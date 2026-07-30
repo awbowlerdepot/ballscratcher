@@ -5,7 +5,12 @@ a normalized Postgres database, feeding a consumer informational site and
 reconciliation against bowlerdepot.com's BigCommerce catalog. Full design
 rationale, the schema, and the decisions behind it live in
 `brunswick-scraper-architecture-review.md` (one level up from this repo) --
-read that first if anything here seems under-explained.
+read that first if anything here seems under-explained. For the actual
+step-by-step deploy process with exact commands, see `DEPLOY_RUNBOOK.md` --
+this README's "Getting this running" section below stays focused on
+explaining each step; the runbook is the checklist to actually follow,
+including a post-deploy smoke-test order designed to surface the highest-
+risk unknowns first.
 
 ## What's actually built right now
 
