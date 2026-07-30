@@ -113,12 +113,6 @@ Parameters:
       every request to the admin API fail closed (see
       AdminApiAuthorizerFunction below) rather than silently allowing
       unauthenticated access.
-      Left blank by default (no BowlerDepot store account wired up yet in
-      this environment); BowlerDepotReconciliationFunction will fail at
-      runtime without a real value here, same as any other
-      not-yet-configured integration -- see src/bowlerdepot_reconciliation/
-      app.py's module docstring for what's genuinely unverified about this
-      integration even once credentials exist.
 
 Resources:
   ImageBucket:
