@@ -2,22 +2,16 @@ AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: >
   Bowling ball scraper/database. Sitemap-driven URL discovery, per-manufacturer
-  HTML + PDF product scraping, image mirroring/normalization, and an admin
-  approval API sitting in front of a shared Postgres schema.
+  HTML + PDF product scraping, image mirroring/normalization, QA cross-checks,
+  and an admin approval API sitting in front of a shared Postgres schema.
 
-  This template wires up all five functions from the architecture doc's
-  build order, chained end to end via SQS: UrlDiscoveryFunction (scheduled)
-  publishes new/changed URLs to ProductScrapeQueue; ProductScraperFunction
-  consumes that queue and, per product, publishes to PdfParseQueue (when an
-  info_sheet_url was found) and ImageProcessQueue (one job per image still
-  missing stored_url); PdfParserFunction and ImageProcessorFunction consume
-  those. AdminApiFunction sits apart from the chain as a real HTTP API.
-  SQS was chosen over Step Functions for this fan-out -- see the comment in
-  src/url_discovery/app.py for why: simpler for a straight-line pipeline
-  with no branching, revisit if that changes. Each queue has a
-  dead-letter queue and the consuming functions use Lambda's partial batch
-  response feature (ReportBatchItemFailures) so one bad message doesn't
-  fail an entire batch.
+  Per-manufacturer scrape pipelines (Brunswick/Craft CMS, SWAG/WooCommerce,
+  MOTIV/NetSuite) are chained end to end via SQS: a URL discovery function
+  publishes to a product-scrape queue, whose consumer publishes to PDF-parse
+  and image-process queues as needed. AdminApiFunction sits apart from the
+  chain as a real HTTP API behind a shared-secret authorizer. See README.md
+  and DEPLOY_RUNBOOK.md for full details -- kept short here to stay under
+  CloudFormation's 1024-char template Description limit.
 
 Globals:
   Function:
