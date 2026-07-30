@@ -317,16 +317,19 @@ def sync_pdf_skus(conn, product_id: str, pdf_skus: list) -> list:
     return flagged
 
 
-def handler(event, context):
-    """Expects event = {"info_sheet_url": "...", "product_id": "..."}.
-    product_id is the row product_scraper.upsert_product already created --
-    this function is meant to run as a second step against the same
-    product, not standalone, since it needs existing product_skus rows to
-    reconcile against. Wiring that hand-off (Step Functions/SQS after
-    ProductScraperFunction) is the same not-yet-decided orchestration
-    question noted in template.yaml, not something to guess at here."""
-    info_sheet_url = event["info_sheet_url"]
-    product_id = event["product_id"]
+def _extract_jobs(event: dict) -> list:
+    """Same shape-detection as product_scraper's handler: real SQS trigger
+    ({"Records": [...]}) vs. direct/manual invocation
+    ({"info_sheet_url": ..., "product_id": ...}). Returns
+    (job_dict, message_id_or_None) pairs."""
+    if "Records" in event:
+        return [(json.loads(r["body"]), r["messageId"]) for r in event["Records"]]
+    return [(event, None)]
+
+
+def _process_one(job: dict) -> dict:
+    info_sheet_url = job["info_sheet_url"]
+    product_id = job["product_id"]
 
     logger.info("Fetching PDF info sheet %s", info_sheet_url)
     pdf_bytes = fetch_pdf(info_sheet_url)
@@ -345,10 +348,40 @@ def handler(event, context):
     )
 
     return {
-        "statusCode": 200,
-        "body": json.dumps({
-            "product_id": str(product_id),
-            "sku_count": len(parsed["skus"]),
-            "flagged_count": len(flagged),
-        }),
+        "product_id": str(product_id),
+        "sku_count": len(parsed["skus"]),
+        "flagged_count": len(flagged),
     }
+
+
+def handler(event, context):
+    """Handles both an SQS-triggered batch (PdfParseQueue, populated by
+    ProductScraperFunction whenever a scraped page had an info_sheet_url)
+    and a direct/manual invocation with
+    {"info_sheet_url": "...", "product_id": "..."}. product_id is the row
+    product_scraper.upsert_product already created -- this function runs
+    as a second step against the same product, since it needs existing
+    product_skus rows to reconcile against (see sync_pdf_skus).
+
+    Uses Lambda's partial batch response feature (ReportBatchItemFailures,
+    set on the event source mapping in template.yaml) so one bad PDF
+    doesn't fail the whole batch -- only that message goes back on the
+    queue for retry."""
+    jobs = _extract_jobs(event)
+
+    results = []
+    batch_item_failures = []
+    for job, message_id in jobs:
+        try:
+            results.append(_process_one(job))
+        except Exception:
+            logger.exception("Failed to parse/sync PDF job: %r", job)
+            if message_id is not None:
+                batch_item_failures.append({"itemIdentifier": message_id})
+            else:
+                raise
+
+    response = {"statusCode": 200, "body": json.dumps({"results": results})}
+    if "Records" in event:
+        response["batchItemFailures"] = batch_item_failures
+    return response

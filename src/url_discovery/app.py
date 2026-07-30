@@ -15,6 +15,15 @@ all: pull /products.json directly instead of diffing a sitemap.
 Kept deliberately split into pure functions (fetch / parse / diff) so the
 parsing logic can be unit tested against a real captured sitemap fixture
 without a network call or a database -- see tests/test_url_discovery.py.
+
+Orchestration: publishes each new/changed URL as a job onto
+PRODUCT_SCRAPE_QUEUE_URL (an SQS queue ProductScraperFunction is triggered
+from -- see template.yaml). SQS chosen over Step Functions for this fan-out
+because it's the simpler option for "one queue, one consumer function" --
+no state machine to author, standard event-driven Lambda pattern. Revisit
+if the pipeline grows branching/retry logic complex enough that Step
+Functions' visual state tracking earns its extra complexity; not the case
+yet for four functions in a straight line.
 """
 import json
 import logging
@@ -129,6 +138,24 @@ def diff_against_known(conn, brand_id: str, entries: list) -> dict:
     return {"new": new_urls, "changed": changed_urls, "unchanged": unchanged_urls}
 
 
+def build_scrape_messages(brand_id: str, urls: list) -> list:
+    """Pure function: one SQS message body per URL to scrape. No SQS/boto3
+    dependency, so this is unit-testable on its own."""
+    return [json.dumps({"url": url, "brand_id": brand_id}) for url in urls]
+
+
+def publish_messages(sqs_client, queue_url: str, message_bodies: list) -> int:
+    """Sends message_bodies to queue_url via SendMessageBatch, chunked to
+    SQS's 10-message-per-call limit. Returns the count sent."""
+    sent = 0
+    for i in range(0, len(message_bodies), 10):
+        chunk = message_bodies[i:i + 10]
+        entries = [{"Id": str(idx), "MessageBody": body} for idx, body in enumerate(chunk)]
+        sqs_client.send_message_batch(QueueUrl=queue_url, Entries=entries)
+        sent += len(chunk)
+    return sent
+
+
 def get_db_connection():
     """Deferred import + Secrets Manager lookup, so the parse_sitemap/diff
     logic above can be unit tested without psycopg2 or AWS credentials
@@ -170,6 +197,25 @@ def handler(event, context):
         len(diff["new"]), len(diff["changed"]), len(diff["unchanged"]),
     )
 
+    urls_to_scrape = diff["new"] + diff["changed"]
+    published_count = 0
+    queue_url = os.environ.get("PRODUCT_SCRAPE_QUEUE_URL")
+    if urls_to_scrape and queue_url:
+        import boto3
+
+        sqs = boto3.client("sqs")
+        messages = build_scrape_messages(brand_id, urls_to_scrape)
+        published_count = publish_messages(sqs, queue_url, messages)
+        logger.info("Published %d scrape jobs to %s", published_count, queue_url)
+    elif urls_to_scrape:
+        # PRODUCT_SCRAPE_QUEUE_URL not set -- fine for manual/local testing
+        # (e.g. invoking this function directly without the full stack
+        # deployed), just means nothing downstream gets triggered.
+        logger.info(
+            "PRODUCT_SCRAPE_QUEUE_URL not set -- %d URL(s) found but not published to any queue",
+            len(urls_to_scrape),
+        )
+
     return {
         "statusCode": 200,
         "body": json.dumps({
@@ -179,5 +225,6 @@ def handler(event, context):
             "unchanged_count": len(diff["unchanged"]),
             "new_urls": diff["new"],
             "changed_urls": diff["changed"],
+            "published_count": published_count,
         }),
     }

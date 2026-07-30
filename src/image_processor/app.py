@@ -278,23 +278,25 @@ def upload_variants(s3_client, bucket: str, product_image_id: str, variants: dic
     return urls
 
 
-def handler(event, context):
-    """Expects event = {"product_image_id": "...", "source_url": "..."} --
-    one image row per invocation, matching a product_images row where
-    stored_url is still null. Wiring this to run automatically after
-    ProductScraperFunction/PdfParserFunction (rather than being invoked
-    per-row manually) is the same not-yet-decided orchestration question
-    noted in template.yaml for the other functions."""
-    product_image_id = event["product_image_id"]
-    source_url = event["source_url"]
+def _extract_jobs(event: dict) -> list:
+    """Same shape-detection as the other functions' handlers: real SQS
+    trigger ({"Records": [...]}) vs. direct/manual invocation
+    ({"product_image_id": ..., "source_url": ...}). Returns
+    (job_dict, message_id_or_None) pairs."""
+    if "Records" in event:
+        return [(json.loads(r["body"]), r["messageId"]) for r in event["Records"]]
+    return [(event, None)]
+
+
+def _process_one(job: dict, s3_client) -> dict:
+    product_image_id = job["product_image_id"]
+    source_url = job["source_url"]
     bucket = os.environ["IMAGE_BUCKET"]
 
     logger.info("Processing image %s for product_image %s", source_url, product_image_id)
     image_bytes = fetch_image_bytes(source_url)
     result = process_image(image_bytes)
 
-    import boto3
-    s3_client = boto3.client("s3")
     urls = upload_variants(s3_client, bucket, product_image_id, result["variants"])
 
     conn = get_db_connection()
@@ -313,7 +315,37 @@ def handler(event, context):
         len(urls), product_image_id, result["bbox_method"],
     )
 
-    return {
-        "statusCode": 200,
-        "body": json.dumps({"product_image_id": product_image_id, "urls": urls, "bbox_method": result["bbox_method"]}),
-    }
+    return {"product_image_id": product_image_id, "urls": urls, "bbox_method": result["bbox_method"]}
+
+
+def handler(event, context):
+    """Handles both an SQS-triggered batch (ImageProcessQueue, populated by
+    ProductScraperFunction for any product_images row still missing
+    stored_url) and a direct/manual invocation with
+    {"product_image_id": "...", "source_url": "..."}.
+
+    Uses Lambda's partial batch response feature (ReportBatchItemFailures,
+    set on the event source mapping in template.yaml) so one bad image
+    (e.g. a 404'd CDN URL, or a source that trips up bbox detection badly
+    enough to error) doesn't fail the whole batch."""
+    jobs = _extract_jobs(event)
+
+    import boto3
+    s3_client = boto3.client("s3")
+
+    results = []
+    batch_item_failures = []
+    for job, message_id in jobs:
+        try:
+            results.append(_process_one(job, s3_client))
+        except Exception:
+            logger.exception("Failed to process image job: %r", job)
+            if message_id is not None:
+                batch_item_failures.append({"itemIdentifier": message_id})
+            else:
+                raise
+
+    response = {"statusCode": 200, "body": json.dumps({"results": results})}
+    if "Records" in event:
+        response["batchItemFailures"] = batch_item_failures
+    return response

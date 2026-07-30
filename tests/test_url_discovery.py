@@ -10,6 +10,7 @@ without AWS credentials or a DB instance.
 
 Run with: pytest tests/test_url_discovery.py -v
 """
+import json
 import pathlib
 import sys
 
@@ -17,7 +18,12 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / "src" / "url_discovery"))
 
-from app import parse_sitemap, diff_against_known  # noqa: E402
+from app import (  # noqa: E402
+    parse_sitemap,
+    diff_against_known,
+    build_scrape_messages,
+    publish_messages,
+)
 
 FIXTURE_PATH = pathlib.Path(__file__).parent / "fixtures" / "bowlerProducts_sitemap_sample.xml"
 
@@ -168,3 +174,47 @@ def test_end_to_end_against_real_fixture(sitemap_bytes):
     assert len(diff["new"]) == 6
     assert len(diff["changed"]) == 0
     assert len(diff["unchanged"]) == 0
+
+
+# --- Orchestration: build_scrape_messages / publish_messages ---
+
+def test_build_scrape_messages_produces_one_message_per_url():
+    messages = build_scrape_messages("brand-123", ["https://a.com/1", "https://a.com/2"])
+    assert len(messages) == 2
+    assert json.loads(messages[0]) == {"url": "https://a.com/1", "brand_id": "brand-123"}
+    assert json.loads(messages[1]) == {"url": "https://a.com/2", "brand_id": "brand-123"}
+
+
+def test_build_scrape_messages_empty_list():
+    assert build_scrape_messages("brand-123", []) == []
+
+
+class _FakeSqsClient:
+    """Minimal stand-in for boto3's SQS client -- just records what would
+    have been sent, no real AWS call."""
+
+    def __init__(self):
+        self.sent_batches = []
+
+    def send_message_batch(self, QueueUrl, Entries):
+        self.sent_batches.append((QueueUrl, Entries))
+        return {"Successful": [{"Id": e["Id"]} for e in Entries], "Failed": []}
+
+
+def test_publish_messages_sends_all_and_returns_count():
+    sqs = _FakeSqsClient()
+    sent = publish_messages(sqs, "https://sqs.example/queue", ["a", "b", "c"])
+    assert sent == 3
+    assert len(sqs.sent_batches) == 1
+    assert len(sqs.sent_batches[0][1]) == 3
+
+
+def test_publish_messages_batches_over_sqs_10_message_limit():
+    """SendMessageBatch caps at 10 entries per call -- confirms
+    publish_messages chunks rather than assuming small volume forever."""
+    sqs = _FakeSqsClient()
+    bodies = [f"msg-{i}" for i in range(23)]
+    sent = publish_messages(sqs, "https://sqs.example/queue", bodies)
+    assert sent == 23
+    assert len(sqs.sent_batches) == 3
+    assert [len(batch[1]) for batch in sqs.sent_batches] == [10, 10, 3]

@@ -315,6 +315,14 @@ def parse_product_page(html: str, url: str) -> dict:
 # tests/test_product_scraper.py); this part is comparatively mechanical
 # upsert logic, deferred-imported so the parsing tests don't need
 # psycopg2/boto3 installed to run.
+#
+# Orchestration: this function is now SQS-triggered from
+# PRODUCT_SCRAPE_QUEUE_URL's queue (see UrlDiscoveryFunction, which
+# publishes there) rather than only manually invoked. After a successful
+# scrape it fans out two more jobs of its own: a PDF-parse job (when
+# info_sheet_url was found) and an image-process job per product_images
+# row that still needs mirroring (stored_url is null) -- see
+# build_pdf_parse_message / build_image_process_messages below.
 # ---------------------------------------------------------------------
 
 import json
@@ -338,9 +346,14 @@ def get_db_connection():
     )
 
 
-def upsert_product(conn, brand_id: str, parsed: dict) -> str:
-    """Insert or update the products row and its product_skus rows for one
-    scraped page. Returns the product id.
+def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
+    """Insert or update the products row and its product_skus/product_images
+    rows for one scraped page. Returns
+    {"product_id": ..., "pending_image_jobs": [{"product_image_id", "source_url"}, ...]}
+    -- the latter is every product_images row (new or pre-existing) that
+    still has stored_url = null, i.e. still needs the image pipeline to
+    run on it, which is what the handler uses to fan out image-process
+    jobs without a separate query.
 
     Mismatches between a re-scrape and the stored value aren't silently
     overwritten for SKU fields sourced from html when a prior value came
@@ -400,28 +413,74 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> str:
                 (product_id, sku["weight_lbs"], sku["rg"], sku["differential"], sku["mass_bias"]),
             )
 
+        pending_image_jobs = []
         for image in parsed["images"]:
+            # Changed from the original "on conflict do nothing" to "do
+            # update" (re-setting image_type to its own value) purely so
+            # this can RETURNING id/stored_url on every row, whether it was
+            # just inserted or already existed -- needed to know which
+            # rows still need an image-process job without a second query.
             cur.execute(
                 """
                 insert into product_images (product_id, image_type, source_url)
                 values (%s, %s, %s)
-                on conflict do nothing
+                on conflict (product_id, source_url) do update set image_type = excluded.image_type
+                returning id, stored_url
                 """,
                 (product_id, image["image_type"], image["source_url"]),
             )
+            image_id, stored_url = cur.fetchone()
+            if stored_url is None:
+                pending_image_jobs.append({"product_image_id": str(image_id), "source_url": image["source_url"]})
 
     conn.commit()
-    return product_id
+    return {"product_id": product_id, "pending_image_jobs": pending_image_jobs}
 
 
-def handler(event, context):
-    """Expects event = {"url": "...", "brand_id": "..."} -- one product page
-    per invocation, matching what UrlDiscoveryFunction emits (new_urls/
-    changed_urls). Wire these together with SQS or Step Functions once
-    UrlDiscoveryFunction is deployed; not done here since that's an
-    orchestration decision, not a scraping-logic one."""
-    url = event["url"]
-    brand_id = event["brand_id"]
+def build_pdf_parse_message(product_id: str, info_sheet_url: str) -> str:
+    """Pure function, no SQS/boto3 dependency -- unit-testable on its own."""
+    return json.dumps({"product_id": str(product_id), "info_sheet_url": info_sheet_url})
+
+
+def build_image_process_messages(pending_image_jobs: list) -> list:
+    return [json.dumps(job) for job in pending_image_jobs]
+
+
+def publish_messages(sqs_client, queue_url: str, message_bodies: list) -> int:
+    """Sends message_bodies to queue_url via SendMessageBatch, chunked to
+    SQS's 10-message-per-call limit. Returns the count sent. Duplicated
+    from url_discovery/app.py rather than shared -- each Lambda here is
+    its own independent deployment package (CodeUri), and introducing a
+    shared Lambda Layer for one seven-line helper isn't worth the added
+    packaging complexity yet."""
+    sent = 0
+    for i in range(0, len(message_bodies), 10):
+        chunk = message_bodies[i:i + 10]
+        entries = [{"Id": str(idx), "MessageBody": body} for idx, body in enumerate(chunk)]
+        sqs_client.send_message_batch(QueueUrl=queue_url, Entries=entries)
+        sent += len(chunk)
+    return sent
+
+
+def _extract_jobs(event: dict) -> list:
+    """Supports two invocation shapes: a real SQS trigger
+    ({"Records": [{"body": "<json>", "messageId": "..."}, ...]}) and a
+    direct/manual invocation ({"url": "...", "brand_id": "..."}). Returns
+    a list of (job_dict, message_id_or_None) pairs so the handler can
+    report per-message failures back to SQS (message_id is None for a
+    direct invocation, where there's no batch to report against)."""
+    if "Records" in event:
+        return [(json.loads(r["body"]), r["messageId"]) for r in event["Records"]]
+    return [(event, None)]
+
+
+def _process_one(job: dict, sqs_client) -> dict:
+    """Scrapes and upserts one product page, then fans out follow-up jobs.
+    Raised exceptions propagate to the caller (handler), which decides how
+    to report the failure -- kept separate so handler can catch per-job
+    rather than letting one bad URL fail an entire SQS batch."""
+    url = job["url"]
+    brand_id = job["brand_id"]
 
     logger.info("Scraping %s", url)
     html = fetch_page(url)
@@ -429,13 +488,63 @@ def handler(event, context):
 
     conn = get_db_connection()
     try:
-        product_id = upsert_product(conn, brand_id, parsed)
+        result = upsert_product(conn, brand_id, parsed)
     finally:
         conn.close()
 
+    product_id = result["product_id"]
     logger.info("Upserted product %s (%d SKUs)", product_id, len(parsed["skus"]))
 
+    pdf_queue_url = os.environ.get("PDF_PARSE_QUEUE_URL")
+    info_sheet_url = parsed["resources"].get("info_sheet_url")
+    pdf_jobs_published = 0
+    if info_sheet_url and pdf_queue_url:
+        message = build_pdf_parse_message(product_id, info_sheet_url)
+        pdf_jobs_published = publish_messages(sqs_client, pdf_queue_url, [message])
+
+    image_queue_url = os.environ.get("IMAGE_PROCESS_QUEUE_URL")
+    image_jobs_published = 0
+    if result["pending_image_jobs"] and image_queue_url:
+        messages = build_image_process_messages(result["pending_image_jobs"])
+        image_jobs_published = publish_messages(sqs_client, image_queue_url, messages)
+
     return {
-        "statusCode": 200,
-        "body": json.dumps({"product_id": str(product_id), "sku_count": len(parsed["skus"])}),
+        "product_id": str(product_id),
+        "sku_count": len(parsed["skus"]),
+        "pdf_jobs_published": pdf_jobs_published,
+        "image_jobs_published": image_jobs_published,
     }
+
+
+def handler(event, context):
+    """Handles both an SQS-triggered batch (ProductScrapeQueue, populated by
+    UrlDiscoveryFunction) and a direct/manual invocation with
+    {"url": "...", "brand_id": "..."}. When SQS-triggered, uses Lambda's
+    partial batch response feature (ReportBatchItemFailures, set on the
+    event source mapping in template.yaml) so one bad URL doesn't cause the
+    whole batch to be retried -- only the failed message(s) go back on the
+    queue."""
+    jobs = _extract_jobs(event)
+
+    sqs_client = None
+    if any(os.environ.get(k) for k in ("PDF_PARSE_QUEUE_URL", "IMAGE_PROCESS_QUEUE_URL")):
+        import boto3
+
+        sqs_client = boto3.client("sqs")
+
+    results = []
+    batch_item_failures = []
+    for job, message_id in jobs:
+        try:
+            results.append(_process_one(job, sqs_client))
+        except Exception:
+            logger.exception("Failed to scrape/upsert job: %r", job)
+            if message_id is not None:
+                batch_item_failures.append({"itemIdentifier": message_id})
+            else:
+                raise  # direct invocation with no batch to report against -- surface the error
+
+    response = {"statusCode": 200, "body": json.dumps({"results": results})}
+    if "Records" in event:
+        response["batchItemFailures"] = batch_item_failures
+    return response

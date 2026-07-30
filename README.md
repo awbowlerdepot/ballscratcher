@@ -10,13 +10,21 @@ read that first if anything here seems under-explained.
 ## What's actually built right now
 
 - `template.yaml` -- SAM template with all five functions from the
-  architecture doc's build order: `UrlDiscoveryFunction` (scheduled),
-  `ProductScraperFunction`, `PdfParserFunction`, `ImageProcessorFunction`
-  (invoked manually pending an orchestration decision -- see each
-  function's comment), and `AdminApiFunction` (a real HTTP API trigger --
-  **no auth wired up**, see its comment in `template.yaml` before deploying
-  this anywhere reachable). Also defines the public-read `ImageBucket` the
-  image pipeline uploads normalized product photos to.
+  architecture doc's build order, now chained end to end via SQS rather
+  than invoked manually: `UrlDiscoveryFunction` (scheduled) publishes
+  new/changed URLs to `ProductScrapeQueue`; `ProductScraperFunction`
+  consumes that queue and publishes a PDF-parse job (when an
+  `info_sheet_url` was found) and image-process jobs (one per image still
+  missing `stored_url`) to `PdfParseQueue`/`ImageProcessQueue`;
+  `PdfParserFunction` and `ImageProcessorFunction` consume those. Every
+  queue has a dead-letter queue, and the three consuming functions use
+  Lambda's partial batch response feature so one bad message doesn't fail
+  an entire batch. `AdminApiFunction` sits apart from the chain as a real
+  HTTP API trigger -- **no auth wired up**, see its comment in
+  `template.yaml` before deploying this anywhere reachable. Also defines
+  the public-read `ImageBucket` the image pipeline uploads normalized
+  product photos to. See the module docstring in `src/url_discovery/app.py`
+  for why SQS was chosen over Step Functions for this.
 - `db/migrations/001_init_schema.sql` -- full schema: brands, `ball_families` ->
   `products` -> `product_skus`, image storage, URL discovery tracking, the
   cross-source review queue, and BowlerDepot reconciliation tracking.
@@ -60,23 +68,38 @@ read that first if anything here seems under-explained.
   (all the actual logic, framework-agnostic) and a thin `app.py` FastAPI +
   Mangum routing layer -- see "Why there's no live end-to-end test yet"
   below for why that split matters more here than for the other functions.
+- **Orchestration** -- `UrlDiscoveryFunction` -> `ProductScrapeQueue` ->
+  `ProductScraperFunction` -> (`PdfParseQueue` -> `PdfParserFunction`) and
+  (`ImageProcessQueue` -> `ImageProcessorFunction`), all wired in
+  `template.yaml`. Each of the three consuming functions' `handler()` now
+  supports both a real SQS batch event and the original direct-invoke dict
+  shape (for manual testing/backward compatibility), and reports individual
+  message failures back to SQS via `batchItemFailures` rather than failing
+  a whole batch over one bad URL/PDF/image. `ProductScraperFunction`'s
+  `upsert_product()` also changed shape slightly to support this: it now
+  returns which `product_images` rows still need processing
+  (`stored_url is null`) instead of just the product id, so the handler
+  can fan out image jobs without an extra query.
 - `tests/` -- unit tests for all five functions above, run against **real**
   captured data where real data exists: a real sitemap sample, real field
   values from two actual product pages, and two real PDF Info Sheets
   fetched directly from Brunswick's CDN (verbatim extracted text, not
   reconstructions). The image pipeline and admin API are exceptions -- see
   "Why there's no live end-to-end test yet" below for why their tests run
-  against synthetic images / a hand-rolled fake DB cursor instead. All
-  tests across all five functions pass when run manually in-sandbox (see
-  below for why "manually" rather than via `pytest` itself).
+  against synthetic images / a hand-rolled fake DB cursor instead. The
+  three `*_orchestration.py` test files (one each for product_scraper,
+  pdf_parser, image_processor) are the one place in this session where
+  fake-object-based tests actually run standalone via
+  `python3 tests/test_*_orchestration.py` rather than needing manual
+  translation -- see their own header comments. All tests across all five
+  functions pass when run manually in-sandbox (see below for why
+  "manually" rather than via `pytest` itself, for the files that use it).
 
 Every function from the architecture doc's original 5-function build order
-now has a first pass built. What's left: orchestration wiring (SQS/Step
-Functions to actually chain UrlDiscovery -> ProductScraper -> PdfParser ->
-ImageProcessor instead of manual invocation), auth on the admin API, the
-bowwwl.com and BowlerDepot cross-checks that are supposed to also write
-into `review_queue` (currently only the PDF-vs-HTML check does), and the
-consumer-facing site itself.
+now has a first pass built, and they're wired together end to end. What's
+left: auth on the admin API, the bowwwl.com and BowlerDepot cross-checks
+that are supposed to also write into `review_queue` (currently only the
+PDF-vs-HTML check does), and the consumer-facing site itself.
 
 ## Why there's no live end-to-end test yet
 
@@ -162,6 +185,20 @@ verify:
   The `AdminApiFunction` also has no authorizer wired up in `template.yaml`
   on purpose -- that's a real security decision for you to make, not a
   default worth guessing at.
+- **SQS orchestration** is tested at the code level -- the message-building
+  functions (`build_scrape_messages`, `build_pdf_parse_message`,
+  `build_image_process_messages`), the SQS-batch-vs-direct-invoke shape
+  detection (`_extract_jobs`), and the full per-job flow including the
+  partial-batch-failure path all run against fake SQS/DB objects in the
+  three `test_*_orchestration.py` files and pass. What's NOT tested,
+  because this sandbox has no AWS access at all: the actual
+  `template.yaml` wiring -- queue ARNs resolving correctly, IAM policies
+  actually granting the right permissions (`SQSSendMessagePolicy` /
+  the SQS event source's implicit poller permissions), `VisibilityTimeout`
+  being long enough in practice, `ReportBatchItemFailures` behaving the way
+  the AWS docs say it does. `sam validate` and a real deploy are the only
+  way to find out if the YAML itself is wrong in a way `yaml.safe_load`
+  (used to spot-check syntax this session) wouldn't catch.
 
 None of that substitutes for actually running this against AWS. Treat this as
 "the logic is verified, the deployment isn't."

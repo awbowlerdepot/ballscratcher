@@ -6,12 +6,18 @@ Description: >
   approval API sitting in front of a shared Postgres schema.
 
   This template wires up all five functions from the architecture doc's
-  build order: URL discovery (scheduled, end to end), the HTML product
-  scraper, the PDF Info Sheet parser, the image mirroring/centering
-  pipeline, and the admin approval API (the only one with a live trigger
-  besides URL discovery -- it's a real HTTP API, the others are still
-  invoked manually pending an orchestration decision, see each function's
-  comment below).
+  build order, chained end to end via SQS: UrlDiscoveryFunction (scheduled)
+  publishes new/changed URLs to ProductScrapeQueue; ProductScraperFunction
+  consumes that queue and, per product, publishes to PdfParseQueue (when an
+  info_sheet_url was found) and ImageProcessQueue (one job per image still
+  missing stored_url); PdfParserFunction and ImageProcessorFunction consume
+  those. AdminApiFunction sits apart from the chain as a real HTTP API.
+  SQS was chosen over Step Functions for this fan-out -- see the comment in
+  src/url_discovery/app.py for why: simpler for a straight-line pipeline
+  with no branching, revisit if that changes. Each queue has a
+  dead-letter queue and the consuming functions use Lambda's partial batch
+  response feature (ReportBatchItemFailures) so one bad message doesn't
+  fail an entire batch.
 
 Globals:
   Function:
@@ -76,6 +82,58 @@ Resources:
             Action: s3:GetObject
             Resource: !Sub arn:aws:s3:::${ImageBucket}/*
 
+  # --- Orchestration queues ---
+  #
+  # One queue + DLQ per hand-off in the pipeline. VisibilityTimeout is 6x
+  # the consuming function's Timeout (30s), the multiplier AWS recommends
+  # for SQS-Lambda so a message isn't picked up again mid-processing before
+  # the function has had a chance to finish and delete it. maxReceiveCount
+  # of 3 on each DLQ redrive policy: fail three times (including transient
+  # errors), then stop retrying and let a human look at the DLQ rather than
+  # retrying forever.
+
+  ProductScrapeDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: bowling-scraper-product-scrape-dlq
+
+  ProductScrapeQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: bowling-scraper-product-scrape
+      VisibilityTimeout: 180
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ProductScrapeDLQ.Arn
+        maxReceiveCount: 3
+
+  PdfParseDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: bowling-scraper-pdf-parse-dlq
+
+  PdfParseQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: bowling-scraper-pdf-parse
+      VisibilityTimeout: 180
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt PdfParseDLQ.Arn
+        maxReceiveCount: 3
+
+  ImageProcessDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: bowling-scraper-image-process-dlq
+
+  ImageProcessQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: bowling-scraper-image-process
+      VisibilityTimeout: 180
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ImageProcessDLQ.Arn
+        maxReceiveCount: 3
+
   UrlDiscoveryFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -87,6 +145,7 @@ Resources:
           SITEMAP_URL: !Ref SitemapUrl
           URL_PATH_PATTERN: !Ref UrlPathPattern
           BRAND_ID: !Ref BrandId
+          PRODUCT_SCRAPE_QUEUE_URL: !Ref ProductScrapeQueue
       Policies:
         - VPCAccessPolicy: {}
         - Statement:
@@ -94,6 +153,8 @@ Resources:
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Ref DbSecretArn
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt ProductScrapeQueue.QueueName
       Events:
         DailySchedule:
           Type: Schedule
@@ -113,16 +174,32 @@ Resources:
       CodeUri: src/product_scraper/
       Handler: app.handler
       Timeout: 30
+      Environment:
+        Variables:
+          PDF_PARSE_QUEUE_URL: !Ref PdfParseQueue
+          IMAGE_PROCESS_QUEUE_URL: !Ref ImageProcessQueue
       Policies:
         - Statement:
             - Effect: Allow
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Ref DbSecretArn
-      # No trigger wired up yet -- invoked with {"url": "...", "brand_id": "..."}
-      # per product page. Wire this to UrlDiscoveryFunction's new_urls/changed_urls
-      # output via SQS or Step Functions once you're ready to run this for real;
-      # that's an orchestration decision, not something to guess at here.
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt PdfParseQueue.QueueName
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt ImageProcessQueue.QueueName
+      Events:
+        ProductScrapeQueueTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt ProductScrapeQueue.Arn
+            BatchSize: 5
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+      # SQS-triggered from ProductScrapeQueue (populated by
+      # UrlDiscoveryFunction) -- also still accepts direct/manual
+      # invocation with {"url": "...", "brand_id": "..."}, see
+      # src/product_scraper/app.py's _extract_jobs.
       #
       # Only handles the Craft-CMS family (Brunswick/Radical/DV8) -- same
       # reasoning as UrlDiscoveryFunction re: reuse across those three brands.
@@ -142,12 +219,21 @@ Resources:
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Ref DbSecretArn
-      # No trigger wired up yet -- invoked with {"info_sheet_url": "...",
-      # "product_id": "..."} per product, meant to run as a second step
-      # after ProductScraperFunction (it reconciles against that function's
-      # product_skus rows -- see sync_pdf_skus in src/pdf_parser/app.py).
-      # Independently-failing from the HTML step on purpose: a PDF-parsing
-      # miss shouldn't block the HTML-derived fields already saved.
+      Events:
+        PdfParseQueueTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt PdfParseQueue.Arn
+            BatchSize: 5
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+      # SQS-triggered from PdfParseQueue (populated by ProductScraperFunction
+      # whenever a scraped page had an info_sheet_url) -- also still accepts
+      # direct/manual invocation with {"info_sheet_url": "...",
+      # "product_id": "..."}. Independently-failing from the HTML step on
+      # purpose: a PDF-parsing miss shouldn't block the HTML-derived fields
+      # already saved (they're two separate queues/functions, not one
+      # invocation doing both).
 
   ImageProcessorFunction:
     Type: AWS::Serverless::Function
@@ -168,10 +254,18 @@ Resources:
               Resource: !Ref DbSecretArn
         - S3CrudPolicy:
             BucketName: !Ref ImageBucket
-      # No trigger wired up yet -- invoked with {"product_image_id": "...",
-      # "source_url": "..."} per product_images row where stored_url is
-      # still null. Same not-yet-decided orchestration question as the
-      # other functions.
+      Events:
+        ImageProcessQueueTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt ImageProcessQueue.Arn
+            BatchSize: 5
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+      # SQS-triggered from ImageProcessQueue (populated by
+      # ProductScraperFunction for any product_images row still missing
+      # stored_url) -- also still accepts direct/manual invocation with
+      # {"product_image_id": "...", "source_url": "..."}.
 
   AdminApiFunction:
     Type: AWS::Serverless::Function
@@ -215,3 +309,9 @@ Outputs:
     Value: !Ref ImageBucket
   AdminApiUrl:
     Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/"
+  ProductScrapeDLQUrl:
+    Value: !Ref ProductScrapeDLQ
+  PdfParseDLQUrl:
+    Value: !Ref PdfParseDLQ
+  ImageProcessDLQUrl:
+    Value: !Ref ImageProcessDLQ
