@@ -224,7 +224,13 @@ def find_mismatches(html_skus: list, pdf_skus: list, tolerance: float = 0.001) -
             pdf_value = pdf_sku.get(field)
             if html_value is None or pdf_value is None:
                 continue
-            if abs(html_value - pdf_value) > tolerance:
+            # html_value comes from Postgres (numeric column -> decimal.Decimal
+            # via psycopg2); pdf_value comes from _to_float() (plain float).
+            # Decimal and float can't be subtracted directly -- coerce both to
+            # float for the comparison. (Real bug, found via production
+            # CloudWatch logs: every job with an actual HTML/PDF pair to compare
+            # was throwing TypeError here.)
+            if abs(float(html_value) - float(pdf_value)) > tolerance:
                 mismatches.append({
                     "weight_lbs": weight,
                     "field_name": field,

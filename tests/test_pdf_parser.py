@@ -10,6 +10,7 @@ these tests also confirm the parser correctly ignores that noise.
 """
 import os
 import sys
+from decimal import Decimal
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src", "pdf_parser"))
 
@@ -111,6 +112,45 @@ def test_find_mismatches_ignores_weights_html_never_had():
     The PDF's 15/14/13/12 lb rows aren't mismatches -- there's nothing on
     the HTML side to disagree with."""
     html_skus = [{"weight_lbs": 16, "rg": 2.557, "differential": 0.039, "mass_bias": None}]
+    pdf_skus = app.parse_info_sheet(_load("crown_78u_info_sheet.txt"))["skus"]
+
+    mismatches = app.find_mismatches(html_skus, pdf_skus)
+
+    assert mismatches == []
+
+
+def test_find_mismatches_handles_decimal_from_postgres():
+    """Real production bug (found via live CloudWatch logs on first-ever real
+    deploy, not a hypothetical): existing_by_weight is built from a Postgres
+    'numeric' column, which psycopg2 returns as decimal.Decimal, not float.
+    pdf_skus values come from _to_float() and are plain float. abs(Decimal -
+    float) raises TypeError. Every prior test here used plain floats on both
+    sides, which is exactly why this shipped -- this test uses Decimal on the
+    HTML side to match what the real database actually returns."""
+    html_skus = [{
+        "weight_lbs": 16,
+        "rg": Decimal("2.577"),
+        "differential": Decimal("0.039"),
+        "mass_bias": None,
+    }]
+    pdf_skus = app.parse_info_sheet(_load("crown_78u_info_sheet.txt"))["skus"]
+
+    mismatches = app.find_mismatches(html_skus, pdf_skus)
+
+    assert len(mismatches) == 1
+    assert mismatches[0]["weight_lbs"] == 16
+    assert mismatches[0]["field_name"] == "rg"
+
+
+def test_find_mismatches_decimal_exact_match_not_flagged():
+    """Same Decimal-vs-float shape as above, but values agree within
+    tolerance -- must not be flagged just because the types differ."""
+    html_skus = [{
+        "weight_lbs": 16,
+        "rg": Decimal("2.557"),
+        "differential": Decimal("0.039"),
+        "mass_bias": None,
+    }]
     pdf_skus = app.parse_info_sheet(_load("crown_78u_info_sheet.txt"))["skus"]
 
     mismatches = app.find_mismatches(html_skus, pdf_skus)
