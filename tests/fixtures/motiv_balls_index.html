@@ -1,0 +1,27 @@
+<!--
+  Small, hand-written excerpt of https://www.motivbowling.com/products/balls/
+  (the "currently for sale" catalog index) -- NOT a full page save. Both
+  product links (n_782172039773743965 -> Jackal Onyx, n_760032766635683491
+  -> Ascend - Green/Teal/Black) are real, captured this session by
+  filtering the live page's <a href> set for the /n_<id> pattern and
+  separately confirming each one's name via the page's visible tile text.
+  The nav/filter link ("./products/balls/") is also real (seen in the same
+  DOM query) and included deliberately -- it does NOT match the /n_\d+$
+  pattern PRODUCT_LINK_RE looks for, so it should be excluded, unlike a
+  same-looking test that only ever fed the parser clean product links.
+-->
+<html>
+<body>
+<div id="product-wrapper">
+  <nav class="product-filters">
+    <ul>
+      <li class="on"><h3><a href="./products/balls/">Balls</a></h3></li>
+    </ul>
+  </nav>
+  <ul class="product-list">
+    <li><a href="https://www.motivbowling.com/n_782172039773743965">Jackal Onyx</a></li>
+    <li><a href="https://www.motivbowling.com/n_760032766635683491">Ascend - Green/Teal/Black</a></li>
+  </ul>
+</div>
+</body>
+</html>

@@ -84,6 +84,11 @@ read that first if anything here seems under-explained.
   -- second manufacturer, second platform family: SWAG Bowling on
   WordPress/WooCommerce. See "Second manufacturer: SWAG Bowling" below for
   the real platform differences that shaped these.
+- `src/netsuite_url_discovery/app.py` + `netsuite_product_scraper/app.py` --
+  third manufacturer, third platform family: MOTIV Bowling on NetSuite
+  SuiteCommerce. See "Third manufacturer: MOTIV Bowling" below -- this one
+  has an important caveat the first two don't: the fetching approach
+  (not the parsing) is unverified.
 - `tests/` -- unit tests for all five functions above, run against **real**
   captured data where real data exists: a real sitemap sample, real field
   values from two actual product pages, and two real PDF Info Sheets
@@ -149,42 +154,91 @@ the one real product page inspected this session was a symmetric core;
 check a real asymmetric SWAG ball's page before trusting mass bias data
 for those.
 
-## Third manufacturer (research done, not yet built): MOTIV Bowling
+## Third manufacturer: MOTIV Bowling (NetSuite SuiteCommerce)
 
-MOTIV Bowling (motivbowling.com) was investigated this session but not yet
-scraped. It runs on what looks like NetSuite SuiteCommerce (identifiable
-by the `/n_<id>` permalink pattern, which redirects to a canonical slug
-URL). Real, confirmed findings, using the Claude in Chrome browser tool
-(not just the non-browser fetch tool the rest of this research used):
+`src/netsuite_url_discovery/app.py` and `src/netsuite_product_scraper/app.py`
+-- MOTIV Bowling (motivbowling.com), a third manufacturer on a third
+platform. Confirmed live this session via a real Chrome browser session
+(Claude in Chrome), reading actual rendered pages and DOM structure
+directly, not just a markdown-converted fetch. This section splits
+cleanly into two very different confidence levels: **parsing is solid,
+fetching is not**.
 
-- The real product-spec content (RG/DIFF per weight, core, coverstock,
-  finish) IS present as static text in the server-delivered HTML -- not
-  injected by JavaScript after page load. Confirmed by fetching the raw
-  page via `fetch()` from inside an actual browser session and finding
-  the real values (a ball's exact RG numbers, core name, coverstock name)
-  present in the raw response text itself. No separate API call for this
-  data was visible in the page's network log either.
-- BUT: fetching that exact same product URL from this session's
-  non-browser fetch tool -- the same style of plain HTTP request a Lambda
-  scraper would make -- came back completely empty, while MOTIV's
-  homepage fetched fine through that same tool. Product pages specifically
-  are rejecting or short-circuiting non-browser requests somehow.
-- Checked the cookies MOTIV's site actually sets: only ordinary analytics/
-  marketing trackers (Google Analytics, AdRoll, Bing UET) plus one short
-  session cookie (`s`, typical of NetSuite) -- no Cloudflare/Akamai/
-  PerimeterX cookies, i.e. no sign of enterprise bot-management.
+**Platform confirmation.** A category-tile link resolves to
+`https://www.motivbowling.com/n_<18-digit-id>`, which 302-redirects (
+confirmed by reading `window.location` after navigating it live) to a
+human-readable canonical URL, e.g. `.../products/balls/heavy-oil/
+jackal-onyx.html`. That `/n_<id>` permalink shape is a NetSuite
+SuiteCommerce signature. No `<meta name="generator">` tag or
+`window.NetSuite`-style global was found on the page, so this is a heavily
+custom-templated storefront on top of NetSuite, not an off-the-shelf one
+-- inferred from the URL convention, not a platform banner.
 
-Net conclusion: a headless browser is likely NOT required just to render
-MOTIV's content, but a plain `requests.get()` almost certainly won't work
-as-is either. The most promising unbuilt approach: a `requests.Session()`
-that visits the homepage first (to pick up the `s` session cookie), reuses
-that cookie on the product-page request, and sends realistic browser-style
-headers. This is a reasoned bet based on real evidence (the cookie
-inventory, the absence of bot-management signatures), not a confirmed
-working approach -- this sandbox has no path to actually test an outbound
-`requests` call against motivbowling.com to prove it out. Build and test
-this against the real site (or report back if it doesn't work) before
-assuming it's solved.
+**Real, confirmed structural facts the parser is built against** (all read
+directly off live pages this session -- see the module docstrings for the
+full detail):
+
+- Two catalog index pages, not a URL path segment or on-page attribute,
+  carry current/retired status: `/products/balls/` (28 links, confirmed
+  no pagination) and `/products/balls/retired-balls/` (202 links, also no
+  pagination). `netsuite_url_discovery` reads both and passes status
+  through the SQS job message to the product scraper, since the product
+  page itself has no reliable status signal of its own -- genuinely
+  different from both other manufacturers.
+- RG/DIFF/mass-bias are in the HTML, per weight, like SWAG and unlike
+  Brunswick -- no PDF dependency for MOTIV's core data either. Confirmed
+  on both a symmetric ball (Sigma Tour Pearl, 5 weights, RG + Max
+  Differential only) and an asymmetric one (Jackal Onyx, 5 weights, RG +
+  Max Differential + a third "Int. Differential" value -- MOTIV's own
+  name for what this schema calls mass_bias).
+- Coverstock material/type come from a single "Cover Stock" field (e.g.
+  "Atomic Propulsion Pearl Reactive"), keyword-matched the same way as
+  Brunswick's single-field approach -- unlike SWAG's two-field split.
+- A subset of balls (the Ascend/Aspire "Designer Series" lines) put color
+  directly in the product name as "Base Name - Color/Color/Color" --
+  confirmed on the ball's own page, not just a category tile. Regular
+  performance balls have no separate color field at all. Handled by
+  splitting the name on " - " rather than reading a dedicated field.
+- Product photos are CSS `background-image: url(...)` inline styles, not
+  `<img>` tags -- confirmed `document.querySelectorAll('img')` returns
+  nothing inside `<main>` on these pages. A "core cutaway" image variant
+  is served from a `filemanager-format/core-image/<id>` path, a transform
+  of one of the main gallery's own image ids.
+- Download link labels (Sell Sheet / Shelf Talker / Factory Finish Guide)
+  vary per product -- confirmed by comparing Sigma Tour Pearl's set
+  against Jackal Onyx's, which don't match. Captured by whatever label is
+  actually present rather than a fixed key set.
+
+**What's NOT confirmed: fetching.** The real product-spec content IS
+present as static text in the server-delivered HTML (confirmed by reading
+the actual page response from inside the browser session), not injected
+by JavaScript after load. But a plain non-browser fetch of that exact same
+product URL (via this sandbox's `mcp__workspace__web_fetch`) came back
+completely blank, while MOTIV's homepage and category pages fetch fine
+through that same tool. Product pages specifically reject or
+short-circuit non-browser requests somehow. Cookie inspection found no
+enterprise bot-management vendor signature (no Cloudflare/Akamai/
+PerimeterX) -- just a short NetSuite session cookie and ordinary analytics
+trackers. `netsuite_product_scraper.fetch_page()` implements the most
+promising approach given that evidence: a `requests.Session()` that visits
+the homepage first to acquire the session cookie, then reuses it plus
+realistic browser headers for the product-page request. **This is an
+educated bet, not a proven fix** -- this sandbox has no outbound path to
+motivbowling.com to actually test it. Treat the first real deployment run
+of `NetsuiteProductScraperFunction` as the actual test; if it still comes
+back blank, the next things to try (not attempted) are inspecting the
+homepage's real `Set-Cookie` header directly (the browser tool's
+`javascript_tool` blocks returning raw cookie-shaped strings as an
+anti-exfiltration measure, so this wasn't readable this session) or
+falling back to a headless-browser-based fetch.
+
+Not yet wired into the SQS orchestration chain, same disclosed-deferred
+treatment as SWAG's functions -- invoke-manually only for now. 27/27 new
+tests pass, run against two real fixture reconstructions (symmetric and
+asymmetric cores) built from real values read off live pages this session
+-- see `tests/fixtures/motiv_sigma_tour_pearl.html`,
+`motiv_jackal_onyx.html`, and the two category-index fixtures for exactly
+what's real vs. reconstructed in each.
 
 ## Why there's no live end-to-end test yet
 
@@ -294,6 +348,17 @@ verify:
   whether `pdf_parser`'s Brunswick-specific PDF layout applies to SWAG's
   Dropbox-hosted PDFs at all (neither PDF could actually be fetched this
   session to check).
+- `src/netsuite_url_discovery/app.py` and `netsuite_product_scraper/app.py`
+  have a different balance than every other module above: the *parsing*
+  is arguably the most solidly verified of any manufacturer's yet (every
+  markup structure was read directly off live pages in a real browser
+  this session, not a markdown-converted approximation), but the
+  *fetching* is the least verified -- a plain request to a MOTIV product
+  page returns blank, and `fetch_page()`'s session-cookie workaround has
+  never actually been run against motivbowling.com from anywhere. See
+  "Third manufacturer: MOTIV Bowling" above for the full detail. 27/27
+  tests pass for the parsing/diff/message-building logic; none of that
+  exercises `fetch_page()` itself, which is exactly the unverified part.
 
 None of that substitutes for actually running this against AWS. Treat this as
 "the logic is verified, the deployment isn't."
@@ -314,8 +379,10 @@ None of that substitutes for actually running this against AWS. Treat this as
    returning id;
    ```
    Keep that `id` -- it's the `BrandId` parameter below. If you're also
-   enabling SWAG, do the same for it (`source_platform` = `'woocommerce'`,
-   `sitemap_url` = the product sitemap) and keep that id for `SwagBrandId`.
+   enabling SWAG or MOTIV, do the same for each (`source_platform` =
+   `'woocommerce'` or `'netsuite'` respectively; MOTIV has no sitemap_url
+   equivalent, see `netsuite_url_discovery/app.py`'s module docstring) and
+   keep those ids for `SwagBrandId`/`MotivBrandId`.
 3. **Store DB credentials in Secrets Manager** as a JSON secret shaped
    `{"host", "port", "dbname", "username", "password"}`. Note its ARN.
 4. **Deploy**:
@@ -329,17 +396,24 @@ None of that substitutes for actually running this against AWS. Treat this as
    template -- see the parameter descriptions in `template.yaml`).
    `SwagCategoryUrl`/`SwagSitemapUrl` default to SWAG's real values;
    `SwagBrandId` defaults to blank and only needs setting once you've seeded
-   SWAG's `brands` row per step 2.
+   SWAG's `brands` row per step 2. Same pattern for
+   `MotivCurrentCategoryUrl`/`MotivRetiredCategoryUrl`/`MotivBrandId` --
+   but see "Third manufacturer: MOTIV Bowling" above before trusting a
+   MOTIV deploy to actually fetch anything; the fetching approach is
+   unverified even though the parsing is solid.
 5. **Run the tests** (once you have `pytest` available -- this session's
    sandbox couldn't install it, so it's unverified in the pytest runner
-   itself for the files that use it; the newer `*_orchestration.py` and
-   `woocommerce_*` test files don't need pytest at all, run them directly):
+   itself for the files that use it; the newer `*_orchestration.py`,
+   `woocommerce_*`, and `netsuite_*` test files don't need pytest at all,
+   run them directly):
    ```
    pip install pytest
    pytest tests/ -v
    # or, for the pytest-free files:
    python3 tests/test_woocommerce_url_discovery.py
    python3 tests/test_woocommerce_product_scraper.py
+   python3 tests/test_netsuite_url_discovery.py
+   python3 tests/test_netsuite_product_scraper.py
    ```
 
 ## Reusing this for Radical / DV8

@@ -75,6 +75,25 @@ Parameters:
       this template still deploys standalone for just the Craft-CMS family
       (BrandId above) without requiring a second brand row up front --
       required once you actually enable the WooCommerce functions.
+  MotivCurrentCategoryUrl:
+    Type: String
+    Default: https://www.motivbowling.com/products/balls/
+    Description: >
+      NetSuite catalog index page NetsuiteUrlDiscoveryFunction reads for
+      currently-for-sale balls -- confirmed real, single-page (no
+      pagination), all product links present as plain <a href="/n_<id>">
+      tags -- see src/netsuite_url_discovery/app.py.
+  MotivRetiredCategoryUrl:
+    Type: String
+    Default: https://www.motivbowling.com/products/balls/retired-balls/
+    Description: Same as MotivCurrentCategoryUrl but for the retired-balls index (202 links as of this session).
+  MotivBrandId:
+    Type: String
+    Default: ""
+    Description: >
+      UUID of the `brands` row for MOTIV Bowling. Left blank by default,
+      same reasoning as SwagBrandId -- required once you actually enable
+      the NetSuite functions.
 
 Resources:
   ImageBucket:
@@ -378,6 +397,68 @@ Resources:
       # Invoked with {"url": "...", "brand_id": "..."} per product page,
       # same shape as ProductScraperFunction -- not yet SQS-triggered.
 
+  # --- NetSuite brand family (MOTIV Bowling to start) ---
+  #
+  # A third platform, added this session -- see
+  # src/netsuite_url_discovery/app.py and netsuite_product_scraper/app.py
+  # module docstrings for the real, confirmed platform differences
+  # (per-weight RG/DIFF/mass-bias in HTML like SWAG but unlike Brunswick;
+  # status split across two dedicated catalog-index pages rather than a
+  # URL path segment or an on-page attribute; colorway sometimes baked
+  # into the product name itself).
+  #
+  # UNVERIFIED, disclosed explicitly: fetch_page() in
+  # netsuite_product_scraper uses a session-cookie-first approach to work
+  # around product pages returning blank to a plain non-browser request
+  # (confirmed real this session, via both this sandbox's fetch tool and
+  # a prior session's research) -- but this sandbox has no outbound path
+  # to motivbowling.com to actually prove that workaround succeeds. Treat
+  # the first real deployment run of this function as the actual test of
+  # that approach, not something already confirmed working.
+  #
+  # Same disclosed-deferred treatment as the WooCommerce functions above:
+  # not wired into the SQS orchestration chain, not a PdfParseQueue
+  # trigger target (mass bias already comes from HTML here too).
+
+  NetsuiteUrlDiscoveryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-netsuite-url-discovery
+      CodeUri: src/netsuite_url_discovery/
+      Handler: app.handler
+      Environment:
+        Variables:
+          CURRENT_CATEGORY_URL: !Ref MotivCurrentCategoryUrl
+          RETIRED_CATEGORY_URL: !Ref MotivRetiredCategoryUrl
+          BRAND_ID: !Ref MotivBrandId
+      Policies:
+        - VPCAccessPolicy: {}
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+      # No schedule wired up yet, same reasoning as WooCommerceUrlDiscoveryFunction.
+
+  NetsuiteProductScraperFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-netsuite-product-scraper
+      CodeUri: src/netsuite_product_scraper/
+      Handler: app.handler
+      Timeout: 30
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+      # Invoked with {"url": "...", "brand_id": "...", "status": "..."}
+      # per product page -- status is required here (unlike the other two
+      # scrapers) since it has no reliable on-page or URL-derived source
+      # for MOTIV; see netsuite_product_scraper/app.py's module docstring
+      # point 1. Not yet SQS-triggered.
+
 Outputs:
   UrlDiscoveryFunctionArn:
     Value: !GetAtt UrlDiscoveryFunction.Arn
@@ -401,3 +482,7 @@ Outputs:
     Value: !GetAtt WooCommerceUrlDiscoveryFunction.Arn
   WooCommerceProductScraperFunctionArn:
     Value: !GetAtt WooCommerceProductScraperFunction.Arn
+  NetsuiteUrlDiscoveryFunctionArn:
+    Value: !GetAtt NetsuiteUrlDiscoveryFunction.Arn
+  NetsuiteProductScraperFunctionArn:
+    Value: !GetAtt NetsuiteProductScraperFunction.Arn
