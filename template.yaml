@@ -108,6 +108,10 @@ Parameters:
       AdminApiAuthorizerFunction below) rather than silently allowing
       unauthenticated access.
 
+Conditions:
+  HasBigCommerceSecret: !Not [!Equals [!Ref BigCommerceSecretArn, ""]]
+  HasAdminApiToken: !Not [!Equals [!Ref AdminApiTokenSecretArn, ""]]
+
 Resources:
   ImageBucket:
     Type: AWS::S3::Bucket
@@ -397,16 +401,29 @@ Resources:
             - Effect: Allow
               Action:
                 - secretsmanager:GetSecretValue
-              Resource: !Ref AdminApiTokenSecretArn
+              # AdminApiTokenSecretArn defaults to "" -- an empty string
+              # isn't a valid IAM Resource value ("must be in ARN format or
+              # *"), which fails changeset creation outright, so only
+              # grant this permission once HasAdminApiToken confirms a
+              # real ARN was supplied. (Found via a real failed deploy --
+              # BowlerDepotReconciliationFunctionRole had the identical bug
+              # against BigCommerceSecretArn; fixed the same way here.)
+              Resource: !If
+                - HasAdminApiToken
+                - !Ref AdminApiTokenSecretArn
+                - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:unused-*"
       # Shared-secret Lambda REQUEST authorizer for AdminHttpApi above.
       # Fails closed if AdminApiTokenSecretArn is left at its blank
       # default -- see the module docstring in
       # src/admin_api_authorizer/app.py for the full reasoning. The
       # Policies block above grants read access to whatever
-      # AdminApiTokenSecretArn actually resolves to, including the blank
-      # default -- an empty Resource ARN is harmless (the function checks
-      # for a blank env var before ever calling Secrets Manager), but set
-      # a real secret ARN before this is genuinely useful.
+      # AdminApiTokenSecretArn actually resolves to; when it's blank, the
+      # policy instead points at a harmless placeholder ARN pattern that
+      # matches nothing real (an empty Resource ARN isn't valid CFN/IAM,
+      # so it can't just be left blank the way the env var can) -- the
+      # function's own blank-env-var check is what actually matters here,
+      # this is only to keep the policy itself well-formed. Set a real
+      # secret ARN before the admin API is genuinely useful.
 
   AdminApiFunction:
     Type: AWS::Serverless::Function
@@ -668,9 +685,16 @@ Resources:
             - Effect: Allow
               Action:
                 - secretsmanager:GetSecretValue
-              Resource:
-                - !Ref DbSecretArn
-                - !Ref BigCommerceSecretArn
+              # BigCommerceSecretArn defaults to "" (see its parameter
+              # description) until BowlerDepot reconciliation is actually
+              # enabled -- an empty string isn't a valid IAM Resource value
+              # ("must be in ARN format or *"), so it's only included here
+              # once HasBigCommerceSecret confirms a real ARN was supplied.
+              Resource: !If
+                - HasBigCommerceSecret
+                - - !Ref DbSecretArn
+                  - !Ref BigCommerceSecretArn
+                - - !Ref DbSecretArn
       Events:
         DailySchedule:
           Type: Schedule
