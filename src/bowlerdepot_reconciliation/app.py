@@ -24,40 +24,68 @@ BigCommerce's own confirmed mechanism for merchant-defined attributes like
 RG/DIFF/coverstock, which is the field this module assumes bowling specs
 live in.
 
-WHAT'S GENUINELY UNVERIFIED, disclosed rather than guessed past: this
-project has no real BowlerDepot store credentials, so none of the
-following has been checked against the actual live store, only against
-BigCommerce's generic public API docs:
+**Both of the two previously-unverified questions below were resolved in
+a later session** by browsing the real, live public storefront (Claude in
+Chrome) rather than the private v3 Catalog API -- still no real
+store_hash/API token exists, so the API's exact JSON shape for these
+fields remains unconfirmed, but the storefront directly shows what the
+underlying custom_fields almost certainly are:
 
-  - Which custom_fields NAMES BowlerDepot actually uses for RG/DIFF/mass
-    bias/coverstock/etc (if it uses custom_fields for these at all --
-    the architecture doc flagged this exact question as something to
-    check "once you're in the API", not something to assume). CUSTOM_FIELD_
-    NAME_CANDIDATES below is a best-guess mapping (common, human-readable
-    label variants), used case-insensitively, NOT a confirmed mapping.
-  - Whether BowlerDepot models each ball weight as a true BigCommerce
-    "variant" (a sub-resource of one product) or as entirely separate
-    products/SKUs, one per weight -- bowlerdepot.com's own storefront
-    returned very little static content when checked live this session
-    (likely a JS-rendered Stencil theme; a plain page-text read showed
-    only header/footer/contact info, no product listings, which isn't
-    enough to determine this either way without deeper JS-rendered
-    inspection not attempted this session). This module assumes the
-    SIMPLER of the two shapes -- one BigCommerce product per (brand, ball
-    name, weight) combination, matched by name+weight -- since that's
-    buildable and testable without a confirmed variant schema; revisit if
-    real API access shows BowlerDepot actually uses true variants instead.
-  - Real store_hash / API token (obviously) -- BIGCOMMERCE_STORE_HASH and
-    the Secrets Manager secret referenced by BIGCOMMERCE_SECRET_ARN are
-    both unset placeholders in template.yaml until a real store account is
-    wired up.
+  - **Product-vs-variant modeling: CONFIRMED true BigCommerce variants,
+    not separate products.** Real product pages (checked: Storm Alpha
+    Crux, Roto Grip RST Hyperdrive) show ONE product page per ball with a
+    "Weight" `<select>` offering 16/15/14/13/12 lbs as options -- this
+    project's original "one BigCommerce product per weight" assumption
+    was wrong. Conveniently, this doesn't actually break the matching
+    logic below (`fuzzy_match_product()` already matches by ball name
+    only, which was always weight-independent), but it does matter for
+    `check_accuracy()` -- see the next point and that function's own
+    docstring for the real consequence.
+  - **Custom field names: CONFIRMED real display labels**, found in the
+    rendered product page (not the private API, so the exact
+    `custom_fields[].name` string is inferred from what's shown, not
+    literally read from JSON): "Radius of Gyration(15lb)", "Max
+    Differential(15lb)", "Int. Differential(15lb)" -- all three
+    explicitly qualified with "(15lb)", confirmed identical on both real
+    products checked. Two of the three original best-guess candidates
+    ("Diff"/"Differential" for differential, "MB"/"Mass Bias" for mass
+    bias) were simply wrong -- BowlerDepot's own real terminology for
+    mass bias is "Int. Differential" (the same term MOTIV's real site
+    uses, confirmed elsewhere in this project -- possibly a shared
+    industry convention rather than coincidence). CUSTOM_FIELD_NAME_
+    CANDIDATES below has been updated with the real values, and
+    `_find_custom_field()`'s matching was loosened from exact-match to
+    prefix-match (startswith, not a bare substring check) specifically
+    because it's not certain whether "(15lb)" is really part of the
+    stored custom_fields.name value or added by the storefront template
+    -- prefix matching handles either case without guessing which, and
+    without the false-positive risk a bare substring check would have
+    (e.g. a short fallback candidate like "rg" matching some unrelated
+    field that merely contains those letters, like "Target Weight").
+  - **The real, important consequence of both findings together:**
+    BowlerDepot only publishes ONE spec value per ball (qualified
+    "15lb"), not one per weight, because weights are variants of a single
+    product with one shared custom_fields set. `check_accuracy()` was
+    fixed to only compare our 15lb-weight SKU against BowlerDepot's
+    values -- comparing every one of our weights (16lb, 14lb, etc.)
+    against BowlerDepot's single 15lb-reference number would have
+    produced constant false-positive mismatches for every non-15lb
+    weight, since RG/DIFF genuinely differ by weight on a real ball (this
+    project's own fixtures already prove that). This was caught and
+    fixed before ever running against a real store, not after.
+  - Real store_hash / API token (still not obtained) -- BIGCOMMERCE_
+    SECRET_ARN is still an unset placeholder in template.yaml until a
+    real store account is wired up. That's the one thing left that
+    genuinely can't be checked without it: whether the API's JSON
+    actually shapes these fields the way the storefront's rendering
+    implies.
 
-Given all of the above, treat this module the same way as
-netsuite_product_scraper's fetch_page(): the STRUCTURE is built against a
-real, current, confirmed API contract, but the actual field-name mapping
-and variant-vs-separate-product assumption need to be checked against the
-real store before this is trusted to write anything back or rely on for
-real coverage numbers.
+Treat this module the same way as netsuite_product_scraper's fetch_page():
+the STRUCTURE is built against a real, current, confirmed API contract,
+and the field-name mapping and variant-vs-product question are now
+resolved against real (if indirect) evidence -- but the exact API
+response shape for custom_fields still needs a real store to fully
+confirm before trusting this module's output blindly.
 """
 import logging
 import re
@@ -69,16 +97,33 @@ logger.setLevel(logging.INFO)
 API_BASE = "https://api.bigcommerce.com"
 PAGE_LIMIT = 250  # BigCommerce's documented max per page for this endpoint
 
-# Best-guess custom_fields "name" values that might carry each spec,
-# matched case-insensitively against whatever custom_fields BowlerDepot's
-# real catalog actually has. UNVERIFIED -- see module docstring.
+# custom_fields "name" values that might carry each spec, matched
+# case-insensitively (and by substring, not exact match -- see
+# _find_custom_field) against whatever custom_fields BowlerDepot's real
+# catalog actually has. The first three entries in each list are the real
+# display labels confirmed live on bowlerdepot.com's storefront this
+# session (Storm Alpha Crux, Roto Grip RST Hyperdrive), including the
+# real "(15lb)" qualifier BowlerDepot always attaches -- see module
+# docstring. The remaining entries are the original best-guess fallbacks,
+# kept in case a different product template omits the qualifier or uses
+# slightly different wording.
 CUSTOM_FIELD_NAME_CANDIDATES = {
-    "rg": ["rg", "radius of gyration", "core rg"],
-    "differential": ["diff", "differential", "core diff"],
-    "mass_bias": ["mb", "mass bias", "mb diff", "mass bias differential"],
+    "rg": ["radius of gyration(15lb)", "radius of gyration", "rg", "core rg"],
+    "differential": ["max differential(15lb)", "max differential", "diff", "differential", "core diff"],
+    "mass_bias": ["int. differential(15lb)", "int. differential", "mb", "mass bias", "mb diff", "mass bias differential"],
     "coverstock_name": ["coverstock", "cover stock"],
     "core_name": ["core", "core name"],
 }
+
+# BowlerDepot's real product pages publish exactly one spec value per
+# ball, qualified "(15lb)" -- not one per weight variant, since (also
+# confirmed this session) weight is a BigCommerce variant/option on a
+# single product, not a separate product per weight. check_accuracy()
+# below only compares against this weight for exactly that reason: our
+# other weights' real RG/DIFF values are expected to differ from the
+# 15lb reference number, so comparing them would be a false-positive
+# mismatch, not a real one.
+BOWLERDEPOT_REFERENCE_WEIGHT_LBS = 15
 
 FUZZY_MATCH_THRESHOLD = 0.80  # SequenceMatcher ratio; see fuzzy_match_product. Chosen to
 # comfortably catch a real-world-plausible "+ Bowling Ball" suffix (measured
@@ -195,9 +240,24 @@ def _custom_fields_by_name(product: dict) -> dict:
 
 
 def _find_custom_field(fields_by_name: dict, candidates: list):
+    """Prefix match, not exact-only -- deliberately, since it's not
+    certain whether BowlerDepot's real custom_fields.name values literally
+    include the "(15lb)" qualifier seen on the storefront or whether
+    that's added by the display template (see module docstring). A
+    candidate like "radius of gyration" matches either "radius of
+    gyration" or "radius of gyration(15lb)" via startswith().
+
+    Deliberately startswith(), not a bare substring check (`candidate in
+    field_name`): a short fallback candidate like "rg" or "mb" as a plain
+    substring could false-positive-match an unrelated real field name
+    that merely happens to contain those letters somewhere in the middle
+    (e.g. "Target Weight" contains "rg"; "Thumb Hole" contains "mb").
+    startswith() avoids that whole class of mismatch while still handling
+    the one real pattern this session confirmed (a qualifier suffix)."""
     for candidate in candidates:
-        if candidate in fields_by_name:
-            return fields_by_name[candidate]
+        for field_name, value in fields_by_name.items():
+            if field_name.startswith(candidate):
+                return value
     return None
 
 
@@ -210,10 +270,12 @@ def _to_float(value):
 
 def extract_specs_from_custom_fields(product: dict) -> dict:
     """Pulls whatever RG/DIFF/mass_bias values it can find in a
-    BigCommerce product's custom_fields, using CUSTOM_FIELD_NAME_CANDIDATES'
-    best-guess label list. Returns None for anything not found rather than
-    guessing -- see module docstring's disclosed-unverified-mapping
-    caveat."""
+    BigCommerce product's custom_fields, using CUSTOM_FIELD_NAME_CANDIDATES.
+    These are BowlerDepot's real, confirmed-live display labels (see
+    module docstring) for the single 15lb-reference value the storefront
+    publishes -- not a per-weight breakdown, since weight is a variant of
+    one product, not a separate product/custom_fields set per weight.
+    Returns None for anything not found rather than guessing."""
     fields = _custom_fields_by_name(product)
     return {
         "rg": _to_float(_find_custom_field(fields, CUSTOM_FIELD_NAME_CANDIDATES["rg"])),
@@ -225,13 +287,28 @@ def extract_specs_from_custom_fields(product: dict) -> dict:
 def check_accuracy(matched_pairs: list, tolerance: float = 0.001) -> list:
     """matched_pairs: list of {product_id, our_sku, bigcommerce_product}
     dicts (our_sku is a single {weight_lbs, rg, differential, mass_bias}
-    dict -- see module docstring's "one product per weight" assumption).
-    Returns review_queue-shaped mismatch dicts, same field_name convention
-    as bowwwl_cross_check ("rg_16lb" etc.)."""
+    dict). Returns review_queue-shaped mismatch dicts, same field_name
+    convention as bowwwl_cross_check ("rg_15lb" etc.).
+
+    Only ever compares our BOWLERDEPOT_REFERENCE_WEIGHT_LBS (15lb) SKU
+    against BowlerDepot's values -- confirmed live this session that
+    BowlerDepot's real product pages publish exactly one spec value per
+    ball, explicitly qualified "(15lb)", not a value per weight. Comparing
+    any other weight's real RG/DIFF against that single 15lb reference
+    would produce a false-positive mismatch on every non-15lb weight (RG/
+    DIFF genuinely differ by weight -- this project's own real fixtures
+    already prove that), not a real disagreement worth a human's time.
+    Callers are still free to pass in matched_pairs for every weight (the
+    Lambda handler does, for simplicity); this function silently skips
+    any weight that isn't the reference one rather than requiring the
+    caller to pre-filter."""
     mismatches = []
     for pair in matched_pairs:
-        product_id = pair["product_id"]
         weight = pair["our_sku"]["weight_lbs"]
+        if weight != BOWLERDEPOT_REFERENCE_WEIGHT_LBS:
+            continue
+
+        product_id = pair["product_id"]
         their_specs = extract_specs_from_custom_fields(pair["bigcommerce_product"])
 
         for field in ("rg", "differential", "mass_bias"):

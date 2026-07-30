@@ -1,17 +1,22 @@
 """
-Tests for src/bowlerdepot_reconciliation/app.py. Unlike this project's
-manufacturer scrapers, there's no real BowlerDepot store to capture
-fixture data from (no store credentials this session -- see app.py's
-module docstring for exactly what's confirmed real vs. unverified: the
-BigCommerce v3 Catalog Products API response SHAPE is real, fetched
-directly from BigCommerce's own current developer docs this session; the
-specific custom_fields names BowlerDepot actually uses, and whether it
-models weights as true BigCommerce variants or separate products, are
-both unverified guesses). Fake BigCommerce product dicts below are
-therefore built to match that CONFIRMED real response shape (id, name,
-sku, custom_fields: [{name, value, id}]) but with invented values, not a
-real captured product -- the pagination/matching/comparison LOGIC is what
-these tests verify, not real BowlerDepot data.
+Tests for src/bowlerdepot_reconciliation/app.py. Still no real BowlerDepot
+store *credentials* (no private v3 Catalog API access), so fake
+BigCommerce product dicts below are built to match the CONFIRMED real
+response SHAPE (id, name, sku, custom_fields: [{name, value, id}]) --
+that part was always real, fetched from BigCommerce's own current
+developer docs. But the specific custom_fields label text used in these
+fixtures ("Radius of Gyration(15lb)", "Max Differential(15lb)",
+"Int. Differential(15lb)") is no longer invented -- it's the real,
+confirmed-live display text read directly off two real bowlerdepot.com
+product pages this session (Storm Alpha Crux, Roto Grip RST Hyperdrive),
+and the "one product with a weight variant, one 15lb-reference spec
+value" model these tests exercise (see check_accuracy's tests) is the
+real, confirmed structure too -- see app.py's module docstring for the
+full detail of what was resolved and how. What's still genuinely
+unconfirmed: whether the private v3 API's JSON literally names the field
+this way (as opposed to the storefront template reformatting a
+differently-named internal field for display) -- that's the one thing
+real store credentials would still be needed to nail down completely.
 
 Manual-runner pattern, run standalone via
 `python3 tests/test_bowlerdepot_reconciliation.py`.
@@ -102,20 +107,48 @@ def test_check_coverage_flags_ambiguous_match():
     assert results[0]["match"]["ambiguous"] is True
 
 
-# --- custom_fields extraction (real BigCommerce shape, invented values) ---
+# --- custom_fields extraction ---
+# Real BigCommerce response SHAPE (custom_fields: [{"name","value","id"}]),
+# and the "Radius of Gyration(15lb)"/"Max Differential(15lb)"/
+# "Int. Differential(15lb)" label text below is the real, confirmed-live
+# display label text read directly off two real bowlerdepot.com product
+# pages this session (Storm Alpha Crux, Roto Grip RST Hyperdrive) -- not
+# a private-API read (no real store credentials exist), but real
+# storefront evidence, not invented.
 
-def test_extract_specs_from_custom_fields_real_shape():
+def test_extract_specs_from_custom_fields_real_confirmed_labels():
     product = {
         "id": 1,
         "custom_fields": [
-            {"id": 10, "name": "RG", "value": "2.533"},
-            {"id": 11, "name": "Diff", "value": "0.033"},
+            {"id": 10, "name": "Radius of Gyration(15lb)", "value": "2.48"},
+            {"id": 11, "name": "Max Differential(15lb)", "value": "0.053"},
+            {"id": 12, "name": "Int. Differential(15lb)", "value": "0.018"},
         ],
     }
     specs = app.extract_specs_from_custom_fields(product)
-    assert specs["rg"] == 2.533
-    assert specs["differential"] == 0.033
-    assert specs["mass_bias"] is None
+    assert specs["rg"] == 2.48
+    assert specs["differential"] == 0.053
+    assert specs["mass_bias"] == 0.018
+
+
+def test_extract_specs_from_custom_fields_prefix_match_without_qualifier():
+    """_find_custom_field matches by prefix (startswith), not exact
+    equality, since it's unconfirmed whether the "(15lb)" qualifier is
+    really part of the stored custom_fields.name or just the storefront
+    template's display text -- a bare "Radius of Gyration" (no qualifier)
+    must still match."""
+    product = {"id": 1, "custom_fields": [{"id": 1, "name": "Radius of Gyration", "value": "2.5"}]}
+    assert app.extract_specs_from_custom_fields(product)["rg"] == 2.5
+
+
+def test_find_custom_field_prefix_match_does_not_false_positive_on_embedded_letters():
+    """Prefix matching (not a bare substring check) specifically avoids a
+    short fallback candidate like "rg" matching an unrelated field that
+    merely contains those letters in the middle of an unrelated word --
+    "Target Weight" contains "rg" as a substring but doesn't start with
+    it, so it must NOT be picked up as the rg value."""
+    product = {"id": 1, "custom_fields": [{"id": 1, "name": "Target Weight", "value": "15"}]}
+    assert app.extract_specs_from_custom_fields(product)["rg"] is None
 
 
 def test_extract_specs_from_custom_fields_case_insensitive_label_matching():
@@ -130,18 +163,27 @@ def test_extract_specs_from_custom_fields_missing_returns_none():
 
 
 # --- check_accuracy ---
+# BowlerDepot's real product pages (confirmed live: Storm Alpha Crux, Roto
+# Grip RST Hyperdrive) publish exactly one spec value per ball, qualified
+# "(15lb)" -- weight is a BigCommerce variant/option on a single product,
+# not a separate product per weight. So check_accuracy only ever compares
+# against our own 15lb SKU; see the two tests below for both halves of
+# that behavior (compares 15lb, skips everything else).
 
 def test_check_accuracy_flags_mismatch_beyond_tolerance():
     pairs = [{
         "product_id": "p1",
-        "our_sku": {"weight_lbs": 16, "rg": 2.533, "differential": 0.033, "mass_bias": None},
+        "our_sku": {"weight_lbs": 15, "rg": 2.533, "differential": 0.033, "mass_bias": None},
         "bigcommerce_product": {
             "id": 42,
-            "custom_fields": [{"id": 1, "name": "RG", "value": "2.600"}, {"id": 2, "name": "Diff", "value": "0.033"}],
+            "custom_fields": [
+                {"id": 1, "name": "Radius of Gyration(15lb)", "value": "2.600"},
+                {"id": 2, "name": "Max Differential(15lb)", "value": "0.033"},
+            ],
         },
     }]
     mismatches = app.check_accuracy(pairs)
-    rg_mismatch = next(m for m in mismatches if m["field_name"] == "rg_16lb")
+    rg_mismatch = next(m for m in mismatches if m["field_name"] == "rg_15lb")
     assert rg_mismatch["current_value"] == "2.533"
     assert rg_mismatch["proposed_value"] == "2.6"
 
@@ -149,10 +191,13 @@ def test_check_accuracy_flags_mismatch_beyond_tolerance():
 def test_check_accuracy_no_mismatch_within_tolerance():
     pairs = [{
         "product_id": "p1",
-        "our_sku": {"weight_lbs": 16, "rg": 2.5335, "differential": 0.033, "mass_bias": None},
+        "our_sku": {"weight_lbs": 15, "rg": 2.5335, "differential": 0.033, "mass_bias": None},
         "bigcommerce_product": {
             "id": 42,
-            "custom_fields": [{"id": 1, "name": "RG", "value": "2.533"}, {"id": 2, "name": "Diff", "value": "0.033"}],
+            "custom_fields": [
+                {"id": 1, "name": "Radius of Gyration(15lb)", "value": "2.533"},
+                {"id": 2, "name": "Max Differential(15lb)", "value": "0.033"},
+            ],
         },
     }]
     assert app.check_accuracy(pairs) == []
@@ -161,10 +206,31 @@ def test_check_accuracy_no_mismatch_within_tolerance():
 def test_check_accuracy_skips_when_bigcommerce_field_missing():
     pairs = [{
         "product_id": "p1",
-        "our_sku": {"weight_lbs": 16, "rg": 2.533, "differential": 0.033, "mass_bias": 0.015},
+        "our_sku": {"weight_lbs": 15, "rg": 2.533, "differential": 0.033, "mass_bias": 0.015},
         "bigcommerce_product": {"id": 42, "custom_fields": []},
     }]
     assert app.check_accuracy(pairs) == []  # nothing to compare against, not a "wrong" flag
+
+
+def test_check_accuracy_skips_non_reference_weights_even_when_clearly_wrong():
+    """The regression guard for the real bug this session's live check
+    caught: BowlerDepot only ever publishes a 15lb-reference spec value,
+    so comparing our 16lb SKU against it would be comparing two genuinely
+    different real numbers and flagging a false-positive mismatch, not a
+    real disagreement. A 16lb SKU must be skipped entirely, even when its
+    values are wildly different from BowlerDepot's 15lb number."""
+    pairs = [{
+        "product_id": "p1",
+        "our_sku": {"weight_lbs": 16, "rg": 99.0, "differential": 99.0, "mass_bias": 99.0},
+        "bigcommerce_product": {
+            "id": 42,
+            "custom_fields": [
+                {"id": 1, "name": "Radius of Gyration(15lb)", "value": "2.533"},
+                {"id": 2, "name": "Max Differential(15lb)", "value": "0.033"},
+            ],
+        },
+    }]
+    assert app.check_accuracy(pairs) == []
 
 
 # --- Pagination (real confirmed response shape) ---

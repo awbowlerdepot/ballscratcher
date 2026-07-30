@@ -369,28 +369,59 @@ case measured ~0.84) to match your product names against BigCommerce
 listing names, since the two sides won't use identical strings. Products
 with no match at all get written to `review_queue` as
 `field_name='bowlerdepot_listing'` -- the "this needs to be added"
-signal you asked for. Matched products get an accuracy check the same way
-bowwwl's does (RG/Diff/mass-bias per weight, via BigCommerce's
-`custom_fields` array).
+signal you asked for. Matched products get an accuracy check against
+BigCommerce's `custom_fields` array, but only at your 15lb SKU -- see
+below for why.
 
-**What's confirmed real vs. what's still a guess here:** the BigCommerce
+**What's confirmed real, and what changed this session:** the BigCommerce
 v3 Catalog Products API response *shape* is real -- `GET /stores/
 {store_hash}/v3/catalog/products`, `X-Auth-Token` header auth, `{"data":
 [...], "meta": {"pagination": {...}}}`, `custom_fields: [{"name",
 "value", "id"}]` -- fetched directly from BigCommerce's own current
-developer docs this session, not from memory. What's NOT confirmed,
-because there's no real store hash or API token yet:
-`CUSTOM_FIELD_NAME_CANDIDATES` (the specific `custom_fields` names
-BowlerDepot actually uses for RG/DIFF/mass-bias) is a best-guess mapping,
-and whether BowlerDepot models a multi-weight ball as several true
-BigCommerce product variants or as entirely separate products is assumed
-to be the latter (simpler, one-product-per-weight) since the live
-storefront didn't return enough static content this session to check
-either way. **Verify both against a real store export before trusting
-this module's accuracy-check output in production** -- a wrong field-name
-guess wouldn't error, it would just silently produce zero mismatches
-(nothing found to compare against), which looks like "all clean" when
-it's actually "not checking anything."
+developer docs. The two things that were originally disclosed as
+best-guesses were both resolved in a later session by browsing the real,
+live public storefront (still no real store credentials, so this is
+storefront evidence, not a private-API read, but real rather than
+invented):
+
+- **Product-vs-variant modeling: CONFIRMED true BigCommerce variants.**
+  Real product pages (Storm Alpha Crux, Roto Grip RST Hyperdrive) show
+  ONE product page per ball with a "Weight" dropdown offering all five
+  weights as options -- not, as originally assumed, a separate product
+  per weight.
+- **Custom field names: CONFIRMED real display labels** -- "Radius of
+  Gyration(15lb)", "Max Differential(15lb)", "Int. Differential(15lb)",
+  identical on both real products checked. Two of the three original
+  best-guess candidates ("Diff"/"Differential", "MB"/"Mass Bias") were
+  simply wrong; BowlerDepot's real term for mass bias is "Int.
+  Differential" (the same term MOTIV's real site uses -- possibly a
+  shared industry convention). `CUSTOM_FIELD_NAME_CANDIDATES` now has the
+  real values, matched by prefix rather than exact string (see
+  `_find_custom_field()`'s docstring for why, and for why it's a prefix
+  check and not a looser substring check -- the latter risks a short
+  fallback candidate like "rg" false-matching an unrelated field like
+  "Target Weight").
+- **The real consequence of both findings together, and the actual bug
+  this caught before it ever ran against a live store:** BowlerDepot only
+  publishes ONE spec value per ball (always qualified "15lb"), because
+  weight is a variant of a single product with one shared custom_fields
+  set. `check_accuracy()` originally compared every one of your weights
+  against that single value -- which would have flagged a false-positive
+  mismatch on every weight except 15lb, since RG/DIFF genuinely differ by
+  weight on a real ball (this project's own fixtures already prove
+  that). Fixed to only ever compare your 15lb SKU
+  (`BOWLERDEPOT_REFERENCE_WEIGHT_LBS`).
+
+What's still genuinely unconfirmed, because there's still no real store
+hash or API token: whether the *private API's* JSON actually names the
+field the way the storefront *displays* it -- the display label and the
+underlying `custom_fields.name` value aren't guaranteed to be identical,
+even though they very often are in practice for a template that just
+loops over the raw field list. **Still worth a real store export before
+fully trusting this in production** -- but the risk profile is much
+better than before: a wrong guess here would silently produce zero
+mismatches rather than false ones, which is a safer failure mode than
+what the pre-fix weight-comparison bug would have produced.
 
 Scheduled `rate(1 day)` but **`Enabled: false`** in `template.yaml` on
 purpose -- `BigCommerceSecretArn` has no default, so a daily-enabled
