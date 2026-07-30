@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Real sample pulled from brunswickbowling.com's bowlerProducts sitemap
+  during architecture research (see brunswick-scraper-architecture-review.md).
+  Not fabricated data: these are actual product URLs and lastmod values
+  captured 2026-07-29/30. Trimmed to a handful of entries for a fast test.
+
+  The two retired entries (attitude, defender) are real URLs but were
+  captured by fetching the product pages directly rather than the sitemap,
+  so no real lastmod was observed for them: they're included here without
+  a lastmod element, which is valid per the sitemap spec and doubles as a
+  test of the parser handling a missing lastmod gracefully.
+
+  A couple of non-ball URLs are included too (apparel/accessories path) to
+  verify the path_pattern filter actually excludes them rather than just
+  happening to only ever see ball URLs.
+-->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://brunswickbowling.com/products/balls/current/team-brunswick-white</loc>
+    <lastmod>2026-07-17T15:12:18-04:00</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://brunswickbowling.com/products/balls/current/crown-victory</loc>
+    <lastmod>2026-04-06T14:44:28-04:00</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://brunswickbowling.com/products/balls/current/crown-victory-pearl</loc>
+    <lastmod>2026-04-06T14:27:43-04:00</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://brunswickbowling.com/products/balls/current/crown-78u</loc>
+    <lastmod>2026-04-06T14:29:31-04:00</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://brunswickbowling.com/products/balls/retired/attitude</loc>
+  </url>
+  <url>
+    <loc>https://brunswickbowling.com/products/balls/retired/defender</loc>
+  </url>
+  <url>
+    <loc>https://brunswickbowling.com/products/apparel/mens-jersey</loc>
+    <lastmod>2026-01-10T09:00:00-05:00</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.5</priority>
+  </url>
+</urlset>

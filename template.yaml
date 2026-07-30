@@ -1,0 +1,110 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Bowling ball scraper/database. Sitemap-driven URL discovery, per-manufacturer
+  HTML + PDF product scraping, image mirroring/normalization, and an admin
+  approval API sitting in front of a shared Postgres schema.
+
+  This template currently wires up URL discovery end to end. The remaining
+  functions (product scraper, PDF parser, image processor, admin API) are
+  listed as commented-out stubs below in the order the architecture doc lays
+  them out (see /brunswick-scraper-architecture-review.md, "Suggested build
+  order") -- add each as its own function + handler when you get there rather
+  than filling in stubs speculatively now.
+
+Globals:
+  Function:
+    Runtime: python3.13
+    Timeout: 60
+    MemorySize: 256
+    Environment:
+      Variables:
+        DB_SECRET_ARN: !Ref DbSecretArn
+        POWERTOOLS_SERVICE_NAME: bowling-scraper
+
+Parameters:
+  DbSecretArn:
+    Type: String
+    Description: >
+      ARN of a Secrets Manager secret holding {host, port, dbname, username,
+      password} for the Postgres instance. Not created by this template --
+      point it at your existing RDS instance/secret once you provision one.
+  SitemapUrl:
+    Type: String
+    Default: https://brunswickbowling.com/sitemaps-1-section-bowlerProducts-1-sitemap.xml
+    Description: >
+      Per-brand product sitemap. Brunswick, Radical, and DV8 share the same
+      Craft CMS template and URL shape, so this same function/handler can be
+      reused for all three by deploying a second stack (or a second
+      EventBridge-triggered invocation) with this parameter pointed at the
+      sister brand's sitemap instead of duplicating code.
+  UrlPathPattern:
+    Type: String
+    Default: /products/balls/(current|retired)/
+    Description: Regex matched against sitemap <loc> paths to keep only ball product pages.
+  BrandId:
+    Type: String
+    Description: >
+      UUID of the row in the `brands` table this deployment discovers URLs
+      for (see db/migrations/001_init_schema.sql). Insert the brand row via
+      the migration/seed data before deploying, then pass its id here.
+
+Resources:
+  UrlDiscoveryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-url-discovery
+      CodeUri: src/url_discovery/
+      Handler: app.handler
+      Environment:
+        Variables:
+          SITEMAP_URL: !Ref SitemapUrl
+          URL_PATH_PATTERN: !Ref UrlPathPattern
+          BRAND_ID: !Ref BrandId
+      Policies:
+        - VPCAccessPolicy: {}
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+      Events:
+        DailySchedule:
+          Type: Schedule
+          Properties:
+            # Daily is a starting point, not a hard requirement -- the
+            # architecture doc recommends triggering off sitemap <lastmod>
+            # rather than a blind full re-crawl once this is proven out.
+            Schedule: rate(1 day)
+            Name: bowling-scraper-url-discovery-daily
+            Description: Sitemap diff against discovered_urls; emits new/changed product URLs.
+            Enabled: true
+
+  # --- Not yet built -- next in the build order from the architecture doc ---
+  #
+  # ProductScraperFunction:
+  #   HTML spec scraper (RG/DIFF/core/coverstock/weights) for URLs emitted by
+  #   UrlDiscoveryFunction. Craft-CMS family (Brunswick/Radical/DV8): requests
+  #   + BeautifulSoup/lxml, no headless browser needed (confirmed server-rendered).
+  #   Shopify family (Hammer/Ebonite/Track): pull {handle}.json directly, no
+  #   HTML parsing at all.
+  #
+  # PdfParserFunction (or folded into ProductScraperFunction as a second step):
+  #   Mass bias + any fields only present on the "Info Sheet" PDF. Treat as
+  #   independently-failing from the HTML step so a PDF-parsing miss doesn't
+  #   block saving the HTML-derived fields.
+  #
+  # ImageProcessorFunction:
+  #   Mirror to own S3; bbox-detect on alpha/background, recenter onto a
+  #   fixed-margin canvas. Plain Pillow, no ML/background-removal model, per
+  #   the architecture doc -- validate that assumption against real samples
+  #   before building the general case.
+  #
+  # AdminApiFunction:
+  #   FastAPI approval workflow. review_queue table (see db/migrations) covers
+  #   all three mismatch sources: HTML vs PDF, vs bowwwl.com, vs BowlerDepot's
+  #   BigCommerce catalog.
+
+Outputs:
+  UrlDiscoveryFunctionArn:
+    Value: !GetAtt UrlDiscoveryFunction.Arn
