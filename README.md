@@ -80,6 +80,15 @@ read that first if anything here seems under-explained.
   returns which `product_images` rows still need processing
   (`stored_url is null`) instead of just the product id, so the handler
   can fan out image jobs without an extra query.
+  SWAG and MOTIV are wired in the same way, just with their own
+  platform-specific scrape queues (`WooCommerceProductScrapeQueue`,
+  `NetsuiteProductScrapeQueue`) feeding their own product scraper
+  functions -- each platform's product-page shape is different enough
+  that they can't share a consumer the way PDF parsing and image
+  processing can. Both DO share the same `ImageProcessQueue`/
+  `ImageProcessorFunction` the Craft-CMS family uses, since that step is
+  genuinely platform-agnostic. See "Second manufacturer" and "Third
+  manufacturer" below for the per-platform detail.
 - `src/woocommerce_url_discovery/app.py` + `woocommerce_product_scraper/app.py`
   -- second manufacturer, second platform family: SWAG Bowling on
   WordPress/WooCommerce. See "Second manufacturer: SWAG Bowling" below for
@@ -139,16 +148,22 @@ Real, confirmed differences from the Craft-CMS scraper that shaped these:
   `Production-status` attribute, not the URL -- more reliable than trying
   to infer it from which category-archive page a link appeared on.
 
-Not yet done for SWAG, disclosed rather than guessed at: these two
-functions aren't wired into the SQS orchestration chain
-(`ProductScrapeQueue`/etc.) the Craft-CMS family uses -- they're
-invoke-manually only, same starting point the Craft-CMS functions had
-before that chain was built. The Info Sheet/Shelf Talker PDFs SWAG links
-are hosted on Dropbox share links, and neither could actually be fetched
-this session (the tool available returned nothing for both) -- so whether
-`pdf_parser`'s Brunswick-specific layout assumptions apply to SWAG's PDFs
-at all is unknown, though also not currently load-bearing since SWAG's
-HTML already carries the core RG/DIFF/mass-bias data. And
+**Orchestration**: `WooCommerceUrlDiscoveryFunction` now publishes to its
+own `WooCommerceProductScrapeQueue`, and `WooCommerceProductScraperFunction`
+consumes it (SQS batch + direct invoke, same `batchItemFailures` pattern
+as the Craft-CMS chain) and fans out to the shared `ImageProcessQueue` for
+any new product images -- that queue/function pair is genuinely
+platform-agnostic, so it's reused rather than duplicated. Not a
+`PdfParseQueue` trigger target: SWAG's HTML already carries RG/DIFF/mass-
+bias directly, so that step doesn't apply here the way it does to
+Brunswick.
+
+Remaining disclosed gaps for SWAG: the Info Sheet/Shelf Talker PDFs SWAG
+links are hosted on Dropbox share links, and neither could actually be
+fetched this session (the tool available returned nothing for both) -- so
+whether `pdf_parser`'s Brunswick-specific layout assumptions apply to
+SWAG's PDFs at all is unknown, though also not currently load-bearing
+since SWAG's HTML already carries the core RG/DIFF/mass-bias data. And
 `parse_mass_bias()`'s handling of a real (non-"N/A") value is unverified --
 the one real product page inspected this session was a symmetric core;
 check a real asymmetric SWAG ball's page before trusting mass bias data
@@ -232,13 +247,25 @@ homepage's real `Set-Cookie` header directly (the browser tool's
 anti-exfiltration measure, so this wasn't readable this session) or
 falling back to a headless-browser-based fetch.
 
-Not yet wired into the SQS orchestration chain, same disclosed-deferred
-treatment as SWAG's functions -- invoke-manually only for now. 27/27 new
-tests pass, run against two real fixture reconstructions (symmetric and
-asymmetric cores) built from real values read off live pages this session
--- see `tests/fixtures/motiv_sigma_tour_pearl.html`,
+**Orchestration**: `NetsuiteUrlDiscoveryFunction` publishes to its own
+`NetsuiteProductScrapeQueue` (message body includes `status`, since -- per
+above -- that's the only reliable source for it), and
+`NetsuiteProductScraperFunction` consumes it and fans out to the shared
+`ImageProcessQueue`, same pattern as SWAG's chain. Wiring the queue
+doesn't make the fetching problem above go away, though: if
+`fetch_page()`'s session-cookie workaround doesn't actually work against
+the real site, messages will fail, retry up to 3 times, and land in
+`NetsuiteProductScrapeDLQ` -- check that queue first if this pipeline
+looks stalled after a real deploy.
+
+34/34 tests pass (19 + 8 from parsing/discovery, plus 7 new for the
+image-job-fanout behavior), run against two real fixture reconstructions
+(symmetric and asymmetric cores) built from real values read off live
+pages this session -- see `tests/fixtures/motiv_sigma_tour_pearl.html`,
 `motiv_jackal_onyx.html`, and the two category-index fixtures for exactly
-what's real vs. reconstructed in each.
+what's real vs. reconstructed in each. None of that exercises
+`fetch_page()` itself (all fixtures go in through a monkeypatched stub) --
+that's still exactly the unverified part.
 
 ## Why there's no live end-to-end test yet
 
@@ -329,21 +356,27 @@ verify:
   `build_image_process_messages`), the SQS-batch-vs-direct-invoke shape
   detection (`_extract_jobs`), and the full per-job flow including the
   partial-batch-failure path all run against fake SQS/DB objects in the
-  three `test_*_orchestration.py` files and pass. What's NOT tested,
-  because this sandbox has no AWS access at all: the actual
-  `template.yaml` wiring -- queue ARNs resolving correctly, IAM policies
-  actually granting the right permissions (`SQSSendMessagePolicy` /
-  the SQS event source's implicit poller permissions), `VisibilityTimeout`
-  being long enough in practice, `ReportBatchItemFailures` behaving the way
-  the AWS docs say it does. `sam validate` and a real deploy are the only
-  way to find out if the YAML itself is wrong in a way `yaml.safe_load`
-  (used to spot-check syntax this session) wouldn't catch.
+  five `test_*_orchestration.py` files (one each for product_scraper,
+  pdf_parser, image_processor, woocommerce_product_scraper, and
+  netsuite_product_scraper) and pass. What's NOT tested, because this
+  sandbox has no AWS access at all: the actual `template.yaml` wiring --
+  queue ARNs resolving correctly, IAM policies actually granting the right
+  permissions (`SQSSendMessagePolicy` / the SQS event source's implicit
+  poller permissions), `VisibilityTimeout` being long enough in practice,
+  `ReportBatchItemFailures` behaving the way the AWS docs say it does.
+  `sam validate` and a real deploy are the only way to find out if the
+  YAML itself is wrong in a way `yaml.safe_load` (used to spot-check
+  syntax this session) wouldn't catch. This applies equally to the two
+  new platform-specific scrape queues (`WooCommerceProductScrapeQueue`,
+  `NetsuiteProductScrapeQueue`) added when SWAG/MOTIV were wired in --
+  same unverified-YAML caveat, nothing platform-specific about that risk.
 - `src/woocommerce_url_discovery/app.py` and `woocommerce_product_scraper/app.py`
   are on similar footing to the Craft-CMS pair: real field values, real
   URLs, real sitemap/category-page structure, all confirmed via direct
   fetches this session, but reconstructed fixtures rather than saved raw
-  HTML (same markdown-conversion limitation as Brunswick's). 22/22 tests
-  pass. Specific unconfirmed pieces, disclosed rather than assumed away:
+  HTML (same markdown-conversion limitation as Brunswick's). 31/31 tests
+  pass (22 parsing/discovery + 9 orchestration/image-fanout). Specific
+  unconfirmed pieces, disclosed rather than assumed away:
   `parse_mass_bias()` on a real non-"N/A" (asymmetric-ball) value, and
   whether `pdf_parser`'s Brunswick-specific PDF layout applies to SWAG's
   Dropbox-hosted PDFs at all (neither PDF could actually be fetched this
@@ -356,9 +389,11 @@ verify:
   *fetching* is the least verified -- a plain request to a MOTIV product
   page returns blank, and `fetch_page()`'s session-cookie workaround has
   never actually been run against motivbowling.com from anywhere. See
-  "Third manufacturer: MOTIV Bowling" above for the full detail. 27/27
-  tests pass for the parsing/diff/message-building logic; none of that
-  exercises `fetch_page()` itself, which is exactly the unverified part.
+  "Third manufacturer: MOTIV Bowling" above for the full detail. 34/34
+  tests pass (27 parsing/discovery + 7 orchestration/image-fanout) for
+  the parsing/diff/message-building/fanout logic; none of that exercises
+  `fetch_page()` itself, which is exactly the unverified part -- wiring
+  the orchestration queue doesn't change that.
 
 None of that substitutes for actually running this against AWS. Treat this as
 "the logic is verified, the deployment isn't."
@@ -412,8 +447,10 @@ None of that substitutes for actually running this against AWS. Treat this as
    # or, for the pytest-free files:
    python3 tests/test_woocommerce_url_discovery.py
    python3 tests/test_woocommerce_product_scraper.py
+   python3 tests/test_woocommerce_product_scraper_orchestration.py
    python3 tests/test_netsuite_url_discovery.py
    python3 tests/test_netsuite_product_scraper.py
+   python3 tests/test_netsuite_product_scraper_orchestration.py
    ```
 
 ## Reusing this for Radical / DV8

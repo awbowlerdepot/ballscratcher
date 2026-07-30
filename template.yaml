@@ -173,6 +173,42 @@ Resources:
         deadLetterTargetArn: !GetAtt ImageProcessDLQ.Arn
         maxReceiveCount: 3
 
+  # Separate scrape queues per platform family, not a shared
+  # ProductScrapeQueue -- each platform's product scraper Lambda expects a
+  # different job shape and calls entirely different parsing code, so
+  # they can't share one consumer the way PDF parsing and image
+  # processing can (those two ARE platform-agnostic, hence the shared
+  # ImageProcessQueue below). Same VisibilityTimeout/maxReceiveCount
+  # convention as every other queue pair in this template.
+
+  WooCommerceProductScrapeDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: bowling-scraper-woocommerce-product-scrape-dlq
+
+  WooCommerceProductScrapeQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: bowling-scraper-woocommerce-product-scrape
+      VisibilityTimeout: 180
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt WooCommerceProductScrapeDLQ.Arn
+        maxReceiveCount: 3
+
+  NetsuiteProductScrapeDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: bowling-scraper-netsuite-product-scrape-dlq
+
+  NetsuiteProductScrapeQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: bowling-scraper-netsuite-product-scrape
+      VisibilityTimeout: 180
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt NetsuiteProductScrapeDLQ.Arn
+        maxReceiveCount: 3
+
   UrlDiscoveryFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -351,13 +387,13 @@ Resources:
   # template/nested stack per platform family) once there's a third
   # platform or this file gets unwieldy -- not a problem yet with two.
   #
-  # Not yet wired into the SQS orchestration chain the Craft-CMS family
-  # uses (ProductScrapeQueue/PdfParseQueue/ImageProcessQueue) -- these two
-  # functions are invoke-manually only in this pass, same starting point
-  # UrlDiscoveryFunction/ProductScraperFunction had before that chain was
-  # built. Not a PDF-parser trigger target either: SWAG's HTML already
-  # carries RG/DIFF/mass-bias-when-present directly, so PdfParseQueue
-  # doesn't apply to this brand the way it does to Brunswick.
+  # Now wired into their own SQS chain -- WooCommerceUrlDiscoveryFunction
+  # publishes to WooCommerceProductScrapeQueue,
+  # WooCommerceProductScraperFunction consumes it and fans out to the
+  # shared ImageProcessQueue for any new images. Not a PDF-parser trigger
+  # target: SWAG's HTML already carries RG/DIFF/mass-bias-when-present
+  # directly, so PdfParseQueue doesn't apply to this brand the way it does
+  # to Brunswick.
 
   WooCommerceUrlDiscoveryFunction:
     Type: AWS::Serverless::Function
@@ -370,6 +406,7 @@ Resources:
           CATEGORY_URL: !Ref SwagCategoryUrl
           SITEMAP_URL: !Ref SwagSitemapUrl
           BRAND_ID: !Ref SwagBrandId
+          PRODUCT_SCRAPE_QUEUE_URL: !Ref WooCommerceProductScrapeQueue
       Policies:
         - VPCAccessPolicy: {}
         - Statement:
@@ -377,6 +414,8 @@ Resources:
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Ref DbSecretArn
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt WooCommerceProductScrapeQueue.QueueName
       # No schedule wired up yet (unlike UrlDiscoveryFunction's daily
       # trigger) -- add once SwagBrandId is actually set for a real
       # deployment; a schedule referencing an empty BrandId isn't useful.
@@ -388,14 +427,31 @@ Resources:
       CodeUri: src/woocommerce_product_scraper/
       Handler: app.handler
       Timeout: 30
+      Environment:
+        Variables:
+          IMAGE_PROCESS_QUEUE_URL: !Ref ImageProcessQueue
       Policies:
         - Statement:
             - Effect: Allow
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Ref DbSecretArn
-      # Invoked with {"url": "...", "brand_id": "..."} per product page,
-      # same shape as ProductScraperFunction -- not yet SQS-triggered.
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt ImageProcessQueue.QueueName
+      Events:
+        WooCommerceProductScrapeQueueTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt WooCommerceProductScrapeQueue.Arn
+            BatchSize: 5
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+      # SQS-triggered from WooCommerceProductScrapeQueue (populated by
+      # WooCommerceUrlDiscoveryFunction) -- also still accepts
+      # direct/manual invocation with {"url": "...", "brand_id": "..."}.
+      # Fans out to the SAME ImageProcessQueue/ImageProcessorFunction the
+      # Craft-CMS family uses -- that function's job shape and processing
+      # are both platform-agnostic.
 
   # --- NetSuite brand family (MOTIV Bowling to start) ---
   #
@@ -416,9 +472,19 @@ Resources:
   # the first real deployment run of this function as the actual test of
   # that approach, not something already confirmed working.
   #
-  # Same disclosed-deferred treatment as the WooCommerce functions above:
-  # not wired into the SQS orchestration chain, not a PdfParseQueue
+  # Now wired into their own SQS chain, same shape as the WooCommerce pair
+  # above: NetsuiteUrlDiscoveryFunction publishes to
+  # NetsuiteProductScrapeQueue, NetsuiteProductScraperFunction consumes it
+  # and fans out to the shared ImageProcessQueue. Not a PdfParseQueue
   # trigger target (mass bias already comes from HTML here too).
+  #
+  # Worth remembering: wiring this queue doesn't make the underlying fetch
+  # problem go away -- NetsuiteProductScraperFunction's fetch_page() is
+  # still the unverified session-cookie workaround (see its module
+  # docstring and the README's "Third manufacturer: MOTIV Bowling"
+  # section). If it doesn't actually work against the real site, messages
+  # will fail, retry up to maxReceiveCount, and land in
+  # NetsuiteProductScrapeDLQ -- that's the queue to check first.
 
   NetsuiteUrlDiscoveryFunction:
     Type: AWS::Serverless::Function
@@ -431,6 +497,7 @@ Resources:
           CURRENT_CATEGORY_URL: !Ref MotivCurrentCategoryUrl
           RETIRED_CATEGORY_URL: !Ref MotivRetiredCategoryUrl
           BRAND_ID: !Ref MotivBrandId
+          PRODUCT_SCRAPE_QUEUE_URL: !Ref NetsuiteProductScrapeQueue
       Policies:
         - VPCAccessPolicy: {}
         - Statement:
@@ -438,6 +505,8 @@ Resources:
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Ref DbSecretArn
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt NetsuiteProductScrapeQueue.QueueName
       # No schedule wired up yet, same reasoning as WooCommerceUrlDiscoveryFunction.
 
   NetsuiteProductScraperFunction:
@@ -447,17 +516,30 @@ Resources:
       CodeUri: src/netsuite_product_scraper/
       Handler: app.handler
       Timeout: 30
+      Environment:
+        Variables:
+          IMAGE_PROCESS_QUEUE_URL: !Ref ImageProcessQueue
       Policies:
         - Statement:
             - Effect: Allow
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Ref DbSecretArn
-      # Invoked with {"url": "...", "brand_id": "...", "status": "..."}
-      # per product page -- status is required here (unlike the other two
-      # scrapers) since it has no reliable on-page or URL-derived source
-      # for MOTIV; see netsuite_product_scraper/app.py's module docstring
-      # point 1. Not yet SQS-triggered.
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt ImageProcessQueue.QueueName
+      Events:
+        NetsuiteProductScrapeQueueTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt NetsuiteProductScrapeQueue.Arn
+            BatchSize: 5
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+      # SQS-triggered from NetsuiteProductScrapeQueue (populated by
+      # NetsuiteUrlDiscoveryFunction, which sets "status" in the message
+      # body -- see that module's docstring, status has no reliable
+      # on-page source for MOTIV) -- also still accepts direct/manual
+      # invocation with {"url": "...", "brand_id": "...", "status": "..."}.
 
 Outputs:
   UrlDiscoveryFunctionArn:
@@ -478,6 +560,10 @@ Outputs:
     Value: !Ref PdfParseDLQ
   ImageProcessDLQUrl:
     Value: !Ref ImageProcessDLQ
+  WooCommerceProductScrapeDLQUrl:
+    Value: !Ref WooCommerceProductScrapeDLQ
+  NetsuiteProductScrapeDLQUrl:
+    Value: !Ref NetsuiteProductScrapeDLQ
   WooCommerceUrlDiscoveryFunctionArn:
     Value: !GetAtt WooCommerceUrlDiscoveryFunction.Arn
   WooCommerceProductScraperFunctionArn:

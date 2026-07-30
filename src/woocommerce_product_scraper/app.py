@@ -299,10 +299,15 @@ def parse_product_page(html: str, url: str) -> dict:
 # Lambda handler + DB write. Same split/orchestration pattern as
 # product_scraper/app.py -- see that module for the reasoning (pure
 # parsing above, tested; mechanical DB/SQS below, deferred-imported).
-# Not yet wired into the PdfParseQueue/ImageProcessQueue fan-out the
-# Craft-CMS scraper does -- SWAG doesn't need the PDF step for its core
-# data (see module docstring), and image mirroring reuse is a follow-up,
-# not built in this pass.
+#
+# Now SQS-triggered from WooCommerceProductScrapeQueue (populated by
+# WooCommerceUrlDiscoveryFunction) -- see template.yaml. Fans out to the
+# SAME ImageProcessQueue/ImageProcessorFunction the Craft-CMS family uses
+# (that function's job shape -- {product_image_id, source_url} -- and
+# processing logic are both platform-agnostic, no reason to duplicate it
+# per platform). Still no PdfParseQueue fan-out here -- SWAG doesn't need
+# the PDF step for its core data (see module docstring), that part of the
+# Craft-CMS chain genuinely doesn't apply to this platform.
 # ---------------------------------------------------------------------
 
 import json
@@ -326,7 +331,13 @@ def get_db_connection():
     )
 
 
-def upsert_product(conn, brand_id: str, parsed: dict) -> str:
+def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
+    """Returns {"product_id": ..., "pending_image_jobs": [...]}, same shape
+    as product_scraper.upsert_product -- the product_images insert now
+    RETURNING id/stored_url (via "on conflict do update" rather than "do
+    nothing", purely to make that RETURNING work on both new and
+    pre-existing rows) so the handler can fan out image-process jobs
+    without a second query."""
     weights_range = None
     if parsed["weights_available"]:
         low, high = parsed["weights_available"]
@@ -375,26 +386,53 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> str:
                 (product_id, sku["weight_lbs"], sku["rg"], sku["differential"], sku["mass_bias"]),
             )
 
+        pending_image_jobs = []
         for image in parsed["images"]:
             cur.execute(
                 """
                 insert into product_images (product_id, image_type, source_url)
                 values (%s, %s, %s)
                 on conflict (product_id, source_url) do update set image_type = excluded.image_type
+                returning id, stored_url
                 """,
                 (product_id, image["image_type"], image["source_url"]),
             )
+            image_id, stored_url = cur.fetchone()
+            if stored_url is None:
+                pending_image_jobs.append({"product_image_id": str(image_id), "source_url": image["source_url"]})
 
     conn.commit()
-    return product_id
+    return {"product_id": product_id, "pending_image_jobs": pending_image_jobs}
 
 
-def handler(event, context):
-    """Same SQS-batch-or-direct-invoke shape as product_scraper's handler
-    (expects to be wired to a ProductScrapeQueue-equivalent eventually --
-    not done in this pass, see template.yaml)."""
-    url = event["url"]
-    brand_id = event["brand_id"]
+def build_image_process_messages(pending_image_jobs: list) -> list:
+    return [json.dumps(job) for job in pending_image_jobs]
+
+
+def publish_messages(sqs_client, queue_url: str, message_bodies: list) -> int:
+    """Duplicated from product_scraper/app.py rather than shared -- see
+    that module's docstring for why (each Lambda here is its own
+    independent deployment package)."""
+    sent = 0
+    for i in range(0, len(message_bodies), 10):
+        chunk = message_bodies[i:i + 10]
+        entries = [{"Id": str(idx), "MessageBody": body} for idx, body in enumerate(chunk)]
+        sqs_client.send_message_batch(QueueUrl=queue_url, Entries=entries)
+        sent += len(chunk)
+    return sent
+
+
+def _extract_jobs(event: dict) -> list:
+    """Same two-shape support (SQS batch or direct invoke) as
+    product_scraper's _extract_jobs."""
+    if "Records" in event:
+        return [(json.loads(r["body"]), r["messageId"]) for r in event["Records"]]
+    return [(event, None)]
+
+
+def _process_one(job: dict, sqs_client) -> dict:
+    url = job["url"]
+    brand_id = job["brand_id"]
 
     logger.info("Scraping %s", url)
     html = fetch_page(url)
@@ -402,13 +440,52 @@ def handler(event, context):
 
     conn = get_db_connection()
     try:
-        product_id = upsert_product(conn, brand_id, parsed)
+        result = upsert_product(conn, brand_id, parsed)
     finally:
         conn.close()
 
+    product_id = result["product_id"]
     logger.info("Upserted product %s (%d SKUs)", product_id, len(parsed["skus"]))
 
+    image_queue_url = os.environ.get("IMAGE_PROCESS_QUEUE_URL")
+    image_jobs_published = 0
+    if result["pending_image_jobs"] and image_queue_url:
+        messages = build_image_process_messages(result["pending_image_jobs"])
+        image_jobs_published = publish_messages(sqs_client, image_queue_url, messages)
+
     return {
-        "statusCode": 200,
-        "body": json.dumps({"product_id": str(product_id), "sku_count": len(parsed["skus"])}),
+        "product_id": str(product_id),
+        "sku_count": len(parsed["skus"]),
+        "image_jobs_published": image_jobs_published,
     }
+
+
+def handler(event, context):
+    """Handles both an SQS-triggered batch (WooCommerceProductScrapeQueue,
+    populated by WooCommerceUrlDiscoveryFunction) and a direct/manual
+    invocation with {"url": "...", "brand_id": "..."}, same
+    batchItemFailures pattern as product_scraper's handler."""
+    jobs = _extract_jobs(event)
+
+    sqs_client = None
+    if os.environ.get("IMAGE_PROCESS_QUEUE_URL"):
+        import boto3
+
+        sqs_client = boto3.client("sqs")
+
+    results = []
+    batch_item_failures = []
+    for job, message_id in jobs:
+        try:
+            results.append(_process_one(job, sqs_client))
+        except Exception:
+            logger.exception("Failed to scrape/upsert job: %r", job)
+            if message_id is not None:
+                batch_item_failures.append({"itemIdentifier": message_id})
+            else:
+                raise
+
+    response = {"statusCode": 200, "body": json.dumps({"results": results})}
+    if "Records" in event:
+        response["batchItemFailures"] = batch_item_failures
+    return response

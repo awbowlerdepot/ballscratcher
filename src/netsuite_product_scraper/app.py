@@ -413,11 +413,13 @@ def parse_product_page(html: str, url: str, status: str = "current") -> dict:
 # product_scraper/app.py and woocommerce_product_scraper/app.py -- pure
 # parsing above (tested), mechanical DB/SQS below (deferred-imported).
 #
-# Not wired into the PdfParseQueue/ImageProcessQueue fan-out -- MOTIV
-# doesn't need the PDF step for its core data (RG/DIFF/mass-bias all come
-# from HTML, see module docstring point 5), and image mirroring reuse for
-# this platform is a follow-up, same disclosed-deferred treatment as
-# SWAG's scraper.
+# Now SQS-triggered from NetsuiteProductScrapeQueue (populated by
+# NetsuiteUrlDiscoveryFunction) -- see template.yaml. Fans out to the
+# SAME ImageProcessQueue/ImageProcessorFunction the other two platforms
+# use (platform-agnostic job shape, no reason to duplicate it a third
+# time). Still no PdfParseQueue fan-out -- MOTIV doesn't need the PDF
+# step for its core data either (RG/DIFF/mass-bias all come from HTML,
+# see module docstring point 5).
 # ---------------------------------------------------------------------
 
 import json
@@ -441,7 +443,12 @@ def get_db_connection():
     )
 
 
-def upsert_product(conn, brand_id: str, parsed: dict) -> str:
+def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
+    """Returns {"product_id": ..., "pending_image_jobs": [...]}, same
+    shape as product_scraper.upsert_product -- see that module for why
+    (image insert is "on conflict do update ... returning id, stored_url"
+    specifically so this can tell new/pre-existing rows apart without a
+    second query)."""
     weights_range = None
     if parsed["weights_available"]:
         low, high = parsed["weights_available"]
@@ -492,18 +499,40 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> str:
                 (product_id, sku["weight_lbs"], sku["rg"], sku["differential"], sku["mass_bias"]),
             )
 
+        pending_image_jobs = []
         for image in parsed["images"]:
             cur.execute(
                 """
                 insert into product_images (product_id, image_type, source_url)
                 values (%s, %s, %s)
                 on conflict (product_id, source_url) do update set image_type = excluded.image_type
+                returning id, stored_url
                 """,
                 (product_id, image["image_type"], image["source_url"]),
             )
+            image_id, stored_url = cur.fetchone()
+            if stored_url is None:
+                pending_image_jobs.append({"product_image_id": str(image_id), "source_url": image["source_url"]})
 
     conn.commit()
-    return product_id
+    return {"product_id": product_id, "pending_image_jobs": pending_image_jobs}
+
+
+def build_image_process_messages(pending_image_jobs: list) -> list:
+    return [json.dumps(job) for job in pending_image_jobs]
+
+
+def publish_messages(sqs_client, queue_url: str, message_bodies: list) -> int:
+    """Duplicated from product_scraper/app.py rather than shared -- see
+    that module's docstring for why (each Lambda here is its own
+    independent deployment package)."""
+    sent = 0
+    for i in range(0, len(message_bodies), 10):
+        chunk = message_bodies[i:i + 10]
+        entries = [{"Id": str(idx), "MessageBody": body} for idx, body in enumerate(chunk)]
+        sqs_client.send_message_batch(QueueUrl=queue_url, Entries=entries)
+        sent += len(chunk)
+    return sent
 
 
 def _extract_jobs(event: dict) -> list:
@@ -517,7 +546,7 @@ def _extract_jobs(event: dict) -> list:
     return [(event, None)]
 
 
-def _process_one(job: dict) -> dict:
+def _process_one(job: dict, sqs_client) -> dict:
     url = job["url"]
     brand_id = job["brand_id"]
     status = job.get("status", "current")
@@ -528,29 +557,45 @@ def _process_one(job: dict) -> dict:
 
     conn = get_db_connection()
     try:
-        product_id = upsert_product(conn, brand_id, parsed)
+        result = upsert_product(conn, brand_id, parsed)
     finally:
         conn.close()
 
+    product_id = result["product_id"]
     logger.info("Upserted product %s (%d SKUs)", product_id, len(parsed["skus"]))
 
-    return {"product_id": str(product_id), "sku_count": len(parsed["skus"])}
+    image_queue_url = os.environ.get("IMAGE_PROCESS_QUEUE_URL")
+    image_jobs_published = 0
+    if result["pending_image_jobs"] and image_queue_url:
+        messages = build_image_process_messages(result["pending_image_jobs"])
+        image_jobs_published = publish_messages(sqs_client, image_queue_url, messages)
+
+    return {
+        "product_id": str(product_id),
+        "sku_count": len(parsed["skus"]),
+        "image_jobs_published": image_jobs_published,
+    }
 
 
 def handler(event, context):
-    """Handles both an SQS-triggered batch and a direct/manual invocation
-    with {"url": "...", "brand_id": "...", "status": "current"|"retired"}.
-    Not currently wired to an SQS event source in template.yaml (see
-    module docstring) -- this shape is ready for it when that's done,
-    matching the same batchItemFailures pattern product_scraper/app.py
-    uses, just not turned on yet."""
+    """Handles both an SQS-triggered batch (NetsuiteProductScrapeQueue,
+    populated by NetsuiteUrlDiscoveryFunction) and a direct/manual
+    invocation with {"url": "...", "brand_id": "...", "status": "current"|
+    "retired"}, same batchItemFailures pattern as product_scraper's
+    handler."""
     jobs = _extract_jobs(event)
+
+    sqs_client = None
+    if os.environ.get("IMAGE_PROCESS_QUEUE_URL"):
+        import boto3
+
+        sqs_client = boto3.client("sqs")
 
     results = []
     batch_item_failures = []
     for job, message_id in jobs:
         try:
-            results.append(_process_one(job))
+            results.append(_process_one(job, sqs_client))
         except Exception:
             logger.exception("Failed to scrape/upsert job: %r", job)
             if message_id is not None:
