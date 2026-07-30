@@ -237,25 +237,38 @@ full detail):
 **What's NOT confirmed: fetching.** The real product-spec content IS
 present as static text in the server-delivered HTML (confirmed by reading
 the actual page response from inside the browser session), not injected
-by JavaScript after load. But a plain non-browser fetch of that exact same
-product URL (via this sandbox's `mcp__workspace__web_fetch`) came back
-completely blank, while MOTIV's homepage and category pages fetch fine
-through that same tool. Product pages specifically reject or
-short-circuit non-browser requests somehow. Cookie inspection found no
-enterprise bot-management vendor signature (no Cloudflare/Akamai/
-PerimeterX) -- just a short NetSuite session cookie and ordinary analytics
-trackers. `netsuite_product_scraper.fetch_page()` implements the most
-promising approach given that evidence: a `requests.Session()` that visits
-the homepage first to acquire the session cookie, then reuses it plus
-realistic browser headers for the product-page request. **This is an
-educated bet, not a proven fix** -- this sandbox has no outbound path to
-motivbowling.com to actually test it. Treat the first real deployment run
-of `NetsuiteProductScraperFunction` as the actual test; if it still comes
-back blank, the next things to try (not attempted) are inspecting the
-homepage's real `Set-Cookie` header directly (the browser tool's
-`javascript_tool` blocks returning raw cookie-shaped strings as an
-anti-exfiltration measure, so this wasn't readable this session) or
-falling back to a headless-browser-based fetch.
+by JavaScript after load. A plain non-browser fetch of that exact same
+product URL (via `mcp__workspace__web_fetch`, re-confirmed fresh in a
+later session) still comes back completely blank, while MOTIV's homepage
+and category pages fetch fine through that same tool -- unchanged finding
+across sessions.
+
+A later session ran one more real experiment that's worth knowing about:
+from a live browser tab already on the real product page,
+`fetch(location.href)` returned the full real content, as expected -- but
+`fetch(location.href, {credentials: 'omit'})`, explicitly sending zero
+cookies, returned the *exact same* full content. That falsifies the pure
+"you just need a session cookie" theory `fetch_page()`'s current approach
+is built on -- a cookie-less request from a real browser still succeeds,
+so cookies alone don't explain why a non-browser client's cookie-less
+request fails. That same session also checked `resp.headers.get('server')`
+and found only a bare "Apache" -- no Cloudflare/Akamai/Fastly/Sucuri/
+Datadome/Imperva branding, so this doesn't look like a dedicated
+enterprise bot-management product (though something unbranded, or a
+TLS-layer check that wouldn't show up in HTTP headers, can't be ruled
+out this way). Net effect: `fetch_page()`'s realistic
+User-Agent/Accept/Accept-Language/Referer headers are now believed to be
+the load-bearing part of the workaround, more than the session-cookie
+logic -- see `netsuite_product_scraper/app.py`'s module docstring for the
+full detail and the two next things to try, in priority order, if it
+still comes back blank on a real deploy: double-check every header a
+real browser sends that isn't sent yet (sec-fetch-*, client hints) before
+concluding it's unfixable with headers alone, then fall back to a
+headless-browser-based fetch if that doesn't resolve it. **Still an
+educated bet, not a proven fix** -- no environment available to this
+project has a genuinely bare, non-browser network path to
+motivbowling.com to test `requests.get()` itself. Treat the first real
+deployment run of `NetsuiteProductScraperFunction` as the actual test.
 
 **Orchestration**: `NetsuiteUrlDiscoveryFunction` publishes to its own
 `NetsuiteProductScrapeQueue` (message body includes `status`, since -- per

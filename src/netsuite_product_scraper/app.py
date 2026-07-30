@@ -22,28 +22,49 @@ every ball on the site follows this exact markup, especially non-ball
 products (bags/apparel/accessories) or older archived pages, since this
 was only checked against a small sample of current balls.
 
-FETCHING IS THE UNVERIFIED PART, NOT THE PARSING. Direct non-browser fetch
-attempts this session (via this sandbox's web_fetch tool) confirmed the
-same split found in an earlier session: motivbowling.com's HOME PAGE and
-CATEGORY pages fetch fine and return real content, but individual PRODUCT
-pages (e.g. this exact Sigma Tour Pearl URL) return a blank response to a
-plain non-browser request -- while the very same URL renders full content
-in a real browser. Cookie inspection in the browser found no enterprise
-bot-management vendor signature (no Cloudflare/Akamai/PerimeterX cookies),
-just a NetSuite session cookie and ordinary analytics trackers. fetch_page
-below therefore does a session-cookie-first approach: GET the homepage
-first to acquire whatever session cookie NetSuite issues, then reuse that
-cookie plus realistic browser-style headers for the actual product-page
-request. This is an educated bet based on real evidence (no heavyweight
-bot-management found; a plain content-page fetch works fine), NOT a
-verified-working solution -- this sandbox has no outbound network path to
-motivbowling.com to actually test it end to end. Try it against a real
-deployment before trusting it; if it still comes back blank, the next
-things to try (not yet attempted) would be inspecting the homepage
-response's actual Set-Cookie headers directly (couldn't be read this
-session -- the browser tool's javascript_tool blocks returning raw
-cookie-shaped strings as an anti-exfiltration safety measure) or falling
-back to a headless-browser-based fetch.
+FETCHING IS THE UNVERIFIED PART, NOT THE PARSING. Re-confirmed fresh this
+session via `mcp__workspace__web_fetch`: motivbowling.com's HOME PAGE and
+CATEGORY pages fetch fine and return real content, but this exact Sigma
+Tour Pearl product page still returns a blank response to a plain
+non-browser request, unchanged from an earlier session's finding.
+
+**New this session: the pure "you just need a session cookie" theory
+behind fetch_page's current approach was tested directly and partially
+falsified.** From a live browser tab already on this exact product URL,
+`fetch(location.href)` returned the full real page (54KB, contains
+"Sigma Tour Pearl" and "RG") -- expected, since the browser has a real
+session. But `fetch(location.href, {credentials: 'omit'})` -- explicitly
+sending NO cookies at all -- returned the exact same full real content,
+same length. That means a cookie-less request from a real browser
+context still succeeds, so cookies alone don't explain why
+`mcp__workspace__web_fetch`'s cookie-less request comes back blank.
+Whatever the real differentiator is, it's something else a genuine
+browser does that a bare non-browser HTTP client doesn't. Also checked
+via `resp.headers.get('server')`: the only identifying response header
+present is a bare "Apache" -- no Cloudflare/Akamai/Fastly/Sucuri/
+Datadome/Imperva signature, so this doesn't look like it's sitting
+behind a dedicated enterprise bot-management product (though an
+unbranded Apache module, or something at the TLS layer that wouldn't
+show up in HTTP headers at all, can't be ruled out this way).
+
+Given that, `fetch_page()`'s realistic User-Agent/Accept/Accept-Language/
+Referer headers (already implemented below) are more likely the
+load-bearing part of this workaround than the session-cookie logic is --
+the cookie-first visit may be unnecessary, or may matter for reasons
+this test didn't isolate (e.g. only relevant to some other check, or a
+red herring entirely). This is still not proof `fetch_page()` will work
+in production: no way exists in this environment to test with a
+genuinely bare `requests.get()` (no browser involved at all) to see
+whether it's headers, TLS fingerprint, or something else entirely that's
+the real gate. If it still comes back blank after a real deployment,
+the next things to try, in order of how much this session's evidence
+favors them: (1) double-check every header a real browser sends that
+`fetch_page()` doesn't yet (sec-fetch-*, sec-ch-ua client hints, a
+matching Referer chain) before assuming it's unfixable with headers
+alone; (2) if that doesn't work, the gate is likely below the HTTP
+layer (TLS fingerprint/JA3, HTTP/2-specific behavior) and no
+`requests`-based approach will fix it -- fall back to a headless-browser
+-based fetch instead.
 
 Real, confirmed structural facts this module's parsing rests on:
 
