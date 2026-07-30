@@ -5,13 +5,13 @@ Description: >
   HTML + PDF product scraping, image mirroring/normalization, and an admin
   approval API sitting in front of a shared Postgres schema.
 
-  This template currently wires up URL discovery (scheduled, end to end) and
-  the HTML product scraper (not yet triggered -- see ProductScraperFunction
-  below). The remaining functions (PDF parser, image processor, admin API)
-  are listed as commented-out stubs below in the order the architecture doc
-  lays them out (see /brunswick-scraper-architecture-review.md, "Suggested
-  build order") -- add each as its own function + handler when you get
-  there rather than filling in stubs speculatively now.
+  This template currently wires up URL discovery (scheduled, end to end),
+  the HTML product scraper, the PDF Info Sheet parser, and the image
+  mirroring/centering pipeline -- none of the latter three triggered yet,
+  see each function's comment below. Only the admin approval API remains
+  as a commented-out stub (see /brunswick-scraper-architecture-review.md,
+  "Suggested build order") -- add it when you get there rather than
+  filling it in speculatively now.
 
 Globals:
   Function:
@@ -51,6 +51,31 @@ Parameters:
       the migration/seed data before deploying, then pass its id here.
 
 Resources:
+  ImageBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub bowling-scraper-images-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+      # Public-read is intentional -- these are the normalized product
+      # images the consumer site serves directly by URL (stored_url in
+      # product_images), not internal working data. Revisit if serving
+      # through CloudFront instead of raw S3 URLs later.
+
+  ImageBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ImageBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal: "*"
+            Action: s3:GetObject
+            Resource: !Sub arn:aws:s3:::${ImageBucket}/*
+
   UrlDiscoveryFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -124,13 +149,31 @@ Resources:
       # Independently-failing from the HTML step on purpose: a PDF-parsing
       # miss shouldn't block the HTML-derived fields already saved.
 
+  ImageProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-image-processor
+      CodeUri: src/image_processor/
+      Handler: app.handler
+      Timeout: 30
+      MemorySize: 512
+      Environment:
+        Variables:
+          IMAGE_BUCKET: !Ref ImageBucket
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+        - S3CrudPolicy:
+            BucketName: !Ref ImageBucket
+      # No trigger wired up yet -- invoked with {"product_image_id": "...",
+      # "source_url": "..."} per product_images row where stored_url is
+      # still null. Same not-yet-decided orchestration question as the
+      # other functions.
+
   # --- Not yet built -- next in the build order from the architecture doc ---
-  #
-  # ImageProcessorFunction:
-  #   Mirror to own S3; bbox-detect on alpha/background, recenter onto a
-  #   fixed-margin canvas. Plain Pillow, no ML/background-removal model, per
-  #   the architecture doc -- validate that assumption against real samples
-  #   before building the general case.
   #
   # AdminApiFunction:
   #   FastAPI approval workflow. review_queue table (see db/migrations) covers
@@ -144,3 +187,7 @@ Outputs:
     Value: !GetAtt ProductScraperFunction.Arn
   PdfParserFunctionArn:
     Value: !GetAtt PdfParserFunction.Arn
+  ImageProcessorFunctionArn:
+    Value: !GetAtt ImageProcessorFunction.Arn
+  ImageBucketName:
+    Value: !Ref ImageBucket

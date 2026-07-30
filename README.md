@@ -9,10 +9,12 @@ read that first if anything here seems under-explained.
 
 ## What's actually built right now
 
-- `template.yaml` -- SAM template with three functions: `UrlDiscoveryFunction`
-  (scheduled, end to end), `ProductScraperFunction`, and `PdfParserFunction`
-  (both built and tested, neither wired to a trigger yet -- see the comments
-  in `template.yaml`).
+- `template.yaml` -- SAM template with four functions: `UrlDiscoveryFunction`
+  (scheduled, end to end), `ProductScraperFunction`, `PdfParserFunction`, and
+  `ImageProcessorFunction` (the latter three built and tested, none wired to
+  a trigger yet -- see the comments in `template.yaml`). Also defines the
+  public-read `ImageBucket` the image pipeline uploads normalized product
+  photos to.
 - `db/migrations/001_init_schema.sql` -- full schema: brands, `ball_families` ->
   `products` -> `product_skus`, image storage, URL discovery tracking, the
   cross-source review queue, and BowlerDepot reconciliation tracking.
@@ -35,21 +37,31 @@ read that first if anything here seems under-explained.
   HTML says 16 lb RG is 2.577, its PDF says 2.557) gets written to
   `review_queue` instead of silently overwritten. See the module docstring
   and `sync_pdf_skus()` for the exact rules.
-- `tests/` -- unit tests for all three functions above, run against **real**
-  captured data: a real sitemap sample, real field values from two actual
-  product pages covering the two different page patterns found during
-  research, and two real PDF Info Sheets fetched directly from Brunswick's
-  CDN (`tests/fixtures/crown_78u_info_sheet.txt`,
-  `defender_info_sheet.txt` -- unlike the HTML fixtures, these are verbatim
-  extracted text, not reconstructions). All 7 PDF parser tests, and the 20+
-  from the earlier two functions, pass when run manually in-sandbox (see
-  below for why "manually" rather than via `pytest` itself).
+- `src/image_processor/app.py` -- mirrors product images to your own S3
+  storage and normalizes composition, not just resolution: detects the
+  ball's bounding box (alpha-channel-based for sources with real
+  transparency, background-color-threshold-based for flattened sources,
+  auto-selected per image), crops to it, and recomposites centered on a
+  fixed-size canvas with a consistent margin percentage -- so a Brunswick
+  photo and a Hammer photo end up visually consistent even though the two
+  manufacturers won't share photography conventions. Outputs
+  thumbnail/catalog/detail sizes. Pillow-only, no ML background removal, per
+  the architecture doc. See the module docstring for the deliberate choice
+  of a flat white output background over preserving per-source transparency.
+- `tests/` -- unit tests for all four functions above, run against **real**
+  captured data where real data exists: a real sitemap sample, real field
+  values from two actual product pages, and two real PDF Info Sheets
+  fetched directly from Brunswick's CDN (verbatim extracted text, not
+  reconstructions). The image pipeline is the one exception -- see "Why
+  there's no live end-to-end test yet" below for why its tests run against
+  synthetic (Pillow-generated) images instead. All tests across all four
+  functions pass when run manually in-sandbox (see below for why
+  "manually" rather than via `pytest` itself).
 
-Everything else in the architecture doc's build order (image
-mirroring/centering pipeline, FastAPI admin API) is intentionally not
-stubbed out yet -- see the commented-out section at the bottom of
-`template.yaml` for what's next and why it's not speculative boilerplate
-today.
+Everything else in the architecture doc's build order (FastAPI admin API)
+is intentionally not stubbed out yet -- see the commented-out section at
+the bottom of `template.yaml` for what's next and why it's not speculative
+boilerplate today.
 
 ## Why there's no live end-to-end test yet
 
@@ -100,6 +112,25 @@ verify:
   handling), `parse_weight_table()`'s line-prefix matching may need minor
   adjustment -- worth a quick manual check against one real PDF before
   trusting this in production.
+- `src/image_processor/app.py` is the weakest-verified of the four
+  functions, honestly: this sandbox never had network access to Brunswick's
+  image CDN at all (same outbound allowlist block as everything else), so
+  there was no real product photo to test against, not even as extracted
+  text the way the PDFs worked. `bbox_from_alpha()`, `bbox_from_background()`,
+  `detect_bbox()`, and `normalize_composition()` are all tested against
+  synthetic images generated with Pillow itself (a circle with exactly-known
+  pixel geometry, on both a transparent and a flattened background) and the
+  math checks out precisely against that known geometry. What that proves:
+  the cropping/scaling/centering logic is correct. What it doesn't prove:
+  that Brunswick's (or any other manufacturer's) real photos actually match
+  either the "clean alpha cutout" or "uniform background" pattern the
+  detection logic assumes -- real product photography sometimes has soft
+  shadows, reflections, or gradient backgrounds that would confuse a hard
+  alpha/color threshold. **This is exactly the risk the architecture doc
+  itself flags** ("should be verified per source platform with a handful of
+  real samples before assuming one approach covers all three template
+  families") -- download a handful of real images per source and eyeball
+  the bbox detection before trusting this in production.
 
 None of that substitutes for actually running this against AWS. Treat this as
 "the logic is verified, the deployment isn't."
