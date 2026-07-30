@@ -507,40 +507,53 @@ verify:
   deploy**, same as everything else in this project that's never
   actually run against AWS -- but the specific "never inspected raw
   markup at all" risk that used to apply here is resolved.
-- `src/pdf_parser/app.py` is on firmer footing than the HTML scraper on the
-  "is this real" question: `mcp__workspace__web_fetch` turned out to be
-  able to fetch and extract text from PDF URLs directly, so both fixture
-  files are verbatim real extracted text from actual Brunswick Info Sheet
-  PDFs, not reconstructions. `parse_info_sheet()`, `parse_weight_table()`,
-  and `find_mismatches()` all ran against that real text in this session
-  and passed (7/7). What's still unverified: `fetch_pdf()` (the actual
-  network call) and `extract_pdf_text()`'s use of `pdfplumber` against raw
-  PDF bytes -- I only ever had the already-extracted text, never the PDF
-  bytes themselves, so pdfplumber's extraction step specifically hasn't
-  been exercised. If its output format differs from what
-  `mcp__workspace__web_fetch` returned (e.g. different whitespace/line
-  handling), `parse_weight_table()`'s line-prefix matching may need minor
-  adjustment -- worth a quick manual check against one real PDF before
-  trusting this in production.
-- `src/image_processor/app.py` is the weakest-verified of the scraping/
-  processing functions, honestly: this sandbox never had network access to Brunswick's
-  image CDN at all (same outbound allowlist block as everything else), so
-  there was no real product photo to test against, not even as extracted
-  text the way the PDFs worked. `bbox_from_alpha()`, `bbox_from_background()`,
-  `detect_bbox()`, and `normalize_composition()` are all tested against
-  synthetic images generated with Pillow itself (a circle with exactly-known
-  pixel geometry, on both a transparent and a flattened background) and the
-  math checks out precisely against that known geometry. What that proves:
-  the cropping/scaling/centering logic is correct. What it doesn't prove:
-  that Brunswick's (or any other manufacturer's) real photos actually match
-  either the "clean alpha cutout" or "uniform background" pattern the
-  detection logic assumes -- real product photography sometimes has soft
-  shadows, reflections, or gradient backgrounds that would confuse a hard
-  alpha/color threshold. **This is exactly the risk the architecture doc
-  itself flags** ("should be verified per source platform with a handful of
-  real samples before assuming one approach covers all three template
-  families") -- download a handful of real images per source and eyeball
-  the bbox detection before trusting this in production.
+- `src/pdf_parser/app.py`: re-confirmed independently in a later session,
+  beyond the original real-fixture-text verification -- fresh live pulls
+  via `mcp__workspace__web_fetch` against both Crown 78U's and Defender's
+  actual Info Sheet PDF URLs reproduced every real value exactly,
+  including the documented real Crown 78U HTML-vs-PDF mismatch (16 lb RG:
+  2.577 HTML vs. 2.557 PDF), and `find_mismatches()` correctly flagged
+  that exact discrepancy end to end against a fresh HTML+PDF pairing.
+  What's still unverified, and now confirmed *why* it can't be closed
+  from this kind of sandbox: `extract_pdf_text()`'s actual use of
+  `pdfplumber` against raw PDF bytes. Getting real PDF bytes from a live
+  browser into a verification sandbox was attempted this session and
+  failed for two structural reasons (cross-origin `fetch()` blocked by
+  CORS; navigating directly to the PDF hands the tab to Chrome's native
+  viewer, which won't allow script injection) -- see
+  `src/pdf_parser/app.py`'s module docstring for the full detail. Every
+  fresh check this session went through already-extracted text, same as
+  the original fixtures; `pdfplumber`'s specific behavior on raw bytes
+  remains the one thing worth a quick manual check with a real PDF and a
+  local Python environment before trusting this in production.
+- `src/image_processor/app.py`: partially de-risked in a later session,
+  with a precise caveat about what that means. Raw bytes of a real
+  Brunswick product image couldn't be transferred into a verification
+  sandbox either (same two structural blockers as the PDF case above,
+  plus this environment's own anti-exfiltration filter rejecting a
+  base64-encoded image transfer outright, `[BLOCKED: Base64 encoded
+  data]`, regardless of size) -- so `bbox_from_alpha()`,
+  `bbox_from_background()`, and `detect_bbox()` themselves were NOT run
+  against real bytes. What WAS done: sampling the real image's actual
+  pixel values directly via the browser's `canvas.getImageData()` (no
+  bytes transferred, just individual pixel queries, which this
+  environment's filter didn't block) confirmed, on real data, that a
+  real Brunswick product photo has genuine alpha transparency (corners
+  alpha=0, ball alpha=255) with a real ~2-3px anti-aliased edge -- not a
+  hard binary cutoff, not a flattened background -- exactly matching
+  `has_real_transparency()`'s and `bbox_from_alpha()`'s design
+  assumptions. That validates the *algorithm's* real-world correctness
+  for the alpha-detection path on one real image; it does not prove the
+  actual Python code runs correctly end to end, and the
+  background-threshold path remains completely unverified against a real
+  flattened source (still relevant for other manufacturers/platforms).
+  Tests still run only against synthetic Pillow-generated images. **This
+  is exactly the risk the architecture doc itself flags** ("should be
+  verified per source platform with a handful of real samples before
+  assuming one approach covers all three template families") -- running
+  the actual pipeline against a handful of real downloaded images (which
+  *is* possible once this deploys somewhere with normal network access)
+  remains the real verification step before trusting this in production.
 - `src/admin_api/` has a different kind of gap than the other four: pip
   couldn't install `fastapi`, `pydantic`, or `mangum` in this sandbox at
   all (same proxy block as everything else), so unlike the others, even

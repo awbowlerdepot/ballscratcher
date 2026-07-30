@@ -24,6 +24,39 @@ Finish, Weights, Warranty), followed by a weight header line ("16 lbs 15
 lbs 14 lbs 13 lbs 12 lbs"), then RG/DIFF/[ASY] lines with one number per
 weight column. This parser is built against that real, observed structure
 -- not a guess.
+
+**Re-confirmed independently this session**, with one precise caveat
+about what's still unproven. `mcp__workspace__web_fetch` was used to
+pull fresh, live text from both Crown 78U's and Defender's real Info
+Sheet PDF URLs again (independent of whatever the original fixture
+text's provenance was) -- `parse_info_sheet()`/`parse_weight_table()`
+ran against that fresh text and reproduced every real value exactly,
+including the real Crown 78U HTML-vs-PDF mismatch this module's
+docstring already documents (16 lb RG: 2.577 on the HTML page vs. 2.557
+on the PDF) -- `find_mismatches()` was run against that fresh PDF text
+paired with a fresh HTML fetch of the same product and correctly flagged
+that exact discrepancy end to end. Defender's fresh PDF text also
+reconfirmed the full 5-weight RG/DIFF/ASY breakdown this docstring
+describes.
+
+What's NOT re-confirmed: `extract_pdf_text()`'s actual use of
+`pdfplumber` against raw PDF *bytes*. Both fresh fetches above went
+through `mcp__workspace__web_fetch`, which returns already-extracted
+text -- not the raw PDF bytes this function's real Lambda code path
+needs. Getting raw bytes from a live browser (Claude in Chrome) into
+this verification sandbox was attempted and failed for two independent,
+structural reasons: a cross-origin `fetch()` of the PDF is blocked by
+CORS (the CDN sends no `Access-Control-Allow-Origin` header), and
+navigating directly to the PDF's own origin to work around that instead
+hands the tab to Chrome's native PDF viewer, which doesn't allow script
+injection at all. So whatever `pdfplumber.open()` does with real PDF
+byte structure specifically -- as opposed to whatever text-extraction
+pipeline `mcp__workspace__web_fetch` uses internally -- remains
+unverified. If `pdfplumber`'s output ever differs in whitespace/line
+structure from what was tested here, `parse_weight_table()`'s
+line-prefix matching may need adjustment; this is the one specific
+thing worth checking with a real PDF and a local Python environment
+before trusting this in production.
 """
 import logging
 import re

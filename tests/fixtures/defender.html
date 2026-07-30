@@ -18,6 +18,21 @@
   page, confirmed here too -- see that fixture's comment and
   src/product_scraper/app.py's module docstring for the bug this exposed
   and fixed.
+
+  Image src URLs below were also corrected this session: the original
+  reconstruction guessed a "/production/bowler_products/Products/Balls/
+  Retired/..." path with a "_retired" filename suffix, but the real path
+  (confirmed via the actual <img> src attributes on the live page) is
+  "/production/transforms/bowlerproducts/Products/Balls/Pro/<numeric-id>/
+  Defender_lrg_1600x1600_<hash>.png" -- no "_retired" suffix at all
+  (retired-status lives in the DB/URL path, not the image filename), and
+  the main image filename has a "_lrg_" segment Crown 78U's doesn't
+  (real, observed inconsistency between products, not a typo). Pixel-
+  level inspection of the real main image this session (getImageData
+  sampling via canvas, since the actual bytes couldn't be transferred
+  into the verification sandbox -- see image_processor/app.py's module
+  docstring) confirmed real alpha transparency with a genuine ~2-3px
+  anti-aliased edge, matching bbox_from_alpha()'s assumptions exactly.
 -->
 <html>
 <body>
@@ -39,9 +54,9 @@
   <tr><td>Warranty</td><td>Two years from purchase date</td></tr>
 </table>
 
-<img src="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/bowler_products/Products/Balls/Retired/Defender_1600x1600_retired.png" alt="Retired Defender bowling ball">
-<img src="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/bowler_products/Products/Balls/Retired/Defender_16-14_lb_Core_1600x1600_retired.png" alt="Retired Defender 16-14 lb Core">
-<img src="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/bowler_products/Products/Balls/Retired/Defender_13-12_lb_Core_1600x1600_retired.png" alt="Retired Defender 13-12 lb Core">
+<img src="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/transforms/bowlerproducts/Products/Balls/Pro/336291/Defender_lrg_1600x1600_18694ddcf445590f9b69434f3e02c496.png" alt="Retired Defender bowling ball">
+<img src="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/transforms/bowlerproducts/Products/Balls/Pro/535037/Defender_16-14_lb_Core_1600x1600_callout_18694ddcf445590f9b69434f3e02c496.png" alt="Retired Defender 16-14 lb Core">
+<img src="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/transforms/bowlerproducts/Products/Balls/Pro/535036/Defender_13-12_lb_Core_1600x1600_callout_18694ddcf445590f9b69434f3e02c496.png" alt="Retired Defender 13-12 lb Core">
 
 <h2>Resources</h2>
 <div class="c-general-content c-general-content--column c-general-content--left">
