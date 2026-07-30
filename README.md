@@ -625,6 +625,17 @@ None of that substitutes for actually running this against AWS. Treat this as
    sam build
    sam deploy --guided
    ```
+   `sam build` installs each function's own `requirements.txt` (`sam
+   build` reads `CodeUri`'s directory) -- every `src/*/` directory that
+   imports a third-party package now has one; `bowlerdepot_reconciliation`,
+   `bowwwl_cross_check`, `netsuite_product_scraper`, and
+   `netsuite_url_discovery` were missing theirs until this pass (all four
+   import `psycopg2`, which isn't in the Lambda runtime by default, so
+   `sam build` would previously have shipped those functions in a state
+   that fails on first DB connection attempt). `boto3` itself is
+   deliberately left off most of these `requirements.txt` files, matching
+   this project's existing majority convention -- it ships in the Lambda
+   Python runtime already, so pinning it is optional, not required.
    You'll be prompted for `DbSecretArn`, `BrandId`, and
    `AdminApiTokenSecretArn` (the secret from step 3 -- leave it blank
    only if you're not using the admin API yet; every request will be
