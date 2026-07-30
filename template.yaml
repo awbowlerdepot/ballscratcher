@@ -55,6 +55,26 @@ Parameters:
       UUID of the row in the `brands` table this deployment discovers URLs
       for (see db/migrations/001_init_schema.sql). Insert the brand row via
       the migration/seed data before deploying, then pass its id here.
+  SwagCategoryUrl:
+    Type: String
+    Default: https://www.swagbowling.com/shop/bowling-balls/
+    Description: >
+      WooCommerce category archive URL WooCommerceUrlDiscoveryFunction
+      paginates through to find ball product URLs (SWAG's flat product
+      sitemap mixes balls with apparel/accessories, so this is the actual
+      filtering mechanism -- see src/woocommerce_url_discovery/app.py).
+  SwagSitemapUrl:
+    Type: String
+    Default: https://www.swagbowling.com/product-sitemap.xml
+    Description: Yoast SEO product sitemap, used only for its per-URL <lastmod> values.
+  SwagBrandId:
+    Type: String
+    Default: ""
+    Description: >
+      UUID of the `brands` row for SWAG Bowling. Left blank by default so
+      this template still deploys standalone for just the Craft-CMS family
+      (BrandId above) without requiring a second brand row up front --
+      required once you actually enable the WooCommerce functions.
 
 Resources:
   ImageBucket:
@@ -296,6 +316,68 @@ Resources:
       # trusted network -- deliberately not guessed at here since it's a
       # real security decision, not a default to assume.
 
+  # --- WooCommerce brand family (SWAG Bowling to start) ---
+  #
+  # A genuinely different platform from everything above, added this
+  # session -- see src/woocommerce_url_discovery/app.py and
+  # woocommerce_product_scraper/app.py module docstrings for the real,
+  # confirmed platform differences that drove their design (no per-weight
+  # RG/DIFF table, mass bias already in HTML unlike Brunswick, category-
+  # page-based discovery instead of sitemap-path filtering).
+  #
+  # Bundled into this same template/stack rather than a separate one, for
+  # now -- consistent with how this template already covers multiple
+  # Craft-CMS brands via redeploys with different parameters, just now
+  # with a second platform's functions too. Worth reconsidering (separate
+  # template/nested stack per platform family) once there's a third
+  # platform or this file gets unwieldy -- not a problem yet with two.
+  #
+  # Not yet wired into the SQS orchestration chain the Craft-CMS family
+  # uses (ProductScrapeQueue/PdfParseQueue/ImageProcessQueue) -- these two
+  # functions are invoke-manually only in this pass, same starting point
+  # UrlDiscoveryFunction/ProductScraperFunction had before that chain was
+  # built. Not a PDF-parser trigger target either: SWAG's HTML already
+  # carries RG/DIFF/mass-bias-when-present directly, so PdfParseQueue
+  # doesn't apply to this brand the way it does to Brunswick.
+
+  WooCommerceUrlDiscoveryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-woocommerce-url-discovery
+      CodeUri: src/woocommerce_url_discovery/
+      Handler: app.handler
+      Environment:
+        Variables:
+          CATEGORY_URL: !Ref SwagCategoryUrl
+          SITEMAP_URL: !Ref SwagSitemapUrl
+          BRAND_ID: !Ref SwagBrandId
+      Policies:
+        - VPCAccessPolicy: {}
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+      # No schedule wired up yet (unlike UrlDiscoveryFunction's daily
+      # trigger) -- add once SwagBrandId is actually set for a real
+      # deployment; a schedule referencing an empty BrandId isn't useful.
+
+  WooCommerceProductScraperFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-woocommerce-product-scraper
+      CodeUri: src/woocommerce_product_scraper/
+      Handler: app.handler
+      Timeout: 30
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+      # Invoked with {"url": "...", "brand_id": "..."} per product page,
+      # same shape as ProductScraperFunction -- not yet SQS-triggered.
+
 Outputs:
   UrlDiscoveryFunctionArn:
     Value: !GetAtt UrlDiscoveryFunction.Arn
@@ -315,3 +397,7 @@ Outputs:
     Value: !Ref PdfParseDLQ
   ImageProcessDLQUrl:
     Value: !Ref ImageProcessDLQ
+  WooCommerceUrlDiscoveryFunctionArn:
+    Value: !GetAtt WooCommerceUrlDiscoveryFunction.Arn
+  WooCommerceProductScraperFunctionArn:
+    Value: !GetAtt WooCommerceProductScraperFunction.Arn

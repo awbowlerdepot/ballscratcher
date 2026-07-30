@@ -80,6 +80,10 @@ read that first if anything here seems under-explained.
   returns which `product_images` rows still need processing
   (`stored_url is null`) instead of just the product id, so the handler
   can fan out image jobs without an extra query.
+- `src/woocommerce_url_discovery/app.py` + `woocommerce_product_scraper/app.py`
+  -- second manufacturer, second platform family: SWAG Bowling on
+  WordPress/WooCommerce. See "Second manufacturer: SWAG Bowling" below for
+  the real platform differences that shaped these.
 - `tests/` -- unit tests for all five functions above, run against **real**
   captured data where real data exists: a real sitemap sample, real field
   values from two actual product pages, and two real PDF Info Sheets
@@ -100,6 +104,87 @@ now has a first pass built, and they're wired together end to end. What's
 left: auth on the admin API, the bowwwl.com and BowlerDepot cross-checks
 that are supposed to also write into `review_queue` (currently only the
 PDF-vs-HTML check does), and the consumer-facing site itself.
+
+## Second manufacturer: SWAG Bowling (a new platform family)
+
+`src/woocommerce_url_discovery/app.py` and
+`src/woocommerce_product_scraper/app.py` -- SWAG Bowling
+(swagbowling.com), confirmed live this session (WordPress + WooCommerce,
+fully server-rendered) as a second manufacturer alongside Brunswick,
+running on a genuinely different platform than any of the three families
+the architecture doc originally scoped (Craft CMS/Shopify/commercebuild).
+Real, confirmed differences from the Craft-CMS scraper that shaped these:
+
+- WooCommerce's flat Yoast product sitemap mixes bowling balls with
+  apparel/accessories under one `/product/{slug}/` path -- no
+  Brunswick-style path segment to filter on. So URL discovery here
+  paginates the `/shop/bowling-balls/` category archive (real, confirmed
+  server-rendered, no JS) to get the *set* of ball URLs, then
+  cross-references the sitemap only for its `<lastmod>` values.
+- SWAG's product page exposes RG, DIFF, and mass bias directly in a
+  WooCommerce attribute table -- no PDF step needed for SWAG's core data,
+  unlike Brunswick where mass bias was PDF-only. There's also no
+  per-weight breakdown table on the page (only a single 15lb value,
+  always), so this always takes the 15lb-default path.
+- Coverstock material and type come from two different attribute fields
+  here (`Bowling Ball Coverstock Type` for material, keyword-matching
+  `Bowling Ball Cover Name` for solid/pearl/hybrid), rather than one
+  combined field like Brunswick's `Cover Type`.
+- Current/retired status comes from the product page's own
+  `Production-status` attribute, not the URL -- more reliable than trying
+  to infer it from which category-archive page a link appeared on.
+
+Not yet done for SWAG, disclosed rather than guessed at: these two
+functions aren't wired into the SQS orchestration chain
+(`ProductScrapeQueue`/etc.) the Craft-CMS family uses -- they're
+invoke-manually only, same starting point the Craft-CMS functions had
+before that chain was built. The Info Sheet/Shelf Talker PDFs SWAG links
+are hosted on Dropbox share links, and neither could actually be fetched
+this session (the tool available returned nothing for both) -- so whether
+`pdf_parser`'s Brunswick-specific layout assumptions apply to SWAG's PDFs
+at all is unknown, though also not currently load-bearing since SWAG's
+HTML already carries the core RG/DIFF/mass-bias data. And
+`parse_mass_bias()`'s handling of a real (non-"N/A") value is unverified --
+the one real product page inspected this session was a symmetric core;
+check a real asymmetric SWAG ball's page before trusting mass bias data
+for those.
+
+## Third manufacturer (research done, not yet built): MOTIV Bowling
+
+MOTIV Bowling (motivbowling.com) was investigated this session but not yet
+scraped. It runs on what looks like NetSuite SuiteCommerce (identifiable
+by the `/n_<id>` permalink pattern, which redirects to a canonical slug
+URL). Real, confirmed findings, using the Claude in Chrome browser tool
+(not just the non-browser fetch tool the rest of this research used):
+
+- The real product-spec content (RG/DIFF per weight, core, coverstock,
+  finish) IS present as static text in the server-delivered HTML -- not
+  injected by JavaScript after page load. Confirmed by fetching the raw
+  page via `fetch()` from inside an actual browser session and finding
+  the real values (a ball's exact RG numbers, core name, coverstock name)
+  present in the raw response text itself. No separate API call for this
+  data was visible in the page's network log either.
+- BUT: fetching that exact same product URL from this session's
+  non-browser fetch tool -- the same style of plain HTTP request a Lambda
+  scraper would make -- came back completely empty, while MOTIV's
+  homepage fetched fine through that same tool. Product pages specifically
+  are rejecting or short-circuiting non-browser requests somehow.
+- Checked the cookies MOTIV's site actually sets: only ordinary analytics/
+  marketing trackers (Google Analytics, AdRoll, Bing UET) plus one short
+  session cookie (`s`, typical of NetSuite) -- no Cloudflare/Akamai/
+  PerimeterX cookies, i.e. no sign of enterprise bot-management.
+
+Net conclusion: a headless browser is likely NOT required just to render
+MOTIV's content, but a plain `requests.get()` almost certainly won't work
+as-is either. The most promising unbuilt approach: a `requests.Session()`
+that visits the homepage first (to pick up the `s` session cookie), reuses
+that cookie on the product-page request, and sends realistic browser-style
+headers. This is a reasoned bet based on real evidence (the cookie
+inventory, the absence of bot-management signatures), not a confirmed
+working approach -- this sandbox has no path to actually test an outbound
+`requests` call against motivbowling.com to prove it out. Build and test
+this against the real site (or report back if it doesn't work) before
+assuming it's solved.
 
 ## Why there's no live end-to-end test yet
 
@@ -199,17 +284,28 @@ verify:
   the AWS docs say it does. `sam validate` and a real deploy are the only
   way to find out if the YAML itself is wrong in a way `yaml.safe_load`
   (used to spot-check syntax this session) wouldn't catch.
+- `src/woocommerce_url_discovery/app.py` and `woocommerce_product_scraper/app.py`
+  are on similar footing to the Craft-CMS pair: real field values, real
+  URLs, real sitemap/category-page structure, all confirmed via direct
+  fetches this session, but reconstructed fixtures rather than saved raw
+  HTML (same markdown-conversion limitation as Brunswick's). 22/22 tests
+  pass. Specific unconfirmed pieces, disclosed rather than assumed away:
+  `parse_mass_bias()` on a real non-"N/A" (asymmetric-ball) value, and
+  whether `pdf_parser`'s Brunswick-specific PDF layout applies to SWAG's
+  Dropbox-hosted PDFs at all (neither PDF could actually be fetched this
+  session to check).
 
 None of that substitutes for actually running this against AWS. Treat this as
 "the logic is verified, the deployment isn't."
 
 ## Getting this running
 
-1. **Provision Postgres** (RDS or otherwise) and run the migration:
+1. **Provision Postgres** (RDS or otherwise) and run both migrations, in order:
    ```
    psql "$DATABASE_URL" -f db/migrations/001_init_schema.sql
+   psql "$DATABASE_URL" -f db/migrations/002_add_woocommerce_netsuite_platforms.sql
    ```
-2. **Seed the `brands` row** this deployment discovers URLs for, e.g.:
+2. **Seed the `brands` row(s)** this deployment discovers URLs for, e.g.:
    ```sql
    insert into manufacturers (name) values ('Brunswick Bowling & Billiards') returning id;
    insert into brands (manufacturer_id, name, base_url, source_platform, sitemap_url)
@@ -217,7 +313,9 @@ None of that substitutes for actually running this against AWS. Treat this as
            'https://brunswickbowling.com/sitemaps-1-section-bowlerProducts-1-sitemap.xml')
    returning id;
    ```
-   Keep that `id` -- it's the `BrandId` parameter below.
+   Keep that `id` -- it's the `BrandId` parameter below. If you're also
+   enabling SWAG, do the same for it (`source_platform` = `'woocommerce'`,
+   `sitemap_url` = the product sitemap) and keep that id for `SwagBrandId`.
 3. **Store DB credentials in Secrets Manager** as a JSON secret shaped
    `{"host", "port", "dbname", "username", "password"}`. Note its ARN.
 4. **Deploy**:
@@ -229,12 +327,19 @@ None of that substitutes for actually running this against AWS. Treat this as
    `UrlPathPattern` default to Brunswick's values and don't need to be set
    unless you're deploying a second stack for Radical or DV8 (same Craft CMS
    template -- see the parameter descriptions in `template.yaml`).
+   `SwagCategoryUrl`/`SwagSitemapUrl` default to SWAG's real values;
+   `SwagBrandId` defaults to blank and only needs setting once you've seeded
+   SWAG's `brands` row per step 2.
 5. **Run the tests** (once you have `pytest` available -- this session's
    sandbox couldn't install it, so it's unverified in the pytest runner
-   itself, only via the manual equivalent described above):
+   itself for the files that use it; the newer `*_orchestration.py` and
+   `woocommerce_*` test files don't need pytest at all, run them directly):
    ```
    pip install pytest
    pytest tests/ -v
+   # or, for the pytest-free files:
+   python3 tests/test_woocommerce_url_discovery.py
+   python3 tests/test_woocommerce_product_scraper.py
    ```
 
 ## Reusing this for Radical / DV8

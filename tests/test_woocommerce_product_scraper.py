@@ -1,0 +1,126 @@
+"""
+Tests for src/woocommerce_product_scraper/app.py, run against
+tests/fixtures/swag_fusion.html -- a reconstruction using real field
+values captured from swagbowling.com/product/swag-fusion-bowling-ball/
+this session (see that fixture's header comment for exactly what's real).
+Manual-runner pattern, run standalone via
+`python3 tests/test_woocommerce_product_scraper.py`.
+"""
+import os
+import pathlib
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src", "woocommerce_product_scraper"))
+
+import app  # noqa: E402
+
+FIXTURES = pathlib.Path(__file__).parent / "fixtures"
+FUSION_URL = "https://www.swagbowling.com/product/swag-fusion-bowling-ball/"
+
+
+def _parsed_fusion():
+    html = (FIXTURES / "swag_fusion.html").read_text()
+    return app.parse_product_page(html, FUSION_URL)
+
+
+def test_basic_fields():
+    p = _parsed_fusion()
+    assert p["name"] == "SWAG Fusion Bowling Ball"
+    assert p["status"] == "current"
+    assert p["color"] == "Black, Pink, Purple"
+    assert p["core_name"] == "SWAG Fusion Core"
+    assert p["coverstock_name"] == "SWAG Xplode Solid Reactive"
+    assert p["factory_finish"] == "3000 Grit"
+    assert p["performance_level_raw"] == "Modern Performance Line"
+    assert p["release_date_raw"] == "January 2025"
+
+
+def test_coverstock_split_across_two_fields():
+    """Material comes from "Bowling Ball Coverstock Type" (Reactive),
+    type comes from keyword-matching "Bowling Ball Cover Name" (contains
+    "Solid") -- the real, confirmed structural difference from Brunswick
+    documented in the module docstring."""
+    p = _parsed_fusion()
+    assert p["coverstock_material"] == "reactive_resin"
+    assert p["coverstock_type"] == "solid"
+
+
+def test_weights_available_from_multivalue_attribute():
+    p = _parsed_fusion()
+    assert p["weights_available"] == (13, 16)
+
+
+def test_sku_defaults_to_15lb_with_real_values():
+    p = _parsed_fusion()
+    assert len(p["skus"]) == 1
+    sku = p["skus"][0]
+    assert sku["weight_lbs"] == 15
+    assert sku["rg"] == 2.54
+    assert sku["differential"] == 0.036
+    assert sku["mass_bias"] is None  # real value is "N/A" -- symmetric core
+
+
+def test_resources_extracts_real_dropbox_links():
+    p = _parsed_fusion()
+    assert p["resources"]["info_sheet_url"].endswith("swag-fusion-flyer-dec2024.pdf?rlkey=k31nzd00h61gu32xg7j02q27x&e=1&st=jk4q0xig&dl=0")
+    assert p["resources"]["shelf_talker_url"].endswith("swag-fusion-solid-shelf-dec2024.pdf?rlkey=gqkawb3uelurx6rob18lbhyjh&e=1&st=vxs4bppg&dl=0")
+
+
+def test_images_main_and_core():
+    p = _parsed_fusion()
+    assert len(p["images"]) == 2
+    assert p["images"][0]["image_type"] == "main"
+    assert p["images"][0]["source_url"].endswith("FUSION-600x600.png")
+    assert p["images"][1]["image_type"] == "core_callout"
+    assert p["images"][1]["source_url"].endswith("FUSION-CORE-600x571.png")
+
+
+# --- Helper functions tested directly, beyond what the fixture exercises ---
+
+def test_parse_mass_bias_rejects_na():
+    assert app.parse_mass_bias("N/A") is None
+
+
+def test_parse_mass_bias_accepts_real_number():
+    """Unconfirmed against a real asymmetric SWAG page this session (see
+    module docstring's disclosed gap) -- this just confirms the function
+    itself handles a numeric value correctly if/when one is encountered."""
+    assert app.parse_mass_bias("0.028") == 0.028
+
+
+def test_parse_mass_bias_rejects_qualitative_value():
+    """If SWAG expresses mass bias qualitatively for asymmetric balls
+    (e.g. "Strong") rather than numerically, this must return None rather
+    than fabricate a number -- see module docstring."""
+    assert app.parse_mass_bias("Strong") is None
+
+
+def test_parse_status_current():
+    assert app.parse_status("In Production") == "current"
+
+
+def test_parse_status_retired():
+    assert app.parse_status("Discontinued") == "retired"
+
+
+def test_parse_status_unknown_value_returns_none():
+    assert app.parse_status("Something Else") is None
+
+
+def test_parse_weights_available_handles_single_weight():
+    assert app.parse_weights_available("15LB") == (15, 15)
+
+
+def test_parse_weights_available_returns_none_for_empty():
+    assert app.parse_weights_available("") is None
+    assert app.parse_weights_available(None) is None
+
+
+if __name__ == "__main__":
+    tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
+    passed = 0
+    for t in tests:
+        t()
+        passed += 1
+        print(f"PASS: {t.__name__}")
+    print(f"\n{passed}/{len(tests)} tests passed")

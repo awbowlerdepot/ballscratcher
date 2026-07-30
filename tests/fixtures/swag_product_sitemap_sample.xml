@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Reconstructed, not literally saved: fetched this session via a
+  non-browser fetch tool that converts to markdown/text, not raw bytes,
+  so this is retyped as valid XML using real captured loc/lastmod
+  values from https://www.swagbowling.com/product-sitemap.xml (confirmed
+  a real, live Yoast SEO product sitemap: flat, mixing balls and
+  apparel under the same /product/ path, which is exactly why
+  woocommerce_url_discovery/app.py cross-references this against the
+  category-page-derived URL set rather than filtering this sitemap
+  directly). swag-swagger-bowling-ball's lastmod is real and verified;
+  the apparel entries are real too, included specifically to confirm
+  parse_sitemap_lastmods doesn't need any path filtering of its own:
+  it just returns every URL's lastmod and lets the caller decide which
+  URLs matter.
+-->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+	<url>
+		<loc>https://www.swagbowling.com/product/swag-bowling-district-womens-v-neck-tee-shirt/</loc>
+		<lastmod>2025-01-13T14:38:34+00:00</lastmod>
+	</url>
+	<url>
+		<loc>https://www.swagbowling.com/product/swag-bowling-district-womens-tee-shirt/</loc>
+		<lastmod>2025-01-13T14:38:37+00:00</lastmod>
+	</url>
+	<url>
+		<loc>https://www.swagbowling.com/product/swag-swagger-bowling-ball/</loc>
+		<lastmod>2025-01-13T15:15:43+00:00</lastmod>
+	</url>
+</urlset>
