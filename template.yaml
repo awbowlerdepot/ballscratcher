@@ -386,6 +386,29 @@ Resources:
       # Manager call on every request, not this setting; see that
       # module's docstring for why the two aren't the same mechanism.
 
+  AdminApiAuthorizerFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref AdminApiAuthorizerFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${AdminHttpApi}/authorizers/*"
+    # Found via a real failed deploy: with EVERY authenticated request
+    # returning a bare 500 and NEITHER function's CloudWatch log group
+    # even existing afterward, API Gateway never actually reached either
+    # Lambda. Root cause: AdminHttpApi's Authorizers block above wires
+    # the authorizer via a raw `FunctionArn: !GetAtt ...` reference, not
+    # through one of SAM's own event-source connections (like an Api
+    # event on a function) -- SAM only auto-generates the
+    # AWS::Lambda::Permission API Gateway needs to invoke a function when
+    # the connection is expressed that second way. A manually-specified
+    # FunctionArn skips that auto-wiring entirely, so it has to be added
+    # by hand. The unauthenticated-request 401 seen earlier was a red
+    # herring -- HTTP API v2 short-circuits to 401 without ever invoking
+    # the authorizer when the configured Identity.Headers source
+    # (Authorization) is simply absent from the request, so that path
+    # never exercised this bug.
+
   AdminApiAuthorizerFunction:
     Type: AWS::Serverless::Function
     Properties:
