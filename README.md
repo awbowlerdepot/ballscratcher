@@ -68,6 +68,10 @@ read that first if anything here seems under-explained.
   (all the actual logic, framework-agnostic) and a thin `app.py` FastAPI +
   Mangum routing layer -- see "Why there's no live end-to-end test yet"
   below for why that split matters more here than for the other functions.
+- `src/admin_api_authorizer/app.py` -- shared-secret bearer-token Lambda
+  authorizer sitting in front of `AdminApiFunction`, so the admin API is
+  no longer a bare unauthenticated HTTP API. See "Admin API auth" below
+  for the design and setup.
 - **Orchestration** -- `UrlDiscoveryFunction` -> `ProductScrapeQueue` ->
   `ProductScraperFunction` -> (`PdfParseQueue` -> `PdfParserFunction`) and
   (`ImageProcessQueue` -> `ImageProcessorFunction`), all wired in
@@ -116,8 +120,9 @@ read that first if anything here seems under-explained.
 Every function from the architecture doc's original 5-function build order
 now has a first pass built, and they're wired together end to end. The
 bowwwl.com and BowlerDepot cross-checks are now built too -- see "QA
-cross-checks and lifecycle date tracking" below. What's left: auth on the
-admin API and the consumer-facing site itself.
+cross-checks and lifecycle date tracking" below. Auth is now wired onto
+the admin API too -- see "Admin API auth" below. What's left: the
+consumer-facing site itself.
 
 ## Second manufacturer: SWAG Bowling (a new platform family)
 
@@ -392,6 +397,60 @@ product data shaped to match the confirmed-real BigCommerce response
 structure, since no real store export exists yet -- see that test file's
 own header comment.
 
+## Admin API auth
+
+`AdminApiFunction` used to be a bare `HttpApi` event with no authorizer
+-- anyone who found the URL could approve/reject `review_queue` items or
+publish/unpublish products. That's now fixed with a shared-secret Lambda
+authorizer, which was the option you picked over Cognito (per-person
+login, more setup and ongoing user management) and IAM/SigV4 (no browser-
+friendly login path at all) -- reasonable for a single admin or a small
+trusted group sharing one token.
+
+**How it works**: `template.yaml`'s implicit `HttpApi` event became an
+explicit `AdminHttpApi` resource (`AWS::Serverless::HttpApi`) with a
+`TokenAuthorizer` set as its `DefaultAuthorizer`, backed by the new
+`AdminApiAuthorizerFunction` (`src/admin_api_authorizer/app.py`). Every
+request to the admin API now needs an `Authorization: Bearer <token>`
+header matching the value stored in the Secrets Manager secret
+referenced by the new `AdminApiTokenSecretArn` parameter (plain string or
+JSON `{"token": "..."}`, your choice).
+
+**Fails closed, on purpose, at two points** -- worth knowing before you
+deploy: if `AdminApiTokenSecretArn` is left at its blank default, every
+request is denied outright rather than the API silently staying open
+(there's no "auth disabled" mode). And a Secrets Manager error (bad ARN,
+missing IAM permission) is allowed to raise rather than being caught and
+treated as "no token configured" -- API Gateway turns that into a loud
+500 instead of a quiet, hard-to-diagnose bypass. See the module
+docstring in `src/admin_api_authorizer/app.py` for the full reasoning,
+including why token freshness is cached per-container (rotating the
+secret won't take effect on already-warm Lambda containers until they
+recycle -- acceptable for a shared token, not for anything needing
+instant revocation) and the specific AWS API Gateway HTTP API v2
+authorizer behaviors that were verified against AWS's own current docs
+this session vs. taken on faith (see that docstring's own disclosure --
+short version: the request/response shape is confirmed real, whether
+every possible client actually sends a lowercase `authorization` header
+the way the docs say API Gateway normalizes it to is not something this
+sandbox could observe directly, though the authorizer's header lookup is
+case-insensitive regardless so it shouldn't matter).
+
+24/24 tests pass (`tests/test_admin_api_authorizer.py`), covering token
+extraction, secret-value parsing (both the bare-string and JSON shapes),
+the constant-time comparison, and `handler()`'s fail-closed paths with
+`get_expected_token` monkeypatched -- the actual Secrets Manager call
+itself is untested here, same "logic verified, deployment isn't" status
+as everything else in this project that touches boto3, and for the same
+reason: no AWS access in this sandbox.
+
+**Setting it up**: create a Secrets Manager secret with a token value
+(e.g. `aws secretsmanager create-secret --name admin-api-token --secret-string '{"token":"<a-long-random-value>"}'`),
+pass its ARN as `AdminApiTokenSecretArn` when you deploy, and send that
+same token as a bearer token from whatever's calling the admin API. See
+"Getting this running" below for exactly where this fits in the deploy
+sequence.
+
 ## Why there's no live end-to-end test yet
 
 This session's sandbox has restricted outbound network access, so I couldn't
@@ -473,9 +532,14 @@ verify:
   function), but it's genuinely unverified -- give it a closer read than
   code that was actually exercised before trusting it, and run it locally
   (`pip install -r requirements.txt && uvicorn app:app`) before deploying.
-  The `AdminApiFunction` also has no authorizer wired up in `template.yaml`
-  on purpose -- that's a real security decision for you to make, not a
-  default worth guessing at.
+  `AdminApiFunction` itself is now sitting behind `AdminHttpApi`'s
+  Lambda authorizer (see "Admin API auth" above) rather than being a bare
+  unauthenticated HTTP API -- but `admin_api_authorizer/app.py`'s own
+  boto3-calling glue (`get_expected_token()`) has the same
+  never-actually-invoked status as every other boto3 call in this
+  project: its pure logic (token extraction, secret-value parsing,
+  constant-time comparison, fail-closed branches) is tested (24/24), the
+  real Secrets Manager round-trip isn't.
 - **SQS orchestration** is tested at the code level -- the message-building
   functions (`build_scrape_messages`, `build_pdf_parse_message`,
   `build_image_process_messages`), the SQS-batch-vs-direct-invoke shape
@@ -552,12 +616,19 @@ None of that substitutes for actually running this against AWS. Treat this as
    keep those ids for `SwagBrandId`/`MotivBrandId`.
 3. **Store DB credentials in Secrets Manager** as a JSON secret shaped
    `{"host", "port", "dbname", "username", "password"}`. Note its ARN.
+   **Also create the admin API token secret** now, since the admin API
+   deploys fail-closed (denies everything) without it: e.g.
+   `aws secretsmanager create-secret --name admin-api-token --secret-string '{"token":"<a-long-random-value>"}'`.
+   Note that ARN too -- see "Admin API auth" above for the full design.
 4. **Deploy**:
    ```
    sam build
    sam deploy --guided
    ```
-   You'll be prompted for `DbSecretArn` and `BrandId`; `SitemapUrl` and
+   You'll be prompted for `DbSecretArn`, `BrandId`, and
+   `AdminApiTokenSecretArn` (the secret from step 3 -- leave it blank
+   only if you're not using the admin API yet; every request will be
+   denied until it's set). `SitemapUrl` and
    `UrlPathPattern` default to Brunswick's values and don't need to be set
    unless you're deploying a second stack for Radical or DV8 (same Craft CMS
    template -- see the parameter descriptions in `template.yaml`).
@@ -590,6 +661,7 @@ None of that substitutes for actually running this against AWS. Treat this as
    python3 tests/test_netsuite_product_scraper_orchestration.py
    python3 tests/test_bowwwl_cross_check.py
    python3 tests/test_bowlerdepot_reconciliation.py
+   python3 tests/test_admin_api_authorizer.py
    ```
 
 ## Reusing this for Radical / DV8

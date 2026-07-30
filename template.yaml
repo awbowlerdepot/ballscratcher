@@ -101,6 +101,18 @@ Parameters:
       ARN of a Secrets Manager secret holding {store_hash, auth_token} for
       BowlerDepot's BigCommerce store -- separate from DbSecretArn since
       it's a different kind of credential with its own rotation story.
+  AdminApiTokenSecretArn:
+    Type: String
+    Default: ""
+    Description: >
+      ARN of a Secrets Manager secret holding the bearer token admin API
+      callers must send as "Authorization: Bearer <token>" -- either a
+      bare token string or JSON {"token": "..."}, see
+      src/admin_api_authorizer/app.py's module docstring. Required before
+      AdminApiFunction is reachable: left blank by default, which makes
+      every request to the admin API fail closed (see
+      AdminApiAuthorizerFunction below) rather than silently allowing
+      unauthenticated access.
       Left blank by default (no BowlerDepot store account wired up yet in
       this environment); BowlerDepotReconciliationFunction will fail at
       runtime without a real value here, same as any other
@@ -355,6 +367,59 @@ Resources:
       # stored_url) -- also still accepts direct/manual invocation with
       # {"product_image_id": "...", "source_url": "..."}.
 
+  AdminHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      Auth:
+        Authorizers:
+          TokenAuthorizer:
+            FunctionArn: !GetAtt AdminApiAuthorizerFunction.Arn
+            FunctionPayloadType: REQUEST
+            AuthorizerPayloadFormatVersion: "2.0"
+            EnableSimpleResponses: true
+            Identity:
+              Headers:
+                - Authorization
+        DefaultAuthorizer: TokenAuthorizer
+      # Explicit HttpApi resource (rather than the implicit one SAM
+      # creates from a bare `Type: HttpApi` function event) specifically
+      # so a Lambda authorizer can be attached -- see
+      # AdminApiAuthorizerFunction below and its module docstring for the
+      # shared-secret-bearer-token design and exactly what's fail-closed
+      # by default. `Identity.Headers: [Authorization]` is the identity
+      # source API Gateway uses to decide whether it can serve a cached
+      # authorizer result for a repeat request with the same header
+      # value -- this project's own token cache in
+      # admin_api_authorizer/app.py is what actually avoids a Secrets
+      # Manager call on every request, not this setting; see that
+      # module's docstring for why the two aren't the same mechanism.
+
+  AdminApiAuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-admin-api-authorizer
+      CodeUri: src/admin_api_authorizer/
+      Handler: app.handler
+      Timeout: 10
+      Environment:
+        Variables:
+          ADMIN_API_TOKEN_SECRET_ARN: !Ref AdminApiTokenSecretArn
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref AdminApiTokenSecretArn
+      # Shared-secret Lambda REQUEST authorizer for AdminHttpApi above.
+      # Fails closed if AdminApiTokenSecretArn is left at its blank
+      # default -- see the module docstring in
+      # src/admin_api_authorizer/app.py for the full reasoning. The
+      # Policies block above grants read access to whatever
+      # AdminApiTokenSecretArn actually resolves to, including the blank
+      # default -- an empty Resource ARN is harmless (the function checks
+      # for a blank env var before ever calling Secrets Manager), but set
+      # a real secret ARN before this is genuinely useful.
+
   AdminApiFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -372,17 +437,19 @@ Resources:
         AdminApi:
           Type: HttpApi
           Properties:
+            ApiId: !Ref AdminHttpApi
             Path: /{proxy+}
             Method: ANY
       # FastAPI + Mangum, per the architecture doc's decided workflow:
       # review everything on the initial catalog load, then steady-state
       # auto-approve except mismatched fields written to review_queue.
-      # No auth wired up here -- this is a bare HTTP API with no
-      # authorizer, fine for testing but NOT for a real deployment.
-      # Put an authorizer (Cognito, IAM, or even a shared-secret Lambda
-      # authorizer) in front before this is reachable from outside a VPN/
-      # trusted network -- deliberately not guessed at here since it's a
-      # real security decision, not a default to assume.
+      # Auth is now handled one layer up, by AdminHttpApi's
+      # TokenAuthorizer (see AdminApiAuthorizerFunction above) -- this
+      # function itself trusts that anything API Gateway routes to it
+      # already passed that check. It does NOT re-validate the
+      # Authorization header itself; if you ever add a way to invoke this
+      # function directly (bypassing API Gateway -- e.g. a test harness,
+      # a second trigger), that path would skip the authorizer entirely.
 
   # --- WooCommerce brand family (SWAG Bowling to start) ---
   #
@@ -652,7 +719,9 @@ Outputs:
   ImageBucketName:
     Value: !Ref ImageBucket
   AdminApiUrl:
-    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/"
+    Value: !Sub "https://${AdminHttpApi}.execute-api.${AWS::Region}.amazonaws.com/"
+  AdminApiAuthorizerFunctionArn:
+    Value: !GetAtt AdminApiAuthorizerFunction.Arn
   ProductScrapeDLQUrl:
     Value: !Ref ProductScrapeDLQ
   PdfParseDLQUrl:
