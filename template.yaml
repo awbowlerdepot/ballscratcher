@@ -5,12 +5,13 @@ Description: >
   HTML + PDF product scraping, image mirroring/normalization, and an admin
   approval API sitting in front of a shared Postgres schema.
 
-  This template currently wires up URL discovery end to end. The remaining
-  functions (product scraper, PDF parser, image processor, admin API) are
-  listed as commented-out stubs below in the order the architecture doc lays
-  them out (see /brunswick-scraper-architecture-review.md, "Suggested build
-  order") -- add each as its own function + handler when you get there rather
-  than filling in stubs speculatively now.
+  This template currently wires up URL discovery (scheduled, end to end) and
+  the HTML product scraper (not yet triggered -- see ProductScraperFunction
+  below). The remaining functions (PDF parser, image processor, admin API)
+  are listed as commented-out stubs below in the order the architecture doc
+  lays them out (see /brunswick-scraper-architecture-review.md, "Suggested
+  build order") -- add each as its own function + handler when you get
+  there rather than filling in stubs speculatively now.
 
 Globals:
   Function:
@@ -80,14 +81,30 @@ Resources:
             Description: Sitemap diff against discovered_urls; emits new/changed product URLs.
             Enabled: true
 
+  ProductScraperFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-product-scraper
+      CodeUri: src/product_scraper/
+      Handler: app.handler
+      Timeout: 30
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+      # No trigger wired up yet -- invoked with {"url": "...", "brand_id": "..."}
+      # per product page. Wire this to UrlDiscoveryFunction's new_urls/changed_urls
+      # output via SQS or Step Functions once you're ready to run this for real;
+      # that's an orchestration decision, not something to guess at here.
+      #
+      # Only handles the Craft-CMS family (Brunswick/Radical/DV8) -- same
+      # reasoning as UrlDiscoveryFunction re: reuse across those three brands.
+      # Shopify family (Hammer/Ebonite/Track): pull {handle}.json directly,
+      # no HTML parsing at all, needs its own function.
+
   # --- Not yet built -- next in the build order from the architecture doc ---
-  #
-  # ProductScraperFunction:
-  #   HTML spec scraper (RG/DIFF/core/coverstock/weights) for URLs emitted by
-  #   UrlDiscoveryFunction. Craft-CMS family (Brunswick/Radical/DV8): requests
-  #   + BeautifulSoup/lxml, no headless browser needed (confirmed server-rendered).
-  #   Shopify family (Hammer/Ebonite/Track): pull {handle}.json directly, no
-  #   HTML parsing at all.
   #
   # PdfParserFunction (or folded into ProductScraperFunction as a second step):
   #   Mass bias + any fields only present on the "Info Sheet" PDF. Treat as
@@ -108,3 +125,5 @@ Resources:
 Outputs:
   UrlDiscoveryFunctionArn:
     Value: !GetAtt UrlDiscoveryFunction.Arn
+  ProductScraperFunctionArn:
+    Value: !GetAtt ProductScraperFunction.Arn

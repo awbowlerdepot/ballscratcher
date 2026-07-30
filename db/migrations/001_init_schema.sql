@@ -133,7 +133,8 @@ create table product_images (
     weight_lbs_context int,               -- for core_callout images tied to a weight range
     source_url text not null,             -- original manufacturer/CDN URL, kept for provenance
     stored_url text,                      -- your own S3 URL once mirrored + centered
-    created_at timestamptz not null default now()
+    created_at timestamptz not null default now(),
+    unique (product_id, source_url)       -- lets the scraper re-run idempotently (on conflict do nothing)
 );
 
 create index idx_product_images_product on product_images(product_id);
