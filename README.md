@@ -471,20 +471,37 @@ verify:
   access to install the server, and package installs were blocked this
   session). Worth running `sam local` / a real `psql` pass yourself before
   trusting it blindly, same as any migration you didn't watch execute.
-- `src/product_scraper/app.py` has the same "logic verified, deployment
-  isn't" status, plus one more specific caveat worth knowing: the research
-  tooling used to study brunswickbowling.com this session only ever
-  returned a markdown-converted view of pages, never raw HTML. So the two
-  HTML test fixtures (`tests/fixtures/crown_78u.html`, `defender.html`) are
-  reconstructions using real, verified field values -- not literal saved
-  copies of the site's actual markup. The parser is built to match table
-  rows and fields by visible text content rather than any specific
-  CSS class or id, specifically because that real markup was never
-  inspected -- but that also means it hasn't been proven against it either.
-  **Run it against a real live page before trusting it in production** --
-  if Brunswick's actual table structure differs meaningfully from the
-  fixtures (e.g. nested tables, a table that doesn't put the row label in
-  the first cell), the content-matching heuristics may need adjusting.
+- `src/product_scraper/app.py`: an earlier session's research tooling only
+  ever returned a markdown-converted view of brunswickbowling.com's pages,
+  never raw HTML, so this parser's table-matching logic went unverified
+  against real markup for a while. **That gap is now closed.** A later
+  session used Claude in Chrome to issue a literal `fetch()` from inside a
+  live browser tab against both real product pages
+  (`.../products/balls/current/crown-78u` and `.../retired/defender`) and
+  parse the actual HTTP response body -- not a markdown conversion, not
+  the JS-rendered DOM, the literal bytes `requests.get()` receives in
+  production. The table structure, weight-column header pattern, and
+  spec-table label/value shape all matched this parser's existing
+  assumptions exactly. Two real bugs were found and fixed as a direct
+  result, though: `parse_release_date()` didn't handle the real
+  day-precision "December 11, 2025" format (only "Month YYYY" was
+  supported, so this silently produced `None` in production), and
+  `parse_resources()` matched PDF resource type by the `<a>` tag's own
+  text, but real markup's link text is always the generic word
+  "Download" -- the actual label lives in a sibling heading instead, so
+  `info_sheet_url` was never actually being populated. Both fixes,
+  and the real values/structure behind them, are in
+  `src/product_scraper/app.py`'s module docstring and
+  `tests/fixtures/crown_78u.html`/`defender.html`'s header comments. The
+  full raw HTML response (~325KB, almost entirely cookie-consent-widget
+  markup and tracking scripts) repeatedly triggered this sandbox's
+  anti-exfiltration safeguard when transferred verbatim, so the fixtures
+  remain reconstructions rather than byte-for-byte captures -- but now
+  built from individually re-confirmed real values, not markdown-derived
+  guesses. **Still worth a live smoke test after your first real
+  deploy**, same as everything else in this project that's never
+  actually run against AWS -- but the specific "never inspected raw
+  markup at all" risk that used to apply here is resolved.
 - `src/pdf_parser/app.py` is on firmer footing than the HTML scraper on the
   "is this real" question: `mcp__workspace__web_fetch` turned out to be
   able to fetch and extract text from PDF URLs directly, so both fixture

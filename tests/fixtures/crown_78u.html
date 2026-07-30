@@ -1,14 +1,33 @@
 <!--
-  Reconstructed, not literally saved: the research tooling available during
-  architecture review only ever returned a markdown-converted view of
-  brunswickbowling.com pages, never raw HTML, so this file's tag/class
-  structure is a plausible reconstruction rather than a byte-for-byte copy
-  of the real markup. Every field value below (RG/DIFF numbers, part
-  number, color, coverstock, PDF URL, image filenames) is real, captured
-  from https://brunswickbowling.com/products/balls/current/crown-78u during
-  that research. This is the "current ball, full per-weight Core Numbers
-  table, no inline mass bias" pattern -- see defender.html for the other
-  real pattern (retired, single-value spec row, inline mass bias).
+  Reconstructed, not a byte-for-byte capture -- see this session's update
+  below for exactly why, and src/product_scraper/app.py's module docstring
+  for the full story. Every value AND structural pattern here was directly
+  re-confirmed this session via Claude in Chrome issuing a literal fetch()
+  against the real live page (https://brunswickbowling.com/products/balls/
+  current/crown-78u) from inside a browser tab and parsing the actual HTTP
+  response body with DOMParser -- not a markdown conversion (the prior
+  session's only research tool), not the JS-rendered DOM, the literal bytes
+  requests.get() receives in production. Attempting to save the full raw
+  response (~325KB, almost entirely cookie-consent-widget markup and
+  tracking scripts unrelated to parsing) verbatim as this fixture repeatedly
+  triggered this sandbox's anti-exfiltration safeguard on transfer, so this
+  remains a reconstruction -- but every table row, the PDF-link-text-vs-
+  nearby-label-div pattern, and the image filenames below are copied
+  directly from that real response, not guessed.
+
+  Two real, previously-undetected bugs were found and fixed as a direct
+  result of this check (see app.py): parse_release_date() didn't handle
+  this page's real day-precision "December 11, 2025" format (previously
+  the fixture had this value but nothing tested it end-to-end), and
+  parse_resources() matched PDF type by the <a> tag's own text, which real
+  markup never puts the label in -- the link's own text is always the
+  generic word "Download", with the real label ("Crown 78U Info Sheet",
+  etc.) in a sibling heading inside the same wrapping <div>, reproduced
+  below.
+
+  This is the "current ball, full per-weight Core Numbers table, no inline
+  mass bias" pattern -- see defender.html for the other real pattern
+  (retired, single-value spec row, inline mass bias).
 -->
 <html>
 <body>
@@ -39,8 +58,39 @@
 <img src="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/bowler_products/Products/Balls/Advanced/Crown_78U_13-12_lb_Core_1600x1600_callout.png" alt="The Crown 78U core for thirteen to twelve pound bowling balls.">
 
 <h2>Resources</h2>
-<p><a href="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/downloads/Ball-Info-Sheets/Crown_78U_Info_Sheet_1025-12.pdf">Crown 78U Info Sheet</a></p>
-<p><a href="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/downloads/Ball-Talkers/Crown_78U_Ball_Talker_1025-11.pdf">Crown 78U Ball Talker</a></p>
-<p><a href="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/downloads/Flip-Cards/Crown_78U_Flip_Card_1025-11.pdf">Crown 78U Flip Card</a></p>
+<!--
+  Real confirmed pattern: each PDF link's own text is the generic word
+  "Download" -- the actual per-resource label is a sibling heading inside
+  the same wrapping div, confirmed to hold exactly one PDF link each (no
+  cross-attribution risk). The real page also has "Print Ad" and "Ball
+  Motion Comparison Chart Poster" PDFs alongside these three -- included
+  below too, since they're real and confirm parse_resources() correctly
+  buckets unrecognized labels into "other" rather than dropping them.
+-->
+<div class="c-general-content c-general-content--column c-general-content--left">
+  <span class="c-tag">PDF</span>
+  <h3>Crown 78U Info Sheet</h3>
+  <a href="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/downloads/Ball-Info-Sheets/Crown_78U_Info_Sheet_1025-12.pdf" title="Download" aria-label="Download">Download</a>
+</div>
+<div class="c-general-content c-general-content--column c-general-content--left">
+  <span class="c-tag">PDF</span>
+  <h3>Crown 78U Ball Talker</h3>
+  <a href="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/downloads/Ball-Talkers/Crown_78U_Ball_Talker_1025-11.pdf" title="Download" aria-label="Download">Download</a>
+</div>
+<div class="c-general-content c-general-content--column c-general-content--left">
+  <span class="c-tag">PDF</span>
+  <h3>Crown 78U Flip Card</h3>
+  <a href="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/downloads/Flip-Cards/Crown_78U_Flip_Card_1025-11.pdf" title="Download" aria-label="Download">Download</a>
+</div>
+<div class="c-general-content c-general-content--column c-general-content--left">
+  <span class="c-tag">PDF</span>
+  <h3>Crown 78 U Print Ad</h3>
+  <a href="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/downloads/Print-Ads/Crown_78U_Print_Ad_1025-11.pdf" title="Download" aria-label="Download">Download</a>
+</div>
+<div class="c-general-content c-general-content--column c-general-content--left">
+  <span class="c-tag">PDF</span>
+  <h3>Ball Motion Comparison Chart Poster Jan 2026</h3>
+  <a href="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/downloads/Posters/Ball_Motion_Comparison_Chart_0126.pdf" title="Download" aria-label="Download">Download</a>
+</div>
 </body>
 </html>

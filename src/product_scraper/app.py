@@ -4,15 +4,56 @@ HTML product scraper for the Craft CMS brand family (Brunswick, Radical, DV8
 research). Shopify-family brands (Hammer/Ebonite/Track/Powerhouse) don't need
 this: pull /products/{handle}.json directly instead, per the architecture doc.
 
-Deliberately does NOT select elements by CSS class or id. This site's actual
-generated markup (Craft CMS + a page-builder) was never directly inspected --
-the research tooling available only returned a markdown-converted view of
-these pages, never raw HTML -- so any class/id names would be guesses, not
-verified selectors. Instead this matches tables and fields by their visible
-text content (row labels like "Part Number", header cells matching a
-"<N> lb" pattern), which is also just a more resilient strategy in general:
-marketing sites rebuild their front end far more often than they change
-field labels.
+Deliberately does NOT select elements by CSS class or id. Instead this
+matches tables and fields by their visible text content (row labels like
+"Part Number", header cells matching a "<N> lb" pattern), which is also just
+a more resilient strategy in general: marketing sites rebuild their front end
+far more often than they change field labels.
+
+**Verified against real raw markup this session** (update: an earlier
+session's research tooling only ever returned a markdown-converted view of
+these pages, never raw HTML, so this file's table-matching logic went
+untested against real markup for a while -- that's now closed. Using Claude
+in Chrome, this session issued a literal `fetch()` from within a live browser
+tab against both https://brunswickbowling.com/products/balls/current/crown-78u
+and .../retired/defender and parsed the actual HTTP response body with
+DOMParser -- not the JS-rendered DOM, the literal bytes `requests.get()` would
+receive in production). Two real, previously-undetected bugs were found and
+fixed as a direct result:
+
+1. `parse_release_date()` only accepted "Month YYYY" (e.g. "December 2025").
+   Crown 78U's real spec table row is "Release Date: December 11, 2025" --
+   day-precision. The old format-only assumption came from a summary in the
+   architecture doc, not the literal page value; the fixture actually had the
+   real day-precision string all along, but no test checked
+   `parse_product_page()`'s `release_date` field end-to-end against it, so
+   this silently produced `None` in production. Now also tries "Month D,
+   YYYY".
+2. `parse_resources()` matched PDF resource type (Info Sheet / Ball Talker /
+   Flip Card) by the `<a>` tag's own visible text. Real markup: every one of
+   these links' own text is the generic word "Download" -- the actual
+   per-resource label lives in a sibling heading inside the link's immediate
+   wrapping container, confirmed identical on both real pages checked (each
+   such container holds exactly one PDF link, so there's no cross-
+   attribution risk). This meant `info_sheet_url` (what the PDF parser step
+   depends on for mass bias) was never actually being populated. Fixed via
+   `_nearby_label_text()` below, which climbs a bounded number of ancestors
+   looking for the first one whose text says more than the link's own --
+   content-based, not tied to any specific tag/class, per this file's
+   existing philosophy.
+
+The table structure, weight-column header pattern, spec-table label/value
+shape, and image filename convention (`<N>-<M>_lb_Core...callout`) were all
+otherwise confirmed to match this file's existing assumptions exactly -- no
+other real discrepancies found. See tests/fixtures/crown_78u.html and
+defender.html's header comments for the full disclosure of what's now
+directly real-verified vs. still a values-only reconstruction (the full raw
+HTML response is ~325KB, mostly cookie-consent-widget markup and tracking
+scripts unrelated to parsing, and repeatedly triggered this sandbox's
+anti-exfiltration safeguard when an attempt was made to transfer it verbatim
+for a byte-for-byte fixture -- so the fixtures remain reconstructions, just
+now built from individually re-confirmed real values/structure rather than
+the prior session's markdown-derived guesses).
 
 Mass bias (ASY) is often only present on the PDF "Info Sheet", not this
 page -- see resources["info_sheet_url"] in the return value, which is what
@@ -197,19 +238,25 @@ def parse_coverstock(cover_type_value: str) -> dict:
 
 
 def parse_release_date(release_date_raw: str):
-    """Parses "April 2025" / "December 2025" -- the real format seen on
-    Brunswick's own pages (see the architecture doc: Crown Victory =
-    April 2025, Crown 78U = December 2025) -- into a date, defaulting to
-    the 1st of the month since no day is ever given. Accepts both full
-    ("April") and abbreviated ("Apr") month names since which one any
-    given page uses hasn't been exhaustively checked. Returns None rather
-    than guessing for anything that doesn't match this exact "Month YYYY"
-    shape -- e.g. a blank release_date_raw (some retired pages, like
-    Defender per the architecture doc, don't have this field at all)."""
+    """Parses Brunswick's real "Release Date" spec row value into a date.
+    Two confirmed real shapes: day-precision "Month D, YYYY" (e.g.
+    "December 11, 2025" -- Crown 78U's actual live value, confirmed via a
+    literal raw-HTTP fetch this session, see this module's docstring) and
+    the day-less "Month YYYY" (e.g. "December 2025" -- from an earlier
+    session's architecture-doc notes, which may have simply summarized
+    the day-precision value rather than reflecting a genuinely different
+    page format; kept since it costs nothing to still accept it and no
+    live page has disproven it). Defaults to the 1st of the month only
+    for the day-less shape. Accepts both full ("December") and
+    abbreviated ("Dec") month names since which one any given page uses
+    hasn't been exhaustively checked. Returns None rather than guessing
+    for anything that doesn't match either shape -- e.g. a blank
+    release_date_raw (some retired pages, like Defender, confirmed live
+    this session to not have this field at all)."""
     if not release_date_raw:
         return None
     cleaned = release_date_raw.strip()
-    for fmt in ("%B %Y", "%b %Y"):
+    for fmt in ("%B %d, %Y", "%b %d, %Y", "%B %Y", "%b %Y"):
         try:
             return datetime.strptime(cleaned, fmt).date()
         except ValueError:
@@ -229,16 +276,57 @@ def parse_weights_available(weights_value: str):
     return (min(a, b), max(a, b))
 
 
+def _nearby_label_text(link, max_levels: int = 4) -> str:
+    """Real markup, confirmed live on both Crown 78U's and Defender's
+    actual pages this session: every PDF resource link's own visible text
+    is just the generic word "Download" -- the real per-resource label
+    ("Crown 78U Info Sheet", "Defender Ball Talker", ...) lives in a
+    sibling heading inside the link's immediate wrapping container, not
+    on the link itself. Climbs up to `max_levels` ancestors looking for
+    the first one whose full text says more than the link's own text --
+    in practice this is the link's immediate wrapping element, which real
+    markup scopes to exactly one PDF resource at a time (confirmed: never
+    more than one PDF link inside that container on either page checked).
+    Bounded on purpose: climbing unboundedly risks eventually reaching an
+    ancestor that also contains a *different* PDF resource's label,
+    misattributing it. Falls back to the link's own text (e.g. plain
+    "Download", which won't match any of the label keywords below and
+    correctly lands the URL in the "other" bucket) if nothing more
+    specific is found within the bound -- safe rather than wrong.
+
+    get_text(separator=" ") is used rather than the no-argument default
+    on purpose: this file's other get_text() calls only ever read a
+    single cell's text (never spans a tag boundary), but this function
+    concatenates a whole subtree's text, and production markup could be
+    minified (no whitespace between adjacent tags) in a way this
+    session's real-but-unminified page check wouldn't have caught --
+    without an explicit separator, minified markup could run two
+    adjacent words together across a tag boundary."""
+    own_text = _clean(link.get_text(separator=" "))
+    own_lower = own_text.lower()
+    node = link
+    for _ in range(max_levels):
+        node = node.parent
+        if node is None or getattr(node, "name", None) in (None, "[document]", "html", "body"):
+            break
+        text = _clean(node.get_text(separator=" "))
+        if text and text.lower() != own_lower:
+            return text
+    return own_text
+
+
 def parse_resources(soup: BeautifulSoup, base_url: str) -> dict:
     """Captures PDF resource links, keyed by a normalized name. The Info
     Sheet is what the (not-yet-built) PDF parser step consumes for mass
-    bias when it's not inline in the HTML spec table."""
+    bias when it's not inline in the HTML spec table. Matches against
+    _nearby_label_text() rather than the link's own text -- see that
+    function's docstring and this module's docstring for why."""
     resources = {}
     for link in soup.find_all("a", href=True):
         href = link["href"]
         if not href.lower().endswith(".pdf"):
             continue
-        label = _clean(link.get_text()).lower()
+        label = _nearby_label_text(link).lower()
         url = urljoin(base_url, href)
         if "info sheet" in label:
             resources["info_sheet_url"] = url

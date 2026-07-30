@@ -1,8 +1,15 @@
 """
 Tests for the HTML product scraper, run against two fixtures built from real
-field values captured from brunswickbowling.com during architecture research
-(see the comment blocks in tests/fixtures/crown_78u.html and defender.html
-for exactly what's real vs. reconstructed, and why).
+field values captured from brunswickbowling.com. Originally captured during
+architecture research via a markdown-converting tool (never raw HTML); this
+session re-verified every value and the structural pattern against a literal
+raw-HTTP fetch of both real live pages via Claude in Chrome (see the comment
+blocks in tests/fixtures/crown_78u.html and defender.html, and
+src/product_scraper/app.py's module docstring, for exactly what's now real-
+verified vs. still a reconstruction, and the two real bugs that
+re-verification found and fixed: day-precision release dates, and PDF
+resource links whose own text is a generic "Download" rather than the
+resource label).
 
 The two fixtures deliberately cover the two real patterns found during
 research: a current ball with a full per-weight Core Numbers table and no
@@ -20,11 +27,14 @@ import pytest
 
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent / "src" / "product_scraper"))
 
+from bs4 import BeautifulSoup  # noqa: E402
+
 from app import (  # noqa: E402
     parse_product_page,
     parse_coverstock,
     parse_weights_available,
     parse_release_date,
+    _nearby_label_text,
 )
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
@@ -78,8 +88,36 @@ def test_crown_78u_full_weight_breakdown(crown_78u):
 
 
 def test_crown_78u_resources(crown_78u):
+    """Real markup puts every PDF link's own text as the generic word
+    "Download" -- the actual label ("Crown 78U Info Sheet", etc.) is a
+    sibling heading in the link's wrapping div instead, confirmed live
+    this session (see app.py's module docstring). This test exercises
+    that real shape end to end via the fixture, not just the pure
+    _nearby_label_text() helper -- confirms parse_resources() correctly
+    resolves info_sheet_url/ball_talker_url/flip_card_url despite the
+    link text itself carrying no useful information."""
     assert crown_78u["resources"]["info_sheet_url"].endswith("Crown_78U_Info_Sheet_1025-12.pdf")
     assert crown_78u["resources"]["ball_talker_url"].endswith("Crown_78U_Ball_Talker_1025-11.pdf")
+    assert crown_78u["resources"]["flip_card_url"].endswith("Crown_78U_Flip_Card_1025-11.pdf")
+
+
+def test_crown_78u_unrecognized_pdf_labels_bucket_into_other(crown_78u):
+    """Real page also has "Print Ad" and "Ball Motion Comparison Chart
+    Poster" PDFs alongside the three this schema tracks by name --
+    confirms they're captured (not silently dropped) rather than
+    mis-bucketed into one of the three named slots."""
+    assert len(crown_78u["resources"]["other"]) == 2
+
+
+def test_crown_78u_release_date_end_to_end(crown_78u):
+    """Real value from Crown 78U's live spec table: day-precision
+    "December 11, 2025", not the day-less "Month YYYY" shape
+    parse_release_date() originally only handled -- this fixture had the
+    real value all along, but nothing checked parse_product_page()'s
+    release_date field end-to-end against it until now, which is exactly
+    how this bug went undetected. See app.py's module docstring."""
+    import datetime
+    assert crown_78u["release_date"] == datetime.date(2025, 12, 11)
 
 
 def test_crown_78u_images(crown_78u):
@@ -130,13 +168,23 @@ def test_defender_missing_release_date_does_not_break_parsing(defender):
     assert defender["release_date"] is None
 
 
-def test_parse_release_date_real_values_from_architecture_doc():
-    """Real values recorded in brunswick-scraper-architecture-review.md
-    during live research (Crown Victory = April 2025, Crown 78U =
-    December 2025) -- not present in either fixture's own spec table
-    (crown_78u.html's reconstruction predates this field being tracked),
-    so tested directly against the pure function rather than through a
-    fixture."""
+def test_parse_release_date_day_precision_real_crown_78u_value():
+    """The real, live, day-precision shape -- confirmed this session via
+    a literal raw-HTTP fetch against Crown 78U's actual page (see app.py's
+    module docstring). This is the format that was NOT originally
+    supported and silently produced None in production."""
+    import datetime
+    assert parse_release_date("December 11, 2025") == datetime.date(2025, 12, 11)
+    assert parse_release_date("Dec 11, 2025") == datetime.date(2025, 12, 11)
+
+
+def test_parse_release_date_month_year_only_still_accepted():
+    """A day-less "Month YYYY" shape, from an earlier session's
+    architecture-doc notes (Crown Victory = April 2025, Crown 78U =
+    December 2025) -- possibly just a summarized version of the
+    day-precision value rather than a genuinely different page format
+    (no live page has actually shown this exact shape), but kept
+    supported since it costs nothing and nothing disproves it."""
     import datetime
     assert parse_release_date("April 2025") == datetime.date(2025, 4, 1)
     assert parse_release_date("December 2025") == datetime.date(2025, 12, 1)
@@ -173,3 +221,46 @@ def test_parse_weights_available_handles_period_and_lbs_suffix():
 
 def test_parse_weights_available_returns_none_for_unexpected_format():
     assert parse_weights_available("assorted") is None
+
+
+# --- _nearby_label_text: the fix for the real "Download"-link-text bug ---
+
+def test_nearby_label_text_finds_sibling_heading_in_wrapping_div():
+    """Real markup shape, reproduced directly (not through the full
+    fixture) -- link's own text is generic, the real label is a sibling
+    heading in the same wrapping div."""
+    soup = BeautifulSoup(
+        '<div><h3>Crown 78U Info Sheet</h3><a href="x.pdf">Download</a></div>',
+        "lxml",
+    )
+    link = soup.find("a")
+    assert _nearby_label_text(link) == "Crown 78U Info Sheet Download"
+
+
+def test_nearby_label_text_two_separate_resources_dont_cross_attribute():
+    """Confirms the bounded climb doesn't let one resource's container
+    pick up a sibling resource's label -- each real container held
+    exactly one PDF link on both pages checked, and this asserts that
+    isolation holds even when two such containers sit next to each
+    other."""
+    soup = BeautifulSoup(
+        """
+        <div><h3>Info Sheet</h3><a id="a" href="a.pdf">Download</a></div>
+        <div><h3>Ball Talker</h3><a id="b" href="b.pdf">Download</a></div>
+        """,
+        "lxml",
+    )
+    link_a = soup.find("a", id="a")
+    link_b = soup.find("a", id="b")
+    assert "info sheet" in _nearby_label_text(link_a).lower()
+    assert "ball talker" not in _nearby_label_text(link_a).lower()
+    assert "ball talker" in _nearby_label_text(link_b).lower()
+    assert "info sheet" not in _nearby_label_text(link_b).lower()
+
+
+def test_nearby_label_text_falls_back_to_own_text_when_nothing_more_specific():
+    """No wrapping element carries extra text within the bound -- falls
+    back to the link's own text rather than raising or returning empty."""
+    soup = BeautifulSoup('<a href="x.pdf">Download</a>', "lxml")
+    link = soup.find("a")
+    assert _nearby_label_text(link) == "Download"
