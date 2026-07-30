@@ -9,12 +9,14 @@ read that first if anything here seems under-explained.
 
 ## What's actually built right now
 
-- `template.yaml` -- SAM template with four functions: `UrlDiscoveryFunction`
-  (scheduled, end to end), `ProductScraperFunction`, `PdfParserFunction`, and
-  `ImageProcessorFunction` (the latter three built and tested, none wired to
-  a trigger yet -- see the comments in `template.yaml`). Also defines the
-  public-read `ImageBucket` the image pipeline uploads normalized product
-  photos to.
+- `template.yaml` -- SAM template with all five functions from the
+  architecture doc's build order: `UrlDiscoveryFunction` (scheduled),
+  `ProductScraperFunction`, `PdfParserFunction`, `ImageProcessorFunction`
+  (invoked manually pending an orchestration decision -- see each
+  function's comment), and `AdminApiFunction` (a real HTTP API trigger --
+  **no auth wired up**, see its comment in `template.yaml` before deploying
+  this anywhere reachable). Also defines the public-read `ImageBucket` the
+  image pipeline uploads normalized product photos to.
 - `db/migrations/001_init_schema.sql` -- full schema: brands, `ball_families` ->
   `products` -> `product_skus`, image storage, URL discovery tracking, the
   cross-source review queue, and BowlerDepot reconciliation tracking.
@@ -48,20 +50,33 @@ read that first if anything here seems under-explained.
   thumbnail/catalog/detail sizes. Pillow-only, no ML background removal, per
   the architecture doc. See the module docstring for the deliberate choice
   of a flat white output background over preserving per-source transparency.
-- `tests/` -- unit tests for all four functions above, run against **real**
+- `src/admin_api/service.py` + `app.py` -- the approval workflow the
+  architecture doc decided on: list/inspect pending `review_queue` rows,
+  approve (applies the proposed value to the real column -- SKU-scoped
+  fields like `rg_16lb` or product-scoped ones like `color`, parsed by a
+  closed whitelist so `field_name` can never drive an arbitrary SQL column)
+  or reject (discards the proposal, current value stays) them, plus a
+  products listing/detail/publish-toggle surface. Split into `service.py`
+  (all the actual logic, framework-agnostic) and a thin `app.py` FastAPI +
+  Mangum routing layer -- see "Why there's no live end-to-end test yet"
+  below for why that split matters more here than for the other functions.
+- `tests/` -- unit tests for all five functions above, run against **real**
   captured data where real data exists: a real sitemap sample, real field
   values from two actual product pages, and two real PDF Info Sheets
   fetched directly from Brunswick's CDN (verbatim extracted text, not
-  reconstructions). The image pipeline is the one exception -- see "Why
-  there's no live end-to-end test yet" below for why its tests run against
-  synthetic (Pillow-generated) images instead. All tests across all four
-  functions pass when run manually in-sandbox (see below for why
-  "manually" rather than via `pytest` itself).
+  reconstructions). The image pipeline and admin API are exceptions -- see
+  "Why there's no live end-to-end test yet" below for why their tests run
+  against synthetic images / a hand-rolled fake DB cursor instead. All
+  tests across all five functions pass when run manually in-sandbox (see
+  below for why "manually" rather than via `pytest` itself).
 
-Everything else in the architecture doc's build order (FastAPI admin API)
-is intentionally not stubbed out yet -- see the commented-out section at
-the bottom of `template.yaml` for what's next and why it's not speculative
-boilerplate today.
+Every function from the architecture doc's original 5-function build order
+now has a first pass built. What's left: orchestration wiring (SQS/Step
+Functions to actually chain UrlDiscovery -> ProductScraper -> PdfParser ->
+ImageProcessor instead of manual invocation), auth on the admin API, the
+bowwwl.com and BowlerDepot cross-checks that are supposed to also write
+into `review_queue` (currently only the PDF-vs-HTML check does), and the
+consumer-facing site itself.
 
 ## Why there's no live end-to-end test yet
 
@@ -112,8 +127,8 @@ verify:
   handling), `parse_weight_table()`'s line-prefix matching may need minor
   adjustment -- worth a quick manual check against one real PDF before
   trusting this in production.
-- `src/image_processor/app.py` is the weakest-verified of the four
-  functions, honestly: this sandbox never had network access to Brunswick's
+- `src/image_processor/app.py` is the weakest-verified of the scraping/
+  processing functions, honestly: this sandbox never had network access to Brunswick's
   image CDN at all (same outbound allowlist block as everything else), so
   there was no real product photo to test against, not even as extracted
   text the way the PDFs worked. `bbox_from_alpha()`, `bbox_from_background()`,
@@ -131,6 +146,22 @@ verify:
   real samples before assuming one approach covers all three template
   families") -- download a handful of real images per source and eyeball
   the bbox detection before trusting this in production.
+- `src/admin_api/` has a different kind of gap than the other four: pip
+  couldn't install `fastapi`, `pydantic`, or `mangum` in this sandbox at
+  all (same proxy block as everything else), so unlike the others, even
+  the framework glue in `app.py` was never imported, let alone run. That's
+  why the logic was deliberately split out into `service.py` -- everything
+  that doesn't depend on those three packages (`field_name` parsing, the
+  update-plan decision logic, and the approve/reject control flow against
+  a hand-rolled fake cursor standing in for psycopg2) is real, tested code,
+  passing 11/11 in this session. `app.py` itself is comparatively thin
+  (each route just validates input shape and calls a `service.py`
+  function), but it's genuinely unverified -- give it a closer read than
+  code that was actually exercised before trusting it, and run it locally
+  (`pip install -r requirements.txt && uvicorn app:app`) before deploying.
+  The `AdminApiFunction` also has no authorizer wired up in `template.yaml`
+  on purpose -- that's a real security decision for you to make, not a
+  default worth guessing at.
 
 None of that substitutes for actually running this against AWS. Treat this as
 "the logic is verified, the deployment isn't."

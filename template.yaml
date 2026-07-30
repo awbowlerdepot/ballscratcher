@@ -5,13 +5,13 @@ Description: >
   HTML + PDF product scraping, image mirroring/normalization, and an admin
   approval API sitting in front of a shared Postgres schema.
 
-  This template currently wires up URL discovery (scheduled, end to end),
-  the HTML product scraper, the PDF Info Sheet parser, and the image
-  mirroring/centering pipeline -- none of the latter three triggered yet,
-  see each function's comment below. Only the admin approval API remains
-  as a commented-out stub (see /brunswick-scraper-architecture-review.md,
-  "Suggested build order") -- add it when you get there rather than
-  filling it in speculatively now.
+  This template wires up all five functions from the architecture doc's
+  build order: URL discovery (scheduled, end to end), the HTML product
+  scraper, the PDF Info Sheet parser, the image mirroring/centering
+  pipeline, and the admin approval API (the only one with a live trigger
+  besides URL discovery -- it's a real HTTP API, the others are still
+  invoked manually pending an orchestration decision, see each function's
+  comment below).
 
 Globals:
   Function:
@@ -173,12 +173,34 @@ Resources:
       # still null. Same not-yet-decided orchestration question as the
       # other functions.
 
-  # --- Not yet built -- next in the build order from the architecture doc ---
-  #
-  # AdminApiFunction:
-  #   FastAPI approval workflow. review_queue table (see db/migrations) covers
-  #   all three mismatch sources: HTML vs PDF, vs bowwwl.com, vs BowlerDepot's
-  #   BigCommerce catalog.
+  AdminApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-admin-api
+      CodeUri: src/admin_api/
+      Handler: app.handler
+      Timeout: 15
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+      Events:
+        AdminApi:
+          Type: HttpApi
+          Properties:
+            Path: /{proxy+}
+            Method: ANY
+      # FastAPI + Mangum, per the architecture doc's decided workflow:
+      # review everything on the initial catalog load, then steady-state
+      # auto-approve except mismatched fields written to review_queue.
+      # No auth wired up here -- this is a bare HTTP API with no
+      # authorizer, fine for testing but NOT for a real deployment.
+      # Put an authorizer (Cognito, IAM, or even a shared-secret Lambda
+      # authorizer) in front before this is reachable from outside a VPN/
+      # trusted network -- deliberately not guessed at here since it's a
+      # real security decision, not a default to assume.
 
 Outputs:
   UrlDiscoveryFunctionArn:
@@ -191,3 +213,5 @@ Outputs:
     Value: !GetAtt ImageProcessorFunction.Arn
   ImageBucketName:
     Value: !Ref ImageBucket
+  AdminApiUrl:
+    Value: !Sub "https://${ServerlessHttpApi}.execute-api.${AWS::Region}.amazonaws.com/"
