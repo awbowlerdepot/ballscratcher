@@ -104,12 +104,27 @@ Resources:
       # Shopify family (Hammer/Ebonite/Track): pull {handle}.json directly,
       # no HTML parsing at all, needs its own function.
 
+  PdfParserFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-pdf-parser
+      CodeUri: src/pdf_parser/
+      Handler: app.handler
+      Timeout: 30
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+      # No trigger wired up yet -- invoked with {"info_sheet_url": "...",
+      # "product_id": "..."} per product, meant to run as a second step
+      # after ProductScraperFunction (it reconciles against that function's
+      # product_skus rows -- see sync_pdf_skus in src/pdf_parser/app.py).
+      # Independently-failing from the HTML step on purpose: a PDF-parsing
+      # miss shouldn't block the HTML-derived fields already saved.
+
   # --- Not yet built -- next in the build order from the architecture doc ---
-  #
-  # PdfParserFunction (or folded into ProductScraperFunction as a second step):
-  #   Mass bias + any fields only present on the "Info Sheet" PDF. Treat as
-  #   independently-failing from the HTML step so a PDF-parsing miss doesn't
-  #   block saving the HTML-derived fields.
   #
   # ImageProcessorFunction:
   #   Mirror to own S3; bbox-detect on alpha/background, recenter onto a
@@ -127,3 +142,5 @@ Outputs:
     Value: !GetAtt UrlDiscoveryFunction.Arn
   ProductScraperFunctionArn:
     Value: !GetAtt ProductScraperFunction.Arn
+  PdfParserFunctionArn:
+    Value: !GetAtt PdfParserFunction.Arn
