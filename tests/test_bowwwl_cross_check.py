@@ -12,6 +12,7 @@ import datetime
 import os
 import pathlib
 import sys
+from decimal import Decimal
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src", "bowwwl_cross_check"))
 
@@ -176,6 +177,34 @@ def test_compare_mass_bias_mismatch_on_asymmetric():
     mismatches = app.compare_to_our_data(p, None, our_skus)
     mb_mismatch = next(m for m in mismatches if m["field_name"] == "mass_bias_16lb")
     assert mb_mismatch["proposed_value"] == "0.013"
+
+
+def test_compare_handles_decimal_from_postgres():
+    """Real production bug (found via live CloudWatch logs on the first-ever
+    real invocation of bowwwl-cross-check, not a hypothetical): our_skus
+    comes from get_product_skus() -> a Postgres 'numeric' column -> Decimal
+    via psycopg2, not float. bowwwl_sku values come from _to_float() and are
+    plain float. abs(Decimal - float) raises TypeError -- the exact same
+    root cause as pdf_parser's find_mismatches() bug, just in a second
+    module that does the same kind of DB-value-vs-scraped-value comparison.
+    Every prior test here used plain floats for our_skus, which is exactly
+    why this shipped -- this test uses Decimal on our side to match what
+    the real database actually returns."""
+    p = _parsed_fury()
+    our_skus = [{"weight_lbs": 16, "rg": Decimal("2.600"), "differential": Decimal("0.033"), "mass_bias": None}]  # real bowwwl value is 2.533
+    mismatches = app.compare_to_our_data(p, None, our_skus)
+    rg_mismatch = next(m for m in mismatches if m["field_name"] == "rg_16lb")
+    assert rg_mismatch["current_value"] == "2.600"
+    assert rg_mismatch["proposed_value"] == "2.533"
+
+
+def test_compare_decimal_within_tolerance_not_flagged():
+    """Same Decimal-vs-float shape as above, but values agree within
+    tolerance -- must not be flagged just because the types differ."""
+    p = _parsed_fury()
+    our_skus = [{"weight_lbs": 16, "rg": Decimal("2.5335"), "differential": Decimal("0.033"), "mass_bias": None}]
+    mismatches = app.compare_to_our_data(p, None, our_skus, tolerance=0.001)
+    assert mismatches == []
 
 
 if __name__ == "__main__":

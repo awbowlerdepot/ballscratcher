@@ -317,12 +317,20 @@ def compare_to_our_data(bowwwl_parsed: dict, our_release_date, our_skus: list, t
             their_value = bowwwl_sku.get(bowwwl_key)
             if our_value is None or their_value is None:
                 continue
-            if abs(our_value - their_value) > tolerance:
+            # our_value comes from get_product_skus() -> Postgres numeric
+            # column -> decimal.Decimal via psycopg2; their_value comes from
+            # _to_float() parsing bowwwl's HTML -> plain float. Same real bug
+            # as pdf_parser's find_mismatches() (see that commit): Decimal
+            # and float can't be subtracted directly. Coerce both to float
+            # for the comparison only -- str(our_value)/str(their_value)
+            # below still use the original values, so no precision lost in
+            # what's written to review_queue.
+            if abs(float(our_value) - float(their_value)) > tolerance:
                 mismatches.append({
                     "field_name": f"{field}_{weight}lb",
                     "current_value": str(our_value),
                     "proposed_value": str(their_value),
-                    "reason": f"bowwwl_cross_check: {field} at {weight}lb disagrees by {abs(our_value - their_value):.4f} (tolerance {tolerance})",
+                    "reason": f"bowwwl_cross_check: {field} at {weight}lb disagrees by {abs(float(our_value) - float(their_value)):.4f} (tolerance {tolerance})",
                 })
 
     if our_release_date and bowwwl_parsed.get("release_date") and our_release_date != bowwwl_parsed["release_date"]:
