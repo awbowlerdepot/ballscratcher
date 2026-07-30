@@ -182,6 +182,31 @@ def test_parse_coverstock_returns_none_when_missing():
     assert result == {"coverstock_material": None, "coverstock_type": None}
 
 
+def test_parse_release_date_strips_available_prefix():
+    import datetime
+    assert app.parse_release_date("AVAILABLE 7/8/2026") == datetime.date(2026, 7, 8)
+    assert app.parse_release_date("AVAILABLE 1/8/2025") == datetime.date(2025, 1, 8)
+
+
+def test_parse_release_date_handles_bare_date_no_prefix():
+    """Real value seen on Raptor Reign's page this session (no "AVAILABLE"
+    prefix) -- see netsuite scraper's module docstring."""
+    import datetime
+    assert app.parse_release_date("10/22/2025") == datetime.date(2025, 10, 22)
+
+
+def test_parse_release_date_returns_none_for_unparseable():
+    assert app.parse_release_date("") is None
+    assert app.parse_release_date(None) is None
+    assert app.parse_release_date("Sometime next year") is None
+
+
+def test_sigma_release_date_parsed():
+    p = _parsed_sigma()
+    import datetime
+    assert p["release_date"] == datetime.date(2026, 7, 8)
+
+
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
     passed = 0

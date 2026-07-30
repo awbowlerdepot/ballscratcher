@@ -114,10 +114,10 @@ read that first if anything here seems under-explained.
   "manually" rather than via `pytest` itself, for the files that use it).
 
 Every function from the architecture doc's original 5-function build order
-now has a first pass built, and they're wired together end to end. What's
-left: auth on the admin API, the bowwwl.com and BowlerDepot cross-checks
-that are supposed to also write into `review_queue` (currently only the
-PDF-vs-HTML check does), and the consumer-facing site itself.
+now has a first pass built, and they're wired together end to end. The
+bowwwl.com and BowlerDepot cross-checks are now built too -- see "QA
+cross-checks and lifecycle date tracking" below. What's left: auth on the
+admin API and the consumer-facing site itself.
 
 ## Second manufacturer: SWAG Bowling (a new platform family)
 
@@ -267,6 +267,131 @@ what's real vs. reconstructed in each. None of that exercises
 `fetch_page()` itself (all fixtures go in through a monkeypatched stub) --
 that's still exactly the unverified part.
 
+## QA cross-checks and lifecycle date tracking
+
+`db/migrations/003_date_tracking_and_bowwwl.sql` adds two things: lifecycle
+date columns on `products`, and a `bowwwl_products` match-cache table
+mirroring `bowlerdepot_products`'s existing shape.
+
+**Date columns**, each with an explicit provenance so future you doesn't
+have to guess which ones are trustworthy:
+
+- `first_seen_at` -- system-observed, backfilled from the already-accurate
+  `created_at` (a `not null default now()` column, set once per product on
+  first insert -- this was already correct, just needed a clearer name).
+- `release_date` -- manufacturer-published, now actually parsed and
+  persisted. Previously this column existed in the schema but no scraper
+  ever populated it. `parse_release_date()` is implemented three times
+  (once each in `product_scraper`, `woocommerce_product_scraper`,
+  `netsuite_product_scraper`, per this project's established
+  per-module-independence convention) because each manufacturer's real
+  format is different: Brunswick/SWAG publish "Month YYYY" (e.g. "April
+  2025"), MOTIV publishes "AVAILABLE M/D/YYYY" or a bare "M/D/YYYY". All
+  three are real formats read off real product pages this session, not
+  guessed at.
+- `discontinued_detected_at` -- system-observed, set entirely in SQL: each
+  scraper's `upsert_product()` ON CONFLICT clause has a CASE expression
+  comparing the old and new `status` values and setting `now()` only on a
+  genuine current->retired transition (also handled: first-insert-already-
+  retired, a repeat scrape of an already-retired ball, and reversion back
+  to current, which clears the timestamp). No extra DB round-trip needed.
+- `announced_date` / `discontinued_date` -- reserved columns, deliberately
+  left unpopulated. No manufacturer site found this session publishes an
+  announcement date separate from release date, or a discontinuation date
+  separate from "no longer appears on the current-balls page." If one
+  shows up later, these columns are ready for it.
+
+**`src/bowwwl_cross_check/app.py`** -- weekly QA cross-check against
+bowwwl.com's independent bowling-ball database, treated as the more
+complete/authoritative source per your instruction. Confirmed real,
+directly off live Chrome DOM inspection this session: Drupal 10, URL
+pattern `bowwwl.com/bowling-ball-database/{brand-slug}/{ball-slug}`,
+`div.field__label` + `div.field__item` label/value pairs (matched by
+visible label text, same content-based convention as every other scraper
+in this project), ISO datetime attributes on date fields (day-precision
+even when the displayed text is month-only, e.g. `release_date` really
+came from a `datetime="2026-07-16T12:00:00Z"` attribute even though the
+page shows "Jul 2026"), a boolean `Discontinued` field confirmed in both
+its present and absent states, and a real markup inconsistency between how
+coverstock and core names are marked up (`h5.card-title` vs.
+`h5.card-header`) that the parser accounts for. Compares bowwwl's RG/
+Diff/mass-bias per weight and release date against our own data
+(tolerance 0.001) and writes disagreements to `review_queue`
+(`source='bowwwl_cross_check'`) rather than auto-applying anything. Also
+backfills `products.usbc_approval_date` from bowwwl's real PBA Approval
+Date field, via `coalesce` so it never overwrites an existing value.
+
+**Legal note, and the decision made about it:** bowwwl.com's Terms &
+Conditions explicitly prohibit reproducing, copying, or redistributing
+their content. I flagged this before writing any code that persists
+bowwwl's data, and you decided to proceed as scoped and accept the risk.
+What that means concretely: `compare_to_our_data()` puts bowwwl's actual
+field values into the mismatch dicts written to `review_queue` (so a human
+reviewer can see exactly what disagrees, not just that something does),
+and `record_bowwwl_match()` persists the `bowwwl_url` itself in
+`bowwwl_products`. Both of those are the specific things to change first
+if the operating posture on this ever shifts -- see the module docstring's
+LEGAL NOTE for the exact functions and what "stop doing this" looks like
+for each. Scheduled weekly (not daily) specifically to keep load on their
+site modest.
+
+**`src/bowlerdepot_reconciliation/app.py`** -- daily coverage + accuracy
+check against your own BowlerDepot BigCommerce store, which is the actual
+motivating case for this whole feature: a ball can appear on a
+manufacturer's site and not yet be listed for sale on yours, and you want
+to know about that gap quickly rather than discover it late.
+`fuzzy_match_product()` uses `difflib.SequenceMatcher` (threshold 0.80,
+tuned down from an initial 0.85 after a realistic "+ Bowling Ball" suffix
+case measured ~0.84) to match your product names against BigCommerce
+listing names, since the two sides won't use identical strings. Products
+with no match at all get written to `review_queue` as
+`field_name='bowlerdepot_listing'` -- the "this needs to be added"
+signal you asked for. Matched products get an accuracy check the same way
+bowwwl's does (RG/Diff/mass-bias per weight, via BigCommerce's
+`custom_fields` array).
+
+**What's confirmed real vs. what's still a guess here:** the BigCommerce
+v3 Catalog Products API response *shape* is real -- `GET /stores/
+{store_hash}/v3/catalog/products`, `X-Auth-Token` header auth, `{"data":
+[...], "meta": {"pagination": {...}}}`, `custom_fields: [{"name",
+"value", "id"}]` -- fetched directly from BigCommerce's own current
+developer docs this session, not from memory. What's NOT confirmed,
+because there's no real store hash or API token yet:
+`CUSTOM_FIELD_NAME_CANDIDATES` (the specific `custom_fields` names
+BowlerDepot actually uses for RG/DIFF/mass-bias) is a best-guess mapping,
+and whether BowlerDepot models a multi-weight ball as several true
+BigCommerce product variants or as entirely separate products is assumed
+to be the latter (simpler, one-product-per-weight) since the live
+storefront didn't return enough static content this session to check
+either way. **Verify both against a real store export before trusting
+this module's accuracy-check output in production** -- a wrong field-name
+guess wouldn't error, it would just silently produce zero mismatches
+(nothing found to compare against), which looks like "all clean" when
+it's actually "not checking anything."
+
+Scheduled `rate(1 day)` but **`Enabled: false`** in `template.yaml` on
+purpose -- `BigCommerceSecretArn` has no default, so a daily-enabled
+schedule would just fail every single day with a Secrets Manager error
+until real credentials are wired up. Flip it to `true` once you've set
+that parameter for real (see "Getting this running" below). Contrast with
+`BowwwlCrossCheckFunction`'s schedule, which is enabled by default since
+it only needs `DbSecretArn` (already required for every other function in
+this stack) and simply no-ops if there are no products due for a check.
+
+39 tests pass across the two new modules (19 for `bowwwl_cross_check`, 17
+for `bowlerdepot_reconciliation`, run manually via `python3
+tests/test_bowwwl_cross_check.py` / `test_bowlerdepot_reconciliation.py`).
+bowwwl's tests run against two real fixture reconstructions
+(`tests/fixtures/bowwwl_fury_emerald_black_hybrid.html`,
+`bowwwl_defender.html` -- current/symmetric and retired/asymmetric,
+built from real field values read off live pages, with each fixture's
+header comment disclosing the one specific inferred-not-observed detail:
+the RG field's CSS class name, matched by label text either way so it
+doesn't affect parsing correctness). BowlerDepot's tests use invented
+product data shaped to match the confirmed-real BigCommerce response
+structure, since no real store export exists yet -- see that test file's
+own header comment.
+
 ## Why there's no live end-to-end test yet
 
 This session's sandbox has restricted outbound network access, so I couldn't
@@ -370,6 +495,12 @@ verify:
   new platform-specific scrape queues (`WooCommerceProductScrapeQueue`,
   `NetsuiteProductScrapeQueue`) added when SWAG/MOTIV were wired in --
   same unverified-YAML caveat, nothing platform-specific about that risk.
+  `BowwwlCrossCheckFunction` and `BowlerDepotReconciliationFunction` are
+  simpler in one respect (`Schedule` events, not SQS queues -- no DLQ or
+  batch-failure behavior to get wrong) but carry the same "never actually
+  invoked by AWS" caveat as everything else; the same strip-CFN-tags-then-
+  `yaml.safe_load` pass confirmed both functions and their new Outputs
+  entries parse and are present, which is a syntax check, not a deploy.
 - `src/woocommerce_url_discovery/app.py` and `woocommerce_product_scraper/app.py`
   are on similar footing to the Craft-CMS pair: real field values, real
   URLs, real sitemap/category-page structure, all confirmed via direct
@@ -400,10 +531,11 @@ None of that substitutes for actually running this against AWS. Treat this as
 
 ## Getting this running
 
-1. **Provision Postgres** (RDS or otherwise) and run both migrations, in order:
+1. **Provision Postgres** (RDS or otherwise) and run all three migrations, in order:
    ```
    psql "$DATABASE_URL" -f db/migrations/001_init_schema.sql
    psql "$DATABASE_URL" -f db/migrations/002_add_woocommerce_netsuite_platforms.sql
+   psql "$DATABASE_URL" -f db/migrations/003_date_tracking_and_bowwwl.sql
    ```
 2. **Seed the `brands` row(s)** this deployment discovers URLs for, e.g.:
    ```sql
@@ -435,7 +567,12 @@ None of that substitutes for actually running this against AWS. Treat this as
    `MotivCurrentCategoryUrl`/`MotivRetiredCategoryUrl`/`MotivBrandId` --
    but see "Third manufacturer: MOTIV Bowling" above before trusting a
    MOTIV deploy to actually fetch anything; the fetching approach is
-   unverified even though the parsing is solid.
+   unverified even though the parsing is solid. `BigCommerceSecretArn`
+   defaults to blank; set it to a real Secrets Manager ARN shaped
+   `{"store_hash", "auth_token"}` once you have a BowlerDepot API token,
+   then flip `BowlerDepotReconciliationFunction`'s schedule to
+   `Enabled: true` in `template.yaml` (it ships disabled on purpose -- see
+   "QA cross-checks and lifecycle date tracking" above for why).
 5. **Run the tests** (once you have `pytest` available -- this session's
    sandbox couldn't install it, so it's unverified in the pytest runner
    itself for the files that use it; the newer `*_orchestration.py`,
@@ -451,6 +588,8 @@ None of that substitutes for actually running this against AWS. Treat this as
    python3 tests/test_netsuite_url_discovery.py
    python3 tests/test_netsuite_product_scraper.py
    python3 tests/test_netsuite_product_scraper_orchestration.py
+   python3 tests/test_bowwwl_cross_check.py
+   python3 tests/test_bowlerdepot_reconciliation.py
    ```
 
 ## Reusing this for Radical / DV8

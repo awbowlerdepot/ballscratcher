@@ -40,6 +40,7 @@ the category listing) before trusting mass bias data from this scraper.
 """
 import logging
 import re
+from datetime import datetime
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
@@ -172,6 +173,24 @@ def parse_coverstock(coverstock_type_value: str, cover_name_value: str) -> dict:
     return {"coverstock_material": material, "coverstock_type": cs_type}
 
 
+def parse_release_date(release_date_raw: str):
+    """Same "Month YYYY" format as Brunswick's own Release Date field (real
+    example: SWAG Fusion's "January 2025", see tests/fixtures/
+    swag_fusion.html) -- defaults to the 1st of the month since no day is
+    given. Duplicated from product_scraper.parse_release_date rather than
+    shared, matching this codebase's established per-module-independent-
+    deployment-package convention."""
+    if not release_date_raw:
+        return None
+    cleaned = release_date_raw.strip()
+    for fmt in ("%B %Y", "%b %Y"):
+        try:
+            return datetime.strptime(cleaned, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
 def parse_weights_available(ball_weight_value: str):
     """Parses a comma-separated multi-value attribute like
     "13LB, 14LB, 15LB, 16LB" into (low, high) = (13, 16) -- different
@@ -288,6 +307,7 @@ def parse_product_page(html: str, url: str) -> dict:
         "factory_finish": attrs.get("surface finish"),
         "weights_available": parse_weights_available(attrs.get("ball weight")),
         "release_date_raw": attrs.get("release date"),
+        "release_date": parse_release_date(attrs.get("release date")),
         "performance_level_raw": attrs.get("ball performance level"),
         "skus": skus,
         "resources": parse_resources(html, url),
@@ -343,14 +363,20 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
         low, high = parsed["weights_available"]
         weights_range = f"[{low},{high}]"
 
+    # See product_scraper.upsert_product / migration 003 for the
+    # discontinued_detected_at reasoning -- same logic here.
     with conn.cursor() as cur:
         cur.execute(
             """
             insert into products (
                 brand_id, name, url, color, coverstock_material, coverstock_type,
-                coverstock_name, factory_finish, weights_available, status, source_platform
+                coverstock_name, factory_finish, weights_available, status, source_platform,
+                release_date, discontinued_detected_at
             )
-            values (%s, %s, %s, %s, %s, %s, %s, %s, %s::int4range, %s, 'woocommerce')
+            values (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s::int4range, %s, 'woocommerce', %s,
+                case when %s = 'retired' then now() else null end
+            )
             on conflict (url) do update set
                 name = excluded.name,
                 color = excluded.color,
@@ -360,6 +386,12 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
                 factory_finish = excluded.factory_finish,
                 weights_available = excluded.weights_available,
                 status = excluded.status,
+                release_date = coalesce(excluded.release_date, products.release_date),
+                discontinued_detected_at = case
+                    when excluded.status = 'retired' and products.status <> 'retired' then now()
+                    when excluded.status = 'current' then null
+                    else products.discontinued_detected_at
+                end,
                 updated_at = now()
             returning id
             """,
@@ -367,7 +399,7 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
                 brand_id, parsed["name"], parsed["url"], parsed["color"],
                 parsed["coverstock_material"], parsed["coverstock_type"],
                 parsed["coverstock_name"], parsed["factory_finish"],
-                weights_range, parsed["status"],
+                weights_range, parsed["status"], parsed["release_date"], parsed["status"],
             ),
         )
         product_id = cur.fetchone()[0]

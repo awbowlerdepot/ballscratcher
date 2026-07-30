@@ -1,0 +1,156 @@
+<!--
+  Reconstructed, not a raw saved-page-source file, but on firmer footing
+  than most of this project's other reconstructions: this exact page was
+  successfully fetched THROUGH the non-browser mcp__workspace__web_fetch
+  tool this session (unlike MOTIV's product pages), returning full real
+  markdown content -- so bowwwl.com is confirmed plainly fetchable with a
+  production-style requests.get(), not an educated bet. The raw HTML
+  structure below was captured separately via a live Chrome DOM inspection
+  of https://www.bowwwl.com/bowling-ball-database/brunswick/
+  fury-emeraldblack-hybrid this session, with one disclosed exception: the
+  "field--name-field-radius-of-gyration" class on the RG field is INFERRED
+  (pattern-matched from the confirmed real "field--name-field-differential"
+  and "field--name-field-mass-bias-differential" class names), not
+  directly captured -- the RG field's own class was never actually seen in
+  raw HTML. Doesn't affect correctness: app.py's parser matches per-weight
+  fields by their "RG"/"Diff"/"MB Diff" LABEL text (real, confirmed, all
+  three), not by class name, for exactly this kind of reason -- same
+  content-matching philosophy as every other scraper in this project.
+  Every other value present (release date "Jul 2026" / datetime=
+  "2026-07-16T12:00:00Z", Factory Finish "500/1000/2000 Siaair Micro Pad",
+  coverstock "PK-26 Hybrid Coverstock" / Type "Hybrid Reactive", core
+  "Fury Core" / Core Type "Symmetric", and all 5 weights' real RG/Diff
+  values) is real, captured this session, not invented. Site runs on
+  Drupal 10 (confirmed via <meta name="generator">).
+
+  This ball is CURRENT (not discontinued) and has a SYMMETRIC core (no
+  "MB Diff" field on any weight card) -- the counterpart fixture,
+  bowwwl_defender.html, exists specifically to cover the discontinued +
+  asymmetric + PBA-approval-date case, all real and different from this
+  one.
+-->
+<html>
+<head>
+<meta name="generator" content="Drupal 10 (https://www.drupal.org)">
+</head>
+<body>
+<article>
+  <h1>Fury Emerald/Black Hybrid</h1>
+
+  <div class="field field--name-field-release-date field--type-datetime field--label-inline">
+    <div class="field__label">Release Date</div>
+    <div class="field__item"><time datetime="2026-07-16T12:00:00Z" class="datetime">Jul 2026</time></div>
+  </div>
+
+  <div class="field field--name-field-discontinued field--type-boolean field--label-hidden field__item"></div>
+  <div class="field field--name-field-international field--type-boolean field--label-hidden field__item"></div>
+
+  <div class="field field--name-field-factory-finish field--type-entity-reference field--label-inline">
+    <div class="field__label">Factory Finish</div>
+    <div class="field__item">500/1000/2000 Siaair Micro Pad</div>
+  </div>
+
+  <div class="field field--name-field-coverstock field--type-entity-reference field--label-hidden field__item card">
+    <div id="taxonomy-term-1084" class="taxonomy-term vocabulary-coverstock card-body">
+      <h5 class="card-title"><a href="/bowling-ball-database/brunswick/coverstocks/pk-26-hybrid">PK-26 Hybrid Coverstock</a></h5>
+      <div class="content">
+        <div class="field field--name-field-coverstock-type field--type-entity-reference field--label-inline">
+          <div class="field__label">Type</div>
+          <div class="field__item">Hybrid Reactive</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="field field--name-field-core field--type-entity-reference field--label-hidden field__item">
+    <article class="node node--type-ball-core node--view-mode-teaser clearfix card text-dark bg-white mb-3">
+      <h5 class="card-header"><a href="/bowling-ball-database/brunswick/cores/fury" rel="bookmark">Fury Core</a></h5>
+      <div class="card-body">
+        <div class="field field--name-field-core-type field--type-list-string field--label-inline">
+          <div class="field__label">Core Type</div>
+          <div class="field__item">Symmetric</div>
+        </div>
+      </div>
+    </article>
+  </div>
+
+  <div class="field field--name-field-core-specs field--type-entity-reference-revisions field--label-hidden field__items row">
+    <div class="field__item col-12 col-sm-6 col-md-4 col-lg-4 col-xl">
+      <div class="paragraph paragraph--type--core-specs paragraph--view-mode--default card">
+        <div class="card-body">
+          <h6 class="card-title text-center">16 pounds</h6>
+          <div class="field field--name-field-radius-of-gyration field--type-decimal field--label-inline">
+            <div class="field__label">RG</div>
+            <div class="field__item">2.533</div>
+          </div>
+          <div class="field field--name-field-differential field--type-decimal field--label-inline">
+            <div class="field__label">Diff</div>
+            <div class="field__item">0.033</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="field__item col-12 col-sm-6 col-md-4 col-lg-4 col-xl">
+      <div class="paragraph paragraph--type--core-specs paragraph--view-mode--default card">
+        <div class="card-body">
+          <h6 class="card-title text-center">15 pounds</h6>
+          <div class="field field--name-field-radius-of-gyration field--type-decimal field--label-inline">
+            <div class="field__label">RG</div>
+            <div class="field__item">2.524</div>
+          </div>
+          <div class="field field--name-field-differential field--type-decimal field--label-inline">
+            <div class="field__label">Diff</div>
+            <div class="field__item">0.038</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="field__item col-12 col-sm-6 col-md-4 col-lg-4 col-xl">
+      <div class="paragraph paragraph--type--core-specs paragraph--view-mode--default card">
+        <div class="card-body">
+          <h6 class="card-title text-center">14 pounds</h6>
+          <div class="field field--name-field-radius-of-gyration field--type-decimal field--label-inline">
+            <div class="field__label">RG</div>
+            <div class="field__item">2.541</div>
+          </div>
+          <div class="field field--name-field-differential field--type-decimal field--label-inline">
+            <div class="field__label">Diff</div>
+            <div class="field__item">0.038</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="field__item col-12 col-sm-6 col-md-4 col-lg-4 col-xl">
+      <div class="paragraph paragraph--type--core-specs paragraph--view-mode--default card">
+        <div class="card-body">
+          <h6 class="card-title text-center">13 pounds</h6>
+          <div class="field field--name-field-radius-of-gyration field--type-decimal field--label-inline">
+            <div class="field__label">RG</div>
+            <div class="field__item">2.592</div>
+          </div>
+          <div class="field field--name-field-differential field--type-decimal field--label-inline">
+            <div class="field__label">Diff</div>
+            <div class="field__item">0.030</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="field__item col-12 col-sm-6 col-md-4 col-lg-4 col-xl">
+      <div class="paragraph paragraph--type--core-specs paragraph--view-mode--default card">
+        <div class="card-body">
+          <h6 class="card-title text-center">12 pounds</h6>
+          <div class="field field--name-field-radius-of-gyration field--type-decimal field--label-inline">
+            <div class="field__label">RG</div>
+            <div class="field__item">2.582</div>
+          </div>
+          <div class="field field--name-field-differential field--type-decimal field--label-inline">
+            <div class="field__label">Diff</div>
+            <div class="field__item">0.038</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</article>
+</body>
+</html>

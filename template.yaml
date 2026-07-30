@@ -94,6 +94,19 @@ Parameters:
       UUID of the `brands` row for MOTIV Bowling. Left blank by default,
       same reasoning as SwagBrandId -- required once you actually enable
       the NetSuite functions.
+  BigCommerceSecretArn:
+    Type: String
+    Default: ""
+    Description: >
+      ARN of a Secrets Manager secret holding {store_hash, auth_token} for
+      BowlerDepot's BigCommerce store -- separate from DbSecretArn since
+      it's a different kind of credential with its own rotation story.
+      Left blank by default (no BowlerDepot store account wired up yet in
+      this environment); BowlerDepotReconciliationFunction will fail at
+      runtime without a real value here, same as any other
+      not-yet-configured integration -- see src/bowlerdepot_reconciliation/
+      app.py's module docstring for what's genuinely unverified about this
+      integration even once credentials exist.
 
 Resources:
   ImageBucket:
@@ -541,6 +554,92 @@ Resources:
       # on-page source for MOTIV) -- also still accepts direct/manual
       # invocation with {"url": "...", "brand_id": "...", "status": "..."}.
 
+  # --- QA cross-checks: bowwwl.com and BowlerDepot reconciliation ---
+  #
+  # Both scheduled (not SQS-triggered like the scraping chain above) --
+  # these work through a batch of already-scraped products rather than
+  # reacting to new URLs, so a periodic sweep fits better than an
+  # event-driven queue. See src/bowwwl_cross_check/app.py and
+  # src/bowlerdepot_reconciliation/app.py module docstrings for the full
+  # design/legal/unverified-mapping detail behind each.
+
+  BowwwlCrossCheckFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-bowwwl-cross-check
+      CodeUri: src/bowwwl_cross_check/
+      Handler: app.handler
+      Timeout: 120
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+      Events:
+        WeeklySchedule:
+          Type: Schedule
+          Properties:
+            # Weekly, not daily -- bowwwl.com's own Terms & Conditions
+            # explicitly prohibit reproducing/redistributing their content
+            # (see app.py's module docstring); a lighter check frequency
+            # is a deliberate choice to keep load on their site modest,
+            # independent of the legal question already raised and
+            # accepted. Works through 25 products per run (see
+            # list_products_to_check's default limit) oldest-checked-first,
+            # so the whole catalog gets covered over consecutive runs
+            # rather than all at once.
+            Schedule: rate(7 days)
+            Name: bowling-scraper-bowwwl-cross-check-weekly
+            Description: QA cross-check against bowwwl.com for published current products, oldest-checked-first.
+            Enabled: true
+      # Also accepts a direct invocation with {"product_id": "...",
+      # "brand_name": "...", "name": "...", "release_date": "..."} for a
+      # single-product check.
+
+  BowlerDepotReconciliationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-bowlerdepot-reconciliation
+      CodeUri: src/bowlerdepot_reconciliation/
+      Handler: app.handler
+      Timeout: 300
+      MemorySize: 512
+      Environment:
+        Variables:
+          BIGCOMMERCE_SECRET_ARN: !Ref BigCommerceSecretArn
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DbSecretArn
+                - !Ref BigCommerceSecretArn
+      Events:
+        DailySchedule:
+          Type: Schedule
+          Properties:
+            # Daily, not weekly -- this is our own store (see the "no ToS
+            # concern" reasoning in app.py's module docstring), and the
+            # whole point is catching a newly-scraped ball that isn't
+            # listed yet "in a timely manner", so a tighter cadence than
+            # bowwwl's fits the actual goal better.
+            Schedule: rate(1 day)
+            Name: bowling-scraper-bowlerdepot-reconciliation-daily
+            Description: Coverage + accuracy check against BowlerDepot's BigCommerce catalog for every published current product.
+            Enabled: false
+      # Enabled: false on purpose, unlike BowwwlCrossCheckFunction's
+      # schedule -- that one no-ops harmlessly with just DbSecretArn (no
+      # matching products = an empty result, not an error), but this
+      # function's very first line calls get_bigcommerce_credentials(),
+      # which will hard-fail every single day against
+      # BigCommerceSecretArn's default blank value. Flip this to true once
+      # a real BowlerDepot store account/API token is wired up (see the
+      # BigCommerceSecretArn parameter description) -- until then, a
+      # disabled-but-defined schedule is more honest than one that's
+      # "on" but guaranteed to error on every invocation.
+
 Outputs:
   UrlDiscoveryFunctionArn:
     Value: !GetAtt UrlDiscoveryFunction.Arn
@@ -572,3 +671,7 @@ Outputs:
     Value: !GetAtt NetsuiteUrlDiscoveryFunction.Arn
   NetsuiteProductScraperFunctionArn:
     Value: !GetAtt NetsuiteProductScraperFunction.Arn
+  BowwwlCrossCheckFunctionArn:
+    Value: !GetAtt BowwwlCrossCheckFunction.Arn
+  BowlerDepotReconciliationFunctionArn:
+    Value: !GetAtt BowlerDepotReconciliationFunction.Arn

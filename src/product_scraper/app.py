@@ -22,6 +22,7 @@ here.
 """
 import logging
 import re
+from datetime import datetime
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
@@ -195,6 +196,27 @@ def parse_coverstock(cover_type_value: str) -> dict:
     return {"coverstock_material": material, "coverstock_type": cs_type}
 
 
+def parse_release_date(release_date_raw: str):
+    """Parses "April 2025" / "December 2025" -- the real format seen on
+    Brunswick's own pages (see the architecture doc: Crown Victory =
+    April 2025, Crown 78U = December 2025) -- into a date, defaulting to
+    the 1st of the month since no day is ever given. Accepts both full
+    ("April") and abbreviated ("Apr") month names since which one any
+    given page uses hasn't been exhaustively checked. Returns None rather
+    than guessing for anything that doesn't match this exact "Month YYYY"
+    shape -- e.g. a blank release_date_raw (some retired pages, like
+    Defender per the architecture doc, don't have this field at all)."""
+    if not release_date_raw:
+        return None
+    cleaned = release_date_raw.strip()
+    for fmt in ("%B %Y", "%b %Y"):
+        try:
+            return datetime.strptime(cleaned, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
 def parse_weights_available(weights_value: str):
     """Parses "16-12 lbs." into (low, high) = (12, 16). Returns None if it
     doesn't match the expected "<high>-<low> lbs" shape rather than guessing."""
@@ -302,7 +324,8 @@ def parse_product_page(html: str, url: str) -> dict:
         "factory_finish": spec.get("finish"),
         "part_number": spec.get("part number"),
         "weights_available": parse_weights_available(spec.get("weights")),
-        "release_date_raw": spec.get("release date"),  # left as text; date parsing is a formatting detail, not a scraping one
+        "release_date_raw": spec.get("release date"),  # kept as text too -- release_date below is the parsed version, raw stays for anything parse_release_date rejects
+        "release_date": parse_release_date(spec.get("release date")),
         "skus": skus,
         "resources": parse_resources(soup, url),
         "images": parse_images(soup, url),
@@ -368,15 +391,25 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
         low, high = parsed["weights_available"]
         weights_range = f"[{low},{high}]"
 
+    # discontinued_detected_at logic (see migration 003's comments for the
+    # full reasoning): on INSERT, set to now() if the product is already
+    # retired the first time we ever see it. On UPDATE, the CASE
+    # expression sets it only on a genuine current->retired transition
+    # (comparing the existing row's status to the incoming one), leaves it
+    # alone on a repeat 'retired' scrape, and clears it if status ever
+    # reverts to 'current'.
     with conn.cursor() as cur:
         cur.execute(
             """
             insert into products (
                 brand_id, name, url, color, coverstock_material, coverstock_type,
                 coverstock_name, factory_finish, part_number, weights_available,
-                status, source_platform
+                status, source_platform, release_date, discontinued_detected_at
             )
-            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::int4range, %s, 'craft_cms')
+            values (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::int4range, %s, 'craft_cms', %s,
+                case when %s = 'retired' then now() else null end
+            )
             on conflict (url) do update set
                 name = excluded.name,
                 color = excluded.color,
@@ -387,6 +420,12 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
                 part_number = excluded.part_number,
                 weights_available = excluded.weights_available,
                 status = excluded.status,
+                release_date = coalesce(excluded.release_date, products.release_date),
+                discontinued_detected_at = case
+                    when excluded.status = 'retired' and products.status <> 'retired' then now()
+                    when excluded.status = 'current' then null
+                    else products.discontinued_detected_at
+                end,
                 updated_at = now()
             returning id
             """,
@@ -394,7 +433,7 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
                 brand_id, parsed["name"], parsed["url"], parsed["color"],
                 parsed["coverstock_material"], parsed["coverstock_type"],
                 parsed["coverstock_name"], parsed["factory_finish"], parsed["part_number"],
-                weights_range, parsed["status"],
+                weights_range, parsed["status"], parsed["release_date"], parsed["status"],
             ),
         )
         product_id = cur.fetchone()[0]

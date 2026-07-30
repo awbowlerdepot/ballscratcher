@@ -116,6 +116,17 @@ def test_parse_weights_available_returns_none_for_empty():
     assert app.parse_weights_available(None) is None
 
 
+def test_parse_release_date_real_swag_fusion_value():
+    import datetime
+    assert app.parse_release_date("January 2025") == datetime.date(2025, 1, 1)
+
+
+def test_parse_release_date_returns_none_for_unparseable():
+    assert app.parse_release_date("") is None
+    assert app.parse_release_date(None) is None
+    assert app.parse_release_date("Q1 2025") is None
+
+
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
     passed = 0

@@ -24,6 +24,7 @@ from app import (  # noqa: E402
     parse_product_page,
     parse_coverstock,
     parse_weights_available,
+    parse_release_date,
 )
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
@@ -126,6 +127,25 @@ def test_defender_missing_release_date_does_not_break_parsing(defender):
     scraper doesn't require every known field to be present."""
     assert "release_date_raw" in defender
     assert defender["release_date_raw"] is None
+    assert defender["release_date"] is None
+
+
+def test_parse_release_date_real_values_from_architecture_doc():
+    """Real values recorded in brunswick-scraper-architecture-review.md
+    during live research (Crown Victory = April 2025, Crown 78U =
+    December 2025) -- not present in either fixture's own spec table
+    (crown_78u.html's reconstruction predates this field being tracked),
+    so tested directly against the pure function rather than through a
+    fixture."""
+    import datetime
+    assert parse_release_date("April 2025") == datetime.date(2025, 4, 1)
+    assert parse_release_date("December 2025") == datetime.date(2025, 12, 1)
+
+
+def test_parse_release_date_returns_none_for_unparseable():
+    assert parse_release_date("") is None
+    assert parse_release_date(None) is None
+    assert parse_release_date("Q1 2025") is None
 
 
 # --- Helper functions tested directly, beyond what the fixtures exercise ---

@@ -122,6 +122,7 @@ Real, confirmed structural facts this module's parsing rests on:
 """
 import logging
 import re
+from datetime import datetime
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
@@ -193,6 +194,26 @@ def parse_name_and_colorway(raw_name: str):
         return raw_name, None
     base, colorway = raw_name.split(" - ", 1)
     return base.strip(), colorway.strip()
+
+
+def parse_release_date(release_date_raw: str):
+    """MOTIV's format is genuinely different from Brunswick/SWAG's "Month
+    YYYY" -- real confirmed values this session: "AVAILABLE 7/8/2026",
+    "AVAILABLE 1/8/2025" (upcoming/recent releases, "AVAILABLE " prefix),
+    and a bare "10/22/2025" with no prefix (seen on Raptor Reign, whose
+    release date is further in the past -- see the README's "Third
+    manufacturer" section for the observation that the prefix's presence
+    may itself be a secondary status signal, not relied on here). Strips
+    an optional "AVAILABLE " prefix (case-insensitive) then parses
+    M/D/YYYY -- full day precision, unlike Brunswick/SWAG's month-only
+    format. Returns None for anything that doesn't match."""
+    if not release_date_raw:
+        return None
+    cleaned = re.sub(r"^available\s+", "", release_date_raw.strip(), flags=re.IGNORECASE)
+    try:
+        return datetime.strptime(cleaned, "%m/%d/%Y").date()
+    except ValueError:
+        return None
 
 
 def parse_header(soup: BeautifulSoup) -> dict:
@@ -392,6 +413,7 @@ def parse_product_page(html: str, url: str, status: str = "current") -> dict:
         "part_number": header["item_number"],
         "price_raw": header["price_raw"],
         "release_date_raw": header["release_date_raw"],
+        "release_date": parse_release_date(header["release_date_raw"]),
         "core_name": spec.get("weight block"),
         "coverstock_name": spec.get("cover stock"),
         "coverstock_material": coverstock["coverstock_material"],
@@ -454,15 +476,24 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
         low, high = parsed["weights_available"]
         weights_range = f"[{low},{high}]"
 
+    # See product_scraper.upsert_product / migration 003 for the
+    # discontinued_detected_at reasoning -- same logic here. Extra
+    # relevance for MOTIV specifically: this is the ONLY signal this
+    # platform has for a status transition at all (see this module's
+    # docstring point 1 -- no on-page indicator), so this timestamp is
+    # more load-bearing here than for the other two platforms.
     with conn.cursor() as cur:
         cur.execute(
             """
             insert into products (
                 brand_id, name, url, color, coverstock_material, coverstock_type,
                 coverstock_name, factory_finish, part_number, weights_available,
-                status, source_platform
+                status, source_platform, release_date, discontinued_detected_at
             )
-            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::int4range, %s, 'netsuite')
+            values (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::int4range, %s, 'netsuite', %s,
+                case when %s = 'retired' then now() else null end
+            )
             on conflict (url) do update set
                 name = excluded.name,
                 color = excluded.color,
@@ -473,6 +504,12 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
                 part_number = excluded.part_number,
                 weights_available = excluded.weights_available,
                 status = excluded.status,
+                release_date = coalesce(excluded.release_date, products.release_date),
+                discontinued_detected_at = case
+                    when excluded.status = 'retired' and products.status <> 'retired' then now()
+                    when excluded.status = 'current' then null
+                    else products.discontinued_detected_at
+                end,
                 updated_at = now()
             returning id
             """,
@@ -480,7 +517,7 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
                 brand_id, parsed["name"], parsed["url"], parsed["color"],
                 parsed["coverstock_material"], parsed["coverstock_type"],
                 parsed["coverstock_name"], parsed["factory_finish"], parsed["part_number"],
-                weights_range, parsed["status"],
+                weights_range, parsed["status"], parsed["release_date"], parsed["status"],
             ),
         )
         product_id = cur.fetchone()[0]
