@@ -34,7 +34,9 @@ from app import (  # noqa: E402
     parse_coverstock,
     parse_weights_available,
     parse_release_date,
+    parse_images,
     _nearby_label_text,
+    _resolve_img_src,
 )
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
@@ -221,6 +223,80 @@ def test_parse_weights_available_handles_period_and_lbs_suffix():
 
 def test_parse_weights_available_returns_none_for_unexpected_format():
     assert parse_weights_available("assorted") is None
+
+
+# --- _resolve_img_src: the fix for the real lazy-load-placeholder bug ---
+#
+# Real bug, found via live production CloudWatch logs (not a hypothetical):
+# every ball page has a lazy-loaded "Performance Index" chart image whose
+# `src` is an inline transparent SVG placeholder
+# (data:image/svg+xml;charset=utf-8,...), with the real image URLs only in
+# `srcset`. parse_images() used to read img["src"] directly, so it stored
+# the placeholder as source_url -- which then failed downstream in
+# image_processor with `InvalidSchema: No connection adapters were found
+# for 'data:image/svg+xml...'`. This exact snippet (widths/URLs redacted to
+# a shorter but structurally identical example) was captured from
+# brunswickbowling.com/products/balls/current/tzone-berry-blast's real raw
+# HTML via curl, confirming the shape, not assumed.
+
+_LAZY_PERFORMANCE_INDEX_IMG = """
+<img class=""
+    loading="lazy"
+    src="data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%27http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%27%20width%3D%27680%27%20height%3D%27140%27%20style%3D%27background%3Atransparent%27%2F%3E"
+    srcset="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/transforms/bowlerproducts/Products/Balls/performance-index/3756/ball-pi_680w.png 680w, https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/transforms/bowlerproducts/Products/Balls/performance-index/3756/ball-pi_1360w.png 1360w"
+    sizes="100vw"
+    alt="Polyester Accurate 99 Performance Index"
+    />
+"""
+
+
+def test_resolve_img_src_prefers_highest_res_srcset_over_placeholder():
+    soup = BeautifulSoup(_LAZY_PERFORMANCE_INDEX_IMG, "lxml")
+    img = soup.find("img")
+    src = _resolve_img_src(img, "https://brunswickbowling.com/products/balls/current/tzone-berry-blast")
+    assert src == (
+        "https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/"
+        "transforms/bowlerproducts/Products/Balls/performance-index/3756/ball-pi_1360w.png"
+    )
+    assert not src.startswith("data:")
+
+
+def test_resolve_img_src_falls_back_to_src_when_no_srcset():
+    soup = BeautifulSoup('<img src="/images/ball.png" alt="Ball">', "lxml")
+    img = soup.find("img")
+    assert _resolve_img_src(img, "https://brunswickbowling.com/x") == "https://brunswickbowling.com/images/ball.png"
+
+
+def test_resolve_img_src_returns_none_for_placeholder_with_no_srcset():
+    """Belt-and-suspenders case: if a data: placeholder ever appears with no
+    srcset at all, there's nothing real to recover -- must return None
+    (dropped by parse_images), never the placeholder itself."""
+    soup = BeautifulSoup(
+        '<img src="data:image/svg+xml;charset=utf-8,%3Csvg%2F%3E" alt="placeholder">',
+        "lxml",
+    )
+    img = soup.find("img")
+    assert _resolve_img_src(img, "https://brunswickbowling.com/x") is None
+
+
+def test_parse_images_skips_placeholder_and_resolves_lazy_image():
+    """End-to-end through parse_images(), not just the helper -- confirms
+    the lazy performance-index image is captured with its real URL (bucketed
+    as "other", since it's neither the first image nor a core-callout) and
+    never with the data: placeholder."""
+    html = (
+        '<img src="/main.png" alt="main product shot">'
+        + _LAZY_PERFORMANCE_INDEX_IMG
+    )
+    soup = BeautifulSoup(html, "lxml")
+    images = parse_images(soup, "https://brunswickbowling.com/products/balls/current/tzone-berry-blast")
+
+    assert len(images) == 2
+    assert images[0]["image_type"] == "main"
+    assert images[0]["source_url"] == "https://brunswickbowling.com/main.png"
+    assert images[1]["image_type"] == "other"
+    assert images[1]["source_url"].endswith("ball-pi_1360w.png")
+    assert all(not img["source_url"].startswith("data:") for img in images)
 
 
 # --- _nearby_label_text: the fix for the real "Download"-link-text bug ---

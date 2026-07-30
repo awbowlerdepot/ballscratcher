@@ -339,6 +339,51 @@ def parse_resources(soup: BeautifulSoup, base_url: str) -> dict:
     return resources
 
 
+def _resolve_img_src(img, base_url: str):
+    """Returns the best real URL for an <img> tag, or None if none can be
+    resolved.
+
+    Real bug, found via production CloudWatch logs: sections marked
+    loading="lazy" (e.g. the "Performance Index" chart images) set `src` to
+    an inline transparent SVG placeholder
+    (data:image/svg+xml;charset=utf-8,...) and put the actual candidate
+    URLs in `srcset` instead. Using `img["src"]` directly picked up that
+    placeholder as source_url, which was then stored as-is and later failed
+    in image_processor with `requests.exceptions.InvalidSchema: No
+    connection adapters were found for 'data:image/svg+xml...'` -- `data:`
+    isn't a scheme `requests` (or any HTTP fetch) can handle.
+
+    Fix: prefer the highest-resolution candidate from `srcset` (format is
+    "<url> <width>w, <url> <width>w, ..."); fall back to `src` only if
+    there's no usable srcset, and never return a `data:` URI either way."""
+    srcset = img.get("srcset")
+    if srcset:
+        candidates = []
+        for part in srcset.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            bits = part.split()
+            url = bits[0]
+            width = 0
+            if len(bits) > 1 and bits[1].endswith("w"):
+                try:
+                    width = int(bits[1][:-1])
+                except ValueError:
+                    width = 0
+            if not url.startswith("data:"):
+                candidates.append((width, url))
+        if candidates:
+            candidates.sort(key=lambda c: c[0])
+            return urljoin(base_url, candidates[-1][1])
+
+    src = img.get("src")
+    if src and not src.startswith("data:"):
+        return urljoin(base_url, src)
+
+    return None
+
+
 def parse_images(soup: BeautifulSoup, base_url: str) -> list:
     """Main product image plus per-weight-range core callout images, matched
     by filename pattern rather than alt text -- alt text spells weights out
@@ -347,8 +392,10 @@ def parse_images(soup: BeautifulSoup, base_url: str) -> list:
     images = []
     seen_urls = set()
 
-    for img in soup.find_all("img", src=True):
-        src = urljoin(base_url, img["src"])
+    for img in soup.find_all("img"):
+        src = _resolve_img_src(img, base_url)
+        if src is None:
+            continue
         if src in seen_urls:
             continue
         seen_urls.add(src)
