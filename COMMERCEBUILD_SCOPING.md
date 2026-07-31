@@ -270,7 +270,62 @@ requests, never via the readability-tool view alone).
    session's one sample had no visible Downloads section) -- matters for
    deciding if the archive parser ever needs PDF fallback too.
 
-Next step: two more raw-curl passes -- one 900 Global current product, one
-non-900-Global archived product -- to nail down whether the template
-split is current-vs-archive (most likely) or something else, before
-writing the two parsers.
+## Second raw-curl pass: template split confirmed, one new URL-reliability risk found
+
+1. **Current-product template confirmed identical across all three
+   brands.** Real curl of `900-global-viking-conquest-bowling-ball`
+   (200 OK) shows the exact same field set as Storm/Roto Grip
+   (`Brand: 900 Global`, Line/Core/Weight Block/Finish/Durometer/
+   Symmetry/Differential/Flare Potential/Radius of Gyration/Weight/
+   Coverstock/Color/Release Date/Avail. for Sales Orders/PSA), same
+   `div-variant-product` JS shell, same `select2` widget, 0 `data:image`
+   occurrences. One product_scraper handles all three brands with no
+   per-brand branching for the current-product path.
+2. **Current-vs-archive template split confirmed on a second brand.**
+   Real curl of `storm-absolute-bowling-ball` (an archived Storm product)
+   shows the same shape as the 900 Global archived sample: no
+   `div-variant-product`/`select2`, and three real `RG:`/`Diff:` pairs
+   directly in raw HTML (2.48/0.048, 2.48/0.050, 2.54/0.045) -- one per
+   weight. Two real brands now confirm archived pages carry the full
+   weight table inline; only Roto Grip's archived template is
+   unconfirmed (see below), but there's no reason to expect it differs
+   given both other brands and the current-product template are uniform
+   across brands.
+3. **New finding: the archive collection listing's own hrefs 404 on a
+   bare request.** Two different archived-product URLs copied directly
+   from the "Bowling Balls Archive" collection page's own anchor tags
+   (`/products/collections/bowling-balls-archive/bbmrac-apocalypse` and
+   `.../bbmral-assault`) both returned a real `404 Page Not Found` page
+   via plain curl with no cookies -- despite being genuine hrefs on the
+   live listing page moments earlier. By contrast, the equivalent
+   current-product listing path
+   (`/products/equipment/bowling-balls/bbmrgx-gremlin`) worked fine and
+   redirected to its flat canonical URL. **This means URL discovery
+   cannot trust the archive collection's own listing links as directly
+   fetchable** -- since this scraper's production fetches will be the
+   same kind of plain, cookie-less request as this curl test, the same
+   404s would happen in production. The two archived products that DID
+   work in this research (900 Global's Altered Reality, Storm's Absolute)
+   were both reached via their flat canonical URL
+   (`{brand}-{slug}-bowling-ball`), not the collections path. Needs
+   resolving before writing url_discovery for archived products --
+   options: (a) find whether the flat canonical URL is guessable/derivable
+   from the archive listing's product name+SKU, (b) check whether the
+   sitemap includes archived product URLs in their canonical flat form,
+   or (c) test whether adding a Referer header or an initial
+   session-establishing request fixes the collections-path 404s.
+
+## Status: scoping is essentially complete for the current-product path; one real risk remains for archived-product URL discovery
+
+Everything needed to build the **current-product** parser is now
+confirmed via real raw HTTP requests: field shape, JS-locked weight
+variant (PDF required), image cleanliness, brand uniformity. The
+**archived-product** parser's field shape is also confirmed (full weight
+table inline, no PDF apparently needed) -- but how to reliably *reach*
+archived product URLs in the first place is still an open, real problem
+(see finding 3 above), not just an unverified assumption. That's the one
+item worth resolving -- likely via the sitemap or by deriving canonical
+flat URLs -- before url_discovery can be written for the retired-balls
+side of this scraper. The current-product side (61 balls) could
+reasonably be built and shipped first, with archived-product coverage
+(~500+ balls) following once the URL-discovery question is resolved.
