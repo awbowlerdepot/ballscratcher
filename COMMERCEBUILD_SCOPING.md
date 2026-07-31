@@ -159,30 +159,118 @@ Recommendation: option 1. Flagging as a decision point rather than just
 picking it, since it's a real architectural choice, not purely a
 technical-verification question like the others above.
 
-## Open questions requiring real raw-HTML confirmation before writing code
+## Raw-HTML verification pass (this session, real curl output)
+
+Confirmed via literal `curl` from a real Mac (not the readability tool),
+against Storm Alpha Crux and Roto Grip Gremlin (both current-brand
+products):
+
+1. **No `data:` placeholder images anywhere** -- `grep -c "data:image"`
+   returned 0 on both full raw HTML pages. The Brunswick lazy-load bug
+   does not exist here (at least not on these two pages). `<img>` tags use
+   real `src` URLs directly (`stormproducts.nyc3.cdn.digitaloceanspaces.com`
+   and `assets.1.commercebuild.com`).
+2. **The weight-variant question is resolved, and it's the harder case**:
+   `<div id="div-variant-product"></div>` is a genuinely empty shell in
+   raw HTML. It's populated entirely client-side by a JS module
+   (`loadCBCustomisation`, loaded from
+   `storage.googleapis.com/cb-customisations-dev/...`) that fetches data
+   keyed on a hidden `virtualItemno` input value -- this looks like it's
+   actually for the "compare items" feature, not necessarily the weight
+   switcher itself, but either way: there is no `<select>` tag anywhere in
+   either page's raw HTML at all. The static spec block (`Weight: 16`,
+   `RG: 2.48`, etc.) is real server-rendered HTML for that one specific
+   SKU/URL -- but nothing about other weights is reachable without
+   executing JS.
+3. **Confirmed the Tech Data PDF has what's needed**: downloaded and
+   opened Alpha Crux's Tech Data PDF directly (not via any tool, by hand)
+   -- it is a real table broken out by weight (RG/Differential/etc. per
+   weight), not just marketing copy. This closes the open question: for
+   current products, **the Tech Data PDF is the only source for the full
+   per-weight breakdown**, exactly mirroring Brunswick's Info Sheet PDF +
+   pdf_parser pattern.
+
+## Major new finding: retired/archive template is structurally different, not just missing fields
+
+Fetched a real archived 900 Global product,
+`https://www.stormbowling.com/900-global-altered-reality-bowling-ball`
+(reached via the Bowling Balls Archive listing). Its page shape is
+genuinely different from the current-product template (Alpha Crux,
+Gremlin), not just missing optional fields:
+
+- **No `Brand:` label field at all.** Brand has to come from context
+  (URL slug prefix / which archive-facet it was discovered under), not a
+  parseable field on the page itself, for this template.
+- **No JS variant selector, no `div-variant-product` shell** (at least
+  none visible in the readability-tool extraction) -- consistent with
+  this being an older, simpler template.
+- **Full per-weight breakdown is directly in the page's raw content**:
+  three weights shown (16, 15, 14), each with its own RG/Diff/PSA values,
+  e.g. `**16** RG: 2.48 Diff: 0.052 PSA: 0.018`, then the same shape
+  repeated for 15 and 14. No mass_bias/MB field observed on this
+  particular product, but the multi-weight structure itself is the
+  important find.
+- **No visible Tech Data PDF / Downloads section** in what was fetched for
+  this page (unconfirmed whether that's true for all archive-template
+  products or just this one -- needs a second archive sample to be sure).
+
+**This means the opposite of the natural assumption**: the *older*
+archive template embeds more structured data directly in HTML than the
+*newer* current-product template does (which locks weight-variant data
+behind JS). A scraper needs two distinct parsers -- one for current
+products (single weight in HTML + required PDF for the rest), one for
+archived products (full weight table already in HTML, brand inferred not
+parsed, PDF probably not needed). This is based on n=1 archive sample;
+needs at least one more archive product checked (ideally a Storm-brand
+and a Roto-Grip-brand archived item, not just 900 Global) before treating
+"archive template = always full HTML breakdown" as reliable rather than
+coincidental.
+
+## Open questions status
 
 Same "verify against reality" pattern this project has used throughout
 (the pdf_parser Decimal bug, the lazy-load placeholder bug, the day-
 precision release-date bug -- all real bugs found via literal raw
-requests, never via the readability-tool view alone). Before building:
+requests, never via the readability-tool view alone).
 
-1. Does the raw (non-JS) HTML for a product page expose all weights'
-   RG/Differential/mass-bias values anywhere (hidden variant-selector
-   data), or genuinely just the one default weight? Determines whether
-   the "Tech Data" PDF is required reading, not optional.
-2. Pull one "Tech Data" PDF and confirm it actually contains a per-weight
-   breakdown (vs. just marketing copy).
-3. Does any product's raw `<img>` tag use a `data:` placeholder + real
-   `srcset`, like Brunswick's bug? Check at least one current-brand
-   product from each of the three brands.
-4. Parse `sitemap_index.xml` for real (gunzip if needed) -- does it cover
-   product pages, and does it carry `<lastmod>`?
-5. Spot-check one 900 Global product page (only Storm and Roto Grip
-   checked so far) to confirm the same template applies to all three
-   brands, not just two of them.
+**Resolved this session:**
 
-Next step: get real raw HTML for a product page from each brand (same
-approach used for Brunswick: either a literal `curl` from your Mac, or a
-Claude-in-Chrome `fetch()` against the live page) before writing any
-scraper code, so the same kind of invisible-until-raw-HTML bug that hit
-Brunswick's image parsing doesn't ship blind here too.
+1. ~~Does raw HTML expose all weights?~~ No, for current products --
+   confirmed via real curl (see verification pass above). Tech Data PDF
+   is required, not optional, for current products.
+2. ~~Does the Tech Data PDF actually have a per-weight table?~~ Yes,
+   confirmed by opening one directly.
+3. ~~Does any product's `<img>` use a `data:` placeholder?~~ No, on the
+   two current-brand pages checked via real curl (Storm, Roto Grip).
+   900 Global not yet checked via raw curl (only the readability-tool
+   view, which wouldn't have caught this even for Brunswick).
+5. ~~Spot-check a 900 Global page~~ Done, via the readability tool (not
+   raw curl yet) -- and it turned up the bigger finding: 900 Global's
+   *archived* product used a structurally different template than the
+   two *current* Storm/Roto Grip products checked. Need to disentangle
+   whether that's brand-specific or current-vs-archive-specific (see
+   below).
+
+**Still open:**
+
+4. `sitemap_index.xml` still hasn't been parsed for real (web-fetch
+   returned it as opaque binary/gzip) -- does it cover product pages, does
+   it carry `<lastmod>`, is it worth using over category-listing
+   pagination.
+6. Confirm the current-vs-archive template split holds generally: check
+   at least one more archived product (a Storm or Roto Grip one, not
+   another 900 Global one) via raw curl, and confirm whether archived
+   pages ever lack the full weight table (this session's one sample had
+   it for all three of its weights, but n=1).
+7. Real raw-curl (not readability-tool) check of a 900 Global *current*
+   product specifically, to confirm the current-product template (JS
+   variant shell, single weight, Tech Data PDF) is truly identical across
+   all three brands and not just Storm/Roto Grip.
+8. Whether archived products reliably lack a Tech Data PDF (this
+   session's one sample had no visible Downloads section) -- matters for
+   deciding if the archive parser ever needs PDF fallback too.
+
+Next step: two more raw-curl passes -- one 900 Global current product, one
+non-900-Global archived product -- to nail down whether the template
+split is current-vs-archive (most likely) or something else, before
+writing the two parsers.
