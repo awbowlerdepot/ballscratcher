@@ -88,6 +88,37 @@ Parameters:
       UUID of the `brands` row for MOTIV Bowling. Left blank by default,
       same reasoning as SwagBrandId -- required once you actually enable
       the NetSuite functions.
+  CommercebuildCategoryUrl:
+    Type: String
+    Default: https://www.stormbowling.com/products/equipment/bowling-balls/
+    Description: >
+      commercebuild/XM Symphony "Bowling Balls" category listing --
+      CommercebuildUrlDiscoveryFunction filters it per brand via a
+      custom1 facet query param (see src/commercebuild_url_discovery/app.py).
+      One site serves all three commercebuild brands, so unlike
+      SwagCategoryUrl/MotivCurrentCategoryUrl this single URL covers all
+      of them.
+  StormBrandId:
+    Type: String
+    Default: ""
+    Description: >
+      UUID of the `brands` row for Storm. Left blank by default, same
+      reasoning as SwagBrandId/MotivBrandId -- required once you actually
+      enable the commercebuild functions. Fed into
+      CommercebuildUrlDiscoveryFunction's BRAND_IDS_JSON env var alongside
+      RotoGripBrandId/Global900BrandId (one function covers all three
+      brands, so this template keeps the established one-parameter-per-
+      brand convention rather than switching to a single combined-JSON
+      parameter -- see that function's Environment block below for how
+      the three are assembled).
+  RotoGripBrandId:
+    Type: String
+    Default: ""
+    Description: UUID of the `brands` row for Roto Grip. Same reasoning as StormBrandId.
+  Global900BrandId:
+    Type: String
+    Default: ""
+    Description: UUID of the `brands` row for 900 Global. Same reasoning as StormBrandId.
   BigCommerceSecretArn:
     Type: String
     Default: ""
@@ -224,6 +255,20 @@ Resources:
       VisibilityTimeout: 180
       RedrivePolicy:
         deadLetterTargetArn: !GetAtt NetsuiteProductScrapeDLQ.Arn
+        maxReceiveCount: 3
+
+  CommercebuildProductScrapeDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: bowling-scraper-commercebuild-product-scrape-dlq
+
+  CommercebuildProductScrapeQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: bowling-scraper-commercebuild-product-scrape
+      VisibilityTimeout: 180
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt CommercebuildProductScrapeDLQ.Arn
         maxReceiveCount: 3
 
   UrlDiscoveryFunction:
@@ -649,6 +694,111 @@ Resources:
       # on-page source for MOTIV) -- also still accepts direct/manual
       # invocation with {"url": "...", "brand_id": "...", "status": "..."}.
 
+  # --- commercebuild brand family (Storm, Roto Grip, 900 Global) ---
+  #
+  # A fourth platform, added this session -- see COMMERCEBUILD_SCOPING.md
+  # and src/commercebuild_product_scraper/app.py's module docstring for
+  # the full research trail. Unlike the three families above, one site
+  # (stormbowling.com) serves all three brands through the same
+  # commercebuild/XM Symphony template, so there's a single
+  # UrlDiscoveryFunction and a single ProductScraperFunction here instead
+  # of one pair per brand -- CommercebuildUrlDiscoveryFunction iterates
+  # all three brands itself (10s apart, respecting stormbowling.com's
+  # robots.txt Crawl-delay: 10) rather than being redeployed per brand
+  # the way UrlDiscoveryFunction is for Brunswick/Radical/DV8.
+  #
+  # Current products only, same scope limit as the other three families'
+  # initial builds -- archived/retired commercebuild products need a
+  # different discovery mechanism (the archive listing's own links 404 on
+  # a bare request, confirmed real and documented as an open risk in
+  # COMMERCEBUILD_SCOPING.md) and aren't built yet.
+  #
+  # Not a PdfParseQueue trigger target, unlike the Craft-CMS family:
+  # CommercebuildProductScraperFunction fetches and parses each product's
+  # Tech Data PDF inline in the same invocation (see fetch_pdf/
+  # parse_tech_data_pdf in app.py) rather than publishing a separate job,
+  # same reasoning as WooCommerce/NetSuite not using PdfParseQueue either.
+  #
+  # KNOWN GAP, disclosed rather than silently ignored (same spirit as
+  # MOTIV's unverified-fetch disclosure above): stormbowling.com's
+  # Crawl-delay: 10 is respected by CommercebuildUrlDiscoveryFunction's
+  # own inter-brand sleep, but CommercebuildProductScraperFunction has no
+  # equivalent throttle on its own per-message fetches -- a burst of SQS
+  # messages could hit the site faster than one request per 10s. Needs an
+  # SQS event-source-mapping concurrency limit (e.g. a queue-level
+  # MaximumConcurrency) once real message volume is observed; not added
+  # here yet since BatchSize: 5 alone doesn't guarantee safe spacing.
+
+  CommercebuildUrlDiscoveryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-commercebuild-url-discovery
+      CodeUri: src/commercebuild_url_discovery/
+      Handler: app.handler
+      Environment:
+        Variables:
+          CATEGORY_URL: !Ref CommercebuildCategoryUrl
+          # Combines the three per-brand parameters into the single JSON
+          # blob commercebuild_url_discovery/app.py's handler expects
+          # (BRAND_IDS_JSON) -- keeps the established one-parameter-per-
+          # brand convention (matching SwagBrandId/MotivBrandId) at the
+          # template level even though one Lambda handles all three
+          # brands, rather than changing already-tested app.py code to
+          # read three separate env vars.
+          BRAND_IDS_JSON: !Sub '{"storm":"${StormBrandId}","roto_grip":"${RotoGripBrandId}","global_900":"${Global900BrandId}"}'
+          PRODUCT_SCRAPE_QUEUE_URL: !Ref CommercebuildProductScrapeQueue
+      Policies:
+        - VPCAccessPolicy: {}
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt CommercebuildProductScrapeQueue.QueueName
+      # No schedule wired up yet, same reasoning as
+      # WooCommerceUrlDiscoveryFunction/NetsuiteUrlDiscoveryFunction --
+      # add once StormBrandId/RotoGripBrandId/Global900BrandId are
+      # actually set for a real deployment.
+
+  CommercebuildProductScraperFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-commercebuild-product-scraper
+      CodeUri: src/commercebuild_product_scraper/
+      Handler: app.handler
+      Timeout: 30
+      MemorySize: 512
+      # Bumped from the 256 default -- pdfplumber's in-memory PDF parsing
+      # (done inline here, see the comment block above) is heavier than
+      # the plain-HTML parsing the other product scrapers do, same
+      # reasoning as ImageProcessorFunction's bump to 512.
+      Environment:
+        Variables:
+          IMAGE_PROCESS_QUEUE_URL: !Ref ImageProcessQueue
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt ImageProcessQueue.QueueName
+      Events:
+        CommercebuildProductScrapeQueueTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt CommercebuildProductScrapeQueue.Arn
+            BatchSize: 5
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+      # SQS-triggered from CommercebuildProductScrapeQueue (populated by
+      # CommercebuildUrlDiscoveryFunction) -- also still accepts
+      # direct/manual invocation with {"url": "...", "brand_id": "..."}.
+      # Fans out to the SAME ImageProcessQueue/ImageProcessorFunction
+      # every other family uses -- that function's job shape and
+      # processing are platform-agnostic.
+
   # --- QA cross-checks: bowwwl.com and BowlerDepot reconciliation ---
   #
   # Both scheduled (not SQS-triggered like the scraping chain above) --
@@ -775,6 +925,12 @@ Outputs:
     Value: !GetAtt NetsuiteUrlDiscoveryFunction.Arn
   NetsuiteProductScraperFunctionArn:
     Value: !GetAtt NetsuiteProductScraperFunction.Arn
+  CommercebuildProductScrapeDLQUrl:
+    Value: !Ref CommercebuildProductScrapeDLQ
+  CommercebuildUrlDiscoveryFunctionArn:
+    Value: !GetAtt CommercebuildUrlDiscoveryFunction.Arn
+  CommercebuildProductScraperFunctionArn:
+    Value: !GetAtt CommercebuildProductScraperFunction.Arn
   BowwwlCrossCheckFunctionArn:
     Value: !GetAtt BowwwlCrossCheckFunction.Arn
   BowlerDepotReconciliationFunctionArn:
