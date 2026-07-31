@@ -316,13 +316,27 @@ def check_accuracy(matched_pairs: list, tolerance: float = 0.001) -> list:
             their_value = their_specs.get(field)
             if our_value is None or their_value is None:
                 continue
-            if abs(our_value - their_value) > tolerance:
+            # our_value comes from get_product_skus() -> Postgres numeric
+            # column -> decimal.Decimal via psycopg2; their_value comes from
+            # extract_specs_from_custom_fields() -> _to_float() parsing
+            # BigCommerce's custom_fields string values -> plain float. Same
+            # real bug as pdf_parser's find_mismatches() and
+            # bowwwl_cross_check's compare_to_our_data() (both found via
+            # live CloudWatch logs earlier in this deploy): Decimal and
+            # float can't be subtracted directly. Fixed here proactively,
+            # before this function's daily schedule ever ran against a real
+            # store, rather than waiting for the same crash a third time.
+            # Coerce both to float for the comparison only --
+            # str(our_value)/str(their_value) below still use the original
+            # values, so no precision lost in what's written to
+            # review_queue.
+            if abs(float(our_value) - float(their_value)) > tolerance:
                 mismatches.append({
                     "product_id": product_id,
                     "field_name": f"{field}_{weight}lb",
                     "current_value": str(our_value),
                     "proposed_value": str(their_value),
-                    "reason": f"bowlerdepot_reconciliation: {field} at {weight}lb disagrees by {abs(our_value - their_value):.4f} (tolerance {tolerance})",
+                    "reason": f"bowlerdepot_reconciliation: {field} at {weight}lb disagrees by {abs(float(our_value) - float(their_value)):.4f} (tolerance {tolerance})",
                 })
     return mismatches
 

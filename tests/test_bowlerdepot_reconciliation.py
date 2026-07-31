@@ -24,6 +24,7 @@ Manual-runner pattern, run standalone via
 import json
 import os
 import sys
+from decimal import Decimal
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src", "bowlerdepot_reconciliation"))
 
@@ -222,6 +223,52 @@ def test_check_accuracy_skips_non_reference_weights_even_when_clearly_wrong():
     pairs = [{
         "product_id": "p1",
         "our_sku": {"weight_lbs": 16, "rg": 99.0, "differential": 99.0, "mass_bias": 99.0},
+        "bigcommerce_product": {
+            "id": 42,
+            "custom_fields": [
+                {"id": 1, "name": "Radius of Gyration(15lb)", "value": "2.533"},
+                {"id": 2, "name": "Max Differential(15lb)", "value": "0.033"},
+            ],
+        },
+    }]
+    assert app.check_accuracy(pairs) == []
+
+
+def test_check_accuracy_handles_decimal_from_postgres():
+    """Real bug (found and fixed proactively before this function's daily
+    schedule ever ran against a real store -- see app.py's comment at the
+    fix site): our_sku comes from get_product_skus() -> a Postgres
+    'numeric' column -> Decimal via psycopg2, not float. BigCommerce's
+    custom_fields values come through extract_specs_from_custom_fields()'s
+    _to_float() and are plain float. abs(Decimal - float) raises TypeError
+    -- the same root cause already fixed in pdf_parser and
+    bowwwl_cross_check earlier in this deploy. Every prior test here used
+    plain floats for our_sku, which is exactly why this would have shipped
+    broken -- this test uses Decimal on our side to match what the real
+    database actually returns."""
+    pairs = [{
+        "product_id": "p1",
+        "our_sku": {"weight_lbs": 15, "rg": Decimal("2.533"), "differential": Decimal("0.033"), "mass_bias": None},
+        "bigcommerce_product": {
+            "id": 42,
+            "custom_fields": [
+                {"id": 1, "name": "Radius of Gyration(15lb)", "value": "2.600"},
+                {"id": 2, "name": "Max Differential(15lb)", "value": "0.033"},
+            ],
+        },
+    }]
+    mismatches = app.check_accuracy(pairs)
+    rg_mismatch = next(m for m in mismatches if m["field_name"] == "rg_15lb")
+    assert rg_mismatch["current_value"] == "2.533"
+    assert rg_mismatch["proposed_value"] == "2.6"
+
+
+def test_check_accuracy_decimal_within_tolerance_not_flagged():
+    """Same Decimal-vs-float shape as above, but values agree within
+    tolerance -- must not be flagged just because the types differ."""
+    pairs = [{
+        "product_id": "p1",
+        "our_sku": {"weight_lbs": 15, "rg": Decimal("2.5335"), "differential": Decimal("0.033"), "mass_bias": None},
         "bigcommerce_product": {
             "id": 42,
             "custom_fields": [

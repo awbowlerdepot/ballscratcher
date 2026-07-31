@@ -730,7 +730,7 @@ Resources:
             Schedule: rate(1 day)
             Name: bowling-scraper-bowlerdepot-reconciliation-daily
             Description: Coverage + accuracy check against BowlerDepot's BigCommerce catalog for every published current product.
-            Enabled: false
+            Enabled: true
       # Enabled: false on purpose, unlike BowwwlCrossCheckFunction's
       # schedule -- that one no-ops harmlessly with just DbSecretArn (no
       # matching products = an empty result, not an error), but this
