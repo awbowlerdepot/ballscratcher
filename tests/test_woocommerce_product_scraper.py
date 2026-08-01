@@ -75,6 +75,45 @@ def test_images_main_and_core():
     assert p["images"][1]["source_url"].endswith("FUSION-CORE-600x571.png")
 
 
+# Real, confirmed structure of a WooCommerce "External/Affiliate Product"
+# listing -- checked via curl against swagbowling.com/product/swag-apex-
+# pearl-bowling-ball/ this deploy's first live smoke test. Has a real
+# <h1> title, but no "Additional information" attributes table and no
+# woocommerce-tabs section at all -- confirmed via the product-type-
+# external CSS class and grep coming back empty for "production" and
+# "Additional information" against the actual page. Roughly a third of
+# SWAG's real catalog hit this on the first live run.
+EXTERNAL_PRODUCT_HTML = """
+<html><body>
+<div id="product-16226" class="product type-product post-16226 status-publish instock product_cat-bowling-balls product-type-external">
+<div class="product-title-container is-large"><h1 class="product-title product_title entry-title">
+SWAG APEX Pearl Bowling Ball</h1></div>
+</div>
+</body></html>
+"""
+
+
+def test_external_product_returns_sentinel_not_none_status():
+    """Real bug found via this deploy's first live smoke test: about a
+    third of SWAG's real catalog are WooCommerce external/affiliate
+    listings with no attribute table at all -- these used to silently
+    produce status=None, which crashed the DB write on the products.status
+    NOT NULL constraint. parse_product_page() must return the
+    external_product sentinel instead of a dict with status=None."""
+    parsed = app.parse_product_page(EXTERNAL_PRODUCT_HTML, "https://www.swagbowling.com/product/swag-apex-pearl-bowling-ball/")
+    assert parsed["external_product"] is True
+    assert parsed["name"] == "SWAG APEX Pearl Bowling Ball"
+    assert "status" not in parsed  # must not carry a None status through
+
+
+def test_external_product_sentinel_does_not_apply_to_real_fusion_page():
+    """Confirms the real Fusion fixture (which DOES have a full attributes
+    table) is never mistakenly treated as an external-product listing."""
+    p = _parsed_fusion()
+    assert "external_product" not in p
+    assert p["status"] == "current"
+
+
 # --- Helper functions tested directly, beyond what the fixture exercises ---
 
 def test_parse_mass_bias_rejects_na():

@@ -37,6 +37,22 @@ numeric value and returns None otherwise, so a qualitative value won't
 crash anything, but it also won't be captured anywhere -- verify against
 a real asymmetric ball (e.g. one of the "Asymmetric Core" balls seen in
 the category listing) before trusting mass bias data from this scraper.
+
+Real finding from this deploy's first live smoke test (all 96 real
+products, not just Fusion): roughly a third of SWAG's catalog are
+WooCommerce "External/Affiliate Product" listings -- confirmed via the
+product-type-external CSS class and a total absence of the
+woocommerce-tabs/"Additional information" section (checked against
+swag-apex-pearl-bowling-ball's real page). These redirect to a different
+retailer rather than being a real SWAG-hosted product page, so there's
+no attribute data to scrape at all. This module was only ever built and
+verified against Fusion, a regular/simple product -- the external-
+product case wasn't something the original research surfaced.
+parse_product_page() now returns an {"external_product": True} sentinel
+for these instead of a dict with status=None, which used to crash the DB
+write on the products.status NOT NULL constraint (and pointlessly retry
+3x into the DLQ, since retrying never helps a permanently-external
+listing) -- see _process_one()'s handling of that sentinel.
 """
 import logging
 import re
@@ -282,6 +298,23 @@ def parse_product_page(html: str, url: str) -> dict:
     table = _find_attributes_table(soup)
     attrs = parse_attributes_table(table) if table is not None else {}
 
+    if not attrs:
+        # Real finding from this deploy's first live smoke test: SWAG's
+        # catalog includes WooCommerce "External/Affiliate Product"
+        # listings -- confirmed via the product-type-external CSS class
+        # and a total absence of the woocommerce-tabs/"Additional
+        # information" section (checked against swag-apex-pearl-bowling-
+        # ball's real page). These redirect to a different retailer
+        # rather than being a real SWAG-hosted product page, so there's
+        # no attribute data here at all, not just a differently-worded
+        # Production-status field. Roughly a third of the real catalog
+        # hit this on the first live run -- previously this silently
+        # produced status=None, which crashed on the products.status
+        # NOT NULL constraint (and pointlessly retried 3x into the DLQ,
+        # since retrying never helps a permanently-external listing).
+        # Returning this sentinel lets the caller skip cleanly instead.
+        return {"url": url, "name": name, "external_product": True}
+
     coverstock = parse_coverstock(
         attrs.get("bowling ball coverstock type"),
         attrs.get("bowling ball cover name"),
@@ -469,6 +502,14 @@ def _process_one(job: dict, sqs_client) -> dict:
     logger.info("Scraping %s", url)
     html = fetch_page(url)
     parsed = parse_product_page(html, url)
+
+    if parsed.get("external_product"):
+        logger.warning(
+            "Skipping %s -- WooCommerce external/affiliate product listing, "
+            "no attribute data available to scrape (see parse_product_page's "
+            "docstring)", url,
+        )
+        return {"product_id": None, "sku_count": 0, "image_jobs_published": 0, "skipped": "external_product"}
 
     conn = get_db_connection()
     try:
