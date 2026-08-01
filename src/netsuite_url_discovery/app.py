@@ -25,10 +25,16 @@ for why product PAGES specifically can't be fetched without a browser):
    this session) and, importantly, both render their FULL catalog on one
    page with no pagination -- confirmed by finding zero "page/N"-style or
    "Next"-labeled category-level pagination controls on either page.
-2. Every ball tile links via <a href="https://www.motivbowling.com/n_<id>">
-   -- a plain, crawlable anchor tag (not a JS onclick handler), so this can
-   be parsed by regex the same way the WooCommerce/Craft-CMS discovery
-   modules parse plain <a href> links.
+2. Every ball tile links via a plain, crawlable anchor tag (not a JS
+   onclick handler), so this can be parsed by regex the same way the
+   WooCommerce/Craft-CMS discovery modules parse plain <a href> links.
+   CORRECTED this deploy: the href's raw text is dot-relative
+   (href="./n_1094"), not the absolute https://www.motivbowling.com/n_<id>
+   form originally documented here -- that was read off a live browser's
+   resolved DOM, which normalizes relative hrefs to absolute, so the raw
+   form was never actually seen until this deploy's first live smoke
+   test. See parse_category_page()'s docstring for the real bug this
+   caused and the fix.
 
 This module deliberately does NOT resolve the /n_<id> URL to its canonical
 slug URL at discovery time (an extra fetch per product, and product-page
@@ -52,7 +58,7 @@ import json
 import logging
 import os
 import re
-from urllib.parse import urljoin
+from urllib.parse import urlsplit
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -61,9 +67,12 @@ DEFAULT_CURRENT_CATEGORY_URL = "https://www.motivbowling.com/products/balls/"
 DEFAULT_RETIRED_CATEGORY_URL = "https://www.motivbowling.com/products/balls/retired-balls/"
 
 # NetSuite SuiteCommerce's internal-item-id permalink shape, confirmed real
-# (see module docstring). Matches both a relative "/n_<id>" href and an
-# absolute "https://www.motivbowling.com/n_<id>" href.
-PRODUCT_LINK_RE = re.compile(r'href="([^"]*?/n_\d+)"')
+# (see module docstring). Matches the numeric id out of an href regardless
+# of how that href is expressed (dot-relative, root-relative, absolute) --
+# see parse_category_page()'s docstring for why extracting just the id and
+# rebuilding the URL, rather than resolving the href's path via urljoin,
+# is the correct approach here.
+PRODUCT_ID_RE = re.compile(r'href="[^"]*?n_(\d+)"')
 
 
 def fetch_page(url: str, timeout: int = 30) -> str:
@@ -83,10 +92,30 @@ def fetch_page(url: str, timeout: int = 30) -> str:
 
 def parse_category_page(html: str, base_url: str) -> set:
     """Returns the set of absolute /n_<id> product URLs linked from a
-    category index page. Matches by href pattern only, same
-    theme-resilient content-matching philosophy as the other two
-    discovery modules."""
-    return {urljoin(base_url, m) for m in PRODUCT_LINK_RE.findall(html)}
+    category index page.
+
+    Real bug found via this deploy's first live smoke test: the raw HTML
+    actually uses a dot-relative href, e.g. href="./n_1094" (confirmed
+    via curl against the real retired-balls page), NOT the absolute URL
+    the original research assumed. That research read the href directly
+    off a live browser's rendered DOM/window.location -- which shows the
+    RESOLVED href, not the raw HTML attribute value -- so the dot-relative
+    form was never actually seen. A plain urljoin(base_url, './n_1094')
+    resolves relative to the category page's own directory, producing a
+    broken double-nested URL like
+    https://www.motivbowling.com/products/balls/retired-balls/n_1094
+    (confirmed real: this 404s) instead of the real, working
+    https://www.motivbowling.com/n_1094 (confirmed real: this redirects
+    cleanly to the canonical slug page). These /n_<id> permalinks are a
+    NetSuite SuiteCommerce convention that's always root-level regardless
+    of which category page links to them, so this extracts just the
+    numeric id and rebuilds the URL against the site's root directly,
+    rather than resolving the href's path via urljoin at all -- correct
+    regardless of whether a given href turns out to be dot-relative,
+    root-relative, or fully absolute."""
+    parts = urlsplit(base_url)
+    root = f"{parts.scheme}://{parts.netloc}"
+    return {f"{root}/n_{product_id}" for product_id in PRODUCT_ID_RE.findall(html)}
 
 
 def build_entries(current_urls: set, retired_urls: set) -> list:

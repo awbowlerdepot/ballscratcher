@@ -15,14 +15,20 @@
     - n_618855082571878269 -- seen in the same live link list; which ball
       this resolves to was not checked this session (not needed for what
       this fixture tests).
+
+  CORRECTED via a later deploy's first live smoke test: the real raw href
+  is dot-relative (href="./n_<id>"), confirmed via curl against this
+  exact live page -- see motiv_balls_index.html's header comment and
+  netsuite_url_discovery/app.py's parse_category_page() docstring for the
+  full story.
 -->
 <html>
 <body>
 <div id="product-wrapper">
   <ul class="product-list">
-    <li><a href="https://www.motivbowling.com/n_782172039773743965">Jackal Onyx</a></li>
-    <li><a href="https://www.motivbowling.com/n_767678396680222492">Raptor Reign</a></li>
-    <li><a href="https://www.motivbowling.com/n_618855082571878269">Some Retired Ball</a></li>
+    <li><a href="./n_782172039773743965">Jackal Onyx</a></li>
+    <li><a href="./n_767678396680222492">Raptor Reign</a></li>
+    <li><a href="./n_618855082571878269">Some Retired Ball</a></li>
   </ul>
 </div>
 </body>

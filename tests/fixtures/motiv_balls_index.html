@@ -3,12 +3,22 @@
   (the "currently for sale" catalog index) -- NOT a full page save. Both
   product links (n_782172039773743965 -> Jackal Onyx, n_760032766635683491
   -> Ascend - Green/Teal/Black) are real, captured this session by
-  filtering the live page's <a href> set for the /n_<id> pattern and
+  filtering the live page's <a href> set for the n_<id> pattern and
   separately confirming each one's name via the page's visible tile text.
-  The nav/filter link ("./products/balls/") is also real (seen in the same
-  DOM query) and included deliberately -- it does NOT match the /n_\d+$
-  pattern PRODUCT_LINK_RE looks for, so it should be excluded, unlike a
-  same-looking test that only ever fed the parser clean product links.
+
+  CORRECTED via this deploy's first live smoke test: the real raw href is
+  dot-relative (href="./n_<id>"), confirmed via curl against the live
+  retired-balls page -- the originally-recorded absolute-URL form
+  (href="https://www.motivbowling.com/n_<id>") was read off a live
+  browser's resolved DOM, which normalizes relative hrefs to absolute, so
+  the raw dot-relative form was never actually seen until now. Updated
+  here to match reality -- see netsuite_url_discovery/app.py's
+  parse_category_page() docstring for the real bug this caused.
+
+  The nav/filter link ("./products/balls/") is also real (seen in the
+  same DOM query) and included deliberately -- it does NOT match the
+  n_\d+ pattern PRODUCT_ID_RE looks for, so it should be excluded, unlike
+  a same-looking test that only ever fed the parser clean product links.
 -->
 <html>
 <body>
@@ -19,8 +29,8 @@
     </ul>
   </nav>
   <ul class="product-list">
-    <li><a href="https://www.motivbowling.com/n_782172039773743965">Jackal Onyx</a></li>
-    <li><a href="https://www.motivbowling.com/n_760032766635683491">Ascend - Green/Teal/Black</a></li>
+    <li><a href="./n_782172039773743965">Jackal Onyx</a></li>
+    <li><a href="./n_760032766635683491">Ascend - Green/Teal/Black</a></li>
   </ul>
 </div>
 </body>

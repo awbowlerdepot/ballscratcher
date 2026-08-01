@@ -38,6 +38,23 @@ def test_parse_category_page_finds_real_product_links():
     assert urls == {JACKAL_ONYX, ASCEND}
 
 
+def test_parse_category_page_dot_relative_href_resolves_to_root_not_nested_path():
+    """Real bug found via this deploy's first live smoke test:
+    href="./n_1094" on the retired-balls page, if resolved with urljoin
+    against that page's own URL, produces the broken
+    https://www.motivbowling.com/products/balls/retired-balls/n_1094
+    (confirmed real: this 404s) instead of the real, working
+    https://www.motivbowling.com/n_1094 (confirmed real: this redirects
+    to the canonical slug page). Deliberately uses a category URL nested
+    two directories deep to make sure a regression back to path-relative
+    resolution would be caught -- a shallow base_url wouldn't expose it."""
+    html = '<a href="./n_1094">Villain</a>'
+    deeply_nested_url = "https://www.motivbowling.com/products/balls/retired-balls/"
+    urls = app.parse_category_page(html, deeply_nested_url)
+    assert urls == {"https://www.motivbowling.com/n_1094"}
+    assert "https://www.motivbowling.com/products/balls/retired-balls/n_1094" not in urls
+
+
 def test_parse_category_page_excludes_non_product_nav_link():
     """The "./products/balls/" filter nav link is real (seen on the live
     page) but must NOT match PRODUCT_LINK_RE -- only genuine /n_<id> links
