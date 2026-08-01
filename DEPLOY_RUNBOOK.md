@@ -268,7 +268,7 @@ Confirmed real category-page/attribute-table structure this session
 (see README's "Second manufacturer" section) -- expect this to work, but
 it's never actually run against AWS before.
 
-### 6e. MOTIV (if `MotivBrandId` was set) -- highest real uncertainty
+### 6e. MOTIV (if `MotivBrandId` was set) -- CONFIRMED working
 
 ```bash
 aws lambda invoke --function-name bowling-scraper-netsuite-url-discovery \
@@ -277,12 +277,17 @@ cat /tmp/out.json
 aws logs tail /aws/lambda/bowling-scraper-netsuite-product-scraper --follow
 ```
 
-This is the one piece flagged as an actual bet, not just an unverified
-default: `netsuite_product_scraper.fetch_page()`'s session-cookie
-workaround for MOTIV's product pages (which reject plain non-browser
-requests) was never testable from the sandbox that wrote it -- no
-outbound path to motivbowling.com. **This is the true first test of it.**
-If it fails, check the DLQ:
+`netsuite_product_scraper.fetch_page()`'s session-cookie workaround for
+MOTIV's product pages (which reject plain non-browser requests) was
+flagged as an actual bet -- untestable from the sandbox that wrote it, no
+outbound path to motivbowling.com. **Confirmed working via a real live
+run this session**: after fixing the dot-relative-href URL discovery bug
+(see netsuite_url_discovery's docstring), a full batch of 202 real
+product URLs was scraped end-to-end with zero errors -- every
+`Scraping <url>` log line was immediately followed by a successful
+`Upserted product <id> (N SKUs)`, no 404s, no DLQ hits. The session-cookie
+approach holds up in production; the URL bug was the only real issue.
+If it ever does fail, check the DLQ:
 
 ```bash
 aws sqs get-queue-attributes \
