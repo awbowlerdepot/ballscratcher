@@ -111,6 +111,28 @@ docstring), and save those ids as `SwagBrandId`/`MotivBrandId`. Both can
 also be added later via a stack update -- nothing about the initial
 deploy locks you out of enabling them afterward.
 
+If you also want Storm/Roto Grip/900 Global enabled, they're three
+separate `brands` rows (one commercebuild site, three brands, same
+one-manufacturer/multiple-brands shape as Brunswick/Radical/DV8) with
+`source_platform = 'commercebuild'` and no `sitemap_url` (there's no
+per-brand sitemap -- `CommercebuildCategoryUrl` in step 5 covers all
+three via its facet filter):
+
+```sql
+insert into manufacturers (name) values ('Storm Products, Inc.') returning id;
+insert into brands (manufacturer_id, name, base_url, source_platform)
+values ('<manufacturer-id>', 'Storm', 'https://www.stormbowling.com', 'commercebuild')
+returning id;
+insert into brands (manufacturer_id, name, base_url, source_platform)
+values ('<manufacturer-id>', 'Roto Grip', 'https://www.stormbowling.com', 'commercebuild')
+returning id;
+insert into brands (manufacturer_id, name, base_url, source_platform)
+values ('<manufacturer-id>', '900 Global', 'https://www.stormbowling.com', 'commercebuild')
+returning id;
+```
+
+Save those three ids as `StormBrandId`/`RotoGripBrandId`/`Global900BrandId`.
+
 ## 5. Deploy
 
 ```bash
@@ -137,6 +159,8 @@ Here's what to give it:
 | `SwagBrandId` | Only if enabling SWAG | SWAG's id from step 4, else leave blank |
 | `MotivCurrentCategoryUrl` / `MotivRetiredCategoryUrl` | No | Default to MOTIV's real values |
 | `MotivBrandId` | Only if enabling MOTIV | MOTIV's id from step 4, else leave blank |
+| `CommercebuildCategoryUrl` | No | Defaults to the real stormbowling.com bowling-balls category URL |
+| `StormBrandId` / `RotoGripBrandId` / `Global900BrandId` | Only if enabling commercebuild | The three ids from step 4, else leave blank (a blank id makes `CommercebuildUrlDiscoveryFunction` skip that brand entirely, see its module docstring -- you can enable them individually, not all-or-nothing) |
 | `BigCommerceSecretArn` | No | Leave blank until step 7's BowlerDepot rollout |
 
 Accept the SAM CLI's other prompts (stack name, region, confirm changes,
@@ -265,7 +289,46 @@ aws sqs get-queue-attributes \
 and see README's "Third manufacturer: MOTIV Bowling" section for the
 next things to try if the cookie-session approach doesn't hold up.
 
-### 6f. bowwwl.com cross-check
+### 6f. commercebuild (Storm/Roto Grip/900 Global) -- if any of the three brand ids were set
+
+No schedule wired up for `CommercebuildUrlDiscoveryFunction` yet, same
+as SWAG/MOTIV -- invoke manually. Its one invocation covers whichever of
+the three brands got a real id (see its module docstring -- a brand with
+no id in `BRAND_IDS_JSON` is skipped, logged, not a hard failure):
+
+```bash
+aws lambda invoke --function-name bowling-scraper-commercebuild-url-discovery \
+  --payload '{}' --cli-binary-format raw-in-base64-out /tmp/out.json
+cat /tmp/out.json
+aws logs tail /aws/lambda/bowling-scraper-commercebuild-product-scraper --follow
+```
+
+This platform got the most real-data verification of any manufacturer
+added this session (see COMMERCEBUILD_SCOPING.md) -- template uniformity
+across all three brands, the Tech Data PDF's table structure, and the
+image markup were all confirmed via direct curl/pdfplumber against real
+pages, not inferred. The one genuinely untested piece is the live
+end-to-end run itself (no outbound path from the sandbox that built it),
+so watch for two specific things on first run:
+
+- `review_queue` entries with `source = 'commercebuild_html_vs_pdf'` --
+  expected occasionally (real, disclosed HTML-vs-PDF disagreements are
+  possible), but a mismatch on *every* product would suggest
+  `parse_product_page()`'s field-shape assumptions don't hold for a
+  brand/product beyond the three checked this session.
+- the DLQ, if scraping fails outright:
+
+```bash
+aws sqs get-queue-attributes \
+  --queue-url $(aws sqs get-queue-url --queue-name bowling-scraper-commercebuild-product-scrape-dlq --query QueueUrl --output text) \
+  --attribute-names ApproximateNumberOfMessages
+```
+
+Current products only -- archived/retired Storm/Roto Grip/900 Global
+balls aren't covered by this function (see COMMERCEBUILD_SCOPING.md's
+open archive-URL-discovery risk).
+
+### 6g. bowwwl.com cross-check
 
 Runs weekly on its own schedule once there are `published = true`,
 `status = 'current'` products in the DB for it to check (won't do
@@ -283,7 +346,7 @@ Remember the ToS decision behind this function (see README's "QA
 cross-checks" section) before pointing it at a large product catalog --
 it's scheduled weekly specifically to keep load modest.
 
-### 6g. BowlerDepot reconciliation -- only after step 3's BigCommerce secret exists
+### 6h. BowlerDepot reconciliation -- only after step 3's BigCommerce secret exists
 
 Ships with its daily schedule `Enabled: false` on purpose. Once you have
 real BowlerDepot API credentials in Secrets Manager:
@@ -308,15 +371,22 @@ real BowlerDepot API credentials in Secrets Manager:
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
   `-pdf-parse-dlq`, `-image-process-dlq`, `-woocommerce-product-scrape-dlq`,
-  `-netsuite-product-scrape-dlq`) -- a nonzero count means something's
-  failing repeatedly, not just a transient blip (Lambda retries up to
-  `maxReceiveCount` before landing there).
-- **SWAG and MOTIV URL discovery have no automated schedule** even once
-  their `BrandId` parameters are set -- add a `Schedule` event to
-  `WooCommerceUrlDiscoveryFunction`/`NetsuiteUrlDiscoveryFunction` in
+  `-netsuite-product-scrape-dlq`, `-commercebuild-product-scrape-dlq`) --
+  a nonzero count means something's failing repeatedly, not just a
+  transient blip (Lambda retries up to `maxReceiveCount` before landing
+  there).
+- **SWAG, MOTIV, and commercebuild URL discovery have no automated
+  schedule** even once their brand id parameters are set -- add a
+  `Schedule` event to `WooCommerceUrlDiscoveryFunction`/
+  `NetsuiteUrlDiscoveryFunction`/`CommercebuildUrlDiscoveryFunction` in
   `template.yaml` yourself once you're ready for them to run
   unattended (matching `UrlDiscoveryFunction`'s existing `rate(1 day)`
-  pattern), or keep invoking manually.
+  pattern), or keep invoking manually. For
+  `CommercebuildUrlDiscoveryFunction` specifically, keep the daily rate
+  slow enough to respect stormbowling.com's `Crawl-delay: 10` -- the
+  function's own inter-brand sleep already handles spacing *within* one
+  invocation, a schedule just controls how often that whole invocation
+  repeats.
 - **Rotating the admin API token**: update the Secrets Manager secret's
   value; already-warm `AdminApiAuthorizerFunction` containers cache the
   old token for their remaining lifetime (see that module's docstring) --
@@ -332,4 +402,4 @@ real BowlerDepot API credentials in Secrets Manager:
 | `info_sheet_url`/mass bias never populated | Confirm you're on the commit that fixed `parse_resources()`'s "Download"-link-text bug (see README) |
 | MOTIV products never scrape | `bowling-scraper-netsuite-product-scrape-dlq`, then `fetch_page()`'s docstring in `netsuite_product_scraper/app.py` for next steps |
 | Images look cropped wrong | Pull a few from `ImageBucket` and eyeball against `image_processor/app.py`'s bbox-detection assumptions |
-| BowlerDepot reconciliation reports nothing, ever | `CUSTOM_FIELD_NAME_CANDIDATES` mapping is probably wrong for your real store -- see step 6g |
+| BowlerDepot reconciliation reports nothing, ever | `CUSTOM_FIELD_NAME_CANDIDATES` mapping is probably wrong for your real store -- see step 6h |
