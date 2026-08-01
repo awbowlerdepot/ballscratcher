@@ -266,6 +266,101 @@ def test_skus_from_table_no_psa_column():
     assert skus[0]["psa"] is None
 
 
+# Exact real shape confirmed via pdfplumber.extract_tables() against the
+# real Roto Grip Gremlin Tech Data PDF this deploy's first live smoke
+# test -- a real header row followed by one data row per weight, totally
+# different from Alpha Crux's single-row/newline-joined shape. This is
+# the case that silently produced 0 SKUs (not even a warning) under the
+# old row[0]-only, newline-split-only implementation.
+REAL_GREMLIN_TABLE = [
+    ["WEIGHT", "RG", "DIFF", "PSA"],
+    ["16 lbs.", "2.50", ".056", ".011"],
+    ["15 lbs.", "2.50", ".058", ".010"],
+    ["14 lbs.", "2.54", ".058", ".008"],
+    ["13 lbs.", "2.57", ".032", ".010"],
+    ["12 lbs.", "2.59", ".029", ".008"],
+]
+
+
+def test_skus_from_table_real_gremlin_long_format_shape():
+    skus = app._skus_from_table(REAL_GREMLIN_TABLE)
+    assert len(skus) == 5
+    by_weight = {s["weight_lbs"]: s for s in skus}
+    # No-leading-zero DIFF/PSA values (".056", ".011") must parse as
+    # 0.056/0.011, not 56.0/11.0 -- see _to_float's docstring.
+    assert by_weight[16] == {"weight_lbs": 16, "rg": 2.50, "differential": 0.056, "mass_bias": None, "psa": 0.011}
+    assert by_weight[12] == {"weight_lbs": 12, "rg": 2.59, "differential": 0.029, "mass_bias": None, "psa": 0.008}
+
+
+def test_skus_from_table_gremlin_header_row_not_mistaken_for_data():
+    """The header row itself ("WEIGHT"/"RG"/"DIFF"/"PSA") must never
+    produce a spurious SKU -- none of its cells contain a digit, so the
+    weight-token match correctly never fires on it."""
+    skus = app._skus_from_table(REAL_GREMLIN_TABLE)
+    assert all(isinstance(s["weight_lbs"], int) for s in skus)
+    assert len(skus) == 5  # not 6 -- header row excluded
+
+
+# Exact real shape confirmed via pdfplumber.extract_tables() against the
+# real Storm Phaze II Tech Data PDF this deploy's first live smoke test --
+# same "one row, newline-joined" family as Alpha Crux, but with an extra
+# blank leading column (shifting weight/rg/diff over by one index) and no
+# PSA column at all. pdfplumber also captured a second, spurious row from
+# the page's "DESIGN INTENT:" section heading as part of the same table --
+# real, confirmed noise that must be skipped, not parsed as data.
+REAL_PHAZE_II_TABLE = [
+    [None, "16 lb\n15 lb\n14 lb\n13 lb\n12 lb", "2.48\n2.48\n2.53\n2.59\n2.65", ".051\n.051\n.050\n.045\n.035"],
+    ["DESIGN INTENT:", None, None, None],
+]
+
+
+def test_skus_from_table_real_phaze_ii_shifted_columns_no_psa():
+    skus = app._skus_from_table(REAL_PHAZE_II_TABLE)
+    assert len(skus) == 5
+    by_weight = {s["weight_lbs"]: s for s in skus}
+    # Old fixed-index code would have read this DIFF value into psa
+    # instead -- confirms the real bug is actually fixed, not just that
+    # SOME data comes back.
+    assert by_weight[16] == {"weight_lbs": 16, "rg": 2.48, "differential": 0.051, "mass_bias": None, "psa": None}
+    assert by_weight[12]["differential"] == 0.035
+    assert all(s["psa"] is None for s in skus)  # Phaze II genuinely has no PSA column
+
+
+def test_skus_from_table_phaze_ii_design_intent_row_ignored():
+    """The spurious "DESIGN INTENT:" row pdfplumber captured as part of
+    the same table must not produce a 6th bogus SKU or raise."""
+    skus = app._skus_from_table(REAL_PHAZE_II_TABLE)
+    assert len(skus) == 5
+
+
+# --- _to_float (real bug: no-leading-zero values) ---
+
+def test_to_float_no_leading_zero_real_bug():
+    """Real bug found via this deploy's first live smoke test: both
+    Gremlin's and Phaze II's actual PDFs use ".051"/".056"-style values
+    with no leading zero. The old regex required a digit before the
+    decimal point and silently matched only the post-decimal digits,
+    turning 0.051 into 51.0 -- a thousand-x corruption that would have
+    written obviously-wrong data straight into product_skus."""
+    assert app._to_float(".051") == 0.051
+    assert app._to_float(".011") == 0.011
+
+
+def test_to_float_leading_zero_still_works():
+    assert app._to_float("0.052") == 0.052
+    assert app._to_float("2.48") == 2.48
+
+
+def test_to_float_negative_no_leading_zero():
+    assert app._to_float("-.05") == -0.05
+
+
+def test_to_float_none_and_empty():
+    assert app._to_float(None) is None
+    assert app._to_float("") is None
+    assert app._to_float("n/a") is None
+
+
 # --- cross_check_html_vs_pdf ---
 
 def test_cross_check_flags_real_disagreement():

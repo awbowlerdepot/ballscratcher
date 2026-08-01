@@ -56,25 +56,41 @@ Brunswick's lazy-load placeholder bug):
    See parse_tech_data_pdf() for the real column layout (weight, RG,
    Diff, PSA -- no mass_bias column observed on the one PDF checked).
 
+**Confirmed via this deploy's first live smoke test (real CloudWatch logs
++ real pdfplumber checks against the actual failing PDFs, not guessed):**
+- Tech Data PDF table shape is genuinely NOT uniform across the catalog.
+  Three real, different shapes confirmed (Alpha Crux/Ion Pro Solid one
+  way, Roto Grip Gremlin a completely different header+rows way, Storm
+  Phaze II a column-shifted variant of the first with no PSA column at
+  all) -- see _skus_from_table()'s docstring for the full detail and the
+  general column-detection approach that now handles all three instead
+  of assuming one.
+- 900 Global's Viking Conquest Tech Data PDF is genuinely image-based (0
+  extractable chars, confirmed via pdfplumber) -- not a shape bug, a real
+  platform limitation this scraper can't recover from without OCR (not
+  implemented). See parse_tech_data_pdf()'s docstring.
+- _to_float() had a real, separate, more serious bug: its regex required
+  a digit before the decimal point, so real values with no leading zero
+  (".051", confirmed on both Gremlin's and Phaze II's actual DIFF/PSA
+  columns) silently became 51.0 instead of 0.051 -- a thousand-x
+  corruption, not caught by any test since every fixture this session
+  happened to use leading-zero values. Fixed.
+
 **Not yet confirmed, flagged rather than assumed:**
 - The exact raw tag wrapping the product name/H1 and the Downloads
   section's link markup were only ever seen through the readability-tool
-  view, not raw curl -- parse_product_name() and parse_tech_data_pdf_url()
-  are built against reasonable, standard-HTML assumptions (a real `<h1>`,
-  real `<a href="...pdf">` tags) but should be treated as first-deploy
-  smoke-test targets, same as every other real bug this project has found
-  by deploying and checking CloudWatch logs rather than by guessing
-  further from a sandbox with no way to fully verify.
-- Whether every product's Tech Data PDF follows the identical table shape
-  as Alpha Crux's (n=1 real pdfplumber check). Different products/brands
-  may use different PDF templates (Roto Grip's was even named
-  differently: "Tech Doc_HP3_GREMLIN.pdf" vs "Alpha Crux Tech Data
-  Final.pdf") -- parse_tech_data_pdf() skips a table it can't confidently
-  parse rather than guessing, but hasn't been checked against more than
-  one real PDF.
+  view, not raw curl -- parse_product_name() is built against reasonable,
+  standard-HTML assumptions (a real `<h1>`) but hasn't been independently
+  smoke-tested the way parse_tech_data_pdf_url() now has (confirmed
+  working correctly against real Gremlin/Viking Conquest/Phaze II link
+  text this deploy).
 - coverstock/core-type parsing below is a reasonable-effort mapping from
   the real field values seen this session, not exhaustively checked
   against every product in the catalog.
+- Whether a fourth, still-undiscovered Tech Data PDF table shape exists
+  beyond the three found so far -- _skus_from_table()'s content-based
+  column detection is general rather than hardcoded to these three, but
+  that's a design choice to be more robust against one, not a guarantee.
 """
 import io
 import logging
@@ -116,9 +132,18 @@ def parse_spec_fields(html: str) -> dict:
 
 
 def _to_float(value):
+    """Real bug found via this deploy's first live smoke test: the old
+    pattern (`-?\\d+\\.?\\d*`) requires a digit before the decimal point,
+    so real Tech Data PDF values with no leading zero -- confirmed real on
+    both Roto Grip Gremlin's and Storm Phaze II's actual DIFF/PSA columns,
+    e.g. ".051", ".056" -- matched only the digits *after* the dot
+    ("051") and silently returned 51.0 instead of 0.051. A thousand-x
+    corruption that would have written obviously-wrong-but-plausible-
+    looking numbers straight into product_skus. The `\\.\\d+` alternative
+    below covers the no-leading-zero case explicitly."""
     if value is None:
         return None
-    match = re.search(r"-?\d+\.?\d*", str(value))
+    match = re.search(r"-?(?:\d+\.?\d*|\.\d+)", str(value))
     return float(match.group()) if match else None
 
 
@@ -271,67 +296,157 @@ def parse_product_page(html: str, url: str) -> dict:
     }
 
 
+WEIGHT_TOKEN_RE = re.compile(r"^\s*\d{1,2}\s*lbs?\.?\s*$", re.I)
+
+
 def _skus_from_table(table: list) -> list:
     """Pure logic for turning one pdfplumber-extracted table into a list
     of per-weight SKU dicts -- split out from parse_tech_data_pdf() so it
-    can be tested directly against a synthetic table (matching the real
-    confirmed shape) without needing to generate actual PDF bytes.
+    can be tested directly against synthetic tables without needing to
+    generate actual PDF bytes.
 
-    Real, confirmed structure (Alpha Crux Tech Data PDF, checked via
-    pdfplumber.extract_tables() this session): a SINGLE table row whose
-    cells each hold newline-joined values for every weight in matching
-    order -- not one row per weight. Real example:
-      col 0 (weight): "16 lb\\n15 lb\\n14 lb\\n13 lb\\n12 lb"
-      col 1 (RG):     "2.48\\n2.48\\n2.52\\n2.56\\n2.58"
-      col 2 (Diff):   "0.052\\n0.053\\n0.051\\n0.034\\n0.031"
-      col 3 (PSA):    "0.017\\n0.018\\n0.016\\n0.011\\n0.009"
-    No mass_bias/MB column observed on this real example. Skips (doesn't
-    guess at) any table whose columns don't line up count-wise, rather
-    than silently mis-pairing values -- this is based on one real PDF, and
-    other products' PDFs may have a different shape (see module
-    docstring)."""
-    if not table or not table[0] or len(table[0]) < 3:
+    Originally built against ONE real PDF (Storm Alpha Crux) and assumed
+    every Tech Data PDF used that same shape. This deploy's first live
+    smoke test (see COMMERCEBUILD_SCOPING.md) proved that wrong -- three
+    real, confirmed, genuinely different shapes exist across this single
+    catalog:
+
+    1. Alpha Crux / Storm Ion Pro Solid: ONE row, 4 columns in a fixed
+       [weight, rg, diff, psa] order, each cell holding all 5 weights'
+       values newline-joined ("16 lb\\n15 lb\\n...").
+    2. Roto Grip Gremlin: a real HEADER row ("WEIGHT"/"RG"/"DIFF"/"PSA")
+       followed by 5 separate DATA rows, one row per weight, each cell a
+       single un-joined value ("16 lbs.", "2.50", etc.) -- the more
+       conventional "long" table shape.
+    3. Storm Phaze II: same "one row, newline-joined" shape as #1, but
+       with an extra blank leading column (`[None, weight, rg, diff]`
+       instead of `[weight, rg, diff, psa]`) shifting every field over by
+       one index, AND no PSA column at all for this product. The old
+       fixed-index version silently read DIFF values into the PSA slot
+       here instead of catching the shift.
+
+    Rather than hardcoding three separate branches (fragile against a
+    still-undiscovered fourth shape), this locates the weight column by
+    CONTENT -- the one whose cell(s), split on newline, match
+    WEIGHT_TOKEN_RE -- rather than assuming it's always column 0. Whether
+    that column holds one token (case 2: "long" mode, one SKU per row) or
+    multiple newline-joined tokens (cases 1/3: "wide" mode, one row holds
+    every SKU) determines how the remaining columns get read. In wide
+    mode, the remaining non-blank columns are taken in their original
+    left-to-right order as [rg, diff, psa] -- correctly dropping Phaze
+    II's blank leading column and correctly leaving psa=None when a
+    product's PDF (like Phaze II's) doesn't report one, instead of
+    mis-assigning a real diff value into the psa slot.
+
+    A row/table where no column's tokens all look like weight values
+    (e.g. Gremlin's own header row, or a stray "DESIGN INTENT:" row
+    pdfplumber sometimes captures as part of the same table -- both
+    confirmed real) is skipped rather than guessed at."""
+    if not table:
         return []
 
-    row = table[0]
-    weight_cells = (row[0] or "").split("\n")
-    rg_cells = (row[1] or "").split("\n")
-    diff_cells = (row[2] or "").split("\n")
-    psa_cells = (row[3] or "").split("\n") if len(row) > 3 and row[3] else [None] * len(weight_cells)
+    # Wide mode: find the first row containing a column whose SINGLE cell
+    # holds multiple newline-joined weight tokens -- that row alone is
+    # the whole table's data.
+    for row in table:
+        for idx, cell in enumerate(row):
+            tokens = [t.strip() for t in (cell or "").split("\n") if t.strip()]
+            if len(tokens) > 1 and all(WEIGHT_TOKEN_RE.match(t) for t in tokens):
+                other_cols = [
+                    (row[i] or "").split("\n")
+                    for i in range(len(row))
+                    if i != idx and (row[i] or "").strip()
+                ]
+                if not all(len(c) == len(tokens) for c in other_cols):
+                    logger.warning(
+                        "Tech Data PDF wide-format table: weight column has %d values but "
+                        "other columns don't all match (%s) -- skipping, not guessing",
+                        len(tokens), [len(c) for c in other_cols],
+                    )
+                    return []
+                skus = []
+                for i, w in enumerate(tokens):
+                    weight_match = re.search(r"(\d{1,2})", w)
+                    if not weight_match:
+                        continue
+                    values = [c[i].strip() for c in other_cols]
+                    skus.append({
+                        "weight_lbs": int(weight_match.group(1)),
+                        "rg": _to_float(values[0]) if len(values) > 0 else None,
+                        "differential": _to_float(values[1]) if len(values) > 1 else None,
+                        "mass_bias": None,
+                        "psa": _to_float(values[2]) if len(values) > 2 else None,
+                    })
+                return skus
 
-    if not (len(weight_cells) == len(rg_cells) == len(diff_cells) == len(psa_cells)):
-        logger.warning(
-            "Tech Data PDF table column lengths don't match (%d/%d/%d/%d) -- skipping, not guessing",
-            len(weight_cells), len(rg_cells), len(diff_cells), len(psa_cells),
-        )
-        return []
-
+    # Long mode: one row per weight, each row's weight cell a single token.
     skus = []
-    for w, rg, diff, psa in zip(weight_cells, rg_cells, diff_cells, psa_cells):
-        weight_match = re.search(r"(\d{1,2})", w)
-        if not weight_match:
+    weight_col_idx = None
+    for row in table:
+        for idx, cell in enumerate(row):
+            token = (cell or "").strip()
+            if token and WEIGHT_TOKEN_RE.match(token):
+                weight_col_idx = idx
+                break
+        if weight_col_idx is not None:
+            break
+
+    if weight_col_idx is None:
+        return []
+
+    for row in table:
+        if weight_col_idx >= len(row):
             continue
+        token = (row[weight_col_idx] or "").strip()
+        weight_match = re.search(r"(\d{1,2})", token) if WEIGHT_TOKEN_RE.match(token) else None
+        if not weight_match:
+            continue  # header row or unrelated row (e.g. "DESIGN INTENT:") -- skip, don't guess
+        other_values = [
+            (row[i] or "").strip()
+            for i in range(len(row))
+            if i != weight_col_idx and (row[i] or "").strip()
+        ]
         skus.append({
             "weight_lbs": int(weight_match.group(1)),
-            "rg": _to_float(rg),
-            "differential": _to_float(diff),
-            "mass_bias": None,  # not observed in any real Tech Data PDF checked so far
-            "psa": _to_float(psa),
+            "rg": _to_float(other_values[0]) if len(other_values) > 0 else None,
+            "differential": _to_float(other_values[1]) if len(other_values) > 1 else None,
+            "mass_bias": None,
+            "psa": _to_float(other_values[2]) if len(other_values) > 2 else None,
         })
     return skus
 
 
 def parse_tech_data_pdf(pdf_bytes: bytes) -> list:
     """Parses the per-weight spec table out of a Tech Data PDF -- see
-    _skus_from_table()'s docstring for the real, confirmed table shape
-    this is built against."""
+    _skus_from_table()'s docstring for the real, confirmed table shapes
+    this is built against.
+
+    Real finding this deploy's first live smoke test: 900 Global's Viking
+    Conquest Tech Data PDF is genuinely image-based -- confirmed via
+    pdfplumber (0 chars, 4 embedded images tiling the full page, 0 lines/
+    rects) -- not a shape this function could ever parse regardless of
+    table-detection logic, since there's no real text layer to read.
+    OCR could theoretically recover it but that's real added scope
+    (Tesseract in Lambda, reliability on numeric tables) not taken on
+    here. Logs a distinct warning for this case specifically so it's
+    never confused with "found a table but the shape didn't match" in the
+    logs -- they need different fixes."""
     import pdfplumber
 
     skus = []
+    total_chars = 0
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages:
+            total_chars += len(page.chars)
             for table in page.extract_tables():
                 skus.extend(_skus_from_table(table))
+
+    if not skus and total_chars == 0:
+        logger.warning(
+            "Tech Data PDF has no extractable text (likely image-based/scanned) -- "
+            "OCR would be required, not implemented, no per-weight data will be stored"
+        )
+
     return skus
 
 
