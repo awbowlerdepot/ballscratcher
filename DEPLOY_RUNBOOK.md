@@ -20,8 +20,12 @@ with your own AWS account.
 - `psql` (or any Postgres client) able to reach whatever instance you
   provision in step 1.
 - Python 3.13 locally isn't required -- `sam build` uses a Lambda-
-  compatible build image via Docker, or `--use-container` if your local
-  Python version differs. Have Docker running either way, simplest path.
+  compatible build image via Docker when `--use-container` is set, which
+  matters if your local Python version differs (this repo's own
+  `samconfig.toml` sets `use_container = true` under
+  `[default.build.parameters]`, so plain `sam build` already does this
+  without needing the flag typed out each time). Have Docker running
+  either way, simplest path.
 
 ## 1. Provision Postgres
 
