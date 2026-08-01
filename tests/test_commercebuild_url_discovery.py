@@ -105,6 +105,103 @@ def test_discover_urls_for_brand_warns_at_per_page_ceiling():
     assert len(urls) == 5  # confirms it still returns everything found, just would log a warning
 
 
+# --- classify_sitemap_url / discover_urls_from_sitemap ---
+
+# Real <loc> entries confirmed via curl against
+# https://www.stormbowling.com/sitemap_products.xml this session (958 real
+# entries total, this is a representative slice): a current ball per
+# brand, an archived ball per brand, non-ball merchandise sharing the same
+# brand-prefixed shape, and the one confirmed real nested-path entry that
+# must be excluded (not a flat single-segment URL).
+REAL_SITEMAP_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+<url><loc>https://www.stormbowling.com/storm-alpha-crux-bowling-ball</loc></url>
+<url><loc>https://www.stormbowling.com/storm-absolute-bowling-ball</loc></url>
+<url><loc>https://www.stormbowling.com/roto-grip-tnt-bowling-ball</loc></url>
+<url><loc>https://www.stormbowling.com/900-global-cove-bowling-ball</loc></url>
+<url><loc>https://www.stormbowling.com/900-global-altered-reality-bowling-ball</loc></url>
+<url><loc>https://www.stormbowling.com/roto-grip-3-ball-roller-bag-competitor</loc></url>
+<url><loc>https://www.stormbowling.com/roto-grip-classic-hoodie</loc></url>
+<url><loc>https://www.stormbowling.com/products/featured/bowling-balls-archive/bbproi-roto-grip-clear-poly</loc></url>
+</urlset>
+"""
+
+
+def test_classify_sitemap_url_storm():
+    assert app.classify_sitemap_url("https://www.stormbowling.com/storm-alpha-crux-bowling-ball") == "storm"
+    assert app.classify_sitemap_url("https://www.stormbowling.com/storm-absolute-bowling-ball") == "storm"
+
+
+def test_classify_sitemap_url_roto_grip():
+    assert app.classify_sitemap_url("https://www.stormbowling.com/roto-grip-tnt-bowling-ball") == "roto_grip"
+
+
+def test_classify_sitemap_url_global_900():
+    assert app.classify_sitemap_url("https://www.stormbowling.com/900-global-cove-bowling-ball") == "global_900"
+
+
+def test_classify_sitemap_url_matches_non_ball_products_too():
+    """By design (see docstring): URL-shape classification can't tell
+    balls from bags/apparel -- that filtering happens per-page in
+    commercebuild_product_scraper.py instead. A bag URL still classifies
+    to its brand here."""
+    assert app.classify_sitemap_url("https://www.stormbowling.com/roto-grip-3-ball-roller-bag-competitor") == "roto_grip"
+    assert app.classify_sitemap_url("https://www.stormbowling.com/roto-grip-classic-hoodie") == "roto_grip"
+
+
+def test_classify_sitemap_url_excludes_nested_path():
+    """Real confirmed exception: one sitemap entry uses a nested
+    collections path instead of the flat canonical form. Must return None,
+    not misroute it."""
+    assert app.classify_sitemap_url(
+        "https://www.stormbowling.com/products/featured/bowling-balls-archive/bbproi-roto-grip-clear-poly"
+    ) is None
+
+
+def test_classify_sitemap_url_no_brand_prefix_match():
+    assert app.classify_sitemap_url("https://www.stormbowling.com/some-unrelated-page") is None
+
+
+def test_discover_urls_from_sitemap_buckets_by_brand_including_archived():
+    calls = []
+
+    def fake_fetch(url):
+        calls.append(url)
+        return REAL_SITEMAP_XML
+
+    buckets = app.discover_urls_from_sitemap(fake_fetch)
+    assert len(calls) == 1  # fetched once, not per brand
+    assert buckets["storm"] == {
+        "https://www.stormbowling.com/storm-alpha-crux-bowling-ball",
+        "https://www.stormbowling.com/storm-absolute-bowling-ball",
+    }
+    assert buckets["roto_grip"] == {
+        "https://www.stormbowling.com/roto-grip-tnt-bowling-ball",
+        "https://www.stormbowling.com/roto-grip-3-ball-roller-bag-competitor",
+        "https://www.stormbowling.com/roto-grip-classic-hoodie",
+    }
+    assert buckets["global_900"] == {
+        "https://www.stormbowling.com/900-global-cove-bowling-ball",
+        "https://www.stormbowling.com/900-global-altered-reality-bowling-ball",
+    }
+
+
+def test_discover_urls_from_sitemap_excludes_nested_path_entry():
+    def fake_fetch(url):
+        return REAL_SITEMAP_XML
+
+    buckets = app.discover_urls_from_sitemap(fake_fetch)
+    all_urls = buckets["storm"] | buckets["roto_grip"] | buckets["global_900"]
+    assert "https://www.stormbowling.com/products/featured/bowling-balls-archive/bbproi-roto-grip-clear-poly" not in all_urls
+
+
+def test_discover_urls_from_sitemap_always_has_all_three_keys():
+    """Even with no matching entries, callers shouldn't need a
+    .get(..., set()) fallback."""
+    buckets = app.discover_urls_from_sitemap(lambda url: "<urlset></urlset>")
+    assert buckets == {"storm": set(), "roto_grip": set(), "global_900": set()}
+
+
 # --- build_entries ---
 
 def test_build_entries_all_lastmod_none_and_sorted():

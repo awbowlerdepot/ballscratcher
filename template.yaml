@@ -97,7 +97,26 @@ Parameters:
       custom1 facet query param (see src/commercebuild_url_discovery/app.py).
       One site serves all three commercebuild brands, so unlike
       SwagCategoryUrl/MotivCurrentCategoryUrl this single URL covers all
-      of them.
+      of them. Only ever finds CURRENT products (this category listing has
+      no retired/archived items) -- see CommercebuildSitemapUrl below for
+      how archived products get discovered.
+  CommercebuildSitemapUrl:
+    Type: String
+    Default: https://www.stormbowling.com/sitemap_products.xml
+    Description: >
+      Confirmed real this session: a public, un-gated sitemap listing all
+      958 commercebuild products (balls AND non-ball merchandise mixed
+      together) in their flat canonical URL form, covering BOTH current
+      and archived products side by side. This replaces the "Bowling
+      Balls Archive" collection listing as the archived-product discovery
+      source -- that collection page was found to 302-redirect to
+      /user/login (gated behind auth), which is the real reason its own
+      product links 404'd on a bare request (see
+      src/commercebuild_url_discovery/app.py's module docstring). The
+      sitemap doesn't distinguish current/archived/non-ball itself --
+      CommercebuildProductScraperFunction classifies each URL by its own
+      page's breadcrumb trail at scrape time and skips non-ball products
+      gracefully (see that function's classify_product_status()).
   StormBrandId:
     Type: String
     Default: ""
@@ -738,6 +757,7 @@ Resources:
       Environment:
         Variables:
           CATEGORY_URL: !Ref CommercebuildCategoryUrl
+          SITEMAP_URL: !Ref CommercebuildSitemapUrl
           # Combines the three per-brand parameters into the single JSON
           # blob commercebuild_url_discovery/app.py's handler expects
           # (BRAND_IDS_JSON) -- keeps the established one-parameter-per-

@@ -329,3 +329,82 @@ flat URLs -- before url_discovery can be written for the retired-balls
 side of this scraper. The current-product side (61 balls) could
 reasonably be built and shipped first, with archived-product coverage
 (~500+ balls) following once the URL-discovery question is resolved.
+
+## RESOLVED, later session: URL discovery fixed, but the archived-page TEMPLATE finding above is now STALE, not just extended
+
+Picked this back up in a later session to resolve the one remaining risk
+above. Real curl this session found the actual root cause of the archive
+collection listing's own links 404ing: that collection URL
+(`/products/featured/bowling-balls-archive/`) now 302-redirects to
+`/user/login` -- it's gated behind authentication. No amount of Referer
+headers or cookie jars was going to fix that; it's just not usable as a
+discovery source anymore, full stop.
+
+The real fix: `sitemap_index.xml` (confirmed real, plain XML this time,
+not gzipped) points to `sitemap_products.xml`, which is public, lists 958
+real product URLs in flat canonical form, and directly includes archived
+products (`900-global-altered-reality-bowling-ball`,
+`storm-absolute-bowling-ball`) right alongside current ones
+(`storm-alpha-crux-bowling-ball`) -- no auth, no broken collection crawl
+needed at all. See src/commercebuild_url_discovery/app.py's
+discover_urls_from_sitemap().
+
+**More importantly, re-verifying the archived-page TEMPLATE itself (not
+just the URL-discovery problem) this session found the "Major new
+finding" section above is now wrong, not just incomplete.** That section
+claimed archived pages have no Brand field, no JS variant shell, and the
+full per-weight RG/Diff/PSA table sitting directly in raw HTML. Real curl
+against three archived products this session -- one per brand (Storm
+Absolute, Roto Grip TNT, 900 Global Altered Reality) -- found:
+
+- Zero `RG:`/`Diff:`/`PSA:` occurrences anywhere in any of the three
+  pages' raw HTML (grepped directly, case-insensitive, whole page).
+- The `div-variant-product`/`loadCBCustomisation` JS-locked weight-variant
+  widget IS present on archived pages, same as current ones (11
+  occurrences of `div-variant-product` on the Absolute page, versus the
+  original research's claim of it being "a genuinely empty shell...
+  absent" on archived pages).
+- No `.pdf` hrefs anywhere on any of the three pages (0 confirmed,
+  matching the original research's Downloads-section observation, but now
+  confirmed 3-for-3 across all three brands instead of n=1).
+
+The most likely explanation is that stormbowling.com was redesigned
+between the original research session and this one -- the archived-page
+template genuinely used to look the way the original research described,
+and doesn't anymore. Whatever the cause, today's live site is the ground
+truth this scraper is built against, not the earlier notes.
+
+**What IS still real and confirmed today:** archived pages use the
+IDENTICAL `<strong>Label:</strong>` spec-field template as current pages
+(same regex, same parser -- no second parser needed after all), just with
+a smaller field set (only Coverstock/Core/Factory Finish/Color/Release
+Date/Fragrance -- no Brand/Weight/Differential/Radius of Gyration/PSA/
+Symmetry/Line/Avail. for Sales Orders). Since brand_id already comes from
+which per-brand discovery queue found the URL rather than from a parsed
+Brand field, the missing Brand field doesn't matter. Since there's no PDF
+and no RG/Diff/PSA anywhere in raw HTML, **archived products end up with
+zero product_skus rows** -- a real, disclosed limitation, not a bug (same
+spirit as 900 Global's image-based current-product PDFs).
+
+A real, reliable classification signal was found to replace the
+now-wrong "presence of Brand field" heuristic: each page's own breadcrumb
+trail (`<ul id="breadcrumbs">`) reads `.../Equipment/Bowling Balls/<NAME>`
+for current products and `.../Featured/Bowling Balls Archive/<NAME>` for
+archived ones -- confirmed real, plus two non-ball controls (a Roto Grip
+bag and hoodie, both sharing the same brand-prefixed URL shape as balls)
+confirmed via breadcrumb to read `.../Bowling Bags/...` and
+`.../Apparel/...` respectively, letting the scraper skip non-ball
+merchandise gracefully rather than guessing. See
+src/commercebuild_product_scraper/app.py's classify_product_status().
+
+One more real bug this same research turned up: archived pages format
+`<strong>Label:</strong>` with the whitespace on the OTHER side of the
+colon than current pages do (`<strong>Coverstock: </strong>value` vs.
+current's `<strong>Coverstock:</strong> value`) -- the original
+SPEC_LABEL_RE regex would have silently returned an empty fields dict for
+every archived product. Fixed (see that module's SPEC_LABEL_RE comment).
+
+Both url_discovery and product_scraper are updated and tested (see their
+module docstrings and tests/test_commercebuild_*.py) -- archived-product
+support is code-complete pending a real deploy + smoke test (see
+DEPLOY_RUNBOOK.md).

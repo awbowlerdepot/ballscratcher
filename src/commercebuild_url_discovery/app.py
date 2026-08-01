@@ -4,36 +4,61 @@ Global -- one site, stormbowling.com, three brands). See
 COMMERCEBUILD_SCOPING.md and commercebuild_product_scraper/app.py's module
 docstring for the full research trail.
 
-**Current products only** -- see commercebuild_product_scraper/app.py's
-docstring for why archived/retired products need a different scraper AND
-a different URL-discovery approach (their collection listing's own links
-404 on a bare request, confirmed real this session).
+**Two discovery sources, unioned per brand, both confirmed real this
+session (a later session than COMMERCEBUILD_SCOPING.md's original
+research -- see below for what changed):**
 
-Discovery source: the "Bowling Balls" category listing, filtered per
-brand via a `custom1` facet query param, e.g.:
-  https://www.stormbowling.com/products/equipment/bowling-balls/?per_page=100&filter[custom1][0]=Roto-Grip
-Confirmed real this session via curl: real counts as of this session were
-Storm 41, Roto Grip 15, 900 Global 5 (61 total) -- well under a single
-per_page=100 page, so this deliberately does NOT implement pagination
-crawling (unlike url_discovery.py's Craft-CMS sitemap approach or
-woocommerce_url_discovery.py's page-by-page crawl). If the catalog grows
-past 100 for any one brand, this under-counts silently -- see
-discover_urls_for_brand()'s docstring for the mitigation (logs a warning
-if the returned count looks like it hit the per_page ceiling).
+1. The "Bowling Balls" category listing, filtered per brand via a
+   `custom1` facet query param, e.g.:
+     https://www.stormbowling.com/products/equipment/bowling-balls/?per_page=100&filter[custom1][0]=Roto-Grip
+   CURRENT products only. Real counts as of the original research session:
+   Storm 41, Roto Grip 15, 900 Global 5 (61 total) -- well under a single
+   per_page=100 page, so this deliberately does NOT implement pagination
+   crawling (unlike url_discovery.py's Craft-CMS sitemap approach or
+   woocommerce_url_discovery.py's page-by-page crawl). If the catalog
+   grows past 100 for any one brand, this under-counts silently -- see
+   discover_urls_for_brand()'s docstring for the mitigation (logs a
+   warning if the returned count looks like it hit the per_page ceiling).
 
-No sitemap dependency, unlike the Craft-CMS/WooCommerce discovery
-functions -- sitemap_index.xml exists (confirmed real, returned as a real
-XML/gzip response) but was never actually parsed this session (see
-COMMERCEBUILD_SCOPING.md's still-open items), so there's no confirmed
-<lastmod> source to build entries from yet. This means
-diff_against_known() below can only ever mark a URL "new" (first time
-seen) or "unchanged" (every later run) -- it can never detect that an
-already-known product's page content actually changed, since there's no
-lastmod signal to compare. Acceptable for now (same spirit as this
-project's other real, disclosed limitations, e.g. SWAG/MOTIV having no
-automated schedule yet) but a real gap: a re-scrape of an existing
-product currently only happens if you invoke this scraper directly for
-that one URL.
+2. `sitemap_products.xml` (see discover_urls_from_sitemap() below) --
+   covers BOTH current and archived products, unioned into each brand's
+   URL set alongside the listing above (harmless overlap on current
+   products, since diff_against_known() dedupes against discovered_urls
+   by URL either way).
+
+**Real finding this session that changes the picture from
+COMMERCEBUILD_SCOPING.md's original research:** that doc's one remaining
+open risk was that the "Bowling Balls Archive" collection listing's own
+product links 404 on a bare request. Root cause is now confirmed: that
+collection URL (`/products/featured/bowling-balls-archive/`) 302-redirects
+to `/user/login` -- it's gated behind authentication now (confirmed via
+curl -sD, real `location: https://www.stormbowling.com/user/login`
+header), which is why following its own links with a plain cookie-less
+request always landed on a login page rather than the product. No
+Referer/cookie workaround was needed or tried further once this was
+understood -- the collection listing simply isn't usable as a discovery
+source at all anymore, gated or not.
+
+The real fix: `sitemap_index.xml` (confirmed real, plain XML, not
+gzipped despite earlier suspicion) points to `sitemap_products.xml`,
+which is public, returns 958 real `<loc>` entries in flat canonical URL
+form, and was confirmed via curl to include archived products directly
+(`900-global-altered-reality-bowling-ball`, `storm-absolute-bowling-ball`)
+alongside current ones (`storm-alpha-crux-bowling-ball`) -- no auth, no
+collection-listing crawl needed. This sitemap also contains non-ball
+merchandise (bags, apparel, accessories -- all share the same brand-name
+URL prefix, e.g. `roto-grip-classic-hoodie`), so discover_urls_from_sitemap()
+below can't reliably pre-filter to balls-only by URL shape alone;
+commercebuild_product_scraper.py's classify_product_status() does that
+filtering per-page instead (via each page's own breadcrumb trail), and
+skips non-ball products gracefully rather than erroring -- see that
+function's docstring.
+
+No sitemap <lastmod> per-product-URL entry was found in the real fetched
+sitemap_products.xml this session (only the top-level sitemap_index.xml's
+per-sitemap-FILE lastmod, not per-URL) -- diff_against_known() below still
+only ever marks a URL "new" or "unchanged", never "changed", same real
+gap as before.
 
 robots.txt sets `Crawl-delay: 10` for stormbowling.com (confirmed real,
 fetched directly this session) -- Brunswick's site had no such directive.
@@ -41,7 +66,9 @@ handler() sleeps 10s between each of the three brands' listing fetches to
 respect it. This does NOT rate-limit CommercebuildProductScraperFunction's
 own fetches (each SQS-triggered invocation only makes 1-2 requests, so
 per-invocation sleeping doesn't help) -- that needs to be handled via SQS
-concurrency limits in template.yaml instead, see the comment there.
+concurrency limits in template.yaml instead, see the comment there. The
+sitemap fetch itself happens once per handler() invocation (not per
+brand), so it doesn't need its own crawl-delay sleep.
 """
 import json
 import logging
@@ -113,6 +140,78 @@ def discover_urls_for_brand(fetch_fn, brand_filter: str, category_url: str = DEF
         )
 
     return urls
+
+
+DEFAULT_SITEMAP_URL = "https://www.stormbowling.com/sitemap_products.xml"
+
+# Plain regex, not an XML parser -- consistent with this module's other
+# link-extraction functions, and sitemap_products.xml's <loc> entries are
+# simple generated URLs with no entity-escaping seen in this session's real
+# sample.
+_LOC_RE = re.compile(r"<loc>([^<]+)</loc>")
+
+# Confirmed real via curl this session: every commercebuild product URL
+# (ball or not, current or archived) in the sitemap is a single flat path
+# segment under the site root, prefixed by its brand's slug -- e.g.
+# storm-alpha-crux-bowling-ball, storm-absolute-bowling-ball (archived),
+# roto-grip-classic-hoodie (non-ball). The one confirmed real exception is
+# a nested-path entry also seen in the sitemap
+# (/products/featured/bowling-balls-archive/bbproi-roto-grip-clear-poly) --
+# excluded by requiring a single path segment, same as this project's
+# other "flat canonical URL" assumptions.
+_FLAT_SLUG_RE = re.compile(r"^https://www\.stormbowling\.com/([a-z0-9-]+)$")
+
+_SITEMAP_BRAND_PREFIXES = (
+    ("storm", "storm-"),
+    ("roto_grip", "roto-grip-"),
+    ("global_900", "900-global-"),
+)
+
+
+def classify_sitemap_url(url: str):
+    """Returns the BRAND_FILTERS-matching brand key ("storm"/"roto_grip"/
+    "global_900") for a flat, single-path-segment sitemap URL whose slug
+    starts with that brand's prefix, or None if it isn't a flat
+    single-segment URL at all, or doesn't match any brand prefix.
+
+    Deliberately NOT trying to also filter out non-ball merchandise here
+    (bags/apparel/accessories share the same brand-prefixed URL shape,
+    confirmed real this session, e.g. roto-grip-classic-hoodie) -- that
+    filtering happens per-page in commercebuild_product_scraper.py's
+    classify_product_status(), which reads each page's own breadcrumb
+    trail rather than guessing from the URL. If a non-product nav page
+    (e.g. /storm-brand) or some other stray slug ever matches a brand
+    prefix here, that same breadcrumb check catches and skips it
+    gracefully at scrape time -- so this function doesn't need to be
+    airtight, just a reasonable pre-filter to avoid discovering entirely
+    unrelated sitemap entries."""
+    m = _FLAT_SLUG_RE.match(url)
+    if not m:
+        return None
+    slug = m.group(1)
+    for brand_key, prefix in _SITEMAP_BRAND_PREFIXES:
+        if slug.startswith(prefix):
+            return brand_key
+    return None
+
+
+def discover_urls_from_sitemap(fetch_fn, sitemap_url: str = DEFAULT_SITEMAP_URL) -> dict:
+    """Fetches sitemap_products.xml ONCE (958 real entries confirmed this
+    session, public, no auth needed -- see module docstring for why this
+    replaces the now-login-gated "Bowling Balls Archive" collection
+    listing) and buckets its URLs by brand key. Doesn't distinguish
+    current vs. archived vs. non-ball here -- that's decided per-page at
+    scrape time (see classify_sitemap_url's docstring). Returns
+    {"storm": set(), "roto_grip": set(), "global_900": set()}, always all
+    three keys present (possibly empty) so callers don't need a
+    .get(..., set()) at every use site."""
+    xml_text = fetch_fn(sitemap_url)
+    buckets = {"storm": set(), "roto_grip": set(), "global_900": set()}
+    for loc in _LOC_RE.findall(xml_text):
+        brand_key = classify_sitemap_url(loc)
+        if brand_key:
+            buckets[brand_key].add(loc)
+    return buckets
 
 
 def build_entries(urls: set) -> list:
@@ -192,8 +291,14 @@ def get_db_connection():
 
 def handler(event, context):
     """Crawls all three brands' current-product listings (one page each,
-    10s apart per robots.txt Crawl-delay), diffs each brand's URLs against
-    discovered_urls, and publishes new URLs to CommercebuildProductScrapeQueue.
+    10s apart per robots.txt Crawl-delay) AND the shared
+    sitemap_products.xml (fetched once, covers current+archived+non-ball
+    -- see module docstring), unions each brand's two URL sets, diffs
+    against discovered_urls, and publishes new URLs to
+    CommercebuildProductScrapeQueue. Non-ball URLs that slip through the
+    sitemap's brand-prefix pre-filter are skipped gracefully at scrape
+    time, not here -- see commercebuild_product_scraper.py's
+    classify_product_status().
 
     Brand IDs come from BRAND_IDS_JSON, a JSON object mapping the same
     keys as BRAND_FILTERS ("storm", "roto_grip", "global_900") to real
@@ -203,6 +308,7 @@ def handler(event, context):
     run over one brand not being onboarded yet."""
     brand_ids = json.loads(os.environ.get("BRAND_IDS_JSON", "{}"))
     category_url = os.environ.get("CATEGORY_URL", DEFAULT_CATEGORY_URL)
+    sitemap_url = os.environ.get("SITEMAP_URL", DEFAULT_SITEMAP_URL)
     queue_url = os.environ.get("PRODUCT_SCRAPE_QUEUE_URL")
 
     conn = get_db_connection()
@@ -210,6 +316,22 @@ def handler(event, context):
     try:
         import boto3
         sqs = boto3.client("sqs") if queue_url else None
+
+        # Fetched once for all three brands (not per-brand -- see module
+        # docstring), before the crawl-delay-respecting per-brand loop
+        # below. A sitemap failure shouldn't take down current-product
+        # discovery, which has worked in production since this platform's
+        # first deploy -- log and continue with an empty sitemap result
+        # rather than failing the whole run.
+        try:
+            sitemap_buckets = discover_urls_from_sitemap(fetch_page, sitemap_url)
+        except Exception:
+            logger.exception(
+                "Failed to fetch/parse commercebuild sitemap at %s -- continuing with "
+                "current-product listing crawl only; archived products won't be "
+                "discovered this run", sitemap_url,
+            )
+            sitemap_buckets = {}
 
         first = True
         for brand_key, filter_value in BRAND_FILTERS.items():
@@ -223,7 +345,15 @@ def handler(event, context):
             first = False
 
             logger.info("Discovering %s (filter=%r) current-product URLs", brand_key, filter_value)
-            urls = discover_urls_for_brand(fetch_page, filter_value, category_url)
+            current_urls = discover_urls_for_brand(fetch_page, filter_value, category_url)
+            sitemap_urls = sitemap_buckets.get(brand_key, set())
+            urls = current_urls | sitemap_urls
+            logger.info(
+                "%s: %d from category listing (current only), %d from sitemap "
+                "(current+archived+non-ball, filtered per-page at scrape time), "
+                "%d combined",
+                brand_key, len(current_urls), len(sitemap_urls), len(urls),
+            )
             entries = build_entries(urls)
             diff = diff_against_known(conn, brand_id, entries)
 

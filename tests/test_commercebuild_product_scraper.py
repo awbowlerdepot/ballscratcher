@@ -33,6 +33,23 @@ ALPHA_CRUX_HTML = """
 <meta property="og:image" content="https://assets.1.commercebuild.com/d186dcd2044cf54d8e48876defef4907/contents/BBMVXA/BBMVXA.png" />
 <meta property="product:retailer_item_id" content="BBMVXA" />
 </head><body>
+<ul  itemscope itemtype="https://schema.org/BreadcrumbList" id="breadcrumbs">
+  <li itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem" class="home">
+    <a href="https://www.stormbowling.com/" itemprop="item"><span itemprop="name">Home</span></a>
+    <meta itemprop="position" content="1" /></li>
+  <li itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+    <a href="https://www.stormbowling.com/products/" itemprop="item"><span itemprop="name">Products</span></a>
+    <meta itemprop="position" content="2" /></li>
+  <li itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+    <a href="https://www.stormbowling.com/products/equipment/" itemprop="item"><span itemprop="name">Equipment</span></a>
+    <meta itemprop="position" content="3" /></li>
+  <li itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+    <a href="https://www.stormbowling.com/products/equipment/bowling-balls/" itemprop="item"><span itemprop="name">Bowling Balls</span></a>
+    <meta itemprop="position" content="4" /></li>
+  <li itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem" class="last-child">
+    <span itemprop="name">ALPHA CRUX</span>
+    <meta itemprop="position" content="5" /></li>
+</ul>
 <h1>ALPHA CRUX</h1>
 <p>SKU: BBMVXA</p>
 <div id="div-variant-product"></div>
@@ -88,6 +105,100 @@ GLOBAL_900_HTML = """
 </body></html>
 """
 
+# Real <ul id="breadcrumbs"> shape confirmed via curl against
+# storm-alpha-crux-bowling-ball (current) this session -- reconstructed
+# with the real schema.org markup and item text seen.
+CURRENT_BREADCRUMB_HTML = """
+<ul  itemscope itemtype="https://schema.org/BreadcrumbList" id="breadcrumbs">
+  <li itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem" class="home">
+    <a href="https://www.stormbowling.com/" itemprop="item"><span itemprop="name">Home</span></a>
+    <meta itemprop="position" content="1" /></li>
+  <li itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+    <a href="https://www.stormbowling.com/products/" itemprop="item"><span itemprop="name">Products</span></a>
+    <meta itemprop="position" content="2" /></li>
+  <li itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+    <a href="https://www.stormbowling.com/products/equipment/" itemprop="item"><span itemprop="name">Equipment</span></a>
+    <meta itemprop="position" content="3" /></li>
+  <li itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+    <a href="https://www.stormbowling.com/products/equipment/bowling-balls/" itemprop="item"><span itemprop="name">Bowling Balls</span></a>
+    <meta itemprop="position" content="4" /></li>
+  <li itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem" class="last-child">
+    <span itemprop="name">ALPHA CRUX</span>
+    <meta itemprop="position" content="5" /></li>
+</ul>
+"""
+
+# Real shape confirmed via curl against storm-absolute-bowling-ball
+# (archived) this session -- note "Featured" / "Bowling Balls Archive"
+# instead of "Equipment" / "Bowling Balls".
+ARCHIVED_BREADCRUMB_HTML = """
+<ul  itemscope itemtype="https://schema.org/BreadcrumbList" id="breadcrumbs">
+  <li itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem" class="home">
+    <a href="https://www.stormbowling.com/" itemprop="item"><span itemprop="name">Home</span></a>
+    <meta itemprop="position" content="1" /></li>
+  <li itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+    <a href="https://www.stormbowling.com/products/" itemprop="item"><span itemprop="name">Products</span></a>
+    <meta itemprop="position" content="2" /></li>
+  <li itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+    <a href="https://www.stormbowling.com/products/featured/" itemprop="item"><span itemprop="name">Featured</span></a>
+    <meta itemprop="position" content="3" /></li>
+  <li itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+    <a href="https://www.stormbowling.com/products/featured/bowling-balls-archive/" itemprop="item"><span itemprop="name">Bowling Balls Archive</span></a>
+    <meta itemprop="position" content="4" /></li>
+  <li itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem" class="last-child">
+    <span itemprop="name">ABSOLUTE</span>
+    <meta itemprop="position" content="5" /></li>
+</ul>
+"""
+
+# Real shape confirmed via curl against a Roto Grip bag URL this session --
+# a non-ball control, used to confirm classify_product_status() correctly
+# returns None (skip) rather than guessing "current".
+NON_BALL_BREADCRUMB_HTML = """
+<ul  itemscope itemtype="https://schema.org/BreadcrumbList" id="breadcrumbs">
+  <li itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem" class="home">
+    <a href="https://www.stormbowling.com/" itemprop="item"><span itemprop="name">Home</span></a>
+    <meta itemprop="position" content="1" /></li>
+  <li itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+    <a href="https://www.stormbowling.com/products/" itemprop="item"><span itemprop="name">Products</span></a>
+    <meta itemprop="position" content="2" /></li>
+  <li itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+    <a href="https://www.stormbowling.com/products/equipment/" itemprop="item"><span itemprop="name">Equipment</span></a>
+    <meta itemprop="position" content="3" /></li>
+  <li itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem">
+    <a href="https://www.stormbowling.com/products/equipment/bowling-bags/" itemprop="item"><span itemprop="name">Bowling Bags</span></a>
+    <meta itemprop="position" content="4" /></li>
+  <li itemprop="itemListElement" itemscope itemtype="https://schema.org/ListItem" class="last-child">
+    <span itemprop="name">ROTO 3-BALL A-S E ROLLER COMPETITOR</span>
+    <meta itemprop="position" content="5" /></li>
+</ul>
+"""
+
+# Real spec-field shape confirmed via curl against storm-absolute-bowling-ball
+# (archived) this session -- only Coverstock/Core/Factory Finish/Color/
+# Release Date/Fragrance, no Brand/Weight/RG/Differential/PSA/Symmetry at
+# all (confirmed 3-for-3 across all three brands), plus the real
+# <!--Tech Data--> HTML comment marker (not a PDF link) and zero .pdf
+# hrefs anywhere on the page.
+ARCHIVED_ABSOLUTE_HTML = """
+<html><head>
+<meta property="og:image" content="https://assets.1.commercebuild.com/d186dcd2044cf54d8e48876defef4907/contents/BBMVBS/BBMVBS.png" />
+<meta property="product:retailer_item_id" content="BBMVBS" />
+</head><body>
+""" + ARCHIVED_BREADCRUMB_HTML + """
+<h1 itemprop="name">ABSOLUTE</h1>
+<div id="div-variant-product"></div>
+<script type="module">loadCBCustomisation("div-variant-product", {});</script>
+<!--Tech Data-->
+<p><strong>Coverstock: </strong>R2S DEEP Hybrid</p>
+<p><strong>Core: </strong>Sentinel Asymmetrical Core</p>
+<p><strong>Factory Finish: </strong>Reacta Gloss</p>
+<p><strong>Color: </strong>Copperhead/Jade/Phantom Black</p>
+<p><strong>Release Date: </strong>January 2023</p>
+<p><strong>Fragrance: </strong>Orange Cream Soda</p>
+</body></html>
+"""
+
 URL = "https://www.stormbowling.com/storm-alpha-crux-bowling-ball"
 
 
@@ -113,6 +224,121 @@ def test_parse_spec_fields_global_900_prefix():
     assert fields["brand"] == "900 Global"
     assert fields["weight block"] == "Strobe AI"
     assert fields["coverstock"] == "94 Solid"
+
+
+def test_parse_spec_fields_handles_space_before_closing_tag_real_archived_bug():
+    """Real bug found via this session's archived-product research: unlike
+    current pages' <strong>Label:</strong> value (space AFTER the closing
+    tag), archived pages use <strong>Label: </strong>value (space BEFORE
+    it, confirmed real via curl against storm-absolute-bowling-ball). The
+    original SPEC_LABEL_RE required the colon immediately before
+    </strong> with zero tolerance for that leading space, which would
+    have silently returned an empty fields dict for every archived
+    product -- no error, just nothing parsed. This is the no-whitespace
+    case that must still work after the fix."""
+    html = "<strong>Coverstock: </strong>R2S DEEP Hybrid"
+    fields = app.parse_spec_fields(html)
+    assert fields["coverstock"] == "R2S DEEP Hybrid"
+
+
+# --- parse_breadcrumb_trail / classify_product_status ---
+
+def test_parse_breadcrumb_trail_current_product():
+    trail = app.parse_breadcrumb_trail(CURRENT_BREADCRUMB_HTML)
+    assert trail == ["Home", "Products", "Equipment", "Bowling Balls", "ALPHA CRUX"]
+
+
+def test_parse_breadcrumb_trail_archived_product():
+    trail = app.parse_breadcrumb_trail(ARCHIVED_BREADCRUMB_HTML)
+    assert trail == ["Home", "Products", "Featured", "Bowling Balls Archive", "ABSOLUTE"]
+
+
+def test_parse_breadcrumb_trail_not_confused_by_nav_menu():
+    """Real gotcha hit this session: an unscoped itemprop="name" search
+    over the whole page also matches the site's main nav menu items
+    (Company/Products/Events/...), which happen to use the same
+    attribute. This must only read the id="breadcrumbs" block."""
+    html_with_nav = "<nav><span itemprop='name'>Company</span><span itemprop='name'>Products</span></nav>" + CURRENT_BREADCRUMB_HTML
+    trail = app.parse_breadcrumb_trail(html_with_nav)
+    assert trail == ["Home", "Products", "Equipment", "Bowling Balls", "ALPHA CRUX"]
+
+
+def test_parse_breadcrumb_trail_empty_when_missing():
+    assert app.parse_breadcrumb_trail("<html><body>no breadcrumbs here</body></html>") == []
+
+
+def test_classify_product_status_current():
+    assert app.classify_product_status(CURRENT_BREADCRUMB_HTML) == "current"
+
+
+def test_classify_product_status_archived_returns_retired():
+    """Real DB enum value is 'retired', not 'archived' -- the site's own
+    UI language ("Bowling Balls Archive") differs from this project's
+    product_status enum (db/migrations/001_init_schema.sql), same
+    'current'/'retired' split Brunswick's Craft-CMS scraper already
+    uses."""
+    assert app.classify_product_status(ARCHIVED_BREADCRUMB_HTML) == "retired"
+
+
+def test_classify_product_status_non_ball_returns_none():
+    """A bag page must return None (skip), not accidentally classify as
+    current/retired just because it has SOME breadcrumb trail."""
+    assert app.classify_product_status(NON_BALL_BREADCRUMB_HTML) is None
+
+
+def test_classify_product_status_no_breadcrumb_returns_none():
+    assert app.classify_product_status("<html><body>no breadcrumbs</body></html>") is None
+
+
+# --- parse_product_page on a real archived-product page (no Brand/Weight/RG/PSA fields, no PDF) ---
+
+def test_parse_product_page_archived_status_is_retired():
+    parsed = app.parse_product_page(ARCHIVED_ABSOLUTE_HTML, "https://www.stormbowling.com/storm-absolute-bowling-ball")
+    assert parsed["status"] == "retired"
+
+
+def test_parse_product_page_archived_has_no_brand_field():
+    """Confirmed real 3-for-3 across all three brands this session:
+    archived pages have no Brand: label at all. Doesn't matter for the DB
+    write (brand_id comes from the job, not this field), but
+    parse_product_page must not error or fabricate one."""
+    parsed = app.parse_product_page(ARCHIVED_ABSOLUTE_HTML, "https://www.stormbowling.com/storm-absolute-bowling-ball")
+    assert parsed["brand_name"] is None
+
+
+def test_parse_product_page_archived_has_no_weight_rg_psa():
+    """Confirmed real: archived pages have zero RG:/Diff:/PSA: occurrences
+    anywhere and no Weight field -- the JS-locked variant widget is
+    present but, unlike current products, there's no Tech Data PDF
+    fallback either (see next test), so these stay None rather than being
+    guessed at."""
+    parsed = app.parse_product_page(ARCHIVED_ABSOLUTE_HTML, "https://www.stormbowling.com/storm-absolute-bowling-ball")
+    assert parsed["html_weight_lbs"] is None
+    assert parsed["html_rg"] is None
+    assert parsed["html_differential"] is None
+
+
+def test_parse_product_page_archived_has_no_tech_data_pdf():
+    """Confirmed real 3-for-3: archived pages have zero .pdf hrefs at
+    all -- the "<!--Tech Data-->" marker on these pages is an HTML
+    comment introducing an inline spec-field block, not a PDF download
+    link, unlike current products."""
+    parsed = app.parse_product_page(ARCHIVED_ABSOLUTE_HTML, "https://www.stormbowling.com/storm-absolute-bowling-ball")
+    assert parsed["tech_data_pdf_url"] is None
+
+
+def test_parse_product_page_archived_still_gets_coverstock_and_color():
+    """The smaller field set archived pages DO have (Coverstock/Core/
+    Factory Finish/Color/Release Date/Fragrance) should still parse
+    normally via the same label-driven parse_spec_fields()."""
+    parsed = app.parse_product_page(ARCHIVED_ABSOLUTE_HTML, "https://www.stormbowling.com/storm-absolute-bowling-ball")
+    assert parsed["coverstock_name"] == "R2S DEEP Hybrid"
+    assert parsed["color"] == "Copperhead/Jade/Phantom Black"
+
+
+def test_parse_product_page_current_status_is_current():
+    parsed = app.parse_product_page(ALPHA_CRUX_HTML, URL)
+    assert parsed["status"] == "current"
 
 
 # --- parse_core_type ---

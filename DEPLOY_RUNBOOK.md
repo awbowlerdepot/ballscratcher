@@ -333,9 +333,33 @@ aws sqs get-queue-attributes \
   --attribute-names ApproximateNumberOfMessages
 ```
 
-Current products only -- archived/retired Storm/Roto Grip/900 Global
-balls aren't covered by this function (see COMMERCEBUILD_SCOPING.md's
-open archive-URL-discovery risk).
+**Now also covers archived/retired products**, added in a later session
+(see COMMERCEBUILD_SCOPING.md's "RESOLVED, later session" addendum) --
+`CommercebuildUrlDiscoveryFunction` unions each brand's category-listing
+URLs (current only) with `sitemap_products.xml` (current + archived +
+non-ball merchandise, all sharing the same brand-prefixed flat URL
+shape). `CommercebuildProductScraperFunction` classifies each URL by its
+own page's breadcrumb trail at scrape time and skips non-ball products
+gracefully (`"skipped": "non_ball_product"` in the result, no DB write,
+no DLQ retry). This is genuinely untested end to end -- the sitemap
+fetch, the brand-prefix bucketing, and the breadcrumb-based
+current/retired/non-ball classification were all built and unit-tested
+against real captured HTML this session, but never run against AWS.
+Watch for on first run:
+
+- Archived products landing with `status = 'retired'` and an empty
+  `product_skus` (expected -- confirmed real this session that archived
+  pages have no Tech Data PDF and no RG/Diff/PSA data anywhere in raw
+  HTML, a genuine platform limitation, not a bug -- see
+  COMMERCEBUILD_SCOPING.md).
+- A meaningful number of `"skipped": "non_ball_product"` results (bags,
+  apparel, accessories all share commercebuild's brand-prefixed URL
+  shape) -- expected, not an error.
+- If archived products come back with EMPTY name/coverstock/color fields
+  instead of populated ones, that would mean the SPEC_LABEL_RE whitespace
+  fix (see commercebuild_product_scraper/app.py) doesn't hold on some
+  product beyond the three checked this session -- worth a real curl
+  check before assuming it's the same bug recurring differently.
 
 ### 6g. bowwwl.com cross-check
 

@@ -5,15 +5,63 @@ commercebuild/XM Symphony platform. See COMMERCEBUILD_SCOPING.md at the
 repo root for the full research trail this module is built from -- real
 `curl` output against live product pages, not just a summary.
 
-**Current products only.** Archived/retired products use a structurally
-different template (confirmed real via curl against two archived
-products, one Storm one 900 Global) -- no Brand: field, no JS variant
-shell, and the full per-weight RG/Diff/PSA table sits directly in raw
-HTML instead of being locked behind a PDF. That's a genuinely different
-parser, not built here. Also unresolved: the archive collection listing's
-own links 404 on a bare request (see COMMERCEBUILD_SCOPING.md), so even
-URL discovery for retired balls isn't ready yet. This file only handles
-the current-product template.
+**Now handles BOTH current and archived (DB status='retired') products**,
+via classify_product_status() below, which reads each page's own
+breadcrumb trail. This is a real correction to COMMERCEBUILD_SCOPING.md's
+original archived-template finding, not an extension of it -- that
+research (done in an earlier session) concluded archived pages used a
+structurally different template: no Brand field, no JS variant shell, and
+the full per-weight RG/Diff/PSA table sitting directly in raw HTML. A
+later session's real curl against three archived products (one per
+brand: Storm Absolute, Roto Grip TNT, 900 Global Altered Reality)
+confirmed that finding is now STALE -- the live site has apparently been
+redesigned since. Today, archived pages use the IDENTICAL
+`<strong>Label:</strong>` spec-field template and the same JS-locked
+`div-variant-product`/loadCBCustomisation weight-variant widget as
+current pages. No `RG:`/`Diff:`/`PSA:` label pattern exists anywhere in
+real archived-page HTML (grepped for directly, zero matches, all three
+brands). The real, confirmed differences for archived pages are just:
+- No `Brand:` field (confirmed 3-for-3) -- doesn't matter for this
+  scraper's DB writes, since brand_id already comes from which per-brand
+  queue discovered the URL (see commercebuild_url_discovery.py), not from
+  a parsed field.
+- A smaller spec-field set: only Coverstock/Core/Factory
+  Finish/Color/Release Date(/Fragrance sometimes) -- no
+  Weight/Differential/Radius of Gyration/PSA/Symmetry/Line/Avail. for
+  Sales Orders fields at all.
+- Zero Tech Data PDF links (confirmed 3-for-3, `.pdf` href count == 0 on
+  every archived page checked). Combined with the JS-locked variant
+  widget and the total absence of RG/Diff/PSA anywhere in raw HTML, this
+  means **archived products have NO per-weight SKU data obtainable by
+  this scraper via any method** -- not a bug, a real disclosed platform
+  limitation, same "log and skip gracefully, don't guess" spirit as 900
+  Global's image-based current-product PDFs (see parse_tech_data_pdf's
+  docstring). product_skus ends up empty for every archived product;
+  everything else (name, SKU code, coverstock, core, color, release date,
+  main image) still gets scraped normally.
+
+**Also resolves COMMERCEBUILD_SCOPING.md's other open item.** The
+"Bowling Balls Archive" collection listing's own product links 404ing on
+a bare request turned out to have a simple root cause: that collection
+URL 302-redirects to `/user/login` (confirmed via curl -sD -- it's gated
+behind auth now). URL discovery for archived products doesn't use that
+collection listing at all anymore -- see
+commercebuild_url_discovery.py's module docstring for the real
+replacement (sitemap_products.xml, public, confirmed to list archived
+products directly in flat canonical form).
+
+**Non-ball products (bags, apparel, accessories) share the same
+brand-prefixed flat URL shape as balls** (confirmed real, e.g.
+roto-grip-classic-hoodie, roto-grip-3-ball-roller-bag-competitor), so
+commercebuild_url_discovery.py's sitemap-based discovery can't reliably
+filter them out by URL alone. classify_product_status() below is the
+real filter: it reads each page's own breadcrumb trail (confirmed real
+shape, e.g. "Home / Products / Equipment / Bowling Bags / <NAME>" for a
+bag vs. "Home / Products / Equipment / Bowling Balls / <NAME>" for a
+ball) and returns None for anything that isn't a ball page.
+_process_one() skips those with a sentinel result, same pattern as
+woocommerce_product_scraper.py's external_product skip -- no DB write,
+no error, no DLQ retry.
 
 **Confirmed real via curl this session** (not the readability-tool view,
 which would have missed the JS-locked variant data the same way it missed
@@ -104,8 +152,20 @@ logger.setLevel(logging.INFO)
 DEFAULT_TOLERANCE = 0.01  # PSA/RG typically reported to 2-3 decimals; a little looser than Brunswick's 0.001 since these are cross-source (HTML's rounded display value vs the PDF's own rounded value), not two reads of the same source.
 
 # <strong>Label:</strong> value  /  <b>Label:</b> value -- confirmed real
-# against curled Storm/Roto Grip/900 Global product pages this session.
-SPEC_LABEL_RE = re.compile(r"<(?:strong|b)>([A-Za-z. ]+):</(?:strong|b)>\s*([^<]*)")
+# against curled Storm/Roto Grip/900 Global current-product pages this
+# session. Real bug found via this session's archived-product research:
+# archived pages format the SAME label:value pattern with the whitespace
+# on the OTHER side of the colon -- <strong>Coverstock: </strong>value
+# (space before the closing tag) instead of current pages'
+# <strong>Coverstock:</strong> value (space after) -- confirmed via curl
+# against storm-absolute-bowling-ball. The original regex required the
+# colon immediately before </strong> with zero tolerance for that leading
+# space, which would have silently returned an empty fields dict for
+# every archived product (no error, no warning -- parse_spec_fields()
+# would have just found nothing, exactly the kind of silent failure this
+# project's real bugs have repeatedly turned out to be). The `\s*` added
+# before the closing tag below covers both real formats.
+SPEC_LABEL_RE = re.compile(r"<(?:strong|b)>([A-Za-z. ]+):\s*</(?:strong|b)>\s*([^<]*)")
 
 # Brand-code prefixes confirmed real on every field value checked this
 # session: "S_" (Storm), "R_" (Roto Grip), "G_" (900 Global).
@@ -265,12 +325,66 @@ def parse_tech_data_pdf_url(html: str, base_url: str):
     return None
 
 
+# <ul ... id="breadcrumbs">...</ul> -- confirmed real via curl this
+# session against current, archived, and non-ball (bag/apparel) pages.
+# Deliberately scoped to just this block before pulling itemprop="name"
+# spans out of it -- an unscoped search over the whole page also matches
+# the site's main nav menu items ("Company"/"Products"/"Events"/...),
+# which happen to use the same itemprop="name" attribute and produced
+# wrong results the first time this was tried against real HTML.
+_BREADCRUMB_BLOCK_RE = re.compile(r'id="breadcrumbs">(.*?)</ul>', re.S)
+_BREADCRUMB_ITEM_RE = re.compile(r'itemprop="name">([^<]+)</span>')
+
+
+def parse_breadcrumb_trail(html: str) -> list:
+    """Returns the ordered list of breadcrumb item names, e.g.
+    ["Home", "Products", "Equipment", "Bowling Balls", "ALPHA CRUX"] for a
+    current product, or ["Home", "Products", "Featured", "Bowling Balls
+    Archive", "ABSOLUTE"] for an archived one -- both confirmed real via
+    curl this session. Empty list if no breadcrumbs block is found."""
+    m = _BREADCRUMB_BLOCK_RE.search(html)
+    if not m:
+        return []
+    return [item.strip() for item in _BREADCRUMB_ITEM_RE.findall(m.group(1))]
+
+
+def classify_product_status(html: str):
+    """Returns "current", "retired" (this project's product_status enum
+    value -- see db/migrations/001_init_schema.sql; the site's own UI
+    calls these "archived" but the DB doesn't have that value), or None
+    if this isn't a bowling ball product page at all (caller should skip
+    it, not guess).
+
+    Confirmed real via curl this session against all three brands' real
+    archived pages, a real current page, and two real non-ball pages (a
+    Roto Grip bag and hoodie) as controls -- the breadcrumb's category
+    segment (second to last item, right before the product's own name) is
+    a clean, reliable signal:
+        current ball:  .../Equipment/Bowling Balls/<NAME>
+        archived ball: .../Featured/Bowling Balls Archive/<NAME>
+        bag:           .../Equipment/Bowling Bags/<NAME>
+        apparel:       .../Merchandise/Apparel/<NAME>
+    Only the first two return a real status; everything else returns None
+    so _process_one() can skip it gracefully, same pattern as
+    woocommerce_product_scraper.py's external_product sentinel."""
+    trail = parse_breadcrumb_trail(html)
+    if len(trail) < 2:
+        return None
+    category = trail[-2]
+    if category == "Bowling Balls":
+        return "current"
+    if category == "Bowling Balls Archive":
+        return "retired"
+    return None
+
+
 def parse_product_page(html: str, url: str) -> dict:
     spec = parse_spec_fields(html)
     coverstock = parse_coverstock(spec.get("coverstock"))
 
     return {
         "url": url,
+        "status": classify_product_status(html),
         "name": parse_product_name(html),
         "sku_code": parse_sku_code(html),
         "brand_name": spec.get("brand"),
@@ -287,7 +401,11 @@ def parse_product_page(html: str, url: str) -> dict:
         # The single weight/RG/Diff/PSA this page's raw HTML actually
         # shows -- used as a cross-check against the Tech Data PDF's full
         # table, not stored as the primary SKU source (see
-        # cross_check_html_vs_pdf below).
+        # cross_check_html_vs_pdf below). Always None for archived
+        # products (they have no Weight/RG/Differential fields at all --
+        # see classify_product_status's docstring), which is fine:
+        # cross_check_html_vs_pdf already treats a missing html_weight_lbs
+        # as "nothing to cross-check" rather than an error.
         "html_weight_lbs": int(_to_float(spec.get("weight"))) if spec.get("weight") else None,
         "html_rg": _to_float(spec.get("radius of gyration")),
         "html_differential": _to_float(spec.get("differential")),
@@ -598,7 +716,14 @@ def upsert_product(conn, brand_id: str, parsed: dict, pdf_skus: list, mismatches
 
     Any html-vs-pdf mismatches found are written to review_queue rather
     than silently preferring one source over the other -- same "flag,
-    don't guess" pattern as the rest of this project."""
+    don't guess" pattern as the rest of this project.
+
+    status now comes from parsed["status"] (set by
+    classify_product_status() -- "current" or "retired", this project's
+    real product_status enum values) rather than being hardcoded, now that
+    this scraper handles archived products too. Included in the ON
+    CONFLICT update as well, so a product correctly flips to 'retired' if
+    a later re-scrape finds it's moved to the archive listing."""
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -607,7 +732,7 @@ def upsert_product(conn, brand_id: str, parsed: dict, pdf_skus: list, mismatches
                 coverstock_name, factory_finish, part_number, status, source_platform,
                 release_date
             )
-            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'current', 'commercebuild', %s)
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'commercebuild', %s)
             on conflict (url) do update set
                 name = excluded.name,
                 color = excluded.color,
@@ -616,6 +741,7 @@ def upsert_product(conn, brand_id: str, parsed: dict, pdf_skus: list, mismatches
                 coverstock_name = excluded.coverstock_name,
                 factory_finish = excluded.factory_finish,
                 part_number = excluded.part_number,
+                status = excluded.status,
                 release_date = coalesce(excluded.release_date, products.release_date),
                 updated_at = now()
             returning id
@@ -624,7 +750,7 @@ def upsert_product(conn, brand_id: str, parsed: dict, pdf_skus: list, mismatches
                 brand_id, parsed["name"], parsed["url"], parsed["color"],
                 parsed["coverstock_material"], parsed["coverstock_type"],
                 parsed["coverstock_name"], parsed["factory_finish"], parsed["sku_code"],
-                parsed["release_date"],
+                parsed["status"], parsed["release_date"],
             ),
         )
         product_id = cur.fetchone()[0]
@@ -700,6 +826,15 @@ def _process_one(job: dict) -> dict:
 
     html = fetch_page(url)
     parsed = parse_product_page(html, url)
+
+    if parsed["status"] is None:
+        logger.info(
+            "Skipping %s -- breadcrumb category isn't Bowling Balls/Bowling Balls "
+            "Archive (non-ball commercebuild product, e.g. bag/apparel/accessory "
+            "that shares the same brand-prefixed URL shape as balls -- see "
+            "classify_product_status's docstring)", url,
+        )
+        return {"product_id": None, "sku_count": 0, "image_jobs_published": 0, "skipped": "non_ball_product"}
 
     pdf_skus = []
     if parsed["tech_data_pdf_url"]:
