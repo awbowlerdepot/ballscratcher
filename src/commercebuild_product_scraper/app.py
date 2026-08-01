@@ -416,36 +416,93 @@ def _skus_from_table(table: list) -> list:
     return skus
 
 
+_TEXT_ROW_RE = re.compile(
+    r"^(\d{1,2})\s+(-?\d*\.\d+|-?\d+)\s+(-?\d*\.\d+|-?\d+)(?:\s+(-?\d*\.\d+|-?\d+))?\s*$",
+    re.M,
+)
+
+
+def _skus_from_text(text: str) -> list:
+    """Fallback for Tech Data PDFs where the per-weight data has real,
+    extractable text but pdfplumber's line-based table detection can't
+    cleanly separate it into columns/cells -- confirmed real on Storm
+    Lightning Storm Clear's PDF, where the whole product-details block
+    AND the weight/RG/DIFF table both landed in one giant free-text table
+    cell, with the actual data lines interleaved with unrelated
+    contact-info lines (phone/email/website) sitting at the same vertical
+    position on the page:
+        "LBS RG DIFF\\n16 2.68 0.006\\n800-369-4402\\n15 2.69 0.006\\n
+         tech@stormbowling.com\\n14 2.69 0.006\\n..."
+    No column structure to key off of here at all, so this scans
+    page.extract_text()'s raw output line by line instead, matching only
+    lines shaped exactly like "<weight> <rg> <diff> [psa]". Confirmed
+    this correctly skips the header line ("LBS RG DIFF", no leading
+    digit) and the interleaved junk lines -- "800-369-4402" doesn't match
+    because a 1-2 digit run isn't immediately followed by whitespace."""
+    skus = []
+    for m in _TEXT_ROW_RE.finditer(text):
+        weight, rg, diff, psa = m.groups()
+        skus.append({
+            "weight_lbs": int(weight),
+            "rg": _to_float(rg),
+            "differential": _to_float(diff),
+            "mass_bias": None,
+            "psa": _to_float(psa) if psa else None,
+        })
+    return skus
+
+
 def parse_tech_data_pdf(pdf_bytes: bytes) -> list:
     """Parses the per-weight spec table out of a Tech Data PDF -- see
     _skus_from_table()'s docstring for the real, confirmed table shapes
     this is built against.
 
     Real finding this deploy's first live smoke test: 900 Global's Viking
-    Conquest Tech Data PDF is genuinely image-based -- confirmed via
-    pdfplumber (0 chars, 4 embedded images tiling the full page, 0 lines/
-    rects) -- not a shape this function could ever parse regardless of
-    table-detection logic, since there's no real text layer to read.
-    OCR could theoretically recover it but that's real added scope
-    (Tesseract in Lambda, reliability on numeric tables) not taken on
-    here. Logs a distinct warning for this case specifically so it's
+    Conquest Tech Data PDF (and, it turns out, some Storm PDFs too --
+    Equinox Solid confirmed the same way) is genuinely image-based --
+    confirmed via pdfplumber (0 chars, embedded images tiling the full
+    page, 0 lines/rects) -- not a shape this function could ever parse
+    regardless of table-detection logic, since there's no real text layer
+    to read. OCR could theoretically recover it but that's real added
+    scope (Tesseract in Lambda, reliability on numeric tables) not taken
+    on here. Logs a distinct warning for this case specifically so it's
     never confused with "found a table but the shape didn't match" in the
-    logs -- they need different fixes."""
+    logs -- they need different fixes.
+
+    Second real finding, same smoke test: Storm Lightning Storm Clear has
+    real, non-image text, but pdfplumber's table detection couldn't
+    cleanly separate the per-weight data into columns at all -- see
+    _skus_from_text()'s docstring. Falls back to that raw-text scan
+    whenever table-based extraction finds real text but no usable rows,
+    rather than giving up."""
     import pdfplumber
 
     skus = []
     total_chars = 0
+    full_text_parts = []
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         for page in pdf.pages:
             total_chars += len(page.chars)
             for table in page.extract_tables():
                 skus.extend(_skus_from_table(table))
+            page_text = page.extract_text()
+            if page_text:
+                full_text_parts.append(page_text)
 
     if not skus and total_chars == 0:
         logger.warning(
             "Tech Data PDF has no extractable text (likely image-based/scanned) -- "
             "OCR would be required, not implemented, no per-weight data will be stored"
         )
+        return skus
+
+    if not skus:
+        skus = _skus_from_text("\n".join(full_text_parts))
+        if not skus:
+            logger.warning(
+                "Tech Data PDF has real text but no per-weight data could be found via "
+                "table or raw-text parsing -- skipping, not guessing"
+            )
 
     return skus
 

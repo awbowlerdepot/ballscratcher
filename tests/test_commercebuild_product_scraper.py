@@ -333,6 +333,67 @@ def test_skus_from_table_phaze_ii_design_intent_row_ignored():
     assert len(skus) == 5
 
 
+# --- _skus_from_text (real Tech Data PDF that isn't table-shaped at all) ---
+
+# Real extract_text() output confirmed via pdfplumber against Storm
+# Lightning Storm Clear's actual Tech Data PDF -- pdfplumber's table
+# detection couldn't cleanly split this into columns at all (product
+# details AND the weight table both landed in one blob per its own
+# extract_tables() call), so this is the raw-text fallback's real input.
+# Note the interleaved contact-info junk lines (phone/email/website) at
+# the same vertical position as the real data rows -- confirmed real,
+# not constructed for the test.
+REAL_LIGHTNING_TEXT = """LIGHTNING STORM
+CLEAR
+COVERSTOCK: Clear Polyester
+WEIGHT BLOCK: Traditional 3-piece Core
+FACTORY FINISH: 3500-grit Polished
+BALL COLOR: Multi
+FLAREPOTENTIAL: Low
+WEIGHTS: 12-16 lbs.
+SKU: VCL
+Digital Imaging Core Technology
+LBS RG DIFF
+16 2.68 0.006
+800-369-4402
+15 2.69 0.006
+tech@stormbowling.com
+14 2.69 0.006
+13 2.71 0.005
+www.stormbowling.com
+12 2.72 0.005"""
+
+
+def test_skus_from_text_real_lightning_storm_clear():
+    skus = app._skus_from_text(REAL_LIGHTNING_TEXT)
+    assert len(skus) == 5
+    by_weight = {s["weight_lbs"]: s for s in skus}
+    assert by_weight[16] == {"weight_lbs": 16, "rg": 2.68, "differential": 0.006, "mass_bias": None, "psa": None}
+    assert by_weight[12] == {"weight_lbs": 12, "rg": 2.72, "differential": 0.005, "mass_bias": None, "psa": None}
+
+
+def test_skus_from_text_ignores_phone_email_website_lines():
+    """The real interleaved junk lines must never produce spurious SKUs
+    or crash the parser -- "800-369-4402" in particular starts with
+    digits, which is exactly the case this needs to get right."""
+    skus = app._skus_from_text(REAL_LIGHTNING_TEXT)
+    weights = [s["weight_lbs"] for s in skus]
+    assert weights == sorted(weights, reverse=True)  # 16,15,14,13,12 in order, nothing extra spliced in
+    assert 800 not in weights  # "800-369-4402" must never be read as a weight
+
+
+def test_skus_from_text_handles_optional_psa_column():
+    text = "WEIGHT RG DIFF PSA\n16 2.50 0.056 0.011\n15 2.50 0.058 0.010"
+    skus = app._skus_from_text(text)
+    assert len(skus) == 2
+    assert skus[0] == {"weight_lbs": 16, "rg": 2.50, "differential": 0.056, "mass_bias": None, "psa": 0.011}
+
+
+def test_skus_from_text_empty_string():
+    assert app._skus_from_text("") == []
+    assert app._skus_from_text("no numbers here at all") == []
+
+
 # --- _to_float (real bug: no-leading-zero values) ---
 
 def test_to_float_no_leading_zero_real_bug():
