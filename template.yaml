@@ -329,7 +329,15 @@ Resources:
       FunctionName: bowling-scraper-product-scraper
       CodeUri: src/product_scraper/
       Handler: app.handler
-      Timeout: 30
+      # Raised from 30 to 150 alongside ImageProcessorFunction/
+      # CommercebuildProductScraperFunction -- same BatchSize: 5
+      # sequential-processing shape, and the commercebuild function was
+      # directly confirmed timing out mid-batch in production. This one
+      # hasn't been directly observed failing yet, but shares the
+      # identical root-cause shape, so fixed proactively rather than
+      # waiting to catch it failing too. Safely under ProductScrapeQueue's
+      # VisibilityTimeout: 180.
+      Timeout: 150
       Environment:
         Variables:
           PDF_PARSE_QUEUE_URL: !Ref PdfParseQueue
@@ -368,7 +376,9 @@ Resources:
       FunctionName: bowling-scraper-pdf-parser
       CodeUri: src/pdf_parser/
       Handler: app.handler
-      Timeout: 30
+      # Raised from 30 to 150, same reasoning as ProductScraperFunction/
+      # ImageProcessorFunction/CommercebuildProductScraperFunction above.
+      Timeout: 150
       Policies:
         - Statement:
             - Effect: Allow
@@ -613,7 +623,9 @@ Resources:
       FunctionName: bowling-scraper-woocommerce-product-scraper
       CodeUri: src/woocommerce_product_scraper/
       Handler: app.handler
-      Timeout: 30
+      # Raised from 30 to 150, same reasoning as ProductScraperFunction/
+      # ImageProcessorFunction/CommercebuildProductScraperFunction above.
+      Timeout: 150
       Environment:
         Variables:
           IMAGE_PROCESS_QUEUE_URL: !Ref ImageProcessQueue
@@ -702,7 +714,9 @@ Resources:
       FunctionName: bowling-scraper-netsuite-product-scraper
       CodeUri: src/netsuite_product_scraper/
       Handler: app.handler
-      Timeout: 30
+      # Raised from 30 to 150, same reasoning as ProductScraperFunction/
+      # ImageProcessorFunction/CommercebuildProductScraperFunction above.
+      Timeout: 150
       Environment:
         Variables:
           IMAGE_PROCESS_QUEUE_URL: !Ref ImageProcessQueue
@@ -802,7 +816,19 @@ Resources:
       FunctionName: bowling-scraper-commercebuild-product-scraper
       CodeUri: src/commercebuild_product_scraper/
       Handler: app.handler
-      Timeout: 30
+      # Real bug confirmed via production CloudWatch logs during the
+      # archived-product smoke test: the same class of problem just fixed
+      # on ImageProcessorFunction (see that Timeout's comment). This
+      # function processes each SQS batch (BatchSize: 5) sequentially --
+      # one page fetch + optional PDF fetch/parse per item -- and was
+      # directly observed hitting a hard 30s timeout mid-batch (REPORT
+      # line: "Duration: 30000.00 ms ... Status: timeout"), right after
+      # successfully handling one item's real 404 and moving on to the
+      # next. A hard timeout here kills the whole invocation with no
+      # batchItemFailures reported, so the entire batch of 5 gets retried
+      # rather than just the slow item. Raised to 150s, safely under
+      # CommercebuildProductScrapeQueue's VisibilityTimeout: 180.
+      Timeout: 150
       MemorySize: 512
       # Bumped from the 256 default -- pdfplumber's in-memory PDF parsing
       # (done inline here, see the comment block above) is heavier than
