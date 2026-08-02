@@ -397,7 +397,22 @@ Resources:
       FunctionName: bowling-scraper-image-processor
       CodeUri: src/image_processor/
       Handler: app.handler
-      Timeout: 30
+      # Real bug found via production CloudWatch logs: image_processor/
+      # app.py's handler processes each SQS batch of up to 5 images
+      # SEQUENTIALLY (fetch + process per job, real durations of several
+      # seconds up to ~20s+ per image observed in logs). The old 30s
+      # timeout was tight enough that real batches were hitting a hard
+      # Lambda timeout mid-batch -- confirmed via "Status: timeout" REPORT
+      # lines in production logs. A hard timeout kills the whole
+      # invocation with NO partial batchItemFailures reported, so all 5
+      # items in that batch get retried as a block rather than just the
+      # slow one -- this was a real, meaningful contributor to
+      # ImageProcessDLQ's growth (774 messages observed), not just the
+      # account's separate 10-execution concurrency ceiling. Raised to
+      # 150s, safely under ImageProcessQueue's VisibilityTimeout: 180
+      # (needs to stay under that or SQS could redeliver a message while
+      # it's still being processed).
+      Timeout: 150
       MemorySize: 512
       Environment:
         Variables:
