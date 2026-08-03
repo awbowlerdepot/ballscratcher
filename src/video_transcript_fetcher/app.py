@@ -75,7 +75,23 @@ _CONSENT_WALL_MARKERS = ("consent.youtube.com", "Before you continue to YouTube"
 
 def fetch_watch_page(video_id: str, timeout: int = 30) -> str:
     """Kept separate from parsing so tests can feed real fixture HTML
-    without a network call. See module docstring point 1."""
+    without a network call. See module docstring point 1.
+
+    TESTED AND REVERTED: briefly sent a real Chrome User-Agent string
+    instead of this honest, self-identifying one, as an explicit
+    user-requested one-variable diagnostic (does YouTube key off the
+    request looking like a real browser?). Live-tested against the same
+    two videos used throughout this investigation -- identical
+    no_captions_available result, no different from the honest UA. Combined
+    with the non-VPC network-path test (also no difference) and a real
+    browser's page source confirmed to genuinely contain captionTracks
+    (so this isn't a "needs JS execution" problem), the evidence now points
+    at IP/ASN-reputation-based detection (this Lambda's egress, VPC or not,
+    is still AWS/cloud IP space, unlike a residential connection) rather
+    than anything about the request's headers or network path. The only
+    remaining lever would be routing through a residential IP, which is
+    the proxy/traffic-disguising category this project has held the line
+    against from the start -- so this stays reverted to the honest UA."""
     import requests
 
     resp = requests.get(
