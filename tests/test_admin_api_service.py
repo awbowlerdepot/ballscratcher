@@ -145,6 +145,12 @@ class FakeCursor:
             row["resolved_by"] = resolved_by
             self._last_result = None
 
+        elif q.startswith("select status, youtube_video_id from product_videos"):
+            (video_id,) = params
+            row = self.db["product_videos"].get(video_id)
+            self._last_result = (row["status"], row["youtube_video_id"]) if row else None
+            self.description = [("status",), ("youtube_video_id",)]
+
         elif q.startswith("select status from product_videos"):
             (video_id,) = params
             row = self.db["product_videos"].get(video_id)
@@ -295,6 +301,33 @@ def test_approve_missing_video_candidate_raises():
         assert False, "expected LookupError"
     except LookupError:
         pass
+
+
+def test_approve_video_candidate_forwards_youtube_video_id_to_publish(monkeypatch):
+    """Split-architecture change (see approve_video_candidate's docstring):
+    video_transcript_fetcher, the queue's consumer as of this change, is
+    deliberately non-VPC-attached and has no DB access, so
+    approve_video_candidate must select youtube_video_id itself and forward
+    it through to the publish call, rather than the old shape where only
+    product_video_id was sent. Monkeypatches _publish_video_summarize_message
+    directly (same pattern as get_review_item elsewhere in this file) to
+    check what it's called with, rather than faking boto3/SQS -- what's
+    under test here is the forwarding, not the SQS wire format."""
+    db = _fake_db_with_pending_video_candidate()
+    conn = FakeConnection(db)
+    captured = {}
+
+    def fake_publish(product_video_id, youtube_video_id):
+        captured["product_video_id"] = product_video_id
+        captured["youtube_video_id"] = youtube_video_id
+        return True
+
+    monkeypatch.setattr(service, "_publish_video_summarize_message", fake_publish)
+
+    result = service.approve_video_candidate(conn, "vid-1", resolved_by="al@bringyourbest.co")
+
+    assert result["queued_for_summary"] is True
+    assert captured == {"product_video_id": "vid-1", "youtube_video_id": "abc123"}
 
 
 def test_reject_video_candidate_marks_rejected():

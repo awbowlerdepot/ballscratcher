@@ -466,6 +466,18 @@ docstrings for exactly what's unconfirmed). Test on a small, explicit
 product list first, not the default "all published/current" scope --
 each product costs one YouTube search.list call against the ~90/day cap.
 
+Two-stage pipeline as of the "split the architecture" change: approving a
+candidate publishes to `VideoSummarizeQueue`, consumed by the non-VPC
+`video_transcript_fetcher` (fetches the transcript, no DB access), which
+publishes its result to `VideoTranscriptResultQueue`, consumed by
+`video_summarizer` (DB write + Bedrock call, no YouTube fetch anymore).
+See src/video_transcript_fetcher/app.py's module docstring for why this
+split happened -- real, live-tested evidence pointed at YouTube's
+consumer-facing surface (`www.youtube.com`) getting different treatment
+from this stack's VPC/NAT-gateway IP than from a residential IP; moving
+the YouTube-facing fetch off VPC is the (unverified as of this deploy) fix
+being tried.
+
 1. Find a real `product_id` (or a few) via `GET /products?search=...` on
    the admin API (see 6a for the auth header shape).
 2. Discover candidates for just those products:
@@ -488,8 +500,9 @@ each product costs one YouTube search.list call against the ~90/day cap.
      -d '{"resolved_by":"al@bringyourbest.co"}' \
      "$ADMIN_API_URL/video-candidates/<video-id>/approve"
    ```
-5. Confirm it landed on `VideoSummarizeQueue` and was processed --
-   `video_summarizer` runs async off that queue, so check back after a
+5. Confirm it made it through both stages -- `video_transcript_fetcher`
+   (off `VideoSummarizeQueue`) then `video_summarizer` (off
+   `VideoTranscriptResultQueue`) both run async, so check back after a
    minute or two:
    ```bash
    curl -H "Authorization: Bearer $TOKEN" "$ADMIN_API_URL/video-candidates/<video-id>"
@@ -497,17 +510,23 @@ each product costs one YouTube search.list call against the ~90/day cap.
    Expect either a real `transcript`/`summary`, or `transcript_note` set to
    `no_captions_available` (a real, expected outcome for videos without
    captions, not a bug). If neither appeared after a few minutes, check
-   `bowling-scraper-video-summarize-dlq` -- same first-stop-for-failures
-   convention as every other DLQ in this project.
+   CloudWatch logs for `bowling-scraper-video-transcript-fetcher` first
+   (that's the function actually talking to YouTube now), then
+   `bowling-scraper-video-summarize-dlq` and
+   `bowling-scraper-video-transcript-result-dlq` -- same
+   first-stop-for-failures convention as every other DLQ in this project.
 
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
   `-pdf-parse-dlq`, `-image-process-dlq`, `-woocommerce-product-scrape-dlq`,
   `-netsuite-product-scrape-dlq`, `-commercebuild-product-scrape-dlq`,
-  `-video-summarize-dlq`) -- a nonzero count means something's failing
-  repeatedly, not just a transient blip (Lambda retries up to
-  `maxReceiveCount` before landing there).
+  `-video-summarize-dlq`, `-video-transcript-result-dlq`) -- a nonzero
+  count means something's failing repeatedly, not just a transient blip
+  (Lambda retries up to `maxReceiveCount` before landing there).
+  `-video-summarize-dlq` now catches `video_transcript_fetcher` failures
+  (it consumes that queue as of the split-architecture change) and
+  `-video-transcript-result-dlq` catches `video_summarizer` failures.
 - **SWAG, MOTIV, and commercebuild URL discovery have no automated
   schedule** even once their brand id parameters are set -- add a
   `Schedule` event to `WooCommerceUrlDiscoveryFunction`/

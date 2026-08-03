@@ -339,15 +339,36 @@ Resources:
     Type: AWS::SQS::Queue
     Properties:
       QueueName: bowling-scraper-video-summarize
-      # 180s, same as every other scraper queue -- VideoSummarizerFunction's
-      # per-message work (watch-page fetch + caption-track fetch + a
-      # Bedrock call) is the same "several sequential network round trips"
-      # shape as ImageProcessorFunction/CommercebuildProductScraperFunction,
-      # which is exactly what caused their real, confirmed Timeout: 30
-      # bug -- starting this one at 150/180 rather than repeating that.
+      # 180s, same as every other scraper queue. Name kept as-is (not
+      # renamed to something like "video-transcript-fetch") even though
+      # VideoTranscriptFetcherFunction is now this queue's consumer, not
+      # VideoSummarizerFunction -- renaming an SQS::Queue's QueueName forces
+      # CloudFormation to replace the resource (a new physical queue),
+      # which would silently drop any in-flight messages at deploy time.
+      # See VideoTranscriptResultQueue below for the second stage.
       VisibilityTimeout: 180
       RedrivePolicy:
         deadLetterTargetArn: !GetAtt VideoSummarizeDLQ.Arn
+        maxReceiveCount: 3
+
+  VideoTranscriptResultDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: bowling-scraper-video-transcript-result-dlq
+
+  VideoTranscriptResultQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: bowling-scraper-video-transcript-result
+      # Second stage of the split-architecture pipeline (see the "YouTube
+      # content enrichment" section below): VideoTranscriptFetcherFunction
+      # publishes here once it's fetched (or failed to fetch) a transcript,
+      # VideoSummarizerFunction consumes it to do the DB write + Bedrock
+      # call. Same 180s/maxReceiveCount:3 convention as every other queue
+      # pair in this template.
+      VisibilityTimeout: 180
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt VideoTranscriptResultDLQ.Arn
         maxReceiveCount: 3
 
   CommercebuildProductScrapeDLQ:
@@ -826,18 +847,40 @@ Resources:
 
   # --- YouTube content enrichment (search + transcript + Bedrock summary) ---
   #
-  # New feature, added this session per explicit user request. Two
-  # functions: VideoDiscoveryFunction (manual/direct invoke only, like the
+  # New feature, added this session per explicit user request. Originally
+  # two functions (discovery + a single summarizer that also fetched the
+  # transcript); NOW THREE, after a "split the architecture" change made
+  # once live smoke-testing showed VideoSummarizerFunction's transcript
+  # fetches consistently failing when made from its VPC-attached Lambda's
+  # NAT-gateway IP -- see VideoTranscriptFetcherFunction's module docstring
+  # (in src/video_transcript_fetcher/app.py) for the full evidence trail.
+  #
+  # VideoDiscoveryFunction: manual/direct invoke only, like the
   # *UrlDiscoveryFunction pattern above but writing candidates straight to
   # product_videos instead of publishing scrape jobs -- there's no
-  # "scraper" step here, a video candidate IS the row) and
-  # VideoSummarizerFunction (SQS-triggered from VideoSummarizeQueue, which
-  # only ever receives a message when an admin approves a candidate via
-  # POST /video-candidates/{id}/approve -- see src/admin_api/service.py's
-  # approve_video_candidate). Both require real credentials this project
-  # can't obtain on its own: YouTubeApiKeySecretArn (a Google Cloud API
-  # key) and Bedrock model access granted in the console for BedrockModelId
-  # -- see those parameters' descriptions above.
+  # "scraper" step here, a video candidate IS the row.
+  #
+  # VideoTranscriptFetcherFunction: SQS-triggered from VideoSummarizeQueue
+  # (which only ever receives a message when an admin approves a candidate
+  # via POST /video-candidates/{id}/approve -- see
+  # src/admin_api/service.py's approve_video_candidate). Deliberately NOT
+  # VPC-attached (no DB access needed -- youtube_video_id is passed in the
+  # message itself) so it uses AWS's normal, shared execution network path
+  # instead of this stack's single NAT gateway IP, a genuinely different
+  # ordinary AWS network path rather than an attempt to disguise traffic
+  # (no proxies/fingerprint spoofing -- same line this project holds for
+  # Instagram/TikTok/etc.). Publishes its result to
+  # VideoTranscriptResultQueue regardless of whether a transcript was
+  # actually found -- "no transcript" is an expected, non-error outcome.
+  #
+  # VideoSummarizerFunction: SQS-triggered from VideoTranscriptResultQueue.
+  # Still VPC-attached (needs DbSecretArn) and does the actual DB write +
+  # Bedrock summarization call, but no longer talks to YouTube itself.
+  #
+  # All three require real credentials this project can't obtain on its
+  # own: YouTubeApiKeySecretArn (a Google Cloud API key) and Bedrock model
+  # access granted in the console for BedrockModelId -- see those
+  # parameters' descriptions above.
 
   VideoDiscoveryFunction:
     Type: AWS::Serverless::Function
@@ -877,6 +920,45 @@ Resources:
       # products, capped), {"brand_id": "..."}, or {"product_ids": [...]}
       # -- see module docstring for the subset-first reasoning and the
       # real ~90-searches/day quota ceiling this respects.
+
+  VideoTranscriptFetcherFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-video-transcript-fetcher
+      CodeUri: src/video_transcript_fetcher/
+      Handler: app.handler
+      # Same 150s reasoning as VideoSummarizerFunction had before the split
+      # -- a watch-page fetch plus up to DEFAULT_WATCH_PAGE_FETCH_ATTEMPTS
+      # retries plus a transcript XML fetch is several sequential network
+      # round trips, the same shape that drove every other 150s Timeout in
+      # this template.
+      Timeout: 150
+      Environment:
+        Variables:
+          TRANSCRIPT_RESULT_QUEUE_URL: !Ref VideoTranscriptResultQueue
+      # Deliberately NO VPCAccessPolicy and no DbSecretArn-reading policy --
+      # this function never touches the database (see the module comment
+      # block above and video_transcript_fetcher/app.py's own module
+      # docstring for why that's the whole point of this split). Globals'
+      # DB_SECRET_ARN environment variable still gets set on this function
+      # like every other one in this template, but it's harmless: nothing
+      # in app.py reads it or has IAM permission to use it.
+      Policies:
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt VideoTranscriptResultQueue.QueueName
+      Events:
+        VideoSummarizeQueueTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt VideoSummarizeQueue.Arn
+            BatchSize: 5
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+      # SQS-triggered from VideoSummarizeQueue (populated only by an admin
+      # approval, see above -- the queue's name predates this split and was
+      # kept as-is to avoid a CloudFormation resource replacement) -- also
+      # still accepts direct/manual invocation with {"product_video_id":
+      # "...", "youtube_video_id": "..."} for testing one row by hand.
 
   VideoSummarizerFunction:
     Type: AWS::Serverless::Function
@@ -931,16 +1013,18 @@ Resources:
                 StringEquals:
                   bedrock:InferenceProfileArn: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockModelId}"
       Events:
-        VideoSummarizeQueueTrigger:
+        VideoTranscriptResultQueueTrigger:
           Type: SQS
           Properties:
-            Queue: !GetAtt VideoSummarizeQueue.Arn
+            Queue: !GetAtt VideoTranscriptResultQueue.Arn
             BatchSize: 5
             FunctionResponseTypes:
               - ReportBatchItemFailures
-      # SQS-triggered from VideoSummarizeQueue (populated only by an admin
-      # approval, see above) -- also still accepts direct/manual invocation
-      # with {"product_video_id": "..."} for testing one row by hand.
+      # SQS-triggered from VideoTranscriptResultQueue (populated by
+      # VideoTranscriptFetcherFunction, which only ever runs after an admin
+      # approval -- see above) -- also still accepts direct/manual
+      # invocation with {"product_video_id": "...", "transcript": "...",
+      # "transcript_note": "..."} for testing one row by hand.
 
   # --- commercebuild brand family (Storm, Roto Grip, 900 Global) ---
   #
@@ -1198,7 +1282,11 @@ Outputs:
     Value: !GetAtt BowlerDepotReconciliationFunction.Arn
   VideoDiscoveryFunctionArn:
     Value: !GetAtt VideoDiscoveryFunction.Arn
+  VideoTranscriptFetcherFunctionArn:
+    Value: !GetAtt VideoTranscriptFetcherFunction.Arn
   VideoSummarizerFunctionArn:
     Value: !GetAtt VideoSummarizerFunction.Arn
   VideoSummarizeDLQUrl:
     Value: !Ref VideoSummarizeDLQ
+  VideoTranscriptResultDLQUrl:
+    Value: !Ref VideoTranscriptResultDLQ

@@ -351,19 +351,26 @@ def get_pending_video_count(conn) -> int:
 
 def approve_video_candidate(conn, video_id: str, resolved_by: str) -> dict:
     """Marks the candidate approved, then best-effort publishes it to
-    VIDEO_SUMMARIZE_QUEUE_URL for video_summarizer to fetch the transcript
-    and Bedrock summary. Mirrors the other functions' "if configured" guard
-    (see e.g. netsuite_url_discovery.handler's queue_url check) -- if the
-    queue isn't wired up yet (env var unset), the row is still approved, it
-    just won't be enriched until re-approved or the queue's added, rather
-    than failing the whole request."""
+    VIDEO_SUMMARIZE_QUEUE_URL for video_transcript_fetcher to pick up.
+    Mirrors the other functions' "if configured" guard (see e.g.
+    netsuite_url_discovery.handler's queue_url check) -- if the queue isn't
+    wired up yet (env var unset), the row is still approved, it just won't
+    be enriched until re-approved or the queue's added, rather than failing
+    the whole request.
+
+    Also selects youtube_video_id here and forwards it in the published
+    message: video_transcript_fetcher (the queue's consumer as of the
+    split-architecture change) is deliberately NOT VPC-attached and has no
+    DB access, so it can't look this up itself -- it needs the id handed to
+    it directly."""
     with conn.cursor() as cur:
-        cur.execute("select status from product_videos where id = %s", (video_id,))
+        cur.execute("select status, youtube_video_id from product_videos where id = %s", (video_id,))
         row = cur.fetchone()
         if row is None:
             raise LookupError(f"No product_videos row with id {video_id}")
         if row[0] != "pending":
             raise ValueError(f"product_videos row {video_id} is already {row[0]}, not pending")
+        youtube_video_id = row[1]
 
         cur.execute(
             "update product_videos set status = 'approved', resolved_at = now(), resolved_by = %s where id = %s",
@@ -371,7 +378,7 @@ def approve_video_candidate(conn, video_id: str, resolved_by: str) -> dict:
         )
     conn.commit()
 
-    queued = _publish_video_summarize_message(video_id)
+    queued = _publish_video_summarize_message(video_id, youtube_video_id)
     return {"video_id": video_id, "status": "approved", "queued_for_summary": queued}
 
 
@@ -392,7 +399,7 @@ def reject_video_candidate(conn, video_id: str, resolved_by: str, reason: str = 
     return {"video_id": video_id, "status": "rejected"}
 
 
-def _publish_video_summarize_message(product_video_id: str) -> bool:
+def _publish_video_summarize_message(product_video_id: str, youtube_video_id: str) -> bool:
     queue_url = os.environ.get("VIDEO_SUMMARIZE_QUEUE_URL")
     if not queue_url:
         return False
@@ -400,5 +407,11 @@ def _publish_video_summarize_message(product_video_id: str) -> bool:
     import boto3
 
     sqs = boto3.client("sqs")
-    sqs.send_message(QueueUrl=queue_url, MessageBody=json.dumps({"product_video_id": product_video_id}))
+    sqs.send_message(
+        QueueUrl=queue_url,
+        MessageBody=json.dumps({
+            "product_video_id": product_video_id,
+            "youtube_video_id": youtube_video_id,
+        }),
+    )
     return True

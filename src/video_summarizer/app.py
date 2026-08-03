@@ -1,60 +1,41 @@
 """
-SQS-triggered: consumes an approved product_videos row (see
-src/admin_api/service.py's approve_video_candidate, which is what publishes
-here -- an admin approving a candidate is the only way a message reaches
-this queue) and fetches its transcript + a Bedrock-generated summary.
+SQS-triggered: consumes a transcript-fetch result (published by
+src/video_transcript_fetcher/app.py to VideoTranscriptResultQueue) and
+writes it to the DB along with a Bedrock-generated summary, if a
+transcript came through.
 
-REVISED TWICE this deploy, both times based on real live-smoke-test
-evidence, not guesses. History, since it explains why this ended up here:
+SPLIT OUT OF THIS FILE this deploy: everything that talks to YouTube
+(watch-page fetching/parsing, caption-track selection, transcript XML
+parsing, and the retry loop around all of it) now lives in
+src/video_transcript_fetcher/app.py, running as its own, separate,
+NON-VPC-attached Lambda. Real reasoning, not a style preference:
 
-1. Original design: fetch the full watch page
-   (https://www.youtube.com/watch?v=<id>) and regex-extract its embedded
-   `"captionTracks":[...]` JSON blob. Confirmed working once via a manual
-   curl from a residential IP (real captionTracks data present). But the
-   SAME URL fetched from inside this Lambda came back with a same-size,
-   genuinely-real (not a consent wall -- checked directly) watch page that
-   simply didn't have the blob inlined that time.
-2. Swapped to YouTube's dedicated `timedtext?type=list` endpoint, reasoning
-   that avoiding the full watch page entirely would sidestep whatever
-   caused #1. Live-tested and found BROKEN from both Lambda AND a manual
-   curl from a residential IP -- meaning that endpoint itself doesn't work
-   (probably deprecated), independent of IP.
+Two rounds of live smoke-testing (see video_transcript_fetcher's module
+docstring for the full history -- watch-page scraping, then
+timedtext?type=list, then back to watch-page scraping with retries) found
+that `www.youtube.com` (the watch page, and apparently the legacy
+timedtext endpoints too) consistently failed to return caption data when
+fetched from THIS function's VPC-attached Lambda -- routed through this
+account's single, static, heavily-reused NAT gateway IP -- across two
+different videos and multiple retry attempts each, while the identical
+URL fetched from a residential IP worked. Meanwhile `googleapis.com/
+youtube/v3/search` (video_discovery's official, keyed API) works fine from
+that same NAT gateway IP. That pattern points at IP-based treatment tied
+to this account's specific NAT gateway address, not per-request
+randomness -- which a retry loop inside this same network path can't fix.
 
-Comparing both real results points to a specific explanation, not just
-"YouTube is flaky": `googleapis.com/youtube/v3/search` (used by
-video_discovery) is an official, keyed, developer-facing API and works
-fine from this same Lambda/NAT-gateway IP -- bot traffic is its expected
-use case. `www.youtube.com` (the watch page, and apparently now also the
-legacy timedtext endpoints) is YouTube's consumer-facing surface, which
-Google actively defends against automated/datacenter traffic. There is no
-official, unauthenticated way to fetch a transcript for a video you don't
-own (the real OAuth-gated captions.download API requires the video
-owner's consent, useless for third-party review videos) -- so this is
-reverted back to design #1 (watch-page scraping), now WITH a retry loop
-(see list_caption_tracks), and explicitly shipped as best-effort, not
-guaranteed, per explicit user decision after seeing this evidence.
-Deliberately NOT pursuing anything that disguises this Lambda's traffic as
-residential (rotating proxies, deeper fingerprinting, etc.) -- same
-"don't build workarounds for anti-bot defenses" line this project already
-drew for Instagram/TikTok/etc. earlier.
-
-What "best-effort" means in practice: transcript_note already treats "no
-transcript" as an expected, non-error outcome (not sent to the DLQ), so
-video discovery, match-confidence scoring, and admin approval all work
-regardless of whether a given video's transcript comes through. Retries
-exist because the watch-page failure looked like per-request variance (a
-single Lambda attempt failed once; we don't yet have evidence it's
-deterministic) rather than a hard, consistent block -- multiple attempts
-materially improve the odds if that's the case.
-
-1. A public video's watch page embeds a `"captionTracks":[...]` JSON array
-   (inside the page's ytInitialPlayerResponse blob) listing each available
-   caption track's `baseUrl`, `languageCode`, and `kind` ("asr" for
-   YouTube's own auto-generated captions, absent for human-uploaded ones).
-2. Fetching a track's baseUrl returns an XML document
-   (`<transcript><text start="..." dur="...">...</text>...</transcript>`)
-   with one <text> element per caption line. Concatenating those in order
-   is the transcript.
+This function still needs DB access (VPC-attached, DbSecretArn) and
+Bedrock access, so it stays as-is on the network side. The YouTube-facing
+work moved to a function that deliberately has NEITHER of those needs, so
+it can run without VPC attachment and use AWS's normal, shared execution
+network path instead of this account's fixed NAT gateway EIP -- a
+genuinely different, ordinary AWS network path, not an attempt to disguise
+traffic as residential (no rotating proxies, no fingerprint spoofing --
+same "don't build anti-bot-defense workarounds" line this project has held
+for Instagram/TikTok/etc. throughout). Unverified whether it actually
+resolves the caption-fetching issue as of this deploy -- confirm via a
+real invoke, same real-data-first discipline as everything else in this
+project.
 
 Bedrock (not the Anthropic API directly) per explicit user choice --
 reuses this project's existing AWS account/IAM rather than a new external
@@ -64,10 +45,6 @@ Manager for credentials, SQS for queues).
 import json
 import logging
 import os
-import re
-import time
-import xml.etree.ElementTree as ET
-from html import unescape
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -84,161 +61,6 @@ logger.setLevel(logging.INFO)
 DEFAULT_BEDROCK_MODEL_ID = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 DEFAULT_TRANSCRIPT_CHAR_LIMIT = 12000
 DEFAULT_SUMMARY_MAX_TOKENS = 300
-
-DEFAULT_WATCH_PAGE_FETCH_ATTEMPTS = 3
-DEFAULT_WATCH_PAGE_RETRY_DELAY_SECONDS = 2
-
-_CAPTION_TRACKS_RE = re.compile(r'"captionTracks":(\[.*?\])', re.DOTALL)
-
-# A real, confirmed consent-wall page is one possible (though, based on
-# this deploy's evidence, probably not the main) reason a fetch could come
-# back with no captionTracks -- checked only to make the CloudWatch log
-# line diagnostic, not to change behavior.
-_CONSENT_WALL_MARKERS = ("consent.youtube.com", "Before you continue to YouTube")
-
-
-def fetch_watch_page(video_id: str, timeout: int = 30) -> str:
-    """Kept separate from parsing so tests can feed real fixture HTML
-    without a network call. See module docstring point 1."""
-    import requests
-
-    resp = requests.get(
-        f"https://www.youtube.com/watch?v={video_id}",
-        headers={"User-Agent": "Mozilla/5.0 (compatible; bowling-scraper/1.0)"},
-        timeout=timeout,
-    )
-    resp.raise_for_status()
-    return resp.text
-
-
-def parse_caption_tracks(watch_page_html: str) -> list:
-    """Extracts the captionTracks JSON array embedded in the watch page
-    (see module docstring point 1). Returns [] if the video has no
-    captions at all, or if this particular fetch just didn't include the
-    blob (see module docstring for why that's a real, observed outcome,
-    not assumed) -- either way, "no tracks this attempt", not a crash.
-
-    Uses re.DOTALL: found via this module's own test (a fixture with the
-    JSON blob spread across multiple lines) that a plain `.` doesn't match
-    newlines by default, which would silently return [] against any watch
-    page where the surrounding markup happens to wrap that blob across
-    lines -- minified real pages likely don't, but there's no reason to
-    depend on that."""
-    match = _CAPTION_TRACKS_RE.search(watch_page_html)
-    if not match:
-        return []
-    try:
-        return json.loads(match.group(1))
-    except (ValueError, TypeError):
-        logger.warning("captionTracks blob found but not valid JSON -- treating as no captions")
-        return []
-
-
-def pick_caption_track(tracks: list) -> dict:
-    """Prefers a real English human-uploaded track, falling back to
-    English auto-generated (kind == 'asr'), falling back to whatever's
-    first if no English track exists at all (better than nothing for a
-    summary -- Bedrock can still work from non-English text)."""
-    if not tracks:
-        return None
-
-    def is_english(t):
-        return (t.get("languageCode") or "").lower().startswith("en")
-
-    english_human = [t for t in tracks if is_english(t) and t.get("kind") != "asr"]
-    if english_human:
-        return english_human[0]
-
-    english_any = [t for t in tracks if is_english(t)]
-    if english_any:
-        return english_any[0]
-
-    return tracks[0]
-
-
-def list_caption_tracks(video_id: str, max_attempts: int = DEFAULT_WATCH_PAGE_FETCH_ATTEMPTS,
-                         delay_seconds: float = DEFAULT_WATCH_PAGE_RETRY_DELAY_SECONDS) -> list:
-    """Fetches the watch page and extracts captionTracks, retrying up to
-    max_attempts times if a fetch comes back empty -- see module docstring
-    for the real evidence this retry is based on (the identical watch page
-    URL, fetched from this Lambda, has been observed to sometimes include
-    the captionTracks blob and sometimes not on a single prior attempt;
-    this is the "best-effort, try a few times" response to that, not a
-    guarantee). Does NOT retry on a network error/non-2xx response -- those
-    should propagate and let SQS's normal retry/DLQ handling deal with
-    genuine transient failures, rather than silently retrying inside the
-    function on top of SQS's own retries."""
-    html = ""
-    for attempt in range(1, max_attempts + 1):
-        html = fetch_watch_page(video_id)
-        tracks = parse_caption_tracks(html)
-        if tracks:
-            if attempt > 1:
-                logger.info("video_id=%s: got %d track(s) on retry attempt %d", video_id, len(tracks), attempt)
-            return tracks
-        if attempt < max_attempts:
-            logger.info(
-                "video_id=%s: attempt %d/%d came back with 0 tracks, retrying in %ss",
-                video_id, attempt, max_attempts, delay_seconds,
-            )
-            time.sleep(delay_seconds)
-
-    hit_marker = next((m for m in _CONSENT_WALL_MARKERS if m in html), None)
-    if hit_marker:
-        logger.warning(
-            "video_id=%s: final attempt's page looks like a consent wall (matched %r)",
-            video_id, hit_marker,
-        )
-    else:
-        logger.info(
-            "video_id=%s: exhausted %d attempts, no consent-wall marker either -- "
-            "page is %d chars, first 200: %r",
-            video_id, max_attempts, len(html), html[:200],
-        )
-    return []
-
-
-def fetch_transcript_xml(base_url: str, timeout: int = 30) -> str:
-    import requests
-
-    resp = requests.get(base_url, timeout=timeout)
-    resp.raise_for_status()
-    return resp.text
-
-
-def parse_transcript_xml(xml_text: str) -> str:
-    """Concatenates every <text> element's content, in document order, into
-    a single plain-text transcript (see module docstring point 2). Caption
-    text is HTML-entity-escaped in the XML (e.g. &#39; for an apostrophe),
-    hence the unescape() call."""
-    if not xml_text.strip():
-        return ""
-    try:
-        root = ET.fromstring(xml_text)
-    except ET.ParseError:
-        logger.warning("Transcript XML did not parse -- treating as unavailable")
-        return ""
-    lines = [unescape(node.text) for node in root.iter("text") if node.text]
-    return " ".join(line.strip() for line in lines if line.strip())
-
-
-def get_transcript(video_id: str) -> tuple:
-    """Returns (transcript_text, note). note is None on success, or a short
-    explanation (e.g. "no_captions_available") when transcript_text is
-    empty -- callers must treat an empty transcript as an expected
-    non-error, best-effort outcome, not raise."""
-    tracks = list_caption_tracks(video_id)
-    logger.info("Found %d caption track(s) for %s", len(tracks), video_id)
-
-    if not tracks:
-        return "", "no_captions_available"
-
-    track = pick_caption_track(tracks)
-    xml_text = fetch_transcript_xml(track["baseUrl"])
-    transcript = parse_transcript_xml(xml_text)
-    if not transcript:
-        return "", "captions_listed_but_transcript_fetch_returned_empty"
-    return transcript, None
 
 
 def build_summary_prompt(product_name: str, brand_name: str, video_title: str, transcript: str) -> str:
@@ -326,7 +148,14 @@ def store_result(conn, product_video_id: str, transcript: str, transcript_note: 
 
 
 def _process_one(job: dict, bedrock_client) -> dict:
+    """job now comes from video_transcript_fetcher via
+    VideoTranscriptResultQueue and already carries the fetch outcome
+    (transcript text, possibly empty, plus a note) -- this function no
+    longer talks to YouTube itself, only DB + Bedrock."""
     product_video_id = job["product_video_id"]
+    transcript = job.get("transcript") or ""
+    note = job.get("transcript_note")
+
     conn = get_db_connection()
     try:
         row = fetch_video_row(conn, product_video_id)
@@ -334,14 +163,12 @@ def _process_one(job: dict, bedrock_client) -> dict:
             logger.warning("No product_videos row with id=%s -- skipping", product_video_id)
             return {"product_video_id": product_video_id, "skipped": "not_found"}
         if row["status"] != "approved":
-            # Only approved candidates should ever reach this queue (see
+            # Only approved candidates should ever reach this pipeline (see
             # module docstring) -- if one didn't, treat it as non-retryable
             # rather than looping forever.
             logger.warning("product_videos id=%s status=%s, not 'approved' -- skipping",
                             product_video_id, row["status"])
             return {"product_video_id": product_video_id, "skipped": f"status_is_{row['status']}"}
-
-        transcript, note = get_transcript(row["youtube_video_id"])
 
         summary = None
         if transcript:

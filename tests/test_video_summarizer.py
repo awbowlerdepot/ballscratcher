@@ -4,217 +4,32 @@ Tests for src/video_summarizer/app.py.
 Manual-runner pattern, run standalone via
 `python3 tests/test_video_summarizer.py`.
 
-Honesty note (see module docstring in app.py for the full history): this
-went watch-page-scraping -> timedtext?type=list -> back to watch-page-
-scraping-with-retries, each swap based on real live-smoke-test evidence
-gathered along the way (not guesses). The captionTracks JSON shape and
-timedtext XML shape below are widely-documented (if unofficial) YouTube
-behavior, confirmed present in a real page via a manual curl this session
--- but this Lambda has also been observed NOT finding that same blob on at
-least one real attempt, hence the retry logic under test below. This is
-explicitly shipped as best-effort, not guaranteed. The Bedrock request/
-response shape IS accurate to AWS's published Anthropic-on-Bedrock wire
-format, but was also never exercised against a real Bedrock endpoint this
-session.
+Trimmed down as part of the "split the architecture" change: everything
+that talked to YouTube (watch-page fetching, caption-track parsing,
+transcript XML parsing, and their tests) moved to
+src/video_transcript_fetcher/app.py and
+tests/test_video_transcript_fetcher.py, running as a separate, non-VPC
+Lambda -- see that module's docstring for the full reasoning (real,
+live-tested evidence that this function's old VPC/NAT-gateway network
+path got different treatment from YouTube's consumer-facing surface than
+a residential IP did). What's left here is DB + Bedrock only: this
+function now consumes an already-fetched transcript (or an empty one plus
+a note explaining why) from VideoTranscriptResultQueue, and its job is
+just to summarize (if there's a transcript) and write the result to the
+product_videos row.
+
+The Bedrock request/response shape IS accurate to AWS's published
+Anthropic-on-Bedrock wire format, but was also never exercised against a
+real Bedrock endpoint in this sandbox (no outbound network access here --
+verified separately via real `aws lambda invoke` calls the user ran).
 """
 import json
-import io
 import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src", "video_summarizer"))
 
 import app  # noqa: E402
-
-
-# --- parse_caption_tracks / pick_caption_track ---
-
-FAKE_WATCH_PAGE_WITH_CAPTIONS = """
-<html><body><script>var ytInitialPlayerResponse = {"captions":{"playerCaptionsTracklistRenderer":
-{"captionTracks":[
-  {"baseUrl":"https://www.youtube.com/api/timedtext?v=abc123\\u0026lang=en", "name":{"simpleText":"English"}, "languageCode":"en", "kind":"asr"},
-  {"baseUrl":"https://www.youtube.com/api/timedtext?v=abc123\\u0026lang=es", "name":{"simpleText":"Spanish"}, "languageCode":"es"}
-]}}};</script></body></html>
-"""
-
-FAKE_WATCH_PAGE_NO_CAPTIONS = "<html><body><script>var ytInitialPlayerResponse = {\"captions\":{}};</script></body></html>"
-
-
-def test_parse_caption_tracks_extracts_array():
-    tracks = app.parse_caption_tracks(FAKE_WATCH_PAGE_WITH_CAPTIONS)
-    assert len(tracks) == 2
-    assert tracks[0]["languageCode"] == "en"
-    assert tracks[0]["kind"] == "asr"
-
-
-def test_parse_caption_tracks_returns_empty_list_when_absent():
-    assert app.parse_caption_tracks(FAKE_WATCH_PAGE_NO_CAPTIONS) == []
-
-
-def test_parse_caption_tracks_returns_empty_list_for_malformed_json():
-    broken = '<script>"captionTracks":[{not valid json</script>'
-    assert app.parse_caption_tracks(broken) == []
-
-
-def test_pick_caption_track_prefers_human_over_asr():
-    tracks = [
-        {"languageCode": "en", "kind": "asr", "baseUrl": "asr-url"},
-        {"languageCode": "en", "baseUrl": "human-url"},
-    ]
-    assert app.pick_caption_track(tracks)["baseUrl"] == "human-url"
-
-
-def test_pick_caption_track_falls_back_to_asr_english_when_no_human_track():
-    tracks = [{"languageCode": "en", "kind": "asr", "baseUrl": "asr-url"}]
-    assert app.pick_caption_track(tracks)["baseUrl"] == "asr-url"
-
-
-def test_pick_caption_track_falls_back_to_first_when_no_english():
-    tracks = [{"languageCode": "es", "baseUrl": "spanish-url"}, {"languageCode": "fr", "baseUrl": "french-url"}]
-    assert app.pick_caption_track(tracks)["baseUrl"] == "spanish-url"
-
-
-def test_pick_caption_track_returns_none_for_empty_list():
-    assert app.pick_caption_track([]) is None
-
-
-# --- list_caption_tracks: retry-on-empty behavior, and the consent-wall
-# diagnostic on the final failed attempt. Real evidence this is based on:
-# a single live Lambda attempt against a video confirmed (via curl from a
-# residential IP) to have real captions came back with zero tracks -- not
-# yet known whether that's random per-attempt variance (retry helps) or a
-# deterministic block (retry won't help, but doesn't hurt either).
-
-def test_list_caption_tracks_returns_immediately_when_first_attempt_has_tracks():
-    real_fetch = app.fetch_watch_page
-    real_sleep = app.time.sleep
-    calls = []
-    app.fetch_watch_page = lambda video_id: FAKE_WATCH_PAGE_WITH_CAPTIONS
-    app.time.sleep = lambda s: calls.append(s)
-    try:
-        tracks = app.list_caption_tracks("abc123")
-        assert len(tracks) == 2
-        assert calls == []  # no retry needed, so no sleep
-    finally:
-        app.fetch_watch_page = real_fetch
-        app.time.sleep = real_sleep
-
-
-def test_list_caption_tracks_retries_once_then_succeeds():
-    real_fetch = app.fetch_watch_page
-    real_sleep = app.time.sleep
-    responses = [FAKE_WATCH_PAGE_NO_CAPTIONS, FAKE_WATCH_PAGE_WITH_CAPTIONS]
-    app.fetch_watch_page = lambda video_id: responses.pop(0)
-    app.time.sleep = lambda s: None
-    try:
-        tracks = app.list_caption_tracks("abc123", max_attempts=2, delay_seconds=0)
-        assert len(tracks) == 2
-        assert responses == []  # both canned responses were consumed
-    finally:
-        app.fetch_watch_page = real_fetch
-        app.time.sleep = real_sleep
-
-
-def test_list_caption_tracks_gives_up_after_max_attempts():
-    real_fetch = app.fetch_watch_page
-    real_sleep = app.time.sleep
-    app.fetch_watch_page = lambda video_id: FAKE_WATCH_PAGE_NO_CAPTIONS
-    app.time.sleep = lambda s: None
-    try:
-        tracks = app.list_caption_tracks("abc123", max_attempts=2, delay_seconds=0)
-        assert tracks == []
-    finally:
-        app.fetch_watch_page = real_fetch
-        app.time.sleep = real_sleep
-
-
-def test_list_caption_tracks_logs_consent_wall_on_final_attempt_without_changing_result():
-    """The consent-wall marker only changes what gets logged, not the
-    return value -- confirming that here so the diagnostic can't
-    accidentally change behavior."""
-    real_fetch = app.fetch_watch_page
-    real_sleep = app.time.sleep
-    app.fetch_watch_page = lambda video_id: (
-        "<html><body>Before you continue to YouTube, consent.youtube.com wants your consent</body></html>"
-    )
-    app.time.sleep = lambda s: None
-    try:
-        tracks = app.list_caption_tracks("abc123", max_attempts=2, delay_seconds=0)
-        assert tracks == []
-    finally:
-        app.fetch_watch_page = real_fetch
-        app.time.sleep = real_sleep
-
-
-# --- parse_transcript_xml ---
-
-SAMPLE_TRANSCRIPT_XML = (
-    '<?xml version="1.0" encoding="utf-8" ?><transcript>'
-    '<text start="0.0" dur="2.0">Alright let&#39;s check out this ball</text>'
-    '<text start="2.0" dur="3.5">the hook is pretty strong</text>'
-    '</transcript>'
-)
-
-
-def test_parse_transcript_xml_concatenates_and_unescapes():
-    text = app.parse_transcript_xml(SAMPLE_TRANSCRIPT_XML)
-    assert text == "Alright let's check out this ball the hook is pretty strong"
-
-
-def test_parse_transcript_xml_empty_for_blank_input():
-    assert app.parse_transcript_xml("") == ""
-    assert app.parse_transcript_xml("   ") == ""
-
-
-def test_parse_transcript_xml_malformed_returns_empty():
-    assert app.parse_transcript_xml("<transcript><text>unclosed") == ""
-
-
-# --- get_transcript: end-to-end wiring ---
-
-def test_get_transcript_extracts_real_transcript_end_to_end():
-    real_fetch = app.fetch_watch_page
-    real_fetch_xml = app.fetch_transcript_xml
-    app.fetch_watch_page = lambda video_id: FAKE_WATCH_PAGE_WITH_CAPTIONS
-    app.fetch_transcript_xml = lambda base_url: SAMPLE_TRANSCRIPT_XML
-    try:
-        transcript, note = app.get_transcript("abc123")
-        assert note is None
-        assert transcript == "Alright let's check out this ball the hook is pretty strong"
-    finally:
-        app.fetch_watch_page = real_fetch
-        app.fetch_transcript_xml = real_fetch_xml
-
-
-def test_get_transcript_no_captions_when_genuinely_absent():
-    real_fetch = app.fetch_watch_page
-    real_sleep = app.time.sleep
-    app.fetch_watch_page = lambda video_id: FAKE_WATCH_PAGE_NO_CAPTIONS
-    app.time.sleep = lambda s: None
-    try:
-        transcript, note = app.get_transcript("abc123")
-        assert transcript == ""
-        assert note == "no_captions_available"
-    finally:
-        app.fetch_watch_page = real_fetch
-        app.time.sleep = real_sleep
-
-
-def test_get_transcript_empty_transcript_after_tracks_listed():
-    """Tracks are listed but the actual transcript fetch comes back empty
-    -- a different, more specific note than 'no_captions_available' so this
-    failure mode is distinguishable in the DB/CloudWatch."""
-    real_fetch = app.fetch_watch_page
-    real_fetch_xml = app.fetch_transcript_xml
-    app.fetch_watch_page = lambda video_id: FAKE_WATCH_PAGE_WITH_CAPTIONS
-    app.fetch_transcript_xml = lambda base_url: ""
-    try:
-        transcript, note = app.get_transcript("abc123")
-        assert transcript == ""
-        assert note == "captions_listed_but_transcript_fetch_returned_empty"
-    finally:
-        app.fetch_watch_page = real_fetch
-        app.fetch_transcript_xml = real_fetch_xml
 
 
 # --- build_summary_prompt ---
@@ -273,11 +88,195 @@ def test_summarize_transcript_returns_model_text_and_calls_expected_model():
     assert "great ball" in sent_body["messages"][0]["content"]
 
 
+# --- _process_one / handler orchestration: fake DB + Bedrock, job now
+# carries transcript/transcript_note directly (no YouTube fetch here) ---
+
+class FakeCursor:
+    def __init__(self, db):
+        self.db = db
+        self._last_result = None
+        self.description = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, query, params=None):
+        params = params or []
+        q = " ".join(query.split())
+
+        if q.startswith("select pv.id, pv.youtube_video_id"):
+            (product_video_id,) = params
+            row = self.db["product_videos"].get(product_video_id)
+            if row is None:
+                self._last_result = None
+                self.description = None
+            else:
+                self._last_result = (
+                    row["id"], row["youtube_video_id"], row["title"], row["status"],
+                    row["product_name"], row["brand_name"],
+                )
+                self.description = [
+                    ("id",), ("youtube_video_id",), ("title",), ("status",),
+                    ("product_name",), ("brand_name",),
+                ]
+
+        elif q.startswith("update product_videos set transcript"):
+            transcript, note, summary, product_video_id = params
+            row = self.db["product_videos"][product_video_id]
+            row["transcript"] = transcript
+            row["transcript_note"] = note
+            row["summary"] = summary
+            self._last_result = None
+
+        else:
+            raise NotImplementedError(f"FakeCursor doesn't support: {q}")
+
+    def fetchone(self):
+        return self._last_result
+
+
+class FakeConnection:
+    def __init__(self, db):
+        self.db = db
+        self.committed = False
+        self.closed = False
+
+    def cursor(self):
+        return FakeCursor(self.db)
+
+    def commit(self):
+        self.committed = True
+
+    def close(self):
+        self.closed = True
+
+
+def _fake_db_with_approved_video():
+    return {
+        "product_videos": {
+            "vid-1": {
+                "id": "vid-1", "youtube_video_id": "abc123", "title": "Storm Absolute Review",
+                "status": "approved", "product_name": "Absolute", "brand_name": "Storm",
+            },
+        },
+    }
+
+
+def test_process_one_summarizes_when_transcript_present(monkeypatch):
+    db = _fake_db_with_approved_video()
+    conn = FakeConnection(db)
+    monkeypatch.setattr(app, "get_db_connection", lambda: conn)
+
+    bedrock = _FakeBedrockClient("Strong hook, clears the front of the lane, recommended for medium-heavy oil.")
+    job = {"product_video_id": "vid-1", "transcript": "great ball, strong hook", "transcript_note": None}
+
+    result = app._process_one(job, bedrock)
+
+    assert result["summarized"] is True
+    assert result["transcript_note"] is None
+    assert db["product_videos"]["vid-1"]["summary"] == "Strong hook, clears the front of the lane, recommended for medium-heavy oil."
+    assert db["product_videos"]["vid-1"]["transcript"] == "great ball, strong hook"
+    assert conn.committed is True
+    assert conn.closed is True
+    assert len(bedrock.calls) == 1
+
+
+def test_process_one_skips_bedrock_when_no_transcript(monkeypatch):
+    """The whole point of transcript_note as a non-error, best-effort
+    outcome (see video_transcript_fetcher's module docstring): no
+    transcript means no Bedrock call, but the row still gets updated with
+    the note so it's visible in the DB/admin UI, and the job doesn't fail."""
+    db = _fake_db_with_approved_video()
+    conn = FakeConnection(db)
+    monkeypatch.setattr(app, "get_db_connection", lambda: conn)
+
+    bedrock = _FakeBedrockClient("should not be called")
+    job = {"product_video_id": "vid-1", "transcript": "", "transcript_note": "no_captions_available"}
+
+    result = app._process_one(job, bedrock)
+
+    assert result["summarized"] is False
+    assert result["transcript_note"] == "no_captions_available"
+    assert db["product_videos"]["vid-1"]["summary"] is None
+    assert len(bedrock.calls) == 0
+    assert conn.committed is True
+
+
+def test_process_one_skips_when_row_not_approved(monkeypatch):
+    db = _fake_db_with_approved_video()
+    db["product_videos"]["vid-1"]["status"] = "rejected"
+    conn = FakeConnection(db)
+    monkeypatch.setattr(app, "get_db_connection", lambda: conn)
+
+    bedrock = _FakeBedrockClient("should not be called")
+    job = {"product_video_id": "vid-1", "transcript": "great ball", "transcript_note": None}
+
+    result = app._process_one(job, bedrock)
+
+    assert result["skipped"] == "status_is_rejected"
+    assert len(bedrock.calls) == 0
+
+
+def test_process_one_skips_when_row_missing(monkeypatch):
+    db = _fake_db_with_approved_video()
+    conn = FakeConnection(db)
+    monkeypatch.setattr(app, "get_db_connection", lambda: conn)
+
+    bedrock = _FakeBedrockClient("should not be called")
+    job = {"product_video_id": "does-not-exist", "transcript": "", "transcript_note": None}
+
+    result = app._process_one(job, bedrock)
+
+    assert result["skipped"] == "not_found"
+    assert len(bedrock.calls) == 0
+
+
 if __name__ == "__main__":
-    tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
+    class _MonkeyPatch:
+        def __init__(self):
+            self._sets = []
+            self._env_sets = []
+
+        def setattr(self, obj, name, value):
+            self._sets.append((obj, name, getattr(obj, name)))
+            setattr(obj, name, value)
+
+        def setenv(self, name, value):
+            had_it = name in os.environ
+            self._env_sets.append((name, os.environ.get(name), had_it))
+            os.environ[name] = value
+
+        def delenv(self, name, raising=True):
+            had_it = name in os.environ
+            self._env_sets.append((name, os.environ.get(name), had_it))
+            if had_it:
+                del os.environ[name]
+            elif raising:
+                raise KeyError(name)
+
+        def undo(self):
+            for obj, name, value in reversed(self._sets):
+                setattr(obj, name, value)
+            for name, value, had_it in reversed(self._env_sets):
+                if had_it:
+                    os.environ[name] = value
+                else:
+                    os.environ.pop(name, None)
+
+    tests = [(k, v) for k, v in list(globals().items()) if k.startswith("test_")]
     passed = 0
-    for t in tests:
-        t()
-        passed += 1
-        print(f"PASS: {t.__name__}")
+    for name, t in tests:
+        mp = _MonkeyPatch()
+        try:
+            if "monkeypatch" in t.__code__.co_varnames[: t.__code__.co_argcount]:
+                t(mp)
+            else:
+                t()
+            print(f"PASS: {name}")
+            passed += 1
+        finally:
+            mp.undo()
     print(f"\n{passed}/{len(tests)} tests passed")
