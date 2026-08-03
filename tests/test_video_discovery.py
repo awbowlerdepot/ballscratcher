@@ -189,6 +189,19 @@ def test_fetch_products_to_search_explicit_product_ids_skips_published_filter():
     assert params[0] == ["p1"]
 
 
+def test_fetch_products_to_search_casts_product_ids_to_uuid_array():
+    """Real bug found via live smoke test against the real DB: psycopg2
+    sends a plain Python list as an untyped Postgres array, which Postgres
+    infers as text[]; products.id is uuid, and 'operator does not exist:
+    uuid = text' resulted. The %s::uuid[] cast on the parameter is what
+    fixes it -- this test guards against that cast getting dropped again."""
+    conn = _FakeConn(products=[])
+    app.fetch_products_to_search(conn, {"product_ids": ["5c670ec9-6926-4b71-a0ed-b88aa44f219d"]}, max_products=90)
+
+    query, _ = conn.cursor().executed[0]
+    assert "p.id = any(%s::uuid[])" in query
+
+
 def test_fetch_products_to_search_brand_id_filter():
     conn = _FakeConn(products=[])
     app.fetch_products_to_search(conn, {"brand_id": "brand-1"}, max_products=90)

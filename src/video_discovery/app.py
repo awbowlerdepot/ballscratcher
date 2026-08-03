@@ -154,7 +154,13 @@ def fetch_products_to_search(conn, job: dict, max_products: int) -> list:
     brand_id = job.get("brand_id")
 
     if product_ids:
-        conditions.append("p.id = any(%s)")
+        # Real bug found via this deploy's first live smoke test:
+        # psycopg2 adapts a plain Python list to an untyped Postgres array
+        # literal, which Postgres infers as text[] -- products.id is uuid,
+        # and Postgres won't implicitly cast text[] to uuid[] for `= any()`
+        # ("operator does not exist: uuid = text"). The explicit ::uuid[]
+        # cast on the parameter (not the column) fixes it.
+        conditions.append("p.id = any(%s::uuid[])")
         params.append(list(product_ids))
     else:
         conditions.append("p.published = true")
