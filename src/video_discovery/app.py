@@ -113,7 +113,19 @@ def search_youtube(api_key: str, query: str, max_results: int = DEFAULT_MAX_RESU
         },
         timeout=30,
     )
-    resp.raise_for_status()
+    if not resp.ok:
+        # Real gap found via this deploy's first live smoke test: a bare
+        # resp.raise_for_status() only surfaces "403 Forbidden" in
+        # CloudWatch, not WHY -- Google's error body (error.errors[0].reason,
+        # e.g. "accessNotConfigured"/"keyInvalid"/"quotaExceeded") is the
+        # actually-actionable part and was getting swallowed. Truncated to
+        # keep a pathological response from bloating the log line; the key
+        # itself is a request param, not part of the response body, so it
+        # doesn't get echoed back into this message.
+        raise requests.exceptions.HTTPError(
+            f"{resp.status_code} error from YouTube search.list: {resp.text[:500]}",
+            response=resp,
+        )
     return parse_search_response(resp.json())
 
 

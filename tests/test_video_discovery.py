@@ -22,6 +22,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src", "video_discovery"))
 
 import app  # noqa: E402
+import requests  # noqa: E402 -- real module; only its .get is monkeypatched below
 
 
 # --- significant_tokens / score_match / build_search_query: pure, no DB ---
@@ -109,6 +110,56 @@ def test_parse_search_response_skips_non_video_items():
 def test_parse_search_response_empty_items():
     assert app.parse_search_response({"items": []}) == []
     assert app.parse_search_response({}) == []
+
+
+# --- search_youtube error handling: real gap found via live smoke test ---
+# (a bare resp.raise_for_status() only logged "403 Forbidden" in CloudWatch,
+# not Google's actual error reason -- see app.py's fix comment). Manual
+# save/restore of requests.get rather than a monkeypatch fixture, since
+# this file's runner (see bottom) doesn't wire one up and only one test
+# here needs it.
+
+class _FakeResponse:
+    def __init__(self, status_code, text, ok):
+        self.status_code = status_code
+        self.text = text
+        self.ok = ok
+
+    def json(self):
+        import json
+        return json.loads(self.text)
+
+
+def test_search_youtube_raises_with_response_body_on_error():
+    real_get = requests.get
+    requests.get = lambda *a, **kw: _FakeResponse(
+        403, '{"error": {"errors": [{"reason": "accessNotConfigured"}]}}', ok=False,
+    )
+    try:
+        try:
+            app.search_youtube("fake-key", "some query")
+            assert False, "expected HTTPError"
+        except requests.exceptions.HTTPError as e:
+            assert "403" in str(e)
+            assert "accessNotConfigured" in str(e)
+    finally:
+        requests.get = real_get
+
+
+def test_search_youtube_returns_videos_on_success():
+    real_get = requests.get
+    requests.get = lambda *a, **kw: _FakeResponse(
+        200,
+        '{"items": [{"id": {"videoId": "abc"}, "snippet": {"title": "t", "channelTitle": "c", '
+        '"publishedAt": "2026-01-01T00:00:00Z", "thumbnails": {"high": {"url": "https://x/y.jpg"}}}}]}',
+        ok=True,
+    )
+    try:
+        videos = app.search_youtube("fake-key", "some query")
+        assert len(videos) == 1
+        assert videos[0]["youtube_video_id"] == "abc"
+    finally:
+        requests.get = real_get
 
 
 # --- Fake DB layer: fetch_products_to_search / insert_candidates ---
