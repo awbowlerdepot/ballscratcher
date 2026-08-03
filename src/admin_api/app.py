@@ -40,6 +40,15 @@ class PublishRequest(BaseModel):
     published: bool
 
 
+class TranscriptSubmitRequest(BaseModel):
+    # transcript defaults to "" (not required) so the same endpoint also
+    # accepts an honest "checked, no captions available" result from the
+    # home fetcher, not just successful transcripts -- see
+    # service.submit_video_transcript's docstring.
+    transcript: str = ""
+    transcript_note: Optional[str] = None
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -192,6 +201,27 @@ def reject_video_candidate(video_id: str, body: RejectRequest):
     conn = service.get_db_connection()
     try:
         return service.reject_video_candidate(conn, video_id, body.resolved_by, body.reason)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/video-candidates/{video_id}/transcript")
+def submit_video_transcript(video_id: str, body: TranscriptSubmitRequest):
+    # Entry point for scripts/home_transcript_fetcher.py -- a transcript
+    # fetched from outside AWS entirely (a residential connection) gets
+    # published into the exact same VideoTranscriptResultQueue
+    # video_transcript_fetcher uses, so video_summarizer treats it
+    # identically either way. See service.submit_video_transcript's
+    # docstring for why this exists: YouTube's caption-fetch behavior was
+    # confirmed identical (blocked) from both a VPC and non-VPC Lambda this
+    # session, but works from a residential IP.
+    conn = service.get_db_connection()
+    try:
+        return service.submit_video_transcript(conn, video_id, body.transcript, body.transcript_note)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:

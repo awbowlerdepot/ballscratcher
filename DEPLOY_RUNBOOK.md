@@ -516,6 +516,68 @@ being tried.
    `bowling-scraper-video-transcript-result-dlq` -- same
    first-stop-for-failures convention as every other DLQ in this project.
 
+### 6j. Home transcript fetcher (residential caption fetching) -- optional, run outside AWS entirely
+
+Real, live-tested finding this session (see
+src/video_transcript_fetcher/app.py's module docstring for the full
+evidence trail): YouTube's watch-page caption data comes back empty from
+every AWS Lambda network path tried -- VPC-attached and non-VPC both,
+across multiple videos, even with a real browser User-Agent -- but
+succeeds from a residential connection. That's consistent with
+IP/ASN-reputation-based detection that no code change inside AWS can fix.
+`scripts/home_transcript_fetcher.py` is the honest way around that: a
+low-volume script meant to run once a day from hardware you control at
+home (a Raspberry Pi, a spare box, whatever's on your own residential
+connection), not a rotating-proxy pool disguising bulk traffic -- see that
+script's module docstring for the full reasoning, including the honest
+caveat that this still doesn't make the fetch fully compliant with
+YouTube's Terms of Service (Section 5.B prohibits "any automated means"
+regardless of whose IP it's on), just lower-risk and non-deceptive
+compared to what this project has explicitly ruled out.
+
+It's a third possible producer for `VideoTranscriptResultQueue` --
+`video_transcript_fetcher` (off AWS, per the Lambda-based path above) and
+this script both feed the same queue via different means, and
+`video_summarizer` doesn't know or care which one a given message came
+from.
+
+Setup on the Pi/home server:
+```bash
+pip install -r scripts/requirements.txt
+export ADMIN_API_URL="https://<your-api-id>.execute-api.us-west-1.amazonaws.com"
+export ADMIN_API_TOKEN="<the same bearer token used for every other admin API call in this runbook>"
+python3 scripts/home_transcript_fetcher.py
+```
+
+Cron, once a day (put the env vars in a `chmod 600` wrapper script rather
+than the crontab itself, so the token isn't sitting in plaintext in
+`crontab -l`):
+```
+0 7 * * * /home/pi/run_transcript_fetcher.sh >> /var/log/bowling-transcript-fetcher.log 2>&1
+```
+
+What it does each run: lists every `approved` video candidate that
+doesn't already have a `transcript_note` or a summary (see
+`needs_transcript` in the script -- deliberately does NOT re-check
+candidates that were already tried, even ones that came back with no
+captions, so this doesn't hammer the same handful of caption-less videos
+every single day forever), fetches each one's transcript using your home
+connection, and `POST`s the result to
+`$ADMIN_API_URL/video-candidates/{id}/transcript` -- the same endpoint
+publishes to `VideoTranscriptResultQueue`, so `video_summarizer` picks it
+up and runs the Bedrock summarization exactly like it would for a
+Lambda-fetched transcript.
+
+Smoke-test it manually once before trusting the cron job:
+```bash
+cd brunswick-scraper
+ADMIN_API_URL="$ADMIN_API_URL" ADMIN_API_TOKEN="$TOKEN" python3 scripts/home_transcript_fetcher.py
+```
+Check the log output for `Done: {'total': ..., 'got_transcript': ...,
+'no_captions': ..., 'errors': ...}`, then confirm via
+`GET /video-candidates/<video-id>` (same as 6i step 5) that a transcript
+or an honest `transcript_note` actually landed.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

@@ -415,3 +415,57 @@ def _publish_video_summarize_message(product_video_id: str, youtube_video_id: st
         }),
     )
     return True
+
+
+def submit_video_transcript(conn, video_id: str, transcript: str, transcript_note: str = None) -> dict:
+    """Publishes an externally-fetched transcript straight to
+    VideoTranscriptResultQueue -- the same queue video_transcript_fetcher
+    publishes to -- so video_summarizer picks it up and does the DB write +
+    Bedrock call exactly like it would for a Lambda-fetched transcript, no
+    special-casing downstream. This is the real reason this endpoint exists:
+    live testing this session found YouTube's caption-fetch behavior
+    identical (blocked) from both a VPC-attached and a non-VPC Lambda, but
+    working from a residential connection -- see
+    src/video_transcript_fetcher/app.py's module docstring for the full
+    evidence trail, and scripts/home_transcript_fetcher.py for the
+    residential-side counterpart that calls this endpoint, meant to run on
+    the user's own hardware at home rather than in AWS.
+
+    Only requires the row exist and already be 'approved' -- the same gate
+    video_summarizer's own _process_one applies -- so this can't be used to
+    inject a transcript onto a row that's still pending review or was
+    rejected. Deliberately does NOT soft-fail like
+    _publish_video_summarize_message does when its queue isn't configured
+    (that function has a DB write to fall back on; this one's entire job
+    IS the publish, there's nothing else to persist) -- a missing
+    TRANSCRIPT_RESULT_QUEUE_URL is a real deployment misconfiguration, so
+    it's left to raise (KeyError, surfaced as a 500) rather than silently
+    discarding the caller's transcript."""
+    with conn.cursor() as cur:
+        cur.execute("select status from product_videos where id = %s", (video_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError(f"No product_videos row with id {video_id}")
+        if row[0] != "approved":
+            raise ValueError(
+                f"product_videos row {video_id} is {row[0]}, not approved -- can't submit a transcript for it"
+            )
+
+    _publish_transcript_result_message(video_id, transcript, transcript_note)
+    return {"video_id": video_id, "queued_for_summary": True}
+
+
+def _publish_transcript_result_message(product_video_id: str, transcript: str, transcript_note: str) -> None:
+    queue_url = os.environ["TRANSCRIPT_RESULT_QUEUE_URL"]
+
+    import boto3
+
+    sqs = boto3.client("sqs")
+    sqs.send_message(
+        QueueUrl=queue_url,
+        MessageBody=json.dumps({
+            "product_video_id": product_video_id,
+            "transcript": transcript,
+            "transcript_note": transcript_note,
+        }),
+    )

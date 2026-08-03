@@ -645,6 +645,14 @@ Resources:
           # module comment for why approving a video candidate has a
           # publish side effect that approving a review_queue row doesn't.
           VIDEO_SUMMARIZE_QUEUE_URL: !Ref VideoSummarizeQueue
+          # Read by service.py's submit_video_transcript (POST
+          # /video-candidates/{id}/transcript) -- lets a transcript fetched
+          # from outside AWS entirely (see scripts/home_transcript_fetcher.py)
+          # feed into the same VideoTranscriptResultQueue
+          # video_transcript_fetcher publishes to, so video_summarizer
+          # doesn't need to know or care which producer a given message
+          # came from.
+          TRANSCRIPT_RESULT_QUEUE_URL: !Ref VideoTranscriptResultQueue
       Policies:
         - Statement:
             - Effect: Allow
@@ -653,6 +661,8 @@ Resources:
               Resource: !Ref DbSecretArn
         - SQSSendMessagePolicy:
             QueueName: !GetAtt VideoSummarizeQueue.QueueName
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt VideoTranscriptResultQueue.QueueName
       Events:
         AdminApi:
           Type: HttpApi

@@ -341,6 +341,79 @@ def test_reject_video_candidate_marks_rejected():
     assert conn.committed is True
 
 
+# --- submit_video_transcript: entry point for scripts/home_transcript_fetcher.py
+# (or any other externally-fetched-transcript source) -- publishes straight
+# to VideoTranscriptResultQueue rather than writing the DB itself, so these
+# tests monkeypatch _publish_transcript_result_message the same way
+# test_approve_video_candidate_forwards_youtube_video_id_to_publish
+# monkeypatches _publish_video_summarize_message above.
+
+def _fake_db_with_approved_video_candidate():
+    db = _fake_db_with_pending_video_candidate()
+    db["product_videos"]["vid-1"]["status"] = "approved"
+    return db
+
+
+def test_submit_video_transcript_publishes_and_returns_queued(monkeypatch):
+    db = _fake_db_with_approved_video_candidate()
+    conn = FakeConnection(db)
+    captured = {}
+
+    def fake_publish(product_video_id, transcript, transcript_note):
+        captured["product_video_id"] = product_video_id
+        captured["transcript"] = transcript
+        captured["transcript_note"] = transcript_note
+
+    monkeypatch.setattr(service, "_publish_transcript_result_message", fake_publish)
+
+    result = service.submit_video_transcript(conn, "vid-1", "great ball, strong hook", None)
+
+    assert result == {"video_id": "vid-1", "queued_for_summary": True}
+    assert captured == {"product_video_id": "vid-1", "transcript": "great ball, strong hook", "transcript_note": None}
+
+
+def test_submit_video_transcript_allows_empty_transcript_with_note(monkeypatch):
+    """The home fetcher submits a real, checked 'no captions' outcome too,
+    not just successful transcripts -- same non-error convention as the
+    Lambda-based fetcher's transcript_note."""
+    db = _fake_db_with_approved_video_candidate()
+    conn = FakeConnection(db)
+    captured = {}
+
+    def fake_publish(product_video_id, transcript, transcript_note):
+        captured["transcript"] = transcript
+        captured["transcript_note"] = transcript_note
+
+    monkeypatch.setattr(service, "_publish_transcript_result_message", fake_publish)
+
+    result = service.submit_video_transcript(conn, "vid-1", "", "no_captions_available")
+
+    assert result["queued_for_summary"] is True
+    assert captured == {"transcript": "", "transcript_note": "no_captions_available"}
+
+
+def test_submit_video_transcript_missing_row_raises():
+    db = _fake_db_with_approved_video_candidate()
+    conn = FakeConnection(db)
+    try:
+        service.submit_video_transcript(conn, "does-not-exist", "transcript text", None)
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def test_submit_video_transcript_rejects_non_approved_row():
+    """Same gate video_summarizer's own _process_one applies -- a pending
+    or rejected row can't have a transcript submitted for it."""
+    db = _fake_db_with_pending_video_candidate()  # status defaults to 'pending'
+    conn = FakeConnection(db)
+    try:
+        service.submit_video_transcript(conn, "vid-1", "transcript text", None)
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
 if __name__ == "__main__":
     # Tiny monkeypatch shim so this file can run standalone the same way
     # as the other manual test runners in this repo, without pytest.
