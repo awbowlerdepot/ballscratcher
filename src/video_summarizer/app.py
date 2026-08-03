@@ -4,33 +4,50 @@ src/admin_api/service.py's approve_video_candidate, which is what publishes
 here -- an admin approving a candidate is the only way a message reaches
 this queue) and fetches its transcript + a Bedrock-generated summary.
 
-Two real, disclosed things this module's design depends on that could NOT
-be verified against a live YouTube page this session (sandbox has zero
-outbound network access -- same hard constraint noted throughout this
-project; every prior real-data check required the user to run curl
-themselves). Both are widely documented, long-standing (if unofficial)
-YouTube behaviors, not a guess made up for this session, but they must be
-confirmed via a real fetch by the user before this is considered done, the
-same discipline this project has applied to every other new parser (e.g.
-the commercebuild archived-page template turned out to be stale after a
-site redesign -- assumed-but-unverified structure has burned this project
-before):
+REVISED this deploy after a real live-smoke-test finding: the original
+design fetched the full watch page (https://www.youtube.com/watch?v=<id>)
+and regex-extracted its embedded `"captionTracks":[...]` JSON blob. That
+worked once against a manual curl from a residential IP (confirmed real
+data), but the SAME URL fetched from inside this Lambda came back with a
+same-size, genuinely-real (not a consent wall -- checked) watch page that
+simply didn't have the blob inlined. Repeated identical requests to the
+same watch page during testing most likely triggered some page-variant
+rotation or soft anti-automation behavior server-side -- not something a
+parsing fix addresses, since the content itself was inconsistent between
+fetches of the identical URL.
 
-1. A public video's watch page (https://www.youtube.com/watch?v=<id>) embeds
-   a `"captionTracks":[...]` JSON array (inside the page's
-   ytInitialPlayerResponse blob) listing each available caption track's
-   `baseUrl`, `languageCode`, and `kind` ("asr" for YouTube's own
-   auto-generated captions, absent for human-uploaded ones). This does NOT
-   require the official (OAuth-gated) captions.download endpoint -- it's
-   the same public data the watch page's own CC button reads.
-2. Fetching a track's baseUrl returns an XML document
-   (`<transcript><text start="..." dur="...">...</text>...</transcript>`)
-   with one <text> element per caption line. Concatenating those in order
-   is the transcript.
+Replaced with YouTube's dedicated, lightweight caption-list endpoint
+instead of parsing the full watch page at all:
 
-Videos with captions disabled entirely have no captionTracks array -- this
-is treated as an expected, non-retryable outcome (transcript_note is set,
-the SQS message is NOT sent to the DLQ for this), not a bug, since not
+1. `https://www.youtube.com/api/timedtext?type=list&v=<id>` returns a
+   small XML document listing available caption tracks directly --
+   `<transcript_list><track lang_code="en" kind="asr" .../>...</transcript_list>`
+   (kind="asr" for YouTube's auto-generated captions, absent for
+   human-uploaded ones). No watch-page fetch, no JS-blob parsing, no
+   dependence on which variant of the watch page YouTube happens to serve
+   a given request.
+2. Fetching `https://www.youtube.com/api/timedtext?v=<id>&lang=<lang_code>`
+   (plus `&kind=asr` for an auto-generated track) returns the same
+   `<transcript><text start="..." dur="...">...</text>...</transcript>`
+   XML shape the original design already expected -- parse_transcript_xml
+   is unchanged.
+
+This is a long-standing, widely-documented (if unofficial) YouTube
+endpoint, older than watch-page JSON scraping, and doesn't require the
+official OAuth-gated captions.download endpoint. Still genuinely
+unverified against a live call this session (same zero-outbound-network
+sandbox constraint noted throughout this project) -- confirm the real
+shape via a manual curl before fully trusting this, same discipline
+applied to every other new parser here.
+
+A short retry (see list_caption_tracks) is layered on top as a cheap
+hedge against the same kind of per-request inconsistency that broke the
+watch-page approach, since there's no way to rule out this endpoint
+having similar variance without more live data than this session has.
+
+Videos with captions disabled entirely have no tracks in the list -- this
+is treated as an expected, non-retryable-by-SQS outcome (transcript_note
+is set, the message is NOT sent to the DLQ for this), not a bug, since not
 every video has captions.
 
 Bedrock (not the Anthropic API directly) per explicit user choice --
@@ -41,7 +58,7 @@ Manager for credentials, SQS for queues).
 import json
 import logging
 import os
-import re
+import time
 import xml.etree.ElementTree as ET
 from html import unescape
 
@@ -61,18 +78,19 @@ DEFAULT_BEDROCK_MODEL_ID = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 DEFAULT_TRANSCRIPT_CHAR_LIMIT = 12000
 DEFAULT_SUMMARY_MAX_TOKENS = 300
 
-_CAPTION_TRACKS_RE = re.compile(r'"captionTracks":(\[.*?\])', re.DOTALL)
+TIMEDTEXT_BASE_URL = "https://www.youtube.com/api/timedtext"
+DEFAULT_LIST_FETCH_ATTEMPTS = 2
+DEFAULT_LIST_RETRY_DELAY_SECONDS = 2
 
 
-def fetch_watch_page(video_id: str, timeout: int = 30) -> str:
-    """Kept separate from parsing so tests can feed real fixture HTML
-    without a network call. See module docstring point 1 for what this
-    page is expected to contain and why it's unverified live this
-    session."""
+def fetch_caption_track_list_xml(video_id: str, timeout: int = 30) -> str:
+    """Kept separate from parsing so tests can feed real fixture XML
+    without a network call. See module docstring point 1."""
     import requests
 
     resp = requests.get(
-        f"https://www.youtube.com/watch?v={video_id}",
+        TIMEDTEXT_BASE_URL,
+        params={"type": "list", "v": video_id},
         headers={"User-Agent": "Mozilla/5.0 (compatible; bowling-scraper/1.0)"},
         timeout=timeout,
     )
@@ -80,25 +98,27 @@ def fetch_watch_page(video_id: str, timeout: int = 30) -> str:
     return resp.text
 
 
-def parse_caption_tracks(watch_page_html: str) -> list:
-    """Extracts the captionTracks JSON array embedded in the watch page
-    (see module docstring point 1). Returns [] if the video has no
-    captions at all -- a real, expected outcome, not a parse failure.
-
-    Uses re.DOTALL: found via this module's own test (a fixture with the
-    JSON blob spread across multiple lines) that a plain `.` doesn't match
-    newlines by default, which would silently return [] against any watch
-    page where the surrounding markup happens to wrap that blob across
-    lines -- minified real pages likely don't, but there's no reason to
-    depend on that."""
-    match = _CAPTION_TRACKS_RE.search(watch_page_html)
-    if not match:
+def parse_caption_track_list(xml_text: str) -> list:
+    """Parses the <track .../> elements out of the type=list response into
+    [{"lang_code": "en", "name": "", "kind": "asr"|None}, ...]. Returns []
+    for a video with no captions at all (a real, empty-but-valid
+    <transcript_list/> response) or for XML that doesn't parse -- both
+    treated as "no tracks", not a crash."""
+    if not xml_text.strip():
         return []
     try:
-        return json.loads(match.group(1))
-    except (ValueError, TypeError):
-        logger.warning("captionTracks blob found but not valid JSON -- treating as no captions")
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        logger.warning("Caption track list XML did not parse -- treating as no tracks")
         return []
+    return [
+        {
+            "lang_code": node.get("lang_code"),
+            "name": node.get("name", ""),
+            "kind": node.get("kind"),  # "asr" or None (human-uploaded)
+        }
+        for node in root.iter("track")
+    ]
 
 
 def pick_caption_track(tracks: list) -> dict:
@@ -110,7 +130,7 @@ def pick_caption_track(tracks: list) -> dict:
         return None
 
     def is_english(t):
-        return (t.get("languageCode") or "").lower().startswith("en")
+        return (t.get("lang_code") or "").lower().startswith("en")
 
     english_human = [t for t in tracks if is_english(t) and t.get("kind") != "asr"]
     if english_human:
@@ -123,10 +143,50 @@ def pick_caption_track(tracks: list) -> dict:
     return tracks[0]
 
 
-def fetch_transcript_xml(base_url: str, timeout: int = 30) -> str:
+def list_caption_tracks(video_id: str, max_attempts: int = DEFAULT_LIST_FETCH_ATTEMPTS,
+                         delay_seconds: float = DEFAULT_LIST_RETRY_DELAY_SECONDS) -> list:
+    """Fetches+parses the caption track list, retrying up to max_attempts
+    times if the first attempt comes back empty -- a cheap hedge against
+    the same kind of per-request inconsistency that broke the original
+    watch-page-scraping approach (see module docstring), since there's no
+    live evidence yet ruling out this endpoint having similar variance.
+    Does NOT retry on a network error/non-2xx response -- those should
+    propagate and let SQS's normal retry/DLQ handling deal with genuine
+    transient failures, rather than silently retrying inside the function
+    on top of SQS's own retries."""
+    for attempt in range(1, max_attempts + 1):
+        xml_text = fetch_caption_track_list_xml(video_id)
+        tracks = parse_caption_track_list(xml_text)
+        if tracks:
+            if attempt > 1:
+                logger.info("video_id=%s: got %d track(s) on retry attempt %d", video_id, len(tracks), attempt)
+            return tracks
+        if attempt < max_attempts:
+            logger.info(
+                "video_id=%s: attempt %d/%d came back with 0 tracks, retrying in %ss",
+                video_id, attempt, max_attempts, delay_seconds,
+            )
+            time.sleep(delay_seconds)
+    return []
+
+
+def build_transcript_url(video_id: str, track: dict) -> tuple:
+    """Returns (url, params) for fetching a specific track's transcript --
+    kept as a separate pure function so the URL-building logic (notably,
+    only including kind=asr for auto-generated tracks) is testable without
+    a network call."""
+    params = {"v": video_id, "lang": track.get("lang_code") or ""}
+    if track.get("name"):
+        params["name"] = track["name"]
+    if track.get("kind") == "asr":
+        params["kind"] = "asr"
+    return TIMEDTEXT_BASE_URL, params
+
+
+def fetch_transcript_xml(url: str, params: dict, timeout: int = 30) -> str:
     import requests
 
-    resp = requests.get(base_url, timeout=timeout)
+    resp = requests.get(url, params=params, timeout=timeout)
     resp.raise_for_status()
     return resp.text
 
@@ -147,47 +207,20 @@ def parse_transcript_xml(xml_text: str) -> str:
     return " ".join(line.strip() for line in lines if line.strip())
 
 
-# Real gap found via this deploy's first live smoke test: a genuinely
-# captioned video (confirmed via curl from a residential IP, which returned
-# a real captionTracks blob) still came back "no_captions_available" when
-# fetched from inside Lambda -- suspected cause is YouTube serving
-# different content to a datacenter/NAT-gateway IP (a consent wall or
-# stripped-down page) than to a residential one, even with an identical
-# User-Agent. These are the markers a YouTube consent-wall page is known to
-# contain; checked only to make the next real CloudWatch log line
-# diagnostic rather than to change behavior -- a match here doesn't change
-# the return value, it just explains WHY tracks came back empty.
-_CONSENT_WALL_MARKERS = ("consent.youtube.com", "Before you continue to YouTube")
-
-
 def get_transcript(video_id: str) -> tuple:
     """Returns (transcript_text, note). note is None on success, or a short
     explanation (e.g. "no_captions_available") when transcript_text is
     empty -- callers must treat an empty transcript as an expected
     non-error outcome, not raise."""
-    html = fetch_watch_page(video_id)
-    logger.info("Fetched watch page for %s: %d chars", video_id, len(html))
-
-    tracks = parse_caption_tracks(html)
+    tracks = list_caption_tracks(video_id)
     logger.info("Found %d caption track(s) for %s", len(tracks), video_id)
 
     if not tracks:
-        hit_marker = next((m for m in _CONSENT_WALL_MARKERS if m in html), None)
-        if hit_marker:
-            logger.warning(
-                "video_id=%s: page looks like a consent wall (matched %r), not the real watch page -- "
-                "this is very likely why no captionTracks were found, not a genuinely caption-less video",
-                video_id, hit_marker,
-            )
-        else:
-            logger.info(
-                "video_id=%s: no consent-wall marker found either -- page is %d chars, "
-                "first 200: %r", video_id, len(html), html[:200],
-            )
         return "", "no_captions_available"
 
     track = pick_caption_track(tracks)
-    xml_text = fetch_transcript_xml(track["baseUrl"])
+    url, params = build_transcript_url(video_id, track)
+    xml_text = fetch_transcript_xml(url, params)
     transcript = parse_transcript_xml(xml_text)
     if not transcript:
         return "", "captions_listed_but_transcript_fetch_returned_empty"
