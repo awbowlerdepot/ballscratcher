@@ -4,17 +4,18 @@ Tests for src/video_summarizer/app.py.
 Manual-runner pattern, run standalone via
 `python3 tests/test_video_summarizer.py`.
 
-Honesty note (see module docstring in app.py): this file originally tested
-a watch-page-scraping approach that a live smoke test found to be
-unreliable (the same URL returned a real, full-size, non-consent-wall page
-that simply didn't have the caption data inlined on one fetch vs. another).
-Replaced with YouTube's dedicated timedtext?type=list endpoint, which is
-believed more reliable but is, like the approach it replaced, NOT verified
-against a live call this session (zero outbound network access in this
-sandbox). Confirm the real XML shape via a manual curl before fully
-trusting this. The Bedrock request/response shape IS accurate to AWS's
-published Anthropic-on-Bedrock wire format, but was also never exercised
-against a real Bedrock endpoint this session.
+Honesty note (see module docstring in app.py for the full history): this
+went watch-page-scraping -> timedtext?type=list -> back to watch-page-
+scraping-with-retries, each swap based on real live-smoke-test evidence
+gathered along the way (not guesses). The captionTracks JSON shape and
+timedtext XML shape below are widely-documented (if unofficial) YouTube
+behavior, confirmed present in a real page via a manual curl this session
+-- but this Lambda has also been observed NOT finding that same blob on at
+least one real attempt, hence the retry logic under test below. This is
+explicitly shipped as best-effort, not guaranteed. The Bedrock request/
+response shape IS accurate to AWS's published Anthropic-on-Bedrock wire
+format, but was also never exercised against a real Bedrock endpoint this
+session.
 """
 import json
 import io
@@ -26,122 +27,122 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src", "video_s
 import app  # noqa: E402
 
 
-# --- parse_caption_track_list / pick_caption_track ---
+# --- parse_caption_tracks / pick_caption_track ---
 
-SAMPLE_TRACK_LIST_XML = (
-    '<?xml version="1.0" encoding="utf-8" ?><transcript_list docid="abc123">'
-    '<track id="0" name="" lang_code="en" lang_original="English" lang_translated="English" kind="asr"/>'
-    '<track id="1" name="" lang_code="es" lang_original="Spanish" lang_translated="Spanish"/>'
-    '</transcript_list>'
-)
+FAKE_WATCH_PAGE_WITH_CAPTIONS = """
+<html><body><script>var ytInitialPlayerResponse = {"captions":{"playerCaptionsTracklistRenderer":
+{"captionTracks":[
+  {"baseUrl":"https://www.youtube.com/api/timedtext?v=abc123\\u0026lang=en", "name":{"simpleText":"English"}, "languageCode":"en", "kind":"asr"},
+  {"baseUrl":"https://www.youtube.com/api/timedtext?v=abc123\\u0026lang=es", "name":{"simpleText":"Spanish"}, "languageCode":"es"}
+]}}};</script></body></html>
+"""
 
-EMPTY_TRACK_LIST_XML = '<?xml version="1.0" encoding="utf-8" ?><transcript_list docid="abc123"></transcript_list>'
+FAKE_WATCH_PAGE_NO_CAPTIONS = "<html><body><script>var ytInitialPlayerResponse = {\"captions\":{}};</script></body></html>"
 
 
-def test_parse_caption_track_list_extracts_tracks():
-    tracks = app.parse_caption_track_list(SAMPLE_TRACK_LIST_XML)
+def test_parse_caption_tracks_extracts_array():
+    tracks = app.parse_caption_tracks(FAKE_WATCH_PAGE_WITH_CAPTIONS)
     assert len(tracks) == 2
-    assert tracks[0]["lang_code"] == "en"
+    assert tracks[0]["languageCode"] == "en"
     assert tracks[0]["kind"] == "asr"
-    assert tracks[1]["lang_code"] == "es"
-    assert tracks[1]["kind"] is None
 
 
-def test_parse_caption_track_list_returns_empty_list_when_no_tracks():
-    assert app.parse_caption_track_list(EMPTY_TRACK_LIST_XML) == []
+def test_parse_caption_tracks_returns_empty_list_when_absent():
+    assert app.parse_caption_tracks(FAKE_WATCH_PAGE_NO_CAPTIONS) == []
 
 
-def test_parse_caption_track_list_returns_empty_list_for_blank_input():
-    assert app.parse_caption_track_list("") == []
-    assert app.parse_caption_track_list("   ") == []
-
-
-def test_parse_caption_track_list_returns_empty_list_for_malformed_xml():
-    assert app.parse_caption_track_list("<transcript_list><track unclosed") == []
+def test_parse_caption_tracks_returns_empty_list_for_malformed_json():
+    broken = '<script>"captionTracks":[{not valid json</script>'
+    assert app.parse_caption_tracks(broken) == []
 
 
 def test_pick_caption_track_prefers_human_over_asr():
     tracks = [
-        {"lang_code": "en", "kind": "asr", "name": "asr-track"},
-        {"lang_code": "en", "kind": None, "name": "human-track"},
+        {"languageCode": "en", "kind": "asr", "baseUrl": "asr-url"},
+        {"languageCode": "en", "baseUrl": "human-url"},
     ]
-    assert app.pick_caption_track(tracks)["name"] == "human-track"
+    assert app.pick_caption_track(tracks)["baseUrl"] == "human-url"
 
 
 def test_pick_caption_track_falls_back_to_asr_english_when_no_human_track():
-    tracks = [{"lang_code": "en", "kind": "asr", "name": "asr-track"}]
-    assert app.pick_caption_track(tracks)["name"] == "asr-track"
+    tracks = [{"languageCode": "en", "kind": "asr", "baseUrl": "asr-url"}]
+    assert app.pick_caption_track(tracks)["baseUrl"] == "asr-url"
 
 
 def test_pick_caption_track_falls_back_to_first_when_no_english():
-    tracks = [{"lang_code": "es", "kind": None, "name": "spanish"}, {"lang_code": "fr", "kind": None, "name": "french"}]
-    assert app.pick_caption_track(tracks)["name"] == "spanish"
+    tracks = [{"languageCode": "es", "baseUrl": "spanish-url"}, {"languageCode": "fr", "baseUrl": "french-url"}]
+    assert app.pick_caption_track(tracks)["baseUrl"] == "spanish-url"
 
 
 def test_pick_caption_track_returns_none_for_empty_list():
     assert app.pick_caption_track([]) is None
 
 
-# --- build_transcript_url ---
-
-def test_build_transcript_url_includes_kind_for_asr_track():
-    url, params = app.build_transcript_url("abc123", {"lang_code": "en", "kind": "asr", "name": ""})
-    assert url == app.TIMEDTEXT_BASE_URL
-    assert params == {"v": "abc123", "lang": "en", "kind": "asr"}
-
-
-def test_build_transcript_url_omits_kind_for_human_track():
-    url, params = app.build_transcript_url("abc123", {"lang_code": "en", "kind": None, "name": ""})
-    assert "kind" not in params
-
-
-def test_build_transcript_url_includes_name_when_present():
-    _, params = app.build_transcript_url("abc123", {"lang_code": "en", "kind": None, "name": "custom"})
-    assert params["name"] == "custom"
-
-
-# --- list_caption_tracks: retry-on-empty behavior ---
+# --- list_caption_tracks: retry-on-empty behavior, and the consent-wall
+# diagnostic on the final failed attempt. Real evidence this is based on:
+# a single live Lambda attempt against a video confirmed (via curl from a
+# residential IP) to have real captions came back with zero tracks -- not
+# yet known whether that's random per-attempt variance (retry helps) or a
+# deterministic block (retry won't help, but doesn't hurt either).
 
 def test_list_caption_tracks_returns_immediately_when_first_attempt_has_tracks():
-    real_fetch = app.fetch_caption_track_list_xml
+    real_fetch = app.fetch_watch_page
     real_sleep = app.time.sleep
     calls = []
-    app.fetch_caption_track_list_xml = lambda video_id: SAMPLE_TRACK_LIST_XML
+    app.fetch_watch_page = lambda video_id: FAKE_WATCH_PAGE_WITH_CAPTIONS
     app.time.sleep = lambda s: calls.append(s)
     try:
         tracks = app.list_caption_tracks("abc123")
         assert len(tracks) == 2
         assert calls == []  # no retry needed, so no sleep
     finally:
-        app.fetch_caption_track_list_xml = real_fetch
+        app.fetch_watch_page = real_fetch
         app.time.sleep = real_sleep
 
 
 def test_list_caption_tracks_retries_once_then_succeeds():
-    real_fetch = app.fetch_caption_track_list_xml
+    real_fetch = app.fetch_watch_page
     real_sleep = app.time.sleep
-    responses = [EMPTY_TRACK_LIST_XML, SAMPLE_TRACK_LIST_XML]
-    app.fetch_caption_track_list_xml = lambda video_id: responses.pop(0)
+    responses = [FAKE_WATCH_PAGE_NO_CAPTIONS, FAKE_WATCH_PAGE_WITH_CAPTIONS]
+    app.fetch_watch_page = lambda video_id: responses.pop(0)
     app.time.sleep = lambda s: None
     try:
         tracks = app.list_caption_tracks("abc123", max_attempts=2, delay_seconds=0)
         assert len(tracks) == 2
         assert responses == []  # both canned responses were consumed
     finally:
-        app.fetch_caption_track_list_xml = real_fetch
+        app.fetch_watch_page = real_fetch
         app.time.sleep = real_sleep
 
 
 def test_list_caption_tracks_gives_up_after_max_attempts():
-    real_fetch = app.fetch_caption_track_list_xml
+    real_fetch = app.fetch_watch_page
     real_sleep = app.time.sleep
-    app.fetch_caption_track_list_xml = lambda video_id: EMPTY_TRACK_LIST_XML
+    app.fetch_watch_page = lambda video_id: FAKE_WATCH_PAGE_NO_CAPTIONS
     app.time.sleep = lambda s: None
     try:
         tracks = app.list_caption_tracks("abc123", max_attempts=2, delay_seconds=0)
         assert tracks == []
     finally:
-        app.fetch_caption_track_list_xml = real_fetch
+        app.fetch_watch_page = real_fetch
+        app.time.sleep = real_sleep
+
+
+def test_list_caption_tracks_logs_consent_wall_on_final_attempt_without_changing_result():
+    """The consent-wall marker only changes what gets logged, not the
+    return value -- confirming that here so the diagnostic can't
+    accidentally change behavior."""
+    real_fetch = app.fetch_watch_page
+    real_sleep = app.time.sleep
+    app.fetch_watch_page = lambda video_id: (
+        "<html><body>Before you continue to YouTube, consent.youtube.com wants your consent</body></html>"
+    )
+    app.time.sleep = lambda s: None
+    try:
+        tracks = app.list_caption_tracks("abc123", max_attempts=2, delay_seconds=0)
+        assert tracks == []
+    finally:
+        app.fetch_watch_page = real_fetch
         app.time.sleep = real_sleep
 
 
@@ -172,30 +173,30 @@ def test_parse_transcript_xml_malformed_returns_empty():
 # --- get_transcript: end-to-end wiring ---
 
 def test_get_transcript_extracts_real_transcript_end_to_end():
-    real_list = app.fetch_caption_track_list_xml
+    real_fetch = app.fetch_watch_page
     real_fetch_xml = app.fetch_transcript_xml
-    app.fetch_caption_track_list_xml = lambda video_id: SAMPLE_TRACK_LIST_XML
-    app.fetch_transcript_xml = lambda url, params: SAMPLE_TRANSCRIPT_XML
+    app.fetch_watch_page = lambda video_id: FAKE_WATCH_PAGE_WITH_CAPTIONS
+    app.fetch_transcript_xml = lambda base_url: SAMPLE_TRANSCRIPT_XML
     try:
         transcript, note = app.get_transcript("abc123")
         assert note is None
         assert transcript == "Alright let's check out this ball the hook is pretty strong"
     finally:
-        app.fetch_caption_track_list_xml = real_list
+        app.fetch_watch_page = real_fetch
         app.fetch_transcript_xml = real_fetch_xml
 
 
 def test_get_transcript_no_captions_when_genuinely_absent():
-    real_list = app.fetch_caption_track_list_xml
+    real_fetch = app.fetch_watch_page
     real_sleep = app.time.sleep
-    app.fetch_caption_track_list_xml = lambda video_id: EMPTY_TRACK_LIST_XML
+    app.fetch_watch_page = lambda video_id: FAKE_WATCH_PAGE_NO_CAPTIONS
     app.time.sleep = lambda s: None
     try:
         transcript, note = app.get_transcript("abc123")
         assert transcript == ""
         assert note == "no_captions_available"
     finally:
-        app.fetch_caption_track_list_xml = real_list
+        app.fetch_watch_page = real_fetch
         app.time.sleep = real_sleep
 
 
@@ -203,16 +204,16 @@ def test_get_transcript_empty_transcript_after_tracks_listed():
     """Tracks are listed but the actual transcript fetch comes back empty
     -- a different, more specific note than 'no_captions_available' so this
     failure mode is distinguishable in the DB/CloudWatch."""
-    real_list = app.fetch_caption_track_list_xml
+    real_fetch = app.fetch_watch_page
     real_fetch_xml = app.fetch_transcript_xml
-    app.fetch_caption_track_list_xml = lambda video_id: SAMPLE_TRACK_LIST_XML
-    app.fetch_transcript_xml = lambda url, params: ""
+    app.fetch_watch_page = lambda video_id: FAKE_WATCH_PAGE_WITH_CAPTIONS
+    app.fetch_transcript_xml = lambda base_url: ""
     try:
         transcript, note = app.get_transcript("abc123")
         assert transcript == ""
         assert note == "captions_listed_but_transcript_fetch_returned_empty"
     finally:
-        app.fetch_caption_track_list_xml = real_list
+        app.fetch_watch_page = real_fetch
         app.fetch_transcript_xml = real_fetch_xml
 
 
