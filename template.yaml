@@ -174,16 +174,42 @@ Parameters:
       this template.
   BedrockModelId:
     Type: String
-    Default: anthropic.claude-3-5-haiku-20241022-v1:0
+    Default: global.anthropic.claude-haiku-4-5-20251001-v1:0
     Description: >
-      Bedrock model id video_summarizer uses to summarize video
-      transcripts. Chosen over the Anthropic API directly per explicit user
-      preference (reuses this project's existing AWS account/IAM rather
-      than a new external API key). Confirm this exact model id has been
-      granted "model access" in the Bedrock console for this account/
-      region before deploying -- that's a one-time manual step in the AWS
-      console this template can't do for you, and an un-granted model id
-      fails at invoke time, not at deploy time.
+      Bedrock modelId video_summarizer passes to InvokeModel. Updated to
+      Claude Haiku 4.5's Global cross-Region inference profile ID, not the
+      bare on-demand model ID -- confirmed via Bedrock's own model-card page
+      that Claude Haiku 4.5 has NO in-Region (on-demand) support in
+      us-west-1 (N. California, where this stack's YouTube secret and,
+      presumably, the rest of this stack live) -- only Geographic and
+      Global cross-Region inference are available there. Global was chosen
+      over the Geographic (US) profile because its IAM policy doesn't need
+      a hardcoded destination-Region list (see VideoSummarizerFunction's
+      Policies below, and BedrockBaseModelId just below) -- Geographic
+      profiles route to a fixed, source-Region-dependent set of Regions
+      that would have to be hardcoded here and would silently go stale if
+      this stack is ever redeployed to a different source Region. If you
+      deploy this stack somewhere with real in-Region support for whatever
+      model you choose, you can simplify back to a bare model ID and a
+      single-resource IAM policy -- check that model's own "Regional
+      availability" table in the Bedrock console/docs first, don't assume.
+  BedrockBaseModelId:
+    Type: String
+    Default: anthropic.claude-haiku-4-5-20251001-v1:0
+    Description: >
+      The underlying foundation model id BedrockModelId's inference profile
+      is built on -- i.e. BedrockModelId with its "global."/"us."/etc.
+      prefix stripped. Needed as a separate parameter because
+      VideoSummarizerFunction's IAM policy has to grant bedrock:InvokeModel
+      on the foundation-model resource itself (in the source Region AND,
+      for Global CRIS, a region-less wildcard resource) IN ADDITION TO the
+      inference-profile resource -- this is AWS's own documented 3-statement
+      policy shape for Global cross-Region inference, not something
+      invented here (see
+      https://docs.aws.amazon.com/bedrock/latest/userguide/global-cross-region-inference.html#global-cris-iam-setup).
+      CloudFormation has no string-strip function to derive this from
+      BedrockModelId automatically, hence the second parameter -- keep the
+      two in sync if you ever change the model.
 
 Conditions:
   HasBigCommerceSecret: !Not [!Equals [!Ref BigCommerceSecretArn, ""]]
@@ -869,13 +895,41 @@ Resources:
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Ref DbSecretArn
-            - Effect: Allow
+            # Bedrock Global cross-Region inference needs THREE separate
+            # resource grants, not one -- this is AWS's own documented
+            # policy shape (see BedrockBaseModelId's parameter description
+            # for the doc link), not something invented here. A single
+            # "foundation-model/${BedrockModelId}" statement (what this
+            # used to be, back when BedrockModelId was a bare on-demand
+            # model id) would fail closed with AccessDeniedException at
+            # invoke time against an inference-profile id, since neither
+            # the profile resource itself nor the cross-Region foundation-
+            # model resources it fans out to would be covered.
+            - Sid: GrantGlobalCrisInferenceProfileRegionAccess
+              Effect: Allow
               Action:
                 - bedrock:InvokeModel
-              # Scoped to whatever BedrockModelId resolves to, not "*" --
-              # narrowest permission that still works regardless of which
-              # model id is configured.
-              Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}"
+              Resource: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockModelId}"
+            - Sid: GrantGlobalCrisInferenceProfileInRegionModelAccess
+              Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/${BedrockBaseModelId}"
+              Condition:
+                StringEquals:
+                  bedrock:InferenceProfileArn: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockModelId}"
+            - Sid: GrantGlobalCrisInferenceProfileGlobalModelAccess
+              Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              # No Region or account in this ARN -- intentional, required
+              # for Global CRIS's cross-Region routing (see AWS's doc: the
+              # global foundation-model resource has no Region/account
+              # component by design).
+              Resource: !Sub "arn:aws:bedrock:::foundation-model/${BedrockBaseModelId}"
+              Condition:
+                StringEquals:
+                  bedrock:InferenceProfileArn: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockModelId}"
       Events:
         VideoSummarizeQueueTrigger:
           Type: SQS

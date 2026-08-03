@@ -48,7 +48,16 @@ from html import unescape
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
-DEFAULT_BEDROCK_MODEL_ID = "anthropic.claude-3-5-haiku-20241022-v1:0"
+# Global cross-Region inference profile ID, not a bare on-demand model id --
+# confirmed via Bedrock's own model-card page that Claude Haiku 4.5 has no
+# in-Region support in us-west-1 (this stack's region), only Geographic/
+# Global cross-Region inference. Matches template.yaml's BedrockModelId
+# default -- this constant only matters as a fallback for a manual/local
+# invoke that skips the Lambda environment entirely, since BEDROCK_MODEL_ID
+# is always set by the deployed function. See template.yaml's
+# BedrockModelId/BedrockBaseModelId parameter descriptions for the full
+# reasoning and the IAM policy shape this requires.
+DEFAULT_BEDROCK_MODEL_ID = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
 DEFAULT_TRANSCRIPT_CHAR_LIMIT = 12000
 DEFAULT_SUMMARY_MAX_TOKENS = 300
 

@@ -112,11 +112,44 @@ Note the returned ARN -- this is `YouTubeApiKeySecretArn`. Remember the
 real, hard quota this key is subject to: search.list costs 100 units/call
 against a default 10,000 units/day project quota -- ~100 searches/day, not
 adjustable from this template (see src/video_discovery/app.py's module
-docstring). Separately, `video_summarizer` calls Bedrock -- in the AWS
-console, go to Bedrock -> Model access and request access to whatever
-model `BedrockModelId` is set to (default
-`anthropic.claude-3-5-haiku-20241022-v1:0`); an un-granted model fails at
-invoke time, not deploy time, so do this before the first real approval.
+docstring).
+
+Separately, `video_summarizer` calls Bedrock, and this needs one real,
+confirmed fact accounted for: Claude Haiku 4.5 (the `BedrockModelId`
+default) has **no in-Region (on-demand) support in `us-west-1`** -- only
+Geographic and Global cross-Region inference are available there,
+confirmed via Bedrock's own model-card "Regional availability" table (each
+model's page under Bedrock's [models at a
+glance](https://docs.aws.amazon.com/bedrock/latest/userguide/model-cards.html)
+console/docs). That's why `BedrockModelId` defaults to
+`global.anthropic.claude-haiku-4-5-20251001-v1:0` (an inference profile ID)
+rather than the bare model ID, and why `template.yaml` has a second
+`BedrockBaseModelId` parameter and a 3-statement IAM policy on
+`VideoSummarizerFunction` instead of one -- see that parameter's
+description in `template.yaml` for the full reasoning and AWS's own
+documented policy shape this follows. Practically, this means:
+
+1. AWS's old "Model access" console page is retired -- serverless models
+   auto-enable on first invoke now, but Anthropic models still need a
+   one-time per-account use-case form. Submit it via the [Model
+   catalog](https://console.aws.amazon.com/bedrock/home#/model-catalog),
+   which will prompt for it the first time you open an Anthropic model.
+2. Confirm access with a direct CLI check rather than guessing from the
+   console UI:
+   ```bash
+   aws bedrock get-foundation-model-availability \
+     --model-id anthropic.claude-haiku-4-5-20251001-v1:0 \
+     --region us-west-1
+   ```
+   Look for `"agreementAvailability": {"status": "AVAILABLE"}` and
+   `"authorizationStatus": "AUTHORIZED"`.
+3. If you ever change `BedrockModelId` to a different model, check that
+   model's own Regional availability table first -- don't assume it has
+   in-Region support just because Haiku 4.5 didn't. If it does have
+   in-Region support in your stack's Region, you can simplify back to a
+   bare model ID and collapse the 3-statement IAM policy back to one
+   (update `BedrockBaseModelId` accordingly either way, they must stay in
+   sync).
 
 ## 4. Seed the `brands` rows
 

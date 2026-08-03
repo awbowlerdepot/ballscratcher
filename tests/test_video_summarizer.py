@@ -139,13 +139,18 @@ class _FakeBedrockClient:
 
 
 def test_summarize_transcript_returns_model_text_and_calls_expected_model():
+    """Uses the Global cross-Region inference profile ID (see
+    DEFAULT_BEDROCK_MODEL_ID's comment) rather than a bare on-demand model
+    ID -- summarize_transcript just passes whatever modelId it's given
+    straight through to invoke_model, so this only tests that pass-through,
+    not the specific string."""
     client = _FakeBedrockClient("This ball hooks strong and clears the front of the lane.")
-    summary = app.summarize_transcript(client, "anthropic.claude-3-5-haiku-20241022-v1:0",
+    summary = app.summarize_transcript(client, "global.anthropic.claude-haiku-4-5-20251001-v1:0",
                                         "Absolute", "Storm", "Storm Absolute Review", "great ball")
 
     assert summary == "This ball hooks strong and clears the front of the lane."
     assert len(client.calls) == 1
-    assert client.calls[0]["modelId"] == "anthropic.claude-3-5-haiku-20241022-v1:0"
+    assert client.calls[0]["modelId"] == "global.anthropic.claude-haiku-4-5-20251001-v1:0"
     sent_body = json.loads(client.calls[0]["body"])
     assert sent_body["anthropic_version"] == "bedrock-2023-05-31"
     assert sent_body["messages"][0]["role"] == "user"
