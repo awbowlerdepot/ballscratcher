@@ -147,14 +147,43 @@ def parse_transcript_xml(xml_text: str) -> str:
     return " ".join(line.strip() for line in lines if line.strip())
 
 
+# Real gap found via this deploy's first live smoke test: a genuinely
+# captioned video (confirmed via curl from a residential IP, which returned
+# a real captionTracks blob) still came back "no_captions_available" when
+# fetched from inside Lambda -- suspected cause is YouTube serving
+# different content to a datacenter/NAT-gateway IP (a consent wall or
+# stripped-down page) than to a residential one, even with an identical
+# User-Agent. These are the markers a YouTube consent-wall page is known to
+# contain; checked only to make the next real CloudWatch log line
+# diagnostic rather than to change behavior -- a match here doesn't change
+# the return value, it just explains WHY tracks came back empty.
+_CONSENT_WALL_MARKERS = ("consent.youtube.com", "Before you continue to YouTube")
+
+
 def get_transcript(video_id: str) -> tuple:
     """Returns (transcript_text, note). note is None on success, or a short
     explanation (e.g. "no_captions_available") when transcript_text is
     empty -- callers must treat an empty transcript as an expected
     non-error outcome, not raise."""
     html = fetch_watch_page(video_id)
+    logger.info("Fetched watch page for %s: %d chars", video_id, len(html))
+
     tracks = parse_caption_tracks(html)
+    logger.info("Found %d caption track(s) for %s", len(tracks), video_id)
+
     if not tracks:
+        hit_marker = next((m for m in _CONSENT_WALL_MARKERS if m in html), None)
+        if hit_marker:
+            logger.warning(
+                "video_id=%s: page looks like a consent wall (matched %r), not the real watch page -- "
+                "this is very likely why no captionTracks were found, not a genuinely caption-less video",
+                video_id, hit_marker,
+            )
+        else:
+            logger.info(
+                "video_id=%s: no consent-wall marker found either -- page is %d chars, "
+                "first 200: %r", video_id, len(html), html[:200],
+            )
         return "", "no_captions_available"
 
     track = pick_caption_track(tracks)

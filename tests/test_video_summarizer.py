@@ -101,6 +101,57 @@ def test_parse_transcript_xml_malformed_returns_empty():
     assert app.parse_transcript_xml("<transcript><text>unclosed") == ""
 
 
+# --- get_transcript: end-to-end wiring + the consent-wall diagnostic ---
+# Real gap found via this deploy's live smoke test: a genuinely captioned
+# video (confirmed via curl from a residential IP) still came back
+# "no_captions_available" when fetched from inside Lambda -- suspected
+# cause is YouTube serving different content to a datacenter/NAT-gateway
+# IP than to a residential one. These tests guard the diagnostic logging
+# added for that (doesn't change return values, only what gets logged) and
+# the normal end-to-end path via a monkeypatched fetch_watch_page.
+
+def test_get_transcript_extracts_real_transcript_end_to_end():
+    real_fetch = app.fetch_watch_page
+    real_fetch_xml = app.fetch_transcript_xml
+    app.fetch_watch_page = lambda video_id: FAKE_WATCH_PAGE_WITH_CAPTIONS
+    app.fetch_transcript_xml = lambda base_url: SAMPLE_TRANSCRIPT_XML
+    try:
+        transcript, note = app.get_transcript("abc123")
+        assert note is None
+        assert transcript == "Alright let's check out this ball the hook is pretty strong"
+    finally:
+        app.fetch_watch_page = real_fetch
+        app.fetch_transcript_xml = real_fetch_xml
+
+
+def test_get_transcript_no_captions_when_genuinely_absent():
+    real_fetch = app.fetch_watch_page
+    app.fetch_watch_page = lambda video_id: "<html><body>no player data here</body></html>"
+    try:
+        transcript, note = app.get_transcript("abc123")
+        assert transcript == ""
+        assert note == "no_captions_available"
+    finally:
+        app.fetch_watch_page = real_fetch
+
+
+def test_get_transcript_still_returns_no_captions_on_consent_wall():
+    """The consent-wall marker changes what gets logged, not the return
+    value -- callers (video_summarizer's _process_one) don't need to know
+    WHY, only that there's no transcript. Confirming that here so the
+    diagnostic logging can't accidentally change behavior."""
+    real_fetch = app.fetch_watch_page
+    app.fetch_watch_page = lambda video_id: (
+        "<html><body>Before you continue to YouTube, consent.youtube.com wants your consent</body></html>"
+    )
+    try:
+        transcript, note = app.get_transcript("abc123")
+        assert transcript == ""
+        assert note == "no_captions_available"
+    finally:
+        app.fetch_watch_page = real_fetch
+
+
 # --- build_summary_prompt ---
 
 def test_build_summary_prompt_includes_key_context():
