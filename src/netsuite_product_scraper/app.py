@@ -140,6 +140,27 @@ Real, confirmed structural facts this module's parsing rests on:
    site also has plenty of unrelated background-image icons elsewhere in
    the page under /assets/images/, deliberately excluded by requiring
    "userfiles/filemanager" in the path).
+
+   Real bug found later via production DLQ investigation (two real
+   products failed image processing with a 404 on
+   ".../userfiles/filemanager-format/core-image/"): for products with no
+   real core-cutaway photo, MOTIV's own template renders this exact same
+   background-image style with an EMPTY path --
+   `background-image: url(./userfiles/filemanager-format/core-image/)`,
+   literally no id after the trailing slash -- once per weight-variant
+   slide (3 real occurrences confirmed via curl against
+   motivbowling.com/n_659670458713337742, a Japan-exclusive ball that
+   plausibly never got a real core-cutaway photo taken). The old regex
+   happily matched this empty-path style since it only required
+   "userfiles/filemanager" to appear somewhere inside the parens, storing
+   a real-looking but fundamentally fileless URL that then 404s in
+   image_processor forever, no matter how many times it's retried (the
+   bug is in what got stored, not in any transient fetch failure). Same
+   "recognize and skip known non-image placeholder shapes" spirit as
+   Brunswick's data: URI lazy-load fix and commercebuild's
+   ajax-loader.gif/coming_soon.jpg skip -- see parse_images()'s
+   docstring below for the fix (skip any captured URL with nothing after
+   its final "/").
 """
 import logging
 import re
@@ -396,7 +417,17 @@ def parse_resources(soup: BeautifulSoup, base_url: str) -> dict:
 def parse_images(html: str, base_url: str) -> list:
     """Regex-based (not BeautifulSoup) since the image is CSS
     background-image on the style attribute, not an <img> src -- see
-    module docstring point 7."""
+    module docstring point 7.
+
+    Real bug found via production DLQ investigation: products with no
+    real core-cutaway photo get a background-image style with an EMPTY
+    path (confirmed real: `url(./userfiles/filemanager-format/core-image/)`,
+    nothing after the trailing slash) -- this still matches IMAGE_RE (it
+    only requires "userfiles/filemanager" to appear inside the parens)
+    but isn't a real image, and 404s forever in image_processor no matter
+    how many times it's retried. Skipped by requiring at least one
+    non-slash character after the URL's final "/" -- same
+    skip-a-known-non-image-shape spirit as Brunswick's data: URI check."""
     images = []
     seen = set()
     for raw_src in IMAGE_RE.findall(html):
@@ -404,6 +435,9 @@ def parse_images(html: str, base_url: str) -> list:
         if src in seen:
             continue
         seen.add(src)
+
+        if src.endswith("/"):
+            continue
 
         if "filemanager-format/core-image" in src:
             image_type = "core_callout"

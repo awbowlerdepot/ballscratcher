@@ -154,6 +154,44 @@ def test_jackal_images_includes_core_callout():
     assert "filemanager-format/core-image" in core_img["source_url"]
 
 
+# Real bug found via production DLQ investigation: two real products
+# (motivbowling.com/n_659670458713337742 "Sapphire Jackal", a
+# Japan-exclusive ball, and n_823175603257004277) 404'd forever in
+# image_processor because their stored core_callout source_url was
+# genuinely empty -- confirmed real via curl against the live Sapphire
+# Jackal page (redirects to
+# products/balls/exclusives/sapphire-jackal.html): its per-weight-slide
+# markup is `<div class="image" style="background-image:
+# url(./userfiles/filemanager-format/core-image/)"></div>`, repeated once
+# per weight (16/15/14 all identical, no id after the trailing slash) --
+# a real "no core-cutaway photo for this product" template artifact, not
+# a fetch fluke. The old IMAGE_RE-based parse_images() stored this as a
+# real-looking product_images row that would 404 on every single retry,
+# no matter how many times image_processor tried it, since the bug is in
+# what got captured, not in any transient network issue.
+REAL_EMPTY_CORE_IMAGE_SNIPPET = """
+<li class="slide"><div class="image" style="background-image: url(./userfiles/filemanager-format/core-image/)"></div><h3 class="weight">16</h3></li>
+<li class="slide"><div class="image" style="background-image: url(./userfiles/filemanager-format/core-image/)"></div><h3 class="weight">15</h3></li>
+<li class="slide"><div class="image" style="background-image: url(./userfiles/filemanager-format/core-image/)"></div><h3 class="weight">14</h3></li>
+<a href="#"><span class="image" style="background-image: url(./userfiles/filemanager/c7jih6m40tuusrocuys9)"></span></a>
+"""
+
+
+def test_parse_images_skips_empty_core_image_placeholder():
+    images = app.parse_images(REAL_EMPTY_CORE_IMAGE_SNIPPET, "https://www.motivbowling.com/n_659670458713337742")
+    assert len(images) == 1  # the 3 empty-path core-image divs must all be excluded
+    assert images[0]["source_url"].endswith("c7jih6m40tuusrocuys9")
+
+
+def test_parse_images_still_captures_real_core_callout_with_real_id():
+    """Regression guard: the empty-path skip must not accidentally start
+    excluding Jackal Onyx's real core-image URL (which has a real id after
+    the slash, unlike Sapphire Jackal's empty one)."""
+    p = _parsed_jackal()
+    image_types = [img["image_type"] for img in p["images"]]
+    assert "core_callout" in image_types
+
+
 # --- Helper functions tested directly ---
 
 def test_parse_name_and_colorway_splits_designer_series_name():
