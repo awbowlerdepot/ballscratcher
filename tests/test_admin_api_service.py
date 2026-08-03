@@ -131,6 +131,26 @@ class FakeCursor:
             self._last_result = (row["status"],) if row else None
             self.description = [("status",)]
 
+        elif q.startswith("update product_videos set status = 'approved'"):
+            resolved_by, video_id = params
+            row = self.db["product_videos"][video_id]
+            row["status"] = "approved"
+            row["resolved_by"] = resolved_by
+            self._last_result = None
+
+        elif q.startswith("update product_videos set status = 'rejected'"):
+            resolved_by, video_id = params
+            row = self.db["product_videos"][video_id]
+            row["status"] = "rejected"
+            row["resolved_by"] = resolved_by
+            self._last_result = None
+
+        elif q.startswith("select status from product_videos"):
+            (video_id,) = params
+            row = self.db["product_videos"].get(video_id)
+            self._last_result = (row["status"],) if row else None
+            self.description = [("status",)]
+
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
 
@@ -222,20 +242,100 @@ def test_reject_missing_review_item_raises():
         pass
 
 
+# --- Video candidates (YouTube content enrichment): approve/reject flow ---
+# Same fake-cursor-shaped-DB approach as review_queue above. _publish_video_
+# summarize_message reads VIDEO_SUMMARIZE_QUEUE_URL directly from os.environ
+# and returns False immediately when it's unset, so these tests don't need
+# to fake boto3/SQS at all -- they exercise the "queue not configured yet"
+# path, which is also the real state of a fresh deploy before that env var
+# is wired up.
+
+def _fake_db_with_pending_video_candidate():
+    return {
+        "product_videos": {
+            "vid-1": {
+                "id": "vid-1", "product_id": "prod-1",
+                "youtube_video_id": "abc123", "status": "pending",
+            },
+        },
+    }
+
+
+def test_approve_video_candidate_marks_approved_without_queue_configured(monkeypatch):
+    db = _fake_db_with_pending_video_candidate()
+    conn = FakeConnection(db)
+    monkeypatch.delenv("VIDEO_SUMMARIZE_QUEUE_URL", raising=False)
+
+    result = service.approve_video_candidate(conn, "vid-1", resolved_by="al@bringyourbest.co")
+
+    assert result["status"] == "approved"
+    assert result["queued_for_summary"] is False
+    assert db["product_videos"]["vid-1"]["status"] == "approved"
+    assert db["product_videos"]["vid-1"]["resolved_by"] == "al@bringyourbest.co"
+    assert conn.committed is True
+
+
+def test_approve_already_resolved_video_candidate_raises():
+    db = _fake_db_with_pending_video_candidate()
+    db["product_videos"]["vid-1"]["status"] = "approved"
+    conn = FakeConnection(db)
+
+    try:
+        service.approve_video_candidate(conn, "vid-1", resolved_by="al@bringyourbest.co")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_approve_missing_video_candidate_raises():
+    db = _fake_db_with_pending_video_candidate()
+    conn = FakeConnection(db)
+    try:
+        service.approve_video_candidate(conn, "does-not-exist", resolved_by="al@bringyourbest.co")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def test_reject_video_candidate_marks_rejected():
+    db = _fake_db_with_pending_video_candidate()
+    conn = FakeConnection(db)
+
+    result = service.reject_video_candidate(conn, "vid-1", resolved_by="al@bringyourbest.co")
+
+    assert result["status"] == "rejected"
+    assert db["product_videos"]["vid-1"]["status"] == "rejected"
+    assert conn.committed is True
+
+
 if __name__ == "__main__":
     # Tiny monkeypatch shim so this file can run standalone the same way
     # as the other manual test runners in this repo, without pytest.
     class _MonkeyPatch:
         def __init__(self):
             self._sets = []
+            self._env_sets = []
 
         def setattr(self, obj, name, value):
             self._sets.append((obj, name, getattr(obj, name)))
             setattr(obj, name, value)
 
+        def delenv(self, name, raising=True):
+            had_it = name in os.environ
+            self._env_sets.append((name, os.environ.get(name), had_it))
+            if had_it:
+                del os.environ[name]
+            elif raising:
+                raise KeyError(name)
+
         def undo(self):
             for obj, name, value in reversed(self._sets):
                 setattr(obj, name, value)
+            for name, value, had_it in reversed(self._env_sets):
+                if had_it:
+                    os.environ[name] = value
+                else:
+                    os.environ.pop(name, None)
 
     tests = [(k, v) for k, v in list(globals().items()) if k.startswith("test_")]
     passed = 0

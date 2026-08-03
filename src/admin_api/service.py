@@ -285,3 +285,120 @@ def set_product_published(conn, product_id: str, published: bool) -> dict:
             raise LookupError(f"No product with id {product_id}")
     conn.commit()
     return {"product_id": product_id, "published": published}
+
+
+# ---------------------------------------------------------------------
+# Video candidates (YouTube content enrichment). Same approve/reject shape
+# as review_queue above, but a dedicated table -- see
+# db/migrations/004_product_videos.sql's comment for why product_videos
+# isn't just reusing review_queue's field_name/current_value/proposed_value
+# shape. Approving a candidate here has a side effect the review_queue
+# approve doesn't: it publishes an SQS message so video_summarizer picks up
+# the transcript+Bedrock-summary work, rather than applying a value
+# directly.
+# ---------------------------------------------------------------------
+
+def list_video_candidates(conn, status: str = "pending", product_id: str = None, limit: int = 50, offset: int = 0) -> list:
+    query = """
+        select pv.id, pv.product_id, p.name as product_name, b.name as brand_name,
+               pv.youtube_video_id, pv.title, pv.channel_title, pv.published_at,
+               pv.thumbnail_url, pv.match_query, pv.match_confidence,
+               pv.transcript_note, pv.status, pv.source,
+               pv.created_at, pv.resolved_at, pv.resolved_by,
+               (pv.summary is not null) as has_summary
+        from product_videos pv
+        join products p on p.id = pv.product_id
+        join brands b on b.id = p.brand_id
+        where pv.status = %s
+    """
+    params = [status]
+    if product_id:
+        query += " and pv.product_id = %s"
+        params.append(product_id)
+    query += " order by pv.match_confidence asc, pv.created_at asc limit %s offset %s"
+    params += [limit, offset]
+
+    with conn.cursor() as cur:
+        cur.execute(query, params)
+        columns = [desc[0] for desc in cur.description]
+        return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
+def get_video_candidate(conn, video_id: str):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select pv.*, p.name as product_name, b.name as brand_name
+            from product_videos pv
+            join products p on p.id = pv.product_id
+            join brands b on b.id = p.brand_id
+            where pv.id = %s
+            """,
+            (video_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        columns = [desc[0] for desc in cur.description]
+        return dict(zip(columns, row))
+
+
+def get_pending_video_count(conn) -> int:
+    with conn.cursor() as cur:
+        cur.execute("select count(*) from product_videos where status = 'pending'")
+        return cur.fetchone()[0]
+
+
+def approve_video_candidate(conn, video_id: str, resolved_by: str) -> dict:
+    """Marks the candidate approved, then best-effort publishes it to
+    VIDEO_SUMMARIZE_QUEUE_URL for video_summarizer to fetch the transcript
+    and Bedrock summary. Mirrors the other functions' "if configured" guard
+    (see e.g. netsuite_url_discovery.handler's queue_url check) -- if the
+    queue isn't wired up yet (env var unset), the row is still approved, it
+    just won't be enriched until re-approved or the queue's added, rather
+    than failing the whole request."""
+    with conn.cursor() as cur:
+        cur.execute("select status from product_videos where id = %s", (video_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError(f"No product_videos row with id {video_id}")
+        if row[0] != "pending":
+            raise ValueError(f"product_videos row {video_id} is already {row[0]}, not pending")
+
+        cur.execute(
+            "update product_videos set status = 'approved', resolved_at = now(), resolved_by = %s where id = %s",
+            (resolved_by, video_id),
+        )
+    conn.commit()
+
+    queued = _publish_video_summarize_message(video_id)
+    return {"video_id": video_id, "status": "approved", "queued_for_summary": queued}
+
+
+def reject_video_candidate(conn, video_id: str, resolved_by: str, reason: str = None) -> dict:
+    with conn.cursor() as cur:
+        cur.execute("select status from product_videos where id = %s", (video_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError(f"No product_videos row with id {video_id}")
+        if row[0] != "pending":
+            raise ValueError(f"product_videos row {video_id} is already {row[0]}, not pending")
+
+        cur.execute(
+            "update product_videos set status = 'rejected', resolved_at = now(), resolved_by = %s where id = %s",
+            (resolved_by, video_id),
+        )
+    conn.commit()
+    return {"video_id": video_id, "status": "rejected"}
+
+
+def _publish_video_summarize_message(product_video_id: str) -> bool:
+    queue_url = os.environ.get("VIDEO_SUMMARIZE_QUEUE_URL")
+    if not queue_url:
+        return False
+
+    import boto3
+
+    sqs = boto3.client("sqs")
+    sqs.send_message(QueueUrl=queue_url, MessageBody=json.dumps({"product_video_id": product_video_id}))
+    return True

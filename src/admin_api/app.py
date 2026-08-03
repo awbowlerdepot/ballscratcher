@@ -141,4 +141,63 @@ def set_product_published(product_id: str, body: PublishRequest):
         conn.close()
 
 
+# --- Video candidates (YouTube content enrichment) ---
+# Same approve/reject shape as /review-queue above; see service.py's
+# "Video candidates" section for why this is its own table/workflow rather
+# than reusing review_queue's endpoints.
+
+@app.get("/video-candidates")
+def get_video_candidates(
+    status: str = Query("pending"),
+    product_id: Optional[str] = Query(None),
+    limit: int = Query(50, le=200),
+    offset: int = Query(0, ge=0),
+):
+    conn = service.get_db_connection()
+    try:
+        items = service.list_video_candidates(conn, status=status, product_id=product_id, limit=limit, offset=offset)
+        pending_count = service.get_pending_video_count(conn) if status == "pending" else None
+        return {"items": items, "pending_count": pending_count}
+    finally:
+        conn.close()
+
+
+@app.get("/video-candidates/{video_id}")
+def get_video_candidate(video_id: str):
+    conn = service.get_db_connection()
+    try:
+        item = service.get_video_candidate(conn, video_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="product_videos item not found")
+        return item
+    finally:
+        conn.close()
+
+
+@app.post("/video-candidates/{video_id}/approve")
+def approve_video_candidate(video_id: str, body: ApproveRequest):
+    conn = service.get_db_connection()
+    try:
+        return service.approve_video_candidate(conn, video_id, body.resolved_by)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/video-candidates/{video_id}/reject")
+def reject_video_candidate(video_id: str, body: RejectRequest):
+    conn = service.get_db_connection()
+    try:
+        return service.reject_video_candidate(conn, video_id, body.resolved_by, body.reason)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        conn.close()
+
+
 handler = Mangum(app)

@@ -157,10 +157,38 @@ Parameters:
       every request to the admin API fail closed (see
       AdminApiAuthorizerFunction below) rather than silently allowing
       unauthenticated access.
+  YouTubeApiKeySecretArn:
+    Type: String
+    Default: ""
+    Description: >
+      ARN of a Secrets Manager secret holding a Google Cloud YouTube Data
+      API v3 key -- either a bare key string or JSON {"api_key": "..."},
+      see src/video_discovery/app.py's get_youtube_api_key(). This is a
+      real credential this project can't obtain on its own (a Google Cloud
+      console API key, same "user has to get this themselves" category as
+      BigCommerceSecretArn/AdminApiTokenSecretArn above). Left blank by
+      default, same fail-closed reasoning as those two -- see
+      HasYouTubeApiKeySecret below. Note the search.list quota this key is
+      subject to (100 units/call, 10,000/day default project quota -- see
+      video_discovery's module docstring) is a hard ceiling independent of
+      this template.
+  BedrockModelId:
+    Type: String
+    Default: anthropic.claude-3-5-haiku-20241022-v1:0
+    Description: >
+      Bedrock model id video_summarizer uses to summarize video
+      transcripts. Chosen over the Anthropic API directly per explicit user
+      preference (reuses this project's existing AWS account/IAM rather
+      than a new external API key). Confirm this exact model id has been
+      granted "model access" in the Bedrock console for this account/
+      region before deploying -- that's a one-time manual step in the AWS
+      console this template can't do for you, and an un-granted model id
+      fails at invoke time, not at deploy time.
 
 Conditions:
   HasBigCommerceSecret: !Not [!Equals [!Ref BigCommerceSecretArn, ""]]
   HasAdminApiToken: !Not [!Equals [!Ref AdminApiTokenSecretArn, ""]]
+  HasYouTubeApiKeySecret: !Not [!Equals [!Ref YouTubeApiKeySecretArn, ""]]
 
 Resources:
   ImageBucket:
@@ -274,6 +302,26 @@ Resources:
       VisibilityTimeout: 180
       RedrivePolicy:
         deadLetterTargetArn: !GetAtt NetsuiteProductScrapeDLQ.Arn
+        maxReceiveCount: 3
+
+  VideoSummarizeDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: bowling-scraper-video-summarize-dlq
+
+  VideoSummarizeQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: bowling-scraper-video-summarize
+      # 180s, same as every other scraper queue -- VideoSummarizerFunction's
+      # per-message work (watch-page fetch + caption-track fetch + a
+      # Bedrock call) is the same "several sequential network round trips"
+      # shape as ImageProcessorFunction/CommercebuildProductScraperFunction,
+      # which is exactly what caused their real, confirmed Timeout: 30
+      # bug -- starting this one at 150/180 rather than repeating that.
+      VisibilityTimeout: 180
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt VideoSummarizeDLQ.Arn
         maxReceiveCount: 3
 
   CommercebuildProductScrapeDLQ:
@@ -544,12 +592,20 @@ Resources:
       CodeUri: src/admin_api/
       Handler: app.handler
       Timeout: 15
+      Environment:
+        Variables:
+          # Read by service.py's approve_video_candidate -- see its
+          # module comment for why approving a video candidate has a
+          # publish side effect that approving a review_queue row doesn't.
+          VIDEO_SUMMARIZE_QUEUE_URL: !Ref VideoSummarizeQueue
       Policies:
         - Statement:
             - Effect: Allow
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Ref DbSecretArn
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt VideoSummarizeQueue.QueueName
       Events:
         AdminApi:
           Type: HttpApi
@@ -741,6 +797,96 @@ Resources:
       # body -- see that module's docstring, status has no reliable
       # on-page source for MOTIV) -- also still accepts direct/manual
       # invocation with {"url": "...", "brand_id": "...", "status": "..."}.
+
+  # --- YouTube content enrichment (search + transcript + Bedrock summary) ---
+  #
+  # New feature, added this session per explicit user request. Two
+  # functions: VideoDiscoveryFunction (manual/direct invoke only, like the
+  # *UrlDiscoveryFunction pattern above but writing candidates straight to
+  # product_videos instead of publishing scrape jobs -- there's no
+  # "scraper" step here, a video candidate IS the row) and
+  # VideoSummarizerFunction (SQS-triggered from VideoSummarizeQueue, which
+  # only ever receives a message when an admin approves a candidate via
+  # POST /video-candidates/{id}/approve -- see src/admin_api/service.py's
+  # approve_video_candidate). Both require real credentials this project
+  # can't obtain on its own: YouTubeApiKeySecretArn (a Google Cloud API
+  # key) and Bedrock model access granted in the console for BedrockModelId
+  # -- see those parameters' descriptions above.
+
+  VideoDiscoveryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-video-discovery
+      CodeUri: src/video_discovery/
+      Handler: app.handler
+      # Network-bound (one YouTube search.list call per product, each a
+      # real HTTP round trip) -- same 150s reasoning as the other
+      # discovery/scraper functions above, even though this one isn't
+      # SQS-triggered.
+      Timeout: 150
+      Environment:
+        Variables:
+          YOUTUBE_API_KEY_SECRET_ARN: !Ref YouTubeApiKeySecretArn
+          MAX_SEARCHES_PER_INVOCATION: "90"
+          MAX_RESULTS_PER_PRODUCT: "5"
+      Policies:
+        - VPCAccessPolicy: {}
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              # Same "blank default isn't a valid IAM Resource" fix as
+              # AdminApiTokenSecretArn/BigCommerceSecretArn above -- only
+              # grant this once HasYouTubeApiKeySecret confirms a real ARN.
+              Resource: !If
+                - HasYouTubeApiKeySecret
+                - !Ref YouTubeApiKeySecretArn
+                - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:unused-*"
+      # Manual/direct invoke only, same as the other discovery functions --
+      # no schedule wired up. Invoke with {} (all published+current
+      # products, capped), {"brand_id": "..."}, or {"product_ids": [...]}
+      # -- see module docstring for the subset-first reasoning and the
+      # real ~90-searches/day quota ceiling this respects.
+
+  VideoSummarizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-video-summarizer
+      CodeUri: src/video_summarizer/
+      Handler: app.handler
+      Timeout: 150
+      Environment:
+        Variables:
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+      Policies:
+        - VPCAccessPolicy: {}
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+            - Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              # Scoped to whatever BedrockModelId resolves to, not "*" --
+              # narrowest permission that still works regardless of which
+              # model id is configured.
+              Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/${BedrockModelId}"
+      Events:
+        VideoSummarizeQueueTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt VideoSummarizeQueue.Arn
+            BatchSize: 5
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+      # SQS-triggered from VideoSummarizeQueue (populated only by an admin
+      # approval, see above) -- also still accepts direct/manual invocation
+      # with {"product_video_id": "..."} for testing one row by hand.
 
   # --- commercebuild brand family (Storm, Roto Grip, 900 Global) ---
   #
@@ -996,3 +1142,9 @@ Outputs:
     Value: !GetAtt BowwwlCrossCheckFunction.Arn
   BowlerDepotReconciliationFunctionArn:
     Value: !GetAtt BowlerDepotReconciliationFunction.Arn
+  VideoDiscoveryFunctionArn:
+    Value: !GetAtt VideoDiscoveryFunction.Arn
+  VideoSummarizerFunctionArn:
+    Value: !GetAtt VideoSummarizerFunction.Arn
+  VideoSummarizeDLQUrl:
+    Value: !Ref VideoSummarizeDLQ

@@ -33,12 +33,13 @@ Any Postgres 13+ instance works (RDS is the obvious choice, but this
 repo doesn't assume it). Note the connection details -- you'll need them
 for step 3's `DbSecretArn` secret and to run migrations directly.
 
-## 2. Run the three migrations, in order
+## 2. Run the four migrations, in order
 
 ```bash
 psql "$DATABASE_URL" -f db/migrations/001_init_schema.sql
 psql "$DATABASE_URL" -f db/migrations/002_add_woocommerce_netsuite_platforms.sql
 psql "$DATABASE_URL" -f db/migrations/003_date_tracking_and_bowwwl.sql
+psql "$DATABASE_URL" -f db/migrations/004_product_videos.sql
 ```
 
 These were reviewed by hand for syntax but never executed against a real
@@ -93,6 +94,29 @@ aws secretsmanager create-secret \
 Note the returned ARN -- this is `BigCommerceSecretArn`, only needed once
 you're ready to flip `BowlerDepotReconciliationFunction`'s schedule on
 (step 7).
+
+**YouTube Data API v3 key (optional, only for the video-enrichment feature
+-- skip until you're ready to try it):**
+
+This one you have to get yourself (Google Cloud console -> APIs & Services
+-> Credentials -> Create API key, then enable the "YouTube Data API v3" on
+that project). There's no way for this project to obtain it for you.
+
+```bash
+aws secretsmanager create-secret \
+  --name bowling-scraper-youtube-api-key \
+  --secret-string '{"api_key":"<your-youtube-api-key>"}'
+```
+
+Note the returned ARN -- this is `YouTubeApiKeySecretArn`. Remember the
+real, hard quota this key is subject to: search.list costs 100 units/call
+against a default 10,000 units/day project quota -- ~100 searches/day, not
+adjustable from this template (see src/video_discovery/app.py's module
+docstring). Separately, `video_summarizer` calls Bedrock -- in the AWS
+console, go to Bedrock -> Model access and request access to whatever
+model `BedrockModelId` is set to (default
+`anthropic.claude-3-5-haiku-20241022-v1:0`); an un-granted model fails at
+invoke time, not deploy time, so do this before the first real approval.
 
 ## 4. Seed the `brands` rows
 
@@ -400,14 +424,57 @@ real BowlerDepot API credentials in Secrets Manager:
    when it's actually "not checking anything." See README's "QA
    cross-checks" section for the full caveat.
 
+### 6i. Video enrichment (YouTube + Bedrock) -- only after `YouTubeApiKeySecretArn` is set and the Bedrock model is granted access
+
+New this session, unverified against a real YouTube page or a real
+Bedrock endpoint (this sandbox has no outbound network access -- see
+src/video_discovery/app.py's and src/video_summarizer/app.py's module
+docstrings for exactly what's unconfirmed). Test on a small, explicit
+product list first, not the default "all published/current" scope --
+each product costs one YouTube search.list call against the ~90/day cap.
+
+1. Find a real `product_id` (or a few) via `GET /products?search=...` on
+   the admin API (see 6a for the auth header shape).
+2. Discover candidates for just those products:
+   ```bash
+   aws lambda invoke --function-name bowling-scraper-video-discovery \
+     --payload '{"product_ids": ["<product-id>"]}' \
+     --cli-binary-format raw-in-base64-out /tmp/out.json
+   cat /tmp/out.json
+   ```
+3. Check what landed in `product_videos` as pending:
+   ```bash
+   curl -H "Authorization: Bearer $TOKEN" "$ADMIN_API_URL/video-candidates?status=pending"
+   ```
+   Look at `match_confidence` -- 'low' entries are exactly the ones this
+   approval step exists for (see README/service.py comments); don't
+   rubber-stamp them without eyeballing the title/channel.
+4. Approve one:
+   ```bash
+   curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+     -d '{"resolved_by":"al@bringyourbest.co"}' \
+     "$ADMIN_API_URL/video-candidates/<video-id>/approve"
+   ```
+5. Confirm it landed on `VideoSummarizeQueue` and was processed --
+   `video_summarizer` runs async off that queue, so check back after a
+   minute or two:
+   ```bash
+   curl -H "Authorization: Bearer $TOKEN" "$ADMIN_API_URL/video-candidates/<video-id>"
+   ```
+   Expect either a real `transcript`/`summary`, or `transcript_note` set to
+   `no_captions_available` (a real, expected outcome for videos without
+   captions, not a bug). If neither appeared after a few minutes, check
+   `bowling-scraper-video-summarize-dlq` -- same first-stop-for-failures
+   convention as every other DLQ in this project.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
   `-pdf-parse-dlq`, `-image-process-dlq`, `-woocommerce-product-scrape-dlq`,
-  `-netsuite-product-scrape-dlq`, `-commercebuild-product-scrape-dlq`) --
-  a nonzero count means something's failing repeatedly, not just a
-  transient blip (Lambda retries up to `maxReceiveCount` before landing
-  there).
+  `-netsuite-product-scrape-dlq`, `-commercebuild-product-scrape-dlq`,
+  `-video-summarize-dlq`) -- a nonzero count means something's failing
+  repeatedly, not just a transient blip (Lambda retries up to
+  `maxReceiveCount` before landing there).
 - **SWAG, MOTIV, and commercebuild URL discovery have no automated
   schedule** even once their brand id parameters are set -- add a
   `Schedule` event to `WooCommerceUrlDiscoveryFunction`/
@@ -424,6 +491,12 @@ real BowlerDepot API credentials in Secrets Manager:
   value; already-warm `AdminApiAuthorizerFunction` containers cache the
   old token for their remaining lifetime (see that module's docstring) --
   not instant revocation, by design, acceptable for a shared token.
+- **`VideoDiscoveryFunction` has no automated schedule either**, same
+  reasoning as the other discovery functions, plus a real quota reason:
+  the ~90-searches/day cap means "run it on everything every day" isn't
+  actually sane math yet against a full catalog. Invoke it manually with
+  an explicit `product_ids`/`brand_id` scope (see 6i) until you've decided
+  how you actually want to spread coverage across the catalog over time.
 
 ## Troubleshooting quick reference
 
