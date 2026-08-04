@@ -638,7 +638,13 @@ Resources:
       FunctionName: bowling-scraper-admin-api
       CodeUri: src/admin_api/
       Handler: app.handler
-      Timeout: 15
+      # Bumped from 15s -- POST /products/{id}/refresh-video-summary (see
+      # service.refresh_video_reviews_rollup) adds a synchronous Bedrock
+      # InvokeModel call to this function's request path, which the other
+      # endpoints here don't have. 15s was fine when every endpoint was a
+      # plain DB query; 30s leaves real headroom for that one call without
+      # ballooning API Gateway's own timeout budget.
+      Timeout: 30
       Environment:
         Variables:
           # Read by service.py's approve_video_candidate -- see its
@@ -653,12 +659,42 @@ Resources:
           # doesn't need to know or care which producer a given message
           # came from.
           TRANSCRIPT_RESULT_QUEUE_URL: !Ref VideoTranscriptResultQueue
+          # Read by service.py's refresh_video_reviews_rollup (POST
+          # /products/{id}/refresh-video-summary) -- same env var
+          # VideoSummarizerFunction reads, same model.
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
       Policies:
         - Statement:
             - Effect: Allow
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Ref DbSecretArn
+            # Same three-statement Global CRIS inference-profile grant
+            # VideoSummarizerFunction needs -- see that function's
+            # Policies block for the full reasoning (AWS's own documented
+            # shape for Global cross-Region inference, not something
+            # invented here).
+            - Sid: GrantGlobalCrisInferenceProfileRegionAccess
+              Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockModelId}"
+            - Sid: GrantGlobalCrisInferenceProfileInRegionModelAccess
+              Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/${BedrockBaseModelId}"
+              Condition:
+                StringEquals:
+                  bedrock:InferenceProfileArn: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockModelId}"
+            - Sid: GrantGlobalCrisInferenceProfileGlobalModelAccess
+              Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: !Sub "arn:aws:bedrock:::foundation-model/${BedrockBaseModelId}"
+              Condition:
+                StringEquals:
+                  bedrock:InferenceProfileArn: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockModelId}"
         - SQSSendMessagePolicy:
             QueueName: !GetAtt VideoSummarizeQueue.QueueName
         - SQSSendMessagePolicy:

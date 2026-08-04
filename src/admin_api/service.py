@@ -225,7 +225,17 @@ def get_pending_review_count(conn) -> int:
         return cur.fetchone()[0]
 
 
-def list_products(conn, published: bool = None, brand_id: str = None, search: str = None, limit: int = 50, offset: int = 0) -> list:
+def list_products(conn, published: bool = None, brand_id: str = None, search: str = None,
+                   needs_video_summary_refresh: bool = None, limit: int = 50, offset: int = 0) -> list:
+    """needs_video_summary_refresh=True: products with at least one
+    approved+summarized video, where video_reviews_summary is either
+    still unset or stale relative to how many approved+summarized videos
+    currently exist (video_reviews_summary_video_count is stored exactly
+    for this comparison -- see 006_products_video_reviews_summary.sql).
+    Built for scripts/backfill_video_review_rollups.py, but written as a
+    general filter (not a one-off) since the same staleness can recur
+    later -- a reassign/delete cleanup, or a product summarized before
+    video_summarizer's automatic regeneration existed."""
     query = "select id, brand_id, name, url, status, published, updated_at from products where 1=1"
     params = []
     if published is not None:
@@ -237,7 +247,27 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     if search:
         query += " and name ilike %s"
         params.append(f"%{search}%")
-    query += " order by updated_at desc limit %s offset %s"
+    if needs_video_summary_refresh:
+        query += """
+            and exists (
+                select 1 from product_videos pv
+                where pv.product_id = products.id and pv.status = 'approved' and pv.summary is not null
+            )
+            and (
+                video_reviews_summary is null
+                or video_reviews_summary_video_count <> (
+                    select count(*) from product_videos pv2
+                    where pv2.product_id = products.id and pv2.status = 'approved' and pv2.summary is not null
+                )
+            )
+        """
+    # id as a final tiebreaker -- same reason list_video_candidates and
+    # fetch_products_to_search needed one (see admin_api/service.py's own
+    # earlier fix and video_discovery/app.py's ROTATION section): rows
+    # sharing an updated_at value make plain OFFSET/LIMIT pagination
+    # unstable, and this endpoint is now paginated by a real consumer
+    # (the backfill script) as of this filter's addition.
+    query += " order by updated_at desc, id asc limit %s offset %s"
     params += [limit, offset]
 
     with conn.cursor() as cur:
@@ -562,3 +592,138 @@ def _publish_transcript_result_message(product_video_id: str, transcript: str, t
             "transcript_note": transcript_note,
         }),
     )
+
+
+# ---------------------------------------------------------------------
+# "Summary of summaries" on-demand refresh (POST /products/{id}/refresh-
+# video-summary). video_summarizer.refresh_video_reviews_rollup already
+# regenerates products.video_reviews_summary automatically every time a
+# video gets a real summary written -- this is the on-demand counterpart,
+# for the cases that trigger doesn't cover: backfilling a product whose
+# videos were already summarized before this endpoint existed, or
+# re-running it after a manual reassign/delete cleanup changed which
+# videos count as "approved" for a product without anything re-
+# summarizing.
+#
+# fetch_approved_video_summaries / build_rollup_prompt / generate_video_
+# reviews_rollup / store_rollup below are deliberate duplicates of
+# video_summarizer/app.py's functions of the same name, NOT imports --
+# admin_api and video_summarizer are separate Lambda deployment packages
+# (separate CodeUri, no shared module path between them), same "own the
+# whole package" convention as scripts/home_transcript_fetcher.py
+# duplicating video_transcript_fetcher/app.py's YouTube-fetching logic
+# (see that script's module docstring for the fuller reasoning). Keep
+# both copies in sync if the prompt or Bedrock wire format ever changes.
+# ---------------------------------------------------------------------
+
+DEFAULT_BEDROCK_MODEL_ID = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+DEFAULT_ROLLUP_MAX_TOKENS = 350
+
+
+def fetch_approved_video_summaries(conn, product_id: str) -> list:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select summary from product_videos
+            where product_id = %s and status = 'approved' and summary is not null
+            order by created_at asc, id asc
+            """,
+            (product_id,),
+        )
+        return [row[0] for row in cur.fetchall()]
+
+
+def build_rollup_prompt(product_name: str, brand_name: str, summaries: list) -> str:
+    if len(summaries) == 1:
+        return (
+            f"The following is a summary of a single YouTube review video for the "
+            f"{brand_name} {product_name} bowling ball. Rewrite it as a standalone "
+            "2-4 sentence product description of what reviewers say about this ball "
+            "-- remove any references to \"this video\" or \"the reviewer\", state it "
+            "as plain fact about the ball's performance instead.\n\n"
+            f"Review summary:\n{summaries[0]}"
+        )
+
+    numbered = "\n".join(f"{i}. {s}" for i, s in enumerate(summaries, start=1))
+    return (
+        f"The following are {len(summaries)} independent review summaries for the "
+        f"{brand_name} {product_name} bowling ball, each from a different YouTube "
+        "review video. Synthesize them into a single 3-5 sentence overview of what "
+        "reviewers generally say about this ball -- note common themes (hook shape, "
+        "reaction on the lane, who it's recommended for) and call out any notable "
+        "disagreements between reviewers rather than papering over them. Don't "
+        "reference \"the videos\" or how many reviews there are; write it as a "
+        "standalone product description.\n\n"
+        f"Review summaries:\n{numbered}"
+    )
+
+
+def generate_video_reviews_rollup(bedrock_client, model_id: str, product_name: str, brand_name: str,
+                                   summaries: list, max_tokens: int = DEFAULT_ROLLUP_MAX_TOKENS) -> str:
+    body = json.dumps({
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": max_tokens,
+        "messages": [
+            {"role": "user", "content": build_rollup_prompt(product_name, brand_name, summaries)},
+        ],
+    })
+    response = bedrock_client.invoke_model(modelId=model_id, contentType="application/json",
+                                            accept="application/json", body=body)
+    payload = json.loads(response["body"].read())
+    return payload["content"][0]["text"].strip()
+
+
+def store_rollup(conn, product_id: str, rollup_text: str, video_count: int) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            update products
+            set video_reviews_summary = %s,
+                video_reviews_summary_video_count = %s,
+                video_reviews_summary_updated_at = now()
+            where id = %s
+            """,
+            (rollup_text, video_count, product_id),
+        )
+    conn.commit()
+
+
+def _fetch_product_for_rollup(conn, product_id: str):
+    with conn.cursor() as cur:
+        cur.execute(
+            "select p.id, p.name, b.name as brand_name from products p "
+            "join brands b on b.id = p.brand_id where p.id = %s",
+            (product_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return {"id": row[0], "name": row[1], "brand_name": row[2]}
+
+
+def refresh_video_reviews_rollup(conn, product_id: str) -> dict:
+    """Builds its own Bedrock client and reads BEDROCK_MODEL_ID itself
+    (same env var video_summarizer uses) rather than taking either as a
+    parameter, so app.py's endpoint stays a thin routing call with nothing
+    to construct -- consistent with every other service.py function here
+    (e.g. _publish_transcript_result_message building its own boto3 SQS
+    client). 'no approved+summarized videos yet' is a normal, expected
+    outcome (rollup_regenerated: False), not an error -- same convention
+    as video_summarizer's own version of this function."""
+    product = _fetch_product_for_rollup(conn, product_id)
+    if product is None:
+        raise LookupError(f"No products row with id {product_id}")
+
+    summaries = fetch_approved_video_summaries(conn, product_id)
+    if not summaries:
+        return {"product_id": product_id, "rollup_regenerated": False, "reason": "no_summaries"}
+
+    import boto3
+
+    bedrock_client = boto3.client("bedrock-runtime")
+    model_id = os.environ.get("BEDROCK_MODEL_ID", DEFAULT_BEDROCK_MODEL_ID)
+    rollup_text = generate_video_reviews_rollup(
+        bedrock_client, model_id, product["name"], product["brand_name"], summaries,
+    )
+    store_rollup(conn, product_id, rollup_text, len(summaries))
+    return {"product_id": product_id, "rollup_regenerated": True, "video_count": len(summaries)}

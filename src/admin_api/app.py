@@ -121,12 +121,16 @@ def get_products(
     published: Optional[bool] = Query(None),
     brand_id: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
+    needs_video_summary_refresh: Optional[bool] = Query(None),
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
 ):
     conn = service.get_db_connection()
     try:
-        return {"items": service.list_products(conn, published=published, brand_id=brand_id, search=search, limit=limit, offset=offset)}
+        return {"items": service.list_products(
+            conn, published=published, brand_id=brand_id, search=search,
+            needs_video_summary_refresh=needs_video_summary_refresh, limit=limit, offset=offset,
+        )}
     finally:
         conn.close()
 
@@ -148,6 +152,24 @@ def set_product_published(product_id: str, body: PublishRequest):
     conn = service.get_db_connection()
     try:
         return service.set_product_published(conn, product_id, body.published)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/products/{product_id}/refresh-video-summary")
+def refresh_video_summary(product_id: str):
+    # On-demand counterpart to video_summarizer's automatic rollup
+    # regeneration (see service.refresh_video_reviews_rollup's docstring)
+    # -- for backfilling products whose videos were summarized before this
+    # endpoint existed, or re-running after a manual reassign/delete
+    # changed which videos count as approved. No request body: this
+    # regenerates from whatever's currently approved+summarized, nothing
+    # to configure per call.
+    conn = service.get_db_connection()
+    try:
+        return service.refresh_video_reviews_rollup(conn, product_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
     finally:

@@ -12,6 +12,7 @@ cursor/connection (real database interaction is untested for the same
 reason it's untested in product_scraper/pdf_parser/image_processor -- no
 Postgres instance available in this sandbox).
 """
+import json
 import os
 import sys
 
@@ -85,6 +86,7 @@ class FakeCursor:
     def __init__(self, db):
         self.db = db
         self._last_result = None
+        self._rows = []
         self.description = None
 
     def __enter__(self):
@@ -102,6 +104,17 @@ class FakeCursor:
             value, product_id, weight_lbs = params
             key = (product_id, weight_lbs)
             self.db["product_skus"].setdefault(key, {})[column] = value
+            self._last_result = None
+
+        elif q.startswith("update products set video_reviews_summary"):
+            # More specific than (and must be checked before) the generic
+            # single-column "update products set" branch below -- store_rollup
+            # sets three columns in one statement, not one.
+            rollup_text, video_count, product_id = params
+            row = self.db["products"].setdefault(product_id, {})
+            row["video_reviews_summary"] = rollup_text
+            row["video_reviews_summary_video_count"] = video_count
+            row["video_reviews_summary_updated_at"] = "now"
             self._last_result = None
 
         elif q.startswith("update products set") and "returning id" not in q:
@@ -198,11 +211,30 @@ class FakeCursor:
             self.db["product_videos"].pop(video_id, None)
             self._last_result = None
 
+        elif q.startswith("select summary from product_videos"):
+            (product_id,) = params
+            matches = [
+                v for v in self.db["product_videos"].values()
+                if v.get("product_id") == product_id and v.get("status") == "approved" and v.get("summary") is not None
+            ]
+            matches.sort(key=lambda v: (v.get("created_at", ""), v["id"]))
+            self._rows = [(v["summary"],) for v in matches]
+            self.description = [("summary",)]
+
+        elif q.startswith("select p.id, p.name, b.name as brand_name from products p"):
+            (product_id,) = params
+            row = self.db["products"].get(product_id)
+            self._last_result = (product_id, row["name"], row["brand_name"]) if row else None
+            self.description = [("id",), ("name",), ("brand_name",)]
+
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
 
     def fetchone(self):
         return self._last_result
+
+    def fetchall(self):
+        return self._rows
 
 
 class FakeConnection:
@@ -579,6 +611,232 @@ def test_submit_video_transcript_rejects_non_approved_row():
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+# --- "Summary of summaries" on-demand refresh (POST /products/{id}/refresh-
+# video-summary): fetch_approved_video_summaries / build_rollup_prompt /
+# generate_video_reviews_rollup / store_rollup / _fetch_product_for_rollup /
+# refresh_video_reviews_rollup. Deliberate duplicates of
+# video_summarizer/app.py's functions of the same name (see service.py's
+# module comment above these functions) -- these tests mirror
+# test_video_summarizer.py's equivalents (_FakeBedrockClient shape included)
+# so both copies stay verifiably in sync.
+
+def _fake_db_with_product_and_approved_videos():
+    return {
+        "products": {
+            "prod-1": {"name": "Absolute", "brand_name": "Storm"},
+        },
+        "product_videos": {
+            "vid-1": {
+                "id": "vid-1", "product_id": "prod-1", "status": "approved",
+                "summary": "In this video, the reviewer notes a strong, early hook.",
+                "created_at": "2026-01-01",
+            },
+            "vid-2": {
+                "id": "vid-2", "product_id": "prod-1", "status": "approved",
+                "summary": "Smooth and predictable on medium oil.",
+                "created_at": "2026-01-02",
+            },
+            "vid-3": {
+                "id": "vid-3", "product_id": "prod-1", "status": "pending",
+                "summary": "Should be excluded -- not approved.",
+                "created_at": "2026-01-03",
+            },
+            "vid-4": {
+                "id": "vid-4", "product_id": "prod-1", "status": "approved",
+                "summary": None,  # approved but not yet summarized -- excluded
+                "created_at": "2026-01-04",
+            },
+            "vid-5": {
+                "id": "vid-5", "product_id": "prod-2", "status": "approved",
+                "summary": "Belongs to a different product -- excluded.",
+                "created_at": "2026-01-01",
+            },
+        },
+    }
+
+
+def test_fetch_approved_video_summaries_filters_status_and_nonnull():
+    db = _fake_db_with_product_and_approved_videos()
+    conn = FakeConnection(db)
+
+    result = service.fetch_approved_video_summaries(conn, "prod-1")
+
+    assert result == [
+        "In this video, the reviewer notes a strong, early hook.",
+        "Smooth and predictable on medium oil.",
+    ]
+
+
+def test_fetch_approved_video_summaries_empty_for_product_with_none():
+    db = _fake_db_with_product_and_approved_videos()
+    conn = FakeConnection(db)
+
+    assert service.fetch_approved_video_summaries(conn, "prod-does-not-exist") == []
+
+
+def test_build_rollup_prompt_single_summary_rewrites_standalone():
+    prompt = service.build_rollup_prompt("Absolute", "Storm", ["In this video, the reviewer notes strong hook."])
+    assert "In this video, the reviewer notes strong hook." in prompt
+    assert "Rewrite it as a standalone" in prompt
+    assert "remove any references" in prompt
+
+
+def test_build_rollup_prompt_multiple_summaries_synthesizes():
+    summaries = ["Strong hook, clears the front.", "Smooth and predictable on medium oil."]
+    prompt = service.build_rollup_prompt("Absolute", "Storm", summaries)
+    assert "2 independent review summaries" in prompt
+    assert "1. Strong hook, clears the front." in prompt
+    assert "2. Smooth and predictable on medium oil." in prompt
+    assert "Synthesize them" in prompt
+    assert "notable disagreements" in prompt
+
+
+class _FakeBedrockBody:
+    def __init__(self, payload: dict):
+        self._data = json.dumps(payload).encode("utf-8")
+
+    def read(self):
+        return self._data
+
+
+class _FakeBedrockClient:
+    def __init__(self, response_text: str):
+        self.response_text = response_text
+        self.calls = []
+
+    def invoke_model(self, modelId, contentType, accept, body):
+        self.calls.append({"modelId": modelId, "contentType": contentType, "accept": accept, "body": body})
+        return {"body": _FakeBedrockBody({"content": [{"text": self.response_text}]})}
+
+
+def test_generate_video_reviews_rollup_returns_model_text():
+    client = _FakeBedrockClient("Reviewers agree this ball hooks hard on medium oil.")
+
+    rollup = service.generate_video_reviews_rollup(
+        client, "global.anthropic.claude-haiku-4-5-20251001-v1:0",
+        "Absolute", "Storm", ["Strong hook.", "Hooks a lot."],
+    )
+
+    assert rollup == "Reviewers agree this ball hooks hard on medium oil."
+    assert len(client.calls) == 1
+    assert client.calls[0]["modelId"] == "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+
+def test_store_rollup_writes_all_three_columns_and_commits():
+    db = _fake_db_with_product_and_approved_videos()
+    conn = FakeConnection(db)
+
+    service.store_rollup(conn, "prod-1", "Reviewers agree this hooks hard.", 2)
+
+    row = db["products"]["prod-1"]
+    assert row["video_reviews_summary"] == "Reviewers agree this hooks hard."
+    assert row["video_reviews_summary_video_count"] == 2
+    assert row["video_reviews_summary_updated_at"] == "now"
+    assert conn.committed is True
+
+
+def test_fetch_product_for_rollup_returns_name_and_brand():
+    db = _fake_db_with_product_and_approved_videos()
+    conn = FakeConnection(db)
+
+    result = service._fetch_product_for_rollup(conn, "prod-1")
+
+    assert result == {"id": "prod-1", "name": "Absolute", "brand_name": "Storm"}
+
+
+def test_fetch_product_for_rollup_missing_returns_none():
+    db = _fake_db_with_product_and_approved_videos()
+    conn = FakeConnection(db)
+
+    assert service._fetch_product_for_rollup(conn, "does-not-exist") is None
+
+
+def test_refresh_video_reviews_rollup_missing_product_raises():
+    db = _fake_db_with_product_and_approved_videos()
+    conn = FakeConnection(db)
+    try:
+        service.refresh_video_reviews_rollup(conn, "does-not-exist")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def test_refresh_video_reviews_rollup_no_summaries_is_not_an_error():
+    """A product that exists but has no approved+summarized videos yet is
+    a normal, expected outcome (rollup_regenerated: False) -- not raised as
+    an error, same convention as video_summarizer's own version."""
+    db = {
+        "products": {"prod-empty": {"name": "Nightroad", "brand_name": "Storm"}},
+        "product_videos": {},
+    }
+    conn = FakeConnection(db)
+
+    result = service.refresh_video_reviews_rollup(conn, "prod-empty")
+
+    assert result == {"product_id": "prod-empty", "rollup_regenerated": False, "reason": "no_summaries"}
+
+
+def test_refresh_video_reviews_rollup_success_builds_bedrock_client_and_stores():
+    """refresh_video_reviews_rollup builds its own boto3 bedrock-runtime
+    client internally (see its docstring) rather than taking one as a
+    parameter, so this fakes boto3.client itself via sys.modules -- same
+    approach test_approve_video_candidate_marks_approved_and_does_not_touch_
+    queue uses above, just returning a working fake instead of an exploding
+    one."""
+    db = _fake_db_with_product_and_approved_videos()
+    conn = FakeConnection(db)
+    fake_client = _FakeBedrockClient("This ball hooks hard and clears the front of the lane.")
+
+    class _FakeBoto3:
+        def client(self, name):
+            assert name == "bedrock-runtime"
+            return fake_client
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    try:
+        result = service.refresh_video_reviews_rollup(conn, "prod-1")
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+
+    assert result == {"product_id": "prod-1", "rollup_regenerated": True, "video_count": 2}
+    assert db["products"]["prod-1"]["video_reviews_summary"] == "This ball hooks hard and clears the front of the lane."
+    assert db["products"]["prod-1"]["video_reviews_summary_video_count"] == 2
+    assert len(fake_client.calls) == 1
+
+
+# --- list_products: needs_video_summary_refresh filter -- confirms the SQL
+# text is actually added when the flag is passed (real DB behavior of the
+# EXISTS/staleness-comparison subquery itself is untested here for the same
+# no-Postgres-in-sandbox reason noted throughout this file; see
+# list_products' own docstring for what the filter is supposed to mean).
+# Also confirms the plain call (flag omitted/None) doesn't add it, and that
+# the id tiebreaker added alongside this filter is present either way.
+
+def test_list_products_omits_refresh_filter_by_default():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "needs_video_summary_refresh" not in query  # not real SQL, just guards against copy-paste
+    assert "video_reviews_summary is null" not in query
+    assert "order by updated_at desc, id asc" in query
+
+
+def test_list_products_needs_video_summary_refresh_adds_filter_sql():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, needs_video_summary_refresh=True, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "pv.status = 'approved' and pv.summary is not null" in query
+    assert "video_reviews_summary is null" in query
+    assert "video_reviews_summary_video_count <>" in query
+    assert "order by updated_at desc, id asc" in query
 
 
 if __name__ == "__main__":

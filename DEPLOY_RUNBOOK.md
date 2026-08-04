@@ -621,8 +621,45 @@ whenever it next runs.
      | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["video_reviews_summary"], d["video_reviews_summary_video_count"])'
    ```
    (`GET /products/{id}` already returns every column via `select *`, so
-   no new admin API endpoint was needed for this -- `list_products` was
-   deliberately left unchanged, to keep that endpoint's response lean.)
+   no new admin API endpoint was needed to read a rollup.)
+8. Backfilling rollups for products summarized before automatic
+   regeneration existed. Step 7's automatic path only fires as a side
+   effect of a video getting a *new* summary written -- any product whose
+   videos were already approved+summarized before that trigger (or before
+   this endpoint) existed has no rollup, and nothing revisits an
+   already-summarized video to build one. This is also the fix after a
+   bulk reassign/delete cleanup (step 5): a product's set of approved
+   videos can change without any video getting freshly summarized, which
+   the automatic trigger has no way to notice.
+
+   One product at a time:
+   ```bash
+   curl -X POST -H "Authorization: Bearer $TOKEN" \
+     "$ADMIN_API_URL/products/<product-id>/refresh-video-summary"
+   ```
+   Returns `{"product_id": ..., "rollup_regenerated": true, "video_count": N}`,
+   or `{"rollup_regenerated": false, "reason": "no_summaries"}` if the
+   product has no approved+summarized videos (not an error).
+
+   `GET /products?needs_video_summary_refresh=true` lists exactly the
+   products that call would actually change -- at least one approved+
+   summarized video, and the stored rollup is either missing or stale
+   relative to the current approved+summarized count (see
+   `list_products`'s docstring in src/admin_api/service.py). Safe to
+   re-run any time, not just once: it recomputes off the real current
+   count each call.
+
+   For the whole catalog, `scripts/backfill_video_review_rollups.py` pages
+   through that filter and calls the refresh endpoint for each match,
+   tolerating per-product errors (one Bedrock hiccup doesn't stop the
+   batch -- it just gets picked up again next run):
+   ```bash
+   export ADMIN_API_URL="https://<your-api-id>.execute-api.us-west-1.amazonaws.com"
+   export ADMIN_API_TOKEN="$TOKEN"
+   python3 scripts/backfill_video_review_rollups.py
+   ```
+   Logs a per-product line and a final `{"total": N, "refreshed": N, "errors": N}`
+   summary; exits non-zero only if every product it tried to refresh errored.
 
 ### 6j. Home transcript fetcher (residential caption fetching) -- optional, run outside AWS entirely
 
