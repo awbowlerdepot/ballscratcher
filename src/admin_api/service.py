@@ -226,7 +226,8 @@ def get_pending_review_count(conn) -> int:
 
 
 def list_products(conn, published: bool = None, brand_id: str = None, search: str = None,
-                   needs_video_summary_refresh: bool = None, limit: int = 50, offset: int = 0) -> list:
+                   needs_video_summary_refresh: bool = None, has_approved_video_summaries: bool = None,
+                   limit: int = 50, offset: int = 0) -> list:
     """needs_video_summary_refresh=True: products with at least one
     approved+summarized video, where video_reviews_summary is either
     still unset or stale relative to how many approved+summarized videos
@@ -235,7 +236,24 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     Built for scripts/backfill_video_review_rollups.py, but written as a
     general filter (not a one-off) since the same staleness can recur
     later -- a reassign/delete cleanup, or a product summarized before
-    video_summarizer's automatic regeneration existed."""
+    video_summarizer's automatic regeneration existed.
+
+    has_approved_video_summaries=True: every product with at least one
+    approved+summarized video, full stop -- a superset of
+    needs_video_summary_refresh, no staleness comparison at all. Added
+    once products.description started getting backfilled onto already-
+    scraped products (see parse_description in the four *_product_
+    scraper modules): a description change doesn't move the approved+
+    summarized video count, so needs_video_summary_refresh's staleness
+    check has no way to notice a product's rollup could now say more with
+    the new context available -- by that filter's definition, a rollup
+    already built from the right number of videos IS current. This filter
+    is the deliberately-blunt "just regenerate everything" escape hatch
+    for that case (or any other "the inputs changed in a way the count-
+    based check can't see" situation), meant for an occasional one-time
+    catalog-wide pass (see scripts/backfill_video_review_rollups.py's
+    REFRESH_ALL), not routine/scheduled use the way needs_video_summary_
+    refresh is."""
     query = "select id, brand_id, name, url, status, published, updated_at from products where 1=1"
     params = []
     if published is not None:
@@ -259,6 +277,13 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
                     select count(*) from product_videos pv2
                     where pv2.product_id = products.id and pv2.status = 'approved' and pv2.summary is not null
                 )
+            )
+        """
+    if has_approved_video_summaries:
+        query += """
+            and exists (
+                select 1 from product_videos pv
+                where pv.product_id = products.id and pv.status = 'approved' and pv.summary is not null
             )
         """
     # id as a final tiebreaker -- same reason list_video_candidates and

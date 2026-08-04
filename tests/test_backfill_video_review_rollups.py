@@ -82,6 +82,24 @@ def test_list_products_needing_refresh_single_page_stops_immediately():
             del sys.modules["requests"]
 
 
+def test_list_products_needing_refresh_all_uses_has_approved_video_summaries_param():
+    """refresh_all=True should swap the filter param entirely (not add a
+    second one) -- see the module docstring's REFRESH_ALL section and
+    list_products_needing_refresh's own docstring."""
+    real_requests = sys.modules.get("requests")
+    fake = _FakeRequestsModule(pages=[{"items": [{"id": "prod-1", "name": "Absolute"}]}])
+    sys.modules["requests"] = fake
+    try:
+        result = script.list_products_needing_refresh("https://admin.example", "tok", page_limit=200, refresh_all=True)
+        assert len(result) == 1
+        assert fake.get_calls[0]["params"] == {"has_approved_video_summaries": "true", "limit": 200, "offset": 0}
+    finally:
+        if real_requests is not None:
+            sys.modules["requests"] = real_requests
+        else:
+            del sys.modules["requests"]
+
+
 # --- refresh_product: fake requests, posts to the right URL ---
 
 def test_refresh_product_posts_to_refresh_video_summary_and_returns_json():
@@ -112,7 +130,7 @@ def test_run_refreshes_every_listed_product(monkeypatch):
         {"id": "prod-1", "name": "Absolute"},
         {"id": "prod-2", "name": "Nightroad"},
     ]
-    monkeypatch.setattr(script, "list_products_needing_refresh", lambda url, token: products)
+    monkeypatch.setattr(script, "list_products_needing_refresh", lambda url, token, refresh_all=False: products)
 
     refreshed_calls = []
 
@@ -136,7 +154,7 @@ def test_run_does_not_count_no_summaries_result_as_refreshed(monkeypatch):
     refresh call actually runs. rollup_regenerated: False in that case --
     not an error, but shouldn't inflate the 'refreshed' count either."""
     products = [{"id": "prod-1", "name": "Absolute"}]
-    monkeypatch.setattr(script, "list_products_needing_refresh", lambda url, token: products)
+    monkeypatch.setattr(script, "list_products_needing_refresh", lambda url, token, refresh_all=False: products)
     monkeypatch.setattr(script, "refresh_product", lambda url, token, pid:
                          {"product_id": pid, "rollup_regenerated": False, "reason": "no_summaries"})
 
@@ -150,7 +168,7 @@ def test_run_tolerates_per_product_refresh_errors(monkeypatch):
     the rest of the batch -- same principle as auto_approve_video_
     candidates.run() and home_transcript_fetcher.run()."""
     products = [{"id": "prod-1", "name": "Absolute"}, {"id": "prod-2", "name": "Nightroad"}]
-    monkeypatch.setattr(script, "list_products_needing_refresh", lambda url, token: products)
+    monkeypatch.setattr(script, "list_products_needing_refresh", lambda url, token, refresh_all=False: products)
 
     def flaky_refresh(url, token, product_id):
         if product_id == "prod-1":
@@ -166,6 +184,28 @@ def test_run_tolerates_per_product_refresh_errors(monkeypatch):
 
 def test_run_with_no_products_needing_refresh():
     summary = script.run("https://admin.example", "tok", list_fn=lambda url, token: [])
+    assert summary == {"total": 0, "refreshed": 0, "errors": 0}
+
+
+def test_run_refresh_all_threads_through_to_default_list_fn(monkeypatch):
+    """run(refresh_all=True) with no explicit list_fn should build its
+    default closure so that list_products_needing_refresh actually receives
+    refresh_all=True -- this is what makes REFRESH_ALL=true do the broader
+    has_approved_video_summaries pass instead of the default staleness
+    check. A caller-supplied list_fn (like test_run_with_no_products_
+    needing_refresh above) intentionally bypasses this -- refresh_all only
+    affects the default."""
+    calls = []
+
+    def fake_list(url, token, refresh_all=False):
+        calls.append(refresh_all)
+        return []
+
+    monkeypatch.setattr(script, "list_products_needing_refresh", fake_list)
+
+    summary = script.run("https://admin.example", "tok", refresh_all=True)
+
+    assert calls == [True]
     assert summary == {"total": 0, "refreshed": 0, "errors": 0}
 
 

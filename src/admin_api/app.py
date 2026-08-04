@@ -122,6 +122,7 @@ def get_products(
     brand_id: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
     needs_video_summary_refresh: Optional[bool] = Query(None),
+    has_approved_video_summaries: Optional[bool] = Query(None),
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
 ):
@@ -129,7 +130,9 @@ def get_products(
     try:
         return {"items": service.list_products(
             conn, published=published, brand_id=brand_id, search=search,
-            needs_video_summary_refresh=needs_video_summary_refresh, limit=limit, offset=offset,
+            needs_video_summary_refresh=needs_video_summary_refresh,
+            has_approved_video_summaries=has_approved_video_summaries,
+            limit=limit, offset=offset,
         )}
     finally:
         conn.close()

@@ -689,10 +689,36 @@ whenever it next runs.
    any other field). The rollup itself only regenerates when a video gets
    summarized (step 7) or via the backfill endpoint (step 8), so a product
    whose description just got backfilled won't show it in
-   `video_reviews_summary` until one of those triggers fires again --
-   re-running `scripts/backfill_video_review_rollups.py` after a
-   description backfill picks this up, same as after a reassign/delete
-   cleanup.
+   `video_reviews_summary` until one of those triggers fires again.
+   **Correction from a real run:** the plain (default-mode)
+   `scripts/backfill_video_review_rollups.py` does *not* pick this up --
+   its `needs_video_summary_refresh` filter is a pure video-count
+   staleness check (see step 8) with no way to notice a description
+   change, since that doesn't move the video count. Confirmed live: after
+   backfilling descriptions onto 76 already-summarized products, a plain
+   run reported `0 products needing refresh` -- correct behavior of that
+   filter, not a bug, but it means a description backfill needs the
+   broader mode described in the next step instead.
+10. Catalog-wide rollup regeneration (`REFRESH_ALL` mode). For the "I just
+    backfilled a field that the staleness filter can't see" case above --
+    or any other one-time reason you want every eligible product's rollup
+    regenerated regardless of whether it looks stale -- `GET /products`
+    also accepts `has_approved_video_summaries=true`: every product with
+    at least one approved+summarized video, no staleness comparison at
+    all (deliberately broader than `needs_video_summary_refresh` from step
+    8). `scripts/backfill_video_review_rollups.py` exposes this via a
+    `REFRESH_ALL` env var:
+    ```bash
+    export ADMIN_API_URL="https://<your-api-id>.execute-api.us-west-1.amazonaws.com"
+    export ADMIN_API_TOKEN="$TOKEN"
+    REFRESH_ALL=true python3 scripts/backfill_video_review_rollups.py
+    ```
+    Same per-product logging and `{"total", "refreshed", "errors"}`
+    summary as the default mode. This is real Bedrock cost across every
+    eligible product each time it's run, not just the stale ones -- treat
+    it as an occasional deliberate pass (e.g. right after a description
+    backfill like this one), not something to schedule routinely. Leave
+    `REFRESH_ALL` unset for routine/scheduled use.
 
 ### 6j. Home transcript fetcher (residential caption fetching) -- optional, run outside AWS entirely
 

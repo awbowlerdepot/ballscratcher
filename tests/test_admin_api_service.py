@@ -887,6 +887,24 @@ def test_list_products_needs_video_summary_refresh_adds_filter_sql():
     assert "order by updated_at desc, id asc" in query
 
 
+# --- list_products: has_approved_video_summaries filter -- the deliberately
+# broader "just regenerate everything" sibling of needs_video_summary_
+# refresh above (see list_products' docstring and backfill_video_review_
+# rollups.py's REFRESH_ALL section). Confirms it adds the same EXISTS
+# clause but, unlike needs_video_summary_refresh, does NOT add either
+# staleness-comparison clause -- that's the whole point of the filter.
+
+def test_list_products_has_approved_video_summaries_adds_filter_sql_without_staleness_check():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, has_approved_video_summaries=True, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "pv.status = 'approved' and pv.summary is not null" in query
+    assert "video_reviews_summary is null" not in query
+    assert "video_reviews_summary_video_count <>" not in query
+    assert "order by updated_at desc, id asc" in query
+
+
 if __name__ == "__main__":
     # Tiny monkeypatch shim so this file can run standalone the same way
     # as the other manual test runners in this repo, without pytest.
