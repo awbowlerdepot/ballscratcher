@@ -157,6 +157,47 @@ class FakeCursor:
             self._last_result = (row["status"],) if row else None
             self.description = [("status",)]
 
+        elif q.startswith("select id, youtube_video_id from product_videos"):
+            (video_id,) = params
+            row = self.db["product_videos"].get(video_id)
+            self._last_result = (row["id"], row["youtube_video_id"]) if row else None
+            self.description = [("id",), ("youtube_video_id",)]
+
+        elif q.startswith("select id from products"):
+            (product_id,) = params
+            row = self.db["products"].get(product_id)
+            # "products" here doubles as the update-plan sink elsewhere in
+            # this file (setdefault(product_id, {})), so a product "exists"
+            # for this fake if its key is present at all, whatever its value.
+            self._last_result = (product_id,) if product_id in self.db["products"] else None
+            self.description = [("id",)]
+
+        elif q.startswith("select id from product_videos where product_id = %s and youtube_video_id = %s"):
+            target_product_id, youtube_video_id = params
+            match = next(
+                (v for v in self.db["product_videos"].values()
+                 if v["product_id"] == target_product_id and v["youtube_video_id"] == youtube_video_id),
+                None,
+            )
+            self._last_result = (match["id"],) if match else None
+            self.description = [("id",)]
+
+        elif q.startswith("update product_videos set product_id = %s"):
+            new_product_id, video_id = params
+            self.db["product_videos"][video_id]["product_id"] = new_product_id
+            self._last_result = None
+
+        elif q.startswith("select id from product_videos where id = %s"):
+            (video_id,) = params
+            row = self.db["product_videos"].get(video_id)
+            self._last_result = (row["id"],) if row else None
+            self.description = [("id",)]
+
+        elif q.startswith("delete from product_videos where id = %s"):
+            (video_id,) = params
+            self.db["product_videos"].pop(video_id, None)
+            self._last_result = None
+
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
 
@@ -329,6 +370,93 @@ def test_reject_video_candidate_marks_rejected():
     assert result["status"] == "rejected"
     assert db["product_videos"]["vid-1"]["status"] == "rejected"
     assert conn.committed is True
+
+
+# --- reassign_video_candidate / delete_video_candidate: correction tools
+# for score_match's known false-positive shape (see
+# reassign_video_candidate's docstring) -- e.g. a "Storm Absolute Power"
+# video landing on the "Storm Absolute" product. These tests need a
+# db["products"] dict too (existence-checked by reassign), unlike the
+# plain approve/reject tests above.
+
+def _fake_db_with_two_products_and_one_video():
+    db = _fake_db_with_pending_video_candidate()
+    db["products"] = {"prod-1": {}, "prod-2": {}}
+    return db
+
+
+def test_reassign_video_candidate_moves_to_new_product():
+    db = _fake_db_with_two_products_and_one_video()
+    conn = FakeConnection(db)
+
+    result = service.reassign_video_candidate(conn, "vid-1", "prod-2")
+
+    assert result == {"video_id": "vid-1", "product_id": "prod-2"}
+    assert db["product_videos"]["vid-1"]["product_id"] == "prod-2"
+    assert conn.committed is True
+
+
+def test_reassign_missing_video_candidate_raises():
+    db = _fake_db_with_two_products_and_one_video()
+    conn = FakeConnection(db)
+    try:
+        service.reassign_video_candidate(conn, "does-not-exist", "prod-2")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def test_reassign_to_missing_product_raises():
+    db = _fake_db_with_two_products_and_one_video()
+    conn = FakeConnection(db)
+    try:
+        service.reassign_video_candidate(conn, "vid-1", "does-not-exist")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+    assert db["product_videos"]["vid-1"]["product_id"] == "prod-1"  # unchanged
+
+
+def test_reassign_raises_on_existing_duplicate_at_destination():
+    """The real scenario this guards: the video already has its own row
+    under the destination product (maybe from a separate, correct
+    discovery run) -- reassigning would collide with product_videos'
+    (product_id, youtube_video_id) unique constraint. Checked up front for
+    a clear error, not left to a raw IntegrityError."""
+    db = _fake_db_with_two_products_and_one_video()
+    db["product_videos"]["vid-2"] = {
+        "id": "vid-2", "product_id": "prod-2",
+        "youtube_video_id": "abc123",  # same video, already under prod-2
+        "status": "pending",
+    }
+    conn = FakeConnection(db)
+
+    try:
+        service.reassign_video_candidate(conn, "vid-1", "prod-2")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "vid-2" in str(e)
+    assert db["product_videos"]["vid-1"]["product_id"] == "prod-1"  # unchanged
+
+
+def test_delete_video_candidate_removes_row():
+    db = _fake_db_with_two_products_and_one_video()
+    conn = FakeConnection(db)
+
+    result = service.delete_video_candidate(conn, "vid-1")
+
+    assert result == {"video_id": "vid-1", "deleted": True}
+    assert "vid-1" not in db["product_videos"]
+
+
+def test_delete_missing_video_candidate_raises():
+    db = _fake_db_with_two_products_and_one_video()
+    conn = FakeConnection(db)
+    try:
+        service.delete_video_candidate(conn, "does-not-exist")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
 
 
 # --- submit_video_transcript: entry point for scripts/home_transcript_fetcher.py

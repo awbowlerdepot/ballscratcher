@@ -412,6 +412,81 @@ def reject_video_candidate(conn, video_id: str, resolved_by: str, reason: str = 
     return {"video_id": video_id, "status": "rejected"}
 
 
+def reassign_video_candidate(conn, video_id: str, new_product_id: str) -> dict:
+    """Moves a video candidate to a different product. Built for a real,
+    known failure mode of video_discovery's score_match heuristic (see its
+    module docstring): 'high' confidence only requires the brand name plus
+    ANY ONE significant product-name token in the title, so e.g. "Storm
+    Absolute Power Review" scores 'high' for the "Storm Absolute" product
+    too, not just "Storm Absolute Power" -- a real, accepted tradeoff of
+    auto-approving 'high' matches in bulk (see
+    scripts/auto_approve_video_candidates.py's docstring), not something
+    this function tries to prevent. This is the correction tool for when
+    it happens: works regardless of status (pending/approved/rejected),
+    and deliberately does NOT touch transcript/transcript_note/summary --
+    if a transcript was already fetched under the wrong product, it's
+    still a real transcript of that same YouTube video, no reason to lose
+    it and refetch under the correct product.
+
+    Checked, not caught: looks for an existing (new_product_id,
+    youtube_video_id) row before updating, rather than attempting the
+    update and catching a unique-constraint violation from the DB driver --
+    a clearer, more actionable error this way ("one already exists over
+    there, delete a duplicate first") than a raw IntegrityError, and this
+    is an admin tool used by one person at a time, so the small
+    check-then-act race window is an acceptable tradeoff. If that
+    conflict fires, delete_video_candidate below is the cleanup path."""
+    with conn.cursor() as cur:
+        cur.execute("select id, youtube_video_id from product_videos where id = %s", (video_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError(f"No product_videos row with id {video_id}")
+        youtube_video_id = row[1]
+
+        cur.execute("select id from products where id = %s", (new_product_id,))
+        if cur.fetchone() is None:
+            raise LookupError(f"No products row with id {new_product_id}")
+
+        cur.execute(
+            "select id from product_videos where product_id = %s and youtube_video_id = %s",
+            (new_product_id, youtube_video_id),
+        )
+        conflict = cur.fetchone()
+        if conflict is not None:
+            raise ValueError(
+                f"product {new_product_id} already has a product_videos row for "
+                f"youtube_video_id={youtube_video_id} (id={conflict[0]}) -- delete "
+                f"one of the two duplicates first (see delete_video_candidate), "
+                f"then retry the reassignment"
+            )
+
+        cur.execute("update product_videos set product_id = %s where id = %s", (new_product_id, video_id))
+    conn.commit()
+    return {"video_id": video_id, "product_id": new_product_id}
+
+
+def delete_video_candidate(conn, video_id: str) -> dict:
+    """Hard delete -- distinct from reject_video_candidate, which only
+    marks status='rejected' and keeps the row for audit. Built as the
+    cleanup step for reassign_video_candidate's conflict case above: two
+    product_videos rows for the same (product_id, youtube_video_id) pair
+    can't coexist (see 004_product_videos.sql's unique constraint), but two
+    DIFFERENT products can each have their own row for the same YouTube
+    video (a real, legitimate case -- one review video can genuinely cover
+    two products), or a video can get moved to the correct product while a
+    stale duplicate is left sitting under the wrong one. Deleting the
+    wrong copy is a normal, expected cleanup action here, not a mistake to
+    guard against with extra confirmation steps -- same one-admin-at-a-time
+    reasoning as reassign_video_candidate above."""
+    with conn.cursor() as cur:
+        cur.execute("select id from product_videos where id = %s", (video_id,))
+        if cur.fetchone() is None:
+            raise LookupError(f"No product_videos row with id {video_id}")
+        cur.execute("delete from product_videos where id = %s", (video_id,))
+    conn.commit()
+    return {"video_id": video_id, "deleted": True}
+
+
 # _publish_video_summarize_message (published to VIDEO_SUMMARIZE_QUEUE_URL
 # for video_transcript_fetcher) used to live here and was called from
 # approve_video_candidate -- removed rather than left as dead code once

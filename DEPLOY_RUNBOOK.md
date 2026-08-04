@@ -537,7 +537,32 @@ whenever it next runs.
      -d '{"resolved_by":"al.wolfe@bringyourbest.co","reason":"wrong product"}' \
      "$ADMIN_API_URL/video-candidates/<video-id>/reject"
    ```
-5. Confirm transcripts show up after the home browser cron's next run (6k)
+5. Fixing a wrong match. `score_match`'s 'high' confidence only requires
+   the brand name plus ANY ONE product-name token in the title -- a video
+   titled "Storm Absolute Power Review" scores 'high' for the "Storm
+   Absolute" product too, not just "Storm Absolute Power". This is a real,
+   accepted risk of auto-approving 'high' matches in bulk (see
+   scripts/auto_approve_video_candidates.py), not something prevented
+   up front -- it's meant to be caught and fixed after the fact:
+   ```bash
+   # Move it to the right product (works at any status; keeps any
+   # transcript/summary already fetched rather than losing it):
+   curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+     -d '{"product_id":"<correct-product-id>"}' \
+     "$ADMIN_API_URL/video-candidates/<video-id>/reassign"
+
+   # If that 422s because the correct product already has its own row for
+   # this same video (a real, legitimate case -- two products can share a
+   # review video), delete the duplicate first, then retry the reassign:
+   curl -X DELETE -H "Authorization: Bearer $TOKEN" \
+     "$ADMIN_API_URL/video-candidates/<duplicate-video-id>"
+   ```
+   `/reassign` is a hard move, not a copy -- the row's `product_id`
+   changes in place. `/reject` (step 4) is different from `DELETE` here:
+   reject just marks `status='rejected'` and keeps the row for audit;
+   `DELETE` actually removes it, which is what you want for cleaning up a
+   genuine duplicate, not for "this video isn't relevant to any product."
+6. Confirm transcripts show up after the home browser cron's next run (6k)
    -- approved candidates just sit with `transcript_note` unset until then,
    this isn't an async-Lambda "check back in a minute" step anymore:
    ```bash

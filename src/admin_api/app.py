@@ -40,6 +40,10 @@ class PublishRequest(BaseModel):
     published: bool
 
 
+class ReassignRequest(BaseModel):
+    product_id: str
+
+
 class TranscriptSubmitRequest(BaseModel):
     # transcript defaults to "" (not required) so the same endpoint also
     # accepts an honest "checked, no captions available" result from the
@@ -205,6 +209,38 @@ def reject_video_candidate(video_id: str, body: RejectRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/video-candidates/{video_id}/reassign")
+def reassign_video_candidate(video_id: str, body: ReassignRequest):
+    # Correction tool for score_match's known false-positive shape (see
+    # service.reassign_video_candidate's docstring) -- e.g. a video for
+    # "Storm Absolute Power" that landed on the "Storm Absolute" product.
+    # Moves the row, keeps any transcript/summary already fetched.
+    conn = service.get_db_connection()
+    try:
+        return service.reassign_video_candidate(conn, video_id, body.product_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.delete("/video-candidates/{video_id}")
+def delete_video_candidate(video_id: str):
+    # Hard delete, distinct from /reject -- see
+    # service.delete_video_candidate's docstring. Mainly the cleanup step
+    # for the duplicate a reassign can surface (two products each with
+    # their own row for the same YouTube video).
+    conn = service.get_db_connection()
+    try:
+        return service.delete_video_candidate(conn, video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     finally:
         conn.close()
 
