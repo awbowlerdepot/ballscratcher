@@ -541,19 +541,36 @@ this script both feed the same queue via different means, and
 `video_summarizer` doesn't know or care which one a given message came
 from.
 
-Setup on the Pi/home server:
+Setup on the Pi/home server. Modern Raspberry Pi OS (Debian 12/Bookworm+)
+blocks a bare `pip install` into the system Python (PEP 668,
+"externally-managed-environment") -- use a virtual environment instead of
+fighting that protection:
 ```bash
+python3 -m venv ~/bowling-transcript-fetcher-venv
+source ~/bowling-transcript-fetcher-venv/bin/activate
 pip install -r scripts/requirements.txt
+
 export ADMIN_API_URL="https://<your-api-id>.execute-api.us-west-1.amazonaws.com"
 export ADMIN_API_TOKEN="<the same bearer token used for every other admin API call in this runbook>"
 python3 scripts/home_transcript_fetcher.py
 ```
+(This is the same venv 6k's browser-based fetcher uses below --
+`requirements-browser.txt` is a superset of `requirements.txt`, so one
+venv covers both scripts; no need for two.)
 
 Cron, once a day (put the env vars in a `chmod 600` wrapper script rather
 than the crontab itself, so the token isn't sitting in plaintext in
-`crontab -l`):
+`crontab -l` -- and call the venv's `python3` directly by full path, since
+cron doesn't run your shell's `source`d activation):
 ```
 0 7 * * * /home/pi/run_transcript_fetcher.sh >> /var/log/bowling-transcript-fetcher.log 2>&1
+```
+where `run_transcript_fetcher.sh` contains:
+```bash
+#!/bin/bash
+export ADMIN_API_URL="https://<your-api-id>.execute-api.us-west-1.amazonaws.com"
+export ADMIN_API_TOKEN="<token>"
+~/bowling-transcript-fetcher-venv/bin/python3 /home/pi/brunswick-scraper/scripts/home_transcript_fetcher.py
 ```
 
 What it does each run: lists every `approved` video candidate that
@@ -605,16 +622,22 @@ reuses `home_transcript_fetcher.py`'s admin-API listing/submission logic
 duplicating it -- only the actual YouTube-fetching mechanism differs
 between the two scripts.
 
-**Setup on the Pi 5:**
+**Setup on the Pi 5** -- same venv as 6j (skip the `python3 -m venv` step if
+you already created it there; `requirements-browser.txt` is a superset of
+`requirements.txt` so this covers both scripts):
 ```bash
+python3 -m venv ~/bowling-transcript-fetcher-venv   # skip if already created
+source ~/bowling-transcript-fetcher-venv/bin/activate
 pip install -r scripts/requirements-browser.txt
 playwright install chromium
-playwright install-deps   # system libraries Chromium needs on a fresh Raspberry Pi OS install
+sudo ~/bowling-transcript-fetcher-venv/bin/playwright install-deps   # apt-installs system libraries Chromium needs -- requires sudo, run outside/after activation with the venv's own playwright binary
 
 export ADMIN_API_URL="https://<your-api-id>.execute-api.us-west-1.amazonaws.com"
 export ADMIN_API_TOKEN="<the same bearer token used everywhere else in this runbook>"
 python3 scripts/home_transcript_fetcher_browser.py
 ```
+Cron wrapper script should call `~/bowling-transcript-fetcher-venv/bin/python3`
+by full path, same reasoning as 6j's wrapper.
 
 **UNVERIFIED as of writing**: YouTube's DOM structure and class names for
 the transcript panel aren't documented and drift over time, so the
