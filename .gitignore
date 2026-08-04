@@ -12,3 +12,7 @@ __pycache__/
 # Deploy-time, contains real account ARNs -- see DEPLOY_RUNBOOK.md
 samconfig.toml
 .aws-sam/
+
+# scripts/home_transcript_fetcher_browser.py's failure diagnostics --
+# screenshots/HTML dumps of real YouTube pages, not something to commit.
+scripts/debug/

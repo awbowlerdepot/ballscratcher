@@ -578,6 +578,75 @@ Check the log output for `Done: {'total': ..., 'got_transcript': ...,
 `GET /video-candidates/<video-id>` (same as 6i step 5) that a transcript
 or an honest `transcript_note` actually landed.
 
+### 6k. Browser-based home fetcher (Pi 5) -- for when the plain-HTTP fetcher hits PoTokenRequired
+
+Real finding from testing 6j live: the plain-HTTP `home_transcript_fetcher.py`
+gets past the network-level wall that blocked every AWS Lambda attempt
+(caption track *listing* genuinely works from a residential connection),
+but then hits a different, harder wall -- the actual transcript *content*
+fetch requires a PoToken (YouTube's BotGuard-issued "proof of origin"
+token), which no HTTP client without a real browser behind it can produce.
+Confirmed via a live test returning a 200 with a completely empty body,
+matching a known, open issue in the `youtube-transcript-api` project
+(`jdepoix/youtube-transcript-api#592`). See
+`scripts/home_transcript_fetcher_browser.py`'s module docstring for the
+full reasoning, including why generating a PoToken ourselves (solving
+YouTube's bot-detection challenge computationally) is explicitly NOT
+something this project does -- that's real anti-bot-evasion, not an
+incidental technical gap.
+
+`home_transcript_fetcher_browser.py` takes a different approach instead:
+a real, unmodified headless Chromium browser (via Playwright) loads the
+actual video page and clicks the real "Show transcript" button -- the
+same UI feature a human would use, rendered by the page's own
+already-authenticated JavaScript, not a hand-built signed-URL request. It
+reuses `home_transcript_fetcher.py`'s admin-API listing/submission logic
+(`run()` now takes a pluggable `get_transcript_fn`) rather than
+duplicating it -- only the actual YouTube-fetching mechanism differs
+between the two scripts.
+
+**Setup on the Pi 5:**
+```bash
+pip install -r scripts/requirements-browser.txt
+playwright install chromium
+playwright install-deps   # system libraries Chromium needs on a fresh Raspberry Pi OS install
+
+export ADMIN_API_URL="https://<your-api-id>.execute-api.us-west-1.amazonaws.com"
+export ADMIN_API_TOKEN="<the same bearer token used everywhere else in this runbook>"
+python3 scripts/home_transcript_fetcher_browser.py
+```
+
+**UNVERIFIED as of writing**: YouTube's DOM structure and class names for
+the transcript panel aren't documented and drift over time, so the
+selectors in this script are a best-effort starting point, not confirmed
+against the real page. If a video comes back with `no_captions_available`
+or `transcript_panel_found_but_text_extraction_returned_empty` and you
+know that video genuinely has captions, check `scripts/debug/` -- the
+script writes a screenshot (`.png`) and the full rendered page HTML
+(`.html`) there on any failure to find the button or extract text. Share
+those (or just describe what the screenshot shows near the "Show
+transcript" button/panel) so the selectors can be corrected against real
+evidence instead of another guess.
+
+To watch it work instead of reading screenshots after the fact (useful
+for the first real run, e.g. over VNC with a desktop environment on the
+Pi):
+```bash
+TRANSCRIPT_FETCHER_HEADLESS=false python3 scripts/home_transcript_fetcher_browser.py
+```
+
+Cron, same pattern as 6j -- put env vars in a `chmod 600` wrapper script
+rather than the crontab itself:
+```
+0 7 * * * /home/pi/run_browser_transcript_fetcher.sh >> /var/log/bowling-transcript-fetcher-browser.log 2>&1
+```
+
+Same `needs_transcript` filtering as the plain-HTTP script applies here
+too (via the shared `run()`) -- a candidate that already has a
+`transcript_note` from a previous attempt (either fetcher) won't be
+re-tried automatically. Clear it manually via `psql` (see 6j) to force a
+recheck with the browser-based fetcher.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

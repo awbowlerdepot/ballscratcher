@@ -214,6 +214,32 @@ def test_run_submits_transcripts_and_tolerates_per_video_errors(monkeypatch):
         script.time.sleep = real_sleep
 
 
+def test_run_honors_get_transcript_fn_override(monkeypatch):
+    """The hook home_transcript_fetcher_browser.py relies on: run() must
+    call whatever get_transcript_fn it's given instead of this module's own
+    HTTP-based get_transcript, so the admin-API listing/submission logic
+    can be reused by a completely different fetch mechanism."""
+    monkeypatch.setattr(script, "list_candidates_needing_transcripts", lambda url, token: [
+        {"id": "vid-1", "youtube_video_id": "abc123"},
+    ])
+    submitted = []
+    monkeypatch.setattr(script, "submit_transcript", lambda url, token, vid, transcript, note: submitted.append(
+        (vid, transcript, note)
+    ))
+
+    calls = []
+
+    def fake_get_transcript(youtube_video_id):
+        calls.append(youtube_video_id)
+        return "some transcript from a different fetch mechanism entirely", None
+
+    summary = script.run("https://admin.example", "tok", delay_between_videos=0, get_transcript_fn=fake_get_transcript)
+
+    assert calls == ["abc123"]
+    assert submitted == [("vid-1", "some transcript from a different fetch mechanism entirely", None)]
+    assert summary == {"total": 1, "got_transcript": 1, "no_captions": 0, "errors": 0}
+
+
 if __name__ == "__main__":
     class _MonkeyPatch:
         def __init__(self):

@@ -236,7 +236,16 @@ def submit_transcript(admin_api_url: str, token: str, video_id: str, transcript:
     resp.raise_for_status()
 
 
-def run(admin_api_url: str, token: str, delay_between_videos: float = DEFAULT_DELAY_BETWEEN_VIDEOS_SECONDS) -> dict:
+def run(admin_api_url: str, token: str, delay_between_videos: float = DEFAULT_DELAY_BETWEEN_VIDEOS_SECONDS,
+        get_transcript_fn=None) -> dict:
+    """get_transcript_fn defaults to this module's own HTTP-based
+    get_transcript, but callers can pass a different one -- see
+    scripts/home_transcript_fetcher_browser.py, which imports this
+    function and passes a Playwright-based fetcher instead. The admin-API
+    listing/submission/filtering logic below doesn't care how a transcript
+    was obtained, so it's shared rather than duplicated."""
+    fetch = get_transcript_fn if get_transcript_fn is not None else get_transcript
+
     candidates = list_candidates_needing_transcripts(admin_api_url, token)
     logger.info("Found %d approved candidate(s) needing a transcript", len(candidates))
 
@@ -247,7 +256,7 @@ def run(admin_api_url: str, token: str, delay_between_videos: float = DEFAULT_DE
         video_id = candidate["id"]
         youtube_video_id = candidate["youtube_video_id"]
         try:
-            transcript, note = get_transcript(youtube_video_id)
+            transcript, note = fetch(youtube_video_id)
             submit_transcript(admin_api_url, token, video_id, transcript, note)
             if transcript:
                 got_transcript += 1
