@@ -558,14 +558,17 @@ python3 scripts/home_transcript_fetcher.py
 `requirements-browser.txt` is a superset of `requirements.txt`, so one
 venv covers both scripts; no need for two.)
 
-Cron, once a day (put the env vars in a `chmod 600` wrapper script rather
+Cron, once a day (put the env vars in a `chmod 700` wrapper script rather
 than the crontab itself, so the token isn't sitting in plaintext in
-`crontab -l` -- and call the venv's `python3` directly by full path, since
-cron doesn't run your shell's `source`d activation):
+`crontab -l` -- 700, not 600, since cron executes the script directly and
+needs the execute bit, not just read; call the venv's `python3` directly
+by full path, since cron doesn't run your shell's `source`d activation;
+and log to a path in your home directory, not `/var/log`, which a normal
+user typically can't write to without sudo):
 ```
-0 7 * * * /home/pi/run_transcript_fetcher.sh >> /var/log/bowling-transcript-fetcher.log 2>&1
+0 7 * * * ~/run_transcript_fetcher.sh >> ~/bowling-transcript-fetcher.log 2>&1
 ```
-where `run_transcript_fetcher.sh` contains:
+where `run_transcript_fetcher.sh` (`chmod 700 ~/run_transcript_fetcher.sh`) contains:
 ```bash
 #!/bin/bash
 export ADMIN_API_URL="https://<your-api-id>.execute-api.us-west-1.amazonaws.com"
@@ -658,11 +661,17 @@ Pi):
 TRANSCRIPT_FETCHER_HEADLESS=false python3 scripts/home_transcript_fetcher_browser.py
 ```
 
-Cron, same pattern as 6j -- put env vars in a `chmod 600` wrapper script
-rather than the crontab itself:
+Cron, same pattern as 6j -- put env vars in a `chmod 700` wrapper script
+rather than the crontab itself (700, not 600, since cron executes the
+script directly and needs the execute bit; log to a path in your home
+directory, not `/var/log`, which a normal user typically can't write to
+without sudo):
 ```
-0 7 * * * /home/pi/run_browser_transcript_fetcher.sh >> /var/log/bowling-transcript-fetcher-browser.log 2>&1
+0 7 * * * ~/run_browser_transcript_fetcher.sh >> ~/bowling-transcript-fetcher-browser.log 2>&1
 ```
+where `run_browser_transcript_fetcher.sh` (`chmod 700 ~/run_browser_transcript_fetcher.sh`)
+contains the same env-var-export pattern as 6j's wrapper script, but
+calling `home_transcript_fetcher_browser.py` instead.
 
 Same `needs_transcript` filtering as the plain-HTTP script applies here
 too (via the shared `run()`) -- a candidate that already has a

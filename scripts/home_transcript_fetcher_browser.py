@@ -68,8 +68,9 @@ Setup on the Pi 5:
     python3 scripts/home_transcript_fetcher_browser.py
 
 Cron, once a day -- same pattern as home_transcript_fetcher.py, see
-DEPLOY_RUNBOOK.md's Pi 5 setup section:
-    0 7 * * * /home/pi/run_browser_transcript_fetcher.sh >> /var/log/bowling-transcript-fetcher-browser.log 2>&1
+DEPLOY_RUNBOOK.md's Pi 5 setup section (chmod 700 wrapper script, home-
+directory log path):
+    0 7 * * * ~/run_browser_transcript_fetcher.sh >> ~/bowling-transcript-fetcher-browser.log 2>&1
 
 Set TRANSCRIPT_FETCHER_HEADLESS=false (with a display or VNC session
 attached) to watch the browser work while debugging selectors -- defaults
