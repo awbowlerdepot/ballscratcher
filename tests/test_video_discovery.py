@@ -16,6 +16,7 @@ psycopg2-shaped cursor/connection, same reasoning and same limitation as
 every other *_url_discovery test file in this project: no Postgres
 instance available in this sandbox.
 """
+import json
 import os
 import sys
 
@@ -177,6 +178,7 @@ class _FakeCursor:
         self.description = None
         self.rowcount = 0
         self._rows = []
+        self.last_marked_searched = None
 
     def execute(self, query, params=None):
         params = params or []
@@ -194,6 +196,9 @@ class _FakeCursor:
             else:
                 self.known_pairs.add(key)
                 self.rowcount = 1
+        elif q.startswith("update products set last_video_discovery_at"):
+            self.last_marked_searched = params[0]
+            self._last_result = None
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
 
@@ -211,12 +216,16 @@ class _FakeConn:
     def __init__(self, products=None, known_pairs=None):
         self._cursor = _FakeCursor(products, known_pairs)
         self.committed = False
+        self.closed = False
 
     def cursor(self):
         return self._cursor
 
     def commit(self):
         self.committed = True
+
+    def close(self):
+        self.closed = True
 
 
 def test_fetch_products_to_search_defaults_to_current_status_only():
@@ -235,6 +244,22 @@ def test_fetch_products_to_search_defaults_to_current_status_only():
     assert params[-1] == 90  # the limit
 
 
+def test_fetch_products_to_search_default_scope_rotates_never_searched_first():
+    """Real production bug: the old `order by p.updated_at desc` never
+    advanced (nothing touches updated_at), so {} kept re-selecting the same
+    top-N products forever -- see mark_product_searched and
+    005_products_last_video_discovery_at.sql. last_video_discovery_at asc
+    nulls first is what actually rotates: never-searched products (null)
+    always sort ahead of any previously-searched one, and p.id is the
+    final deterministic tiebreaker (same discipline as the pv.id fix in
+    list_video_candidates)."""
+    conn = _FakeConn(products=[{"id": "p1", "name": "Absolute", "brand_name": "Storm"}])
+    app.fetch_products_to_search(conn, {}, max_products=90)
+
+    query, _ = conn.cursor().executed[0]
+    assert "order by p.last_video_discovery_at asc nulls first, p.id asc limit %s" in query
+
+
 def test_fetch_products_to_search_explicit_product_ids_skips_status_filter():
     conn = _FakeConn(products=[{"id": "p1", "name": "Absolute", "brand_name": "Storm"}])
     app.fetch_products_to_search(conn, {"product_ids": ["p1"]}, max_products=90)
@@ -243,6 +268,20 @@ def test_fetch_products_to_search_explicit_product_ids_skips_status_filter():
     assert "p.id = any(" in query
     assert "p.published = true" not in query
     assert "p.status = 'current'" not in query
+
+
+def test_fetch_products_to_search_product_ids_scope_orders_by_id_not_rotation():
+    """product_ids is an explicit, deliberate list -- it shouldn't rotate
+    (that column is about which products haven't been chosen yet, not
+    relevant once someone's already named exactly which ones they want),
+    but it still needs SOME deterministic order for when
+    len(product_ids) > max_products."""
+    conn = _FakeConn(products=[{"id": "p1", "name": "Absolute", "brand_name": "Storm"}])
+    app.fetch_products_to_search(conn, {"product_ids": ["p1"]}, max_products=90)
+
+    query, _ = conn.cursor().executed[0]
+    assert "order by p.id asc limit %s" in query
+    assert "last_video_discovery_at" not in query
 
 
 def test_fetch_products_to_search_brand_id_scope_also_skips_published():
@@ -254,6 +293,7 @@ def test_fetch_products_to_search_brand_id_scope_also_skips_published():
     assert "p.status = 'current'" in query
     assert "p.brand_id = %s" in query
     assert params[0] == "brand-1"
+    assert "order by p.last_video_discovery_at asc nulls first, p.id asc limit %s" in query
 
 
 def test_fetch_products_to_search_casts_product_ids_to_uuid_array():
@@ -302,11 +342,80 @@ def test_insert_candidates_is_idempotent_against_already_known_video():
     assert inserted == 0  # already known -- ON CONFLICT DO NOTHING
 
 
+# --- mark_product_searched: what actually drives the rotation fix ---
+
+def test_mark_product_searched_writes_and_commits():
+    conn = _FakeConn()
+    app.mark_product_searched(conn, "prod-1")
+
+    assert conn.cursor().last_marked_searched == "prod-1"
+    assert conn.committed is True
+
+
+# --- handler: search errors must NOT mark a product searched, success
+# must -- this is the actual invariant the rotation fix depends on (see
+# mark_product_searched's docstring: crediting a quota-exhausted or
+# otherwise-failed search as "covered" would push it to the back of the
+# line past products never even attempted). No handler test existed
+# before this fix; monkeypatch is used here the same way every other test
+# file in this project uses it for handler-level wiring checks. ---
+
+def test_handler_marks_only_successfully_searched_products(monkeypatch):
+    marked = []
+    inserted_for = []
+
+    monkeypatch.setattr(app, "get_youtube_api_key", lambda: "fake-key")
+    monkeypatch.setattr(app, "get_db_connection", lambda: _FakeConn())
+    monkeypatch.setattr(
+        app, "fetch_products_to_search",
+        lambda conn, job, max_products: [
+            {"id": "prod-good", "name": "Absolute", "brand_name": "Storm"},
+            {"id": "prod-bad", "name": "Fury", "brand_name": "Brunswick"},
+        ],
+    )
+
+    def fake_search_youtube(api_key, query, max_results):
+        if "Fury" in query:
+            raise RuntimeError("simulated quotaExceeded")
+        return [{"youtube_video_id": "v1", "title": "Storm Absolute Review",
+                  "channel_title": "c1", "published_at": None, "thumbnail_url": None}]
+
+    monkeypatch.setattr(app, "search_youtube", fake_search_youtube)
+    monkeypatch.setattr(app, "insert_candidates", lambda conn, pid, q, videos: inserted_for.append(pid) or len(videos))
+    monkeypatch.setattr(app, "mark_product_searched", lambda conn, pid: marked.append(pid))
+
+    result = app.handler({}, None)
+    body = json.loads(result["body"])
+
+    assert marked == ["prod-good"]  # NOT prod-bad -- its search raised
+    assert inserted_for == ["prod-good"]
+    assert body == {"products_searched": 2, "new_candidates": 1, "search_errors": 1}
+
+
 if __name__ == "__main__":
-    tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
+    class _MonkeyPatch:
+        def __init__(self):
+            self._sets = []
+
+        def setattr(self, obj, name, value):
+            self._sets.append((obj, name, getattr(obj, name)))
+            setattr(obj, name, value)
+
+        def undo(self):
+            for obj, name, value in reversed(self._sets):
+                setattr(obj, name, value)
+
+    tests = [(k, v) for k, v in list(globals().items()) if k.startswith("test_")]
     passed = 0
-    for t in tests:
-        t()
-        passed += 1
-        print(f"PASS: {t.__name__}")
+    for name, t in tests:
+        mp = _MonkeyPatch()
+        try:
+            if "monkeypatch" in t.__code__.co_varnames[: t.__code__.co_argcount]:
+                t(mp)
+            else:
+                t()
+            print(f"PASS: {name}")
+            passed += 1
+        finally:
+            mp.undo()
     print(f"\n{passed}/{len(tests)} tests passed")

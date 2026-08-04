@@ -33,14 +33,18 @@ Any Postgres 13+ instance works (RDS is the obvious choice, but this
 repo doesn't assume it). Note the connection details -- you'll need them
 for step 3's `DbSecretArn` secret and to run migrations directly.
 
-## 2. Run the four migrations, in order
+## 2. Run the five migrations, in order
 
 ```bash
 psql "$DATABASE_URL" -f db/migrations/001_init_schema.sql
 psql "$DATABASE_URL" -f db/migrations/002_add_woocommerce_netsuite_platforms.sql
 psql "$DATABASE_URL" -f db/migrations/003_date_tracking_and_bowwwl.sql
 psql "$DATABASE_URL" -f db/migrations/004_product_videos.sql
+psql "$DATABASE_URL" -f db/migrations/005_products_last_video_discovery_at.sql
 ```
+
+(If you already ran 001-004 in an earlier deploy, just run 005 by itself
+against the same database -- it's additive, adding one nullable column.)
 
 These were reviewed by hand for syntax but never executed against a real
 Postgres instance (no server available in the sandbox that wrote them) --
@@ -508,6 +512,27 @@ whenever it next runs.
    (90/day) to fully cover; re-running discovery against a product that
    already has candidates is safe (`insert_candidates` is idempotent
    against an already-known `youtube_video_id` -- see test_video_discovery.py).
+
+   This scope genuinely rotates now -- each `{}` invocation picks the
+   least-recently-searched products first (`last_video_discovery_at asc
+   nulls first`, never-searched sorting ahead of everything), not the same
+   top-N every time. That wasn't always true: the original `order by
+   p.updated_at desc` never advanced (nothing in this pipeline touches
+   `updated_at`), so repeated `{}` calls silently re-searched the same
+   products forever and never reached the rest of the catalog -- a real
+   bug caught in production and fixed by
+   005_products_last_video_discovery_at.sql (see app.py's module docstring,
+   ROTATION section, and `mark_product_searched`). One side effect worth
+   knowing: since `{}` now always picks the least-recently-searched
+   products, if you deliberately want to re-search products you already
+   covered (e.g. after raising `MAX_RESULTS_PER_PRODUCT`, as happened here
+   going from 5 to 20), passing an explicit `{"product_ids": [...]}` list
+   is the reliable way to force it -- that scope selects exactly the ids
+   you name regardless of their rotation position (it doesn't order by
+   `last_video_discovery_at` at all). It still updates
+   `last_video_discovery_at` for whatever it searches, same as every other
+   scope -- so those products' rotation position resets to "just searched"
+   afterward, which is the right outcome either way.
 3. Check what landed in `product_videos` as pending:
    ```bash
    curl -H "Authorization: Bearer $TOKEN" "$ADMIN_API_URL/video-candidates?status=pending"

@@ -29,6 +29,21 @@ time a product actually goes live, not discovered from scratch afterward.
 `status = 'current'` (excluding retired balls) is still applied -- that
 part of the scoping was never in question, only `published`.
 
+ROTATION (real bug found in production, fixed via 005_products_last_
+video_discovery_at.sql): the default/brand_id scopes used to order by
+`p.updated_at desc` -- but nothing in this pipeline ever touches that
+column, so every {} invocation re-selected the exact same top-N products,
+forever. The documented "run {} once a day to cover the whole catalog
+under the ~90/day quota" pattern (DEPLOY_RUNBOOK.md 6i) never actually
+progressed past the first day's batch. Fixed by ordering on
+`last_video_discovery_at asc nulls first` instead: never-searched products
+always sort first, and mark_product_searched (called from handler, success
+path only -- see its docstring for why errors don't count) records when a
+product was actually covered. Once the whole catalog has been searched at
+least once, this naturally cycles back to the least-recently-searched
+products, which is also correct behavior long-term (new review videos get
+posted well after a ball's release).
+
 HARD QUOTA CONSTRAINT (real, not a guess -- documented in Google's own API
 console, same discipline as this project's other real, disclosed
 constraints like the AWS account's 10-execution Lambda concurrency
@@ -165,7 +180,15 @@ def fetch_products_to_search(conn, job: dict, max_products: int) -> list:
     for review-video enrichment and can be added to product_ids explicitly
     if ever wanted. Deliberately does NOT require published = true (see
     module docstring's real catalog numbers on why that was dropped) --
-    discovery is meant to run ahead of publishing, not after it."""
+    discovery is meant to run ahead of publishing, not after it.
+
+    Default/brand_id scopes order by last_video_discovery_at asc nulls
+    first (see module docstring's ROTATION section) -- this is what makes
+    repeated {} invocations actually progress through the catalog instead
+    of re-selecting the same top-N products every time. product_ids scope
+    ignores that column entirely (an explicit list is already a deliberate
+    choice, not something to rotate) but still orders by p.id for
+    deterministic results when len(product_ids) > max_products."""
     query = """
         select p.id, p.name, b.name as brand_name
         from products p
@@ -194,13 +217,37 @@ def fetch_products_to_search(conn, job: dict, max_products: int) -> list:
 
     if conditions:
         query += " where " + " and ".join(conditions)
-    query += " order by p.updated_at desc limit %s"
+
+    if product_ids:
+        query += " order by p.id asc limit %s"
+    else:
+        query += " order by p.last_video_discovery_at asc nulls first, p.id asc limit %s"
     params.append(max_products)
 
     with conn.cursor() as cur:
         cur.execute(query, params)
         columns = [desc[0] for desc in cur.description]
         return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
+def mark_product_searched(conn, product_id: str) -> None:
+    """Records that video_discovery actually completed a search.list call
+    for this product -- called from handler's success path only (after
+    search_youtube returns without raising), never from the except branch.
+    A search that errors (transient network issue, or real: quota
+    exhaustion -- see the module docstring's HARD QUOTA CONSTRAINT section,
+    something this project has genuinely hit) never really searched
+    anything; crediting it as 'searched' would push that product to the
+    back of the rotation queue past products that were never attempted at
+    all, which is exactly backwards. See fetch_products_to_search's
+    ordering (last_video_discovery_at asc nulls first) for what this
+    column drives."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "update products set last_video_discovery_at = now() where id = %s",
+            (product_id,),
+        )
+    conn.commit()
 
 
 def insert_candidates(conn, product_id: str, query: str, videos: list) -> int:
@@ -294,6 +341,7 @@ def handler(event, context):
                 video["match_confidence"] = score_match(video["title"], product["brand_name"], product["name"])
 
             inserted = insert_candidates(conn, product["id"], query, videos)
+            mark_product_searched(conn, product["id"])
             total_candidates += inserted
             logger.info(
                 "product_id=%s query=%r -> %d results, %d new candidates",
