@@ -451,6 +451,26 @@ def parse_images(html: str, base_url: str) -> list:
     return images
 
 
+def parse_description(soup: BeautifulSoup) -> str:
+    """MOTIV's marketing description, e.g. the Sigma Tour Pearl page opens
+    with "Some sequels are worth the wait. Back in 2011, the Sigma Tour
+    became one of those balls bowlers never stopped talking about...".
+    Confirmed live via Claude in Chrome: sits in a "wysiwyg" div inside the
+    product order form (`section.product form.order-form div.wysiwyg`) --
+    and, same verification as the other three scrapers' parse_description,
+    confirmed present in the raw server HTML MOTIV's fetch_page() actually
+    receives (checked via a literal fetch() of the page's own response body
+    from a live tab), not something only the client-side render produces,
+    so this doesn't need any JS-execution workaround beyond what
+    fetch_page() already does to get past MOTIV's bot-blocking (see this
+    module's docstring)."""
+    el = soup.select_one("section.product form.order-form div.wysiwyg")
+    if el is None:
+        return None
+    text = _clean(el.get_text(separator=" "))
+    return text or None
+
+
 def parse_product_page(html: str, url: str, status: str = "current") -> dict:
     soup = BeautifulSoup(html, "lxml")
 
@@ -482,6 +502,7 @@ def parse_product_page(html: str, url: str, status: str = "current") -> dict:
         "skus": parse_weight_slides(soup),
         "resources": parse_resources(soup, url),
         "images": parse_images(html, url),
+        "description": parse_description(soup),
     }
 
 
@@ -543,10 +564,10 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
             insert into products (
                 brand_id, name, url, color, coverstock_material, coverstock_type,
                 coverstock_name, factory_finish, part_number, weights_available,
-                status, source_platform, release_date, discontinued_detected_at
+                status, source_platform, release_date, description, discontinued_detected_at
             )
             values (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::int4range, %s, 'netsuite', %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::int4range, %s, 'netsuite', %s, %s,
                 case when %s = 'retired' then now() else null end
             )
             on conflict (url) do update set
@@ -560,6 +581,7 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
                 weights_available = excluded.weights_available,
                 status = excluded.status,
                 release_date = coalesce(excluded.release_date, products.release_date),
+                description = coalesce(excluded.description, products.description),
                 discontinued_detected_at = case
                     when excluded.status = 'retired' and products.status <> 'retired' then now()
                     when excluded.status = 'current' then null
@@ -572,7 +594,8 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
                 brand_id, parsed["name"], parsed["url"], parsed["color"],
                 parsed["coverstock_material"], parsed["coverstock_type"],
                 parsed["coverstock_name"], parsed["factory_finish"], parsed["part_number"],
-                weights_range, parsed["status"], parsed["release_date"], parsed["status"],
+                weights_range, parsed["status"], parsed["release_date"], parsed["description"],
+                parsed["status"],
             ),
         )
         product_id = cur.fetchone()[0]

@@ -28,11 +28,25 @@
   This is the "current ball, full per-weight Core Numbers table, no inline
   mass bias" pattern -- see defender.html for the other real pattern
   (retired, single-value spec row, inline mass bias).
+
+  UPDATED a later session: added the <div class="c-product-feature__info-
+  body"><div class="u-hide"> wrapper and its full real text -- both the
+  selector/structure (confirmed via document.querySelector against this
+  same real live page) and the complete paragraph (previously only its
+  opening sentence was captured, in a plain unwrapped <p>) are real,
+  fetched directly this session -- not reconstructed. See parse_
+  description's docstring in app.py for the full trail, including
+  confirmation this text is present in the raw server HTML fetch_page()
+  actually receives, not just the client-rendered DOM.
 -->
 <html>
 <body>
 <h1>Crown 78U</h1>
-<p>Brunswick introduces the Crown 78U, giving bowlers a new urethane option approved for use in most USBC national competitions.</p>
+<div class="c-product-feature__info-body">
+<div class="u-hide">
+<p>Brunswick introduces the Crown 78U, giving bowlers a new urethane option approved for use in most USBC national competitions. In addition to these regulations, Brunswick recognizes the use of harder urethane balls on tougher tournament patterns and for high rev rates. They developed a new urethane ball with more flare potential and more dynamic numbers to meet the needs of those bowlers. The new Crown 78U features the Tiered Hexagon core shape from the Crown Victory, a higher RG and medium differential core, providing bowlers with an option not currently available on the market. The harder 78 durometer urethane cover has limitations that a more dynamic core helps alleviate, creating a new level of ball motion option for bowlers using urethane.</p>
+</div>
+</div>
 
 <table>
   <tr><th></th><th>16 lb</th><th>15 lb</th><th>14 lb</th><th>13 lb</th><th>12 lb</th></tr>

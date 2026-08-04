@@ -35,6 +35,7 @@ from app import (  # noqa: E402
     parse_weights_available,
     parse_release_date,
     parse_images,
+    parse_description,
     _nearby_label_text,
     _resolve_img_src,
 )
@@ -89,6 +90,23 @@ def test_crown_78u_full_weight_breakdown(crown_78u):
     assert all(s["mass_bias"] is None for s in crown_78u["skus"])
 
 
+def test_crown_78u_description_finds_hidden_block(crown_78u):
+    """Confirmed live via Claude in Chrome against this same real page --
+    see parse_description's docstring and this fixture's own header
+    comment for the full trail. The div is visually hidden (class
+    "u-hide") but present in the raw server HTML, same as every other
+    field this scraper parses."""
+    assert crown_78u["description"].startswith(
+        "Brunswick introduces the Crown 78U, giving bowlers a new urethane option"
+    )
+    assert "Tiered Hexagon core shape from the Crown Victory" in crown_78u["description"]
+
+
+def test_parse_description_returns_none_when_block_absent():
+    soup = BeautifulSoup("<html><body><h1>No Description Here</h1></body></html>", "lxml")
+    assert parse_description(soup) is None
+
+
 def test_crown_78u_resources(crown_78u):
     """Real markup puts every PDF link's own text as the generic word
     "Download" -- the actual label ("Crown 78U Info Sheet", etc.) is a
@@ -137,6 +155,15 @@ def test_defender_basic_fields(defender):
     assert defender["name"] == "Defender"
     assert defender["status"] == "retired"
     assert defender["core_name"] == "Portal X"
+
+
+def test_defender_description_none_when_fixture_lacks_hidden_block(defender):
+    """defender.html's fixture was never updated with a u-hide description
+    block -- unlike crown_78u.html, this isn't claiming the real Defender
+    page lacks one, just confirming a missing block doesn't crash parsing
+    and leaves the field None, same graceful-miss convention as every
+    other optional field this scraper parses."""
+    assert defender["description"] is None
 
 
 def test_defender_coverstock_split(defender):

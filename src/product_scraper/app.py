@@ -315,6 +315,40 @@ def _nearby_label_text(link, max_levels: int = 4) -> str:
     return own_text
 
 
+def parse_description(soup: BeautifulSoup) -> str:
+    """Brunswick's marketing description text for this specific ball --
+    e.g. Strategy's page has a real paragraph starting "Brunswick is
+    excited to introduce Strategy, the newest addition to its Pro
+    Performance lineup...". Confirmed live via Claude in Chrome on the
+    Strategy product page: the text sits in a `div.u-hide` inside
+    `.c-product-feature__info-body` -- visually hidden via CSS (behind a
+    "read more" toggle, going by the class name), but present verbatim in
+    the raw server HTML `requests.get()` receives, confirmed by issuing a
+    literal `fetch()` of the page's own raw response body from inside a
+    live tab and checking the description text was in it, not just the
+    JS-rendered/hydrated DOM.
+
+    This is a deliberate, narrow exception to this module's usual
+    "match by visible text content, not CSS class" philosophy (see module
+    docstring): unlike spec table rows, this content has no text label of
+    its own to match against. `.u-hide` is a generic Tailwind-style
+    utility class that could plausibly recur elsewhere on the page for
+    unrelated reasons (e.g. mobile-only nav text), so this doesn't just
+    grab the first match anywhere in the document -- it's scoped to
+    descend from `.c-product-feature__info-body` (the container
+    immediately following the H1) and requires a minimum length, since
+    stray hidden utility text elsewhere tends to be short labels/buttons,
+    not paragraph-length marketing copy. Returns None rather than raising
+    if the page doesn't have one (e.g. a colorway variant of an existing
+    ball, or the site's markup shifts) -- description is enrichment, not
+    a required field."""
+    for candidate in soup.select(".c-product-feature__info-body .u-hide"):
+        text = _clean(candidate.get_text(separator=" "))
+        if len(text) > 40:
+            return text
+    return None
+
+
 def parse_resources(soup: BeautifulSoup, base_url: str) -> dict:
     """Captures PDF resource links, keyed by a normalized name. The Info
     Sheet is what the (not-yet-built) PDF parser step consumes for mass
@@ -461,6 +495,7 @@ def parse_product_page(html: str, url: str) -> dict:
         "weights_available": parse_weights_available(spec.get("weights")),
         "release_date_raw": spec.get("release date"),  # kept as text too -- release_date below is the parsed version, raw stays for anything parse_release_date rejects
         "release_date": parse_release_date(spec.get("release date")),
+        "description": parse_description(soup),
         "skus": skus,
         "resources": parse_resources(soup, url),
         "images": parse_images(soup, url),
@@ -539,10 +574,10 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
             insert into products (
                 brand_id, name, url, color, coverstock_material, coverstock_type,
                 coverstock_name, factory_finish, part_number, weights_available,
-                status, source_platform, release_date, discontinued_detected_at
+                status, source_platform, release_date, description, discontinued_detected_at
             )
             values (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::int4range, %s, 'craft_cms', %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::int4range, %s, 'craft_cms', %s, %s,
                 case when %s = 'retired' then now() else null end
             )
             on conflict (url) do update set
@@ -556,6 +591,11 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
                 weights_available = excluded.weights_available,
                 status = excluded.status,
                 release_date = coalesce(excluded.release_date, products.release_date),
+                -- coalesce, not overwrite: a page-parse hiccup that misses
+                -- the hidden u-hide description (see parse_description's
+                -- docstring) shouldn't null out a previously-good value,
+                -- same reasoning as release_date above.
+                description = coalesce(excluded.description, products.description),
                 discontinued_detected_at = case
                     when excluded.status = 'retired' and products.status <> 'retired' then now()
                     when excluded.status = 'current' then null
@@ -568,7 +608,8 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
                 brand_id, parsed["name"], parsed["url"], parsed["color"],
                 parsed["coverstock_material"], parsed["coverstock_type"],
                 parsed["coverstock_name"], parsed["factory_finish"], parsed["part_number"],
-                weights_range, parsed["status"], parsed["release_date"], parsed["status"],
+                weights_range, parsed["status"], parsed["release_date"], parsed["description"],
+                parsed["status"],
             ),
         )
         product_id = cur.fetchone()[0]

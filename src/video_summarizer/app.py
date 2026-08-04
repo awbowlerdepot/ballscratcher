@@ -122,7 +122,7 @@ def summarize_transcript(bedrock_client, model_id: str, product_name: str, brand
     return payload["content"][0]["text"].strip()
 
 
-def build_rollup_prompt(product_name: str, brand_name: str, summaries: list) -> str:
+def build_rollup_prompt(product_name: str, brand_name: str, summaries: list, description: str = None) -> str:
     """Two different prompts depending on how many review summaries feed
     in -- not because the underlying task differs (both are "describe what
     reviewers say about this ball"), but a single per-video summary is
@@ -130,15 +130,41 @@ def build_rollup_prompt(product_name: str, brand_name: str, summaries: list) -> 
     notes...") and copying it verbatim into a product-level field would
     carry that framing along. Rewriting even a single source keeps the
     field's voice consistent regardless of video count -- see module
-    docstring's SUMMARY OF SUMMARIES section for the full reasoning."""
+    docstring's SUMMARY OF SUMMARIES section for the full reasoning.
+
+    description (optional): the manufacturer's own marketing copy for this
+    ball, scraped from its product page (products.description -- see
+    product_scraper/commercebuild_product_scraper/woocommerce_product_
+    scraper/netsuite_product_scraper's parse_description functions, added
+    once real product pages across all four platforms were confirmed to
+    carry ball-specific description text, not just generic tier/tech
+    blurbs). Included as grounding context when present -- useful for
+    getting technical details right (core/coverstock names, the lane
+    conditions the manufacturer markets it for) -- but the prompt is
+    explicit that the output must still reflect what reviewers actually
+    said, not just restate marketing copy. Optional because not every
+    product has one yet (rows written before this field existed, or a
+    genuine parse miss); the rollup already worked fine without it, this
+    only adds context when available."""
+    context_block = ""
+    if description:
+        context_block = (
+            "\n\nFor context, here is the manufacturer's own description of "
+            "this ball. Use it to get technical details right (core/"
+            "coverstock names, the lane conditions it's marketed for), but "
+            "the summary must still reflect what reviewers actually said, "
+            "not just restate marketing copy:\n" + description
+        )
+
     if len(summaries) == 1:
         return (
             f"The following is a summary of a single YouTube review video for the "
             f"{brand_name} {product_name} bowling ball. Rewrite it as a standalone "
             "2-4 sentence product description of what reviewers say about this ball "
             "-- remove any references to \"this video\" or \"the reviewer\", state it "
-            "as plain fact about the ball's performance instead.\n\n"
-            f"Review summary:\n{summaries[0]}"
+            "as plain fact about the ball's performance instead."
+            f"{context_block}"
+            f"\n\nReview summary:\n{summaries[0]}"
         )
 
     numbered = "\n".join(f"{i}. {s}" for i, s in enumerate(summaries, start=1))
@@ -150,13 +176,15 @@ def build_rollup_prompt(product_name: str, brand_name: str, summaries: list) -> 
         "reaction on the lane, who it's recommended for) and call out any notable "
         "disagreements between reviewers rather than papering over them. Don't "
         "reference \"the videos\" or how many reviews there are; write it as a "
-        "standalone product description.\n\n"
-        f"Review summaries:\n{numbered}"
+        "standalone product description."
+        f"{context_block}"
+        f"\n\nReview summaries:\n{numbered}"
     )
 
 
 def generate_video_reviews_rollup(bedrock_client, model_id: str, product_name: str, brand_name: str,
-                                   summaries: list, max_tokens: int = DEFAULT_ROLLUP_MAX_TOKENS) -> str:
+                                   summaries: list, description: str = None,
+                                   max_tokens: int = DEFAULT_ROLLUP_MAX_TOKENS) -> str:
     """Same Bedrock wire format as summarize_transcript -- kept as a
     separate function (not summarize_transcript with a different prompt
     argument) since the two have genuinely different inputs (a transcript
@@ -165,7 +193,7 @@ def generate_video_reviews_rollup(bedrock_client, model_id: str, product_name: s
         "anthropic_version": "bedrock-2023-05-31",
         "max_tokens": max_tokens,
         "messages": [
-            {"role": "user", "content": build_rollup_prompt(product_name, brand_name, summaries)},
+            {"role": "user", "content": build_rollup_prompt(product_name, brand_name, summaries, description)},
         ],
     })
     response = bedrock_client.invoke_model(modelId=model_id, contentType="application/json",
@@ -196,7 +224,7 @@ def fetch_video_row(conn, product_video_id: str) -> dict:
         cur.execute(
             """
             select pv.id, pv.youtube_video_id, pv.title, pv.status, pv.product_id,
-                   p.name as product_name, b.name as brand_name
+                   p.name as product_name, b.name as brand_name, p.description as product_description
             from product_videos pv
             join products p on p.id = pv.product_id
             join brands b on b.id = p.brand_id
@@ -263,7 +291,7 @@ def store_rollup(conn, product_id: str, rollup_text: str, video_count: int) -> N
 
 
 def refresh_video_reviews_rollup(conn, bedrock_client, model_id: str, product_id: str,
-                                  product_name: str, brand_name: str) -> dict:
+                                  product_name: str, brand_name: str, description: str = None) -> dict:
     """Regenerates products.video_reviews_summary from every approved
     video's current summary for this product -- called from _process_one
     after a video just got a real summary written (see module docstring's
@@ -273,7 +301,12 @@ def refresh_video_reviews_rollup(conn, bedrock_client, model_id: str, product_id
     Deliberately does not special-case 'went from N summaries to the same
     N' (e.g. a video got re-summarized with identical content) --
     regenerating is cheap and always correct, so there's no real benefit to
-    detecting and skipping a no-op case."""
+    detecting and skipping a no-op case.
+
+    description: the product's manufacturer-page description, if any --
+    see build_rollup_prompt's docstring. Passed through as-is (may be
+    None); the caller (_process_one) already has it from fetch_video_row's
+    join, so this function doesn't need its own query for it."""
     summaries = fetch_approved_video_summaries(conn, product_id)
     if not summaries:
         # Shouldn't happen in the caller's actual flow (this only runs
@@ -284,7 +317,8 @@ def refresh_video_reviews_rollup(conn, bedrock_client, model_id: str, product_id
         # got rejected between store_result and here) is possible, if rare.
         return {"product_id": product_id, "rollup_regenerated": False, "reason": "no_summaries"}
 
-    rollup_text = generate_video_reviews_rollup(bedrock_client, model_id, product_name, brand_name, summaries)
+    rollup_text = generate_video_reviews_rollup(bedrock_client, model_id, product_name, brand_name,
+                                                 summaries, description)
     store_rollup(conn, product_id, rollup_text, len(summaries))
     return {"product_id": product_id, "rollup_regenerated": True, "video_count": len(summaries)}
 
@@ -330,7 +364,7 @@ def _process_one(job: dict, bedrock_client) -> dict:
             try:
                 rollup_result = refresh_video_reviews_rollup(
                     conn, bedrock_client, os.environ.get("BEDROCK_MODEL_ID", DEFAULT_BEDROCK_MODEL_ID),
-                    row["product_id"], row["product_name"], row["brand_name"],
+                    row["product_id"], row["product_name"], row["brand_name"], row["product_description"],
                 )
                 rollup_regenerated = rollup_result["rollup_regenerated"]
             except Exception:

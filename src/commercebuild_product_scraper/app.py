@@ -310,6 +310,36 @@ def parse_main_image_url(html: str, base_url: str) -> str:
     return urljoin(base_url, m.group(1)) if m else None
 
 
+# class="std secondary-desc" -- confirmed live via Claude in Chrome against
+# the real Storm Absolute page: the marketing description (e.g. "Sentinel(tm)
+# Core: In most cases, an extra slug..." / "R2S (tm) DEEP Hybrid Coverstock:
+# R2S Deep is cleaner through the front...") sits in a div with this class,
+# already present in the raw server HTML (checked via a literal fetch() of
+# the page's own response body from inside a live tab, not the JS-rendered
+# DOM -- same verification method used for Brunswick's hidden description,
+# see product_scraper/app.py's parse_description). Non-greedy match up to
+# the first </div> after the opening tag, same assumption this file's
+# breadcrumb regex above already makes: no nested <div> between open and
+# close (only <p>/<strong> were present on the one real page checked). A
+# false negative here just leaves description null, not a crash.
+_SECONDARY_DESC_RE = re.compile(r'class="[^"]*\bsecondary-desc\b[^"]*"[^>]*>(.*?)</div>', re.S)
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def parse_description(html: str) -> str:
+    """See _SECONDARY_DESC_RE's comment above. Strips inline tags
+    (<p>/<strong>/...) and collapses whitespace, e.g. multiple paragraphs
+    covering the core and coverstock separately become one flowing block
+    of prose -- fine for feeding to Bedrock as grounding context later,
+    which is the only planned consumer."""
+    m = _SECONDARY_DESC_RE.search(html)
+    if not m:
+        return None
+    text = _TAG_RE.sub(" ", m.group(1))
+    text = re.sub(r"\s+", " ", text).strip()
+    return text or None
+
+
 def parse_tech_data_pdf_url(html: str, base_url: str):
     """Finds the "Tech Data" PDF link in the Downloads section by LINK
     TEXT content ("tech data", case-insensitive), not by filename pattern
@@ -411,6 +441,7 @@ def parse_product_page(html: str, url: str) -> dict:
         "html_differential": _to_float(spec.get("differential")),
         "tech_data_pdf_url": parse_tech_data_pdf_url(html, url),
         "main_image_url": parse_main_image_url(html, url),
+        "description": parse_description(html),
     }
 
 
@@ -730,9 +761,9 @@ def upsert_product(conn, brand_id: str, parsed: dict, pdf_skus: list, mismatches
             insert into products (
                 brand_id, name, url, color, coverstock_material, coverstock_type,
                 coverstock_name, factory_finish, part_number, status, source_platform,
-                release_date
+                release_date, description
             )
-            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'commercebuild', %s)
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'commercebuild', %s, %s)
             on conflict (url) do update set
                 name = excluded.name,
                 color = excluded.color,
@@ -743,6 +774,7 @@ def upsert_product(conn, brand_id: str, parsed: dict, pdf_skus: list, mismatches
                 part_number = excluded.part_number,
                 status = excluded.status,
                 release_date = coalesce(excluded.release_date, products.release_date),
+                description = coalesce(excluded.description, products.description),
                 updated_at = now()
             returning id
             """,
@@ -750,7 +782,7 @@ def upsert_product(conn, brand_id: str, parsed: dict, pdf_skus: list, mismatches
                 brand_id, parsed["name"], parsed["url"], parsed["color"],
                 parsed["coverstock_material"], parsed["coverstock_type"],
                 parsed["coverstock_name"], parsed["factory_finish"], parsed["sku_code"],
-                parsed["status"], parsed["release_date"],
+                parsed["status"], parsed["release_date"], parsed["description"],
             ),
         )
         product_id = cur.fetchone()[0]

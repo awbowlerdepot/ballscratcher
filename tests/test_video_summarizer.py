@@ -121,6 +121,32 @@ def test_build_rollup_prompt_multiple_summaries_synthesizes():
     assert "notable disagreements" in prompt
 
 
+# --- build_rollup_prompt with a manufacturer description: added once real
+# product pages across all four scraper platforms were confirmed (via
+# Claude in Chrome) to carry ball-specific marketing copy, not just
+# generic tier blurbs -- see products.description / parse_description in
+# each of the four *_product_scraper modules.
+
+def test_build_rollup_prompt_includes_description_when_present():
+    prompt = app.build_rollup_prompt(
+        "Absolute", "Storm", ["Strong hook, clears the front."],
+        description="Sentinel Core: an asymmetric core built for early transition.",
+    )
+    assert "manufacturer's own description" in prompt
+    assert "Sentinel Core: an asymmetric core built for early transition." in prompt
+    # Still must say the summary has to reflect real reviewer commentary,
+    # not just restate the manufacturer copy verbatim.
+    assert "must still reflect what reviewers actually said" in prompt
+
+
+def test_build_rollup_prompt_omits_description_block_when_absent():
+    """description defaults to None (e.g. a product scraped before this
+    field existed) -- the prompt shouldn't reference a manufacturer
+    description at all in that case, not just pass an empty one through."""
+    prompt = app.build_rollup_prompt("Absolute", "Storm", ["Strong hook, clears the front."])
+    assert "manufacturer's own description" not in prompt
+
+
 def test_generate_video_reviews_rollup_returns_model_text():
     client = _FakeBedrockClient("Reviewers agree this ball hooks hard on medium oil.")
     rollup = app.generate_video_reviews_rollup(
@@ -161,10 +187,11 @@ class FakeCursor:
                 self._last_result = (
                     row["id"], row["youtube_video_id"], row["title"], row["status"],
                     row["product_id"], row["product_name"], row["brand_name"],
+                    row.get("product_description"),
                 )
                 self.description = [
                     ("id",), ("youtube_video_id",), ("title",), ("status",),
-                    ("product_id",), ("product_name",), ("brand_name",),
+                    ("product_id",), ("product_name",), ("brand_name",), ("product_description",),
                 ]
 
         elif q.startswith("update product_videos set transcript"):
@@ -303,6 +330,22 @@ def test_refresh_video_reviews_rollup_success():
     assert db["products"]["prod-1"]["video_reviews_summary_video_count"] == 1
 
 
+def test_refresh_video_reviews_rollup_threads_description_into_prompt():
+    db = _fake_db_with_approved_video()
+    db["product_videos"]["vid-1"]["summary"] = "Strong hook."
+    conn = FakeConnection(db)
+    bedrock = _FakeBedrockClient("This ball is a strong hooker.")
+
+    result = app.refresh_video_reviews_rollup(
+        conn, bedrock, "model-id", "prod-1", "Absolute", "Storm",
+        description="Sentinel Core: an asymmetric core built for early transition.",
+    )
+
+    assert result == {"product_id": "prod-1", "rollup_regenerated": True, "video_count": 1}
+    sent_body = json.loads(bedrock.calls[0]["body"])
+    assert "Sentinel Core: an asymmetric core built for early transition." in sent_body["messages"][0]["content"]
+
+
 def test_process_one_summarizes_when_transcript_present(monkeypatch):
     """A successful summarization now also regenerates the product-level
     rollup (see refresh_video_reviews_rollup) -- two Bedrock calls total:
@@ -330,6 +373,30 @@ def test_process_one_summarizes_when_transcript_present(monkeypatch):
     assert conn.committed is True
     assert conn.closed is True
     assert len(bedrock.calls) == 2
+
+
+def test_process_one_threads_product_description_into_rollup_call(monkeypatch):
+    """End-to-end: fetch_video_row's join now selects p.description too
+    (see that function's query) -- confirms it actually reaches the
+    rollup's Bedrock call, not just that the plumbing compiles."""
+    db = _fake_db_with_approved_video()
+    db["product_videos"]["vid-1"]["product_description"] = (
+        "Sentinel Core: an asymmetric core built for early transition."
+    )
+    conn = FakeConnection(db)
+    monkeypatch.setattr(app, "get_db_connection", lambda: conn)
+
+    bedrock = _FakeBedrockClient(responses=[
+        "Strong hook, clears the front of the lane.",
+        "This ball hooks strong and clears the front of the lane.",
+    ])
+    job = {"product_video_id": "vid-1", "transcript": "great ball, strong hook", "transcript_note": None}
+
+    result = app._process_one(job, bedrock)
+
+    assert result["rollup_regenerated"] is True
+    rollup_call_body = json.loads(bedrock.calls[1]["body"])
+    assert "Sentinel Core: an asymmetric core built for early transition." in rollup_call_body["messages"][0]["content"]
 
 
 def test_process_one_rollup_failure_does_not_undo_video_summary(monkeypatch):

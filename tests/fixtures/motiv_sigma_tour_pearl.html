@@ -20,6 +20,18 @@
   "Int. Differential" pair appears in any of its 5 weight slides, unlike
   the asymmetric Jackal Onyx fixture (motiv_jackal_onyx.html), which
   exists specifically to cover that case.
+
+  UPDATED a later session: added the <section class="product"><form
+  class="order-form"><div class="wysiwyg"> block above the Downloads
+  section -- both the structure (confirmed via Claude in Chrome's
+  javascript_tool walking the real DOM ancestry from the description text
+  node up to its container) and the paragraph text itself (opening "Some
+  sequels are worth the wait...") are real, captured directly from this
+  same live page during that session -- not reconstructed/invented, unlike
+  most of this file's surrounding boilerplate. See netsuite_product_
+  scraper/app.py's parse_description docstring for the full trail,
+  including confirmation this text is present in the raw server HTML
+  fetch_page() actually receives, not just the client-rendered DOM.
 -->
 <html>
 <body>
@@ -106,6 +118,14 @@
       </ul>
     </div>
   </div>
+
+  <section class="product">
+    <form class="order-form available">
+      <div class="wysiwyg">
+        <p>Some sequels are worth the wait. Back in 2011, the Sigma Tour became one of those balls bowlers never stopped talking about. Fifteen years later, the legend comes back stronger. Meet the Sigma Tour Pearl, a weapon built for modern lane conditions. Fast revving, clean through the fronts, and explosive down lane without becoming uncontrollable. It fits perfectly between your benchmark piece and your big angular pearl.</p>
+      </div>
+    </form>
+  </section>
 
   <section class="product-downloads">
     <h2>Downloads</h2>

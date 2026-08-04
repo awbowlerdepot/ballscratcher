@@ -11,12 +11,23 @@
   an asymmetric SWAG ball, so parse_mass_bias()'s handling of a non-"N/A"
   value is unverified against real data (see the module docstring's
   disclosed gap).
+
+  UPDATED a later session: the short-description paragraph below (real
+  text, already present) is now wrapped in a div with class
+  "product-short-description" -- confirmed real via Claude in Chrome
+  against the Executioner Solid product page (a different SWAG product,
+  same WooCommerce theme) this session, see parse_description's docstring.
+  The wrapping div itself is a reconstruction (the original fetch never
+  showed the raw class name), the text inside it is still the real,
+  originally-captured value.
 -->
 <html>
 <body>
 <h1>SWAG Fusion Bowling Ball</h1>
 <p>MODERN PERFORMANCE LINE<br>MRP - $139.95</p>
+<div class="product-short-description">
 <p>SWAG proudly presents the Modern Performance Line, a revolutionary series that seamlessly combines cutting-edge performance with innovative symmetrical core technology.</p>
+</div>
 
 <img src="https://www.swagbowling.com/wp-content/uploads/2024/12/FUSION-600x600.png" alt="FUSION">
 <img src="https://www.swagbowling.com/wp-content/uploads/2024/12/FUSION-CORE-600x571.png" alt="FUSION-CORE">

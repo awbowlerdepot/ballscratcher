@@ -289,6 +289,26 @@ def parse_images(soup: BeautifulSoup, base_url: str) -> list:
     return images
 
 
+def parse_description(soup: BeautifulSoup) -> str:
+    """WooCommerce's short-description block, e.g. SWAG's Executioner Solid
+    page has "The Executioner Solid is the strongest, most aggressive ball
+    SWAG has ever built, engineered for the heavy fresh oil that shuts
+    weaker equipment down...". Confirmed live via Claude in Chrome: sits in
+    a container with class "product-short-description" -- WooCommerce's own
+    standard class for this block (assigned by WooCommerce core's product
+    template, same "stable WooCommerce convention, not site-specific theme
+    markup" reasoning this module's docstring already gives for
+    ATTRIBUTE_LABELS), so likely stable across other WooCommerce sites too,
+    not just this one. Falls back to None for external/affiliate listings
+    (see parse_product_page's external_product sentinel) -- those never
+    reach this function since they return early."""
+    el = soup.select_one(".product-short-description")
+    if el is None:
+        return None
+    text = _clean(el.get_text(separator=" "))
+    return text or None
+
+
 def parse_product_page(html: str, url: str) -> dict:
     soup = BeautifulSoup(html, "lxml")
 
@@ -345,6 +365,7 @@ def parse_product_page(html: str, url: str) -> dict:
         "skus": skus,
         "resources": parse_resources(html, url),
         "images": parse_images(soup, url),
+        "description": parse_description(soup),
     }
 
 
@@ -404,10 +425,10 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
             insert into products (
                 brand_id, name, url, color, coverstock_material, coverstock_type,
                 coverstock_name, factory_finish, weights_available, status, source_platform,
-                release_date, discontinued_detected_at
+                release_date, description, discontinued_detected_at
             )
             values (
-                %s, %s, %s, %s, %s, %s, %s, %s, %s::int4range, %s, 'woocommerce', %s,
+                %s, %s, %s, %s, %s, %s, %s, %s, %s::int4range, %s, 'woocommerce', %s, %s,
                 case when %s = 'retired' then now() else null end
             )
             on conflict (url) do update set
@@ -420,6 +441,7 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
                 weights_available = excluded.weights_available,
                 status = excluded.status,
                 release_date = coalesce(excluded.release_date, products.release_date),
+                description = coalesce(excluded.description, products.description),
                 discontinued_detected_at = case
                     when excluded.status = 'retired' and products.status <> 'retired' then now()
                     when excluded.status = 'current' then null
@@ -432,7 +454,8 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
                 brand_id, parsed["name"], parsed["url"], parsed["color"],
                 parsed["coverstock_material"], parsed["coverstock_type"],
                 parsed["coverstock_name"], parsed["factory_finish"],
-                weights_range, parsed["status"], parsed["release_date"], parsed["status"],
+                weights_range, parsed["status"], parsed["release_date"], parsed["description"],
+                parsed["status"],
             ),
         )
         product_id = cur.fetchone()[0]

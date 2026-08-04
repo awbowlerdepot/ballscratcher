@@ -90,6 +90,32 @@ def test_sigma_downloads():
     assert p["resources"]["shelf_talker_url"].endswith("userfiles/filemanager/h9s22i72056smvvoxatj")
 
 
+# --- parse_description: confirmed live via Claude in Chrome against this
+# same Sigma Tour Pearl page this session -- see parse_description's
+# docstring and the fixture's own header comment for the full trail
+# (structure AND text both real, not reconstructed).
+
+def test_sigma_description_finds_wysiwyg_block():
+    p = _parsed_sigma()
+    assert p["description"] == (
+        "Some sequels are worth the wait. Back in 2011, the Sigma Tour became one of "
+        "those balls bowlers never stopped talking about. Fifteen years later, the "
+        "legend comes back stronger. Meet the Sigma Tour Pearl, a weapon built for "
+        "modern lane conditions. Fast revving, clean through the fronts, and "
+        "explosive down lane without becoming uncontrollable. It fits perfectly "
+        "between your benchmark piece and your big angular pearl."
+    )
+
+
+def test_jackal_description_returns_none_when_block_absent():
+    """Jackal Onyx's fixture never had this block added -- confirms a
+    missing wysiwyg description doesn't crash parsing, just leaves the
+    field None (same graceful-miss convention as the other three
+    platforms' parse_description)."""
+    p = _parsed_jackal()
+    assert p["description"] is None
+
+
 def test_sigma_images_main_plus_other_no_core_callout():
     """Sigma Tour Pearl's fixture has 3 main gallery photos and no
     core-image variant (only observed on Jackal Onyx this session)."""

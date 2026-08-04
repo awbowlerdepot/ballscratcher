@@ -71,6 +71,10 @@ ALPHA_CRUX_HTML = """
 <strong>Fragrance:</strong> Apple Fritter
 <strong>Avail. for Sales Orders:</strong> Yes
 <strong>PSA:</strong> 0.017
+<div class="std secondary-desc">
+<p><strong>AI Core:</strong> The Alpha Intelligence core continues Storm's asymmetric lineage with a stronger shape than the outgoing Crux, giving it more traction in the midlane without giving up backend reaction.</p>
+<p><strong>GI26 Solid Coverstock:</strong> The debut of the GI26 line, built for heavy fresh oil with an aggressive, angular finish through the pins.</p>
+</div>
 <h2>DOWNLOADS</h2>
 <a href="https://stormproducts.nyc3.cdn.digitaloceanspaces.com/product_pages/Balls/Storm/Alpha_Crux/Storm_adsheet_AlphaCrux-nobleed.pdf">Alpha Crux Ad Sheet</a>
 <a href="https://stormproducts.nyc3.cdn.digitaloceanspaces.com/product_pages/Balls/Storm/Alpha_Crux/Alpha%20Crux%20Tech%20Data%20Final.pdf">Alpha Crux Tech Data</a>
@@ -422,6 +426,26 @@ def test_parse_tech_data_pdf_url_returns_none_when_absent():
     assert app.parse_tech_data_pdf_url(GLOBAL_900_HTML, URL) is None
 
 
+# --- parse_description: confirmed live via Claude in Chrome against the
+# real Storm Absolute page this session -- see this module's docstring
+# note on parse_description for the full verification trail. Uses the
+# ALPHA_CRUX_HTML/GLOBAL_900_HTML fixtures above (secondary-desc div added
+# to Alpha Crux's fixture, deliberately absent from 900 Global's -- same
+# "confirm both the match and the graceful miss" pattern as
+# test_parse_tech_data_pdf_url_returns_none_when_absent).
+
+def test_parse_description_finds_secondary_desc_block():
+    description = app.parse_description(ALPHA_CRUX_HTML)
+    assert description is not None
+    assert "Alpha Intelligence core" in description
+    assert "GI26 Solid Coverstock" in description
+    assert "Storm's asymmetric lineage" in description
+
+
+def test_parse_description_returns_none_when_absent():
+    assert app.parse_description(GLOBAL_900_HTML) is None
+
+
 # --- parse_product_page (end to end) ---
 
 def test_parse_product_page_alpha_crux_end_to_end():
@@ -440,12 +464,14 @@ def test_parse_product_page_alpha_crux_end_to_end():
     assert parsed["html_rg"] == 2.48
     assert parsed["html_differential"] == 0.052
     assert parsed["tech_data_pdf_url"] is not None
+    assert "Alpha Intelligence core" in parsed["description"]
 
 
 def test_parse_product_page_900_global_brand_field():
     parsed = app.parse_product_page(GLOBAL_900_HTML, URL)
     assert parsed["brand_name"] == "900 Global"
     assert parsed["name"] == "VIKING CONQUEST"
+    assert parsed["description"] is None
 
 
 # --- _skus_from_table (real Tech Data PDF table shape) ---

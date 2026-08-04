@@ -221,11 +221,11 @@ class FakeCursor:
             self._rows = [(v["summary"],) for v in matches]
             self.description = [("summary",)]
 
-        elif q.startswith("select p.id, p.name, b.name as brand_name from products p"):
+        elif q.startswith("select p.id, p.name, b.name as brand_name, p.description from products p"):
             (product_id,) = params
             row = self.db["products"].get(product_id)
-            self._last_result = (product_id, row["name"], row["brand_name"]) if row else None
-            self.description = [("id",), ("name",), ("brand_name",)]
+            self._last_result = (product_id, row["name"], row["brand_name"], row.get("description")) if row else None
+            self.description = [("id",), ("name",), ("brand_name",), ("description",)]
 
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
@@ -711,6 +711,25 @@ class _FakeBedrockClient:
         return {"body": _FakeBedrockBody({"content": [{"text": self.response_text}]})}
 
 
+# --- build_rollup_prompt with a manufacturer description -- kept in sync
+# with test_video_summarizer.py's equivalent tests. See service.py's
+# build_rollup_prompt docstring for the design reasoning.
+
+def test_build_rollup_prompt_includes_description_when_present():
+    prompt = service.build_rollup_prompt(
+        "Absolute", "Storm", ["Strong hook, clears the front."],
+        description="Sentinel Core: an asymmetric core built for early transition.",
+    )
+    assert "manufacturer's own description" in prompt
+    assert "Sentinel Core: an asymmetric core built for early transition." in prompt
+    assert "must still reflect what reviewers actually said" in prompt
+
+
+def test_build_rollup_prompt_omits_description_block_when_absent():
+    prompt = service.build_rollup_prompt("Absolute", "Storm", ["Strong hook, clears the front."])
+    assert "manufacturer's own description" not in prompt
+
+
 def test_generate_video_reviews_rollup_returns_model_text():
     client = _FakeBedrockClient("Reviewers agree this ball hooks hard on medium oil.")
 
@@ -743,7 +762,7 @@ def test_fetch_product_for_rollup_returns_name_and_brand():
 
     result = service._fetch_product_for_rollup(conn, "prod-1")
 
-    assert result == {"id": "prod-1", "name": "Absolute", "brand_name": "Storm"}
+    assert result == {"id": "prod-1", "name": "Absolute", "brand_name": "Storm", "description": None}
 
 
 def test_fetch_product_for_rollup_missing_returns_none():
@@ -808,6 +827,35 @@ def test_refresh_video_reviews_rollup_success_builds_bedrock_client_and_stores()
     assert db["products"]["prod-1"]["video_reviews_summary"] == "This ball hooks hard and clears the front of the lane."
     assert db["products"]["prod-1"]["video_reviews_summary_video_count"] == 2
     assert len(fake_client.calls) == 1
+
+
+def test_refresh_video_reviews_rollup_threads_description_from_products_row():
+    """_fetch_product_for_rollup's query now selects p.description too --
+    confirms it actually reaches the Bedrock call, not just that the
+    plumbing compiles."""
+    db = _fake_db_with_product_and_approved_videos()
+    db["products"]["prod-1"]["description"] = (
+        "Sentinel Core: an asymmetric core built for early transition."
+    )
+    conn = FakeConnection(db)
+    fake_client = _FakeBedrockClient("This ball hooks hard and clears the front of the lane.")
+
+    class _FakeBoto3:
+        def client(self, name):
+            return fake_client
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    try:
+        service.refresh_video_reviews_rollup(conn, "prod-1")
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+
+    sent_body = json.loads(fake_client.calls[0]["body"])
+    assert "Sentinel Core: an asymmetric core built for early transition." in sent_body["messages"][0]["content"]
 
 
 # --- list_products: needs_video_summary_refresh filter -- confirms the SQL

@@ -35,6 +35,42 @@ def test_basic_fields():
     assert p["release_date_raw"] == "January 2025"
 
 
+# --- parse_description: confirmed live via Claude in Chrome against the
+# real Executioner Solid product page this session -- see parse_
+# description's docstring and swag_fusion.html's fixture comment for the
+# full verification trail.
+
+def test_parse_description_finds_short_description_block():
+    p = _parsed_fusion()
+    assert p["description"] == (
+        "SWAG proudly presents the Modern Performance Line, a revolutionary "
+        "series that seamlessly combines cutting-edge performance with "
+        "innovative symmetrical core technology."
+    )
+
+
+def test_parse_description_returns_none_when_block_absent():
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup("<html><body><h1>No Description Here</h1></body></html>", "lxml")
+    assert app.parse_description(soup) is None
+
+
+def test_parse_description_returns_none_for_external_product():
+    """External/affiliate listings never reach parse_description at all --
+    parse_product_page returns the {"external_product": True} sentinel
+    before parsing attributes (see that function's docstring). Confirms
+    the sentinel path doesn't include a "description" key that could be
+    mistaken for a real (but empty) one."""
+    from bs4 import BeautifulSoup
+    external_html = "<html><body><h1>SWAG Apex Pearl Bowling Ball</h1></body></html>"
+    parsed = app.parse_product_page(external_html, "https://www.swagbowling.com/product/swag-apex-pearl-bowling-ball/")
+    assert parsed == {
+        "url": "https://www.swagbowling.com/product/swag-apex-pearl-bowling-ball/",
+        "name": "SWAG Apex Pearl Bowling Ball",
+        "external_product": True,
+    }
+
+
 def test_coverstock_split_across_two_fields():
     """Material comes from "Bowling Ball Coverstock Type" (Reactive),
     type comes from keyword-matching "Bowling Ball Cover Name" (contains

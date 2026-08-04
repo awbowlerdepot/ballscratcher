@@ -633,15 +633,36 @@ def fetch_approved_video_summaries(conn, product_id: str) -> list:
         return [row[0] for row in cur.fetchall()]
 
 
-def build_rollup_prompt(product_name: str, brand_name: str, summaries: list) -> str:
+def build_rollup_prompt(product_name: str, brand_name: str, summaries: list, description: str = None) -> str:
+    """Kept in sync with video_summarizer/app.py's function of the same
+    name -- see this file's module comment above fetch_approved_video_
+    summaries for why these are deliberate duplicates, not a shared import.
+
+    description (optional): the manufacturer's own marketing copy for this
+    ball, scraped from its product page (products.description). Included
+    as grounding context when present -- useful for getting technical
+    details right (core/coverstock names, the lane conditions it's
+    marketed for) -- but the prompt is explicit that the output must still
+    reflect what reviewers actually said, not just restate marketing copy."""
+    context_block = ""
+    if description:
+        context_block = (
+            "\n\nFor context, here is the manufacturer's own description of "
+            "this ball. Use it to get technical details right (core/"
+            "coverstock names, the lane conditions it's marketed for), but "
+            "the summary must still reflect what reviewers actually said, "
+            "not just restate marketing copy:\n" + description
+        )
+
     if len(summaries) == 1:
         return (
             f"The following is a summary of a single YouTube review video for the "
             f"{brand_name} {product_name} bowling ball. Rewrite it as a standalone "
             "2-4 sentence product description of what reviewers say about this ball "
             "-- remove any references to \"this video\" or \"the reviewer\", state it "
-            "as plain fact about the ball's performance instead.\n\n"
-            f"Review summary:\n{summaries[0]}"
+            "as plain fact about the ball's performance instead."
+            f"{context_block}"
+            f"\n\nReview summary:\n{summaries[0]}"
         )
 
     numbered = "\n".join(f"{i}. {s}" for i, s in enumerate(summaries, start=1))
@@ -653,18 +674,20 @@ def build_rollup_prompt(product_name: str, brand_name: str, summaries: list) -> 
         "reaction on the lane, who it's recommended for) and call out any notable "
         "disagreements between reviewers rather than papering over them. Don't "
         "reference \"the videos\" or how many reviews there are; write it as a "
-        "standalone product description.\n\n"
-        f"Review summaries:\n{numbered}"
+        "standalone product description."
+        f"{context_block}"
+        f"\n\nReview summaries:\n{numbered}"
     )
 
 
 def generate_video_reviews_rollup(bedrock_client, model_id: str, product_name: str, brand_name: str,
-                                   summaries: list, max_tokens: int = DEFAULT_ROLLUP_MAX_TOKENS) -> str:
+                                   summaries: list, description: str = None,
+                                   max_tokens: int = DEFAULT_ROLLUP_MAX_TOKENS) -> str:
     body = json.dumps({
         "anthropic_version": "bedrock-2023-05-31",
         "max_tokens": max_tokens,
         "messages": [
-            {"role": "user", "content": build_rollup_prompt(product_name, brand_name, summaries)},
+            {"role": "user", "content": build_rollup_prompt(product_name, brand_name, summaries, description)},
         ],
     })
     response = bedrock_client.invoke_model(modelId=model_id, contentType="application/json",
@@ -691,14 +714,14 @@ def store_rollup(conn, product_id: str, rollup_text: str, video_count: int) -> N
 def _fetch_product_for_rollup(conn, product_id: str):
     with conn.cursor() as cur:
         cur.execute(
-            "select p.id, p.name, b.name as brand_name from products p "
+            "select p.id, p.name, b.name as brand_name, p.description from products p "
             "join brands b on b.id = p.brand_id where p.id = %s",
             (product_id,),
         )
         row = cur.fetchone()
         if row is None:
             return None
-        return {"id": row[0], "name": row[1], "brand_name": row[2]}
+        return {"id": row[0], "name": row[1], "brand_name": row[2], "description": row[3]}
 
 
 def refresh_video_reviews_rollup(conn, product_id: str) -> dict:
@@ -724,6 +747,7 @@ def refresh_video_reviews_rollup(conn, product_id: str) -> dict:
     model_id = os.environ.get("BEDROCK_MODEL_ID", DEFAULT_BEDROCK_MODEL_ID)
     rollup_text = generate_video_reviews_rollup(
         bedrock_client, model_id, product["name"], product["brand_name"], summaries,
+        product["description"],
     )
     store_rollup(conn, product_id, rollup_text, len(summaries))
     return {"product_id": product_id, "rollup_regenerated": True, "video_count": len(summaries)}

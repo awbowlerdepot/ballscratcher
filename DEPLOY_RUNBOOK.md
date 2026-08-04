@@ -660,6 +660,39 @@ whenever it next runs.
    ```
    Logs a per-product line and a final `{"total": N, "refreshed": N, "errors": N}`
    summary; exits non-zero only if every product it tried to refresh errored.
+9. Manufacturer description as rollup context. `products.description`
+   (a column that's existed in the schema since migration 001 but was
+   never actually populated by any scraper) is now scraped by all four
+   platforms and fed into the "summary of summaries" prompt (step 7) as
+   grounding context -- helps get technical details right (core/
+   coverstock names, the lane conditions the manufacturer markets it for)
+   without letting the rollup just restate marketing copy; the prompt is
+   explicit the output must still reflect what reviewers actually said.
+   Confirmed live via Claude in Chrome that all four platforms carry real,
+   ball-specific description text (not just generic tier/tech blurbs) --
+   see each scraper's `parse_description` docstring for the exact CSS
+   selector used per platform:
+   | Platform | Selector |
+   |---|---|
+   | Brunswick (`product_scraper`) | `.c-product-feature__info-body .u-hide` (visually hidden, but present in the raw server HTML) |
+   | Storm/Roto Grip/900 Global (`commercebuild_product_scraper`) | `.secondary-desc` |
+   | SWAG (`woocommerce_product_scraper`) | `.product-short-description` |
+   | MOTIV (`netsuite_product_scraper`) | `section.product form.order-form div.wysiwyg` |
+
+   `description` is coalesce-updated on every re-scrape (same pattern as
+   `release_date`), so a parse miss on one run doesn't null out a
+   previously-good value. Existing products won't have a description until
+   their next re-scrape -- no migration or backfill script needed for this
+   one specifically, it just fills in naturally as `product_scraper`/
+   `commercebuild_product_scraper`/`woocommerce_product_scraper`/
+   `netsuite_product_scraper` re-run (daily cron or manual invoke, same as
+   any other field). The rollup itself only regenerates when a video gets
+   summarized (step 7) or via the backfill endpoint (step 8), so a product
+   whose description just got backfilled won't show it in
+   `video_reviews_summary` until one of those triggers fires again --
+   re-running `scripts/backfill_video_review_rollups.py` after a
+   description backfill picks this up, same as after a reassign/delete
+   cleanup.
 
 ### 6j. Home transcript fetcher (residential caption fetching) -- optional, run outside AWS entirely
 
