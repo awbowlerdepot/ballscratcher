@@ -489,11 +489,16 @@ whenever it next runs.
      --cli-binary-format raw-in-base64-out /tmp/out.json
    cat /tmp/out.json
    ```
-   To cover a whole catalog, run it with `{}` (all published/current
-   products) once a day until it's caught up -- there's no schedule wired
-   up for this function on purpose (see the "no automated schedule"
-   section further down), so each day's invoke is a manual/cron call you
-   make yourself:
+   To cover a whole catalog, run it with `{}` (all 'current', non-retired
+   products, regardless of `published` -- see app.py's module docstring:
+   a real check against this catalog found 142 'current' products but only
+   1 with `published = true`, so requiring `published` here would have
+   meant this basically never ran; discovery is meant to run ahead of
+   publishing, so candidates are ready by the time a product goes live)
+   once a day until it's caught up -- there's no schedule wired up for
+   this function on purpose (see the "no automated schedule" section
+   further down), so each day's invoke is a manual/cron call you make
+   yourself:
    ```bash
    aws lambda invoke --function-name bowling-scraper-video-discovery \
      --payload '{}' --cli-binary-format raw-in-base64-out /tmp/out.json

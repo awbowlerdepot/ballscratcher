@@ -219,25 +219,41 @@ class _FakeConn:
         self.committed = True
 
 
-def test_fetch_products_to_search_defaults_to_published_current():
+def test_fetch_products_to_search_defaults_to_current_status_only():
+    """Real catalog check found 142 'current' products but only 1 with
+    published=true -- requiring published=true in this default scope would
+    have meant video discovery basically never ran across the catalog, so
+    that requirement was dropped (status='current' is still applied).
+    See app.py's module docstring for the full reasoning."""
     conn = _FakeConn(products=[{"id": "p1", "name": "Absolute", "brand_name": "Storm"}])
     products = app.fetch_products_to_search(conn, {}, max_products=90)
 
     assert products == [{"id": "p1", "name": "Absolute", "brand_name": "Storm"}]
     query, params = conn.cursor().executed[0]
-    assert "p.published = true" in query
+    assert "p.published = true" not in query
     assert "p.status = 'current'" in query
     assert params[-1] == 90  # the limit
 
 
-def test_fetch_products_to_search_explicit_product_ids_skips_published_filter():
+def test_fetch_products_to_search_explicit_product_ids_skips_status_filter():
     conn = _FakeConn(products=[{"id": "p1", "name": "Absolute", "brand_name": "Storm"}])
     app.fetch_products_to_search(conn, {"product_ids": ["p1"]}, max_products=90)
 
     query, params = conn.cursor().executed[0]
     assert "p.id = any(" in query
     assert "p.published = true" not in query
-    assert params[0] == ["p1"]
+    assert "p.status = 'current'" not in query
+
+
+def test_fetch_products_to_search_brand_id_scope_also_skips_published():
+    conn = _FakeConn(products=[{"id": "p1", "name": "Absolute", "brand_name": "Storm"}])
+    app.fetch_products_to_search(conn, {"brand_id": "brand-1"}, max_products=90)
+
+    query, params = conn.cursor().executed[0]
+    assert "p.published = true" not in query
+    assert "p.status = 'current'" in query
+    assert "p.brand_id = %s" in query
+    assert params[0] == "brand-1"
 
 
 def test_fetch_products_to_search_casts_product_ids_to_uuid_array():

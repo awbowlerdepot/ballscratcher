@@ -10,14 +10,24 @@ Manual/direct invoke only, same convention as this project's other discovery
 functions being invoked by hand rather than on a schedule (see
 DEPLOY_RUNBOOK.md) -- there's no SQS trigger here. The invoking event
 decides scope:
-    {"product_ids": ["<uuid>", ...]}   -- specific products
-    {"brand_id": "<uuid>"}             -- all published, current products for one brand
-    {}                                  -- all published, current products (capped, see below)
+    {"product_ids": ["<uuid>", ...]}   -- specific products, any status/published value
+    {"brand_id": "<uuid>"}             -- all 'current' (non-retired) products for one brand
+    {}                                  -- all 'current' (non-retired) products (capped, see below)
 This is deliberately NOT "the whole catalog, always" -- the user explicitly
 chose a subset-first approach over an immediate full-catalog job, and a
 per-invocation scope argument is how every other discovery function in this
 project already supports "just run it on what I tell you to" (e.g.
 netsuite_url_discovery's BRAND_ID env var, commercebuild's per-brand loop).
+
+The default/brand_id scopes deliberately do NOT require `published = true`
+(they only used to, until a real catalog check found why that mattered:
+142 'current' products, but only 1 with `published = true` -- almost the
+entire catalog would never get discovered under that filter). Video
+discovery is meant to run ahead of publishing, per an explicit product
+decision: candidates should already be found (and ideally approved) by the
+time a product actually goes live, not discovered from scratch afterward.
+`status = 'current'` (excluding retired balls) is still applied -- that
+part of the scoping was never in question, only `published`.
 
 HARD QUOTA CONSTRAINT (real, not a guess -- documented in Google's own API
 console, same discipline as this project's other real, disclosed
@@ -150,10 +160,12 @@ def parse_search_response(data: dict) -> list:
 
 def fetch_products_to_search(conn, job: dict, max_products: int) -> list:
     """Resolves the job's scope (see module docstring) into a list of
-    {id, name, brand_name} dicts, capped at max_products. Only published,
-    'current' products are considered by default -- retired balls are lower
-    priority for review-video enrichment and can be added to product_ids
-    explicitly if ever wanted."""
+    {id, name, brand_name} dicts, capped at max_products. 'current' (non-
+    retired) products only, by default -- retired balls are lower priority
+    for review-video enrichment and can be added to product_ids explicitly
+    if ever wanted. Deliberately does NOT require published = true (see
+    module docstring's real catalog numbers on why that was dropped) --
+    discovery is meant to run ahead of publishing, not after it."""
     query = """
         select p.id, p.name, b.name as brand_name
         from products p
@@ -175,7 +187,6 @@ def fetch_products_to_search(conn, job: dict, max_products: int) -> list:
         conditions.append("p.id = any(%s::uuid[])")
         params.append(list(product_ids))
     else:
-        conditions.append("p.published = true")
         conditions.append("p.status = 'current'")
         if brand_id:
             conditions.append("p.brand_id = %s")
