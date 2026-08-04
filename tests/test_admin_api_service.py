@@ -249,12 +249,14 @@ def test_reject_missing_review_item_raises():
 
 
 # --- Video candidates (YouTube content enrichment): approve/reject flow ---
-# Same fake-cursor-shaped-DB approach as review_queue above. _publish_video_
-# summarize_message reads VIDEO_SUMMARIZE_QUEUE_URL directly from os.environ
-# and returns False immediately when it's unset, so these tests don't need
-# to fake boto3/SQS at all -- they exercise the "queue not configured yet"
-# path, which is also the real state of a fresh deploy before that env var
-# is wired up.
+# Same fake-cursor-shaped-DB approach as review_queue above.
+# approve_video_candidate deliberately does NOT publish to
+# VIDEO_SUMMARIZE_QUEUE_URL / video_transcript_fetcher anymore -- see its
+# docstring for why (that Lambda path is confirmed broken by PoToken, and
+# auto-queuing to it on every approval would race-poison transcript_note
+# before the working home browser cron ever got a chance). These tests
+# confirm approval just marks the row approved and returns a plain result,
+# nothing SQS-shaped.
 
 def _fake_db_with_pending_video_candidate():
     return {
@@ -267,15 +269,30 @@ def _fake_db_with_pending_video_candidate():
     }
 
 
-def test_approve_video_candidate_marks_approved_without_queue_configured(monkeypatch):
+def test_approve_video_candidate_marks_approved_and_does_not_touch_queue(monkeypatch):
+    """No SQS publish at all anymore -- confirmed here by making sure
+    boto3 isn't even touched: if approve_video_candidate regressed back to
+    calling something SQS-shaped, importing a fake boto3 that raises on any
+    attribute access would catch it."""
     db = _fake_db_with_pending_video_candidate()
     conn = FakeConnection(db)
-    monkeypatch.delenv("VIDEO_SUMMARIZE_QUEUE_URL", raising=False)
 
-    result = service.approve_video_candidate(conn, "vid-1", resolved_by="al@bringyourbest.co")
+    class _ExplodingBoto3:
+        def __getattr__(self, name):
+            raise AssertionError(f"approve_video_candidate should not touch boto3.{name}")
 
-    assert result["status"] == "approved"
-    assert result["queued_for_summary"] is False
+    import sys as _sys
+    real_boto3 = _sys.modules.get("boto3")
+    _sys.modules["boto3"] = _ExplodingBoto3()
+    try:
+        result = service.approve_video_candidate(conn, "vid-1", resolved_by="al@bringyourbest.co")
+    finally:
+        if real_boto3 is not None:
+            _sys.modules["boto3"] = real_boto3
+        else:
+            del _sys.modules["boto3"]
+
+    assert result == {"video_id": "vid-1", "status": "approved"}
     assert db["product_videos"]["vid-1"]["status"] == "approved"
     assert db["product_videos"]["vid-1"]["resolved_by"] == "al@bringyourbest.co"
     assert conn.committed is True
@@ -301,33 +318,6 @@ def test_approve_missing_video_candidate_raises():
         assert False, "expected LookupError"
     except LookupError:
         pass
-
-
-def test_approve_video_candidate_forwards_youtube_video_id_to_publish(monkeypatch):
-    """Split-architecture change (see approve_video_candidate's docstring):
-    video_transcript_fetcher, the queue's consumer as of this change, is
-    deliberately non-VPC-attached and has no DB access, so
-    approve_video_candidate must select youtube_video_id itself and forward
-    it through to the publish call, rather than the old shape where only
-    product_video_id was sent. Monkeypatches _publish_video_summarize_message
-    directly (same pattern as get_review_item elsewhere in this file) to
-    check what it's called with, rather than faking boto3/SQS -- what's
-    under test here is the forwarding, not the SQS wire format."""
-    db = _fake_db_with_pending_video_candidate()
-    conn = FakeConnection(db)
-    captured = {}
-
-    def fake_publish(product_video_id, youtube_video_id):
-        captured["product_video_id"] = product_video_id
-        captured["youtube_video_id"] = youtube_video_id
-        return True
-
-    monkeypatch.setattr(service, "_publish_video_summarize_message", fake_publish)
-
-    result = service.approve_video_candidate(conn, "vid-1", resolved_by="al@bringyourbest.co")
-
-    assert result["queued_for_summary"] is True
-    assert captured == {"product_video_id": "vid-1", "youtube_video_id": "abc123"}
 
 
 def test_reject_video_candidate_marks_rejected():

@@ -350,19 +350,34 @@ def get_pending_video_count(conn) -> int:
 
 
 def approve_video_candidate(conn, video_id: str, resolved_by: str) -> dict:
-    """Marks the candidate approved, then best-effort publishes it to
-    VIDEO_SUMMARIZE_QUEUE_URL for video_transcript_fetcher to pick up.
-    Mirrors the other functions' "if configured" guard (see e.g.
-    netsuite_url_discovery.handler's queue_url check) -- if the queue isn't
-    wired up yet (env var unset), the row is still approved, it just won't
-    be enriched until re-approved or the queue's added, rather than failing
-    the whole request.
+    """Marks the candidate approved. Deliberately does NOT publish to
+    VIDEO_SUMMARIZE_QUEUE_URL / video_transcript_fetcher anymore -- that
+    was this function's original behavior, but it created a real race once
+    the home browser fetcher (scripts/home_transcript_fetcher_browser.py)
+    became the confirmed-working transcript path: video_transcript_fetcher
+    is a plain-HTTP fetch and, per its own module docstring, is confirmed
+    blocked by YouTube's PoToken/BotGuard requirement regardless of network
+    path (VPC or not). It never raises on that -- get_transcript treats a
+    blocked fetch as an expected outcome and always forwards a result with
+    a transcript_note (e.g. "captions_listed_but_transcript_fetch_returned_
+    empty") to video_summarizer, which writes that note onto the row.
+    needs_transcript() (home_transcript_fetcher.py) only picks up rows
+    where transcript_note IS NULL -- so if this function still auto-queued
+    to that broken Lambda on every approval, every candidate would get a
+    failure note written moments after approval, and the actually-working
+    browser fetcher would skip it forever, having no way to tell "genuinely
+    checked and no captions" apart from "never got a real attempt". Leaving
+    transcript_note untouched at approval time is what lets the home
+    browser cron (the confirmed-working path, see DEPLOY_RUNBOOK.md 6k) be
+    the one and only thing that sets it. VideoTranscriptFetcherFunction and
+    VideoSummarizeQueue are left deployed (nothing publishes to the queue
+    now, so the function simply never fires) rather than torn out here --
+    removing dead infra is a separate, lower-stakes cleanup, not bundled
+    into this fix.
 
-    Also selects youtube_video_id here and forwards it in the published
-    message: video_transcript_fetcher (the queue's consumer as of the
-    split-architecture change) is deliberately NOT VPC-attached and has no
-    DB access, so it can't look this up itself -- it needs the id handed to
-    it directly."""
+    Also selects youtube_video_id here (unused for publishing now, but kept
+    since callers/tests may still want it, and it costs nothing extra in
+    the same query)."""
     with conn.cursor() as cur:
         cur.execute("select status, youtube_video_id from product_videos where id = %s", (video_id,))
         row = cur.fetchone()
@@ -370,7 +385,6 @@ def approve_video_candidate(conn, video_id: str, resolved_by: str) -> dict:
             raise LookupError(f"No product_videos row with id {video_id}")
         if row[0] != "pending":
             raise ValueError(f"product_videos row {video_id} is already {row[0]}, not pending")
-        youtube_video_id = row[1]
 
         cur.execute(
             "update product_videos set status = 'approved', resolved_at = now(), resolved_by = %s where id = %s",
@@ -378,8 +392,7 @@ def approve_video_candidate(conn, video_id: str, resolved_by: str) -> dict:
         )
     conn.commit()
 
-    queued = _publish_video_summarize_message(video_id, youtube_video_id)
-    return {"video_id": video_id, "status": "approved", "queued_for_summary": queued}
+    return {"video_id": video_id, "status": "approved"}
 
 
 def reject_video_candidate(conn, video_id: str, resolved_by: str, reason: str = None) -> dict:
@@ -399,22 +412,14 @@ def reject_video_candidate(conn, video_id: str, resolved_by: str, reason: str = 
     return {"video_id": video_id, "status": "rejected"}
 
 
-def _publish_video_summarize_message(product_video_id: str, youtube_video_id: str) -> bool:
-    queue_url = os.environ.get("VIDEO_SUMMARIZE_QUEUE_URL")
-    if not queue_url:
-        return False
-
-    import boto3
-
-    sqs = boto3.client("sqs")
-    sqs.send_message(
-        QueueUrl=queue_url,
-        MessageBody=json.dumps({
-            "product_video_id": product_video_id,
-            "youtube_video_id": youtube_video_id,
-        }),
-    )
-    return True
+# _publish_video_summarize_message (published to VIDEO_SUMMARIZE_QUEUE_URL
+# for video_transcript_fetcher) used to live here and was called from
+# approve_video_candidate -- removed rather than left as dead code once
+# approve_video_candidate stopped calling it (see that function's
+# docstring for why). VIDEO_SUMMARIZE_QUEUE_URL/VideoSummarizeQueue are
+# still wired in template.yaml; nothing publishes to that queue anymore,
+# so VideoTranscriptFetcherFunction simply never fires. Tearing that infra
+# out is a separate cleanup, not bundled into this fix.
 
 
 def submit_video_transcript(conn, video_id: str, transcript: str, transcript_note: str = None) -> dict:

@@ -459,62 +459,91 @@ real BowlerDepot API credentials in Secrets Manager:
 
 ### 6i. Video enrichment (YouTube + Bedrock) -- only after `YouTubeApiKeySecretArn` is set and the Bedrock model is granted access
 
-New this session, unverified against a real YouTube page or a real
-Bedrock endpoint (this sandbox has no outbound network access -- see
-src/video_discovery/app.py's and src/video_summarizer/app.py's module
-docstrings for exactly what's unconfirmed). Test on a small, explicit
-product list first, not the default "all published/current" scope --
-each product costs one YouTube search.list call against the ~90/day cap.
-
-Two-stage pipeline as of the "split the architecture" change: approving a
-candidate publishes to `VideoSummarizeQueue`, consumed by the non-VPC
-`video_transcript_fetcher` (fetches the transcript, no DB access), which
-publishes its result to `VideoTranscriptResultQueue`, consumed by
-`video_summarizer` (DB write + Bedrock call, no YouTube fetch anymore).
-See src/video_transcript_fetcher/app.py's module docstring for why this
-split happened -- real, live-tested evidence pointed at YouTube's
-consumer-facing surface (`www.youtube.com`) getting different treatment
-from this stack's VPC/NAT-gateway IP than from a residential IP; moving
-the YouTube-facing fetch off VPC is the (unverified as of this deploy) fix
-being tried.
+**Transcript fetching is now exclusively the home browser cron (6k), not
+`VideoTranscriptFetcherFunction`.** Real, live-tested evidence this project
+(see src/video_transcript_fetcher/app.py's module docstring) confirmed
+that Lambda's plain-HTTP fetch is blocked by YouTube's PoToken/BotGuard
+requirement regardless of network path (VPC or non-VPC) -- it's not a
+"maybe fix this later" gap, it's a dead end. Because of that,
+`approve_video_candidate` no longer publishes to `VideoSummarizeQueue` on
+approval (see its docstring in src/admin_api/service.py for the full
+reasoning): the old behavior would have raced the confirmed-working
+browser fetcher, since the broken Lambda always writes *some*
+`transcript_note` on completion (even a failure one), and the browser
+cron's `needs_transcript` filter treats any existing note as "already
+checked, don't retry." `VideoTranscriptFetcherFunction` and
+`VideoSummarizeQueue` are still deployed (harmless, just never invoked
+now) -- tearing them out is a separate cleanup, not required for any of
+this to work. Approving a candidate now just marks it `approved` and
+leaves `transcript_note` untouched, so 6k's cron is free to pick it up
+whenever it next runs.
 
 1. Find a real `product_id` (or a few) via `GET /products?search=...` on
    the admin API (see 6a for the auth header shape).
-2. Discover candidates for just those products:
+2. Discover candidates. Each product costs one YouTube search.list call
+   against a ~90/day quota (see src/video_discovery/app.py's module
+   docstring) -- test on a small, explicit list first:
    ```bash
    aws lambda invoke --function-name bowling-scraper-video-discovery \
      --payload '{"product_ids": ["<product-id>"]}' \
      --cli-binary-format raw-in-base64-out /tmp/out.json
    cat /tmp/out.json
    ```
+   To cover a whole catalog, run it with `{}` (all published/current
+   products) once a day until it's caught up -- there's no schedule wired
+   up for this function on purpose (see the "no automated schedule"
+   section further down), so each day's invoke is a manual/cron call you
+   make yourself:
+   ```bash
+   aws lambda invoke --function-name bowling-scraper-video-discovery \
+     --payload '{}' --cli-binary-format raw-in-base64-out /tmp/out.json
+   cat /tmp/out.json
+   ```
+   A catalog of, say, 300 published products takes ~4 days of these calls
+   (90/day) to fully cover; re-running discovery against a product that
+   already has candidates is safe (`insert_candidates` is idempotent
+   against an already-known `youtube_video_id` -- see test_video_discovery.py).
 3. Check what landed in `product_videos` as pending:
    ```bash
    curl -H "Authorization: Bearer $TOKEN" "$ADMIN_API_URL/video-candidates?status=pending"
    ```
-   Look at `match_confidence` -- 'low' entries are exactly the ones this
-   approval step exists for (see README/service.py comments); don't
-   rubber-stamp them without eyeballing the title/channel.
-4. Approve one:
+4. Approve. For one candidate at a time:
    ```bash
    curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
-     -d '{"resolved_by":"al@bringyourbest.co"}' \
+     -d '{"resolved_by":"al.wolfe@bringyourbest.co"}' \
      "$ADMIN_API_URL/video-candidates/<video-id>/approve"
    ```
-5. Confirm it made it through both stages -- `video_transcript_fetcher`
-   (off `VideoSummarizeQueue`) then `video_summarizer` (off
-   `VideoTranscriptResultQueue`) both run async, so check back after a
-   minute or two:
+   Or in bulk with `scripts/auto_approve_video_candidates.py`, which
+   auto-approves every `match_confidence='high'` pending candidate and
+   prints the `'low'` ones (title/channel/product) for you to eyeball and
+   approve/reject by hand -- 'high' is still a simple title-token
+   heuristic, not a guarantee (see that script's module docstring for the
+   known false-positive shape, e.g. "Storm Absolute Power Review" also
+   scoring high for the "Storm Absolute" product), so a wrong auto-approval
+   is possible but reversible via the reject endpoint below, not silent or
+   permanent:
+   ```bash
+   python3 scripts/auto_approve_video_candidates.py
+   ```
+   Reject a bad match (auto- or hand-approved) the same way approval
+   works, just against `/reject`:
+   ```bash
+   curl -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+     -d '{"resolved_by":"al.wolfe@bringyourbest.co","reason":"wrong product"}' \
+     "$ADMIN_API_URL/video-candidates/<video-id>/reject"
+   ```
+5. Confirm transcripts show up after the home browser cron's next run (6k)
+   -- approved candidates just sit with `transcript_note` unset until then,
+   this isn't an async-Lambda "check back in a minute" step anymore:
    ```bash
    curl -H "Authorization: Bearer $TOKEN" "$ADMIN_API_URL/video-candidates/<video-id>"
    ```
    Expect either a real `transcript`/`summary`, or `transcript_note` set to
-   `no_captions_available` (a real, expected outcome for videos without
-   captions, not a bug). If neither appeared after a few minutes, check
-   CloudWatch logs for `bowling-scraper-video-transcript-fetcher` first
-   (that's the function actually talking to YouTube now), then
-   `bowling-scraper-video-summarize-dlq` and
-   `bowling-scraper-video-transcript-result-dlq` -- same
-   first-stop-for-failures convention as every other DLQ in this project.
+   something like `no_captions_available` (a real, expected outcome for
+   videos without captions, not a bug). If a candidate approved days ago
+   still has no `transcript_note` at all, the cron job itself likely isn't
+   running -- check `~/bowling-transcript-fetcher-browser.log` on the Pi
+   first.
 
 ### 6j. Home transcript fetcher (residential caption fetching) -- optional, run outside AWS entirely
 
