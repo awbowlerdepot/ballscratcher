@@ -289,6 +289,55 @@ def test_reject_missing_review_item_raises():
         pass
 
 
+# --- list_video_candidates: pagination-stability regression test ---
+# Real bug found via a live full-catalog run of
+# auto_approve_video_candidates.py: this query orders by (match_confidence,
+# created_at) only, and rows inserted in the same video_discovery
+# invocation often share a created_at timestamp -- ties with no
+# deterministic tiebreaker make OFFSET/LIMIT pagination unstable, and a
+# candidate showed up on two different pages, got approved twice, and the
+# second attempt hit a real 422. This test doesn't run the query against a
+# real DB (no Postgres in this sandbox) -- it just captures the SQL text
+# and confirms pv.id is present as a final ORDER BY tiebreaker, which is
+# what actually fixes the instability.
+
+class _QueryCapturingCursor:
+    def __init__(self):
+        self.queries = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, query, params=None):
+        self.queries.append(" ".join(query.split()))
+
+    @property
+    def description(self):
+        return []
+
+    def fetchall(self):
+        return []
+
+
+class _QueryCapturingConnection:
+    def __init__(self):
+        self._cursor = _QueryCapturingCursor()
+
+    def cursor(self):
+        return self._cursor
+
+
+def test_list_video_candidates_orders_by_id_as_tiebreaker():
+    conn = _QueryCapturingConnection()
+    service.list_video_candidates(conn, status="pending", limit=200, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "order by pv.match_confidence asc, pv.created_at asc, pv.id asc" in query
+
+
 # --- Video candidates (YouTube content enrichment): approve/reject flow ---
 # Same fake-cursor-shaped-DB approach as review_queue above.
 # approve_video_candidate deliberately does NOT publish to

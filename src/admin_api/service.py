@@ -299,6 +299,19 @@ def set_product_published(conn, product_id: str, published: bool) -> dict:
 # ---------------------------------------------------------------------
 
 def list_video_candidates(conn, status: str = "pending", product_id: str = None, limit: int = 50, offset: int = 0) -> list:
+    """Real bug found via a live full-catalog run of
+    scripts/auto_approve_video_candidates.py: a single video_discovery
+    invocation inserts many product_videos rows in quick succession, often
+    with identical or near-identical `created_at` timestamps -- ordering
+    by (match_confidence, created_at) alone has no way to break those
+    ties deterministically, so OFFSET/LIMIT pagination across multiple
+    calls (this function is paginated by both that script and
+    home_transcript_fetcher.py) could return the same row on two different
+    pages (observed live: one candidate got approved, then failed with a
+    real 422 the second time it showed up) and, by the same instability,
+    could just as easily have skipped a different row entirely without any
+    visible error. `pv.id` is added as a final, always-unique tiebreaker so
+    the ordering -- and therefore the pagination -- is fully deterministic."""
     query = """
         select pv.id, pv.product_id, p.name as product_name, b.name as brand_name,
                pv.youtube_video_id, pv.title, pv.channel_title, pv.published_at,
@@ -315,7 +328,7 @@ def list_video_candidates(conn, status: str = "pending", product_id: str = None,
     if product_id:
         query += " and pv.product_id = %s"
         params.append(product_id)
-    query += " order by pv.match_confidence asc, pv.created_at asc limit %s offset %s"
+    query += " order by pv.match_confidence asc, pv.created_at asc, pv.id asc limit %s offset %s"
     params += [limit, offset]
 
     with conn.cursor() as cur:
