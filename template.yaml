@@ -907,7 +907,11 @@ Resources:
         Variables:
           YOUTUBE_API_KEY_SECRET_ARN: !Ref YouTubeApiKeySecretArn
           MAX_SEARCHES_PER_INVOCATION: "90"
-          MAX_RESULTS_PER_PRODUCT: "5"
+          # 20 results/product (was 5) -- doesn't cost extra YouTube API
+          # quota, that's per search.list *call* (one per product, still
+          # capped by MAX_SEARCHES_PER_INVOCATION), not per result returned.
+          # YouTube's own ceiling on this param is 50.
+          MAX_RESULTS_PER_PRODUCT: "20"
       Policies:
         - VPCAccessPolicy: {}
         - Statement:
