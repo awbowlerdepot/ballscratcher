@@ -38,15 +38,26 @@ ToS (Section 5.B) prohibits "any automated means" regardless of mechanism,
 so this isn't fully compliant either -- just non-deceptive, low-volume
 (once a day), and run from hardware you control.
 
-WHETHER THIS ACTUALLY WORKS IS UNVERIFIED as of writing -- YouTube's DOM
-structure and CSS class names for the transcript panel aren't documented
-and change over time, so the selectors below are a best-effort starting
-point, not a confirmed-working implementation. This script writes a
-screenshot + full page HTML dump to ./debug/ on any failure to find the
-button or extract text, specifically so real evidence (not more guessing)
-can drive whatever selector fixes turn out to be needed -- same
-evidence-first discipline as every other diagnostic in this project. Send
-those files back if it doesn't work on the first try.
+CONFIRMED WORKING against a real video (DcbP2eltVsE, on the Pi 5) as of
+this revision: the "Show transcript" button click succeeds, and the
+transcript panel genuinely renders each caption line as a
+`<transcript-segment-view-model class="ytwTranscriptSegmentViewModelHost">`
+element, with the caption text in a nested
+`<span class="ytAttributedStringHost ...">` separate from the timestamp
+div -- see _extract_transcript_text's docstring for the real markup this
+was confirmed against. The FIRST version of this script guessed at
+`ytd-transcript-segment-list-renderer`/`ytd-transcript-segment-renderer`
+(the older, "ytd-" prefixed naming convention YouTube's other UI still
+uses in places) and that guess was wrong -- caught via this script's own
+debug screenshot/HTML dump, not by guessing again. YouTube's DOM and class
+names aren't documented and can still drift over time, so this remains a
+"confirmed as of one real test," not a permanent guarantee -- this script
+still writes a screenshot + full page HTML dump to ./debug/ on any future
+failure to find the button or extract text, specifically so real evidence
+(not more guessing) can drive whatever selector fixes turn out to be
+needed next -- same evidence-first discipline as every other diagnostic in
+this project. Send those files back if it stops working after a YouTube
+UI change.
 
 Setup on the Pi 5:
     pip install -r scripts/requirements-browser.txt
@@ -134,39 +145,40 @@ def _click_first_visible(page, selectors: list, timeout_ms: int) -> bool:
 
 
 def _extract_transcript_text(page, timeout_ms: int) -> str:
-    """The transcript panel's exact structure isn't documented -- this
-    grabs every segment renderer's text content, falling back to the whole
-    panel's innerText if the specific segment selector doesn't match.
-    Segment timestamps are typically in a separate element from the
-    caption text within each segment; joining innerText across segments and
-    collapsing whitespace is good enough for feeding Bedrock a summary
-    prompt (see video_summarizer/app.py's build_summary_prompt) -- doesn't
-    need to be pixel-perfect."""
-    panel = page.locator("ytd-transcript-segment-list-renderer").first
-    panel.wait_for(state="visible", timeout=timeout_ms)
+    """CONFIRMED against real markup via a live test's debug HTML dump
+    (DcbP2eltVsE, see module docstring): each caption line is a
+    <transcript-segment-view-model class="ytwTranscriptSegmentViewModelHost">
+    element containing a timestamp div (class contains "...Timestamp") and
+    the actual caption text in a separate
+    <span class="ytAttributedStringHost ..."> -- e.g.:
 
-    segments = page.locator("ytd-transcript-segment-renderer")
+        <transcript-segment-view-model class="ytwTranscriptSegmentViewModelHost" ...>
+          <div aria-hidden="true" class="ytwTranscriptSegmentViewModelTimestamp">0:00</div>
+          <div class="ytwTranscriptSegmentViewModelTimestampA11yLabel">0 seconds</div>
+          <span class="ytAttributedStringHost ytAttributedStringLinkInheritColor" role="text">...actual text...</span>
+        </transcript-segment-view-model>
+
+    Targeting that span directly, scoped within each segment element, is
+    more robust than grabbing the whole segment's innerText and trying to
+    strip the timestamp back out -- ytAttributedStringHost is YouTube's
+    generic text-rendering class used all over the site, so it's only safe
+    to select scoped inside a transcript-segment-view-model, not page-wide.
+    Falls back to the segment's own innerText if that span isn't found for
+    some reason, rather than silently dropping the line."""
+    segments = page.locator("transcript-segment-view-model")
+    segments.first.wait_for(state="visible", timeout=timeout_ms)
+
     count = segments.count()
-    if count > 0:
-        texts = [segments.nth(i).inner_text() for i in range(count)]
-    else:
-        texts = [panel.inner_text()]
+    texts = []
+    for i in range(count):
+        segment = segments.nth(i)
+        text_span = segment.locator(".ytAttributedStringHost").first
+        try:
+            texts.append(text_span.inner_text())
+        except Exception:
+            texts.append(segment.inner_text())
 
-    # Segment inner_text often includes the leading timestamp
-    # (e.g. "0:03\nAlright let's check out this ball") -- strip a leading
-    # bare-timestamp line if present, join the rest.
-    cleaned = []
-    for t in texts:
-        lines = [ln.strip() for ln in t.splitlines() if ln.strip()]
-        if lines and _looks_like_timestamp(lines[0]):
-            lines = lines[1:]
-        cleaned.append(" ".join(lines))
-    return " ".join(c for c in cleaned if c).strip()
-
-
-def _looks_like_timestamp(s: str) -> bool:
-    parts = s.split(":")
-    return 1 < len(parts) <= 3 and all(p.isdigit() for p in parts)
+    return " ".join(t.strip() for t in texts if t and t.strip())
 
 
 def get_transcript_via_browser(video_id: str, browser) -> tuple:

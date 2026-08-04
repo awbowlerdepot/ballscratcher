@@ -5,15 +5,18 @@ Manual-runner pattern, run standalone via
 `python3 tests/test_home_transcript_fetcher_browser.py`.
 
 Playwright itself is not installed in this sandbox (no browser to actually
-launch), and the real question of whether the selectors in
-home_transcript_fetcher_browser.py match YouTube's actual current DOM is
-UNVERIFIED here -- these tests only cover the pure logic (timestamp
-detection, text-cleanup, selector-fallback ordering, and the
+launch) -- these tests cover the pure logic (text extraction against the
+real, confirmed DOM shape, selector-fallback ordering, and the
 success/failure branching in get_transcript_via_browser) against small
 fake Playwright-shaped objects (FakeLocator/FakePage/FakeBrowser below),
-not against real YouTube markup. See that module's docstring: real
-verification happens on the Pi 5, and any selector mismatch shows up as a
-screenshot + HTML dump in ./debug/, not as a sandbox test failure.
+not a real browser. The `<transcript-segment-view-model>` /
+`.ytAttributedStringHost` structure these fakes model is NOT a guess --
+it's what a real live test against DcbP2eltVsE on the Pi 5 actually found
+(see _extract_transcript_text's docstring for the real markup snippet
+pulled from that test's debug HTML dump). What's still unverified here is
+only whether YouTube's markup stays this way going forward -- any future
+drift shows up as a screenshot + HTML dump in ./debug/, not as a sandbox
+test failure.
 """
 import os
 import sys
@@ -23,34 +26,18 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 import home_transcript_fetcher_browser as script  # noqa: E402
 
 
-# --- _looks_like_timestamp ---
-
-def test_looks_like_timestamp_mm_ss():
-    assert script._looks_like_timestamp("0:03") is True
-
-
-def test_looks_like_timestamp_hh_mm_ss():
-    assert script._looks_like_timestamp("1:02:03") is True
-
-
-def test_looks_like_timestamp_rejects_plain_text():
-    assert script._looks_like_timestamp("Alright let's check out this ball") is False
-
-
-def test_looks_like_timestamp_rejects_single_number():
-    assert script._looks_like_timestamp("42") is False
-
-
 # --- Fake Playwright-shaped objects, minimal enough to cover how the
 # module actually calls them (.first, .wait_for, .click, .inner_text,
-# .count, .nth) ---
+# .count, .nth, and now .locator() for the span scoped inside a segment) ---
 
 class FakeLocator:
-    def __init__(self, visible=True, text="", segments=None):
+    def __init__(self, visible=True, text="", segments=None, child_locator_map=None, raise_on_inner_text=False):
         self.visible = visible
         self.text = text
         self.segments = segments or []
         self.clicked = False
+        self.child_locator_map = child_locator_map or {}
+        self.raise_on_inner_text = raise_on_inner_text
 
     @property
     def first(self):
@@ -64,6 +51,8 @@ class FakeLocator:
         self.clicked = True
 
     def inner_text(self):
+        if self.raise_on_inner_text:
+            raise Exception("element not found")
         return self.text
 
     def count(self):
@@ -71,6 +60,13 @@ class FakeLocator:
 
     def nth(self, i):
         return self.segments[i]
+
+    def locator(self, selector):
+        # Mirrors Playwright's Locator.locator() -- a selector scoped
+        # within this element. Missing selector -> a locator whose
+        # inner_text() raises, so _extract_transcript_text's fallback path
+        # (segment.inner_text() when the span isn't found) is exercisable.
+        return self.child_locator_map.get(selector, FakeLocator(raise_on_inner_text=True))
 
 
 class FakePage:
@@ -103,39 +99,46 @@ class FakeBrowser:
         return self._page
 
 
-# --- _extract_transcript_text ---
+# --- _extract_transcript_text, against the real confirmed
+# transcript-segment-view-model / .ytAttributedStringHost structure ---
 
-def test_extract_transcript_text_strips_leading_timestamp_per_segment():
+def test_extract_transcript_text_reads_caption_span_per_segment():
+    segment1 = FakeLocator(child_locator_map={
+        ".ytAttributedStringHost": FakeLocator(text="Alright let's check out this ball"),
+    })
+    segment2 = FakeLocator(child_locator_map={
+        ".ytAttributedStringHost": FakeLocator(text="the hook is pretty strong"),
+    })
     locator_map = {
-        "ytd-transcript-segment-list-renderer": FakeLocator(visible=True),
-        "ytd-transcript-segment-renderer": FakeLocator(segments=[
-            FakeLocator(text="0:00\nAlright let's check out this ball"),
-            FakeLocator(text="0:02\nthe hook is pretty strong"),
-        ]),
+        "transcript-segment-view-model": FakeLocator(visible=True, segments=[segment1, segment2]),
     }
     page = FakePage(locator_map)
     text = script._extract_transcript_text(page, timeout_ms=1000)
     assert text == "Alright let's check out this ball the hook is pretty strong"
 
 
-def test_extract_transcript_text_falls_back_to_panel_innertext_when_no_segments():
+def test_extract_transcript_text_falls_back_to_segment_innertext_when_span_missing():
+    """If .ytAttributedStringHost doesn't match for some reason (a future
+    YouTube markup tweak, say), fall back to the whole segment's innerText
+    rather than silently dropping that line -- better a timestamp-prefixed
+    line makes it into the transcript than the line vanishes entirely."""
+    segment1 = FakeLocator(text="0:00 Alright let's check out this ball")  # no child_locator_map entry
     locator_map = {
-        "ytd-transcript-segment-list-renderer": FakeLocator(visible=True, text="Some raw transcript text"),
-        "ytd-transcript-segment-renderer": FakeLocator(segments=[]),  # count() == 0
+        "transcript-segment-view-model": FakeLocator(visible=True, segments=[segment1]),
     }
     page = FakePage(locator_map)
     text = script._extract_transcript_text(page, timeout_ms=1000)
-    assert text == "Some raw transcript text"
+    assert text == "0:00 Alright let's check out this ball"
 
 
-def test_extract_transcript_text_raises_if_panel_never_appears():
+def test_extract_transcript_text_raises_if_no_segments_ever_appear():
     locator_map = {
-        "ytd-transcript-segment-list-renderer": FakeLocator(visible=False),
+        "transcript-segment-view-model": FakeLocator(visible=False),
     }
     page = FakePage(locator_map)
     try:
         script._extract_transcript_text(page, timeout_ms=1000)
-        assert False, "expected an exception when the panel never becomes visible"
+        assert False, "expected an exception when no segment ever becomes visible"
     except TimeoutError:
         pass
 
@@ -161,12 +164,12 @@ def test_click_first_visible_returns_false_when_nothing_visible():
 
 def test_get_transcript_via_browser_success(monkeypatch):
     monkeypatch.setattr(script, "_dump_debug_evidence", lambda *a, **k: None)
+    segment = FakeLocator(child_locator_map={
+        ".ytAttributedStringHost": FakeLocator(text="Alright let's check out this ball"),
+    })
     locator_map = {
         script._SHOW_TRANSCRIPT_SELECTORS[0]: FakeLocator(visible=True),
-        "ytd-transcript-segment-list-renderer": FakeLocator(visible=True),
-        "ytd-transcript-segment-renderer": FakeLocator(segments=[
-            FakeLocator(text="0:00\nAlright let's check out this ball"),
-        ]),
+        "transcript-segment-view-model": FakeLocator(visible=True, segments=[segment]),
     }
     page = FakePage(locator_map)
     browser = FakeBrowser(page)
@@ -197,7 +200,7 @@ def test_get_transcript_via_browser_panel_extraction_fails(monkeypatch):
     monkeypatch.setattr(script, "_dump_debug_evidence", lambda page, video_id, tag: dumps.append(tag))
     locator_map = {
         script._SHOW_TRANSCRIPT_SELECTORS[0]: FakeLocator(visible=True),  # button click succeeds
-        "ytd-transcript-segment-list-renderer": FakeLocator(visible=False),  # panel never appears
+        "transcript-segment-view-model": FakeLocator(visible=False),  # panel never appears
     }
     page = FakePage(locator_map)
     browser = FakeBrowser(page)
