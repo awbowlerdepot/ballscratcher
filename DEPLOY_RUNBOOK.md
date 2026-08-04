@@ -33,7 +33,7 @@ Any Postgres 13+ instance works (RDS is the obvious choice, but this
 repo doesn't assume it). Note the connection details -- you'll need them
 for step 3's `DbSecretArn` secret and to run migrations directly.
 
-## 2. Run the five migrations, in order
+## 2. Run the six migrations, in order
 
 ```bash
 psql "$DATABASE_URL" -f db/migrations/001_init_schema.sql
@@ -41,10 +41,12 @@ psql "$DATABASE_URL" -f db/migrations/002_add_woocommerce_netsuite_platforms.sql
 psql "$DATABASE_URL" -f db/migrations/003_date_tracking_and_bowwwl.sql
 psql "$DATABASE_URL" -f db/migrations/004_product_videos.sql
 psql "$DATABASE_URL" -f db/migrations/005_products_last_video_discovery_at.sql
+psql "$DATABASE_URL" -f db/migrations/006_products_video_reviews_summary.sql
 ```
 
-(If you already ran 001-004 in an earlier deploy, just run 005 by itself
-against the same database -- it's additive, adding one nullable column.)
+(If you already ran an earlier subset in a prior deploy, just run whatever
+you're missing against the same database -- each migration is additive,
+adding columns/tables only.)
 
 These were reviewed by hand for syntax but never executed against a real
 Postgres instance (no server available in the sandbox that wrote them) --
@@ -599,6 +601,28 @@ whenever it next runs.
    still has no `transcript_note` at all, the cron job itself likely isn't
    running -- check `~/bowling-transcript-fetcher-browser.log` on the Pi
    first.
+7. "Summary of summaries" -- a product-level rollup, synthesized from
+   every approved video's own summary for that product. video_summarizer
+   regenerates it automatically every time a video gets a real summary
+   written (no separate trigger, nothing to run by hand) -- see
+   src/video_summarizer/app.py's module docstring, SUMMARY OF SUMMARIES
+   section, and `refresh_video_reviews_rollup`. A single summarized video
+   is enough to produce one (not gated behind a minimum count); it still
+   goes through Bedrock rather than just copying that one summary
+   verbatim, specifically so the field's voice/framing stays consistent
+   whether it's built from 1 video or 10 (a per-video summary is written
+   in that video's own context -- "in this video, the reviewer notes..."
+   -- which reads oddly copied straight into a product-level field).
+   Regeneration is soft-fail: a Bedrock hiccup here never blocks or
+   retries the video's own summary, it just leaves the existing rollup
+   (if any) stale until the next successful video summarization retries it.
+   ```bash
+   curl -H "Authorization: Bearer $TOKEN" "$ADMIN_API_URL/products/<product-id>" \
+     | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["video_reviews_summary"], d["video_reviews_summary_video_count"])'
+   ```
+   (`GET /products/{id}` already returns every column via `select *`, so
+   no new admin API endpoint was needed for this -- `list_products` was
+   deliberately left unchanged, to keep that endpoint's response lean.)
 
 ### 6j. Home transcript fetcher (residential caption fetching) -- optional, run outside AWS entirely
 
