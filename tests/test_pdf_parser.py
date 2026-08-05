@@ -7,6 +7,15 @@ the HTML fixtures -- see their own header notes in the architecture doc
 for that distinction). Both fixture files include the raw performance-index
 chart noise text that trails the real fields on the actual PDF page, so
 these tests also confirm the parser correctly ignores that noise.
+
+tests/fixtures/mastermind_strategy_info_sheet.txt -- captured the same way
+(mcp__workspace__web_fetch against Brunswick's real CDN URL), in a later
+session, for a real, live-reported parsing bug: Mastermind Strategy (a
+retired asymmetric-core ball) uses an older Info Sheet layout entirely,
+with a 5-row RG MAX/INT/Min/Diff/ASY breakdown instead of the modern
+bare RG/DIFF/ASY lines, and ALL-CAPS field labels instead of title case.
+See parse_weight_table's and parse_fields' docstrings for exactly how
+each broke before this fixture's tests were added.
 """
 import os
 import sys
@@ -79,6 +88,62 @@ def test_defender_skus_full_breakdown_with_mass_bias():
     assert by_weight[15]["rg"] == 2.473
     assert by_weight[15]["differential"] == 0.054
     assert by_weight[15]["mass_bias"] == 0.015
+
+
+def test_mastermind_strategy_fields_all_caps_labels():
+    """Real bug: this older sheet's field labels are ALL CAPS ("PART
+    NUMBER", "COLOR", ...) where modern sheets use title case ("Part
+    Number", "Color"). Before parse_fields' case-insensitive fix, every
+    one of these came back None."""
+    parsed = app.parse_info_sheet(_load("mastermind_strategy_info_sheet.txt"))
+    assert parsed["part_number"] == "60105839"
+    assert parsed["color"] == "Blue / Violet / Orange"
+    assert parsed["core_name"] == "Modified Mastermind Asymmetric"
+    assert parsed["coverstock_name"] == "Relativity Solid"
+    assert parsed["factory_finish"] == "500 / 2000 Siaair Micro Pad"
+    # This older layout has no separate "Cover Type"/"Warranty" lines at
+    # all -- correctly None, not a parsing failure.
+    assert parsed["cover_type"] is None
+    assert parsed["warranty"] is None
+
+
+def test_mastermind_strategy_skus_older_rg_max_int_min_layout():
+    """The real motivating case: this sheet's weight table has five rows
+    (RG MAX/INT/Min/Diff/ASY) instead of the modern two/three (RG/DIFF/
+    ASY), because it exposes the raw measurements the modern sheets
+    collapse away. "RG Min" is what maps to this project's "rg" column --
+    confirmed against the values below, which are this exact ball's own
+    published spec-table numbers (RG 2.504 / DIFF 0.048 / ASY 0.013, all
+    at 15 lb)."""
+    parsed = app.parse_info_sheet(_load("mastermind_strategy_info_sheet.txt"))
+    skus = parsed["skus"]
+    assert [s["weight_lbs"] for s in skus] == [16, 15, 14, 13, 12]
+
+    by_weight = {s["weight_lbs"]: s for s in skus}
+    assert by_weight[15]["rg"] == 2.504
+    assert by_weight[15]["differential"] == 0.048
+    assert by_weight[15]["mass_bias"] == 0.013
+    # Spot-check a second weight too, not just the one the spec table
+    # happens to publish -- confirms the whole row, not a coincidence at
+    # 15 lb only.
+    assert by_weight[16]["rg"] == 2.492
+    assert by_weight[16]["differential"] == 0.048
+    assert by_weight[16]["mass_bias"] == 0.013
+    assert by_weight[12]["rg"] == 2.612
+    assert by_weight[12]["differential"] == 0.043
+    assert by_weight[12]["mass_bias"] == 0.011
+
+
+def test_mastermind_strategy_ignores_headline_only_rg_differential_line():
+    """This sheet also has a standalone "RG DIFFERENTIAL .048" line (a
+    single headline value, not a per-weight row) that starts with "RG "
+    just like the real per-weight rows do. Must not leak into any
+    result -- confirmed above that differential values come from the
+    real "RG Diff" per-weight row instead, which this test just
+    reinforces isn't a coincidental match."""
+    parsed = app.parse_info_sheet(_load("mastermind_strategy_info_sheet.txt"))
+    diffs = {s["weight_lbs"]: s["differential"] for s in parsed["skus"]}
+    assert diffs == {16: 0.048, 15: 0.048, 14: 0.048, 13: 0.043, 12: 0.043}
 
 
 def test_find_mismatches_detects_real_crown_78u_discrepancy():

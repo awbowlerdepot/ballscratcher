@@ -315,6 +315,32 @@ actual first real test. If image processing looks wrong, download a
 couple of the mirrored images from `ImageBucket` and eyeball them before
 assuming the bug is elsewhere.
 
+**Real bug found and fixed (retired/older balls' Info Sheets):**
+`pdf_parser` originally assumed every Info Sheet PDF used the modern
+layout (a bare `RG `/`DIFF `/`ASY ` line, one final number per weight).
+Older sheets -- confirmed live against Mastermind Strategy's actual PDF,
+a retired asymmetric-core ball -- use a 5-row layout instead (`RG MAX`/
+`RG INT`/`RG Min`/`RG Diff`/`RG ASY`, exposing the raw measurements
+rather than collapsing them), and ALL-CAPS field labels (`PART NUMBER`
+vs modern `Part Number`). Both silently broke: every one of those five
+rows starts with `RG `, so the old code kept overwriting `rg_values`
+with whichever row came last (with the sub-label word itself parsed as
+a bogus number, shifting everything by one position), while
+`diff`/`mass_bias` stayed `None` entirely since this layout has no bare
+`DIFF `/`ASY ` line at all; and case-sensitive field-label matching
+missed every field since the labels were the wrong case. Fixed in both
+`parse_weight_table()` (prefers the `RG Min`/`RG Diff`/`RG ASY` rows
+when present -- `RG Min` is what's publicly reported as "RG", confirmed
+against this exact ball's own spec table) and `parse_fields()`
+(case-insensitive label matching). See `tests/fixtures/
+mastermind_strategy_info_sheet.txt` for the real captured text and
+`tests/test_pdf_parser.py`'s three new tests for the exact before/after
+values. No migration or backfill needed -- this only affects parsing of
+PDFs not yet successfully synced; `sync_pdf_skus`'s existing
+insert/coalesce/review_queue logic (see that function's docstring)
+handles re-running `pdf_parser` against an already-partially-synced
+product the same as any other re-scrape.
+
 ### 6d. SWAG (if `SwagBrandId` was set)
 
 No schedule wired up for `WooCommerceUrlDiscoveryFunction` yet -- invoke

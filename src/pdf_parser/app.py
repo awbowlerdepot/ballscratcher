@@ -68,6 +68,18 @@ WEIGHT_HEADER_LINE_RE = re.compile(r"(?:\d{1,2}\s*lbs?\s*){2,}")
 WEIGHT_TOKEN_RE = re.compile(r"(\d{1,2})\s*lbs?")
 NUMBER_RE = re.compile(r"-?\d+\.\d+")
 
+# Older Info Sheets (e.g. retired asymmetric-core balls like Mastermind
+# Strategy) expose the raw RG measurements instead of collapsing them
+# into a single "RG" line -- "RG MAX"/"RG INT"/"RG Min" rows plus already-
+# computed "RG Diff"/"RG ASY" rows, one number per weight, in place of the
+# modern sheets' bare "RG "/"DIFF "/"ASY " lines. See parse_weight_table's
+# docstring for the real fixture text and how the four sub-labels map to
+# this project's schema. `\b` after the alternation is what keeps this
+# from also matching "RG DIFFERENTIAL .048" (a real line on the same
+# sheet, a single headline value with no per-weight breakdown) --
+# "DIFFERENTIAL" doesn't end at a word boundary right after "DIFF".
+RG_SUBLABEL_RE = re.compile(r"^RG\s+(MAX|INT|MIN|DIFF|ASY)\b", re.IGNORECASE)
+
 # "Label Value" line prefixes, longest-first so "Part Number" matches before
 # a hypothetical bare "Part" would. Matched at the start of a line only --
 # these labels also appear as PDF form-title boilerplate elsewhere in the
@@ -117,6 +129,42 @@ def parse_weight_table(text: str) -> list:
     has ASY present and Crown 78U's real sheet doesn't -- offset-based
     parsing would break on whichever sheet doesn't match the offset it was
     tuned against.
+
+    Handles two real, distinct table layouts, confirmed live against
+    actual Brunswick Info Sheet PDFs:
+
+    Modern (Crown 78U, Defender, and every "Current" ball checked): a bare
+    "RG "/"DIFF "/"ASY " line, one already-final number per weight.
+
+    Older (retired asymmetric-core balls, e.g. Mastermind Strategy --
+    real fixture, tests/fixtures/mastermind_strategy_info_sheet.txt):
+        RG MAX  2.540 2.552 2.569 2.632 2.655
+        RG INT  2.526 2.538 2.555 2.621 2.644
+        RG Min  2.492 2.504 2.521 2.589 2.612
+        RG Diff 0.048 0.048 0.048 0.043 0.043
+        RG ASY  0.013 0.013 0.013 0.011 0.011
+    Five rows instead of two/three -- the raw max/int/min RG measurements
+    plus the already-computed per-weight Diff/ASY (not values this parser
+    needs to compute itself; they're already right there on the sheet).
+    Confirmed against that same ball's own published spec table (RG
+    2.504 / DIFF 0.048 / ASY 0.013, all at 15 lb) that "RG Min" -- not
+    "RG INT" -- is what's publicly reported as "RG": 2.504 matches "RG
+    Min"'s 15 lb value exactly. "RG MAX"/"RG INT" are real measurements
+    with no column in this project's schema (product_skus only has
+    rg/differential/mass_bias) and don't need deriving from beyond what
+    "RG Diff"/"RG ASY" already give directly -- they're parsed only to
+    recognize this layout, then otherwise discarded.
+
+    Without this split, every one of the five old-format rows matches a
+    bare `line.startswith("RG ")` check (they all start with "RG "), so
+    rg_values silently got overwritten five times over, ending up as
+    whichever row happened to come last in the text -- with the sub-label
+    word itself ("ASY", "MIN", ...) parsed as a bogus leading value,
+    shifting every real number over by one position relative to the
+    weight list. diff_values/asy_values stayed None the whole time, since
+    this layout has no bare "DIFF "/"ASY " line at all. Real bug, not
+    hypothetical -- this is exactly what a live fetch of Mastermind
+    Strategy's actual Info Sheet PDF text showed before this fix.
     """
     lines = [line.strip() for line in text.splitlines() if line.strip()]
 
@@ -132,13 +180,32 @@ def parse_weight_table(text: str) -> list:
         return []
 
     rg_values, diff_values, asy_values = None, None, None
+    old_format = {}
     for line in lines:
+        sub_match = RG_SUBLABEL_RE.match(line)
+        if sub_match:
+            old_format[sub_match.group(1).upper()] = [_to_float(t) for t in line[sub_match.end():].split()]
+            continue
         if line.startswith("RG "):
+            # Only reached for the modern bare-value row -- every
+            # old-format "RG <SUBLABEL> ..." row was already caught (and
+            # `continue`d past) by RG_SUBLABEL_RE above.
             rg_values = [_to_float(t) for t in line[len("RG "):].split()]
         elif line.startswith("DIFF "):
             diff_values = [_to_float(t) for t in line[len("DIFF "):].split()]
         elif line.startswith("ASY "):
             asy_values = [_to_float(t) for t in line[len("ASY "):].split()]
+
+    # Old-format rows, when present, are the real per-weight data --
+    # prefer them over anything a bare-line match above happened to catch
+    # (e.g. a stray "RG DIFFERENTIAL .048" headline-only line, which does
+    # start with "RG " but isn't the per-weight breakdown).
+    if "MIN" in old_format:
+        rg_values = old_format["MIN"]
+    if "DIFF" in old_format:
+        diff_values = old_format["DIFF"]
+    if "ASY" in old_format:
+        asy_values = old_format["ASY"]
 
     results = []
     for idx, weight in enumerate(weights):
@@ -158,13 +225,23 @@ def parse_weight_table(text: str) -> list:
 
 def parse_fields(text: str) -> dict:
     """Extracts the "Label Value" block. Matches only at line-start against
-    the known label list (see module docstring for why)."""
+    the known label list (see module docstring for why).
+
+    Case-insensitive on purpose: older Info Sheets (same real Mastermind
+    Strategy PDF as parse_weight_table's docstring) print these labels in
+    ALL CAPS ("PART NUMBER 60105839", "COLOR Blue / Violet / Orange", ...)
+    where modern sheets use title case ("Part Number 60-108363-93X").
+    Confirmed live -- with a case-sensitive match, none of this older
+    sheet's fields matched at all. Matching stays anchored to line-start
+    either way (only the comparison is case-folded, not the extracted
+    value itself), so this doesn't loosen the "avoid matching inside
+    marketing boilerplate" guard the module docstring describes."""
     fields = {}
     for line in text.splitlines():
         line = line.strip()
         for label in FIELD_LABELS:
             prefix = label + " "
-            if line.startswith(prefix):
+            if line[:len(prefix)].upper() == prefix.upper():
                 fields[label.lower().replace(" ", "_")] = line[len(prefix):].strip()
                 break
     return fields
