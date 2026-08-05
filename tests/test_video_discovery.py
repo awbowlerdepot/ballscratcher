@@ -23,7 +23,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src", "video_discovery"))
 
 import app  # noqa: E402
-import requests  # noqa: E402 -- real module; only its .get is monkeypatched below
+import requests  # noqa: E402 -- real module; only used for the HTTPError exception type below
 
 
 # --- significant_tokens / score_match / build_search_query: pure, no DB ---
@@ -115,10 +115,21 @@ def test_parse_search_response_empty_items():
 
 # --- search_youtube error handling: real gap found via live smoke test ---
 # (a bare resp.raise_for_status() only logged "403 Forbidden" in CloudWatch,
-# not Google's actual error reason -- see app.py's fix comment). Manual
-# save/restore of requests.get rather than a monkeypatch fixture, since
-# this file's runner (see bottom) doesn't wire one up and only one test
-# here needs it.
+# not Google's actual error reason -- see app.py's fix comment).
+#
+# search_youtube now takes an injectable `session` param (see
+# get_youtube_requests_session's docstring: a real, confirmed 429-storm
+# from YouTube's per-minute rate limit during a live full-backlog run --
+# see app.py's module docstring) rather than importing `requests` and
+# calling requests.get directly, so these two tests inject a small fake
+# session object with .get() instead of monkeypatching the module-level
+# requests.get the way this file originally did -- get_youtube_requests_
+# session() itself now touches requests.Session/requests.adapters.
+# HTTPAdapter/urllib3.util.retry.Retry, none of which a bare
+# requests.get swap would exercise, so injecting a fake session is both
+# simpler and actually tests what search_youtube does with it. Same
+# transformation scripts/backfill_core_ids.py's tests went through
+# earlier for the identical reason.
 
 class _FakeResponse:
     def __init__(self, status_code, text, ok):
@@ -131,36 +142,63 @@ class _FakeResponse:
         return json.loads(self.text)
 
 
+class _FakeSession:
+    def __init__(self, response):
+        self._response = response
+        self.get_calls = []
+
+    def get(self, url, params=None, timeout=None):
+        self.get_calls.append({"url": url, "params": params})
+        return self._response
+
+
 def test_search_youtube_raises_with_response_body_on_error():
-    real_get = requests.get
-    requests.get = lambda *a, **kw: _FakeResponse(
+    fake = _FakeSession(_FakeResponse(
         403, '{"error": {"errors": [{"reason": "accessNotConfigured"}]}}', ok=False,
-    )
+    ))
     try:
-        try:
-            app.search_youtube("fake-key", "some query")
-            assert False, "expected HTTPError"
-        except requests.exceptions.HTTPError as e:
-            assert "403" in str(e)
-            assert "accessNotConfigured" in str(e)
-    finally:
-        requests.get = real_get
+        app.search_youtube("fake-key", "some query", session=fake)
+        assert False, "expected HTTPError"
+    except requests.exceptions.HTTPError as e:
+        assert "403" in str(e)
+        assert "accessNotConfigured" in str(e)
 
 
 def test_search_youtube_returns_videos_on_success():
-    real_get = requests.get
-    requests.get = lambda *a, **kw: _FakeResponse(
+    fake = _FakeSession(_FakeResponse(
         200,
         '{"items": [{"id": {"videoId": "abc"}, "snippet": {"title": "t", "channelTitle": "c", '
         '"publishedAt": "2026-01-01T00:00:00Z", "thumbnails": {"high": {"url": "https://x/y.jpg"}}}}]}',
         ok=True,
-    )
-    try:
-        videos = app.search_youtube("fake-key", "some query")
-        assert len(videos) == 1
-        assert videos[0]["youtube_video_id"] == "abc"
-    finally:
-        requests.get = real_get
+    ))
+    videos = app.search_youtube("fake-key", "some query", session=fake)
+    assert len(videos) == 1
+    assert videos[0]["youtube_video_id"] == "abc"
+    assert fake.get_calls[0]["params"]["q"] == "some query"
+
+
+# --- get_youtube_requests_session: confirms the actual retry config,
+# against the real requests/urllib3 (both available in this sandbox) --
+# not just that the function runs, but that it retries on exactly the
+# status this whole feature exists for (429, YouTube's per-minute rate
+# limit -- see module docstring's incident writeup), plus the neighboring
+# 5xx bucket, the expected retry count/backoff, and GET specifically
+# (the only method this module ever calls).
+
+def test_get_youtube_requests_session_retries_on_rate_limit_and_5xx():
+    session = app.get_youtube_requests_session()
+    adapter = session.get_adapter("https://www.googleapis.com/youtube/v3/search")
+    retry = adapter.max_retries
+
+    assert retry.total == app.RETRY_TOTAL
+    assert set(retry.status_forcelist) == set(app.RETRY_STATUS_FORCELIST)
+    assert 429 in retry.status_forcelist  # the specific status this feature exists for
+    assert "GET" in retry.allowed_methods
+    assert retry.backoff_factor == app.RETRY_BACKOFF_FACTOR
+
+
+def test_get_youtube_requests_session_returns_a_fresh_session_each_call():
+    assert app.get_youtube_requests_session() is not app.get_youtube_requests_session()
 
 
 # --- Fake DB layer: fetch_products_to_search / insert_candidates ---
@@ -366,6 +404,7 @@ def test_handler_marks_only_successfully_searched_products(monkeypatch):
 
     monkeypatch.setattr(app, "get_youtube_api_key", lambda: "fake-key")
     monkeypatch.setattr(app, "get_db_connection", lambda: _FakeConn())
+    monkeypatch.setattr(app, "get_youtube_requests_session", lambda: object())
     monkeypatch.setattr(
         app, "fetch_products_to_search",
         lambda conn, job, max_products: [
@@ -374,7 +413,7 @@ def test_handler_marks_only_successfully_searched_products(monkeypatch):
         ],
     )
 
-    def fake_search_youtube(api_key, query, max_results):
+    def fake_search_youtube(api_key, query, max_results, session=None):
         if "Fury" in query:
             raise RuntimeError("simulated quotaExceeded")
         return [{"youtube_video_id": "v1", "title": "Storm Absolute Review",

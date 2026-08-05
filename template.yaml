@@ -1267,10 +1267,16 @@ Resources:
       CodeUri: src/video_discovery/
       Handler: app.handler
       # Network-bound (one YouTube search.list call per product, each a
-      # real HTTP round trip) -- same 150s reasoning as the other
-      # discovery/scraper functions above, even though this one isn't
-      # SQS-triggered.
-      Timeout: 150
+      # real HTTP round trip) -- same reasoning as the other discovery/
+      # scraper functions' 150s, but raised to 280s after a real incident:
+      # a live 90-product run hit YouTube's per-minute search.list rate
+      # limit partway through (38/90 calls got a 429 "rateLimitExceeded"
+      # -- see src/video_discovery/app.py's module docstring for the full
+      # writeup and the retry-with-backoff fix). The extra headroom is for
+      # the backoff waits get_youtube_requests_session's Retry config
+      # introduces on whichever calls actually get throttled, not for the
+      # normal per-request round trip time.
+      Timeout: 280
       Environment:
         Variables:
           YOUTUBE_API_KEY_SECRET_ARN: !Ref YouTubeApiKeySecretArn

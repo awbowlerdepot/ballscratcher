@@ -65,6 +65,32 @@ sometimes. Rather than guess at a numeric threshold, every candidate is
 still stored (never silently dropped), but tagged 'low' confidence when the
 brand+product name aren't both recognizable in the title -- this is exactly
 what the admin approval step is for.
+
+REAL INCIDENT, first 90-product run against the whole never-searched
+backlog (Track/Ebonite's brand-new catalogs plus everything else that had
+never been discovered): 813 new candidates, but 38 of the 90 searches
+failed. CloudWatch showed every failure was the SAME cause -- a 429 from
+search.list with reason "rateLimitExceeded" against quota metric "Search
+Queries per minute", NOT the daily 10,000-unit ceiling described above
+(90 calls is only 9,000 units, comfortably under that). This is a
+DIFFERENT, shorter-window limit: YouTube throttles how fast you can call
+search.list, not just how many calls/day -- and search_youtube() was
+firing all 90 requests back-to-back with no pacing or retry at all, so
+once the per-minute cap was hit partway through, every remaining call in
+that burst got rejected. Same failure shape as the Shopify 429s and the
+Lambda-concurrency 503s found earlier in this project (an unthrottled
+loop outrunning someone else's rate limit) -- fixed the same way, retry-
+with-backoff via get_youtube_requests_session() below, reusing the exact
+RETRY_TOTAL/RETRY_BACKOFF_FACTOR/RETRY_STATUS_FORCELIST naming convention
+scripts/backfill_core_ids.py already established for this. No data was
+actually lost from the incident itself -- mark_product_searched only
+runs on the success path, so all 38 failed products stayed
+last_video_discovery_at=NULL and were still eligible for the very next
+{} invocation -- but without this fix, a re-run risks hitting the same
+wall again partway through. VideoDiscoveryFunction's Timeout in
+template.yaml was also raised (150s -> 280s) to give the retry backoff
+room to actually wait out a per-minute window without the Lambda itself
+timing out mid-recovery.
 """
 import json
 import logging
@@ -77,6 +103,20 @@ logger.setLevel(logging.INFO)
 DEFAULT_MAX_RESULTS_PER_PRODUCT = 5
 DEFAULT_MAX_SEARCHES_PER_INVOCATION = 90
 YOUTUBE_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
+
+# Retried status codes: 429 is the real, confirmed cause here (YouTube's
+# per-minute search.list rate limit -- see module docstring's incident
+# writeup), 500/502/503/504 included as the same "probably transient"
+# bucket every other retry-enabled request in this project uses.
+# backoff_factor=1 with urllib3's default formula
+# (backoff_factor * 2^(retry_number-1)) waits 1s/2s/4s/8s/16s between the
+# 5 attempts -- and, importantly, urllib3's Retry honors a Retry-After
+# response header when present (respect_retry_after_header defaults to
+# True), so a request that DOES get a real reset hint from Google waits
+# exactly that long instead of guessing.
+RETRY_STATUS_FORCELIST = (429, 500, 502, 503, 504)
+RETRY_TOTAL = 5
+RETRY_BACKOFF_FACTOR = 1
 
 # Generic words stripped when building the "significant tokens" set used by
 # score_match -- every product name contains these, so matching on them
@@ -119,14 +159,49 @@ def build_search_query(brand_name: str, product_name: str) -> str:
     return f"{brand_name} {product_name} bowling ball review"
 
 
-def search_youtube(api_key: str, query: str, max_results: int = DEFAULT_MAX_RESULTS_PER_PRODUCT) -> list:
+def get_youtube_requests_session():
+    """Builds a requests.Session with urllib3 Retry mounted on https --
+    see RETRY_STATUS_FORCELIST/RETRY_TOTAL/RETRY_BACKOFF_FACTOR's comment
+    and the module docstring's incident writeup for why this exists (a
+    real, confirmed per-minute YouTube rate limit, not a guess). A fresh
+    session per call rather than one module-level singleton keeps this
+    easy to monkeypatch/replace in tests without cross-test state -- same
+    reasoning as scripts/backfill_core_ids.py's identically-named
+    function. handler() below builds ONE session and reuses it across
+    every product in a given invocation (connection pooling), rather than
+    one per search_youtube call, but a fresh default is still provided
+    here for any direct/manual call that doesn't pass one."""
+    import requests
+    from urllib3.util.retry import Retry
+
+    session = requests.Session()
+    retry = Retry(
+        total=RETRY_TOTAL,
+        backoff_factor=RETRY_BACKOFF_FACTOR,
+        status_forcelist=RETRY_STATUS_FORCELIST,
+        allowed_methods=("GET",),
+        raise_on_status=False,  # let the resp.ok check below report the final failure, not urllib3's own exception shape
+    )
+    adapter = requests.adapters.HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    return session
+
+
+def search_youtube(api_key: str, query: str, max_results: int = DEFAULT_MAX_RESULTS_PER_PRODUCT,
+                    session=None) -> list:
     """One search.list call (100 quota units -- see module docstring).
     Returns a list of {youtube_video_id, title, channel_title, published_at,
     thumbnail_url} dicts. Kept separate from the DB/looping logic so tests
-    can feed a canned response shape without a network call or a real key."""
+    can feed a canned response shape without a network call or a real key.
+    session defaults to a fresh retry-enabled one (see
+    get_youtube_requests_session) but is overridable so tests can inject a
+    fake transport instead of hitting the network, and so handler() can
+    pass down one shared session for the whole invocation."""
     import requests
 
-    resp = requests.get(
+    session = session if session is not None else get_youtube_requests_session()
+
+    resp = session.get(
         YOUTUBE_SEARCH_URL,
         params={
             "part": "snippet",
@@ -320,6 +395,13 @@ def handler(event, context):
     max_results = int(os.environ.get("MAX_RESULTS_PER_PRODUCT", DEFAULT_MAX_RESULTS_PER_PRODUCT))
 
     api_key = get_youtube_api_key()
+    # One session, reused across every product this invocation -- see
+    # get_youtube_requests_session's docstring (connection pooling) and
+    # the module docstring's incident writeup (this is also where the
+    # actual retry-with-backoff protection against YouTube's per-minute
+    # rate limit comes from; search_youtube's own default fallback exists
+    # for direct/manual calls that skip handler entirely).
+    session = get_youtube_requests_session()
 
     conn = get_db_connection()
     try:
@@ -331,7 +413,7 @@ def handler(event, context):
         for product in products:
             query = build_search_query(product["brand_name"], product["name"])
             try:
-                videos = search_youtube(api_key, query, max_results)
+                videos = search_youtube(api_key, query, max_results, session=session)
             except Exception:
                 logger.exception("YouTube search failed for product_id=%s query=%r", product["id"], query)
                 errors.append(product["id"])
