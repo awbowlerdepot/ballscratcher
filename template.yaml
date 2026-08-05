@@ -844,23 +844,27 @@ Resources:
       # own (single-threaded, one-request-at-a-time) invocation to grab
       # -- HTTP API v2 surfaces that specific Lambda-service throttle as
       # a plain 503, which is why nothing showed up in the app-level logs.
-      # 2 is a deliberately small reservation, not a real fix -- it
-      # guarantees this function always has a slot even when the other 8
-      # remaining unreserved slots are fully saturated by the scraper
-      # swarm, covering this script's own strictly-sequential traffic
-      # (never more than 1 in flight) plus a little headroom for a human
-      # using admin-site/index.html at the same time. It does shrink the
-      # rest of the account's shared pool from 10 to 8, though, which is
-      # worth watching if scraper-side throttling starts showing up
-      # instead. scripts/backfill_core_ids.py's own retry-with-backoff
-      # (see its module docstring) is the complementary fix for whatever
-      # throttling still gets through either way. The real structural fix
-      # is requesting a Lambda concurrency quota increase for this
-      # account via AWS Service Quotas (service-code lambda, quota
-      # "Concurrent executions") -- 10 total across an account running
-      # five-plus Lambda functions will keep being tight regardless of
-      # what's reserved where.
-      ReservedConcurrentExecutions: 2
+      #
+      # A ReservedConcurrentExecutions: 2 reservation here was tried and
+      # reverted -- real, confirmed deploy failure: "Specified
+      # ReservedConcurrentExecutions for function decreases account's
+      # UnreservedConcurrentExecution below its minimum value of [10]."
+      # AWS enforces a hard floor of 10 concurrent executions that must
+      # always remain in the account's *unreserved* pool -- since this
+      # account's entire limit IS 10, there's nothing above that floor to
+      # carve a reservation out of; reserving even 1 slot here is rejected
+      # outright regardless of what number is used. There is no
+      # template-level mitigation available until the account's total
+      # limit is raised. scripts/backfill_core_ids.py's retry-with-backoff
+      # (see its module docstring) is the only fix currently in place --
+      # it's a client-side/script-level change, not a deploy, so it's
+      # already in effect. Request a Lambda concurrency quota increase for
+      # this account via AWS Service Quotas (service code `lambda`, quota
+      # "Concurrent executions") before the next catalog-wide backfill --
+      # once the account limit is meaningfully above 10, revisit adding
+      # ReservedConcurrentExecutions back here, since retries alone are a
+      # workaround for the underlying scarcity, not a substitute for
+      # actually having enough concurrency.
       Environment:
         Variables:
           # Read by service.py's approve_video_candidate -- see its

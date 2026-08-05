@@ -503,23 +503,32 @@ HTTP API v2 surfaces that specific Lambda-service throttle as a plain 503,
 which is why nothing showed up in the app-level logs -- the request never
 reached application code.
 
-Two complementary fixes, neither a full substitute for the other:
+Two mitigations were attempted; only one is actually in effect:
 
-1. `AdminApiFunction` now sets `ReservedConcurrentExecutions: 2` in
-   `template.yaml` -- a guaranteed slot so it's never fully starved by the
-   scraper swarm, at the cost of shrinking the account's shared pool from
-   10 to 8 (worth watching if scraper-side throttling shows up instead).
-2. `scripts/backfill_core_ids.py`'s `list_products_missing_core`/
+1. `scripts/backfill_core_ids.py`'s `list_products_missing_core`/
    `rescrape_product` now retry on 429/500/502/503/504 with exponential
    backoff (`get_requests_session()`, 5 attempts, 1s/2s/4s/8s/16s) rather
    than counting a transient throttle as a hard failure needing a manual
-   re-run.
+   re-run. This is a client-side/script-level change, not a deploy --
+   already in effect.
+2. `AdminApiFunction` setting `ReservedConcurrentExecutions: 2` in
+   `template.yaml` was tried and **reverted after a real, confirmed deploy
+   failure**: `"Specified ReservedConcurrentExecutions for function
+   decreases account's UnreservedConcurrentExecution below its minimum
+   value of [10]."` AWS enforces a hard floor of 10 concurrent executions
+   that must always remain in the account's *unreserved* pool -- since
+   this account's entire limit IS 10, there's nothing above that floor to
+   carve a reservation out of. Reserving even 1 slot for any function is
+   rejected outright until the account's total limit is raised above 10.
+   The stack rolled back cleanly (`UPDATE_ROLLBACK_COMPLETE`) -- nothing
+   was left broken, this mitigation just isn't available yet.
 
-**Neither of these is the real fix.** 10 total concurrent executions
-across an account running five-plus Lambda functions is going to keep
-being tight. Request a Lambda concurrency quota increase for this account
+**Retries alone are a workaround for the underlying scarcity, not a fix
+for it.** Request a Lambda concurrency quota increase for this account
 via AWS Service Quotas (service code `lambda`, quota "Concurrent
-executions") before running a catalog-wide backfill like this again.
+executions") before running a catalog-wide backfill like this again --
+once the account limit is meaningfully above 10, revisit adding
+`ReservedConcurrentExecutions` back to `AdminApiFunction`.
 
 **Cores tab (the "other direction" view):** Everything above (the Products
 tab's Core column, the missing-core filter/backfill) shows core info
