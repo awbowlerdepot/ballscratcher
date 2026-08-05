@@ -34,21 +34,56 @@ Parameters:
     Type: String
     Default: https://brunswickbowling.com/sitemaps-1-section-bowlerProducts-1-sitemap.xml
     Description: >
-      Per-brand product sitemap. Brunswick, Radical, and DV8 share the same
-      Craft CMS template and URL shape, so this same function/handler can be
-      reused for all three by deploying a second stack (or a second
-      EventBridge-triggered invocation) with this parameter pointed at the
-      sister brand's sitemap instead of duplicating code.
+      Brunswick's product sitemap. Radical and DV8 share the same Craft CMS
+      template/URL shape (confirmed live) and are now onboarded as their own
+      RadicalUrlDiscoveryFunction/Dv8UrlDiscoveryFunction resources below,
+      reusing this same src/url_discovery/ code with their own
+      RadicalSitemapUrl/Dv8SitemapUrl + RadicalBrandId/Dv8BrandId params,
+      inside this same stack -- same convention as SwagBrandId/MotivBrandId
+      rather than the separate-stack-per-brand approach this description
+      used to suggest before that pattern was established.
   UrlPathPattern:
     Type: String
     Default: /products/balls/(current|retired)/
-    Description: Regex matched against sitemap <loc> paths to keep only ball product pages.
+    Description: >
+      Regex matched against sitemap <loc> paths to keep only ball product
+      pages. Shared across the whole Craft-CMS family -- confirmed the same
+      URL shape holds for Radical/DV8 too, so RadicalUrlDiscoveryFunction/
+      Dv8UrlDiscoveryFunction reuse this one parameter rather than getting
+      their own copies.
   BrandId:
     Type: String
     Description: >
       UUID of the row in the `brands` table this deployment discovers URLs
       for (see db/migrations/001_init_schema.sql). Insert the brand row via
       the migration/seed data before deploying, then pass its id here.
+  RadicalSitemapUrl:
+    Type: String
+    Default: https://radicalbowling.com/sitemaps-1-section-bowlerProducts-1-sitemap.xml
+    Description: >
+      Confirmed live this session -- same Craft CMS/SEOmatic sitemap shape
+      as SitemapUrl above, just Radical's domain.
+  RadicalBrandId:
+    Type: String
+    Default: ""
+    Description: >
+      UUID of the `brands` row for Radical. Left blank by default, same
+      reasoning as SwagBrandId -- required once you actually enable
+      RadicalUrlDiscoveryFunction. Insert the brand row (see
+      DEPLOY_RUNBOOK.md section 4) before setting this.
+  Dv8SitemapUrl:
+    Type: String
+    Default: https://dv8bowling.com/sitemaps-1-section-bowlerProducts-1-sitemap.xml
+    Description: >
+      Confirmed live this session -- same Craft CMS/SEOmatic sitemap shape
+      as SitemapUrl above, just DV8's domain.
+  Dv8BrandId:
+    Type: String
+    Default: ""
+    Description: >
+      UUID of the `brands` row for DV8. Left blank by default, same
+      reasoning as RadicalBrandId -- required once you actually enable
+      Dv8UrlDiscoveryFunction.
   SwagCategoryUrl:
     Type: String
     Default: https://www.swagbowling.com/shop/bowling-balls/
@@ -417,6 +452,68 @@ Resources:
             Name: bowling-scraper-url-discovery-daily
             Description: Sitemap diff against discovered_urls; emits new/changed product URLs.
             Enabled: true
+
+  # Radical and DV8 -- same Craft CMS platform as Brunswick (confirmed live
+  # this session: identical SEOmatic sitemap shape, identical
+  # /products/balls/(current|retired)/<slug> URL structure, identical
+  # spec-table/RG-DIFF markup on the product pages themselves). No new
+  # scraper code needed -- ProductScraperFunction already takes {url,
+  # brand_id} as plain pass-through job parameters with zero
+  # Brunswick-specific hardcoding, so both of these publish straight onto
+  # the SAME ProductScrapeQueue that function already consumes. Only the
+  # URL-discovery step needs a new deployment per brand, reusing
+  # src/url_discovery/'s existing, already-generic code -- exactly what
+  # that module's own docstring anticipated.
+  #
+  # No schedule wired up yet, same reasoning as WooCommerceUrlDiscoveryFunction/
+  # NetsuiteUrlDiscoveryFunction below -- add a Schedule event once
+  # RadicalBrandId/Dv8BrandId are actually set for a real deployment (insert
+  # the brand rows first, see DEPLOY_RUNBOOK.md section 4). Invoke manually
+  # in the meantime.
+
+  RadicalUrlDiscoveryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-radical-url-discovery
+      CodeUri: src/url_discovery/
+      Handler: app.handler
+      Environment:
+        Variables:
+          SITEMAP_URL: !Ref RadicalSitemapUrl
+          URL_PATH_PATTERN: !Ref UrlPathPattern
+          BRAND_ID: !Ref RadicalBrandId
+          PRODUCT_SCRAPE_QUEUE_URL: !Ref ProductScrapeQueue
+      Policies:
+        - VPCAccessPolicy: {}
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt ProductScrapeQueue.QueueName
+
+  Dv8UrlDiscoveryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-dv8-url-discovery
+      CodeUri: src/url_discovery/
+      Handler: app.handler
+      Environment:
+        Variables:
+          SITEMAP_URL: !Ref Dv8SitemapUrl
+          URL_PATH_PATTERN: !Ref UrlPathPattern
+          BRAND_ID: !Ref Dv8BrandId
+          PRODUCT_SCRAPE_QUEUE_URL: !Ref ProductScrapeQueue
+      Policies:
+        - VPCAccessPolicy: {}
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt ProductScrapeQueue.QueueName
 
   ProductScraperFunction:
     Type: AWS::Serverless::Function
@@ -1352,6 +1449,10 @@ Resources:
 Outputs:
   UrlDiscoveryFunctionArn:
     Value: !GetAtt UrlDiscoveryFunction.Arn
+  RadicalUrlDiscoveryFunctionArn:
+    Value: !GetAtt RadicalUrlDiscoveryFunction.Arn
+  Dv8UrlDiscoveryFunctionArn:
+    Value: !GetAtt Dv8UrlDiscoveryFunction.Arn
   ProductScraperFunctionArn:
     Value: !GetAtt ProductScraperFunction.Arn
   PdfParserFunctionArn:

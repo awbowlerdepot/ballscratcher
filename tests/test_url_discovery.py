@@ -3,6 +3,15 @@ Tests for the URL discovery Lambda's parsing logic, using a real sitemap
 sample captured from brunswickbowling.com during architecture research
 (see tests/fixtures/bowlerProducts_sitemap_sample.xml for provenance).
 
+Also covers Radical/DV8 (tests/fixtures/radical_sitemap_sample.xml,
+dv8_sitemap_sample.xml) -- real sitemaps captured live when onboarding
+those two brands as a second/third deployment of this same generic
+function (see template.yaml's RadicalUrlDiscoveryFunction/
+Dv8UrlDiscoveryFunction). Same Craft CMS/SEOmatic platform and sitemap
+shape as Brunswick, confirmed by these fixtures actually parsing correctly
+with the shared UrlPathPattern regex rather than assumed from the platform
+match alone.
+
 Deliberately does not touch the network or a real database: parse_sitemap
 is a pure function, and diff_against_known is tested against a small fake
 cursor rather than a live Postgres connection, so this suite runs anywhere
@@ -26,6 +35,8 @@ from app import (  # noqa: E402
 )
 
 FIXTURE_PATH = pathlib.Path(__file__).parent / "fixtures" / "bowlerProducts_sitemap_sample.xml"
+RADICAL_FIXTURE_PATH = pathlib.Path(__file__).parent / "fixtures" / "radical_sitemap_sample.xml"
+DV8_FIXTURE_PATH = pathlib.Path(__file__).parent / "fixtures" / "dv8_sitemap_sample.xml"
 
 
 @pytest.fixture
@@ -82,6 +93,51 @@ def test_custom_path_pattern_can_scope_to_current_only(sitemap_bytes):
     entries = parse_sitemap(sitemap_bytes, path_pattern=r"/products/balls/(current)/")
     assert len(entries) == 4
     assert all(e["status"] == "current" for e in entries)
+
+
+# --- Radical/DV8: confirms the shared parser/pattern also works against
+# these sister brands' real sitemap output, not just Brunswick's ---
+
+def test_radical_sitemap_parses_only_ball_urls():
+    entries = parse_sitemap(RADICAL_FIXTURE_PATH.read_bytes())
+    urls = [e["url"] for e in entries]
+
+    assert all("/products/balls/" in u for u in urls)
+    assert not any("accessories" in u for u in urls)
+    assert len(entries) == 5  # 3 current + 2 retired in the fixture
+
+
+def test_radical_sitemap_classifies_current_vs_retired():
+    entries = parse_sitemap(RADICAL_FIXTURE_PATH.read_bytes())
+    by_url = {e["url"]: e for e in entries}
+
+    current_url = "https://radicalbowling.com/products/balls/current/evil-eye-pearl"
+    retired_url = "https://radicalbowling.com/products/balls/retired/intel-recon"
+
+    assert by_url[current_url]["status"] == "current"
+    assert by_url[current_url]["lastmod"] == "2026-08-04T12:32:45-04:00"
+    assert by_url[retired_url]["status"] == "retired"
+
+
+def test_dv8_sitemap_parses_only_ball_urls():
+    entries = parse_sitemap(DV8_FIXTURE_PATH.read_bytes())
+    urls = [e["url"] for e in entries]
+
+    assert all("/products/balls/" in u for u in urls)
+    assert not any("accessories" in u for u in urls)
+    assert len(entries) == 5  # 3 current + 2 retired in the fixture
+
+
+def test_dv8_sitemap_classifies_current_vs_retired():
+    entries = parse_sitemap(DV8_FIXTURE_PATH.read_bytes())
+    by_url = {e["url"]: e for e in entries}
+
+    current_url = "https://dv8bowling.com/products/balls/current/intense-collision"
+    retired_url = "https://dv8bowling.com/products/balls/retired/mantra-solid"
+
+    assert by_url[current_url]["status"] == "current"
+    assert by_url[current_url]["lastmod"] == "2026-08-04T13:30:45-04:00"
+    assert by_url[retired_url]["status"] == "retired"
 
 
 # --- diff_against_known: exercised against a small fake cursor/connection ---

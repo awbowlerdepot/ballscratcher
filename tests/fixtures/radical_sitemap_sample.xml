@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Real sample pulled from radicalbowling.com's bowlerProducts sitemap this
+  session, captured while researching Radical onboarding (same Craft
+  CMS/SEOmatic family as Brunswick, see bowlerProducts_sitemap_sample.xml).
+  Not fabricated: actual product URLs and lastmod values from a live fetch
+  of https://radicalbowling.com/sitemaps-1-section-bowlerProducts-1-sitemap.xml,
+  trimmed to a handful of entries.
+
+  A non-ball URL (accessories/shoe-essentials/shammy) is included to confirm
+  the SAME shared UrlPathPattern regex (/products/balls/(current|retired)/)
+  correctly excludes it here too, not just on Brunswick's own sitemap.
+-->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>https://radicalbowling.com/products/balls/current/evil-eye-pearl</loc>
+    <lastmod>2026-08-04T12:32:45-04:00</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://radicalbowling.com/products/balls/current/intel-tour</loc>
+    <lastmod>2026-08-04T14:39:35-04:00</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://radicalbowling.com/products/balls/current/no-doubt-hybrid</loc>
+    <lastmod>2026-07-17T15:06:36-04:00</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://radicalbowling.com/products/balls/retired/intel-recon</loc>
+    <lastmod>2026-06-02T15:39:24-04:00</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://radicalbowling.com/products/balls/retired/snapshot-hybrid</loc>
+    <lastmod>2026-06-23T14:30:52-04:00</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.5</priority>
+  </url>
+  <url>
+    <loc>https://radicalbowling.com/products/accessories/shoe-essentials/shammy</loc>
+    <lastmod>2025-07-18T11:42:12-04:00</lastmod>
+    <changefreq>weekly</changefreq>
+    <priority>0.5</priority>
+  </url>
+</urlset>

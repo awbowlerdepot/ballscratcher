@@ -171,6 +171,33 @@ returning id;
 
 Save that returned id -- it's `BrandId` in step 5.
 
+If you also want Radical and/or DV8 enabled -- same manufacturer, same
+Craft CMS platform as Brunswick, confirmed live this session (identical
+SEOmatic sitemap shape and product-page structure):
+
+```sql
+insert into manufacturers (name) values ('Brunswick Bowling & Billiards') returning id;
+-- (skip the insert above and reuse Brunswick's manufacturer_id if you already have it)
+
+insert into brands (manufacturer_id, name, base_url, source_platform, sitemap_url)
+values ('<manufacturer-id>', 'Radical', 'https://radicalbowling.com', 'craft_cms',
+        'https://radicalbowling.com/sitemaps-1-section-bowlerProducts-1-sitemap.xml')
+returning id;
+
+insert into brands (manufacturer_id, name, base_url, source_platform, sitemap_url)
+values ('<manufacturer-id>', 'DV8', 'https://dv8bowling.com', 'craft_cms',
+        'https://dv8bowling.com/sitemaps-1-section-bowlerProducts-1-sitemap.xml')
+returning id;
+```
+
+Save those ids as `RadicalBrandId`/`Dv8BrandId`. Both are new
+`RadicalUrlDiscoveryFunction`/`Dv8UrlDiscoveryFunction` resources in this
+same stack, reusing `src/url_discovery/`'s existing code -- they publish
+onto the same `ProductScrapeQueue` that `ProductScraperFunction` already
+consumes, so no new scraper function was needed (that function already
+takes `{url, brand_id}` as generic pass-through parameters). Can also be
+added later via a stack update, same as SWAG/MOTIV below.
+
 If you also want SWAG and/or MOTIV enabled at deploy time, repeat with
 `source_platform = 'woocommerce'` (SWAG) or `'netsuite'` (MOTIV; no
 `sitemap_url` for MOTIV, see `netsuite_url_discovery/app.py`'s module
@@ -220,8 +247,10 @@ Here's what to give it:
 | `DbSecretArn` | Yes | ARN from step 3 |
 | `BrandId` | Yes | Brunswick's id from step 4 |
 | `AdminApiTokenSecretArn` | Yes* | ARN from step 3 (*technically optional, but the admin API is unusable without it -- see README) |
-| `SitemapUrl` | No | Defaults to Brunswick's real sitemap; only override for a second Craft-CMS stack (Radical/DV8) |
-| `UrlPathPattern` | No | Defaults to Brunswick's real path pattern; same caveat |
+| `SitemapUrl` | No | Defaults to Brunswick's real sitemap |
+| `UrlPathPattern` | No | Defaults to Brunswick's real path pattern; shared by RadicalUrlDiscoveryFunction/Dv8UrlDiscoveryFunction too (same URL shape confirmed live) |
+| `RadicalSitemapUrl` / `Dv8SitemapUrl` | No | Default to Radical's/DV8's real sitemaps (confirmed live this session) |
+| `RadicalBrandId` / `Dv8BrandId` | Only if enabling Radical/DV8 | Their ids from step 4, else leave blank (blank means that brand's discovery function runs against BRAND_ID="" -- harmless since it isn't scheduled yet, but don't invoke it manually until set for real) |
 | `SwagCategoryUrl` / `SwagSitemapUrl` | No | Default to SWAG's real values |
 | `SwagBrandId` | Only if enabling SWAG | SWAG's id from step 4, else leave blank |
 | `MotivCurrentCategoryUrl` / `MotivRetiredCategoryUrl` | No | Default to MOTIV's real values |
@@ -297,6 +326,38 @@ aws sqs get-queue-attributes \
   --queue-url $(aws sqs get-queue-url --queue-name bowling-scraper-product-scrape-dlq --query QueueUrl --output text) \
   --attribute-names ApproximateNumberOfMessages
 ```
+
+### 6b.5. Radical / DV8 (if `RadicalBrandId`/`Dv8BrandId` were set)
+
+Same platform as Brunswick, so this reuses `ProductScraperFunction` and
+`ProductScrapeQueue` as-is -- only the discovery step is brand-specific.
+No schedule wired up yet (same reasoning as SWAG/MOTIV below: a schedule
+against a blank `BrandId` isn't useful), so invoke manually:
+
+```bash
+aws lambda invoke --function-name bowling-scraper-radical-url-discovery \
+  --payload '{}' --cli-binary-format raw-in-base64-out /tmp/out.json
+cat /tmp/out.json
+
+aws lambda invoke --function-name bowling-scraper-dv8-url-discovery \
+  --payload '{}' --cli-binary-format raw-in-base64-out /tmp/out.json
+cat /tmp/out.json
+```
+
+Both publish onto the same `bowling-scraper-product-scrape` queue 6b
+checks, so watch `ProductScraperFunction`'s logs the same way. Confirmed
+live this session: both domains' sitemaps
+(`https://radicalbowling.com/sitemaps-1-section-bowlerProducts-1-sitemap.xml`,
+`https://dv8bowling.com/sitemaps-1-section-bowlerProducts-1-sitemap.xml`)
+return real SEOmatic-generated XML with the identical
+`/products/balls/(current|retired)/<slug>` URL shape as Brunswick's own
+sitemap, including non-ball URLs (accessories/bags/apparel) mixed in that
+`UrlPathPattern` correctly filters out -- see `tests/fixtures/
+radical_sitemap_sample.xml` / `dv8_sitemap_sample.xml` and the new tests
+in `tests/test_url_discovery.py`. Not yet confirmed: the product pages
+themselves parsing correctly through `product_scraper` (only the sitemap
+step was verified live this session) -- treat the first real invoke as
+that test, same as 6b's own first run was.
 
 ### 6c. PDF parser and image processor (chained off 6b, unverified against real bytes/photos)
 
