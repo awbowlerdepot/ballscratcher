@@ -289,6 +289,7 @@
       </div>
       <label class="checkbox"><input id="product-needs-refresh" type="checkbox"> stale rollup</label>
       <label class="checkbox"><input id="product-has-approved" type="checkbox"> has any summarized video</label>
+      <label class="checkbox"><input id="product-missing-core" type="checkbox"> missing core</label>
       <button class="btn" type="submit">Filter</button>
     </form>
     <div id="product-list"><p class="muted">Set your API URL and token above, then this loads automatically.</p></div>
@@ -325,6 +326,15 @@
       <button id="batch-stop-all" class="btn ghost" onclick="stopBatch('all')" disabled>Stop</button>
       <div id="batch-stats-all" class="mono small muted" style="margin-top:8px;"></div>
       <pre id="batch-log-all" class="scrollbox" style="margin-top:6px;"></pre>
+    </div>
+
+    <div class="panel">
+      <h3>Backfill missing core info</h3>
+      <p class="muted">Equivalent of scripts/backfill_core_ids.py (missing_core filter): queues a rescrape for every product with no core_id set yet (migration 007). Only enqueues -- the actual scrape happens asynchronously via each platform's own SQS-triggered scraper Lambda, so re-run this later (or just re-filter the Products tab) to see how much is left. Products on a platform with no scraper deployed yet (Hammer/Track/Ebonite) will keep showing up here -- that&rsquo;s expected, not a bug.</p>
+      <button id="batch-start-core" class="btn" onclick="runBatch('core')">Start</button>
+      <button id="batch-stop-core" class="btn ghost" onclick="stopBatch('core')" disabled>Stop</button>
+      <div id="batch-stats-core" class="mono small muted" style="margin-top:8px;"></div>
+      <pre id="batch-log-core" class="scrollbox" style="margin-top:6px;"></pre>
     </div>
   </section>
 
@@ -683,7 +693,7 @@ async function deleteVideo(id) {
 // --------------------------------------------------------------------
 // Products tab
 // --------------------------------------------------------------------
-const productState = { search: '', brandId: '', published: '', needsRefresh: false, hasApproved: false, offset: 0, limit: 50, lastCount: 0 };
+const productState = { search: '', brandId: '', published: '', needsRefresh: false, hasApproved: false, missingCore: false, offset: 0, limit: 50, lastCount: 0 };
 
 function applyProductFilters() {
   productState.search = document.getElementById('product-search').value.trim();
@@ -691,6 +701,7 @@ function applyProductFilters() {
   productState.published = document.getElementById('product-published').value;
   productState.needsRefresh = document.getElementById('product-needs-refresh').checked;
   productState.hasApproved = document.getElementById('product-has-approved').checked;
+  productState.missingCore = document.getElementById('product-missing-core').checked;
   productState.offset = 0;
   loadProducts();
 }
@@ -712,6 +723,7 @@ async function loadProducts() {
     if (productState.published === 'false') params.published = false;
     if (productState.needsRefresh) params.needs_video_summary_refresh = true;
     if (productState.hasApproved) params.has_approved_video_summaries = true;
+    if (productState.missingCore) params.missing_core = true;
     const data = await api('GET', '/products', { params: params });
     renderProducts(data.items || []);
   } catch (e) {
@@ -730,13 +742,14 @@ function renderProducts(items) {
         '<td><a href="' + escapeHtml(p.url || '#') + '" target="_blank" rel="noopener">' + escapeHtml(p.name) + '</a></td>' +
         '<td class="mono small">' + escapeHtml((p.brand_id || '').slice(0, 8)) + '&hellip;</td>' +
         '<td>' + escapeHtml(p.status || '') + '</td>' +
+        '<td>' + (p.core_name ? escapeHtml(p.core_name) : '<span class="muted">&mdash;</span>') + '</td>' +
         '<td><button class="btn small ' + (p.published ? 'ok' : 'ghost') + '" onclick="togglePublish(\'' + p.id + '\', ' + (!p.published) + ')">' + (p.published ? 'Published' : 'Unpublished') + '</button></td>' +
         '<td>' + fmtDate(p.updated_at) + '</td>' +
         '<td class="actions"><button class="btn small ghost" onclick="toggleProductDetail(\'' + p.id + '\')">Detail</button></td>' +
         '</tr>' +
-        '<tr id="product-detail-' + p.id + '" class="detail-row hidden"><td colspan="6"></td></tr>';
+        '<tr id="product-detail-' + p.id + '" class="detail-row hidden"><td colspan="7"></td></tr>';
     }).join('');
-    listEl.innerHTML = '<table><thead><tr><th>Name</th><th>Brand ID</th><th>Status</th><th>Published</th><th>Updated</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    listEl.innerHTML = '<table><thead><tr><th>Name</th><th>Brand ID</th><th>Status</th><th>Core</th><th>Published</th><th>Updated</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
   document.getElementById('product-prev').disabled = productState.offset === 0;
   document.getElementById('product-next').disabled = productState.lastCount < productState.limit;
@@ -795,7 +808,9 @@ async function loadProductDetailInto(id, cell) {
       '<p><strong>Images</strong> (' + (p.images || []).length + '):</p>' +
       '<div class="image-grid">' + (imageCards || '<p class="muted">none pulled down yet</p>') + '</div>' +
       '<p><strong>Core:</strong> ' + escapeHtml(p.core_name || '(not identified yet)') +
-        (p.core_type ? ' <span class="muted">(' + escapeHtml(p.core_type) + ')</span>' : '') + '</p>' +
+        (p.core_type ? ' <span class="muted">(' + escapeHtml(p.core_type) + ')</span>' : '') +
+        ' <button class="btn small ghost" onclick="rescrapeProduct(\'' + id + '\')">Rescrape</button></p>' +
+      '<p id="rescrape-result-' + id + '" class="muted small"></p>' +
       '<p><strong>Description:</strong></p><pre class="scrollbox">' + escapeHtml(p.description || '(none scraped yet)') + '</pre>' +
       '<p><strong>Video review rollup</strong> (' + videoCount + ' video' + (videoCount === 1 ? '' : 's') + ', generated ' + (fmtDate(p.video_reviews_summary_generated_at) || 'never') + '):</p>' +
       '<pre class="scrollbox">' + escapeHtml(p.video_reviews_summary || '(none yet)') + '</pre>' +
@@ -818,6 +833,26 @@ async function refreshRollup(id) {
   } catch (e) { toast(e.message, true); }
 }
 
+async function rescrapeProduct(id) {
+  // On-demand equivalent of scripts/backfill_core_ids.py's per-product
+  // call -- republishes this product's {url, brand_id} onto whichever
+  // platform's scrape queue it belongs to (see admin_api's queue_rescrape).
+  // Doesn't wait for the actual scrape to finish (that's SQS-triggered,
+  // asynchronous) -- just confirms it was queued, or reports why it
+  // wasn't (e.g. no scraper deployed for that platform yet).
+  const out = document.getElementById('rescrape-result-' + id);
+  if (out) out.textContent = 'Queuing…';
+  try {
+    const result = await api('POST', '/products/' + id + '/rescrape');
+    const msg = result.queued ? ('Queued -- re-check in a bit for the updated core.') : ('Not queued: ' + result.reason);
+    toast(msg, !result.queued);
+    if (out) out.textContent = msg;
+  } catch (e) {
+    toast(e.message, true);
+    if (out) out.textContent = 'Error: ' + e.message;
+  }
+}
+
 // --------------------------------------------------------------------
 // Batch Jobs tab -- mirrors scripts/backfill_video_review_rollups.py's
 // list-then-loop logic (see that script's run()), just running in the
@@ -826,7 +861,7 @@ async function refreshRollup(id) {
 // behind the two filters (needs_video_summary_refresh vs
 // has_approved_video_summaries / REFRESH_ALL).
 // --------------------------------------------------------------------
-const batchRunning = { stale: false, all: false };
+const batchRunning = { stale: false, all: false, core: false };
 
 async function batchRefreshSingle() {
   const id = document.getElementById('batch-single-id').value.trim();
@@ -843,9 +878,36 @@ async function batchRefreshSingle() {
   }
 }
 
+// Config-driven so the three batch kinds (stale/all/core) share one
+// listing/looping implementation instead of each hardcoding its own
+// filter/endpoint/result-shape -- added when 'core' became a third kind
+// with a genuinely different endpoint (/rescrape, not /refresh-video-
+// summary) and result shape (queued/reason, not rollup_regenerated/
+// video_count/reason).
+const BATCH_CONFIGS = {
+  stale: {
+    filterParam: 'needs_video_summary_refresh',
+    call: function (id) { return api('POST', '/products/' + id + '/refresh-video-summary'); },
+    isSuccess: function (r) { return !!r.rollup_regenerated; },
+    describe: function (r) { return r.rollup_regenerated ? ('refreshed (' + r.video_count + ' videos)') : r.reason; },
+  },
+  all: {
+    filterParam: 'has_approved_video_summaries',
+    call: function (id) { return api('POST', '/products/' + id + '/refresh-video-summary'); },
+    isSuccess: function (r) { return !!r.rollup_regenerated; },
+    describe: function (r) { return r.rollup_regenerated ? ('refreshed (' + r.video_count + ' videos)') : r.reason; },
+  },
+  core: {
+    filterParam: 'missing_core',
+    call: function (id) { return api('POST', '/products/' + id + '/rescrape'); },
+    isSuccess: function (r) { return !!r.queued; },
+    describe: function (r) { return r.queued ? 'queued for rescrape' : r.reason; },
+  },
+};
+
 async function runBatch(kind) {
   if (batchRunning[kind]) return;
-  const filterParam = kind === 'all' ? 'has_approved_video_summaries' : 'needs_video_summary_refresh';
+  const cfg = BATCH_CONFIGS[kind];
   if (kind === 'all') {
     const ok = confirm('This regenerates EVERY product with an approved+summarized video, not just stale ones -- real Bedrock cost across the whole catalog. Continue?');
     if (!ok) return;
@@ -864,7 +926,7 @@ async function runBatch(kind) {
     logEl.scrollTop = logEl.scrollHeight;
   }
 
-  let total = 0, refreshed = 0, errors = 0;
+  let total = 0, done = 0, errors = 0;
   try {
     appendLog('Listing products…');
     let items = [];
@@ -872,7 +934,7 @@ async function runBatch(kind) {
     const limit = 200;
     while (batchRunning[kind]) {
       const params = { limit: limit, offset: offset };
-      params[filterParam] = true;
+      params[cfg.filterParam] = true;
       const page = await api('GET', '/products', { params: params });
       const pageItems = page.items || [];
       items = items.concat(pageItems);
@@ -882,24 +944,20 @@ async function runBatch(kind) {
     if (!batchRunning[kind]) { appendLog('Stopped before listing finished.'); return; }
     total = items.length;
     appendLog('Found ' + total + ' product(s).');
-    statsEl.textContent = 'total: ' + total + '  refreshed: 0  errors: 0';
+    statsEl.textContent = 'total: ' + total + '  done: 0  errors: 0';
 
     for (let i = 0; i < items.length; i++) {
       if (!batchRunning[kind]) { appendLog('Stopped.'); break; }
       const product = items[i];
       try {
-        const result = await api('POST', '/products/' + product.id + '/refresh-video-summary');
-        if (result.rollup_regenerated) {
-          refreshed++;
-          appendLog('Refreshed ' + product.name + ' (' + result.video_count + ' videos)');
-        } else {
-          appendLog(product.name + ': ' + result.reason);
-        }
+        const result = await cfg.call(product.id);
+        if (cfg.isSuccess(result)) done++;
+        appendLog(product.name + ': ' + cfg.describe(result));
       } catch (e) {
         errors++;
         appendLog('ERROR ' + product.name + ': ' + e.message);
       }
-      statsEl.textContent = 'total: ' + total + '  refreshed: ' + refreshed + '  errors: ' + errors;
+      statsEl.textContent = 'total: ' + total + '  done: ' + done + '  errors: ' + errors;
     }
     if (batchRunning[kind]) appendLog('Done.');
   } catch (e) {

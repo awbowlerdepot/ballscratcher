@@ -123,6 +123,7 @@ def get_products(
     search: Optional[str] = Query(None),
     needs_video_summary_refresh: Optional[bool] = Query(None),
     has_approved_video_summaries: Optional[bool] = Query(None),
+    missing_core: Optional[bool] = Query(None),
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
 ):
@@ -132,6 +133,7 @@ def get_products(
             conn, published=published, brand_id=brand_id, search=search,
             needs_video_summary_refresh=needs_video_summary_refresh,
             has_approved_video_summaries=has_approved_video_summaries,
+            missing_core=missing_core,
             limit=limit, offset=offset,
         )}
     finally:
@@ -155,6 +157,24 @@ def set_product_published(product_id: str, body: PublishRequest):
     conn = service.get_db_connection()
     try:
         return service.set_product_published(conn, product_id, body.published)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/products/{product_id}/rescrape")
+def rescrape_product(product_id: str):
+    # On-demand rescrape trigger for the cores backfill (migration 007,
+    # scripts/backfill_core_ids.py) -- see service.queue_rescrape's
+    # docstring. No request body: this republishes the product's own
+    # {url, brand_id} onto whichever scrape queue its source_platform
+    # maps to. Returns 200 with queued=False (not a 4xx/5xx) when the
+    # platform isn't supported yet -- that's an expected, non-error
+    # outcome a batch caller logs and moves past, not a request error.
+    conn = service.get_db_connection()
+    try:
+        return service.queue_rescrape(conn, product_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
     finally:

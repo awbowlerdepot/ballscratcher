@@ -420,14 +420,42 @@ actually populated by `commercebuild_product_scraper` today (the only
 platform with a dedicated "Symmetry" field) -- the other three pass `None`
 until/unless that gets parsed too.
 
-**Important: this only takes effect on the next scrape of each product.**
-Existing rows in `products` won't get a `core_id` retroactively just from
-running the migration -- `core_id` only gets set the next time
-`upsert_product` runs for that URL (a fresh discovery diff, or a manual
-re-invoke). If you want the whole existing catalog backfilled with core
-info immediately rather than waiting for the next natural re-scrape, you'd
-need to re-trigger a scrape per already-known URL -- there's no dedicated
-backfill script for this yet, unlike the video-rollup backfill in 6i.
+**This only takes effect on the next scrape of each product -- there is now
+a backfill for that** (there wasn't when this was first written; added
+right after). `core_id` only gets set the next time `upsert_product` runs
+for that URL, and nothing else re-triggers a scrape for an
+already-scraped, unchanged product on its own. Three ways to trigger it:
+
+1. `POST /products/{id}/rescrape` -- republishes that one product's
+   `{url, brand_id}` onto whichever platform's scrape queue it belongs to
+   (see `service.queue_rescrape`/`resolve_scrape_queue_env_var`). Returns
+   `{"queued": true, ...}` on success, or `{"queued": false, "reason":
+   ...}` (not an error) for a product on a platform with no scraper
+   deployed yet (Hammer/Track/Ebonite) or a misconfigured queue env var.
+2. `scripts/backfill_core_ids.py` -- same `ADMIN_API_URL`/`ADMIN_API_TOKEN`
+   env var setup as `scripts/backfill_video_review_rollups.py` (see 6i).
+   Paginates `GET /products?missing_core=true` and calls the rescrape
+   endpoint for each. Only enqueues -- doesn't wait for the actual scrape,
+   so re-run it later (or just re-check the count) to see what's left.
+   ```bash
+   export ADMIN_API_URL="https://<your-api-id>.execute-api.us-west-1.amazonaws.com"
+   export ADMIN_API_TOKEN="<the same bearer token used elsewhere>"
+   python3 scripts/backfill_core_ids.py
+   ```
+3. `admin-site/index.html`'s Products tab has a "missing core" filter
+   checkbox and a Core column, plus a per-product "Rescrape" button in the
+   detail view; the Batch Jobs tab has a "Backfill missing core info"
+   panel that does the same list-then-loop as the script, in the browser.
+
+This required new plumbing on `AdminApiFunction`: `PRODUCT_SCRAPE_QUEUE_URL`
+/ `WOOCOMMERCE_PRODUCT_SCRAPE_QUEUE_URL` / `NETSUITE_PRODUCT_SCRAPE_QUEUE_URL`
+/ `COMMERCEBUILD_PRODUCT_SCRAPE_QUEUE_URL` env vars and matching
+`SQSSendMessagePolicy` grants, so the admin API can publish onto any of the
+four platforms' scrape queues rather than just the two it already talked to
+(`VideoSummarizeQueue`/`VideoTranscriptResultQueue`). No new scraper-side
+code was needed -- every one of the four scrapers already accepts a direct
+`{"url", "brand_id"}` invocation (see each `*_product_scraper/app.py`'s
+`_extract_jobs`), this just republishes onto the queue that feeds it.
 
 `admin_api`'s `PRODUCT_UPDATABLE_FIELDS` used to list `core_name` as a
 directly-editable products column, which was never actually true (only

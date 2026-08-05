@@ -235,7 +235,7 @@ def get_pending_review_count(conn) -> int:
 
 def list_products(conn, published: bool = None, brand_id: str = None, search: str = None,
                    needs_video_summary_refresh: bool = None, has_approved_video_summaries: bool = None,
-                   limit: int = 50, offset: int = 0) -> list:
+                   missing_core: bool = None, limit: int = 50, offset: int = 0) -> list:
     """needs_video_summary_refresh=True: products with at least one
     approved+summarized video, where video_reviews_summary is either
     still unset or stale relative to how many approved+summarized videos
@@ -261,29 +261,46 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     based check can't see" situation), meant for an occasional one-time
     catalog-wide pass (see scripts/backfill_video_review_rollups.py's
     REFRESH_ALL), not routine/scheduled use the way needs_video_summary_
-    refresh is."""
-    query = "select id, brand_id, name, url, status, published, updated_at from products where 1=1"
+    refresh is.
+
+    missing_core=True: products with no core_id set yet (migration 007).
+    Built for scripts/backfill_core_ids.py -- see that script and
+    queue_rescrape() below. Every product scraped before the cores table
+    was wired up matches this, plus any product whose page genuinely
+    doesn't expose a parseable core name."""
+    # p alias + left join cores: needed once c.name entered the picture --
+    # products and cores both have a plain "name" column, so every
+    # previously-bare column reference below (name, published, brand_id,
+    # updated_at, id) got a p. prefix to stay unambiguous, even though
+    # none of them actually change meaning.
+    query = """
+        select p.id, p.brand_id, p.name, p.url, p.status, p.published, p.updated_at,
+               p.core_id, c.name as core_name
+        from products p
+        left join cores c on c.id = p.core_id
+        where 1=1
+    """
     params = []
     if published is not None:
-        query += " and published = %s"
+        query += " and p.published = %s"
         params.append(published)
     if brand_id:
-        query += " and brand_id = %s"
+        query += " and p.brand_id = %s"
         params.append(brand_id)
     if search:
-        query += " and name ilike %s"
+        query += " and p.name ilike %s"
         params.append(f"%{search}%")
     if needs_video_summary_refresh:
         query += """
             and exists (
                 select 1 from product_videos pv
-                where pv.product_id = products.id and pv.status = 'approved' and pv.summary is not null
+                where pv.product_id = p.id and pv.status = 'approved' and pv.summary is not null
             )
             and (
-                video_reviews_summary is null
-                or video_reviews_summary_video_count <> (
+                p.video_reviews_summary is null
+                or p.video_reviews_summary_video_count <> (
                     select count(*) from product_videos pv2
-                    where pv2.product_id = products.id and pv2.status = 'approved' and pv2.summary is not null
+                    where pv2.product_id = p.id and pv2.status = 'approved' and pv2.summary is not null
                 )
             )
         """
@@ -291,16 +308,18 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
         query += """
             and exists (
                 select 1 from product_videos pv
-                where pv.product_id = products.id and pv.status = 'approved' and pv.summary is not null
+                where pv.product_id = p.id and pv.status = 'approved' and pv.summary is not null
             )
         """
+    if missing_core:
+        query += " and p.core_id is null"
     # id as a final tiebreaker -- same reason list_video_candidates and
     # fetch_products_to_search needed one (see admin_api/service.py's own
     # earlier fix and video_discovery/app.py's ROTATION section): rows
     # sharing an updated_at value make plain OFFSET/LIMIT pagination
     # unstable, and this endpoint is now paginated by a real consumer
     # (the backfill script) as of this filter's addition.
-    query += " order by updated_at desc, id asc limit %s offset %s"
+    query += " order by p.updated_at desc, p.id asc limit %s offset %s"
     params += [limit, offset]
 
     with conn.cursor() as cur:
@@ -346,6 +365,81 @@ def get_product(conn, product_id: str):
         product["images"] = [dict(zip(image_columns, row)) for row in cur.fetchall()]
 
         return product
+
+
+# ---------------------------------------------------------------------
+# Rescrape trigger (POST /products/{id}/rescrape), built for the cores
+# backfill (migration 007, scripts/backfill_core_ids.py): core_id only
+# gets set the next time a product is actually scraped, and nothing else
+# re-triggers that automatically for an already-scraped product. This
+# republishes the exact {"url", "brand_id"} job shape every one of the
+# four product scrapers already accepts for direct/manual invocation (see
+# product_scraper/app.py's _extract_jobs), onto whichever platform's
+# scrape queue that product actually belongs to.
+# ---------------------------------------------------------------------
+
+# products.source_platform -> the env var holding that platform's
+# product-scrape queue URL. craft_cms covers Brunswick/Radical/DV8 (one
+# shared queue/scraper -- see template.yaml's RadicalUrlDiscoveryFunction/
+# Dv8UrlDiscoveryFunction comments). shopify is deliberately absent --
+# Hammer/Track/Ebonite were explicitly deferred and have no scraper built
+# yet (see DEPLOY_RUNBOOK.md) -- resolve_scrape_queue_env_var returns None
+# for it, same as any other unrecognized value, rather than raising.
+SCRAPE_QUEUE_ENV_VAR_BY_PLATFORM = {
+    "craft_cms": "PRODUCT_SCRAPE_QUEUE_URL",
+    "woocommerce": "WOOCOMMERCE_PRODUCT_SCRAPE_QUEUE_URL",
+    "netsuite": "NETSUITE_PRODUCT_SCRAPE_QUEUE_URL",
+    "commercebuild": "COMMERCEBUILD_PRODUCT_SCRAPE_QUEUE_URL",
+}
+
+
+def resolve_scrape_queue_env_var(source_platform: str):
+    """Pure lookup, no env/DB access -- deliberately returns None rather
+    than raising for a platform with no scraper deployed yet, so callers
+    can build a graceful "not supported" response instead of a hard
+    error. A batch backfill run (scripts/backfill_core_ids.py) shouldn't
+    abort just because it reached a product on a platform that isn't
+    wired up for rescraping."""
+    return SCRAPE_QUEUE_ENV_VAR_BY_PLATFORM.get(source_platform)
+
+
+def queue_rescrape(conn, product_id: str) -> dict:
+    """Looks up the product's url/brand_id/source_platform and publishes
+    a fresh scrape job for it. Returns {"queued": True, "product_id",
+    "url", "queue_env_var"} on success, or {"queued": False, "reason"}
+    (not an exception) when the product's platform has no scraper
+    deployed yet or that platform's queue URL isn't configured on this
+    stack -- both are expected, non-error states a batch caller should
+    log and move past, not treat as a failure worth stopping for.
+
+    Raises LookupError if the product_id itself doesn't exist -- that one
+    IS a caller error, same as set_product_published above."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "select url, brand_id, source_platform from products where id = %s",
+            (product_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError(f"No product with id {product_id}")
+        url, brand_id, source_platform = row
+
+    env_var = resolve_scrape_queue_env_var(source_platform)
+    if env_var is None:
+        return {"queued": False, "reason": f"no scraper deployed for source_platform={source_platform!r} yet"}
+
+    queue_url = os.environ.get(env_var)
+    if not queue_url:
+        return {"queued": False, "reason": f"{env_var} is not configured on this deployment"}
+
+    import boto3
+
+    sqs = boto3.client("sqs")
+    sqs.send_message(
+        QueueUrl=queue_url,
+        MessageBody=json.dumps({"url": url, "brand_id": str(brand_id)}),
+    )
+    return {"queued": True, "product_id": product_id, "url": url, "queue_env_var": env_var}
 
 
 def set_product_published(conn, product_id: str, published: bool) -> dict:

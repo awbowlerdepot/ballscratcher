@@ -785,6 +785,17 @@ Resources:
           # /products/{id}/refresh-video-summary) -- same env var
           # VideoSummarizerFunction reads, same model.
           BEDROCK_MODEL_ID: !Ref BedrockModelId
+          # Read by service.py's queue_rescrape (POST
+          # /products/{id}/rescrape, see SCRAPE_QUEUE_ENV_VAR_BY_PLATFORM)
+          # -- one env var per platform's product-scrape queue, so a
+          # rescrape lands on the exact same queue that platform's own
+          # UrlDiscoveryFunction-equivalent already publishes to. Built
+          # for the cores backfill (migration 007), but generically
+          # useful for re-triggering any product's scrape on demand.
+          PRODUCT_SCRAPE_QUEUE_URL: !Ref ProductScrapeQueue
+          WOOCOMMERCE_PRODUCT_SCRAPE_QUEUE_URL: !Ref WooCommerceProductScrapeQueue
+          NETSUITE_PRODUCT_SCRAPE_QUEUE_URL: !Ref NetsuiteProductScrapeQueue
+          COMMERCEBUILD_PRODUCT_SCRAPE_QUEUE_URL: !Ref CommercebuildProductScrapeQueue
       Policies:
         - Statement:
             - Effect: Allow
@@ -821,6 +832,17 @@ Resources:
             QueueName: !GetAtt VideoSummarizeQueue.QueueName
         - SQSSendMessagePolicy:
             QueueName: !GetAtt VideoTranscriptResultQueue.QueueName
+        # One SQSSendMessagePolicy per platform's product-scrape queue --
+        # see PRODUCT_SCRAPE_QUEUE_URL and friends above, and
+        # queue_rescrape's SCRAPE_QUEUE_ENV_VAR_BY_PLATFORM.
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt ProductScrapeQueue.QueueName
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt WooCommerceProductScrapeQueue.QueueName
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt NetsuiteProductScrapeQueue.QueueName
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt CommercebuildProductScrapeQueue.QueueName
       # Four explicit per-method routes instead of a single `Method: ANY`
       # -- found via a real live test (curl OPTIONS /health with no
       # Authorization header returned a bare 401 "Unauthorized" from API

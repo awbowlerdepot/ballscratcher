@@ -176,6 +176,12 @@ class FakeCursor:
             self._last_result = (row["id"], row["youtube_video_id"]) if row else None
             self.description = [("id",), ("youtube_video_id",)]
 
+        elif q.startswith("select url, brand_id, source_platform from products"):
+            (product_id,) = params
+            row = self.db["products"].get(product_id)
+            self._last_result = (row["url"], row["brand_id"], row["source_platform"]) if row else None
+            self.description = [("url",), ("brand_id",), ("source_platform",)]
+
         elif q.startswith("select id from products"):
             (product_id,) = params
             row = self.db["products"].get(product_id)
@@ -858,6 +864,130 @@ def test_refresh_video_reviews_rollup_threads_description_from_products_row():
     assert "Sentinel Core: an asymmetric core built for early transition." in sent_body["messages"][0]["content"]
 
 
+# --- resolve_scrape_queue_env_var: pure lookup, no DB/env access ---
+
+def test_resolve_scrape_queue_env_var_craft_cms():
+    assert service.resolve_scrape_queue_env_var("craft_cms") == "PRODUCT_SCRAPE_QUEUE_URL"
+
+
+def test_resolve_scrape_queue_env_var_woocommerce():
+    assert service.resolve_scrape_queue_env_var("woocommerce") == "WOOCOMMERCE_PRODUCT_SCRAPE_QUEUE_URL"
+
+
+def test_resolve_scrape_queue_env_var_netsuite():
+    assert service.resolve_scrape_queue_env_var("netsuite") == "NETSUITE_PRODUCT_SCRAPE_QUEUE_URL"
+
+
+def test_resolve_scrape_queue_env_var_commercebuild():
+    assert service.resolve_scrape_queue_env_var("commercebuild") == "COMMERCEBUILD_PRODUCT_SCRAPE_QUEUE_URL"
+
+
+def test_resolve_scrape_queue_env_var_unsupported_platform_returns_none():
+    """shopify (Hammer/Track/Ebonite) has no scraper deployed yet -- this
+    must return None, not raise, so queue_rescrape can build a graceful
+    'not supported' response instead of a 500."""
+    assert service.resolve_scrape_queue_env_var("shopify") is None
+    assert service.resolve_scrape_queue_env_var("nonsense") is None
+
+
+# --- queue_rescrape: fake DB + fake boto3 SQS client, same sys.modules
+# fake-injection approach as test_refresh_video_reviews_rollup_success_
+# builds_bedrock_client_and_stores above (this function also does an
+# inline deferred `import boto3`, no separate wrapper to monkeypatch).
+
+def _fake_db_with_product(source_platform="craft_cms", url="https://brunswickbowling.com/products/balls/current/fury"):
+    return {"products": {"prod-1": {"url": url, "brand_id": "brand-abc", "source_platform": source_platform}}}
+
+
+class _FakeSqsClient:
+    def __init__(self):
+        self.sent = []
+
+    def send_message(self, QueueUrl, MessageBody):
+        self.sent.append({"QueueUrl": QueueUrl, "MessageBody": MessageBody})
+
+
+def test_queue_rescrape_publishes_to_craft_cms_queue():
+    db = _fake_db_with_product(source_platform="craft_cms")
+    conn = FakeConnection(db)
+    fake_sqs = _FakeSqsClient()
+
+    class _FakeBoto3:
+        def client(self, name):
+            assert name == "sqs"
+            return fake_sqs
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    os.environ["PRODUCT_SCRAPE_QUEUE_URL"] = "https://sqs.example/product-scrape"
+    try:
+        result = service.queue_rescrape(conn, "prod-1")
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+        del os.environ["PRODUCT_SCRAPE_QUEUE_URL"]
+
+    assert result == {
+        "queued": True, "product_id": "prod-1",
+        "url": "https://brunswickbowling.com/products/balls/current/fury",
+        "queue_env_var": "PRODUCT_SCRAPE_QUEUE_URL",
+    }
+    assert len(fake_sqs.sent) == 1
+    assert fake_sqs.sent[0]["QueueUrl"] == "https://sqs.example/product-scrape"
+    body = json.loads(fake_sqs.sent[0]["MessageBody"])
+    assert body == {"url": "https://brunswickbowling.com/products/balls/current/fury", "brand_id": "brand-abc"}
+
+
+def test_queue_rescrape_missing_product_raises():
+    db = _fake_db_with_product()
+    conn = FakeConnection(db)
+    try:
+        service.queue_rescrape(conn, "does-not-exist")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def test_queue_rescrape_unsupported_platform_returns_not_queued_without_touching_sqs():
+    """A product on a platform with no scraper deployed yet (shopify)
+    shouldn't even try to import boto3/publish anything -- confirms via a
+    boto3 stand-in that would raise if .client() were ever called."""
+    db = _fake_db_with_product(source_platform="shopify")
+    conn = FakeConnection(db)
+
+    class _ExplodingBoto3:
+        def client(self, name):
+            raise AssertionError("should never be called for an unsupported platform")
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _ExplodingBoto3()
+    try:
+        result = service.queue_rescrape(conn, "prod-1")
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+
+    assert result == {"queued": False, "reason": "no scraper deployed for source_platform='shopify' yet"}
+
+
+def test_queue_rescrape_missing_queue_env_var_returns_not_queued():
+    """The platform IS supported (commercebuild), but this deployment's
+    stack just doesn't have COMMERCEBUILD_PRODUCT_SCRAPE_QUEUE_URL set --
+    a real misconfiguration, but still a graceful response rather than a
+    KeyError, since a batch caller shouldn't hard-stop on one product."""
+    db = _fake_db_with_product(source_platform="commercebuild")
+    conn = FakeConnection(db)
+    os.environ.pop("COMMERCEBUILD_PRODUCT_SCRAPE_QUEUE_URL", None)  # confirm truly unset
+
+    result = service.queue_rescrape(conn, "prod-1")
+
+    assert result == {"queued": False, "reason": "COMMERCEBUILD_PRODUCT_SCRAPE_QUEUE_URL is not configured on this deployment"}
+
+
 # --- list_products: needs_video_summary_refresh filter -- confirms the SQL
 # text is actually added when the flag is passed (real DB behavior of the
 # EXISTS/staleness-comparison subquery itself is untested here for the same
@@ -873,7 +1003,7 @@ def test_list_products_omits_refresh_filter_by_default():
     query = conn.cursor().queries[0]
     assert "needs_video_summary_refresh" not in query  # not real SQL, just guards against copy-paste
     assert "video_reviews_summary is null" not in query
-    assert "order by updated_at desc, id asc" in query
+    assert "order by p.updated_at desc, p.id asc" in query
 
 
 def test_list_products_needs_video_summary_refresh_adds_filter_sql():
@@ -884,7 +1014,7 @@ def test_list_products_needs_video_summary_refresh_adds_filter_sql():
     assert "pv.status = 'approved' and pv.summary is not null" in query
     assert "video_reviews_summary is null" in query
     assert "video_reviews_summary_video_count <>" in query
-    assert "order by updated_at desc, id asc" in query
+    assert "order by p.updated_at desc, p.id asc" in query
 
 
 # --- list_products: has_approved_video_summaries filter -- the deliberately
@@ -902,7 +1032,32 @@ def test_list_products_has_approved_video_summaries_adds_filter_sql_without_stal
     assert "pv.status = 'approved' and pv.summary is not null" in query
     assert "video_reviews_summary is null" not in query
     assert "video_reviews_summary_video_count <>" not in query
-    assert "order by updated_at desc, id asc" in query
+    assert "order by p.updated_at desc, p.id asc" in query
+
+
+# --- list_products: missing_core filter + the cores join (migration 007).
+# The p./c. aliasing above exists specifically because of this join --
+# products and cores both have a plain "name" column, so left-joining
+# cores in made every previously-bare column reference ambiguous. Confirms
+# the join is actually present (core_name selected) and that missing_core
+# adds the expected "core_id is null" clause only when passed.
+
+def test_list_products_joins_cores_and_omits_missing_core_filter_by_default():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "left join cores c on c.id = p.core_id" in query
+    assert "c.name as core_name" in query
+    assert "core_id is null" not in query
+
+
+def test_list_products_missing_core_adds_filter_sql():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, missing_core=True, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "p.core_id is null" in query
 
 
 if __name__ == "__main__":
