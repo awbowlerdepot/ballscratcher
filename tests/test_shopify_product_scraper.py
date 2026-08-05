@@ -1,7 +1,9 @@
 """
 Tests for src/shopify_product_scraper/app.py's pure parsing functions, run
-against four real fixtures spanning three eras of Hammer's body_html
-markup -- see that module's docstring for exactly what real, confirmed
+against real fixtures spanning three eras of Hammer's body_html markup
+plus Track's and Ebonite's <table>-based markup (a different structure
+entirely -- see parse_ball_specs_table/parse_rg_diff_table's docstrings)
+-- see that module's docstring for exactly what real, confirmed
 formatting differences each fixture exercises:
 
 - hammer_black_widow_3_0_dynasty.json: modern, asymmetric (has ASY),
@@ -21,6 +23,35 @@ formatting differences each fixture exercises:
   diagnose a real production bug -- see below), every BALL SPECS <li>
   pretty-printed with a newline between <li> and its <strong> label
   (e.g. "<li>\\n<strong>CORE</strong><span> </span>Scandal</li>").
+- track_theorem_delta.json: real body_html from
+  https://trackbowling.com/collections/new-balls/products.json, modern,
+  asymmetric (Core Numbers table has an ASY column), <h3>Specifications
+  </h3> heading, plain (non-<strong>) label cells, no alt text on any
+  image (confirms classify_image's position-based "other" fallback for a
+  brand other than Hammer).
+- track_100p.json: real body_html from
+  https://trackbowling.com/products/100p.json, an old retired spare ball
+  -- Specifications table present but no Core Numbers table at all (no
+  RG/DIFF data for this ball), confirming parse_rg_diff_table's None
+  section returns [] the same way parse_rg_diff_list's does.
+- ebonite_spartan_pearl.json: real body_html from
+  https://ebonite.com/collections/balls/products.json, modern, asymmetric,
+  <h2>Specifications</h2> heading (different tag than Track/Hammer's h3),
+  <strong>-wrapped label cells (different from Track's plain cells) --
+  confirms parse_ball_specs_table doesn't care which brand's label-cell
+  style it's reading.
+- ebonite_game_breaker_5_hybrid.json: real body_html, modern, symmetric --
+  Core Numbers table has only Weight/RG/DIFF columns, no ASY column at
+  all (confirms core_type inference still lands on "symmetric" when the
+  table structurally omits the column rather than just leaving cells
+  blank), and 7 weights (16 down to 10 lb, wider range than most).
+- ebonite_angry_birds.json: real body_html, a very old novelty listing
+  with no Specifications/Core Numbers section at all -- just plain
+  marketing <p> tags and one inline "<p><strong>Coverstock</strong>
+  Polyester</p>". Confirms _find_section returning None here (no matching
+  heading exists) is handled gracefully -- raw={} and skus=[] -- same as
+  any other real product that simply doesn't have a structured spec
+  section, not a parsing failure.
 
 Regression coverage for a real production bug (all Hammer fixtures above
 were hand-reconstructed and didn't reproduce it -- hammer_scandal.json's
@@ -280,6 +311,148 @@ def test_scandal_full_ball_specs_raw_dict_every_field_survives_leading_newline()
         "core_type_raw": "Symmetrical",
         "weights_raw": "12-16 lb",
     }
+
+
+# --- Track: <table>-based markup, a different structure than Hammer's
+# <ul><li> entirely (see parse_ball_specs_table/parse_rg_diff_table) ---
+
+THEOREM_DELTA_URL = "https://trackbowling.com/products/theorem-delta"
+TRACK_100P_URL = "https://trackbowling.com/products/100p"
+
+
+def test_theorem_delta_basic_fields_from_table():
+    p = _parsed("track_theorem_delta.json", THEOREM_DELTA_URL)
+    assert p["name"] == "Theorem Delta"
+    assert p["performance_level_raw"] == "Upper Mid"
+    assert p["color"] == "Black / Indigo / Blue"
+    assert p["core_name"] == "MC2 Asym"
+    assert p["part_number"] == "60-108645-93X"
+
+
+def test_theorem_delta_skus_from_core_numbers_table_include_asy():
+    p = _parsed("track_theorem_delta.json", THEOREM_DELTA_URL)
+    assert p["core_type"] == "asymmetric"
+    assert len(p["skus"]) == 5
+    sixteen = next(s for s in p["skus"] if s["weight_lbs"] == 16)
+    assert sixteen == {"weight_lbs": 16, "rg": 2.485, "differential": 0.044, "mass_bias": 0.017}
+    twelve = next(s for s in p["skus"] if s["weight_lbs"] == 12)
+    assert twelve == {"weight_lbs": 12, "rg": 2.593, "differential": 0.041, "mass_bias": 0.014}
+
+
+def test_theorem_delta_coverstock_and_weights():
+    p = _parsed("track_theorem_delta.json", THEOREM_DELTA_URL)
+    assert p["coverstock_name"] == "Super Response Hybrid (HK22)"
+    assert p["coverstock_material"] == "reactive_resin"
+    assert p["coverstock_type"] == "hybrid"
+    assert p["weights_available"] == (12, 16)
+    assert str(p["release_date"]) == "2026-08-13"
+
+
+def test_theorem_delta_description_from_p1_paragraph():
+    p = _parsed("track_theorem_delta.json", THEOREM_DELTA_URL)
+    assert p["description"].startswith("The Track Theorem earned its reputation")
+
+
+def test_theorem_delta_images_with_no_alt_fall_back_to_other():
+    """Real, confirmed case (unlike most Hammer images): Track's own
+    fetched images carry no alt text at all -- classify_image can't
+    keyword-match, so anything past position 1 falls back to "other"."""
+    p = _parsed("track_theorem_delta.json", THEOREM_DELTA_URL)
+    assert p["images"][0]["image_type"] == "main"
+    assert p["images"][1]["image_type"] == "other"
+    assert p["images"][2]["image_type"] == "other"
+
+
+def test_track_100p_specs_table_with_plain_unwrapped_label_cells():
+    """Track's label cells are bare text ("<td>Color</td>"), not wrapped
+    in <strong> like Ebonite's -- confirms parse_ball_specs_table doesn't
+    require the <strong> wrapper."""
+    p = _parsed("track_100p.json", TRACK_100P_URL)
+    assert p["color"] == "Black Sparkle"
+    assert p["core_name"] == "Pancake"
+    assert p["coverstock_name"] == "Polyester"
+    assert p["weights_available"] == (12, 16)
+
+
+def test_track_100p_no_core_numbers_table_returns_empty_skus():
+    """This spare ball's page has a Specifications table but no Core
+    Numbers table at all -- confirms parse_rg_diff_table's None-section
+    handling (same graceful [] as parse_rg_diff_list's)."""
+    p = _parsed("track_100p.json", TRACK_100P_URL)
+    assert p["skus"] == []
+    assert p["core_type"] is None
+
+
+# --- Ebonite: also <table>-based, but <h2> heading (not Track/Hammer's
+# <h3>) and <strong>-wrapped label cells (not Track's plain cells) ---
+
+SPARTAN_PEARL_URL = "https://ebonite.com/products/spartan-pearl"
+GB5_HYBRID_URL = "https://ebonite.com/products/game-breaker-5-hybrid"
+ANGRY_BIRDS_URL = "https://ebonite.com/products/angry-birds"
+
+
+def test_spartan_pearl_basic_fields_h2_heading_strong_wrapped_labels():
+    p = _parsed("ebonite_spartan_pearl.json", SPARTAN_PEARL_URL)
+    assert p["name"] == "Spartan Pearl"
+    assert p["performance_level_raw"] == "Pro"
+    assert p["color"] == "Sky Blue / Purple / Carbon"
+    assert p["core_name"] == "Iron Fist V2"
+
+
+def test_spartan_pearl_skus_asymmetric_with_asy_column():
+    p = _parsed("ebonite_spartan_pearl.json", SPARTAN_PEARL_URL)
+    assert p["core_type"] == "asymmetric"
+    assert len(p["skus"]) == 5
+    sixteen = next(s for s in p["skus"] if s["weight_lbs"] == 16)
+    assert sixteen == {"weight_lbs": 16, "rg": 2.485, "differential": 0.047, "mass_bias": 0.017}
+
+
+def test_spartan_pearl_coverstock_pearl_reactive():
+    p = _parsed("ebonite_spartan_pearl.json", SPARTAN_PEARL_URL)
+    assert p["coverstock_material"] == "reactive_resin"
+    assert p["coverstock_type"] == "pearl"
+    assert str(p["release_date"]) == "2026-07-16"
+
+
+def test_gb5_hybrid_symmetric_no_asy_column_at_all():
+    """Real, confirmed case: this Core Numbers table only has Weight/RG/
+    DIFF columns -- no ASY column exists structurally (not just blank
+    cells) -- confirms core_type inference still lands on "symmetric"."""
+    p = _parsed("ebonite_game_breaker_5_hybrid.json", GB5_HYBRID_URL)
+    assert p["core_type"] == "symmetric"
+    assert len(p["skus"]) == 7
+    assert all(s["mass_bias"] is None for s in p["skus"])
+    ten = next(s for s in p["skus"] if s["weight_lbs"] == 10)
+    assert ten == {"weight_lbs": 10, "rg": 2.800, "differential": 0.002, "mass_bias": None}
+
+
+def test_gb5_hybrid_weights_available_wider_range():
+    p = _parsed("ebonite_game_breaker_5_hybrid.json", GB5_HYBRID_URL)
+    assert p["weights_available"] == (10, 16)
+
+
+def test_angry_birds_no_specs_section_at_all_returns_empty_gracefully():
+    """Real, confirmed case: this very old novelty listing has no
+    Specifications/Core Numbers section whatsoever -- just marketing
+    paragraphs and one inline "<strong>Coverstock</strong> Polyester".
+    _find_section correctly returns None (no heading matches), and
+    parse_ball_specs_table/parse_rg_diff_table's None handling means this
+    is treated as "no structured data available", not a parse error."""
+    p = _parsed("ebonite_angry_birds.json", ANGRY_BIRDS_URL)
+    assert p["core_name"] is None
+    assert p["skus"] == []
+    assert p["core_type"] is None
+
+
+def test_angry_birds_description_still_found_from_plain_paragraph():
+    p = _parsed("ebonite_angry_birds.json", ANGRY_BIRDS_URL)
+    assert p["description"].startswith("This exciting brand has captivated people")
+
+
+def test_angry_birds_images_classified_by_real_alt_text():
+    p = _parsed("ebonite_angry_birds.json", ANGRY_BIRDS_URL)
+    assert p["images"][0]["image_type"] == "main"
+    assert p["images"][1]["image_type"] == "other"
 
 
 # --- Standalone unit coverage for the smaller pure helpers ---

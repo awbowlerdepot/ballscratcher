@@ -51,16 +51,30 @@ shopify_product_scraper/app.py's module docstring for why that matters
 retired, so the scraper reads status_path back from this table instead of
 re-deriving it).
 
-Multiple brands are believed to share this platform (Hammer confirmed live
-this session; Track/Ebonite believed the same theme per prior research,
-not yet confirmed live) -- STORE_DOMAIN and COLLECTION_HANDLES are both
-env-var driven for that reason, same reuse convention as
-RadicalUrlDiscoveryFunction/Dv8UrlDiscoveryFunction reusing
-url_discovery/app.py's code with different SitemapUrl/BrandId params. Only
-Hammer is actually wired up in template.yaml this session -- only "the
-hammer brand" was asked for. Track/Ebonite would each get their own
-ShopifyUrlDiscoveryFunction resource (same CodeUri, different env vars)
-once someone actually asks for them, not built speculatively here.
+Three brands confirmed sharing this platform: Hammer (confirmed prior
+session), and Track (trackbowling.com) + Ebonite (ebonite.com), both
+confirmed live this session via the same signals (collections.json,
+retired-balls as a real separate collection, /products/{handle}.json).
+STORE_DOMAIN and COLLECTION_HANDLES are both env-var driven for exactly
+this reason, same reuse convention as RadicalUrlDiscoveryFunction/
+Dv8UrlDiscoveryFunction reusing url_discovery/app.py's code with different
+SitemapUrl/BrandId params -- TrackUrlDiscoveryFunction/
+EboniteUrlDiscoveryFunction in template.yaml are each a second/third
+instance of this same CodeUri, not a rewrite.
+
+Collection-handle sets are NOT identical across the three brands --
+confirmed live, each store's own collections.json was fetched and checked
+directly rather than assumed: Track has no lower-mid-performance
+collection at all (high-performance/upper-mid-performance/mid-performance/
+polyester/retired-balls only), while Ebonite has no upper-mid-performance
+collection but does have a pro-performance tier Hammer/Track don't
+(pro-performance/high-performance/mid-performance/lower-mid-performance/
+polyester/retired-balls) -- see TrackCollectionHandles/
+EboniteCollectionHandles in template.yaml for the exact confirmed sets.
+Also note Track spells its mid-tier collection "mid-performance"
+correctly, unlike Hammer's confirmed "mide-performance" typo -- copying
+Hammer's DEFAULT_COLLECTION_HANDLES verbatim for Track would silently
+0-discover its mid-tier ball.
 """
 import json
 import logging

@@ -1,0 +1,53 @@
+{
+  "product": {
+    "id": 9767175422169,
+    "title": "Theorem Delta",
+    "handle": "theorem-delta",
+    "body_html": "<h3><iframe width=\"560\" height=\"315\" src=\"https://www.youtube.com/embed/L6f70MfBJik?si=FtTjNcJ7Dw3yC3JQ\" title=\"YouTube video player\"></iframe></h3>\n<h3>The Benchmark Evolves!</h3>\n<p class=\"p1\">The Track Theorem earned its reputation as one of the best rolling balls in Track history by delivering a motion that simply worked across styles, conditions, and skill levels. Now, the Track <span class=\"s1\"><b>Theorem Delta</b></span> builds on that legacy, recreating the trusted Theorem shape with enhanced performance. Designed to stay true to the original's benchmark performance, the <span class=\"s1\"><b>Theorem Delta</b></span> offers a powerful blend of strong midlane and a sharper response to friction, giving bowlers the best of both worlds. Compared to the original, it delivers added responsiveness downlane while preserving that sweeping ball motion that made the Theorem so reliable. The result is a versatile, go-to option that captures the essence of the original, now with more continuation and backend that Track fans love.</p>\n<h3>Specifications</h3>\n<table width=\"100%\">\n<tbody>\n<tr>\n<td>Performance</td>\n<td>Upper Mid</td>\n</tr>\n<tr>\n<td>Part Number</td>\n<td>60-108645-93X</td>\n</tr>\n<tr>\n<td>Color</td>\n<td>Black / Indigo / Blue<br></td>\n</tr>\n<tr>\n<td>Core</td>\n<td>MC2 Asym</td>\n</tr>\n<tr>\n<td>Coverstock</td>\n<td>Super Response Hybrid (HK22)</td>\n</tr>\n<tr>\n<td>Cover Type</td>\n<td>Hybrid Reactive</td>\n</tr>\n<tr>\n<td>Finish</td>\n<td>500, 1000, 1500 Siaair / Factory Compound</td>\n</tr>\n<tr>\n<td>Weights</td>\n<td>16-12 Pounds</td>\n</tr>\n<tr>\n<td>Lane Condition</td>\n<td>Medium to oily</td>\n</tr>\n<tr>\n<td>Reaction</td>\n<td>Skid / Flip<br></td>\n</tr>\n<tr>\n<td>Warranty</td>\n<td>Two years from purchase date</td>\n</tr>\n<tr>\n<td>Release Date</td>\n<td>August 13, 2026</td>\n</tr>\n</tbody>\n</table>\n<h3>Core Numbers</h3>\n<table>\n<tbody>\n<tr>\n<td>\n<p>Weight</p>\n</td>\n<td>\n<p>RG</p>\n</td>\n<td>\n<p>DIFF</p>\n</td>\n<td>ASY</td>\n</tr>\n<tr>\n<td>16 lb</td>\n<td>2.485<br></td>\n<td>0.044<br></td>\n<td>0.017</td>\n</tr>\n<tr>\n<td>15 lb</td>\n<td>2.473<br></td>\n<td>0.046<br></td>\n<td>0.017</td>\n</tr>\n<tr>\n<td>14 lb</td>\n<td>2.487<br></td>\n<td>0.046<br></td>\n<td>0.017</td>\n</tr>\n<tr>\n<td>13 lb</td>\n<td>2.597<br></td>\n<td>0.041<br></td>\n<td>0.014</td>\n</tr>\n<tr>\n<td>12 lb</td>\n<td>2.593<br></td>\n<td>0.041<br></td>\n<td>0.014</td>\n</tr>\n</tbody>\n</table>\n<h3>Downloads:</h3>",
+    "vendor": "Track Bowling",
+    "product_type": "Ball",
+    "published_at": "2026-06-30T13:00:05-04:00",
+    "created_at": "2026-06-09T11:20:03-04:00",
+    "updated_at": "2026-08-05T03:46:06-04:00",
+    "tags": ["Ball", "New Balls"],
+    "variants": [
+      {
+        "id": 48793253347545,
+        "title": "Default Title",
+        "product_id": 9767175422169
+      }
+    ],
+    "images": [
+      {
+        "id": 49126604013785,
+        "position": 1,
+        "product_id": 9767175422169,
+        "alt": null,
+        "src": "https://cdn.shopify.com/s/files/1/0609/7590/7033/files/Theorem_Delta_1600x1600_3b21d45e-77c1-4cc2-b957-875dda875646.png?v=1781018237",
+        "width": 1600,
+        "height": 1600
+      },
+      {
+        "id": 49126604079321,
+        "position": 2,
+        "product_id": 9767175422169,
+        "alt": null,
+        "src": "https://cdn.shopify.com/s/files/1/0609/7590/7033/files/Theorem_Delta_16-14_lb_Core_1600x1600_callout.png?v=1781018237",
+        "width": 1600,
+        "height": 1600
+      },
+      {
+        "id": 49126604046553,
+        "position": 3,
+        "product_id": 9767175422169,
+        "alt": null,
+        "src": "https://cdn.shopify.com/s/files/1/0609/7590/7033/files/Theorem_Delta_13-12_lb_Core_1600x1600_callout.png?v=1781018237",
+        "width": 1600,
+        "height": 1600
+      }
+    ],
+    "options": [
+      {"name": "Title", "position": 1, "values": ["Default Title"]}
+    ]
+  }
+}

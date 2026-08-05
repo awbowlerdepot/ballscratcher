@@ -177,7 +177,7 @@ Parameters:
     Type: String
     Default: hammerbowling.com
     Description: >
-      A fourth platform, added this session -- see
+      A fourth platform, added a prior session -- see
       src/shopify_url_discovery/app.py and shopify_product_scraper/app.py
       module docstrings for the real, confirmed platform differences
       (collection-membership-based discovery via Shopify's public
@@ -186,16 +186,16 @@ Parameters:
       unlike Brunswick; no on-page current/retired signal at all, unlike
       every other family, so status is resolved once at discovery time from
       collection membership and read back by the scraper). Track and
-      Ebonite are believed to share this same Shopify theme/platform per
-      prior research but were NOT confirmed live this session and are NOT
-      wired up below -- only "the hammer brand" was actually asked for.
-      ShopifyUrlDiscoveryFunction's CodeUri/ShopifyProductScraperFunction
-      are still parameterized (this param plus HammerCollectionHandles/
-      HammerBrandId) the same way RadicalUrlDiscoveryFunction/
-      Dv8UrlDiscoveryFunction reuse url_discovery/app.py, so a Track/Ebonite
-      instance of this platform would just be a second
-      Xyz UrlDiscoveryFunction resource with its own store-domain param
-      later, not a rewrite.
+      Ebonite share this same Shopify platform -- confirmed live this
+      session (trackbowling.com/ebonite.com) -- and are wired up below as
+      TrackUrlDiscoveryFunction/EboniteUrlDiscoveryFunction, each a second/
+      third instance of ShopifyUrlDiscoveryFunction's CodeUri with their
+      own StoreDomain/CollectionHandles/BrandId params, same reuse
+      convention RadicalUrlDiscoveryFunction/Dv8UrlDiscoveryFunction
+      already use for url_discovery/app.py. Note Track and Ebonite's
+      product-page markup is NOT identical to Hammer's, though --
+      shopify_product_scraper/app.py's module docstring covers the real
+      <table>-vs-<ul> difference this required.
   HammerCollectionHandles:
     Type: String
     Default: "high-performance,upper-mid-performance,mide-performance,lower-mid-performance,polyester,retired-balls"
@@ -213,6 +213,56 @@ Parameters:
       blank by default, same reasoning as SwagBrandId/MotivBrandId/
       StormBrandId -- required once you actually enable
       ShopifyUrlDiscoveryFunction.
+  TrackStoreDomain:
+    Type: String
+    Default: trackbowling.com
+    Description: >
+      Confirmed live this session (collections.json, retired-balls
+      collection, /products/{handle}.json all present and Shopify-shaped,
+      same signals used to confirm Hammer). See HammerStoreDomain's
+      description for the shared-platform reasoning.
+  TrackCollectionHandles:
+    Type: String
+    Default: "high-performance,upper-mid-performance,mid-performance,polyester,retired-balls"
+    Description: >
+      Confirmed live this session via trackbowling.com/collections.json --
+      deliberately NOT the same set as HammerCollectionHandles's default:
+      Track has no lower-mid-performance collection at all (confirmed
+      absent from collections.json, not just empty), and correctly spells
+      "mid-performance" (Hammer's default has the "mide-performance" typo,
+      which is real but specific to Hammer's own site -- copying it here
+      would silently 0-discover Track's mid-tier ball).
+  TrackBrandId:
+    Type: String
+    Default: ""
+    Description: >
+      UUID of the `brands` row for Track (source_platform='shopify'). Left
+      blank by default, same reasoning as HammerBrandId -- required once
+      you actually enable TrackUrlDiscoveryFunction.
+  EboniteStoreDomain:
+    Type: String
+    Default: ebonite.com
+    Description: >
+      Confirmed live this session (collections.json, retired-balls
+      collection, /products/{handle}.json all present and Shopify-shaped,
+      same signals used to confirm Hammer). See HammerStoreDomain's
+      description for the shared-platform reasoning.
+  EboniteCollectionHandles:
+    Type: String
+    Default: "pro-performance,high-performance,mid-performance,lower-mid-performance,polyester,retired-balls"
+    Description: >
+      Confirmed live this session via ebonite.com/collections.json --
+      also deliberately NOT the same set as Hammer/Track: Ebonite has no
+      upper-mid-performance collection at all, but does have a
+      pro-performance tier neither Hammer nor Track has (confirmed via
+      collections.json's own product_count field, not assumed).
+  EboniteBrandId:
+    Type: String
+    Default: ""
+    Description: >
+      UUID of the `brands` row for Ebonite (source_platform='shopify').
+      Left blank by default, same reasoning as HammerBrandId -- required
+      once you actually enable EboniteUrlDiscoveryFunction.
   BigCommerceSecretArn:
     Type: String
     Default: ""
@@ -1476,16 +1526,22 @@ Resources:
       # every other family uses -- that function's job shape and
       # processing are platform-agnostic.
 
-  # --- Shopify brand family (Hammer Bowling to start) ---
+  # --- Shopify brand family (Hammer Bowling, Track, Ebonite) ---
   #
-  # A fourth platform, added this session -- see HammerStoreDomain's
-  # Parameters description above and src/shopify_url_discovery/app.py's
-  # module docstring for the real, confirmed platform differences that
-  # drove this pair's design.
+  # A fourth platform, added a prior session for Hammer -- see
+  # HammerStoreDomain's Parameters description above and
+  # src/shopify_url_discovery/app.py's module docstring for the real,
+  # confirmed platform differences that drove this design. Track and
+  # Ebonite (confirmed live this session) reuse the exact same
+  # ShopifyUrlDiscoveryFunction CodeUri, one resource per brand, same
+  # reuse convention as RadicalUrlDiscoveryFunction/Dv8UrlDiscoveryFunction
+  # -- ShopifyProductScraperFunction below is a SINGLE shared function for
+  # all three brands (brand-agnostic already: brand_id comes from each
+  # SQS job's payload, not an env var -- see that function's own comment),
+  # so only the discovery side needed new resources.
   #
-  # Wired into its own SQS chain, same shape as WooCommerce/NetSuite/
-  # Commercebuild: ShopifyUrlDiscoveryFunction publishes to
-  # ShopifyProductScrapeQueue, ShopifyProductScraperFunction consumes it
+  # All three discovery functions publish into the SAME
+  # ShopifyProductScrapeQueue -- ShopifyProductScraperFunction consumes it
   # and fans out to the shared ImageProcessQueue for any new images. Not a
   # PdfParseQueue trigger target -- RG/DIFF/ASY are already in HTML on this
   # platform, same reasoning as WooCommerce/NetSuite.
@@ -1514,12 +1570,61 @@ Resources:
       # No schedule wired up yet (unlike UrlDiscoveryFunction's daily
       # trigger) -- add once HammerBrandId is actually set for a real
       # deployment; a schedule referencing an empty BrandId isn't useful.
-      # A second brand on this platform (Track/Ebonite) would be a second
-      # ShopifyUrlDiscoveryFunction-shaped resource here, reusing this same
-      # CodeUri with its own StoreDomain/CollectionHandles/BrandId params --
-      # same reuse convention as RadicalUrlDiscoveryFunction/
-      # Dv8UrlDiscoveryFunction -- not added speculatively since only
-      # Hammer was actually asked for this session.
+      # Same for TrackUrlDiscoveryFunction/EboniteUrlDiscoveryFunction
+      # below.
+
+  TrackUrlDiscoveryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-track-url-discovery
+      CodeUri: src/shopify_url_discovery/
+      Handler: app.handler
+      Environment:
+        Variables:
+          STORE_DOMAIN: !Ref TrackStoreDomain
+          COLLECTION_HANDLES: !Ref TrackCollectionHandles
+          BRAND_ID: !Ref TrackBrandId
+          PRODUCT_SCRAPE_QUEUE_URL: !Ref ShopifyProductScrapeQueue
+      Policies:
+        - VPCAccessPolicy: {}
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt ShopifyProductScrapeQueue.QueueName
+      # Same CodeUri as ShopifyUrlDiscoveryFunction, different env vars --
+      # see TrackStoreDomain/TrackCollectionHandles/TrackBrandId's
+      # Parameters descriptions above for what's actually different about
+      # Track vs. Hammer (collection-handle set, not the discovery logic
+      # itself). No schedule wired up yet, same reasoning as Hammer's.
+
+  EboniteUrlDiscoveryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-ebonite-url-discovery
+      CodeUri: src/shopify_url_discovery/
+      Handler: app.handler
+      Environment:
+        Variables:
+          STORE_DOMAIN: !Ref EboniteStoreDomain
+          COLLECTION_HANDLES: !Ref EboniteCollectionHandles
+          BRAND_ID: !Ref EboniteBrandId
+          PRODUCT_SCRAPE_QUEUE_URL: !Ref ShopifyProductScrapeQueue
+      Policies:
+        - VPCAccessPolicy: {}
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt ShopifyProductScrapeQueue.QueueName
+      # Same CodeUri as ShopifyUrlDiscoveryFunction, different env vars --
+      # see EboniteStoreDomain/EboniteCollectionHandles/EboniteBrandId's
+      # Parameters descriptions above. No schedule wired up yet, same
+      # reasoning as Hammer's.
 
   ShopifyProductScraperFunction:
     Type: AWS::Serverless::Function
@@ -1696,6 +1801,10 @@ Outputs:
     Value: !Ref ShopifyProductScrapeDLQ
   ShopifyUrlDiscoveryFunctionArn:
     Value: !GetAtt ShopifyUrlDiscoveryFunction.Arn
+  TrackUrlDiscoveryFunctionArn:
+    Value: !GetAtt TrackUrlDiscoveryFunction.Arn
+  EboniteUrlDiscoveryFunctionArn:
+    Value: !GetAtt EboniteUrlDiscoveryFunction.Arn
   ShopifyProductScraperFunctionArn:
     Value: !GetAtt ShopifyProductScraperFunction.Arn
   BowwwlCrossCheckFunctionArn:

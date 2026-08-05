@@ -252,13 +252,35 @@ values ('<manufacturer-id>', 'Hammer', 'https://hammerbowling.com', 'shopify')
 returning id;
 ```
 
-Save that id as `HammerBrandId`. Track and Ebonite are believed to share
-this same Shopify platform per prior research (not confirmed live this
-session) -- not seeded here since only "the hammer brand" was actually
-asked for; adding either later is the same shape (a new `brands` row plus
-a new `ShopifyUrlDiscoveryFunction`-shaped resource in `template.yaml`
-with its own store-domain/collection-handles params, reusing
-`src/shopify_product_scraper/`'s existing scraper unchanged).
+Save that id as `HammerBrandId`. Track and Ebonite share this same
+Shopify platform -- confirmed live (trackbowling.com/ebonite.com:
+collections.json, a real separate retired-balls collection, working
+/products/{handle}.json), and both are wired up in `template.yaml` as
+`TrackUrlDiscoveryFunction`/`EboniteUrlDiscoveryFunction`:
+
+```sql
+insert into brands (manufacturer_id, name, base_url, source_platform)
+values ('<manufacturer-id>', 'Track', 'https://trackbowling.com', 'shopify')
+returning id;
+insert into brands (manufacturer_id, name, base_url, source_platform)
+values ('<manufacturer-id>', 'Ebonite', 'https://ebonite.com', 'shopify')
+returning id;
+```
+
+Save those ids as `TrackBrandId`/`EboniteBrandId`. Both reuse the same
+manufacturer_id as Hammer/Brunswick -- Track and Ebonite are also part of
+the Brunswick-owned equipment family (see the note above this block).
+
+One real gotcha worth knowing before you enable either: Track's and
+Ebonite's product pages use a completely different BALL SPECS/RG-DIFF
+markup than Hammer's -- an HTML `<table>` instead of Hammer's `<ul><li>`
+list (confirmed live against both sites; see
+`src/shopify_product_scraper/app.py`'s module docstring and
+`parse_ball_specs_table`/`parse_rg_diff_table`'s docstrings for the full
+details). This was caught and handled before either brand was wired up
+here, not after -- `ShopifyProductScraperFunction` (shared by all three
+brands) now dispatches to whichever parser matches the section it
+actually finds, so no separate per-brand scraper was needed.
 
 ## 5. Deploy
 
@@ -290,8 +312,12 @@ Here's what to give it:
 | `MotivBrandId` | Only if enabling MOTIV | MOTIV's id from step 4, else leave blank |
 | `CommercebuildCategoryUrl` | No | Defaults to the real stormbowling.com bowling-balls category URL |
 | `StormBrandId` / `RotoGripBrandId` / `Global900BrandId` | Only if enabling commercebuild | The three ids from step 4, else leave blank (a blank id makes `CommercebuildUrlDiscoveryFunction` skip that brand entirely, see its module docstring -- you can enable them individually, not all-or-nothing) |
-| `HammerStoreDomain` / `HammerCollectionHandles` | No | Default to Hammer's real domain/collection handles (confirmed live this session) |
+| `HammerStoreDomain` / `HammerCollectionHandles` | No | Default to Hammer's real domain/collection handles (confirmed live) |
 | `HammerBrandId` | Only if enabling Hammer | Hammer's id from step 4, else leave blank |
+| `TrackStoreDomain` / `TrackCollectionHandles` | No | Default to Track's real domain/collection handles (confirmed live this session -- note the set differs from Hammer's, no lower-mid-performance tier) |
+| `TrackBrandId` | Only if enabling Track | Track's id from step 4, else leave blank |
+| `EboniteStoreDomain` / `EboniteCollectionHandles` | No | Default to Ebonite's real domain/collection handles (confirmed live this session -- differs from both Hammer and Track, has a pro-performance tier but no upper-mid-performance) |
+| `EboniteBrandId` | Only if enabling Ebonite | Ebonite's id from step 4, else leave blank |
 | `BigCommerceSecretArn` | No | Leave blank until step 7's BowlerDepot rollout |
 
 Accept the SAM CLI's other prompts (stack name, region, confirm changes,
@@ -462,13 +488,13 @@ already-scraped, unchanged product on its own. Three ways to trigger it:
 
 1. `POST /products/{id}/rescrape` -- republishes that one product's
    `{url, brand_id}` onto whichever platform's scrape queue it belongs to
-   (see `service.queue_rescrape`/`resolve_scrape_queue_env_var`). Returns
-   `{"queued": true, ...}` on success, or `{"queued": false, "reason":
-   ...}` (not an error) for a product on a platform with no scraper
-   deployed yet (Track/Ebonite would fall in this bucket if you seed a
-   `brands` row for either without also adding a `ShopifyUrlDiscoveryFunction`-
-   shaped resource for it -- Hammer itself is now a supported platform, see
-   6f.5) or a misconfigured queue env var.
+   (see `service.queue_rescrape`/`resolve_scrape_queue_env_var`, keyed by
+   `source_platform`, not brand -- so this works for Hammer/Track/Ebonite
+   alike as long as `brands.source_platform = 'shopify'` for that row, see
+   6f.5/6f.6). Returns `{"queued": true, ...}` on success, or
+   `{"queued": false, "reason": ...}` (not an error) for a product on a
+   platform with no scraper deployed at all yet, or a misconfigured queue
+   env var.
 2. `scripts/backfill_core_ids.py` -- same `ADMIN_API_URL`/`ADMIN_API_TOKEN`
    env var setup as `scripts/backfill_video_review_rollups.py` (see 6i).
    Paginates `GET /products?missing_core=true` and calls the rescrape
@@ -785,6 +811,62 @@ delete from cores
 where brand_id = '<HammerBrandId>'
   and id not in (select core_id from products where core_id is not null);
 ```
+
+### 6f.6. Track + Ebonite (Shopify) -- if `TrackBrandId`/`EboniteBrandId` were set
+
+Same platform as Hammer, same shared `ShopifyProductScraperFunction`, but
+each brand has its own discovery function -- no schedule wired up for
+either yet, same reasoning as Hammer's:
+
+```bash
+aws lambda invoke --function-name bowling-scraper-track-url-discovery \
+  --payload '{}' --cli-binary-format raw-in-base64-out /tmp/out.json
+cat /tmp/out.json
+
+aws lambda invoke --function-name bowling-scraper-ebonite-url-discovery \
+  --payload '{}' --cli-binary-format raw-in-base64-out /tmp/out.json
+cat /tmp/out.json
+
+aws logs tail /aws/lambda/bowling-scraper-shopify-product-scraper --follow
+```
+
+Real, confirmed this session (live fetches against trackbowling.com and
+ebonite.com, not inferred): both stores' collections.json/products.json/
+{handle}.json endpoints behave identically to Hammer's, and each brand's
+own collection-handle set was read directly from its real collections.json
+rather than assumed (see `TrackCollectionHandles`/
+`EboniteCollectionHandles`'s Parameters descriptions -- neither one is the
+same set as Hammer's or each other's).
+
+**The one real difference that mattered:** Track's and Ebonite's product
+pages use an HTML `<table>` for BALL SPECS/RG-DIFF instead of Hammer's
+`<ul><li>` list -- confirmed against six real live product fetches across
+both brands (three modern, two older/retired, one very old novelty
+listing with no structured specs section at all). Reusing Hammer's parser
+unchanged against these would not have errored -- it would have silently
+inserted every Track/Ebonite product with empty core/coverstock/RG-DIFF
+data, a worse failure mode than the Hammer `"E "`-prefix bug (see 6f.5's
+incident writeup below) because nothing about a "successful" 200 response
+would have looked wrong. This was caught before wiring up either brand
+(not after) and handled via `parse_ball_specs_table`/`parse_rg_diff_table`
+in `src/shopify_product_scraper/app.py`, with real-fixture regression
+tests in `tests/test_shopify_product_scraper.py`
+(`track_theorem_delta.json`, `track_100p.json`, `ebonite_spartan_pearl.json`,
+`ebonite_game_breaker_5_hybrid.json`, `ebonite_angry_birds.json`) -- see
+that module's docstring for the full before/after story. What's **not**
+yet confirmed: an actual live Lambda invocation against AWS for either
+brand (no outbound path from the sandbox that built this) -- watch for on
+first run:
+
+- A Track or Ebonite product landing with populated `core_id`/
+  `coverstock_name`/`skus` (not empty) -- confirms the table parser is
+  actually matching real production markup, not just the fixtures.
+- `discovered_urls.status_path` correctly split `current`/`retired` per
+  product for both brands, same check as Hammer's.
+- The DLQ, same command as Hammer's 6f.5 above (swap the queue name to
+  `bowling-scraper-shopify-product-scrape-dlq` -- it's the SAME shared DLQ
+  for all three brands, since `ShopifyProductScraperFunction` itself is
+  shared).
 
 ### 6g. bowwwl.com cross-check
 

@@ -1,0 +1,76 @@
+{
+  "product": {
+    "id": 7912550924505,
+    "title": "100P",
+    "body_html": "<p>Every ball we design at Track serves a purpose and this one is no different. The purpose behind this ball is simple, provide Track fans around the world with a classic looking ball which makes picking up spares a breeze.</p>\n<p><strong>CORE</strong> <br>Our new 100P features a pancake core design. Spare balls are designed to go straight, so no need for a high-tech core in this one.</p>\n<p><strong>COVER</strong> <br>Polyester covers provided a decent amount of hook back in the 70’s. Today they make perfect spare balls due to the low friction levels they create on modern bowling environments.</p>\n<p><strong>FINISH</strong> <br>The polished finished keeps this one from gripping the lane which is ideal for picking up those pesky corner pins.</p>\n<p><strong>OVERALL</strong> <br>It’s been said for years that straighter is greater. They don’t get much straighter than the 100P Black Sparkle</p>\n<h3>Specifications</h3>\n<table width=\"100%\">\n<tbody>\n<tr>\n<td>Color</td>\n<td>Black Sparkle</td>\n</tr>\n<tr>\n<td>Core</td>\n<td>Pancake</td>\n</tr>\n<tr>\n<td>Coverstock</td>\n<td>Polyester</td>\n</tr>\n<tr>\n<td>Finish</td>\n<td>800 Abranet®, 1000, 2000 Abralon® Power House Factory Finish Polish</td>\n</tr>\n<tr>\n<td>Weights</td>\n<td>16-12 Pounds</td>\n</tr>\n</tbody>\n</table>\n<p> </p>\n<h3>Stay Informed</h3>",
+    "vendor": "Track Bowling",
+    "product_type": "Ball",
+    "created_at": "2022-09-27T13:08:12-04:00",
+    "handle": "100p",
+    "updated_at": "2026-08-05T03:48:37-04:00",
+    "published_at": "2022-09-27T13:08:13-04:00",
+    "template_suffix": "ball-2",
+    "published_scope": "web",
+    "tags": "Retired",
+    "variants": [
+      {
+        "id": 43413327118553,
+        "product_id": 7912550924505,
+        "title": "Default Title",
+        "price": "0.00",
+        "sku": "",
+        "position": 1,
+        "compare_at_price": "",
+        "fulfillment_service": "manual",
+        "inventory_management": null,
+        "option1": "Default Title",
+        "option2": null,
+        "option3": null,
+        "created_at": "2022-09-27T13:08:13-04:00",
+        "updated_at": "2026-08-05T03:48:37-04:00",
+        "taxable": false,
+        "barcode": null,
+        "grams": 0,
+        "image_id": null,
+        "weight": 0.0,
+        "weight_unit": "lb",
+        "requires_shipping": true
+      }
+    ],
+    "options": [
+      {
+        "id": 10036108329177,
+        "product_id": 7912550924505,
+        "name": "Title",
+        "position": 1,
+        "values": ["Default Title"]
+      }
+    ],
+    "images": [
+      {
+        "id": 38804206190809,
+        "product_id": 7912550924505,
+        "position": 1,
+        "created_at": "2022-09-27T13:08:24-04:00",
+        "updated_at": "2022-09-27T13:08:25-04:00",
+        "alt": "100P Bowling Ball",
+        "width": 1600,
+        "height": 1600,
+        "src": "https://cdn.shopify.com/s/files/1/0609/7590/7033/products/100P_1600x1600_2685a093-32c4-414a-aed5-0705d4d10888.png?v=1664298505",
+        "variant_ids": []
+      },
+      {
+        "id": 38804208091353,
+        "product_id": 7912550924505,
+        "position": 2,
+        "created_at": "2022-09-27T13:08:31-04:00",
+        "updated_at": "2022-09-27T13:08:32-04:00",
+        "alt": "100P Core",
+        "width": 1600,
+        "height": 1600,
+        "src": "https://cdn.shopify.com/s/files/1/0609/7590/7033/products/100P_Core_1600x1600_8b850ba2-3e64-4249-803e-dacc8b3acea8.png?v=1664298512",
+        "variant_ids": []
+      }
+    ]
+  }
+}

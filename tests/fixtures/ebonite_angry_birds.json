@@ -1,0 +1,44 @@
+{
+  "product": {
+    "id": 7770604699900,
+    "title": "Angry Birds",
+    "handle": "angry-birds",
+    "body_html": "<h2>Overview</h2>\n<p>This exciting brand has captivated people of all ages, from all walks of life! Now, bowlers that are Angry Birds enthusiasts can take their Angry Birds Bowling Ball and Angry Birds Bag to the lanes with them!</p>\n<p>Available colors are Angry Birds Red, Angry Birds Black and Angry Green Pig, in both Bowling Balls and Bowling Bags.</p>\n<p>The Angry Birds balls are poly balls that will be a great entry level ball, or a spare ball of a lifetime for the bowler that is an Angry Birds Fan!</p>\n<p><strong>Coverstock</strong><span> </span>Polyester</p>",
+    "vendor": "Ebonite",
+    "product_type": "Bowling Ball",
+    "created_at": "2022-07-12T08:05:59-04:00",
+    "updated_at": "2026-08-05T03:48:38-04:00",
+    "published_at": "2022-07-12T08:05:59-04:00",
+    "template_suffix": "ball-page-1",
+    "published_scope": "web",
+    "tags": "Retired Balls",
+    "variants": [
+      {"id": 43346765152508, "title": "Default Title", "product_id": 7770604699900}
+    ],
+    "options": [
+      {"name": "Title", "position": 1, "values": ["Default Title"]}
+    ],
+    "images": [
+      {
+        "id": 37818805256444,
+        "position": 1,
+        "product_id": 7770604699900,
+        "alt": "Angry Birds Black Bowling Ball",
+        "width": 1600,
+        "height": 1600,
+        "src": "https://cdn.shopify.com/s/files/1/0609/8790/0156/products/Angry_Bird_Black_1600x1600_bbaf7be3-96a9-4531-a2ee-b159c8c686fc.png?v=1657627581",
+        "variant_ids": []
+      },
+      {
+        "id": 37818806010108,
+        "position": 2,
+        "product_id": 7770604699900,
+        "alt": "Angry Birds Red Bowling Ball",
+        "width": 1600,
+        "height": 1600,
+        "src": "https://cdn.shopify.com/s/files/1/0609/8790/0156/products/Angry_Bird_Red_1600x1600_48f89c7b-efd1-474e-880d-143756084a4c.png?v=1657627587",
+        "variant_ids": []
+      }
+    ]
+  }
+}

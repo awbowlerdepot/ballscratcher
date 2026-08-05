@@ -1,0 +1,49 @@
+{
+  "product": {
+    "id": 9241746374908,
+    "title": "Game Breaker 5 Hybrid",
+    "handle": "game-breaker-5-hybrid",
+    "body_html": "<h2><iframe width=\"560\" height=\"315\" src=\"https://www.youtube.com/embed/7k6-y9k1FI0?si=6DslKdLF4F7QLu-W\" title=\"YouTube video player\"></iframe></h2>\n<h2>The Next Step in the Game Breaker Legacy.</h2>\n<p class=\"p1\">The Ebonite Game Breaker line has been synonymous with performance and value for more than a decade, earning its reputation as one of the most reliable go-to options in bowling. The <span class=\"s1\"><b>GB5 Hybrid</b></span> continues that legacy, designed to perfectly complement the GB5 lineup and provide a natural follow-up to the GB5 Pearl. Its balanced, predictable motion makes it an ideal symmetrical option for bowlers needing to handle more oil.</p>\n<h2 class=\"p1\">Specifications</h2>\n<table width=\"100%\">\n<tbody>\n<tr>\n<td><strong>Performance</strong></td>\n<td>Mid<br></td>\n</tr>\n<tr>\n<td><strong>Part Number</strong></td>\n<td>60-108577-93X</td>\n</tr>\n<tr>\n<td>\n<strong>Color</strong><br>\n</td>\n<td>Sky Blue / Black<br></td>\n</tr>\n<tr>\n<td><strong>Core</strong></td>\n<td>Enhanced V2<br></td>\n</tr>\n<tr>\n<td><strong>Coverstock</strong></td>\n<td>HK22 - GB 12.7 Hybrid<br></td>\n</tr>\n<tr>\n<td><strong>Cover Type</strong></td>\n<td>Hybrid Reactive</td>\n</tr>\n<tr>\n<td><strong>Finish</strong></td>\n<td>500, 2000 Siaair Micro Pad</td>\n</tr>\n<tr>\n<td><strong>Weights</strong></td>\n<td>16-10 Pounds</td>\n</tr>\n<tr>\n<td><strong>Lane Condition</strong></td>\n<td>Medium to oily</td>\n</tr>\n<tr>\n<td><strong>Reaction</strong></td>\n<td>Strong mid-lane and backend<br></td>\n</tr>\n<tr>\n<td><strong>Warranty</strong></td>\n<td>Two years from purchase date </td>\n</tr>\n<tr>\n<td><strong>Release Date</strong></td>\n<td>March 19, 2026</td>\n</tr>\n</tbody>\n</table>\n<h2>Core Numbers</h2>\n<table style=\"width: 50.7725%;\">\n<tbody>\n<tr>\n<td style=\"width: 23%;\">\n<p><strong>Weight</strong></p>\n</td>\n<td style=\"width: 19%;\">\n<p><strong>RG</strong></p>\n</td>\n<td style=\"width: 19.7218%;\">\n<p><strong>DIFF</strong></p>\n</td>\n</tr>\n<tr>\n<td style=\"width: 23%;\"><strong>16 lb</strong></td>\n<td style=\"width: 19%;\">2.491</td>\n<td style=\"width: 19.7218%;\">0.041</td>\n</tr>\n<tr>\n<td style=\"width: 23%;\"><strong>15 lb</strong></td>\n<td style=\"width: 19%;\">2.480</td>\n<td style=\"width: 19.7218%;\">0.048</td>\n</tr>\n<tr>\n<td style=\"width: 23%;\"><strong>14 lb</strong></td>\n<td style=\"width: 19%;\">2.517</td>\n<td style=\"width: 19.7218%;\">0.048</td>\n</tr>\n<tr>\n<td style=\"width: 23%;\"><strong>13 lb</strong></td>\n<td style=\"width: 19%;\">2.574</td>\n<td style=\"width: 19.7218%;\">0.040</td>\n</tr>\n<tr>\n<td style=\"width: 23%;\"><strong>12 lb</strong></td>\n<td style=\"width: 19%;\">2.597</td>\n<td style=\"width: 19.7218%;\">0.040</td>\n</tr>\n<tr>\n<td style=\"width: 23%;\"><strong>11 lb</strong></td>\n<td style=\"width: 19%;\">2.769</td>\n<td style=\"width: 19.7218%;\">0.002</td>\n</tr>\n<tr>\n<td style=\"width: 23%;\"><strong>10 lb</strong></td>\n<td style=\"width: 19%;\">2.800</td>\n<td style=\"width: 19.7218%;\">0.002</td>\n</tr>\n</tbody>\n</table>\n<h2>Featuring</h2>\n<h2>Downloads<br></h2>",
+    "vendor": "Ebonite",
+    "product_type": "Bowling Ball",
+    "published_at": "2026-03-10T13:03:15-04:00",
+    "created_at": "2026-02-11T08:59:13-05:00",
+    "updated_at": "2026-08-05T03:46:57-04:00",
+    "tags": ["Balls", "Current Ball Lineup", "Mid Performance", "New Balls"],
+    "variants": [
+      {"id": 48763108753660, "title": "Default Title", "product_id": 9241746374908}
+    ],
+    "images": [
+      {
+        "id": 47431832338684,
+        "position": 1,
+        "product_id": 9241746374908,
+        "alt": null,
+        "src": "https://cdn.shopify.com/s/files/1/0609/8790/0156/files/Game_Breaker_5_Hybrid_1600x1600_7ac2c99d-6f7a-48fa-a7f4-2f2bae9d9317.png?v=1770818142",
+        "width": 1600,
+        "height": 1600
+      },
+      {
+        "id": 47431833616636,
+        "position": 2,
+        "product_id": 9241746374908,
+        "alt": null,
+        "src": "https://cdn.shopify.com/s/files/1/0609/8790/0156/files/Game_Breaker_5_Hybrid_16-14_lb_Core_1600x1600_callout.png?v=1770818175",
+        "width": 1600,
+        "height": 1600
+      },
+      {
+        "id": 47431833583868,
+        "position": 3,
+        "product_id": 9241746374908,
+        "alt": null,
+        "src": "https://cdn.shopify.com/s/files/1/0609/8790/0156/files/Game_Breaker_5_Hybrid_13-12_lb_Core_1600x1600_callout.png?v=1770818175",
+        "width": 1600,
+        "height": 1600
+      }
+    ],
+    "options": [
+      {"name": "Title", "position": 1, "values": ["Default Title"]}
+    ]
+  }
+}

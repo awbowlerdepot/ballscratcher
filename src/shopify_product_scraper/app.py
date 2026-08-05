@@ -1,7 +1,30 @@
 """
-Product scraper for the Shopify brand family (Hammer Bowling to start --
-see shopify_url_discovery/app.py's module docstring for the platform
-confirmation).
+Product scraper for the Shopify brand family (Hammer Bowling to start,
+joined by Track and Ebonite -- see shopify_url_discovery/app.py's module
+docstring for the platform confirmation).
+
+TWO MARKUP FAMILIES, not one -- confirmed real this session via live
+fetches against trackbowling.com and ebonite.com: Hammer's BALL SPECS/
+RG-DIFF sections are <ul><li><strong> lists (see parse_ball_specs/
+parse_rg_diff_list below), but Track and Ebonite both use plain HTML
+<table>s instead, under different heading text ("Specifications"/"Core
+Numbers" instead of "BALL SPECS"/"RG / DIFF") and even a different heading
+tag (Track: <h3>, Ebonite: <h2>). Reusing the <ul>-based parsers unchanged
+against these would not error -- _find_section's old single-prefix,
+<ul>/<p>-only signature would just silently return None for every Track/
+Ebonite product (heading text never matches "BALL SPECS", and even a
+matching heading's next sibling is a <table> it wasn't looking for),
+producing a fully "successful" scrape with completely empty specs/core/
+coverstock/skus for every product -- a worse failure mode than the
+"E "-prefix bug (see parse_ball_specs's docstring) because nothing about
+it would look wrong until someone noticed the data gap. _find_section now
+checks both <h2>/<h3> and accepts multiple heading-text prefixes, and
+parse_product_page dispatches to parse_ball_specs_table/
+parse_rg_diff_table instead of the <ul>-based pair whenever the located
+section's tag is a <table> -- see those two functions' docstrings for the
+real cross-brand formatting differences they tolerate (label cells
+plain text on Track, <strong>-wrapped on Ebonite; ASY column present or
+absent depending on whether that ball's core is asymmetric).
 
 Fetches each product via Shopify's own {product_url}.json convention
 (confirmed real this session against
@@ -136,17 +159,31 @@ def _clean(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip()
 
 
-def _find_section(soup: BeautifulSoup, heading_prefix: str):
-    """Finds the <h3> whose cleaned, upper-cased text starts with
-    heading_prefix, and returns its next sibling tag (the <ul> or <p> that
-    actually holds the section's content). Matching by heading text
-    content rather than any CSS class/position -- same "match by content,
-    not markup" approach every other scraper in this codebase already
-    uses, needed here too since "RG / DIFF" vs. "RG / DIFF / ASY" varies
-    by product (see module docstring)."""
-    for h3 in soup.find_all("h3"):
-        if _clean(h3.get_text()).upper().startswith(heading_prefix):
-            return h3.find_next_sibling(["ul", "p"])
+def _find_section(soup: BeautifulSoup, heading_prefixes):
+    """Finds the <h2>/<h3> whose cleaned, upper-cased text starts with any
+    of heading_prefixes, and returns its next sibling tag (the <ul>, <p>,
+    or <table> that actually holds the section's content). Matching by
+    heading text content rather than any CSS class/position -- same "match
+    by content, not markup" approach every other scraper in this codebase
+    already uses, needed here too since "RG / DIFF" vs. "RG / DIFF / ASY"
+    vs. "CORE NUMBERS" varies by product/brand (see module docstring).
+
+    Both <h2> and <h3> are checked, and heading_prefixes accepts multiple
+    strings, because Track and Ebonite (confirmed live, real fetches
+    against trackbowling.com and ebonite.com) use different heading tags
+    and text than Hammer for the same two sections: Hammer is
+    <h3>BALL SPECS</h3>, Track is <h3>Specifications</h3>, Ebonite is
+    <h2>Specifications</h2> -- and Hammer's core-numbers heading is
+    "RG / DIFF" (or "RG / DIFF / ASY") while Track/Ebonite's is
+    <h2 or h3>Core Numbers</h2>. A single string parameter couldn't match
+    both "BALL SPECS" and "SPECIFICATIONS" (different first word), or both
+    "RG" and "CORE NUMBERS" (no shared prefix), hence the sequence."""
+    if isinstance(heading_prefixes, str):
+        heading_prefixes = (heading_prefixes,)
+    for heading in soup.find_all(["h2", "h3"]):
+        text = _clean(heading.get_text()).upper()
+        if any(text.startswith(prefix) for prefix in heading_prefixes):
+            return heading.find_next_sibling(["ul", "p", "table"])
     return None
 
 
@@ -231,6 +268,92 @@ def parse_rg_diff_list(rg_ul) -> list:
             "differential": float(diff_match.group(1)) if diff_match else None,
             "mass_bias": float(asy_match.group(1)) if asy_match else None,
         })
+    return skus
+
+
+def parse_ball_specs_table(specs_table) -> dict:
+    """Table-shaped counterpart to parse_ball_specs, for Track/Ebonite
+    (confirmed live against trackbowling.com and ebonite.com): both use a
+    plain <table><tr><td>label</td><td>value</td></tr>...</table> for the
+    "Specifications" section instead of Hammer's <ul><li><strong>. Track's
+    label cells are bare text ("<td>Performance</td>"), Ebonite's wrap the
+    label in <strong> ("<td><strong>Performance</strong></td>") -- both
+    read identically via cell.get_text(), so no brand-specific branching
+    needed here. Returns {} the same way parse_ball_specs does for a
+    missing section -- real for Ebonite's oldest novelty listings (e.g.
+    "Angry Birds"), which have no Specifications table at all, just plain
+    marketing paragraphs with at most one inline spec mentioned in
+    passing; nothing to structure-parse there, same as any other
+    data-sparse retired product."""
+    if specs_table is None:
+        return {}
+    raw = {}
+    for tr in specs_table.find_all("tr"):
+        cells = tr.find_all("td")
+        if len(cells) < 2:
+            continue
+        label = _clean(cells[0].get_text()).upper()
+        canonical = BALL_SPEC_LABEL_MAP.get(label)
+        if canonical is None:
+            continue
+        value = _clean(cells[1].get_text())
+        if value:
+            raw[canonical] = value
+    return raw
+
+
+def parse_rg_diff_table(rg_table) -> list:
+    """Table-shaped counterpart to parse_rg_diff_list, for Track/Ebonite's
+    "Core Numbers" table (confirmed live): first row is a header
+    (Weight/RG/DIFF, with ASY as a fourth column only for asymmetric
+    cores -- same "ASY present" signal parse_core_type already relies on,
+    just sourced from a header row's column count instead of a per-LI
+    "ASY (...)" substring). Column position is read from the header text
+    rather than assumed fixed, since Ebonite's Turbo X NU/Game Breaker 5
+    Hybrid tables omit the ASY column entirely (symmetric cores) while
+    Track's three modern fixtures and Ebonite's Spartan Pearl all include
+    it (asymmetric) -- get_text() on each header cell strips whatever
+    <p>/<strong> wrapping that particular brand/era uses, same as the data
+    cells below it."""
+    if rg_table is None:
+        return []
+    rows = rg_table.find_all("tr")
+    if not rows:
+        return []
+
+    header_cells = [_clean(td.get_text()).upper() for td in rows[0].find_all("td")]
+    column_keys = []
+    for header in header_cells:
+        if header.startswith("WEIGHT"):
+            column_keys.append("weight_lbs")
+        elif header.startswith("RG"):
+            column_keys.append("rg")
+        elif header.startswith("DIFF"):
+            column_keys.append("differential")
+        elif header.startswith("ASY"):
+            column_keys.append("mass_bias")
+        else:
+            column_keys.append(None)
+
+    skus = []
+    for tr in rows[1:]:
+        cells = [_clean(td.get_text()) for td in tr.find_all("td")]
+        if not cells:
+            continue
+        sku = {"weight_lbs": None, "rg": None, "differential": None, "mass_bias": None}
+        for key, text in zip(column_keys, cells):
+            if key is None or not text:
+                continue
+            if key == "weight_lbs":
+                match = WEIGHT_RE.search(text)
+                sku["weight_lbs"] = int(match.group(1)) if match else None
+            else:
+                try:
+                    sku[key] = float(text)
+                except ValueError:
+                    sku[key] = None
+        if sku["weight_lbs"] is not None:
+            skus.append(sku)
     return skus
 
 
@@ -373,10 +496,27 @@ def parse_description(soup: BeautifulSoup) -> str:
 
 
 def parse_product_page(product: dict, url: str) -> dict:
+    """Dispatches to the <ul>-based or <table>-based spec/core-numbers
+    parser depending on which one _find_section actually located --
+    Hammer uses <ul><li>, Track/Ebonite use <table> (see
+    parse_ball_specs_table/parse_rg_diff_table's docstrings). Checking
+    section.name rather than hardcoding by brand keeps this brand-agnostic
+    the same way the rest of this module already is; a future Shopify
+    brand landing on either shape needs no changes here."""
     soup = BeautifulSoup(product.get("body_html") or "", "lxml")
 
-    raw = parse_ball_specs(_find_section(soup, "BALL SPECS"))
-    skus = parse_rg_diff_list(_find_section(soup, "RG"))
+    specs_section = _find_section(soup, ("BALL SPECS", "SPECIFICATIONS"))
+    if specs_section is not None and specs_section.name == "table":
+        raw = parse_ball_specs_table(specs_section)
+    else:
+        raw = parse_ball_specs(specs_section)
+
+    rg_section = _find_section(soup, ("RG", "CORE NUMBERS"))
+    if rg_section is not None and rg_section.name == "table":
+        skus = parse_rg_diff_table(rg_section)
+    else:
+        skus = parse_rg_diff_list(rg_section)
+
     coverstock = parse_coverstock(raw.get("coverstock_name"), raw.get("coverstock_type_raw"))
 
     return {
