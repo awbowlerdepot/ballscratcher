@@ -16,6 +16,25 @@ formatting differences each fixture exercises:
   (.031)" weight-list format (no "lb", lowercase "Diff", no ASY),
   "FACTORY FINISH"/"BEST LANE CONDITION"/"AVAILABLE WEIGHTS" label
   spellings, no RELEASE DATE field at all.
+- hammer_scandal.json: real captured body_html from
+  https://hammerbowling.com/products/scandal.json (fetched live to
+  diagnose a real production bug -- see below), every BALL SPECS <li>
+  pretty-printed with a newline between <li> and its <strong> label
+  (e.g. "<li>\\n<strong>CORE</strong><span> </span>Scandal</li>").
+
+Regression coverage for a real production bug (all Hammer fixtures above
+were hand-reconstructed and didn't reproduce it -- hammer_scandal.json's
+body_html is the real fetched bytes): parse_ball_specs() originally sliced
+each <li>'s full get_text() by len(strong.get_text()) to find where the
+label ended and the value began. That works when there's no whitespace
+between <li> and <strong>, but real Hammer markup has a newline there,
+which li.get_text() includes and strong.get_text() doesn't -- so the
+slice started one character early, landing on the label's own last
+character. Every product's BALL_SPEC_LABEL_MAP field shipped to
+production with this corruption (caught via cores.name, e.g. "Scandal"
+became "E Scandal" for every one of 219 Hammer products) before being
+fixed to walk strong.next_siblings instead of slicing by character
+count -- see parse_ball_specs's own docstring for the full story.
 
 Manual-runner pattern, run standalone via
 `python3 tests/test_shopify_product_scraper.py`, matching every other
@@ -46,6 +65,7 @@ BWD_URL = "https://hammerbowling.com/products/black-widow-3-0-dynasty"
 FALLOUT_URL = "https://hammerbowling.com/products/fallout"
 OFFSET_URL = "https://hammerbowling.com/products/3-d-offset"
 CURVE_URL = "https://hammerbowling.com/products/absolut-curve"
+SCANDAL_URL = "https://hammerbowling.com/products/scandal"
 
 
 # --- Black Widow 3.0 Dynasty: modern, asymmetric ---
@@ -200,6 +220,66 @@ def test_absolut_curve_description_from_plain_untitled_paragraphs():
     doesn't depend on either."""
     p = _parsed("hammer_absolut_curve.json", CURVE_URL)
     assert p["description"] == "Absolut Curve has everything that Hammer bowlers want. With the combination of the new FatMax core shape and our H-150 Crosscover Reactive shell, the Absolut Curve gives Hammer bowlers the most angular mid-price ball from the Hammer line in years."
+
+
+# --- Scandal: real fetched body_html, regression coverage for the
+# leading-newline-before-<strong> production bug (see module docstring) ---
+
+def test_scandal_core_name_not_corrupted_by_leading_newline_before_strong():
+    """Regression test for a real production bug: real Hammer markup has
+    a newline between <li> and <strong> (confirmed live against
+    hammerbowling.com/products/scandal.json), which desynced the old
+    char-slice implementation and produced a leading "E " on every
+    Hammer product's cores.name in production (219/219 affected)."""
+    p = _parsed("hammer_scandal.json", SCANDAL_URL)
+    assert p["core_name"] == "Scandal"
+    assert p["core_type"] == "symmetric"
+
+
+def test_scandal_color_not_corrupted_same_bug_class():
+    """Same bug, a different field: COLOR's last letter is "R", so the
+    old slicing bug would have produced "R Blue / Green / Black" here --
+    confirms the fix isn't specific to the word "CORE"."""
+    p = _parsed("hammer_scandal.json", SCANDAL_URL)
+    assert p["color"] == "Blue / Green / Black"
+
+
+def test_scandal_coverstock_and_weights_not_corrupted():
+    p = _parsed("hammer_scandal.json", SCANDAL_URL)
+    assert p["coverstock_name"] == "Semtex Solid CFI"
+    assert p["factory_finish"] == "500 / 2000 Abralon®"
+    assert p["weights_available"] == (12, 16)
+
+
+def test_scandal_rg_diff_list_unaffected_no_asy():
+    """parse_rg_diff_list was never affected by this bug -- it regex-
+    searches the LI's full text rather than slicing by label length --
+    included here to confirm the RG/DIFF section still parses correctly
+    against this same real fixture."""
+    p = _parsed("hammer_scandal.json", SCANDAL_URL)
+    assert len(p["skus"]) == 5
+    sixteen = next(s for s in p["skus"] if s["weight_lbs"] == 16)
+    assert sixteen == {"weight_lbs": 16, "rg": 2.49, "differential": 0.047, "mass_bias": None}
+
+
+def test_scandal_full_ball_specs_raw_dict_every_field_survives_leading_newline():
+    """Exercises parse_ball_specs() directly (rather than just the subset
+    of fields parse_product_page surfaces) to confirm every
+    BALL_SPEC_LABEL_MAP field -- not just core_name/color -- survives the
+    real leading-newline-before-<strong> markup."""
+    product = _load("hammer_scandal.json")
+    soup = app.BeautifulSoup(product["body_html"], "lxml")
+    raw = app.parse_ball_specs(app._find_section(soup, "BALL SPECS"))
+    assert raw == {
+        "color": "Blue / Green / Black",
+        "reaction": "Aggressive Overall Hook",
+        "coverstock_name": "Semtex Solid CFI",
+        "factory_finish": "500 / 2000 Abralon®",
+        "lane_condition": "Medium to Heavy Oil",
+        "core_name": "Scandal",
+        "core_type_raw": "Symmetrical",
+        "weights_raw": "12-16 lb",
+    }
 
 
 # --- Standalone unit coverage for the smaller pure helpers ---

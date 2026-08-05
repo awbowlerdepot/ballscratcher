@@ -658,6 +658,59 @@ aws sqs get-queue-attributes \
   `curl https://hammerbowling.com/products/<slug>.json` check before
   assuming it's the same bug recurring differently.
 
+**Real incident, first live run:** deployed clean, all 219 products scraped
+and upserted without error -- but every single one landed with a corrupted
+`cores.name` (Al caught it: "all of the cores begin with 'E '", e.g.
+`"Scandal"` stored as `"E Scandal"`). Root cause was in
+`parse_ball_specs()`: it located each `BALL SPECS` field's value by slicing
+`li.get_text()` at `len(strong.get_text())`, assuming the label's own text
+length told you exactly where the value started. Real Hammer markup is
+pretty-printed with a newline between `<li>` and `<strong>` (confirmed live
+against `https://hammerbowling.com/products/scandal.json`:
+`<li>\n<strong>CORE</strong><span> </span>Scandal</li>`) -- `li.get_text()`
+includes that leading `"\n"`, `strong.get_text()` doesn't, so the slice
+started one character early and landed on the label's own last letter.
+Every `BALL_SPEC_LABEL_MAP` field was affected the same way, not just
+`CORE` -- `COLOR` would have landed on its trailing `"R"` -- it just showed
+up first via `cores.name` since that's the field Al happened to spot-check.
+None of the four hand-built fixtures this feature originally shipped with
+reproduced it (they were written without the leading newline), so the
+23/23 passing test suite gave false confidence. Fixed by reading
+`strong.next_siblings` instead of slicing by character count -- see
+`parse_ball_specs`'s docstring in `src/shopify_product_scraper/app.py` for
+the full explanation, and `tests/fixtures/hammer_scandal.json` (real
+fetched `body_html`, not hand-built) plus its five regression tests in
+`tests/test_shopify_product_scraper.py` for the exact before/after values.
+
+Cleanup needed for the 219 already-corrupted rows after redeploying the
+fix -- `scripts/backfill_core_ids.py` **won't** catch these, since it only
+targets `GET /products?missing_core=true` and every one of these products
+already has a (wrong) `core_id` set. Instead, force a rescrape of every
+Hammer product regardless of its current core status:
+
+```bash
+psql "$DATABASE_URL" -Atc \
+  "select id from products where brand_id = '<HammerBrandId>'" \
+  | while read -r id; do
+      curl -s -X POST "$ADMIN_API_URL/products/$id/rescrape" \
+        -H "Authorization: Bearer $ADMIN_API_TOKEN" >/dev/null
+      sleep 0.1
+    done
+```
+
+That republishes each product onto `ShopifyProductScrapeQueue`; the fixed
+Lambda will re-`upsert_product()`, and `core_id = coalesce(excluded.core_id,
+products.core_id)` means the newly-resolved (correct) core id overwrites
+the old wrong one. Once every product's re-scraped, the old `"E "`-prefixed
+`cores` rows are orphaned (no `products.core_id` pointing at them anymore)
+and safe to delete:
+
+```sql
+delete from cores
+where brand_id = '<HammerBrandId>'
+  and id not in (select core_id from products where core_id is not null);
+```
+
 ### 6g. bowwwl.com cross-check
 
 Runs weekly on its own schedule once there are `published = true`,

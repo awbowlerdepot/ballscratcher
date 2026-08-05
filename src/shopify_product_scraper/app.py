@@ -45,9 +45,12 @@ session, real fixtures for each in tests/fixtures/):
   COVER TYPE all present as <strong>LABEL</strong><span>value</span> --
   though the value sometimes spills outside the <span> as plain trailing
   text (Fallout's "COVER TYPE" is <span>Solid</span> Reactive, not fully
-  inside the span) -- parse_ball_specs slices the LI's full text by the
-  label's own length rather than only reading the <span>, specifically to
-  survive this.
+  inside the span) -- parse_ball_specs reads everything that comes after
+  the label's own <strong> tag (siblings, not a text-offset slice) to
+  survive this. See parse_ball_specs's own docstring for a real bug this
+  module shipped to production with: an earlier version sliced by
+  character count instead, which broke on real markup's whitespace
+  formatting and corrupted every spec field for every Hammer product.
 - Older retired (3-D Offset): adds an explicit "CORE TYPE" field
   ("Asymmetric") BALL SPECS doesn't always carry on newer balls, and heading
   text "RG / DIFF / ASY" instead of "RG / DIFF" -- find_section() matches
@@ -150,18 +153,37 @@ def _find_section(soup: BeautifulSoup, heading_prefix: str):
 def parse_ball_specs(specs_ul) -> dict:
     """Returns {canonical_key: raw_value_text}, normalized through
     BALL_SPEC_LABEL_MAP so callers never need to know which era's label
-    spelling a given product used. Slices each <li>'s full text by the
-    length of its own <strong> label text, rather than only reading the
-    <span> that (usually) holds the value -- real, confirmed reason: some
-    products have the <span> and <strong> tags butted directly against
-    each other with no whitespace in between (e.g. Black Widow 3.0
-    Dynasty's "CORE" li is literally
-    <strong>CORE</strong><span>Gas Mask</span> with no space), while
-    others spill part of the value outside the <span> entirely as trailing
-    plain text (Fallout's "COVER TYPE" li is
-    <strong>COVER TYPE</strong><span>Solid</span> Reactive) -- slicing the
-    LI's own full concatenated text by len(label) handles both correctly
-    without depending on where the tag boundaries happen to fall."""
+    spelling a given product used.
+
+    Reads the value by walking strong.next_siblings (everything in the LI
+    that comes *after* the label's own <strong> tag) rather than slicing
+    li.get_text() by len(label_text) -- that slicing approach was the
+    original implementation and shipped to production with a real,
+    confirmed off-by-one bug: real Hammer markup is pretty-printed with a
+    newline between <li> and <strong> (e.g.
+    "<li>\\n<strong>CORE</strong><span> </span>Scandal</li>", confirmed
+    live against https://hammerbowling.com/products/scandal.json), so
+    li.get_text() includes that leading "\\n" while strong.get_text()
+    (used as the slice length) does not. Slicing by len(label_text) then
+    starts one character short of where the label actually ends, landing
+    on the label's own last character -- e.g. "CORE" produced a leading
+    "E ", "COLOR" would have produced a leading "R ". This shipped and
+    corrupted every BALL_SPEC_LABEL_MAP field for every Hammer product in
+    production (all 219) before being caught, via cores.name -- see
+    tests/fixtures/hammer_scandal.json for the real captured body_html and
+    tests/test_shopify_product_scraper.py's regression tests for the
+    before/after values.
+
+    Walking siblings instead of slicing by character count sidesteps the
+    whole class of bug (immune to any whitespace before/inside <strong>)
+    while still handling the two real layout quirks the old approach was
+    built for: no whitespace between <strong> and <span> at all (Black
+    Widow 3.0 Dynasty's "CORE" li is
+    <strong>CORE</strong><span>Gas Mask</span>), and a value that spills
+    outside the <span> as trailing plain text (Fallout's "COVER TYPE" li
+    is <strong>COVER TYPE</strong><span>Solid</span> Reactive) -- both are
+    just siblings of <strong>, span or bare NavigableString alike, and get
+    concatenated in document order either way."""
     if specs_ul is None:
         return {}
     raw = {}
@@ -169,12 +191,14 @@ def parse_ball_specs(specs_ul) -> dict:
         strong = li.find("strong")
         if strong is None:
             continue
-        label_text = strong.get_text()
-        label = _clean(label_text).upper()
+        label = _clean(strong.get_text()).upper()
         canonical = BALL_SPEC_LABEL_MAP.get(label)
         if canonical is None:
             continue
-        value = _clean(li.get_text()[len(label_text):])
+        value = _clean("".join(
+            sib.get_text() if hasattr(sib, "get_text") else str(sib)
+            for sib in strong.next_siblings
+        ))
         if value:
             raw[canonical] = value
     return raw

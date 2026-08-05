@@ -1,0 +1,100 @@
+{
+  "product": {
+    "id": 1593976160343,
+    "title": "Scandal",
+    "body_html": "<p><meta charset=\"utf-8\"><strong>FCC Rating (27.75)</strong><br></p>\n<div class=\"page\" title=\"Page 1\">\n<div class=\"layoutArea\">\n<div class=\"column\"><span>The overall strength of the Scandal makes it the strongest hooking Hammer ball ever produced! What makes it so strong? Is it the new Scandal core, Semtex Solid CFI (Carbon Fiber Infused) cover?</span></div>\n<div class=\"column\"><strong> </strong></div>\n<div class=\"column\">\n<strong>FINISH<span> </span></strong><span><strong>(9)</strong><br></span><span>The 2000 Abralon</span><span>™ </span><span>finish is perfect for </span><span>medium to heavy oil patterns. Although designed for fresh oil patterns, polishing the Scandal will increase its skid through the front part of the lane as well as its reaction at the back end.</span>\n</div>\n<div class=\"column\"><span> </span></div>\n<div class=\"column\">\n<strong>CORE<span> </span></strong><span><strong>(8.75)</strong><br></span><span>People say symmetrical cores can’t </span><span>offer this much performance. Well, we beg to differ!</span>\n</div>\n<div class=\"column\"><strong> </strong></div>\n<p class=\"column\"><strong>COVER (10)</strong></p>\n<p class=\"column\"><span>Chemical Friction, blah, blah. </span>Mechanical Friction, blah, blah. We got your friction! Our new Semtex Solid CFI (Carbon Fiber Infused) cover takes friction to a whole new level. </p>\n<div class=\"column\">\n<meta charset=\"utf-8\">\n<h3>BALL SPECS</h3>\n<ul>\n<li>\n<strong>COLOR</strong><span> </span>Blue / Green / Black</li>\n<li>\n<strong>REACTION</strong><span> </span>Aggressive Overall Hook</li>\n<li>\n<strong>COVERSTOCK</strong><span> </span>Semtex Solid CFI</li>\n<li>\n<strong>FACTORY FINISH</strong><span> </span>500 / 2000 Abralon®</li>\n<li>\n<strong>BEST LANE CONDITION</strong><span> </span>Medium to Heavy Oil</li>\n<li>\n<strong>CORE</strong><span> </span>Scandal</li>\n<li>\n<strong>CORE TYPE</strong><span> </span>Symmetrical</li>\n<li>\n<strong>AVAILABLE WEIGHTS</strong><span> </span>12-16 lb</li>\n</ul>\n<h3>RG / DIFFERENTIAL</h3>\n<ul class=\"spec-weights\">\n<li>\n<strong>#16</strong><span> </span>RG (2.49) Diff (.047)</li>\n<li>\n<strong>#15</strong><span> </span>RG (2.48) Diff (.054)</li>\n<li>\n<strong>#14</strong><span> </span>RG (2.49) Diff (.055)</li>\n<li>\n<strong>#13</strong><span> </span>RG (2.56) Diff (.030)</li>\n<li>\n<strong>#12</strong><span> </span>RG (2.63) Diff (.025)</li>\n</ul>\n</div>\n</div>\n</div>\n</div>",
+    "vendor": "HammerBowling",
+    "product_type": "",
+    "created_at": "2018-12-05T16:10:38-05:00",
+    "handle": "scandal",
+    "updated_at": "2026-08-05T02:24:33-04:00",
+    "published_at": "2018-12-05T16:08:35-05:00",
+    "template_suffix": "",
+    "published_scope": "web",
+    "tags": "",
+    "variants": [
+      {
+        "id": 15840105103447,
+        "product_id": 1593976160343,
+        "title": "Default Title",
+        "price": "0.00",
+        "sku": "",
+        "position": 1,
+        "compare_at_price": "",
+        "fulfillment_service": "manual",
+        "inventory_management": null,
+        "option1": "Default Title",
+        "option2": null,
+        "option3": null,
+        "created_at": "2018-12-05T16:10:38-05:00",
+        "updated_at": "2026-08-05T02:24:33-04:00",
+        "taxable": false,
+        "barcode": null,
+        "grams": 0,
+        "image_id": null,
+        "weight": 0.0,
+        "weight_unit": "lb",
+        "requires_shipping": false
+      }
+    ],
+    "options": [
+      {
+        "id": 2171581988951,
+        "product_id": 1593976160343,
+        "name": "Title",
+        "position": 1,
+        "values": ["Default Title"]
+      }
+    ],
+    "images": [
+      {
+        "id": 33758640242775,
+        "product_id": 1593976160343,
+        "position": 1,
+        "created_at": "2025-08-18T13:34:14-04:00",
+        "updated_at": "2025-08-18T13:36:43-04:00",
+        "alt": "A blue, green, and black colored bowling ball with the Scandal logo in white centered prominently and with a small image of the Tough Tech Cover in the upper right-hand corner.",
+        "width": 1600,
+        "height": 1707,
+        "src": "https://cdn.shopify.com/s/files/1/0030/3330/1104/files/Scandal_1600x1707_website.png?v=1755538603",
+        "variant_ids": []
+      },
+      {
+        "id": 4578480324695,
+        "product_id": 1593976160343,
+        "position": 2,
+        "created_at": "2018-12-05T16:10:42-05:00",
+        "updated_at": "2025-08-18T13:36:43-04:00",
+        "alt": "The Scandal core for sixteen to fourteen pound bowling balls.",
+        "width": 500,
+        "height": 523,
+        "src": "https://cdn.shopify.com/s/files/1/0030/3330/1104/products/HMR_Scandal_Pearl_CORE_afb63df2-5929-4cb4-9fea-03515c1da791.png?v=1755538603",
+        "variant_ids": []
+      },
+      {
+        "id": 10915076538455,
+        "product_id": 1593976160343,
+        "position": 3,
+        "created_at": "2019-04-16T12:20:04-04:00",
+        "updated_at": "2025-08-18T13:36:43-04:00",
+        "alt": "The Scandal core for thirteen to twelve pound bowling balls.",
+        "width": 1920,
+        "height": 1980,
+        "src": "https://cdn.shopify.com/s/files/1/0030/3330/1104/products/12-13lbs_core_043b5131-5082-4d31-9552-d9882bd1a788.png?v=1755538603",
+        "variant_ids": []
+      },
+      {
+        "id": 4578480357463,
+        "product_id": 1593976160343,
+        "position": 4,
+        "created_at": "2018-12-05T16:10:43-05:00",
+        "updated_at": "2025-08-18T13:36:43-04:00",
+        "alt": "The Scandal performance graphic with a 9 Finish, an 8.75 Core, a 10 Cover, and in the center, a Cumulative total of 27.75.",
+        "width": 132,
+        "height": 126,
+        "src": "https://cdn.shopify.com/s/files/1/0030/3330/1104/products/Scandal_FCC_00000.png?v=1755538603",
+        "variant_ids": []
+      }
+    ]
+  }
+}
