@@ -34,7 +34,7 @@ video_discovery_at.sql): the default/brand_id scopes used to order by
 `p.updated_at desc` -- but nothing in this pipeline ever touches that
 column, so every {} invocation re-selected the exact same top-N products,
 forever. The documented "run {} once a day to cover the whole catalog
-under the ~90/day quota" pattern (DEPLOY_RUNBOOK.md 6i) never actually
+under the daily quota" pattern (DEPLOY_RUNBOOK.md 6i) never actually
 progressed past the first day's batch. Fixed by ordering on
 `last_video_discovery_at asc nulls first` instead: never-searched products
 always sort first, and mark_product_searched (called from handler, success
@@ -44,18 +44,20 @@ least once, this naturally cycles back to the least-recently-searched
 products, which is also correct behavior long-term (new review videos get
 posted well after a ball's release).
 
-HARD QUOTA CONSTRAINT (real, not a guess -- documented in Google's own API
-console, same discipline as this project's other real, disclosed
-constraints like the AWS account's 10-execution Lambda concurrency
-ceiling): YouTube Data API v3's search.list costs 100 quota units per call
-against a default project quota of 10,000 units/day. That's a hard ceiling
-of ~100 search calls/day per Google Cloud project, and this function makes
-exactly one search call per product. MAX_SEARCHES_PER_INVOCATION defaults
-to 90 (not 100) to leave headroom for manual re-runs/retries on the same
-day without silently blowing the daily quota. If this needs to cover more
-than ~90 products/day, that requires either a quota increase request in the
-Google Cloud console or spreading invocations across multiple days -- not
-something fixable in this code.
+HARD QUOTA CONSTRAINT (real, CONFIRMED by the user directly in Google Cloud
+console -- not a units-math estimate -- same discipline as this project's
+other real, disclosed constraints like the AWS account's 10-execution
+Lambda concurrency ceiling): this project's YouTube Data API v3 quota is
+configured for exactly 100 search.list calls/day (the console shows this
+as a per-day query cap, consistent with the default 10,000-unit budget at
+100 units/call, but the 100/day figure itself is the confirmed number, not
+a derived one). This function makes exactly one search call per product.
+MAX_SEARCHES_PER_INVOCATION defaults to 70 (not 100, and no longer 90 --
+see REAL INCIDENT #3 below) to leave real same-day headroom for a retry or
+follow-up run without exhausting the daily quota outright. If this needs
+to cover more than ~70 products/day, that requires either a quota increase
+request in the Google Cloud console or spreading invocations across
+multiple days -- not something fixable in this code.
 
 Match confidence is a simple two-tier heuristic (see score_match), not a
 real relevance score -- YouTube's search API already ranks by its own
@@ -119,6 +121,28 @@ early with a clean, informative result
 of grinding through the remaining batch paying full backoff on every one.
 Skipped products are, same as failed ones, still last_video_discovery_at
 =NULL and naturally picked up by the next {} invocation.
+
+REAL INCIDENT #3, two consecutive invocations after the circuit breaker
+above shipped: both runs returned the IDENTICAL result --
+{"new_candidates": 0, "search_errors": 5, "circuit_breaker_tripped": true,
+"products_skipped": 85} -- byte-for-byte the same, on two separate
+attempts. A per-minute rate limit should show variance run to run (some
+partial progress before tripping, different error counts as the window
+shifts); getting the exact same numbers twice pointed at a limit that
+resets on a much longer cycle than a minute. The math also fit: the very
+first successful run in REAL INCIDENT #1 alone made 90 calls = 9,000 of
+the (assumed at the time) 10,000-unit daily budget, and every run after
+that was landing on an already-near-exhausted day. Rather than ship
+another blind code change, asked the user to check the actual configured
+daily limit in Google Cloud console directly -- confirmed at exactly 100
+search.list queries/day (see HARD QUOTA CONSTRAINT above). This meant
+MAX_SEARCHES_PER_INVOCATION=90 was consuming nearly the ENTIRE daily
+budget in a single invocation, leaving next to no room for the retries
+and follow-up runs this project had already been attempting same-day.
+Fixed by lowering the default to 70, leaving 30 units/day of real
+headroom -- not a code bug, a capacity-planning one, and the same
+"request a quota increase or spread the work out" ceiling documented
+above still applies if 70 products/day stops being enough.
 """
 import json
 import logging
@@ -129,7 +153,12 @@ logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
 DEFAULT_MAX_RESULTS_PER_PRODUCT = 5
-DEFAULT_MAX_SEARCHES_PER_INVOCATION = 90
+# 70, not the confirmed 100/day ceiling itself -- see REAL INCIDENT #3 in
+# the module docstring. A single invocation must leave same-day headroom
+# for a retry/follow-up run; 90 (the old default) left only 10 units of
+# slack, which is exactly what caused two consecutive circuit-breaker-
+# tripped runs once the daily quota was already spent.
+DEFAULT_MAX_SEARCHES_PER_INVOCATION = 70
 YOUTUBE_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
 
 # Retried status codes: 429 is the real, confirmed cause here (YouTube's

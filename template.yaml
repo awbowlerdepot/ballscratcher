@@ -1280,7 +1280,12 @@ Resources:
       Environment:
         Variables:
           YOUTUBE_API_KEY_SECRET_ARN: !Ref YouTubeApiKeySecretArn
-          MAX_SEARCHES_PER_INVOCATION: "90"
+          # 70, not 90 -- lowered after REAL INCIDENT #3 (see app.py's
+          # module docstring): the user confirmed in Google Cloud console
+          # that this project's search.list quota is exactly 100/day, so
+          # 90 was consuming nearly the entire daily budget in a single
+          # invocation and leaving no real headroom for same-day retries.
+          MAX_SEARCHES_PER_INVOCATION: "70"
           # 20 results/product (was 5) -- doesn't cost extra YouTube API
           # quota, that's per search.list *call* (one per product, still
           # capped by MAX_SEARCHES_PER_INVOCATION), not per result returned.

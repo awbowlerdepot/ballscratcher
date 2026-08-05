@@ -116,10 +116,12 @@ aws secretsmanager create-secret \
 ```
 
 Note the returned ARN -- this is `YouTubeApiKeySecretArn`. Remember the
-real, hard quota this key is subject to: search.list costs 100 units/call
-against a default 10,000 units/day project quota -- ~100 searches/day, not
-adjustable from this template (see src/video_discovery/app.py's module
-docstring).
+real, hard quota this key is subject to: this project's search.list quota
+is CONFIRMED (checked directly in Google Cloud console, not just inferred
+from unit math) at exactly 100 searches/day, not adjustable from this
+template. `MAX_SEARCHES_PER_INVOCATION` defaults to 70 (not 90) to leave
+same-day headroom for retries -- see src/video_discovery/app.py's module
+docstring, REAL INCIDENT #3, for the full story of how this was confirmed.
 
 Separately, `video_summarizer` calls Bedrock, and this needs one real,
 confirmed fact accounted for: Claude Haiku 4.5 (the `BedrockModelId`
@@ -931,8 +933,9 @@ whenever it next runs.
 1. Find a real `product_id` (or a few) via `GET /products?search=...` on
    the admin API (see 6a for the auth header shape).
 2. Discover candidates. Each product costs one YouTube search.list call
-   against a ~90/day quota (see src/video_discovery/app.py's module
-   docstring) -- test on a small, explicit list first:
+   against a confirmed 100/day quota, capped per-invocation at 70 (see
+   src/video_discovery/app.py's module docstring) -- test on a small,
+   explicit list first:
    ```bash
    aws lambda invoke --function-name bowling-scraper-video-discovery \
      --payload '{"product_ids": ["<product-id>"]}' \
@@ -962,19 +965,24 @@ whenever it next runs.
    legitimately take -- the CLI gives up and reports a client-side error
    while the Lambda keeps running server-side regardless, and if the CLI
    (or you, seeing the error) then re-invokes, you can end up with two
-   overlapping 90-product bursts hammering the same per-minute YouTube
+   overlapping product-search bursts hammering the same per-minute YouTube
    quota at once, which is worse than either burst alone. The result body
    now also includes `circuit_breaker_tripped`/`products_skipped` --
    real, confirmed second incident: a sustained-throttled batch blew past
    even the 280s Timeout with a hard `Sandbox.Timedout` kill (see
    app.py's module docstring for both incidents' full writeups). If a
-   response comes back with `circuit_breaker_tripped: true`, that means
-   YouTube's per-minute quota was still exhausted when this invocation
-   started -- wait a few minutes before re-invoking rather than
-   immediately retrying into the same wall.
+   response comes back with `circuit_breaker_tripped: true`, that can mean
+   either of two DIFFERENT limits (both real, both confirmed this
+   project -- see REAL INCIDENT #3 in app.py's module docstring): a
+   short-lived per-minute throttle (wait a few minutes and re-invoke), or
+   the DAILY 100-query quota already being exhausted for the day (in which
+   case re-invoking will just trip the breaker again immediately -- getting
+   the exact same `circuit_breaker_tripped` result on back-to-back
+   invocations is the tell; wait for the quota to reset, typically midnight
+   Pacific, or request a quota increase in Google Cloud console).
 
-   A catalog of, say, 300 published products takes ~4 days of these calls
-   (90/day) to fully cover; re-running discovery against a product that
+   A catalog of, say, 300 published products takes ~5 days of these calls
+   (70/day) to fully cover; re-running discovery against a product that
    already has candidates is safe (`insert_candidates` is idempotent
    against an already-known `youtube_video_id` -- see test_video_discovery.py).
 
@@ -1445,8 +1453,9 @@ recheck with the browser-based fetcher.
   not instant revocation, by design, acceptable for a shared token.
 - **`VideoDiscoveryFunction` has no automated schedule either**, same
   reasoning as the other discovery functions, plus a real quota reason:
-  the ~90-searches/day cap means "run it on everything every day" isn't
-  actually sane math yet against a full catalog. Invoke it manually with
+  the confirmed 100-searches/day cap (70/invocation, see 6i) means "run it
+  on everything every day" isn't actually sane math yet against a full
+  catalog. Invoke it manually with
   an explicit `product_ids`/`brand_id` scope (see 6i) until you've decided
   how you actually want to spread coverage across the catalog over time.
 
