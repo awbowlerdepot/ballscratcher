@@ -826,6 +826,41 @@ Resources:
       # plain DB query; 30s leaves real headroom for that one call without
       # ballooning API Gateway's own timeout budget.
       Timeout: 30
+      # Real, confirmed incident: running scripts/backfill_core_ids.py
+      # (or the admin site's "Backfill missing core info" batch panel)
+      # across the WHOLE catalog -- not just one brand -- started throwing
+      # bare 503s from AdminHttpApi partway through, with NOTHING in this
+      # function's own CloudWatch log group, meaning the invocation never
+      # even started. Root cause, confirmed via `aws lambda
+      # get-account-settings` and CloudWatch's Throttles metric on this
+      # function: this AWS account's Lambda UnreservedConcurrentExecutions
+      # is 10 (AWS's default low tier for a new/unverified account, not
+      # the usual 1000) -- and every rescrape call this function issues
+      # publishes onto one of five different platform scrape queues,
+      # each with its own SQS-triggered Lambda that fires immediately and
+      # shares that same tiny 10-slot pool. A backfill spanning every
+      # platform at once can easily have all five scraper functions
+      # running concurrently, leaving nothing left for this function's
+      # own (single-threaded, one-request-at-a-time) invocation to grab
+      # -- HTTP API v2 surfaces that specific Lambda-service throttle as
+      # a plain 503, which is why nothing showed up in the app-level logs.
+      # 2 is a deliberately small reservation, not a real fix -- it
+      # guarantees this function always has a slot even when the other 8
+      # remaining unreserved slots are fully saturated by the scraper
+      # swarm, covering this script's own strictly-sequential traffic
+      # (never more than 1 in flight) plus a little headroom for a human
+      # using admin-site/index.html at the same time. It does shrink the
+      # rest of the account's shared pool from 10 to 8, though, which is
+      # worth watching if scraper-side throttling starts showing up
+      # instead. scripts/backfill_core_ids.py's own retry-with-backoff
+      # (see its module docstring) is the complementary fix for whatever
+      # throttling still gets through either way. The real structural fix
+      # is requesting a Lambda concurrency quota increase for this
+      # account via AWS Service Quotas (service-code lambda, quota
+      # "Concurrent executions") -- 10 total across an account running
+      # five-plus Lambda functions will keep being tight regardless of
+      # what's reserved where.
+      ReservedConcurrentExecutions: 2
       Environment:
         Variables:
           # Read by service.py's approve_video_candidate -- see its

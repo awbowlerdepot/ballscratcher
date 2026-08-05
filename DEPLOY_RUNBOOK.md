@@ -484,6 +484,43 @@ already-scraped, unchanged product on its own. Three ways to trigger it:
    detail view; the Batch Jobs tab has a "Backfill missing core info"
    panel that does the same list-then-loop as the script, in the browser.
 
+**Real incident: 503s partway through a whole-catalog `backfill_core_ids.py`
+run.** Running it against every brand at once (not just Hammer -- the
+first time this had ever been run catalog-wide) started throwing bare
+`503 Service Unavailable` from `ADMIN_API_URL` partway through, with
+**nothing** in `bowling-scraper-admin-api`'s own CloudWatch log group for
+the failed requests -- meaning the Lambda invocation never even started.
+Confirmed root cause via `aws lambda get-account-settings` (
+`UnreservedConcurrentExecutions: 10` -- AWS's default low tier for a
+new/unverified account, not the usual 1000) and CloudWatch's `Throttles`
+metric on `AdminApiFunction` (nonzero during the run): every rescrape call
+this function issues publishes onto one of five different platforms'
+scrape queues, each with its own SQS-triggered Lambda that fires
+immediately -- a catalog-wide backfill can have all five running
+concurrently, saturating the account's tiny 10-slot pool and leaving
+nothing for `AdminApiFunction`'s own (single-threaded) invocation to grab.
+HTTP API v2 surfaces that specific Lambda-service throttle as a plain 503,
+which is why nothing showed up in the app-level logs -- the request never
+reached application code.
+
+Two complementary fixes, neither a full substitute for the other:
+
+1. `AdminApiFunction` now sets `ReservedConcurrentExecutions: 2` in
+   `template.yaml` -- a guaranteed slot so it's never fully starved by the
+   scraper swarm, at the cost of shrinking the account's shared pool from
+   10 to 8 (worth watching if scraper-side throttling shows up instead).
+2. `scripts/backfill_core_ids.py`'s `list_products_missing_core`/
+   `rescrape_product` now retry on 429/500/502/503/504 with exponential
+   backoff (`get_requests_session()`, 5 attempts, 1s/2s/4s/8s/16s) rather
+   than counting a transient throttle as a hard failure needing a manual
+   re-run.
+
+**Neither of these is the real fix.** 10 total concurrent executions
+across an account running five-plus Lambda functions is going to keep
+being tight. Request a Lambda concurrency quota increase for this account
+via AWS Service Quotas (service code `lambda`, quota "Concurrent
+executions") before running a catalog-wide backfill like this again.
+
 **Cores tab (the "other direction" view):** Everything above (the Products
 tab's Core column, the missing-core filter/backfill) shows core info
 one product at a time -- the many-products-to-one-core relationship

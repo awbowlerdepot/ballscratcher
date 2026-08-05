@@ -2,11 +2,19 @@
 Tests for scripts/backfill_core_ids.py.
 
 Manual-runner pattern, run standalone via
-`python3 tests/test_backfill_core_ids.py`. Same sys.modules-faking approach
-for `requests` as test_backfill_video_review_rollups.py -- mirrors that
-file's structure closely since both scripts share the same "list from
-admin API, act on each item, tolerate per-item errors" shape (list ->
-POST-per-item -> tally queued/skipped/errors).
+`python3 tests/test_backfill_core_ids.py`.
+
+list_products_missing_core/rescrape_product now take an injectable
+`session` param (see get_requests_session's docstring) rather than
+importing `requests` directly, so these tests inject a small fake session
+object with .get()/.post() instead of swapping out sys.modules["requests"]
+wholesale the way this file originally did -- get_requests_session()
+itself now touches requests.Session/requests.adapters.HTTPAdapter/
+urllib3.util.retry.Retry, none of which a bare fake module stand-in would
+have, so the old whole-module-swap approach stopped working once retry
+support was added (see that function's own docstring for why it exists:
+a real, confirmed 503 storm from Lambda concurrency throttling during a
+live full-catalog run -- see DEPLOY_RUNBOOK.md).
 """
 import os
 import sys
@@ -16,7 +24,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
 import backfill_core_ids as script  # noqa: E402
 
 
-# --- list_products_missing_core: fake requests, paginates ---
+# --- list_products_missing_core / rescrape_product: fake injected session ---
 
 class _FakeResponse:
     def __init__(self, payload):
@@ -29,7 +37,7 @@ class _FakeResponse:
         return self._payload
 
 
-class _FakeRequestsModule:
+class _FakeSession:
     def __init__(self, pages=None):
         self.pages = pages if pages is not None else []
         self.get_calls = []
@@ -46,59 +54,67 @@ class _FakeRequestsModule:
 
 
 def test_list_products_missing_core_paginates():
-    real_requests = sys.modules.get("requests")
-    fake = _FakeRequestsModule(pages=[
+    fake = _FakeSession(pages=[
         {"items": [{"id": f"prod-{i}", "name": f"Ball {i}"} for i in range(200)]},
         {"items": [{"id": "prod-200", "name": "Ball 200"}]},
     ])
-    sys.modules["requests"] = fake
-    try:
-        result = script.list_products_missing_core("https://admin.example", "tok", page_limit=200)
-        assert len(result) == 201
-        assert len(fake.get_calls) == 2
-        assert fake.get_calls[0]["params"] == {"missing_core": "true", "limit": 200, "offset": 0}
-        assert fake.get_calls[1]["params"] == {"missing_core": "true", "limit": 200, "offset": 200}
-        assert fake.get_calls[0]["headers"]["Authorization"] == "Bearer tok"
-    finally:
-        if real_requests is not None:
-            sys.modules["requests"] = real_requests
-        else:
-            del sys.modules["requests"]
+
+    result = script.list_products_missing_core("https://admin.example", "tok", page_limit=200, session=fake)
+
+    assert len(result) == 201
+    assert len(fake.get_calls) == 2
+    assert fake.get_calls[0]["params"] == {"missing_core": "true", "limit": 200, "offset": 0}
+    assert fake.get_calls[1]["params"] == {"missing_core": "true", "limit": 200, "offset": 200}
+    assert fake.get_calls[0]["headers"]["Authorization"] == "Bearer tok"
 
 
 def test_list_products_missing_core_single_page_stops_immediately():
-    real_requests = sys.modules.get("requests")
-    fake = _FakeRequestsModule(pages=[{"items": [{"id": "prod-1", "name": "Absolute"}]}])
-    sys.modules["requests"] = fake
-    try:
-        result = script.list_products_missing_core("https://admin.example", "tok", page_limit=200)
-        assert len(result) == 1
-        assert len(fake.get_calls) == 1  # short page (< page_limit) -- no second request
-    finally:
-        if real_requests is not None:
-            sys.modules["requests"] = real_requests
-        else:
-            del sys.modules["requests"]
+    fake = _FakeSession(pages=[{"items": [{"id": "prod-1", "name": "Absolute"}]}])
 
+    result = script.list_products_missing_core("https://admin.example", "tok", page_limit=200, session=fake)
 
-# --- rescrape_product: fake requests, posts to the right URL ---
+    assert len(result) == 1
+    assert len(fake.get_calls) == 1  # short page (< page_limit) -- no second request
+
 
 def test_rescrape_product_posts_to_rescrape_and_returns_json():
-    real_requests = sys.modules.get("requests")
-    fake = _FakeRequestsModule()
-    sys.modules["requests"] = fake
-    try:
-        result = script.rescrape_product("https://admin.example", "tok", "prod-1")
-        assert len(fake.post_calls) == 1
-        call = fake.post_calls[0]
-        assert call["url"] == "https://admin.example/products/prod-1/rescrape"
-        assert call["headers"]["Authorization"] == "Bearer tok"
-        assert result == {"queued": True, "product_id": "prod-1", "url": "https://example.com/x"}
-    finally:
-        if real_requests is not None:
-            sys.modules["requests"] = real_requests
-        else:
-            del sys.modules["requests"]
+    fake = _FakeSession()
+
+    result = script.rescrape_product("https://admin.example", "tok", "prod-1", session=fake)
+
+    assert len(fake.post_calls) == 1
+    call = fake.post_calls[0]
+    assert call["url"] == "https://admin.example/products/prod-1/rescrape"
+    assert call["headers"]["Authorization"] == "Bearer tok"
+    assert result == {"queued": True, "product_id": "prod-1", "url": "https://example.com/x"}
+
+
+# --- get_requests_session: confirms the actual retry config, against the
+# real requests/urllib3 (both available in this sandbox, unlike fastapi/
+# pydantic/mangum/pytest) -- not just that the function runs, but that it
+# retries on exactly the status codes a Lambda-concurrency throttle can
+# surface as (503, plus the neighboring 429/500/502/504), the expected
+# retry count, and that GET/POST are both covered (this script uses both).
+
+def test_get_requests_session_retries_on_throttle_and_5xx_status_codes():
+    session = script.get_requests_session()
+    adapter = session.get_adapter("https://admin.example")
+    retry = adapter.max_retries
+
+    assert retry.total == script.RETRY_TOTAL
+    assert set(retry.status_forcelist) == set(script.RETRY_STATUS_FORCELIST)
+    assert 503 in retry.status_forcelist  # the specific status this whole feature exists for
+    assert "GET" in retry.allowed_methods
+    assert "POST" in retry.allowed_methods
+    assert retry.backoff_factor == script.RETRY_BACKOFF_FACTOR
+
+
+def test_get_requests_session_returns_a_fresh_session_each_call():
+    """Each call builds its own Session -- confirmed here so a future
+    change toward a shared/cached session doesn't silently introduce
+    cross-call state (e.g. connection pool exhaustion) without a test
+    noticing the behavior changed."""
+    assert script.get_requests_session() is not script.get_requests_session()
 
 
 # --- run: the orchestration -- rescrapes every listed product, tolerates
