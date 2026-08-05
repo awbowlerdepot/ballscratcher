@@ -233,6 +233,26 @@ class FakeCursor:
             self._last_result = (product_id, row["name"], row["brand_name"], row.get("description")) if row else None
             self.description = [("id",), ("name",), ("brand_name",), ("description",)]
 
+        elif q.startswith("select product_id, min(created_at) from product_videos group by product_id"):
+            by_product = {}
+            for v in self.db["product_videos"].values():
+                pid = v["product_id"]
+                created_at = v["created_at"]
+                if pid not in by_product or created_at < by_product[pid]:
+                    by_product[pid] = created_at
+            self._rows = list(by_product.items())
+            self.description = [("product_id",), ("min",)]
+
+        elif q.startswith("update products set last_video_discovery_at = %s where id = %s and last_video_discovery_at is null"):
+            earliest, product_id = params
+            row = self.db["products"].get(product_id)
+            if row is not None and row.get("last_video_discovery_at") is None:
+                row["last_video_discovery_at"] = earliest
+                self._last_result = (product_id,)
+            else:
+                self._last_result = None
+            self.description = [("id",)]
+
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
 
@@ -870,6 +890,87 @@ def test_refresh_video_reviews_rollup_threads_description_from_products_row():
 
     sent_body = json.loads(fake_client.calls[0]["body"])
     assert "Sentinel Core: an asymmetric core built for early transition." in sent_body["messages"][0]["content"]
+
+
+# --- backfill_last_video_discovery_at: one-off migration-005 correction ---
+
+def test_backfill_last_video_discovery_at_sets_null_column_from_earliest_video():
+    db = {
+        "products": {
+            "prod-1": {"name": "Absolute", "last_video_discovery_at": None},
+        },
+        "product_videos": {
+            "vid-1": {"id": "vid-1", "product_id": "prod-1", "created_at": "2026-01-02"},
+            "vid-2": {"id": "vid-2", "product_id": "prod-1", "created_at": "2026-01-01"},
+        },
+    }
+    conn = FakeConnection(db)
+
+    result = service.backfill_last_video_discovery_at(conn)
+
+    assert result == {"products_with_video_history": 1, "products_updated": 1}
+    # earliest, not latest -- 01-01, not 01-02
+    assert db["products"]["prod-1"]["last_video_discovery_at"] == "2026-01-01"
+    assert conn.committed is True
+
+
+def test_backfill_last_video_discovery_at_skips_products_already_set():
+    """A product that's already been searched under the new rotation logic
+    has a real (non-NULL) last_video_discovery_at -- this backfill must
+    never clobber it with an earlier product_videos timestamp, even if one
+    exists from before the column was being maintained."""
+    db = {
+        "products": {
+            "prod-1": {"name": "Absolute", "last_video_discovery_at": "2026-03-01"},
+        },
+        "product_videos": {
+            "vid-1": {"id": "vid-1", "product_id": "prod-1", "created_at": "2026-01-01"},
+        },
+    }
+    conn = FakeConnection(db)
+
+    result = service.backfill_last_video_discovery_at(conn)
+
+    assert result == {"products_with_video_history": 1, "products_updated": 0}
+    assert db["products"]["prod-1"]["last_video_discovery_at"] == "2026-03-01"
+
+
+def test_backfill_last_video_discovery_at_leaves_never_searched_products_null():
+    """A product with zero product_videos rows never appears in the
+    group-by result at all -- its column is left NULL, exactly as
+    intended, so it still sorts first under video_discovery's rotation."""
+    db = {
+        "products": {
+            "prod-never-searched": {"name": "Nightroad", "last_video_discovery_at": None},
+        },
+        "product_videos": {},
+    }
+    conn = FakeConnection(db)
+
+    result = service.backfill_last_video_discovery_at(conn)
+
+    assert result == {"products_with_video_history": 0, "products_updated": 0}
+    assert db["products"]["prod-never-searched"]["last_video_discovery_at"] is None
+
+
+def test_backfill_last_video_discovery_at_handles_multiple_products_independently():
+    db = {
+        "products": {
+            "prod-1": {"name": "Absolute", "last_video_discovery_at": None},
+            "prod-2": {"name": "Phaze II", "last_video_discovery_at": "2026-02-15"},
+        },
+        "product_videos": {
+            "vid-1": {"id": "vid-1", "product_id": "prod-1", "created_at": "2026-01-05"},
+            "vid-2": {"id": "vid-2", "product_id": "prod-2", "created_at": "2026-01-01"},
+        },
+    }
+    conn = FakeConnection(db)
+
+    result = service.backfill_last_video_discovery_at(conn)
+
+    assert result == {"products_with_video_history": 2, "products_updated": 1}
+    assert db["products"]["prod-1"]["last_video_discovery_at"] == "2026-01-05"
+    assert db["products"]["prod-2"]["last_video_discovery_at"] == "2026-02-15"  # untouched
 
 
 # --- resolve_scrape_queue_env_var: pure lookup, no DB/env access ---

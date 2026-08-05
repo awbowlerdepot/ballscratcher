@@ -998,3 +998,60 @@ def refresh_video_reviews_rollup(conn, product_id: str) -> dict:
     )
     store_rollup(conn, product_id, rollup_text, len(summaries))
     return {"product_id": product_id, "rollup_regenerated": True, "video_count": len(summaries)}
+
+
+# ---------------------------------------------------------------------
+# One-off correction for migration 005 (last_video_discovery_at) not
+# backfilling existing data -- see that migration's own comment and
+# src/video_discovery/app.py's module docstring, ROTATION section.
+# ---------------------------------------------------------------------
+
+def backfill_last_video_discovery_at(conn) -> dict:
+    """Real gap found in production: migration 005 added products.
+    last_video_discovery_at with no backfill, so any product searched
+    before that migration ran (under the old, buggy `updated_at desc`
+    rotation -- see video_discovery's ROTATION incident writeup) has real
+    product_videos rows but a NULL last_video_discovery_at. Since
+    rotation now sorts NULLs first, those already-searched products kept
+    jumping the queue ahead of products that had genuinely never been
+    searched -- caught via a live count mismatch (231 with a NULL column
+    vs. only 174 with zero product_videos rows at all, a ~57-product
+    gap).
+
+    Idempotent and safe to re-run: only ever sets a currently-NULL
+    column, and only for a product that actually has product_videos
+    history -- a genuinely never-searched product's column stays NULL
+    exactly as intended, so it still sorts first under video_discovery's
+    rotation ordering. Uses each product's EARLIEST product_videos.
+    created_at (not the latest) -- the goal is "when did this product
+    first get covered", matching what mark_product_searched would have
+    recorded if it had existed at the time, not "when was it most
+    recently touched".
+
+    Two queries rather than one UPDATE ... FROM: keeps the read (which
+    products have earliest search history) separate from the write (only
+    touching rows still NULL), which stays correct even if a real
+    video_discovery invocation searches one of these same products
+    between this function's SELECT and its UPDATE -- that product's
+    column is no longer NULL by the time the second query's WHERE clause
+    runs, so it's naturally skipped instead of being overwritten with a
+    stale backfilled value."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "select product_id, min(created_at) from product_videos group by product_id"
+        )
+        earliest_by_product = {row[0]: row[1] for row in cur.fetchall()}
+
+    updated = 0
+    with conn.cursor() as cur:
+        for product_id, earliest in earliest_by_product.items():
+            cur.execute(
+                "update products set last_video_discovery_at = %s "
+                "where id = %s and last_video_discovery_at is null "
+                "returning id",
+                (earliest, product_id),
+            )
+            if cur.fetchone() is not None:
+                updated += 1
+    conn.commit()
+    return {"products_with_video_history": len(earliest_by_product), "products_updated": updated}

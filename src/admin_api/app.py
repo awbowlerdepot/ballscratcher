@@ -181,6 +181,22 @@ def rescrape_product(product_id: str):
         conn.close()
 
 
+@app.post("/admin/backfill-last-video-discovery-at")
+def backfill_last_video_discovery_at():
+    # One-off correction for migration 005's unbackfilled column -- see
+    # service.backfill_last_video_discovery_at's docstring for the full
+    # story (a real ~57-product count mismatch this project found live).
+    # No request body, no path param: this is catalog-wide by design, not
+    # per-product like rescrape/refresh-video-summary above -- there's no
+    # per-product decision to make here, just "fill in every row that's
+    # missing it". Safe to call more than once (idempotent, see docstring).
+    conn = service.get_db_connection()
+    try:
+        return service.backfill_last_video_discovery_at(conn)
+    finally:
+        conn.close()
+
+
 @app.get("/cores")
 def get_cores(
     brand_id: Optional[str] = Query(None),

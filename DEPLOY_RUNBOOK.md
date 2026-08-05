@@ -1006,6 +1006,30 @@ whenever it next runs.
    `last_video_discovery_at` for whatever it searches, same as every other
    scope -- so those products' rotation position resets to "just searched"
    afterward, which is the right outcome either way.
+
+   **One-off correction if you're on a stack that ran video_discovery
+   before migration 005 existed:** that migration added
+   `last_video_discovery_at` with no backfill, so any product searched
+   under the old `updated_at desc` rotation has real `product_videos`
+   rows but a NULL `last_video_discovery_at` -- it looks "never searched"
+   to the new rotation column and keeps jumping the queue ahead of
+   products that genuinely never were. Real, confirmed gap on this
+   project's own catalog: a count check found 231 products with a NULL
+   column but only 174 with zero `product_videos` rows at all (~57
+   products affected). Run this once (safe to re-run -- idempotent, only
+   ever sets a currently-NULL column):
+   ```bash
+   curl -X POST -H "Authorization: Bearer $TOKEN" \
+     "$ADMIN_API_URL/admin/backfill-last-video-discovery-at"
+   ```
+   or `python3 scripts/backfill_last_video_discovery_at.py` (same
+   `ADMIN_API_URL`/`ADMIN_API_TOKEN` env vars as every other script here).
+   Either way returns `{"products_with_video_history": N, "products_updated": M}`
+   -- `M` is how many products actually had the gap; 0 on a fresh stack or
+   once caught up. See `service.backfill_last_video_discovery_at`'s
+   docstring for why this is safe even if a real `video_discovery`
+   invocation runs concurrently (it only fills in rows still NULL, never
+   overwrites one that's already been legitimately set).
 3. Check what landed in `product_videos` as pending:
    ```bash
    curl -H "Authorization: Bearer $TOKEN" "$ADMIN_API_URL/video-candidates?status=pending"
