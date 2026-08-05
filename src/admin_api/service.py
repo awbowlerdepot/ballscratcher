@@ -381,15 +381,20 @@ def get_product(conn, product_id: str):
 # products.source_platform -> the env var holding that platform's
 # product-scrape queue URL. craft_cms covers Brunswick/Radical/DV8 (one
 # shared queue/scraper -- see template.yaml's RadicalUrlDiscoveryFunction/
-# Dv8UrlDiscoveryFunction comments). shopify is deliberately absent --
-# Hammer/Track/Ebonite were explicitly deferred and have no scraper built
-# yet (see DEPLOY_RUNBOOK.md) -- resolve_scrape_queue_env_var returns None
-# for it, same as any other unrecognized value, rather than raising.
+# Dv8UrlDiscoveryFunction comments). shopify now covers Hammer (onboarded
+# this session -- see src/shopify_url_discovery/app.py) the same way --
+# one shared ShopifyProductScrapeQueue/ShopifyProductScraperFunction for
+# every brand on the platform, Track/Ebonite included whenever they're
+# actually onboarded, since that function's job shape/parsing code is
+# brand-agnostic. Any source_platform not listed here still returns None
+# from resolve_scrape_queue_env_var, same as before -- not every platform
+# has a scraper deployed yet.
 SCRAPE_QUEUE_ENV_VAR_BY_PLATFORM = {
     "craft_cms": "PRODUCT_SCRAPE_QUEUE_URL",
     "woocommerce": "WOOCOMMERCE_PRODUCT_SCRAPE_QUEUE_URL",
     "netsuite": "NETSUITE_PRODUCT_SCRAPE_QUEUE_URL",
     "commercebuild": "COMMERCEBUILD_PRODUCT_SCRAPE_QUEUE_URL",
+    "shopify": "SHOPIFY_PRODUCT_SCRAPE_QUEUE_URL",
 }
 
 

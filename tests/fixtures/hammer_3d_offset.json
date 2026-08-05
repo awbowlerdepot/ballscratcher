@@ -1,0 +1,36 @@
+{
+  "product": {
+    "id": 6708188414039,
+    "title": "3-D Offset",
+    "handle": "3-d-offset",
+    "vendor": "Hammer Bowling",
+    "updated_at": "2026-08-05T01:37:04-04:00",
+    "body_html": "<h3><strong><iframe title=\"YouTube video player\" src=\"https://www.youtube.com/embed/lIn1NaC54Tw\" height=\"315\" width=\"560\"></iframe></strong></h3>\n<h3><strong>25TH ANNIVERARY TRIBUTE</strong></h3>\n<p class=\"p1\">This is the 25th anniversary of the <strong>3-D Offset</strong>, and we are excited to pay tribute to one of the greatest balls ever. We started with the core shape, creating a single density inner core with the same shape as the original.</p>\n<h3><strong>BALL SPECS</strong></h3>\n<ul>\n<li><strong>PERFORMANCE</strong><span> High</span></li>\n<li><strong>PART NUMBER</strong><span> 60-106714-93X</span></li>\n<li><strong>COLOR</strong><span> Blazing Violet</span></li>\n<li><strong>CORE</strong><span> High Rev Offset</span><br></li>\n<li><strong>CORE TYPE</strong><span> </span>Asymmetric<br></li>\n<li><strong>COVERSTOCK</strong><span> Neoflex 25</span></li>\n<li><strong>COVER TYPE</strong><span> Pearl</span> Reactive</li>\n<li><strong>FINISH</strong><span> 500, 2000 Siaair Micro Pad</span><br></li>\n<li><strong>WEIGHTS</strong><span> </span>16-12 Pounds<br></li>\n<li><strong>LANE CONDITION</strong><span> Medium to heavy </span>oil</li>\n<li><strong>WARRANTY</strong><span> </span>Two years from purchase date</li>\n<li><strong>RELEASE DATE</strong><span> February 25, 2022</span></li>\n</ul>\n<h3><strong>RG / DIFF / ASY</strong></h3>\n<ul class=\"spec-weights\">\n<li><strong>16 lb -</strong><span> </span><strong>RG</strong><span> </span>(2.501)<span> </span><strong>DIFF</strong><span> </span>(0.046)<span> </span><strong>ASY</strong><span> </span>(0.007)</li>\n<li><strong>15 lb -</strong><span> </span><strong>RG</strong><span> </span>(2.489)<span> </span><strong>DIFF</strong><span> </span>(0.053)<span> </span><strong>ASY</strong><span> </span>(0.008)</li>\n<li><strong>14 lb -</strong><span> </span><strong>RG</strong><span> </span>(2.505)<span> </span><strong>DIFF</strong><span> </span>(0.053)<span> </span><strong>ASY</strong><span> </span>(0.008)</li>\n<li><strong>13 lb -</strong><span> </span><strong>RG</strong><span> </span>(2.589)<span> </span><strong>DIFF</strong><span> </span>(0.043)<span> </span><strong>ASY</strong><span> </span>(0.011)</li>\n<li><strong>12 lb -</strong><span> </span><strong>RG</strong><span> </span>(2.612)<span> </span><strong>DIFF</strong><span> </span>(0.043)<span> </span><strong>ASY</strong><span> </span>(0.011)</li>\n</ul>\n<p><strong>DOWNLOADS</strong></p>\n<p><a title=\"3-D Offset Info Sheet\" href=\"https://cdn.shopify.com/s/files/1/0030/3330/1104/files/3-D_Offset_Info_Sheet_0122-02.pdf?v=1643032134\">Info Sheet</a><br><a title=\"3-D Offset Ball Talker\" href=\"https://cdn.shopify.com/s/files/1/0030/3330/1104/files/3-D_Offset_Ball_Talker_0122-01.pdf?v=1643032096\">Ball Talker</a><br></p>",
+    "images": [
+      {
+        "id": 31987794575447,
+        "position": 1,
+        "alt": "A violet-purple colored bowling ball with the High Rev 3D Offset logo in orange centered prominently.",
+        "src": "https://cdn.shopify.com/s/files/1/0030/3330/1104/files/3-D_Offset_1600x1707_website.png?v=1720031315"
+      },
+      {
+        "id": 28796030812247,
+        "position": 2,
+        "alt": null,
+        "src": "https://cdn.shopify.com/s/files/1/0030/3330/1104/products/High_Rev_3D_Offset_Core_16-14_lb_1920x1980_5437c7bf-3097-429b-8e03-f3cc770e1322.jpg?v=1720031315"
+      },
+      {
+        "id": 28796030779479,
+        "position": 3,
+        "alt": null,
+        "src": "https://cdn.shopify.com/s/files/1/0030/3330/1104/products/High_Rev_3D_Offset_Core_13-12_lb_1920x1980_0e9f8131-26f5-41d1-9bab-454dac7c2683.jpg?v=1720031315"
+      },
+      {
+        "id": 28799694045271,
+        "position": 4,
+        "alt": null,
+        "src": "https://cdn.shopify.com/s/files/1/0030/3330/1104/products/3-D_Offset_Badge_1920x1980_07b439a9-a872-44b5-bd79-880454e21ef9.jpg?v=1720031315"
+      }
+    ]
+  }
+}

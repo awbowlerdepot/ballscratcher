@@ -228,6 +228,33 @@ returning id;
 
 Save those three ids as `StormBrandId`/`RotoGripBrandId`/`Global900BrandId`.
 
+If you also want Hammer enabled, it's a fourth platform
+(`source_platform = 'shopify'`) -- no `sitemap_url` (discovery is
+collection-JSON-based, not sitemap-based, see
+`src/shopify_url_discovery/app.py`'s module docstring):
+
+```sql
+insert into manufacturers (name) values ('Escalade Sports') returning id;
+-- (skip if you already have a manufacturer row covering the Brunswick/
+-- Radical/DV8/Hammer corporate family -- confirmed live this session that
+-- Hammer's footer cross-links dv8bowling.com/ebonite.com/hammerbowling.com/
+-- radicalbowling.com/trackbowling.com/powerhousebowling.com, same family
+-- as Brunswick's own brands, though the exact legal manufacturer name
+-- wasn't independently verified this session -- double check before
+-- relying on it)
+insert into brands (manufacturer_id, name, base_url, source_platform)
+values ('<manufacturer-id>', 'Hammer', 'https://hammerbowling.com', 'shopify')
+returning id;
+```
+
+Save that id as `HammerBrandId`. Track and Ebonite are believed to share
+this same Shopify platform per prior research (not confirmed live this
+session) -- not seeded here since only "the hammer brand" was actually
+asked for; adding either later is the same shape (a new `brands` row plus
+a new `ShopifyUrlDiscoveryFunction`-shaped resource in `template.yaml`
+with its own store-domain/collection-handles params, reusing
+`src/shopify_product_scraper/`'s existing scraper unchanged).
+
 ## 5. Deploy
 
 ```bash
@@ -258,6 +285,8 @@ Here's what to give it:
 | `MotivBrandId` | Only if enabling MOTIV | MOTIV's id from step 4, else leave blank |
 | `CommercebuildCategoryUrl` | No | Defaults to the real stormbowling.com bowling-balls category URL |
 | `StormBrandId` / `RotoGripBrandId` / `Global900BrandId` | Only if enabling commercebuild | The three ids from step 4, else leave blank (a blank id makes `CommercebuildUrlDiscoveryFunction` skip that brand entirely, see its module docstring -- you can enable them individually, not all-or-nothing) |
+| `HammerStoreDomain` / `HammerCollectionHandles` | No | Default to Hammer's real domain/collection handles (confirmed live this session) |
+| `HammerBrandId` | Only if enabling Hammer | Hammer's id from step 4, else leave blank |
 | `BigCommerceSecretArn` | No | Leave blank until step 7's BowlerDepot rollout |
 
 Accept the SAM CLI's other prompts (stack name, region, confirm changes,
@@ -431,7 +460,10 @@ already-scraped, unchanged product on its own. Three ways to trigger it:
    (see `service.queue_rescrape`/`resolve_scrape_queue_env_var`). Returns
    `{"queued": true, ...}` on success, or `{"queued": false, "reason":
    ...}` (not an error) for a product on a platform with no scraper
-   deployed yet (Hammer/Track/Ebonite) or a misconfigured queue env var.
+   deployed yet (Track/Ebonite would fall in this bucket if you seed a
+   `brands` row for either without also adding a `ShopifyUrlDiscoveryFunction`-
+   shaped resource for it -- Hammer itself is now a supported platform, see
+   6f.5) or a misconfigured queue env var.
 2. `scripts/backfill_core_ids.py` -- same `ADMIN_API_URL`/`ADMIN_API_TOKEN`
    env var setup as `scripts/backfill_video_review_rollups.py` (see 6i).
    Paginates `GET /products?missing_core=true` and calls the rescrape
@@ -576,6 +608,50 @@ Watch for on first run:
   fix (see commercebuild_product_scraper/app.py) doesn't hold on some
   product beyond the three checked this session -- worth a real curl
   check before assuming it's the same bug recurring differently.
+
+### 6f.5. Hammer (Shopify) -- if `HammerBrandId` was set
+
+No schedule wired up for `ShopifyUrlDiscoveryFunction` yet, same as every
+other non-Brunswick family -- invoke manually:
+
+```bash
+aws lambda invoke --function-name bowling-scraper-shopify-url-discovery \
+  --payload '{}' --cli-binary-format raw-in-base64-out /tmp/out.json
+cat /tmp/out.json
+aws logs tail /aws/lambda/bowling-scraper-shopify-product-scraper --follow
+```
+
+Real, confirmed this session (live fetches against hammerbowling.com, not
+inferred): the six collection JSON endpoints
+(`/collections/{handle}/products.json`) all return real product lists, the
+individual `{product_url}.json` endpoint returns the same `body_html`
+field the collection listing's item omits, and four real product pages'
+worth of `body_html` (Black Widow 3.0 Dynasty, Fallout, and the older
+retired 3-D Offset/Absolut Curve listings, spanning three eras of markup)
+were parsed correctly against `tests/fixtures/hammer_*.json` -- see
+`src/shopify_product_scraper/app.py`'s module docstring for exactly which
+formatting quirks each fixture covers. What's **not** yet confirmed: an
+actual live Lambda invocation against AWS (no outbound path from the
+sandbox that built this), so watch for on first run:
+
+- `discovered_urls` rows getting a real `status_path` of `current` or
+  `retired` per product -- if everything lands `current` regardless of
+  which collection it came from, check that `HammerCollectionHandles`
+  actually includes `retired-balls` (it does by default).
+- The DLQ, if scraping fails outright:
+
+```bash
+aws sqs get-queue-attributes \
+  --queue-url $(aws sqs get-queue-url --queue-name bowling-scraper-shopify-product-scrape-dlq --query QueueUrl --output text) \
+  --attribute-names ApproximateNumberOfMessages
+```
+
+- A product with no `core_id` resolved despite having a real "CORE" field
+  in `BALL SPECS` -- would mean `parse_ball_specs`'s no-whitespace-between-
+  tags handling (see that function's docstring) doesn't hold on a real
+  product beyond the ones checked this session; worth a direct
+  `curl https://hammerbowling.com/products/<slug>.json` check before
+  assuming it's the same bug recurring differently.
 
 ### 6g. bowwwl.com cross-check
 

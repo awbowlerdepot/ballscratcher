@@ -1,0 +1,9 @@
+{
+  "products": [
+    {"id": 7633556504663, "title": "Spawn", "handle": "spawn", "updated_at": "2026-08-05T01:37:05-04:00"},
+    {"id": 7569856561239, "title": "Full Effect", "handle": "full-effect", "updated_at": "2026-08-05T01:37:05-04:00"},
+    {"id": 7494876954711, "title": "Zero Mercy Solid", "handle": "zero-mercy-solid", "updated_at": "2026-08-05T01:37:05-04:00"},
+    {"id": 7494877282391, "title": "Zero Mercy Pearl", "handle": "zero-mercy-pearl", "updated_at": "2026-08-05T01:37:05-04:00"},
+    {"id": 7301568495703, "title": "Hammer Effect Tour", "handle": "hammer-effect-tour", "updated_at": "2026-08-05T01:37:05-04:00"}
+  ]
+}

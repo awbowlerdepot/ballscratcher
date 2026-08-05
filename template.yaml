@@ -173,6 +173,46 @@ Parameters:
     Type: String
     Default: ""
     Description: UUID of the `brands` row for 900 Global. Same reasoning as StormBrandId.
+  HammerStoreDomain:
+    Type: String
+    Default: hammerbowling.com
+    Description: >
+      A fourth platform, added this session -- see
+      src/shopify_url_discovery/app.py and shopify_product_scraper/app.py
+      module docstrings for the real, confirmed platform differences
+      (collection-membership-based discovery via Shopify's public
+      /collections/{handle}/products.json endpoint instead of a sitemap or
+      scraped listing page; RG/DIFF/ASY already in HTML like SWAG/MOTIV but
+      unlike Brunswick; no on-page current/retired signal at all, unlike
+      every other family, so status is resolved once at discovery time from
+      collection membership and read back by the scraper). Track and
+      Ebonite are believed to share this same Shopify theme/platform per
+      prior research but were NOT confirmed live this session and are NOT
+      wired up below -- only "the hammer brand" was actually asked for.
+      ShopifyUrlDiscoveryFunction's CodeUri/ShopifyProductScraperFunction
+      are still parameterized (this param plus HammerCollectionHandles/
+      HammerBrandId) the same way RadicalUrlDiscoveryFunction/
+      Dv8UrlDiscoveryFunction reuse url_discovery/app.py, so a Track/Ebonite
+      instance of this platform would just be a second
+      Xyz UrlDiscoveryFunction resource with its own store-domain param
+      later, not a rewrite.
+  HammerCollectionHandles:
+    Type: String
+    Default: "high-performance,upper-mid-performance,mide-performance,lower-mid-performance,polyester,retired-balls"
+    Description: >
+      Comma-separated Shopify collection handles ShopifyUrlDiscoveryFunction
+      crawls for Hammer. Confirmed live this session, including the real
+      "mide-performance" typo on Hammer's own site (not a bug here) and
+      "retired-balls" as a genuinely separate collection from the five
+      current-ball performance tiers (see HammerStoreDomain's description).
+  HammerBrandId:
+    Type: String
+    Default: ""
+    Description: >
+      UUID of the `brands` row for Hammer (source_platform='shopify'). Left
+      blank by default, same reasoning as SwagBrandId/MotivBrandId/
+      StormBrandId -- required once you actually enable
+      ShopifyUrlDiscoveryFunction.
   BigCommerceSecretArn:
     Type: String
     Default: ""
@@ -418,6 +458,25 @@ Resources:
       VisibilityTimeout: 180
       RedrivePolicy:
         deadLetterTargetArn: !GetAtt CommercebuildProductScrapeDLQ.Arn
+        maxReceiveCount: 3
+
+  ShopifyProductScrapeDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: bowling-scraper-shopify-product-scrape-dlq
+
+  ShopifyProductScrapeQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: bowling-scraper-shopify-product-scrape
+      # Shared by any brand on this platform (Hammer now, Track/Ebonite
+      # potentially later) -- same one-queue-per-platform-family reasoning
+      # as WooCommerceProductScrapeQueue/NetsuiteProductScrapeQueue, since
+      # ShopifyProductScraperFunction's job shape/parsing code is
+      # brand-agnostic (see shopify_product_scraper/app.py).
+      VisibilityTimeout: 180
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt ShopifyProductScrapeDLQ.Arn
         maxReceiveCount: 3
 
   UrlDiscoveryFunction:
@@ -796,6 +855,7 @@ Resources:
           WOOCOMMERCE_PRODUCT_SCRAPE_QUEUE_URL: !Ref WooCommerceProductScrapeQueue
           NETSUITE_PRODUCT_SCRAPE_QUEUE_URL: !Ref NetsuiteProductScrapeQueue
           COMMERCEBUILD_PRODUCT_SCRAPE_QUEUE_URL: !Ref CommercebuildProductScrapeQueue
+          SHOPIFY_PRODUCT_SCRAPE_QUEUE_URL: !Ref ShopifyProductScrapeQueue
       Policies:
         - Statement:
             - Effect: Allow
@@ -843,6 +903,8 @@ Resources:
             QueueName: !GetAtt NetsuiteProductScrapeQueue.QueueName
         - SQSSendMessagePolicy:
             QueueName: !GetAtt CommercebuildProductScrapeQueue.QueueName
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt ShopifyProductScrapeQueue.QueueName
       # Four explicit per-method routes instead of a single `Method: ANY`
       # -- found via a real live test (curl OPTIONS /health with no
       # Authorization header returned a bare 401 "Unauthorized" from API
@@ -1375,6 +1437,86 @@ Resources:
       # every other family uses -- that function's job shape and
       # processing are platform-agnostic.
 
+  # --- Shopify brand family (Hammer Bowling to start) ---
+  #
+  # A fourth platform, added this session -- see HammerStoreDomain's
+  # Parameters description above and src/shopify_url_discovery/app.py's
+  # module docstring for the real, confirmed platform differences that
+  # drove this pair's design.
+  #
+  # Wired into its own SQS chain, same shape as WooCommerce/NetSuite/
+  # Commercebuild: ShopifyUrlDiscoveryFunction publishes to
+  # ShopifyProductScrapeQueue, ShopifyProductScraperFunction consumes it
+  # and fans out to the shared ImageProcessQueue for any new images. Not a
+  # PdfParseQueue trigger target -- RG/DIFF/ASY are already in HTML on this
+  # platform, same reasoning as WooCommerce/NetSuite.
+
+  ShopifyUrlDiscoveryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-shopify-url-discovery
+      CodeUri: src/shopify_url_discovery/
+      Handler: app.handler
+      Environment:
+        Variables:
+          STORE_DOMAIN: !Ref HammerStoreDomain
+          COLLECTION_HANDLES: !Ref HammerCollectionHandles
+          BRAND_ID: !Ref HammerBrandId
+          PRODUCT_SCRAPE_QUEUE_URL: !Ref ShopifyProductScrapeQueue
+      Policies:
+        - VPCAccessPolicy: {}
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt ShopifyProductScrapeQueue.QueueName
+      # No schedule wired up yet (unlike UrlDiscoveryFunction's daily
+      # trigger) -- add once HammerBrandId is actually set for a real
+      # deployment; a schedule referencing an empty BrandId isn't useful.
+      # A second brand on this platform (Track/Ebonite) would be a second
+      # ShopifyUrlDiscoveryFunction-shaped resource here, reusing this same
+      # CodeUri with its own StoreDomain/CollectionHandles/BrandId params --
+      # same reuse convention as RadicalUrlDiscoveryFunction/
+      # Dv8UrlDiscoveryFunction -- not added speculatively since only
+      # Hammer was actually asked for this session.
+
+  ShopifyProductScraperFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-shopify-product-scraper
+      CodeUri: src/shopify_product_scraper/
+      Handler: app.handler
+      # Same reasoning as every other product scraper's raised timeout --
+      # one product-page-plus-image-fanout per SQS batch item, sequential.
+      Timeout: 150
+      Environment:
+        Variables:
+          IMAGE_PROCESS_QUEUE_URL: !Ref ImageProcessQueue
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt ImageProcessQueue.QueueName
+      Events:
+        ShopifyProductScrapeQueueTrigger:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt ShopifyProductScrapeQueue.Arn
+            BatchSize: 5
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+      # SQS-triggered from ShopifyProductScrapeQueue (populated by
+      # ShopifyUrlDiscoveryFunction) -- also still accepts direct/manual
+      # invocation with {"url": "...", "brand_id": "..."}, including from
+      # AdminApiFunction's queue_rescrape backfill path (see
+      # SHOPIFY_PRODUCT_SCRAPE_QUEUE_URL below). Fans out to the SAME
+      # ImageProcessQueue/ImageProcessorFunction every other family uses.
+
   # --- QA cross-checks: bowwwl.com and BowlerDepot reconciliation ---
   #
   # Both scheduled (not SQS-triggered like the scraping chain above) --
@@ -1511,6 +1653,12 @@ Outputs:
     Value: !GetAtt CommercebuildUrlDiscoveryFunction.Arn
   CommercebuildProductScraperFunctionArn:
     Value: !GetAtt CommercebuildProductScraperFunction.Arn
+  ShopifyProductScrapeDLQUrl:
+    Value: !Ref ShopifyProductScrapeDLQ
+  ShopifyUrlDiscoveryFunctionArn:
+    Value: !GetAtt ShopifyUrlDiscoveryFunction.Arn
+  ShopifyProductScraperFunctionArn:
+    Value: !GetAtt ShopifyProductScraperFunction.Arn
   BowwwlCrossCheckFunctionArn:
     Value: !GetAtt BowwwlCrossCheckFunction.Arn
   BowlerDepotReconciliationFunctionArn:

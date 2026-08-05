@@ -1,0 +1,24 @@
+{
+  "product": {
+    "id": 1594189774935,
+    "title": "Absolut Curve",
+    "handle": "absolut-curve",
+    "vendor": "HammerBowling",
+    "updated_at": "2026-08-05T01:37:04-04:00",
+    "body_html": "<p>Tough look? Check.</p>\n<p>Aggressive Roll? Check.</p>\n<p>Devastating backend reaction? You bet.</p>\n<p>Absolut Curve has everything that Hammer bowlers want. With the combination of the new FatMax core shape and our H-150 Crosscover Reactive shell, the Absolut Curve gives Hammer bowlers the most angular mid-price ball from the Hammer line in years.</p>\n<p><b>Nothing Hits Like A Hammer!</b></p>\n<h3>BALL SPECS</h3>\n<ul>\n<li><strong>COLOR</strong><span> </span>Black / Orange / Yellow</li>\n<li><strong>COVERSTOCK</strong><span> </span>H-150 Crossover</li>\n<li><strong>FACTORY FINISH</strong><span> </span>500-500-500 Abralon® -1500 Abranet™- Powerhouse™ Factory Finish Polish</li>\n<li><strong>BEST LANE CONDITION</strong><span> </span>Heavy Oil</li>\n<li><strong>CORE</strong><span> </span>FatMax Core</li>\n<li><strong>AVAILABLE WEIGHTS</strong><span> </span>10-16</li>\n</ul>\n<h3><strong>RG / DIFFERENTIAL</strong></h3>\n<ul class=\"spec-weights\">\n<li><strong>#10</strong><span> </span>RG (2.72) Diff (.031)</li>\n<li><strong>#11</strong><span> </span>RG (2.62) Diff (.031)</li>\n<li><strong>#12</strong><span> </span>RG (2.60) Diff (.039)</li>\n<li><strong>#13</strong><span> </span>RG (2.53) Diff (.055)</li>\n<li><strong>#14</strong><span> </span>RG (2.51) Diff (.044)</li>\n<li><strong>#15</strong><span> </span>RG (2.48) Diff (.048)</li>\n<li><strong>#16</strong><span> </span>RG (2.50) Diff (.042)</li>\n</ul>",
+    "images": [
+      {
+        "id": 31987810992215,
+        "position": 1,
+        "alt": "A black, orange, and yellow colored bowling ball with the Absolut Curve logo in orange centered prominently.",
+        "src": "https://cdn.shopify.com/s/files/1/0030/3330/1104/files/Absolut_Curve_1600x1707_website.png?v=1720031864"
+      },
+      {
+        "id": 4579072639063,
+        "position": 2,
+        "alt": null,
+        "src": "https://cdn.shopify.com/s/files/1/0030/3330/1104/products/Absolut_Curve_Core.png?v=1720031864"
+      }
+    ]
+  }
+}

@@ -882,11 +882,19 @@ def test_resolve_scrape_queue_env_var_commercebuild():
     assert service.resolve_scrape_queue_env_var("commercebuild") == "COMMERCEBUILD_PRODUCT_SCRAPE_QUEUE_URL"
 
 
+def test_resolve_scrape_queue_env_var_shopify():
+    """Onboarded this session (Hammer) -- shopify now resolves the same
+    way every other platform does, unlike before when it deliberately
+    returned None (see this file's git history / DEPLOY_RUNBOOK.md)."""
+    assert service.resolve_scrape_queue_env_var("shopify") == "SHOPIFY_PRODUCT_SCRAPE_QUEUE_URL"
+
+
 def test_resolve_scrape_queue_env_var_unsupported_platform_returns_none():
-    """shopify (Hammer/Track/Ebonite) has no scraper deployed yet -- this
-    must return None, not raise, so queue_rescrape can build a graceful
-    'not supported' response instead of a 500."""
-    assert service.resolve_scrape_queue_env_var("shopify") is None
+    """'other' (the catch-all source_platform enum value) and any
+    unrecognized string both have no scraper deployed -- must return
+    None, not raise, so queue_rescrape can build a graceful 'not
+    supported' response instead of a 500."""
+    assert service.resolve_scrape_queue_env_var("other") is None
     assert service.resolve_scrape_queue_env_var("nonsense") is None
 
 
@@ -951,10 +959,12 @@ def test_queue_rescrape_missing_product_raises():
 
 
 def test_queue_rescrape_unsupported_platform_returns_not_queued_without_touching_sqs():
-    """A product on a platform with no scraper deployed yet (shopify)
-    shouldn't even try to import boto3/publish anything -- confirms via a
-    boto3 stand-in that would raise if .client() were ever called."""
-    db = _fake_db_with_product(source_platform="shopify")
+    """A product on a platform with no scraper deployed yet ('other' --
+    shopify itself is now supported, see test_resolve_scrape_queue_env_var_
+    shopify above) shouldn't even try to import boto3/publish anything --
+    confirms via a boto3 stand-in that would raise if .client() were ever
+    called."""
+    db = _fake_db_with_product(source_platform="other")
     conn = FakeConnection(db)
 
     class _ExplodingBoto3:
@@ -971,7 +981,39 @@ def test_queue_rescrape_unsupported_platform_returns_not_queued_without_touching
         else:
             del sys.modules["boto3"]
 
-    assert result == {"queued": False, "reason": "no scraper deployed for source_platform='shopify' yet"}
+    assert result == {"queued": False, "reason": "no scraper deployed for source_platform='other' yet"}
+
+
+def test_queue_rescrape_publishes_to_shopify_queue():
+    """Confirms the new mapping actually flows through queue_rescrape end
+    to end, not just resolve_scrape_queue_env_var in isolation."""
+    db = _fake_db_with_product(source_platform="shopify", url="https://hammerbowling.com/products/spawn")
+    conn = FakeConnection(db)
+    fake_sqs = _FakeSqsClient()
+
+    class _FakeBoto3:
+        def client(self, name):
+            assert name == "sqs"
+            return fake_sqs
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    os.environ["SHOPIFY_PRODUCT_SCRAPE_QUEUE_URL"] = "https://sqs.example/shopify-scrape"
+    try:
+        result = service.queue_rescrape(conn, "prod-1")
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+        del os.environ["SHOPIFY_PRODUCT_SCRAPE_QUEUE_URL"]
+
+    assert result == {
+        "queued": True, "product_id": "prod-1",
+        "url": "https://hammerbowling.com/products/spawn",
+        "queue_env_var": "SHOPIFY_PRODUCT_SCRAPE_QUEUE_URL",
+    }
+    assert fake_sqs.sent[0]["QueueUrl"] == "https://sqs.example/shopify-scrape"
 
 
 def test_queue_rescrape_missing_queue_env_var_returns_not_queued():
