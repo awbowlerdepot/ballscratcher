@@ -541,6 +541,29 @@ def get_db_connection():
     )
 
 
+def get_or_create_core_id(conn, brand_id: str, core_name, core_type=None):
+    """Same helper as product_scraper.get_or_create_core_id -- duplicated
+    rather than shared, same reasoning as publish_messages elsewhere in
+    this project (each Lambda here is its own independent CodeUri package).
+    MOTIV's spec fields don't expose a dedicated symmetric/asymmetric field
+    (see this module's docstring), so core_type is always None here -- see
+    migration 007 for why the cores table exists."""
+    if not core_name:
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into cores (brand_id, name, core_type)
+            values (%s, %s, %s)
+            on conflict (brand_id, name) do update set
+                core_type = coalesce(cores.core_type, excluded.core_type)
+            returning id
+            """,
+            (brand_id, core_name, core_type),
+        )
+        return cur.fetchone()[0]
+
+
 def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
     """Returns {"product_id": ..., "pending_image_jobs": [...]}, same
     shape as product_scraper.upsert_product -- see that module for why
@@ -551,6 +574,8 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
     if parsed["weights_available"]:
         low, high = parsed["weights_available"]
         weights_range = f"[{low},{high}]"
+
+    core_id = get_or_create_core_id(conn, brand_id, parsed.get("core_name"))
 
     # See product_scraper.upsert_product / migration 003 for the
     # discontinued_detected_at reasoning -- same logic here. Extra
@@ -564,11 +589,13 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
             insert into products (
                 brand_id, name, url, color, coverstock_material, coverstock_type,
                 coverstock_name, factory_finish, part_number, weights_available,
-                status, source_platform, release_date, description, discontinued_detected_at
+                status, source_platform, release_date, description, discontinued_detected_at,
+                core_id
             )
             values (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::int4range, %s, 'netsuite', %s, %s,
-                case when %s = 'retired' then now() else null end
+                case when %s = 'retired' then now() else null end,
+                %s
             )
             on conflict (url) do update set
                 name = excluded.name,
@@ -582,6 +609,7 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
                 status = excluded.status,
                 release_date = coalesce(excluded.release_date, products.release_date),
                 description = coalesce(excluded.description, products.description),
+                core_id = coalesce(excluded.core_id, products.core_id),
                 discontinued_detected_at = case
                     when excluded.status = 'retired' and products.status <> 'retired' then now()
                     when excluded.status = 'current' then null
@@ -595,7 +623,7 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
                 parsed["coverstock_material"], parsed["coverstock_type"],
                 parsed["coverstock_name"], parsed["factory_finish"], parsed["part_number"],
                 weights_range, parsed["status"], parsed["release_date"], parsed["description"],
-                parsed["status"],
+                parsed["status"], core_id,
             ),
         )
         product_id = cur.fetchone()[0]

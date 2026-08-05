@@ -794,6 +794,8 @@ async function loadProductDetailInto(id, cell) {
       '<div class="detail-panel">' +
       '<p><strong>Images</strong> (' + (p.images || []).length + '):</p>' +
       '<div class="image-grid">' + (imageCards || '<p class="muted">none pulled down yet</p>') + '</div>' +
+      '<p><strong>Core:</strong> ' + escapeHtml(p.core_name || '(not identified yet)') +
+        (p.core_type ? ' <span class="muted">(' + escapeHtml(p.core_type) + ')</span>' : '') + '</p>' +
       '<p><strong>Description:</strong></p><pre class="scrollbox">' + escapeHtml(p.description || '(none scraped yet)') + '</pre>' +
       '<p><strong>Video review rollup</strong> (' + videoCount + ' video' + (videoCount === 1 ? '' : 's') + ', generated ' + (fmtDate(p.video_reviews_summary_generated_at) || 'never') + '):</p>' +
       '<pre class="scrollbox">' + escapeHtml(p.video_reviews_summary || '(none yet)') + '</pre>' +

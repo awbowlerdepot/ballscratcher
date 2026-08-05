@@ -25,9 +25,17 @@ import re
 SKU_FIELD_NAME_RE = re.compile(r"^(rg|differential|mass_bias)_(\d{1,2})lb$")
 
 PRODUCT_UPDATABLE_FIELDS = {
-    "name", "color", "core_name", "coverstock_material", "coverstock_type",
+    "name", "color", "coverstock_material", "coverstock_type",
     "coverstock_name", "factory_finish", "part_number", "published",
 }
+# core_name removed (migration 007): it was never actually a products
+# column -- only ball_families (now cores) ever had it, and that table was
+# never wired up either, so this was a latent bug that would have 500'd
+# execute_update_plan's f-string UPDATE if any review_queue row had ever
+# actually carried field_name="core_name" (confirmed via grep that nothing
+# ever wrote one -- bowwwl_cross_check explicitly excludes core from its
+# comparable fields). Core info now lives on the cores table, joined in via
+# get_product() below rather than being a directly-editable product field.
 
 # Fields on product_skus that are numeric -- proposed_value is stored as
 # text on review_queue (it has to represent values from multiple sources
@@ -303,7 +311,18 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
 
 def get_product(conn, product_id: str):
     with conn.cursor() as cur:
-        cur.execute("select * from products where id = %s", (product_id,))
+        # Left join cores (migration 007) so the detail view can show a
+        # human-readable core name/type alongside p.core_id -- p.* still
+        # carries core_id itself, c.name/c.core_type are the added columns.
+        cur.execute(
+            """
+            select p.*, c.name as core_name, c.core_type as core_type
+            from products p
+            left join cores c on c.id = p.core_id
+            where p.id = %s
+            """,
+            (product_id,),
+        )
         row = cur.fetchone()
         if row is None:
             return None

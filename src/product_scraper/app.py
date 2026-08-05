@@ -539,6 +539,39 @@ def get_db_connection():
     )
 
 
+def get_or_create_core_id(conn, brand_id: str, core_name, core_type=None):
+    """Looks up or inserts a cores row for this brand+core_name, returns
+    its id (or None if core_name wasn't parsed off this page). Idempotent
+    across repeated scrapes of different products that share one physical
+    core -- e.g. DV8's Collision core, used by six differently-named balls
+    (Intense Collision, Severe Collision, Wicked Collision, Violent
+    Collision, Brutal Collision, and Collision itself): each scrape
+    resolves to the same cores row via the (brand_id, name) unique
+    constraint rather than creating a duplicate.
+
+    core_type is only ever filled in when the existing row doesn't already
+    have one (coalesce, never overwrite) -- this project has no observed
+    case of the same core name legitimately reporting two different
+    core_types, so this errs toward not overwriting rather than building
+    review_queue machinery for a situation that hasn't come up. See
+    migration 007 for why this table exists at all (it's a rename/repurpose
+    of the previously-unused ball_families table, not a new addition)."""
+    if not core_name:
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into cores (brand_id, name, core_type)
+            values (%s, %s, %s)
+            on conflict (brand_id, name) do update set
+                core_type = coalesce(cores.core_type, excluded.core_type)
+            returning id
+            """,
+            (brand_id, core_name, core_type),
+        )
+        return cur.fetchone()[0]
+
+
 def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
     """Insert or update the products row and its product_skus/product_images
     rows for one scraped page. Returns
@@ -561,6 +594,11 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
         low, high = parsed["weights_available"]
         weights_range = f"[{low},{high}]"
 
+    # This platform doesn't expose a dedicated symmetric/asymmetric field
+    # anywhere on the page (see parse_product_page) -- core_type stays None
+    # here, same as it always has. Only core_name is new.
+    core_id = get_or_create_core_id(conn, brand_id, parsed.get("core_name"))
+
     # discontinued_detected_at logic (see migration 003's comments for the
     # full reasoning): on INSERT, set to now() if the product is already
     # retired the first time we ever see it. On UPDATE, the CASE
@@ -574,11 +612,13 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
             insert into products (
                 brand_id, name, url, color, coverstock_material, coverstock_type,
                 coverstock_name, factory_finish, part_number, weights_available,
-                status, source_platform, release_date, description, discontinued_detected_at
+                status, source_platform, release_date, description, discontinued_detected_at,
+                core_id
             )
             values (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::int4range, %s, 'craft_cms', %s, %s,
-                case when %s = 'retired' then now() else null end
+                case when %s = 'retired' then now() else null end,
+                %s
             )
             on conflict (url) do update set
                 name = excluded.name,
@@ -596,6 +636,10 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
                 -- docstring) shouldn't null out a previously-good value,
                 -- same reasoning as release_date above.
                 description = coalesce(excluded.description, products.description),
+                -- same coalesce reasoning: a scrape that doesn't find a
+                -- "Core" spec value (page layout hiccup, etc.) shouldn't
+                -- null out a core_id a previous scrape already resolved.
+                core_id = coalesce(excluded.core_id, products.core_id),
                 discontinued_detected_at = case
                     when excluded.status = 'retired' and products.status <> 'retired' then now()
                     when excluded.status = 'current' then null
@@ -609,7 +653,7 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
                 parsed["coverstock_material"], parsed["coverstock_type"],
                 parsed["coverstock_name"], parsed["factory_finish"], parsed["part_number"],
                 weights_range, parsed["status"], parsed["release_date"], parsed["description"],
-                parsed["status"],
+                parsed["status"], core_id,
             ),
         )
         product_id = cur.fetchone()[0]

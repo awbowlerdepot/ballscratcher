@@ -33,7 +33,7 @@ Any Postgres 13+ instance works (RDS is the obvious choice, but this
 repo doesn't assume it). Note the connection details -- you'll need them
 for step 3's `DbSecretArn` secret and to run migrations directly.
 
-## 2. Run the six migrations, in order
+## 2. Run the seven migrations, in order
 
 ```bash
 psql "$DATABASE_URL" -f db/migrations/001_init_schema.sql
@@ -42,6 +42,7 @@ psql "$DATABASE_URL" -f db/migrations/003_date_tracking_and_bowwwl.sql
 psql "$DATABASE_URL" -f db/migrations/004_product_videos.sql
 psql "$DATABASE_URL" -f db/migrations/005_products_last_video_discovery_at.sql
 psql "$DATABASE_URL" -f db/migrations/006_products_video_reviews_summary.sql
+psql "$DATABASE_URL" -f db/migrations/007_cores_table.sql
 ```
 
 (If you already ran an earlier subset in a prior deploy, just run whatever
@@ -401,6 +402,43 @@ PDFs not yet successfully synced; `sync_pdf_skus`'s existing
 insert/coalesce/review_queue logic (see that function's docstring)
 handles re-running `pdf_parser` against an already-partially-synced
 product the same as any other re-scrape.
+
+**Core name now captured (migration 007):** Al noticed core name was parsed
+by every one of the four product scrapers but silently dropped -- nothing
+ever wrote it anywhere. Multiple named products can share one physical
+core (his example: DV8's Collision core, used by six differently-named
+balls), so this needed a real many-products-to-one-core relationship
+rather than a repeated free-text column. Rather than add a new table, this
+repurposes `ball_families` (migration 001 already had exactly this shape --
+brand-scoped name + core_name + core_type -- but it was never wired into
+any scraper, so `family_id` was null on every products row): renamed to
+`cores`, `products.family_id` renamed to `core_id`. Each scraper now has a
+`get_or_create_core_id()` that upserts on `(brand_id, name)`, so repeated
+scrapes of different products sharing a core resolve to the same row
+instead of duplicating it. `core_type` (symmetric/asymmetric) is only
+actually populated by `commercebuild_product_scraper` today (the only
+platform with a dedicated "Symmetry" field) -- the other three pass `None`
+until/unless that gets parsed too.
+
+**Important: this only takes effect on the next scrape of each product.**
+Existing rows in `products` won't get a `core_id` retroactively just from
+running the migration -- `core_id` only gets set the next time
+`upsert_product` runs for that URL (a fresh discovery diff, or a manual
+re-invoke). If you want the whole existing catalog backfilled with core
+info immediately rather than waiting for the next natural re-scrape, you'd
+need to re-trigger a scrape per already-known URL -- there's no dedicated
+backfill script for this yet, unlike the video-rollup backfill in 6i.
+
+`admin_api`'s `PRODUCT_UPDATABLE_FIELDS` used to list `core_name` as a
+directly-editable products column, which was never actually true (only
+`ball_families`/now-`cores` ever had that column) -- a latent bug that
+would have 500'd if a review_queue row had ever carried
+`field_name="core_name"`. Confirmed via grep that nothing ever wrote one
+(`bowwwl_cross_check` explicitly excludes core from its comparable
+fields), so nothing was actually broken by this in practice. Removed the
+dead entry; `get_product()` now left-joins `cores` so the admin API
+returns `core_name`/`core_type` for the detail view, and `admin-site/
+index.html`'s product detail panel shows it.
 
 ### 6d. SWAG (if `SwagBrandId` was set)
 
