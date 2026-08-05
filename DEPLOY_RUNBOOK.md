@@ -719,6 +719,31 @@ whenever it next runs.
     it as an occasional deliberate pass (e.g. right after a description
     backfill like this one), not something to schedule routinely. Leave
     `REFRESH_ALL` unset for routine/scheduled use.
+11. Admin site (`admin-site/index.html`). A single self-contained HTML/JS
+    page covering the manual workflows this section has otherwise required
+    curl/psql/a terminal for: review_queue approve/reject, video-candidate
+    approve/reject/reassign/delete + manual transcript submission (a
+    browser-based fallback to step 5's home script), product search +
+    publish toggle + description/rollup viewing, and browser versions of
+    steps 8/10's single-product and batch (stale/`REFRESH_ALL`) rollup
+    refresh jobs. No build step or new AWS infra needed to run it -- open
+    the file directly (`file://`), or host it wherever later; it talks
+    straight to `admin_api`'s HTTP API from the browser via `fetch()`,
+    using the same bearer token scheme as every script above.
+
+    **Requires a redeploy** if `AdminHttpApi` hasn't been deployed since
+    this page was added: it now needs a `CorsConfiguration` block (see
+    `template.yaml`) so a browser on a different origin than the API
+    actually receives a response instead of being blocked by CORS --
+    `sam build && sam deploy` picks this up like any other template
+    change.
+
+    On first open, fill in the Settings bar (top of the page): the same
+    `ADMIN_API_URL` used above, the same bearer token, and your name (used
+    as `resolved_by` on approve/reject calls) -- these persist in that
+    browser's `localStorage` only. Deliberately a flat single file, not
+    componentized -- meant to get real usage against the current API
+    surface before investing in a framework-based rebuild.
 
 ### 6j. Home transcript fetcher (residential caption fetching) -- optional, run outside AWS entirely
 

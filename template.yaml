@@ -557,6 +557,31 @@ Resources:
               Headers:
                 - Authorization
         DefaultAuthorizer: TokenAuthorizer
+      # For admin-site/index.html (a single static HTML/JS page meant to be
+      # opened directly from disk or hosted anywhere -- see that file's
+      # header comment) to call this API from a browser, both the OPTIONS
+      # preflight AND the real response need Access-Control-Allow-* headers.
+      # HTTP API v2's built-in CorsConfiguration handles both automatically
+      # -- critically, it also makes API Gateway answer OPTIONS preflight
+      # requests itself, WITHOUT invoking TokenAuthorizer above, so an
+      # unauthenticated browser preflight doesn't 401 before the real
+      # (authenticated) request even goes out. AllowOrigins: "*" is fine
+      # here specifically because AllowCredentials is left unset/false --
+      # the admin page sends its bearer token as an explicit Authorization
+      # header value (fetch's credentials mode is irrelevant to that), not
+      # via cookies, so no browser will refuse the wildcard for this case.
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowMethods:
+          - GET
+          - POST
+          - PATCH
+          - DELETE
+          - OPTIONS
+        AllowHeaders:
+          - Authorization
+          - Content-Type
       # Explicit HttpApi resource (rather than the implicit one SAM
       # creates from a bare `Type: HttpApi` function event) specifically
       # so a Lambda authorizer can be attached -- see

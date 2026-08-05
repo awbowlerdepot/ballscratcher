@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<!--
+  Bowling Ball Scraper -- Admin Site
+
+  A single self-contained HTML/JS page for the manual-task surfaces the
+  project already exposes via src/admin_api (review_queue approvals,
+  video-candidate approvals/reassign/delete/manual-transcript, product
+  publish toggle + rollup viewing, and the batch refresh jobs currently
+  only runnable via scripts/backfill_video_review_rollups.py from a
+  terminal). No build step, no framework, no new AWS infra required to run
+  it -- open this file directly in a browser (file://), or host it
+  anywhere static files are served later.
+
+  Talks directly to admin_api's HTTP API from the browser via fetch(),
+  using the same Authorization: Bearer <token> scheme the existing
+  scripts/*.py callers use (see src/admin_api_authorizer/app.py). Requires
+  AdminHttpApi's CorsConfiguration (template.yaml) to be deployed --
+  that's what lets a browser on a different origin than the API actually
+  receive a response instead of being blocked by CORS. If you deployed
+  AdminHttpApi before this file existed, redeploy (`sam build && sam
+  deploy`) before using this page.
+
+  Deliberately a single flat file, not componentized -- see this project's
+  DEPLOY_RUNBOOK.md for the reasoning (get something running now to
+  iterate the backend against; a framework-based rebuild is expected
+  later once the API surface has settled from actual use).
+
+  No server-side code here at all -- everything below runs in the
+  visitor's own browser, talking straight to whatever API URL/token they
+  enter. Settings (API URL, bearer token, "resolved by" name) persist in
+  this browser's localStorage only; nothing is sent anywhere except the
+  admin_api URL you configure.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bowling Ball Scraper -- Admin</title>
+<style>
+  :root {
+    --bg: #f5f6f8;
+    --card: #ffffff;
+    --border: #e0e2e7;
+    --text: #1f2330;
+    --muted: #6b7280;
+    --primary: #2563eb;
+    --primary-dark: #1d4ed8;
+    --danger: #dc2626;
+    --danger-dark: #b91c1c;
+    --ok: #16a34a;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 14px;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 20px;
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .conn { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #cbd0d8; display: inline-block; }
+  .dot.ok { background: var(--ok); }
+  .dot.bad { background: var(--danger); }
+
+  #settings {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: flex-end;
+    padding: 12px 20px;
+    background: var(--card);
+    border-bottom: 1px solid var(--border);
+  }
+  #settings .field { display: flex; flex-direction: column; gap: 3px; }
+  #settings label { font-size: 11px; color: var(--muted); }
+  #settings input { padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; min-width: 200px; }
+  #settings input#cfg-url { min-width: 340px; }
+
+  nav#tabs { display: flex; gap: 4px; padding: 0 20px; background: var(--card); border-bottom: 1px solid var(--border); }
+  nav#tabs button {
+    padding: 10px 16px;
+    border: none;
+    background: none;
+    font-size: 13px;
+    color: var(--muted);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+  }
+  nav#tabs button.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+
+  main { padding: 20px; max-width: 1200px; margin: 0 auto; }
+  .tab.hidden { display: none; }
+
+  .filters { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-bottom: 14px; }
+  .filters .field { display: flex; flex-direction: column; gap: 3px; }
+  .filters label { font-size: 11px; color: var(--muted); }
+  .filters input[type=text], .filters select {
+    padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px;
+  }
+  .filters label.checkbox { flex-direction: row; align-items: center; gap: 5px; font-size: 12px; color: var(--text); }
+
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; background: #eef0f4; color: var(--muted); }
+  .badge.ok { background: #dcfce7; color: #166534; }
+  .badge.pending { background: #fef9c3; color: #854d0e; }
+  .badge.rejected { background: #fee2e2; color: #991b1b; }
+  .badge.approved { background: #dcfce7; color: #166534; }
+  .badge.muted { background: #f1f2f5; color: var(--muted); }
+
+  table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
+  table.mini { border: none; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { background: #fafafb; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+  td.mono, span.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  td.small, .small { font-size: 11px; }
+  .muted { color: var(--muted); }
+  .actions { white-space: nowrap; }
+
+  .btn {
+    padding: 5px 11px;
+    border-radius: 6px;
+    border: 1px solid var(--primary);
+    background: var(--primary);
+    color: #fff;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .btn:hover { background: var(--primary-dark); }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .btn.small { padding: 4px 9px; font-size: 11px; margin-right: 4px; }
+  .btn.danger { border-color: var(--danger); background: var(--danger); }
+  .btn.danger:hover { background: var(--danger-dark); }
+  .btn.ghost { background: transparent; color: var(--primary); }
+  .btn.ghost.danger { color: var(--danger); }
+  .btn.ok { border-color: var(--ok); background: var(--ok); }
+
+  .detail-row td { background: #fafbfc; }
+  .detail-panel { padding: 6px 2px; }
+  .detail-panel pre.scrollbox, pre.scrollbox {
+    max-height: 220px; overflow: auto; white-space: pre-wrap; background: #fafbfc;
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px; font-size: 12px; margin: 4px 0 12px;
+  }
+  .detail-panel textarea { width: 100%; margin: 6px 0; padding: 6px; border: 1px solid var(--border); border-radius: 6px; font-family: inherit; font-size: 13px; }
+  .detail-panel input[type=text] { width: 100%; margin-bottom: 6px; padding: 6px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
+
+  .pager { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 12px; color: var(--muted); }
+
+  .panel { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 16px; }
+  .panel h3 { margin: 0 0 6px; font-size: 14px; }
+  .panel p.muted { margin: 0 0 10px; font-size: 12px; }
+  .panel input[type=text] { padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; min-width: 320px; margin-right: 8px; }
+
+  #toast {
+    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%) translateY(20px);
+    background: #1f2330; color: #fff; padding: 9px 16px; border-radius: 8px; font-size: 13px;
+    opacity: 0; pointer-events: none; transition: opacity .15s, transform .15s; z-index: 50;
+  }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #toast.error { background: var(--danger-dark); }
+
+  .error { color: var(--danger); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Bowling Ball Scraper &mdash; Admin</h1>
+  <div class="conn"><span id="conn-dot" class="dot"></span><span id="conn-label">not connected</span></div>
+</header>
+
+<section id="settings">
+  <div class="field">
+    <label for="cfg-url">Admin API URL</label>
+    <input id="cfg-url" type="text" placeholder="https://xxxxx.execute-api.us-west-1.amazonaws.com">
+  </div>
+  <div class="field">
+    <label for="cfg-token">Bearer token</label>
+    <input id="cfg-token" type="password" placeholder="the same token scripts/*.py use">
+  </div>
+  <div class="field">
+    <label for="cfg-by">Your name (resolved_by)</label>
+    <input id="cfg-by" type="text" placeholder="al">
+  </div>
+  <button class="btn" onclick="saveSettings()">Save</button>
+</section>
+
+<nav id="tabs">
+  <button data-tab="review" class="active" onclick="showTab('review')">Review Queue</button>
+  <button data-tab="videos" onclick="showTab('videos')">Video Candidates</button>
+  <button data-tab="products" onclick="showTab('products')">Products</button>
+  <button data-tab="batch" onclick="showTab('batch')">Batch Jobs</button>
+</nav>
+
+<main>
+
+  <!-- ============ Review Queue tab ============ -->
+  <section id="tab-review" class="tab">
+    <form class="filters" onsubmit="applyReviewFilters(); return false;">
+      <div class="field">
+        <label>Status</label>
+        <select id="review-status" onchange="applyReviewFilters()">
+          <option value="pending" selected>pending</option>
+          <option value="approved">approved</option>
+          <option value="rejected">rejected</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Product ID (exact)</label>
+        <input id="review-product-id" type="text" placeholder="optional uuid">
+      </div>
+      <button class="btn" type="submit">Filter</button>
+      <span id="review-pending-badge" class="badge pending"></span>
+    </form>
+    <div id="review-list"><p class="muted">Set your API URL and token above, then this loads automatically.</p></div>
+    <div class="pager">
+      <button id="review-prev" onclick="reviewPage(-1)" disabled>&larr; Prev</button>
+      <span id="review-page-label"></span>
+      <button id="review-next" onclick="reviewPage(1)" disabled>Next &rarr;</button>
+    </div>
+  </section>
+
+  <!-- ============ Video Candidates tab ============ -->
+  <section id="tab-videos" class="tab hidden">
+    <form class="filters" onsubmit="applyVideoFilters(); return false;">
+      <div class="field">
+        <label>Status</label>
+        <select id="video-status" onchange="applyVideoFilters()">
+          <option value="pending" selected>pending</option>
+          <option value="approved">approved</option>
+          <option value="rejected">rejected</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Product ID (exact)</label>
+        <input id="video-product-id" type="text" placeholder="optional uuid">
+      </div>
+      <button class="btn" type="submit">Filter</button>
+      <span id="video-pending-badge" class="badge pending"></span>
+    </form>
+    <div id="video-list"><p class="muted">Set your API URL and token above, then this loads automatically.</p></div>
+    <div class="pager">
+      <button id="video-prev" onclick="videoPage(-1)" disabled>&larr; Prev</button>
+      <span id="video-page-label"></span>
+      <button id="video-next" onclick="videoPage(1)" disabled>Next &rarr;</button>
+    </div>
+  </section>
+
+  <!-- ============ Products tab ============ -->
+  <section id="tab-products" class="tab hidden">
+    <form class="filters" onsubmit="applyProductFilters(); return false;">
+      <div class="field">
+        <label>Search name</label>
+        <input id="product-search" type="text" placeholder="e.g. crown">
+      </div>
+      <div class="field">
+        <label>Brand ID (exact)</label>
+        <input id="product-brand-id" type="text" placeholder="optional uuid">
+      </div>
+      <div class="field">
+        <label>Published</label>
+        <select id="product-published">
+          <option value="">any</option>
+          <option value="true">published</option>
+          <option value="false">unpublished</option>
+        </select>
+      </div>
+      <label class="checkbox"><input id="product-needs-refresh" type="checkbox"> stale rollup</label>
+      <label class="checkbox"><input id="product-has-approved" type="checkbox"> has any summarized video</label>
+      <button class="btn" type="submit">Filter</button>
+    </form>
+    <div id="product-list"><p class="muted">Set your API URL and token above, then this loads automatically.</p></div>
+    <div class="pager">
+      <button id="product-prev" onclick="productPage(-1)" disabled>&larr; Prev</button>
+      <span id="product-page-label"></span>
+      <button id="product-next" onclick="productPage(1)" disabled>Next &rarr;</button>
+    </div>
+  </section>
+
+  <!-- ============ Batch Jobs tab ============ -->
+  <section id="tab-batch" class="tab hidden">
+    <div class="panel">
+      <h3>Refresh one product&rsquo;s rollup</h3>
+      <p class="muted">On-demand equivalent of POST /products/&#123;id&#125;/refresh-video-summary -- regenerates the "summary of summaries" from whatever&rsquo;s currently approved+summarized for that product.</p>
+      <input id="batch-single-id" type="text" placeholder="product_id (uuid)">
+      <button class="btn" onclick="batchRefreshSingle()">Refresh</button>
+      <p id="batch-single-result" class="muted"></p>
+    </div>
+
+    <div class="panel">
+      <h3>Refresh stale rollups</h3>
+      <p class="muted">Same filter scripts/backfill_video_review_rollups.py uses by default (needs_video_summary_refresh): products whose rollup is missing, or out of date with their current approved+summarized video count.</p>
+      <button id="batch-start-stale" class="btn" onclick="runBatch('stale')">Start</button>
+      <button id="batch-stop-stale" class="btn ghost" onclick="stopBatch('stale')" disabled>Stop</button>
+      <div id="batch-stats-stale" class="mono small muted" style="margin-top:8px;"></div>
+      <pre id="batch-log-stale" class="scrollbox" style="margin-top:6px;"></pre>
+    </div>
+
+    <div class="panel">
+      <h3>Refresh ALL (catalog-wide)</h3>
+      <p class="muted">Equivalent of REFRESH_ALL=true scripts/backfill_video_review_rollups.py (has_approved_video_summaries filter): regenerates every product with at least one approved+summarized video, regardless of staleness. Real Bedrock cost across the whole catalog -- an occasional deliberate pass (e.g. right after a description backfill), not routine use.</p>
+      <button id="batch-start-all" class="btn danger" onclick="runBatch('all')">Start</button>
+      <button id="batch-stop-all" class="btn ghost" onclick="stopBatch('all')" disabled>Stop</button>
+      <div id="batch-stats-all" class="mono small muted" style="margin-top:8px;"></div>
+      <pre id="batch-log-all" class="scrollbox" style="margin-top:6px;"></pre>
+    </div>
+  </section>
+
+</main>
+
+<div id="toast"></div>
+
+<script>
+'use strict';
+
+// --------------------------------------------------------------------
+// Settings (localStorage-backed) + low-level API helper
+// --------------------------------------------------------------------
+const LS_KEYS = { url: 'bbs_admin_api_url', token: 'bbs_admin_token', by: 'bbs_admin_resolved_by' };
+
+function getSettings() {
+  return {
+    apiUrl: (localStorage.getItem(LS_KEYS.url) || '').replace(/\/+$/, ''),
+    token: localStorage.getItem(LS_KEYS.token) || '',
+    resolvedBy: localStorage.getItem(LS_KEYS.by) || '',
+  };
+}
+
+function saveSettings() {
+  localStorage.setItem(LS_KEYS.url, document.getElementById('cfg-url').value.trim());
+  localStorage.setItem(LS_KEYS.token, document.getElementById('cfg-token').value.trim());
+  localStorage.setItem(LS_KEYS.by, document.getElementById('cfg-by').value.trim());
+  toast('Settings saved');
+  checkHealth();
+  loadActiveTab();
+}
+
+function loadSettingsIntoForm() {
+  const s = getSettings();
+  document.getElementById('cfg-url').value = s.apiUrl;
+  document.getElementById('cfg-token').value = s.token;
+  document.getElementById('cfg-by').value = s.resolvedBy;
+}
+
+async function api(method, path, opts) {
+  opts = opts || {};
+  const { apiUrl, token } = getSettings();
+  if (!apiUrl) throw new Error('Set the API URL in Settings above first.');
+  let url = apiUrl + path;
+  if (opts.params) {
+    const qs = new URLSearchParams();
+    for (const k in opts.params) {
+      const v = opts.params[k];
+      if (v !== undefined && v !== null && v !== '') qs.set(k, v);
+    }
+    const qsStr = qs.toString();
+    if (qsStr) url += '?' + qsStr;
+  }
+  let res;
+  try {
+    res = await fetch(url, {
+      method,
+      headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },
+      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined,
+    });
+  } catch (e) {
+    throw new Error('Network/CORS error reaching the API -- is AdminHttpApi deployed with CorsConfiguration? (' + e.message + ')');
+  }
+  let data = null;
+  const text = await res.text();
+  if (text) { try { data = JSON.parse(text); } catch (e) { /* non-JSON body */ } }
+  if (!res.ok) {
+    const detail = (data && data.detail) ? (typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail)) : res.statusText;
+    throw new Error(res.status + ': ' + detail);
+  }
+  return data;
+}
+
+async function checkHealth() {
+  const dot = document.getElementById('conn-dot');
+  const label = document.getElementById('conn-label');
+  const { apiUrl, token } = getSettings();
+  if (!apiUrl || !token) { dot.className = 'dot'; label.textContent = 'not connected'; return; }
+  try {
+    await api('GET', '/health');
+    dot.className = 'dot ok';
+    label.textContent = 'connected';
+  } catch (e) {
+    dot.className = 'dot bad';
+    label.textContent = 'unreachable';
+  }
+}
+
+function toast(msg, isError) {
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.className = isError ? 'toast error show' : 'toast show';
+  clearTimeout(toast._t);
+  toast._t = setTimeout(function () { el.classList.remove('show'); }, 4000);
+}
+
+function escapeHtml(s) {
+  return String(s === undefined || s === null ? '' : s).replace(/[&<>"']/g, function (c) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+  });
+}
+function fmtDate(s) {
+  if (!s) return '';
+  try { return new Date(s).toLocaleString(); } catch (e) { return s; }
+}
+
+// --------------------------------------------------------------------
+// Tabs
+// --------------------------------------------------------------------
+const TAB_LOADERS = { review: loadReviewQueue, videos: loadVideoCandidates, products: loadProducts, batch: null };
+let activeTab = 'review';
+
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach(function (t) { t.classList.add('hidden'); });
+  document.getElementById('tab-' + name).classList.remove('hidden');
+  document.querySelectorAll('#tabs button').forEach(function (b) { b.classList.toggle('active', b.dataset.tab === name); });
+  activeTab = name;
+  loadActiveTab();
+}
+
+function loadActiveTab() {
+  const fn = TAB_LOADERS[activeTab];
+  if (fn) fn();
+}
+
+// --------------------------------------------------------------------
+// Review Queue tab
+// --------------------------------------------------------------------
+const reviewState = { status: 'pending', productId: '', offset: 0, limit: 50, lastCount: 0 };
+
+function applyReviewFilters() {
+  reviewState.status = document.getElementById('review-status').value;
+  reviewState.productId = document.getElementById('review-product-id').value.trim();
+  reviewState.offset = 0;
+  loadReviewQueue();
+}
+
+function reviewPage(delta) {
+  reviewState.offset = Math.max(0, reviewState.offset + delta * reviewState.limit);
+  loadReviewQueue();
+}
+
+async function loadReviewQueue() {
+  const listEl = document.getElementById('review-list');
+  listEl.innerHTML = '<p class="muted">Loading&hellip;</p>';
+  try {
+    const data = await api('GET', '/review-queue', { params: {
+      status: reviewState.status, product_id: reviewState.productId, limit: reviewState.limit, offset: reviewState.offset,
+    }});
+    renderReviewQueue(data.items || [], data.pending_count);
+  } catch (e) {
+    listEl.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
+  }
+}
+
+function renderReviewQueue(items, pendingCount) {
+  reviewState.lastCount = items.length;
+  const badge = document.getElementById('review-pending-badge');
+  badge.textContent = pendingCount !== undefined && pendingCount !== null ? pendingCount + ' pending' : '';
+
+  const listEl = document.getElementById('review-list');
+  if (!items.length) {
+    listEl.innerHTML = '<p class="muted">No items.</p>';
+  } else {
+    const rows = items.map(function (item) {
+      const actions = item.status === 'pending'
+        ? '<button class="btn small" onclick="approveReview(\'' + item.id + '\')">Approve</button>' +
+          '<button class="btn small danger" onclick="rejectReview(\'' + item.id + '\')">Reject</button>'
+        : '<span class="badge ' + escapeHtml(item.status) + '">' + escapeHtml(item.status) + '</span>';
+      return '<tr>' +
+        '<td><a href="' + escapeHtml(item.product_url || '#') + '" target="_blank" rel="noopener">' + escapeHtml(item.product_name) + '</a></td>' +
+        '<td class="mono">' + escapeHtml(item.field_name) + '</td>' +
+        '<td class="mono">' + escapeHtml(item.current_value === null ? '—' : item.current_value) + '</td>' +
+        '<td class="mono">' + escapeHtml(item.proposed_value === null ? '—' : item.proposed_value) + '</td>' +
+        '<td>' + escapeHtml(item.source || '') + '</td>' +
+        '<td>' + escapeHtml(item.reason || '') + '</td>' +
+        '<td>' + fmtDate(item.created_at) + '</td>' +
+        '<td class="actions">' + actions + '</td>' +
+        '</tr>';
+    }).join('');
+    listEl.innerHTML = '<table><thead><tr><th>Product</th><th>Field</th><th>Current</th><th>Proposed</th><th>Source</th><th>Reason</th><th>Created</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+  document.getElementById('review-prev').disabled = reviewState.offset === 0;
+  document.getElementById('review-next').disabled = reviewState.lastCount < reviewState.limit;
+  document.getElementById('review-page-label').textContent = items.length ? ('showing ' + (reviewState.offset + 1) + '–' + (reviewState.offset + items.length)) : '';
+}
+
+async function approveReview(id) {
+  const by = getSettings().resolvedBy;
+  if (!by) { toast('Set "Your name" in Settings first.', true); return; }
+  if (!confirm('Approve this change and apply it to the product?')) return;
+  try {
+    await api('POST', '/review-queue/' + id + '/approve', { body: { resolved_by: by } });
+    toast('Approved');
+    loadReviewQueue();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function rejectReview(id) {
+  const by = getSettings().resolvedBy;
+  if (!by) { toast('Set "Your name" in Settings first.', true); return; }
+  const reason = prompt('Reason for rejecting (optional):');
+  if (reason === null) return;
+  try {
+    await api('POST', '/review-queue/' + id + '/reject', { body: { resolved_by: by, reason: reason || undefined } });
+    toast('Rejected');
+    loadReviewQueue();
+  } catch (e) { toast(e.message, true); }
+}
+
+// --------------------------------------------------------------------
+// Video Candidates tab
+// --------------------------------------------------------------------
+const videoState = { status: 'pending', productId: '', offset: 0, limit: 50, lastCount: 0 };
+
+function applyVideoFilters() {
+  videoState.status = document.getElementById('video-status').value;
+  videoState.productId = document.getElementById('video-product-id').value.trim();
+  videoState.offset = 0;
+  loadVideoCandidates();
+}
+
+function videoPage(delta) {
+  videoState.offset = Math.max(0, videoState.offset + delta * videoState.limit);
+  loadVideoCandidates();
+}
+
+async function loadVideoCandidates() {
+  const listEl = document.getElementById('video-list');
+  listEl.innerHTML = '<p class="muted">Loading&hellip;</p>';
+  try {
+    const data = await api('GET', '/video-candidates', { params: {
+      status: videoState.status, product_id: videoState.productId, limit: videoState.limit, offset: videoState.offset,
+    }});
+    renderVideoCandidates(data.items || [], data.pending_count);
+  } catch (e) {
+    listEl.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
+  }
+}
+
+function renderVideoCandidates(items, pendingCount) {
+  videoState.lastCount = items.length;
+  const badge = document.getElementById('video-pending-badge');
+  badge.textContent = pendingCount !== undefined && pendingCount !== null ? pendingCount + ' pending' : '';
+
+  const listEl = document.getElementById('video-list');
+  if (!items.length) {
+    listEl.innerHTML = '<p class="muted">No items.</p>';
+  } else {
+    const rows = items.map(function (v) {
+      const statusCell = v.status === 'pending'
+        ? '<button class="btn small" onclick="approveVideo(\'' + v.id + '\')">Approve</button>' +
+          '<button class="btn small danger" onclick="rejectVideo(\'' + v.id + '\')">Reject</button>'
+        : '<span class="badge ' + escapeHtml(v.status) + '">' + escapeHtml(v.status) + '</span>';
+      return '<tr>' +
+        '<td><a href="https://www.youtube.com/watch?v=' + encodeURIComponent(v.youtube_video_id) + '" target="_blank" rel="noopener">' + escapeHtml(v.title) + '</a>' +
+        '<div class="muted small">' + escapeHtml(v.channel_title || '') + '</div></td>' +
+        '<td>' + escapeHtml(v.product_name) + '<div class="muted small">' + escapeHtml(v.brand_name || '') + '</div></td>' +
+        '<td>' + (v.match_confidence !== null && v.match_confidence !== undefined ? Number(v.match_confidence).toFixed(2) : '—') + '</td>' +
+        '<td>' + (v.has_summary ? '<span class="badge ok">yes</span>' : '<span class="badge muted">no</span>') + '</td>' +
+        '<td>' + fmtDate(v.created_at) + '</td>' +
+        '<td class="actions">' + statusCell +
+        '<button class="btn small ghost" onclick="reassignVideo(\'' + v.id + '\')">Reassign</button>' +
+        '<button class="btn small ghost danger" onclick="deleteVideo(\'' + v.id + '\')">Delete</button>' +
+        '<button class="btn small ghost" onclick="toggleVideoDetail(\'' + v.id + '\')">Detail</button></td>' +
+        '</tr>' +
+        '<tr id="video-detail-' + v.id + '" class="detail-row hidden"><td colspan="6"></td></tr>';
+    }).join('');
+    listEl.innerHTML = '<table><thead><tr><th>Video</th><th>Product</th><th>Match</th><th>Summarized</th><th>Created</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+  document.getElementById('video-prev').disabled = videoState.offset === 0;
+  document.getElementById('video-next').disabled = videoState.lastCount < videoState.limit;
+  document.getElementById('video-page-label').textContent = items.length ? ('showing ' + (videoState.offset + 1) + '–' + (videoState.offset + items.length)) : '';
+}
+
+async function toggleVideoDetail(id) {
+  const row = document.getElementById('video-detail-' + id);
+  if (!row) return;
+  const opening = row.classList.contains('hidden');
+  if (!opening) { row.classList.add('hidden'); return; }
+  row.classList.remove('hidden');
+  await loadVideoDetailInto(id, row.querySelector('td'));
+}
+
+async function loadVideoDetailInto(id, cell) {
+  cell.innerHTML = '<p class="muted">Loading&hellip;</p>';
+  try {
+    const v = await api('GET', '/video-candidates/' + id);
+    cell.innerHTML =
+      '<div class="detail-panel">' +
+      '<p><strong>Transcript note:</strong> ' + escapeHtml(v.transcript_note || '—') + '</p>' +
+      '<p><strong>Summary:</strong></p><pre class="scrollbox">' + escapeHtml(v.summary || '(none yet)') + '</pre>' +
+      '<p><strong>Transcript:</strong></p><pre class="scrollbox">' + escapeHtml(v.transcript || '(none yet)') + '</pre>' +
+      '<hr>' +
+      '<p><strong>Submit transcript manually</strong> (e.g. pasted from scripts/home_transcript_fetcher.py, or by hand -- leave blank for an honest "checked, no captions available"):</p>' +
+      '<textarea id="transcript-input-' + id + '" rows="4" placeholder="Paste transcript text here"></textarea>' +
+      '<input id="transcript-note-' + id + '" type="text" placeholder="Optional note">' +
+      '<button class="btn small" onclick="submitTranscript(\'' + id + '\')">Submit transcript</button>' +
+      '</div>';
+  } catch (e) {
+    cell.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
+  }
+}
+
+async function submitTranscript(id) {
+  const transcript = document.getElementById('transcript-input-' + id).value;
+  const note = document.getElementById('transcript-note-' + id).value || undefined;
+  try {
+    await api('POST', '/video-candidates/' + id + '/transcript', { body: { transcript: transcript, transcript_note: note } });
+    toast('Transcript submitted, queued for summary');
+  } catch (e) { toast(e.message, true); }
+}
+
+async function approveVideo(id) {
+  const by = getSettings().resolvedBy;
+  if (!by) { toast('Set "Your name" in Settings first.', true); return; }
+  if (!confirm('Approve this video candidate? This queues it for transcript+summary.')) return;
+  try {
+    await api('POST', '/video-candidates/' + id + '/approve', { body: { resolved_by: by } });
+    toast('Approved');
+    loadVideoCandidates();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function rejectVideo(id) {
+  const by = getSettings().resolvedBy;
+  if (!by) { toast('Set "Your name" in Settings first.', true); return; }
+  const reason = prompt('Reason for rejecting (optional):');
+  if (reason === null) return;
+  try {
+    await api('POST', '/video-candidates/' + id + '/reject', { body: { resolved_by: by, reason: reason || undefined } });
+    toast('Rejected');
+    loadVideoCandidates();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function reassignVideo(id) {
+  const productId = prompt('New product_id to reassign this video to:');
+  if (!productId) return;
+  try {
+    await api('POST', '/video-candidates/' + id + '/reassign', { body: { product_id: productId.trim() } });
+    toast('Reassigned');
+    loadVideoCandidates();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function deleteVideo(id) {
+  if (!confirm('Permanently delete this video candidate? This cannot be undone.')) return;
+  try {
+    await api('DELETE', '/video-candidates/' + id);
+    toast('Deleted');
+    loadVideoCandidates();
+  } catch (e) { toast(e.message, true); }
+}
+
+// --------------------------------------------------------------------
+// Products tab
+// --------------------------------------------------------------------
+const productState = { search: '', brandId: '', published: '', needsRefresh: false, hasApproved: false, offset: 0, limit: 50, lastCount: 0 };
+
+function applyProductFilters() {
+  productState.search = document.getElementById('product-search').value.trim();
+  productState.brandId = document.getElementById('product-brand-id').value.trim();
+  productState.published = document.getElementById('product-published').value;
+  productState.needsRefresh = document.getElementById('product-needs-refresh').checked;
+  productState.hasApproved = document.getElementById('product-has-approved').checked;
+  productState.offset = 0;
+  loadProducts();
+}
+
+function productPage(delta) {
+  productState.offset = Math.max(0, productState.offset + delta * productState.limit);
+  loadProducts();
+}
+
+async function loadProducts() {
+  const listEl = document.getElementById('product-list');
+  listEl.innerHTML = '<p class="muted">Loading&hellip;</p>';
+  try {
+    const params = {
+      search: productState.search, brand_id: productState.brandId,
+      limit: productState.limit, offset: productState.offset,
+    };
+    if (productState.published === 'true') params.published = true;
+    if (productState.published === 'false') params.published = false;
+    if (productState.needsRefresh) params.needs_video_summary_refresh = true;
+    if (productState.hasApproved) params.has_approved_video_summaries = true;
+    const data = await api('GET', '/products', { params: params });
+    renderProducts(data.items || []);
+  } catch (e) {
+    listEl.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
+  }
+}
+
+function renderProducts(items) {
+  productState.lastCount = items.length;
+  const listEl = document.getElementById('product-list');
+  if (!items.length) {
+    listEl.innerHTML = '<p class="muted">No products match.</p>';
+  } else {
+    const rows = items.map(function (p) {
+      return '<tr>' +
+        '<td><a href="' + escapeHtml(p.url || '#') + '" target="_blank" rel="noopener">' + escapeHtml(p.name) + '</a></td>' +
+        '<td class="mono small">' + escapeHtml((p.brand_id || '').slice(0, 8)) + '&hellip;</td>' +
+        '<td>' + escapeHtml(p.status || '') + '</td>' +
+        '<td><button class="btn small ' + (p.published ? 'ok' : 'ghost') + '" onclick="togglePublish(\'' + p.id + '\', ' + (!p.published) + ')">' + (p.published ? 'Published' : 'Unpublished') + '</button></td>' +
+        '<td>' + fmtDate(p.updated_at) + '</td>' +
+        '<td class="actions"><button class="btn small ghost" onclick="toggleProductDetail(\'' + p.id + '\')">Detail</button></td>' +
+        '</tr>' +
+        '<tr id="product-detail-' + p.id + '" class="detail-row hidden"><td colspan="6"></td></tr>';
+    }).join('');
+    listEl.innerHTML = '<table><thead><tr><th>Name</th><th>Brand ID</th><th>Status</th><th>Published</th><th>Updated</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+  document.getElementById('product-prev').disabled = productState.offset === 0;
+  document.getElementById('product-next').disabled = productState.lastCount < productState.limit;
+  document.getElementById('product-page-label').textContent = items.length ? ('showing ' + (productState.offset + 1) + '–' + (productState.offset + items.length)) : '';
+}
+
+async function togglePublish(id, newValue) {
+  if (!confirm((newValue ? 'Publish' : 'Unpublish') + ' this product?')) return;
+  try {
+    await api('PATCH', '/products/' + id + '/published', { body: { published: newValue } });
+    toast(newValue ? 'Published' : 'Unpublished');
+    loadProducts();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function toggleProductDetail(id) {
+  const row = document.getElementById('product-detail-' + id);
+  if (!row) return;
+  const opening = row.classList.contains('hidden');
+  if (!opening) { row.classList.add('hidden'); return; }
+  row.classList.remove('hidden');
+  await loadProductDetailInto(id, row.querySelector('td'));
+}
+
+async function loadProductDetailInto(id, cell) {
+  cell.innerHTML = '<p class="muted">Loading&hellip;</p>';
+  try {
+    const p = await api('GET', '/products/' + id);
+    const skuRows = (p.skus || []).map(function (s) {
+      return '<tr><td>' + s.weight_lbs + 'lb</td><td>' + (s.rg === null || s.rg === undefined ? '—' : s.rg) +
+        '</td><td>' + (s.differential === null || s.differential === undefined ? '—' : s.differential) +
+        '</td><td>' + (s.mass_bias === null || s.mass_bias === undefined ? '—' : s.mass_bias) +
+        '</td><td>' + escapeHtml(s.source || '') + '</td><td>' + (s.needs_review ? '⚠️' : '') + '</td></tr>';
+    }).join('');
+    const videoCount = p.video_reviews_summary_video_count === null || p.video_reviews_summary_video_count === undefined ? 0 : p.video_reviews_summary_video_count;
+    cell.innerHTML =
+      '<div class="detail-panel">' +
+      '<p><strong>Description:</strong></p><pre class="scrollbox">' + escapeHtml(p.description || '(none scraped yet)') + '</pre>' +
+      '<p><strong>Video review rollup</strong> (' + videoCount + ' video' + (videoCount === 1 ? '' : 's') + ', generated ' + (fmtDate(p.video_reviews_summary_generated_at) || 'never') + '):</p>' +
+      '<pre class="scrollbox">' + escapeHtml(p.video_reviews_summary || '(none yet)') + '</pre>' +
+      '<button class="btn small" onclick="refreshRollup(\'' + id + '\')">Refresh rollup now</button>' +
+      '<p style="margin-top:14px;"><strong>SKUs:</strong></p>' +
+      '<table class="mini"><thead><tr><th>Weight</th><th>RG</th><th>Diff</th><th>Mass Bias</th><th>Source</th><th></th></tr></thead><tbody>' +
+      (skuRows || '<tr><td colspan="6" class="muted">none</td></tr>') + '</tbody></table>' +
+      '</div>';
+  } catch (e) {
+    cell.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
+  }
+}
+
+async function refreshRollup(id) {
+  try {
+    const result = await api('POST', '/products/' + id + '/refresh-video-summary');
+    toast(result.rollup_regenerated ? ('Rollup regenerated (' + result.video_count + ' videos)') : ('Not regenerated: ' + result.reason));
+    const row = document.getElementById('product-detail-' + id);
+    if (row) await loadProductDetailInto(id, row.querySelector('td'));
+  } catch (e) { toast(e.message, true); }
+}
+
+// --------------------------------------------------------------------
+// Batch Jobs tab -- mirrors scripts/backfill_video_review_rollups.py's
+// list-then-loop logic (see that script's run()), just running in the
+// browser against the same two GET /products filters instead of a
+// terminal. See that script's module docstring for the full reasoning
+// behind the two filters (needs_video_summary_refresh vs
+// has_approved_video_summaries / REFRESH_ALL).
+// --------------------------------------------------------------------
+const batchRunning = { stale: false, all: false };
+
+async function batchRefreshSingle() {
+  const id = document.getElementById('batch-single-id').value.trim();
+  const out = document.getElementById('batch-single-result');
+  if (!id) { toast('Enter a product_id', true); return; }
+  out.textContent = 'Working…';
+  try {
+    const result = await api('POST', '/products/' + id + '/refresh-video-summary');
+    out.textContent = result.rollup_regenerated
+      ? ('Regenerated -- ' + result.video_count + ' videos.')
+      : ('Not regenerated: ' + result.reason);
+  } catch (e) {
+    out.textContent = 'Error: ' + e.message;
+  }
+}
+
+async function runBatch(kind) {
+  if (batchRunning[kind]) return;
+  const filterParam = kind === 'all' ? 'has_approved_video_summaries' : 'needs_video_summary_refresh';
+  if (kind === 'all') {
+    const ok = confirm('This regenerates EVERY product with an approved+summarized video, not just stale ones -- real Bedrock cost across the whole catalog. Continue?');
+    if (!ok) return;
+  }
+  batchRunning[kind] = true;
+  const logEl = document.getElementById('batch-log-' + kind);
+  const statsEl = document.getElementById('batch-stats-' + kind);
+  const startBtn = document.getElementById('batch-start-' + kind);
+  const stopBtn = document.getElementById('batch-stop-' + kind);
+  logEl.textContent = '';
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+
+  function appendLog(line) {
+    logEl.textContent += line + '\n';
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  let total = 0, refreshed = 0, errors = 0;
+  try {
+    appendLog('Listing products…');
+    let items = [];
+    let offset = 0;
+    const limit = 200;
+    while (batchRunning[kind]) {
+      const params = { limit: limit, offset: offset };
+      params[filterParam] = true;
+      const page = await api('GET', '/products', { params: params });
+      const pageItems = page.items || [];
+      items = items.concat(pageItems);
+      if (pageItems.length < limit) break;
+      offset += limit;
+    }
+    if (!batchRunning[kind]) { appendLog('Stopped before listing finished.'); return; }
+    total = items.length;
+    appendLog('Found ' + total + ' product(s).');
+    statsEl.textContent = 'total: ' + total + '  refreshed: 0  errors: 0';
+
+    for (let i = 0; i < items.length; i++) {
+      if (!batchRunning[kind]) { appendLog('Stopped.'); break; }
+      const product = items[i];
+      try {
+        const result = await api('POST', '/products/' + product.id + '/refresh-video-summary');
+        if (result.rollup_regenerated) {
+          refreshed++;
+          appendLog('Refreshed ' + product.name + ' (' + result.video_count + ' videos)');
+        } else {
+          appendLog(product.name + ': ' + result.reason);
+        }
+      } catch (e) {
+        errors++;
+        appendLog('ERROR ' + product.name + ': ' + e.message);
+      }
+      statsEl.textContent = 'total: ' + total + '  refreshed: ' + refreshed + '  errors: ' + errors;
+    }
+    if (batchRunning[kind]) appendLog('Done.');
+  } catch (e) {
+    appendLog('Fatal error: ' + e.message);
+  } finally {
+    batchRunning[kind] = false;
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+  }
+}
+
+function stopBatch(kind) {
+  batchRunning[kind] = false;
+}
+
+// --------------------------------------------------------------------
+// Init
+// --------------------------------------------------------------------
+document.addEventListener('DOMContentLoaded', function () {
+  loadSettingsIntoForm();
+  checkHealth();
+  loadActiveTab();
+});
+</script>
+
+</body>
+</html>
