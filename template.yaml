@@ -724,13 +724,50 @@ Resources:
             QueueName: !GetAtt VideoSummarizeQueue.QueueName
         - SQSSendMessagePolicy:
             QueueName: !GetAtt VideoTranscriptResultQueue.QueueName
+      # Four explicit per-method routes instead of a single `Method: ANY`
+      # -- found via a real live test (curl OPTIONS /health with no
+      # Authorization header returned a bare 401 "Unauthorized" from API
+      # Gateway itself, not from this function or the authorizer's own
+      # logic). Root cause: `ANY` matches every method INCLUDING OPTIONS,
+      # so AdminHttpApi's CorsConfiguration (see that resource's own
+      # comment) never gets to auto-generate the CORS preflight response
+      # for this path -- API Gateway only does that when the path+method
+      # has no explicit route of its own, and `ANY` already claims one.
+      # With no auto-preflight, the OPTIONS request fell through to the
+      # normal integration, which requires TokenAuthorizer, which (per
+      # AdminApiAuthorizerFunctionInvokePermission's own comment above)
+      # short-circuits to 401 without even invoking the authorizer when
+      # Authorization is absent -- exactly what a real preflight request
+      # looks like, since browsers never attach custom headers to it.
+      # Splitting into the four methods admin_api/app.py actually defines
+      # (GET/POST/PATCH/DELETE) leaves OPTIONS with no explicit route, so
+      # CorsConfiguration's automatic (unauthenticated) preflight handling
+      # applies instead.
       Events:
-        AdminApi:
+        AdminApiGet:
           Type: HttpApi
           Properties:
             ApiId: !Ref AdminHttpApi
             Path: /{proxy+}
-            Method: ANY
+            Method: GET
+        AdminApiPost:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref AdminHttpApi
+            Path: /{proxy+}
+            Method: POST
+        AdminApiPatch:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref AdminHttpApi
+            Path: /{proxy+}
+            Method: PATCH
+        AdminApiDelete:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref AdminHttpApi
+            Path: /{proxy+}
+            Method: DELETE
       # FastAPI + Mangum, per the architecture doc's decided workflow:
       # review everything on the initial catalog load, then steady-state
       # auto-approve except mismatched fields written to review_queue.

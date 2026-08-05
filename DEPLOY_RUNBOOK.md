@@ -738,6 +738,23 @@ whenever it next runs.
     `sam build && sam deploy` picks this up like any other template
     change.
 
+    **Real gotcha hit on first live use, now fixed:** `CorsConfiguration`
+    alone wasn't enough -- `AdminApiFunction`'s route was a single
+    `Method: ANY` on `/{proxy+}`, and `ANY` matches `OPTIONS` too. API
+    Gateway only auto-answers a CORS preflight for a path+method that has
+    no explicit route of its own; since `ANY` already claimed one, the
+    preflight fell through to the normal integration, which requires
+    `TokenAuthorizer`, which 401s on the missing `Authorization` header
+    every real preflight request has (browsers never attach custom
+    headers to a preflight). Confirmed live via `curl -X OPTIONS
+    <api-url>/health` returning a bare `{"message":"Unauthorized"}`.
+    Fixed by splitting that one `ANY` event into four explicit
+    `AdminApiGet`/`AdminApiPost`/`AdminApiPatch`/`AdminApiDelete` events
+    (the actual methods `admin_api/app.py` defines) -- with no explicit
+    `OPTIONS` route left, `CorsConfiguration`'s automatic unauthenticated
+    preflight handling applies. Redeploy again if you deployed the CORS
+    block before this fix.
+
     On first open, fill in the Settings bar (top of the page): the same
     `ADMIN_API_URL` used above, the same bearer token, and your name (used
     as `resolved_by` on approve/reject calls) -- these persist in that
