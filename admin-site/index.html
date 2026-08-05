@@ -211,6 +211,7 @@
   <button data-tab="review" class="active" onclick="showTab('review')">Review Queue</button>
   <button data-tab="videos" onclick="showTab('videos')">Video Candidates</button>
   <button data-tab="products" onclick="showTab('products')">Products</button>
+  <button data-tab="cores" onclick="showTab('cores')">Cores</button>
   <button data-tab="batch" onclick="showTab('batch')">Batch Jobs</button>
 </nav>
 
@@ -297,6 +298,35 @@
       <button id="product-prev" onclick="productPage(-1)" disabled>&larr; Prev</button>
       <span id="product-page-label"></span>
       <button id="product-next" onclick="productPage(1)" disabled>Next &rarr;</button>
+    </div>
+  </section>
+
+  <!-- ============ Cores tab ============ -->
+  <!-- The "other direction" view of the Products tab's Core column: one
+       row per core (not per product), with how many products currently
+       reference it. Built for the exact case migration 007's cores table
+       exists for -- multiple named products sharing one physical core
+       (Al's example: DV8's Collision core, used by six differently-named
+       balls) -- which is otherwise only noticeable by spotting the same
+       core name repeated across several Products-tab rows, one page load
+       at a time. -->
+  <section id="tab-cores" class="tab hidden">
+    <form class="filters" onsubmit="applyCoreFilters(); return false;">
+      <div class="field">
+        <label>Search core name</label>
+        <input id="core-search" type="text" placeholder="e.g. collision">
+      </div>
+      <div class="field">
+        <label>Brand ID (exact)</label>
+        <input id="core-brand-id" type="text" placeholder="optional uuid">
+      </div>
+      <button class="btn" type="submit">Filter</button>
+    </form>
+    <div id="core-list"><p class="muted">Set your API URL and token above, then this loads automatically.</p></div>
+    <div class="pager">
+      <button id="core-prev" onclick="corePage(-1)" disabled>&larr; Prev</button>
+      <span id="core-page-label"></span>
+      <button id="core-next" onclick="corePage(1)" disabled>Next &rarr;</button>
     </div>
   </section>
 
@@ -444,7 +474,7 @@ function fmtDate(s) {
 // --------------------------------------------------------------------
 // Tabs
 // --------------------------------------------------------------------
-const TAB_LOADERS = { review: loadReviewQueue, videos: loadVideoCandidates, products: loadProducts, batch: null };
+const TAB_LOADERS = { review: loadReviewQueue, videos: loadVideoCandidates, products: loadProducts, cores: loadCores, batch: null };
 let activeTab = 'review';
 
 function showTab(name) {
@@ -850,6 +880,103 @@ async function rescrapeProduct(id) {
   } catch (e) {
     toast(e.message, true);
     if (out) out.textContent = 'Error: ' + e.message;
+  }
+}
+
+// --------------------------------------------------------------------
+// Cores tab -- the "other direction" view of the Products tab's Core
+// column (see that section's HTML comment above for the reasoning).
+// Same list/filter/pager/detail-row shape as the Products tab, just one
+// row per core instead of per product, and the detail row expands into
+// the list of products currently pointing at that core (id.core_id) via
+// GET /cores/{id} instead of any per-product data.
+// --------------------------------------------------------------------
+const coreState = { search: '', brandId: '', offset: 0, limit: 50, lastCount: 0 };
+
+function applyCoreFilters() {
+  coreState.search = document.getElementById('core-search').value.trim();
+  coreState.brandId = document.getElementById('core-brand-id').value.trim();
+  coreState.offset = 0;
+  loadCores();
+}
+
+function corePage(delta) {
+  coreState.offset = Math.max(0, coreState.offset + delta * coreState.limit);
+  loadCores();
+}
+
+async function loadCores() {
+  const listEl = document.getElementById('core-list');
+  listEl.innerHTML = '<p class="muted">Loading&hellip;</p>';
+  try {
+    const data = await api('GET', '/cores', { params: {
+      search: coreState.search, brand_id: coreState.brandId,
+      limit: coreState.limit, offset: coreState.offset,
+    }});
+    renderCores(data.items || []);
+  } catch (e) {
+    listEl.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
+  }
+}
+
+function renderCores(items) {
+  coreState.lastCount = items.length;
+  const listEl = document.getElementById('core-list');
+  if (!items.length) {
+    listEl.innerHTML = '<p class="muted">No cores match.</p>';
+  } else {
+    const rows = items.map(function (c) {
+      const countBadge = c.product_count > 0
+        ? '<span class="badge ok">' + c.product_count + '</span>'
+        : '<span class="badge muted">0</span>';
+      return '<tr>' +
+        '<td>' + escapeHtml(c.brand_name || '') + '</td>' +
+        '<td>' + escapeHtml(c.name) + '</td>' +
+        '<td>' + (c.core_type ? escapeHtml(c.core_type) : '<span class="muted">&mdash;</span>') + '</td>' +
+        '<td>' + countBadge + '</td>' +
+        '<td>' + fmtDate(c.created_at) + '</td>' +
+        '<td class="actions"><button class="btn small ghost" onclick="toggleCoreDetail(\'' + c.id + '\')">Products</button></td>' +
+        '</tr>' +
+        '<tr id="core-detail-' + c.id + '" class="detail-row hidden"><td colspan="6"></td></tr>';
+    }).join('');
+    listEl.innerHTML = '<table><thead><tr><th>Brand</th><th>Core Name</th><th>Type</th><th>Products</th><th>Created</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+  document.getElementById('core-prev').disabled = coreState.offset === 0;
+  document.getElementById('core-next').disabled = coreState.lastCount < coreState.limit;
+  document.getElementById('core-page-label').textContent = items.length ? ('showing ' + (coreState.offset + 1) + '–' + (coreState.offset + items.length)) : '';
+}
+
+async function toggleCoreDetail(id) {
+  const row = document.getElementById('core-detail-' + id);
+  if (!row) return;
+  const opening = row.classList.contains('hidden');
+  if (!opening) { row.classList.add('hidden'); return; }
+  row.classList.remove('hidden');
+  await loadCoreDetailInto(id, row.querySelector('td'));
+}
+
+async function loadCoreDetailInto(id, cell) {
+  cell.innerHTML = '<p class="muted">Loading&hellip;</p>';
+  try {
+    const c = await api('GET', '/cores/' + id);
+    const productRows = (c.products || []).map(function (p) {
+      const publishedBadge = p.published ? '<span class="badge ok">published</span>' : '<span class="badge muted">unpublished</span>';
+      return '<tr>' +
+        '<td><a href="' + escapeHtml(p.url || '#') + '" target="_blank" rel="noopener">' + escapeHtml(p.name) + '</a></td>' +
+        '<td>' + escapeHtml(p.status || '') + '</td>' +
+        '<td>' + publishedBadge + '</td>' +
+        '<td>' + fmtDate(p.updated_at) + '</td>' +
+        '</tr>';
+    }).join('');
+    cell.innerHTML =
+      '<div class="detail-panel">' +
+      '<p><strong>' + escapeHtml(c.products.length) + ' product' + (c.products.length === 1 ? '' : 's') + ' using this core:</strong></p>' +
+      '<table class="mini"><thead><tr><th>Name</th><th>Status</th><th>Published</th><th>Updated</th></tr></thead><tbody>' +
+      (productRows || '<tr><td colspan="4" class="muted">none -- likely an orphaned row, safe to investigate for cleanup</td></tr>') +
+      '</tbody></table>' +
+      '</div>';
+  } catch (e) {
+    cell.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
   }
 }
 

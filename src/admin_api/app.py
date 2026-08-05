@@ -181,6 +181,38 @@ def rescrape_product(product_id: str):
         conn.close()
 
 
+@app.get("/cores")
+def get_cores(
+    brand_id: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    limit: int = Query(50, le=200),
+    offset: int = Query(0, ge=0),
+):
+    # The "other direction" view of core_name/core_type -- see
+    # service.list_cores' docstring. One row per core (not per product),
+    # with a product_count so a many-products-to-one-core case (this
+    # table's whole reason for existing, per migration 007) is visible at
+    # a glance instead of only inferable by noticing several Products-tab
+    # rows share a core name.
+    conn = service.get_db_connection()
+    try:
+        return {"items": service.list_cores(conn, brand_id=brand_id, search=search, limit=limit, offset=offset)}
+    finally:
+        conn.close()
+
+
+@app.get("/cores/{core_id}")
+def get_core(core_id: str):
+    conn = service.get_db_connection()
+    try:
+        core = service.get_core(conn, core_id)
+        if core is None:
+            raise HTTPException(status_code=404, detail="core not found")
+        return core
+    finally:
+        conn.close()
+
+
 @app.post("/products/{product_id}/refresh-video-summary")
 def refresh_video_summary(product_id: str):
     # On-demand counterpart to video_summarizer's automatic rollup

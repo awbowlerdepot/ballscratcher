@@ -368,6 +368,110 @@ def get_product(conn, product_id: str):
 
 
 # ---------------------------------------------------------------------
+# Cores (GET /cores, GET /cores/{id}) -- the "other direction" view of the
+# same data get_product()/list_products() already surface per-product
+# (core_name/core_type joined onto one product row at a time). Product
+# is core-agnostic history: this project's whole reason for building the
+# cores table in the first place (migration 007) was that multiple named
+# products can share one physical core -- Al's example, DV8's Collision
+# core used by six differently-named balls -- and that many-to-one shape
+# was invisible from the Products tab alone (you'd have to notice six
+# different products all showing "Collision" as their core, one page load
+# at a time). This surfaces it directly: one row per core, with how many
+# products currently reference it, and (on the detail view) exactly which
+# ones.
+# ---------------------------------------------------------------------
+
+def list_cores(conn, brand_id: str = None, search: str = None, limit: int = 50, offset: int = 0) -> list:
+    """product_count comes from a left join + count/group by rather than a
+    correlated subquery -- same reasoning as list_products' left join onto
+    cores, just the reverse direction: one row per core, zero or more
+    matching products rolled up into a single count. A core with zero
+    products currently pointing at it (every referencing product got
+    reassigned to a different, correctly-named core, or the core was
+    created but never actually used by a real product -- e.g. the
+    "E "-prefixed rows this exact feature was born out of debugging, see
+    DEPLOY_RUNBOOK.md's Hammer incident writeup) still shows up here with
+    product_count=0 rather than being silently hidden -- that's a real,
+    useful signal (a likely-orphaned row worth cleaning up), not noise to
+    filter out by default.
+
+    Ordered by product_count desc, name asc -- cores actually in heavy use
+    (the many-products-to-one-core cases this table exists for) surface
+    first, ahead of the long tail of single-product or zero-product rows."""
+    query = """
+        select c.id, c.brand_id, b.name as brand_name, c.name, c.core_type,
+               c.release_era, c.created_at, count(p.id) as product_count
+        from cores c
+        join brands b on b.id = c.brand_id
+        left join products p on p.core_id = c.id
+        where 1=1
+    """
+    params = []
+    if brand_id:
+        query += " and c.brand_id = %s"
+        params.append(brand_id)
+    if search:
+        query += " and c.name ilike %s"
+        params.append(f"%{search}%")
+    # c.id as a final tiebreaker -- same pagination-stability reasoning as
+    # list_products'/list_video_candidates' own id tiebreakers (rows
+    # sharing both product_count and name would otherwise paginate
+    # unstably).
+    query += """
+        group by c.id, b.name
+        order by product_count desc, c.name asc, c.id asc
+        limit %s offset %s
+    """
+    params += [limit, offset]
+
+    with conn.cursor() as cur:
+        cur.execute(query, params)
+        columns = [desc[0] for desc in cur.description]
+        return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
+def get_core(conn, core_id: str):
+    """Detail view: the core row itself plus every product currently
+    pointing at it (id/name/url/status/published -- enough for the admin
+    UI to link straight back into the Products tab's detail view for any
+    one of them, same fields that tab's own table already shows). Returns
+    None (not an exception) when the id doesn't exist, same convention as
+    get_product/get_review_item/get_video_candidate -- app.py maps that to
+    a 404."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select c.id, c.brand_id, b.name as brand_name, c.name, c.core_type,
+                   c.release_era, c.created_at
+            from cores c
+            join brands b on b.id = c.brand_id
+            where c.id = %s
+            """,
+            (core_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        columns = [desc[0] for desc in cur.description]
+        core = dict(zip(columns, row))
+
+        cur.execute(
+            """
+            select id, name, url, status, published, updated_at
+            from products
+            where core_id = %s
+            order by name asc
+            """,
+            (core_id,),
+        )
+        product_columns = [desc[0] for desc in cur.description]
+        core["products"] = [dict(zip(product_columns, row)) for row in cur.fetchall()]
+
+        return core
+
+
+# ---------------------------------------------------------------------
 # Rescrape trigger (POST /products/{id}/rescrape), built for the cores
 # backfill (migration 007, scripts/backfill_core_ids.py): core_id only
 # gets set the next time a product is actually scraped, and nothing else

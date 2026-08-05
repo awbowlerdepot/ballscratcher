@@ -359,6 +359,14 @@ class _QueryCapturingCursor:
     def fetchall(self):
         return []
 
+    def fetchone(self):
+        # Default to "not found" -- get_core (and any other single-row
+        # get_* this connection is reused for) short-circuits to None on
+        # this, which is itself a real, useful thing to confirm (the
+        # second query never runs for a missing id) rather than an
+        # unsupported-fake gap.
+        return None
+
 
 class _QueryCapturingConnection:
     def __init__(self):
@@ -1100,6 +1108,61 @@ def test_list_products_missing_core_adds_filter_sql():
 
     query = conn.cursor().queries[0]
     assert "p.core_id is null" in query
+
+
+# --- list_cores / get_core: the "other direction" view of core_name/
+# core_type (GET /cores, GET /cores/{id}) -- see service.list_cores'
+# docstring for why this exists (multiple products can share one core,
+# invisible from the Products tab alone). SQL-text-capturing tests only,
+# same convention as list_products' filter tests above -- no real Postgres
+# in this sandbox to exercise the actual join/group-by/count behavior
+# against. get_core itself (like get_product, get_review_item, etc.) isn't
+# otherwise unit tested beyond its not-found path, for the same reason.
+
+def test_list_cores_default_query_joins_brands_and_counts_products():
+    conn = _QueryCapturingConnection()
+    service.list_cores(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "join brands b on b.id = c.brand_id" in query
+    assert "left join products p on p.core_id = c.id" in query
+    assert "count(p.id) as product_count" in query
+    assert "group by c.id, b.name" in query
+    assert "order by product_count desc, c.name asc, c.id asc" in query
+    assert "c.brand_id = %s" not in query  # not real SQL, guards against copy-paste
+    assert "c.name ilike %s" not in query
+
+
+def test_list_cores_brand_id_filter_adds_clause():
+    conn = _QueryCapturingConnection()
+    service.list_cores(conn, brand_id="brand-abc", limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "and c.brand_id = %s" in query
+
+
+def test_list_cores_search_filter_adds_ilike_clause():
+    conn = _QueryCapturingConnection()
+    service.list_cores(conn, search="Collision", limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "and c.name ilike %s" in query
+
+
+def test_get_core_returns_none_for_missing_id():
+    """_QueryCapturingCursor.fetchone() defaults to None (see that class'
+    own comment) -- get_core's early `if row is None: return None` means
+    the second (products-by-core_id) query never even runs, which this
+    also confirms by checking only one query was issued."""
+    conn = _QueryCapturingConnection()
+
+    result = service.get_core(conn, "does-not-exist")
+
+    assert result is None
+    queries = conn.cursor().queries
+    assert len(queries) == 1
+    assert "join brands b on b.id = c.brand_id" in queries[0]
+    assert "where c.id = %s" in queries[0]
 
 
 if __name__ == "__main__":

@@ -484,6 +484,35 @@ already-scraped, unchanged product on its own. Three ways to trigger it:
    detail view; the Batch Jobs tab has a "Backfill missing core info"
    panel that does the same list-then-loop as the script, in the browser.
 
+**Cores tab (the "other direction" view):** Everything above (the Products
+tab's Core column, the missing-core filter/backfill) shows core info
+one product at a time -- the many-products-to-one-core relationship
+migration 007 exists for (Al's example: DV8's Collision core, used by six
+differently-named balls) was otherwise only noticeable by spotting the
+same core name repeated across several Products-tab rows, one page load
+at a time. Added `GET /cores` (paginated, `brand_id`/`search` filters,
+one row per core with a `product_count` rolled up via a left join +
+`count`/`group by`, ordered by `product_count desc` so the actually-
+shared cores surface first) and `GET /cores/{id}` (that core's row plus
+the full list of products currently pointing at it -- id/name/url/status/
+published/updated_at, enough to link straight into the Products tab's own
+detail view for any one of them). No `template.yaml` change needed for
+either -- `AdminApiFunction`'s routes are a `/{proxy+}` catch-all per HTTP
+method (see the CORS-preflight comment on that function's `Events` block),
+so a new path under an already-wired method just works.
+
+`admin-site/index.html` gets a new Cores tab: Brand/Core Name/Type/
+Products-count/Created table, same filter+pager shape as every other tab,
+with a "Products" detail-row button per core (like Products tab's
+"Detail" and Video Candidates tab's "Detail") that lists every product
+using that core via `GET /cores/{id}`. A core showing 0 products is
+flagged directly in the UI as "likely an orphaned row" rather than just
+an empty table -- exactly the shape the Hammer `"E "`-prefix incident
+above left behind in production (219 correctly-scraped products, plus a
+batch of now-unreferenced corrupted `cores` rows) before they were
+manually cleaned up via direct SQL; this tab is what would have made that
+visible without needing to already know to go looking for it.
+
 This required new plumbing on `AdminApiFunction`: `PRODUCT_SCRAPE_QUEUE_URL`
 / `WOOCOMMERCE_PRODUCT_SCRAPE_QUEUE_URL` / `NETSUITE_PRODUCT_SCRAPE_QUEUE_URL`
 / `COMMERCEBUILD_PRODUCT_SCRAPE_QUEUE_URL` env vars and matching
