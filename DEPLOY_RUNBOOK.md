@@ -234,14 +234,19 @@ collection-JSON-based, not sitemap-based, see
 `src/shopify_url_discovery/app.py`'s module docstring):
 
 ```sql
-insert into manufacturers (name) values ('Escalade Sports') returning id;
+insert into manufacturers (name) values ('Brunswick Bowling Products, LLC') returning id;
 -- (skip if you already have a manufacturer row covering the Brunswick/
 -- Radical/DV8/Hammer corporate family -- confirmed live this session that
 -- Hammer's footer cross-links dv8bowling.com/ebonite.com/hammerbowling.com/
 -- radicalbowling.com/trackbowling.com/powerhousebowling.com, same family
--- as Brunswick's own brands, though the exact legal manufacturer name
--- wasn't independently verified this session -- double check before
--- relying on it)
+-- as Brunswick's own brands. "Brunswick Bowling Products, LLC" per a web
+-- search after this session: Brunswick's bowling *equipment* line
+-- (bowling balls, pinsetters, etc., owned by BlueArc Capital Management
+-- since 2015) is a completely separate business from Brunswick
+-- *Billiards*, which Escalade Sports acquired in 2022 -- an earlier draft
+-- of this doc wrongly named Escalade Sports here, conflating the two.
+-- Hammer itself came into this family via Brunswick's 2019 acquisition of
+-- Ebonite International, Hammer's prior owner since 2002.)
 insert into brands (manufacturer_id, name, base_url, source_platform)
 values ('<manufacturer-id>', 'Hammer', 'https://hammerbowling.com', 'shopify')
 returning id;
