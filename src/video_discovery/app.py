@@ -91,6 +91,34 @@ wall again partway through. VideoDiscoveryFunction's Timeout in
 template.yaml was also raised (150s -> 280s) to give the retry backoff
 room to actually wait out a per-minute window without the Lambda itself
 timing out mid-recovery.
+
+REAL INCIDENT #2, the very next invocation after the fix above shipped:
+"Sandbox.Timedout ... Task timed out after 280.00 seconds" -- a hard
+Lambda kill, not a clean JSON response, meaning zero visibility into how
+far it got. Root cause: retry-with-backoff fixes the case where a FEW
+requests in a batch get throttled, but doesn't scale when MOST/ALL of
+them do -- worst case per throttled product is ~31s of backoff (5
+retries, 1s/2s/4s/8s/16s) plus request time, and since the loop is
+strictly sequential, that cost stacks per product rather than overlapping.
+This particular run likely started already deep into a rate-limited
+window (two overlapping invocations from the CLI's own client-side read
+timeout retrying mid-flight the run before this one -- a separate, CLI-
+side issue: `aws lambda invoke`'s default --cli-read-timeout is 60s,
+well under this function's now-280s server-side Timeout, so the CLI can
+give up and silently retry a fresh invocation while the first one is
+still legitimately running server-side, doubling request volume against
+the same per-minute quota). Whatever the exact trigger, a batch that's
+sustained-throttled from the start can blow past any Lambda Timeout you
+set, since backoff cost scales with the number of throttled products,
+not a fixed amount. Fixed with a circuit breaker (see
+DEFAULT_CIRCUIT_BREAKER_THRESHOLD/_is_rate_limit_error/handler below):
+5 consecutive 429s (specifically 429s, not any 5 consecutive failures --
+an unrelated bug shouldn't trip a rate-limit breaker) stops the loop
+early with a clean, informative result
+({"circuit_breaker_tripped": true, "products_skipped": N, ...}) instead
+of grinding through the remaining batch paying full backoff on every one.
+Skipped products are, same as failed ones, still last_video_discovery_at
+=NULL and naturally picked up by the next {} invocation.
 """
 import json
 import logging
@@ -117,6 +145,20 @@ YOUTUBE_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
 RETRY_STATUS_FORCELIST = (429, 500, 502, 503, 504)
 RETRY_TOTAL = 5
 RETRY_BACKOFF_FACTOR = 1
+
+# Circuit breaker: real, confirmed second incident (see module docstring)
+# -- per-request retry-with-backoff alone doesn't scale when MOST/ALL of
+# an invocation's batch is rate-limited at once, since the up-to-~31s
+# worst-case backoff per product (see RETRY_BACKOFF_FACTOR's comment)
+# stacks sequentially across the whole loop. A batch that's sustained-
+# throttled from the start can blow past even a generous Lambda Timeout
+# with zero visibility into what happened (a hard Sandbox.Timedout kill,
+# not a clean JSON response). 5 consecutive 429s (not just any 5
+# consecutive failures -- see _is_rate_limit_error) is treated as "the
+# per-minute window is exhausted for this whole invocation, not just
+# unlucky for one product" -- stopping there instead of continuing to pay
+# full backoff on every remaining product.
+DEFAULT_CIRCUIT_BREAKER_THRESHOLD = 5
 
 # Generic words stripped when building the "significant tokens" set used by
 # score_match -- every product name contains these, so matching on them
@@ -390,9 +432,25 @@ def get_youtube_api_key() -> str:
         return secret_value
 
 
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """True if exc is (ultimately) a 429 from search_youtube -- i.e. every
+    retry in get_youtube_requests_session's Retry budget was already
+    exhausted and the request STILL came back rate-limited, not just any
+    exception. Duck-typed against exc.response.status_code rather than
+    isinstance-checking requests.exceptions.HTTPError so this function
+    doesn't need its own `import requests` -- every exception this
+    project's request-based code raises on a bad HTTP response already
+    carries a `.response` with a real status_code (see search_youtube's
+    own raise), and anything else (a DB error, a bug, ...) just won't
+    have one, which is exactly the "don't count this toward the breaker"
+    case this function exists to distinguish."""
+    return getattr(getattr(exc, "response", None), "status_code", None) == 429
+
+
 def handler(event, context):
     max_products = int(os.environ.get("MAX_SEARCHES_PER_INVOCATION", DEFAULT_MAX_SEARCHES_PER_INVOCATION))
     max_results = int(os.environ.get("MAX_RESULTS_PER_PRODUCT", DEFAULT_MAX_RESULTS_PER_PRODUCT))
+    circuit_breaker_threshold = int(os.environ.get("CIRCUIT_BREAKER_THRESHOLD", DEFAULT_CIRCUIT_BREAKER_THRESHOLD))
 
     api_key = get_youtube_api_key()
     # One session, reused across every product this invocation -- see
@@ -410,15 +468,41 @@ def handler(event, context):
 
         total_candidates = 0
         errors = []
+        consecutive_rate_limit_failures = 0
+        circuit_breaker_tripped = False
+        products_attempted = 0
+
         for product in products:
+            products_attempted += 1
             query = build_search_query(product["brand_name"], product["name"])
             try:
                 videos = search_youtube(api_key, query, max_results, session=session)
-            except Exception:
+            except Exception as exc:
                 logger.exception("YouTube search failed for product_id=%s query=%r", product["id"], query)
                 errors.append(product["id"])
+                if _is_rate_limit_error(exc):
+                    consecutive_rate_limit_failures += 1
+                else:
+                    # A non-rate-limit failure (bad query, transient DB
+                    # hiccup, etc.) doesn't indicate a sustained quota
+                    # wall the way repeated 429s do -- doesn't reset
+                    # progress toward tripping, but doesn't count toward
+                    # it either.
+                    pass
+                if consecutive_rate_limit_failures >= circuit_breaker_threshold:
+                    circuit_breaker_tripped = True
+                    logger.error(
+                        "Circuit breaker tripped: %d consecutive rate-limit failures -- "
+                        "stopping early with %d/%d product(s) attempted this invocation. "
+                        "The remaining products were never touched (no last_video_discovery_at "
+                        "update), so they'll be picked up again by the next {} invocation once "
+                        "YouTube's per-minute quota window has actually reset.",
+                        consecutive_rate_limit_failures, products_attempted, len(products),
+                    )
+                    break
                 continue
 
+            consecutive_rate_limit_failures = 0
             for video in videos:
                 video["match_confidence"] = score_match(video["title"], product["brand_name"], product["name"])
 
@@ -438,5 +522,7 @@ def handler(event, context):
             "products_searched": len(products),
             "new_candidates": total_candidates,
             "search_errors": len(errors),
+            "circuit_breaker_tripped": circuit_breaker_tripped,
+            "products_skipped": len(products) - products_attempted,
         }),
     }

@@ -1286,6 +1286,13 @@ Resources:
           # capped by MAX_SEARCHES_PER_INVOCATION), not per result returned.
           # YouTube's own ceiling on this param is 50.
           MAX_RESULTS_PER_PRODUCT: "20"
+          # Real incident #2 (see app.py's module docstring): a batch
+          # that's sustained-throttled from the start can blow past even
+          # this function's 280s Timeout, since retry-with-backoff cost
+          # stacks per throttled product in the sequential loop. 5
+          # consecutive 429s stops the invocation early with a clean
+          # result instead of risking a hard Sandbox.Timedout kill.
+          CIRCUIT_BREAKER_THRESHOLD: "5"
       Policies:
         - VPCAccessPolicy: {}
         - Statement:

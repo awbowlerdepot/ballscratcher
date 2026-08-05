@@ -428,7 +428,121 @@ def test_handler_marks_only_successfully_searched_products(monkeypatch):
 
     assert marked == ["prod-good"]  # NOT prod-bad -- its search raised
     assert inserted_for == ["prod-good"]
-    assert body == {"products_searched": 2, "new_candidates": 1, "search_errors": 1}
+    assert body == {
+        "products_searched": 2, "new_candidates": 1, "search_errors": 1,
+        "circuit_breaker_tripped": False, "products_skipped": 0,
+    }
+
+
+# --- Circuit breaker: real incident #2 (see module docstring) -- a
+# sustained-throttled batch blew past even the raised 280s Timeout with a
+# hard Sandbox.Timedout kill and zero visibility. 5 consecutive 429s now
+# stops the loop early instead of paying full retry backoff on every
+# remaining product. ---
+
+class _FakeHTTPError(Exception):
+    """Duck-typed stand-in for requests.exceptions.HTTPError -- only
+    needs a `.response.status_code`, which is all _is_rate_limit_error
+    actually looks at (see that function's docstring for why it's
+    duck-typed rather than isinstance-checking the real requests
+    exception class)."""
+    def __init__(self, status_code):
+        super().__init__(f"{status_code} error")
+        self.response = type("Resp", (), {"status_code": status_code})()
+
+
+def test_is_rate_limit_error_true_only_for_429():
+    assert app._is_rate_limit_error(_FakeHTTPError(429)) is True
+    assert app._is_rate_limit_error(_FakeHTTPError(500)) is False
+    assert app._is_rate_limit_error(RuntimeError("no response attr at all")) is False
+
+
+def test_handler_circuit_breaker_stops_after_consecutive_429s(monkeypatch):
+    """10 products queued, every search_youtube call raises a 429 --
+    should stop after CIRCUIT_BREAKER_THRESHOLD (5) attempts, not grind
+    through all 10 paying backoff each time."""
+    products = [{"id": f"p{i}", "name": f"Ball {i}", "brand_name": "Storm"} for i in range(10)]
+    attempted = []
+
+    monkeypatch.setattr(app, "get_youtube_api_key", lambda: "fake-key")
+    monkeypatch.setattr(app, "get_db_connection", lambda: _FakeConn())
+    monkeypatch.setattr(app, "get_youtube_requests_session", lambda: object())
+    monkeypatch.setattr(app, "fetch_products_to_search", lambda conn, job, max_products: products)
+
+    def always_429(api_key, query, max_results, session=None):
+        attempted.append(query)
+        raise _FakeHTTPError(429)
+
+    monkeypatch.setattr(app, "search_youtube", always_429)
+    monkeypatch.setattr(app, "insert_candidates", lambda conn, pid, q, videos: 0)
+    monkeypatch.setattr(app, "mark_product_searched", lambda conn, pid: None)
+
+    result = app.handler({}, None)
+    body = json.loads(result["body"])
+
+    assert len(attempted) == app.DEFAULT_CIRCUIT_BREAKER_THRESHOLD  # stopped at 5, not all 10
+    assert body["circuit_breaker_tripped"] is True
+    assert body["search_errors"] == 5
+    assert body["products_skipped"] == 5  # the other 5 never attempted at all
+
+
+def test_handler_circuit_breaker_resets_on_success_between_failures(monkeypatch):
+    """4 consecutive 429s, then a success, then 4 more 429s -- should NOT
+    trip (never actually hits 5 in a row) even though there are 8 total
+    failures across the whole run."""
+    products = [{"id": f"p{i}", "name": f"Ball {i}", "brand_name": "Storm"} for i in range(9)]
+    attempted = []
+
+    monkeypatch.setattr(app, "get_youtube_api_key", lambda: "fake-key")
+    monkeypatch.setattr(app, "get_db_connection", lambda: _FakeConn())
+    monkeypatch.setattr(app, "get_youtube_requests_session", lambda: object())
+    monkeypatch.setattr(app, "fetch_products_to_search", lambda conn, job, max_products: products)
+
+    def mostly_429_one_success(api_key, query, max_results, session=None):
+        attempted.append(query)
+        if len(attempted) == 5:  # the 5th call (index 4) succeeds
+            return []
+        raise _FakeHTTPError(429)
+
+    monkeypatch.setattr(app, "search_youtube", mostly_429_one_success)
+    monkeypatch.setattr(app, "insert_candidates", lambda conn, pid, q, videos: 0)
+    monkeypatch.setattr(app, "mark_product_searched", lambda conn, pid: None)
+
+    result = app.handler({}, None)
+    body = json.loads(result["body"])
+
+    assert len(attempted) == 9  # ran the full batch -- breaker never actually tripped
+    assert body["circuit_breaker_tripped"] is False
+    assert body["search_errors"] == 8
+    assert body["products_skipped"] == 0
+
+
+def test_handler_circuit_breaker_ignores_non_rate_limit_errors(monkeypatch):
+    """5 consecutive failures that are NOT 429s (e.g. a real bug) should
+    NOT trip the rate-limit circuit breaker -- see _is_rate_limit_error's
+    docstring for why only 429s count."""
+    products = [{"id": f"p{i}", "name": f"Ball {i}", "brand_name": "Storm"} for i in range(6)]
+    attempted = []
+
+    monkeypatch.setattr(app, "get_youtube_api_key", lambda: "fake-key")
+    monkeypatch.setattr(app, "get_db_connection", lambda: _FakeConn())
+    monkeypatch.setattr(app, "get_youtube_requests_session", lambda: object())
+    monkeypatch.setattr(app, "fetch_products_to_search", lambda conn, job, max_products: products)
+
+    def always_bug(api_key, query, max_results, session=None):
+        attempted.append(query)
+        raise RuntimeError("some unrelated real bug")
+
+    monkeypatch.setattr(app, "search_youtube", always_bug)
+    monkeypatch.setattr(app, "insert_candidates", lambda conn, pid, q, videos: 0)
+    monkeypatch.setattr(app, "mark_product_searched", lambda conn, pid: None)
+
+    result = app.handler({}, None)
+    body = json.loads(result["body"])
+
+    assert len(attempted) == 6  # ran the full batch, never tripped
+    assert body["circuit_breaker_tripped"] is False
+    assert body["search_errors"] == 6
 
 
 if __name__ == "__main__":

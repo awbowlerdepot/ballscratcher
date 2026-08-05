@@ -951,9 +951,28 @@ whenever it next runs.
    yourself:
    ```bash
    aws lambda invoke --function-name bowling-scraper-video-discovery \
+     --cli-read-timeout 300 --cli-connect-timeout 10 \
      --payload '{}' --cli-binary-format raw-in-base64-out /tmp/out.json
    cat /tmp/out.json
    ```
+   **Always pass `--cli-read-timeout` above this function's own Timeout
+   (280s, see the resource's own comment in template.yaml) for this
+   particular invoke.** Real, confirmed incident: the AWS CLI's default
+   read timeout is 60s, well under how long a retry-heavy invocation can
+   legitimately take -- the CLI gives up and reports a client-side error
+   while the Lambda keeps running server-side regardless, and if the CLI
+   (or you, seeing the error) then re-invokes, you can end up with two
+   overlapping 90-product bursts hammering the same per-minute YouTube
+   quota at once, which is worse than either burst alone. The result body
+   now also includes `circuit_breaker_tripped`/`products_skipped` --
+   real, confirmed second incident: a sustained-throttled batch blew past
+   even the 280s Timeout with a hard `Sandbox.Timedout` kill (see
+   app.py's module docstring for both incidents' full writeups). If a
+   response comes back with `circuit_breaker_tripped: true`, that means
+   YouTube's per-minute quota was still exhausted when this invocation
+   started -- wait a few minutes before re-invoking rather than
+   immediately retrying into the same wall.
+
    A catalog of, say, 300 published products takes ~4 days of these calls
    (90/day) to fully cover; re-running discovery against a product that
    already has candidates is safe (`insert_candidates` is idempotent
