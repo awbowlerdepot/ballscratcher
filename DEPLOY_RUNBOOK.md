@@ -800,6 +800,22 @@ whenever it next runs.
     componentized -- meant to get real usage against the current API
     surface before investing in a framework-based rebuild.
 
+    Product detail view (Products tab -> Detail) also renders the pulled-
+    down images: `GET /products/{id}` already returns `product_images`
+    rows (`image_type`, `weight_lbs_context`, `source_url`, `stored_url`)
+    via `service.get_product()`, so this was a frontend-only addition, no
+    `admin_api` change needed. `stored_url` (when set) is a public S3 URL
+    for the "detail" size variant -- `ImageBucket`'s policy is
+    intentionally public-read (see `template.yaml`), so it loads directly
+    as an `<img src>` with no signing. The thumbnail shown is derived by
+    swapping `detail.png` for `thumbnail.png` in that same URL (the
+    storage convention `image_processor/app.py` documents -- same S3 key
+    prefix, one object per size). A row whose `stored_url` is still null
+    (queued in `ImageProcessQueue` but not processed yet, or stuck in its
+    DLQ) falls back to `source_url` -- the original manufacturer image --
+    and is labeled "not processed yet" rather than showing a broken image
+    or nothing at all.
+
 ### 6j. Home transcript fetcher (residential caption fetching) -- optional, run outside AWS entirely
 
 Real, live-tested finding this session (see
