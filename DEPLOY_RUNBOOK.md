@@ -755,6 +755,18 @@ whenever it next runs.
     preflight handling applies. Redeploy again if you deployed the CORS
     block before this fix.
 
+    **Second real gotcha, also confirmed live:** even with the route fix
+    above, opening `admin-site/index.html` directly via `file://` still
+    fails CORS -- a `file://` page sends `Origin: null`, and AWS API
+    Gateway's automatic CORS handling does not add
+    `Access-Control-Allow-Origin` for a literal `null` origin, even with
+    `AllowOrigins: ["*"]` (confirmed via curl: `Origin: null` gets a bare
+    204 with no CORS headers at all; a real origin like
+    `http://localhost:8000` gets the full set). So this page needs to be
+    served from a real origin, not opened as a local file -- easiest way:
+    `cd admin-site && python3 -m http.server 8000`, then open
+    `http://localhost:8000` in a browser.
+
     On first open, fill in the Settings bar (top of the page): the same
     `ADMIN_API_URL` used above, the same bearer token, and your name (used
     as `resolved_by` on approve/reject calls) -- these persist in that
