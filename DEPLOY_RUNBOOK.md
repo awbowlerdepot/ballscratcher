@@ -770,8 +770,22 @@ Unlike the status-clobber fix (6e.5), there's no targeted SQL correction
 possible here -- a wrongly-attached image row looks like an ordinary
 `product_images` row; nothing in the data itself distinguishes it from a
 real one after the fact. The only fix is a fresh scrape under the
-corrected parser, which naturally replaces whatever image rows it parses
-this time (see `upsert_product`'s `ON CONFLICT` handling). This script
+corrected parser.
+
+Al asked directly whether this script would actually REMOVE the
+already-wrong rows, not just add correct ones alongside them -- a fair
+question, and the honest answer at first was no: `upsert_product`'s image
+step was a plain insert-on-conflict-update (`ON CONFLICT (product_id,
+source_url) DO UPDATE`), which only ever inserts a row for a source_url
+still present or updates one that already matches -- it never deletes a
+row for a source_url no longer part of what got parsed. Fixed by adding a
+delete step to `upsert_product` (see its own docstring) that removes any
+`product_images` row for the product whose `source_url` isn't in the
+current parse's set, so a rescrape now genuinely REPLACES the image list
+instead of just extending it. One disclosed gap: if a deleted row already
+had a real `stored_url` (already mirrored to S3 by `image_processor`),
+that S3 object is left orphaned -- no cleanup call is made for it; a
+storage-tidiness concern, not a data-correctness one. This script
 lists every `source_platform = 'netsuite'` product via the new
 `GET /products?source_platform=netsuite` filter (added to
 `service.list_products` for this) and calls `POST /products/{id}/rescrape`

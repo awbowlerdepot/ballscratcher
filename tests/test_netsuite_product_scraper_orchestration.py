@@ -146,6 +146,24 @@ class FakeCursor:
             row = self.db["product_images"][key]
             self._result = (row["id"], row["stored_url"])
 
+        elif q == "delete from product_images where product_id = %s and source_url <> all(%s)":
+            # upsert_product's stale-image cleanup (real, confirmed follow-
+            # up fix -- see that function's docstring): removes any row
+            # for this product_id whose source_url isn't in the just-
+            # parsed set, so a rescrape genuinely replaces the image list
+            # rather than just adding to it.
+            del_product_id, keep_urls = params
+            keep_urls = set(keep_urls)
+            for key in [k for k in self.db["product_images"] if k[0] == del_product_id and k[1] not in keep_urls]:
+                del self.db["product_images"][key]
+            self._result = None
+
+        elif q == "delete from product_images where product_id = %s":
+            (del_product_id,) = params
+            for key in [k for k in self.db["product_images"] if k[0] == del_product_id]:
+                del self.db["product_images"][key]
+            self._result = None
+
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
 
@@ -310,6 +328,68 @@ def test_process_one_does_not_republish_image_job_for_already_processed_image(mo
     sqs2 = FakeSqs()
     second = app._process_one(job, sqs2)
     assert second["image_jobs_published"] == 0
+
+
+def test_process_one_removes_stale_image_rows_no_longer_matched(monkeypatch):
+    """Real, confirmed follow-up fix: Al asked directly whether
+    scripts/rescrape_netsuite_products.py would actually remove the wrong
+    image rows an already-scraped MOTIV product might still have -- it
+    would NOT have, without this fix (see upsert_product's own docstring):
+    a plain insert-on-conflict-update never deletes a row for a
+    source_url that's no longer part of the current parse, so a rescrape
+    would have just added the correct 3 gallery photos alongside whatever
+    wrong one (e.g. a cross-sell thumbnail) was already sitting there.
+    This seeds exactly that scenario -- a stale row for this product_id
+    under a url the real fixture's gallery never contains -- and confirms
+    _process_one's rescrape clears it."""
+    db = _fresh_db(discovered_urls={SIGMA_URL: "current"})
+    db["_products_by_url"][SIGMA_URL] = 1
+    db["_next_product_id"] = 2
+    db["products"][1] = {"url": SIGMA_URL, "status": "current"}
+    stale_key = (1, "https://www.motivbowling.com/userfiles/filemanager/unrelatedthumb")
+    db["product_images"][stale_key] = {
+        "id": 999, "image_type": "other", "stored_url": "https://s3.example/already-mirrored.png",
+    }
+
+    monkeypatch.setattr(app, "fetch_page", lambda url: _sigma_html())
+    monkeypatch.setattr(app, "get_db_connection", lambda: FakeConnection(db))
+    monkeypatch.delenv("IMAGE_PROCESS_QUEUE_URL", raising=False)
+
+    job = {"url": SIGMA_URL, "brand_id": "brand-1", "status": "current"}
+    app._process_one(job, None)
+
+    remaining = {url for (pid, url) in db["product_images"] if pid == 1}
+    assert stale_key[1] not in remaining
+    assert len(remaining) == 3  # only the 3 real gallery photos remain
+
+
+def test_process_one_empty_image_parse_clears_all_existing_rows(monkeypatch):
+    """Edge case for the same cleanup fix: if a rescrape genuinely finds
+    zero images this time (e.g. MOTIV's template changed and the gallery
+    selector no longer matches anything), every existing row for that
+    product is stale by definition and should be cleared too, not left
+    behind forever."""
+    db = _fresh_db(discovered_urls={SIGMA_URL: "current"})
+    db["_products_by_url"][SIGMA_URL] = 1
+    db["_next_product_id"] = 2
+    db["products"][1] = {"url": SIGMA_URL, "status": "current"}
+    db["product_images"][(1, "https://www.motivbowling.com/userfiles/filemanager/stale1")] = {
+        "id": 1, "image_type": "main", "stored_url": None,
+    }
+
+    _real_parse_product_page = app.parse_product_page
+    monkeypatch.setattr(app, "fetch_page", lambda url: _sigma_html())
+    monkeypatch.setattr(app, "get_db_connection", lambda: FakeConnection(db))
+    monkeypatch.setattr(app, "parse_product_page", lambda html, url, status="current": {
+        **_real_parse_product_page(html, url, status=status), "images": [],
+    })
+    monkeypatch.delenv("IMAGE_PROCESS_QUEUE_URL", raising=False)
+
+    job = {"url": SIGMA_URL, "brand_id": "brand-1", "status": "current"}
+    app._process_one(job, None)
+
+    remaining = {url for (pid, url) in db["product_images"] if pid == 1}
+    assert remaining == set()
 
 
 def test_handler_sqs_batch_reports_only_failed_message(monkeypatch):

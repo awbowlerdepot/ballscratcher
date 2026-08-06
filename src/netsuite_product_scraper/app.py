@@ -184,6 +184,21 @@ Real, confirmed structural facts this module's parsing rests on:
    with a background-image style OUTSIDE both containers is no longer
    even looked at, regardless of what path it happens to use.
 
+   Al directly asked whether scripts/rescrape_netsuite_products.py would
+   actually REMOVE the already-wrong image rows an already-scraped MOTIV
+   product might still have, not just stop adding new ones -- a fair
+   question, and the honest answer at that point was no: upsert_product's
+   image step was a plain insert-on-conflict-update, which only ever adds
+   a row for a source_url still present or updates one that already
+   matches; it never deletes a row for a source_url that's no longer part
+   of what got parsed. So a rescrape under the fixed parser would have
+   just added the correct 3-4 photos ALONGSIDE whatever wrong ones were
+   already sitting there, not replaced them. Fixed in upsert_product
+   (see its own docstring) by deleting any product_images row for this
+   product_id whose source_url isn't in the current parse's set, after
+   the insert/update loop -- a rescrape now genuinely replaces the image
+   set instead of just extending it.
+
 REAL INCIDENT, found via a live data-quality pass (Al noticed every
 product on the admin site's MOTIV catalog showed as "current", which
 looked wrong given how many retired balls MOTIV has): confirmed via
@@ -772,7 +787,9 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
             )
 
         pending_image_jobs = []
+        current_source_urls = set()
         for image in parsed["images"]:
+            current_source_urls.add(image["source_url"])
             cur.execute(
                 """
                 insert into product_images (product_id, image_type, source_url)
@@ -785,6 +802,35 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
             image_id, stored_url = cur.fetchone()
             if stored_url is None:
                 pending_image_jobs.append({"product_image_id": str(image_id), "source_url": image["source_url"]})
+
+        # Real cleanup step, added alongside parse_images' DOM-scoping fix
+        # (see that function's docstring, "SECOND real bug", and DEPLOY_
+        # RUNBOOK.md 6e.6): a plain upsert on its own never REMOVES a row
+        # -- it only inserts new source_urls or updates ones still present.
+        # Al asked directly whether scripts/rescrape_netsuite_products.py
+        # would actually clear the wrong image rows a MOTIV product
+        # already scraped under the old unscoped regex might still have --
+        # without this delete, the answer was no: a rescrape would just
+        # add the correct 3-4 photos alongside whatever wrong ones were
+        # already sitting there, never removing them. This makes a
+        # rescrape genuinely REPLACE the image set with whatever the
+        # current parse actually found, not just extend it.
+        #
+        # Known, disclosed gap: this only deletes the product_images row
+        # itself. Any deleted row that already had a real stored_url
+        # (image_processor had already mirrored it to S3) leaves that S3
+        # object orphaned -- no cleanup call is made here. Acceptable for
+        # now (a storage-cost/tidiness concern, not a data-correctness
+        # one); revisit if it matters in practice.
+        if current_source_urls:
+            cur.execute(
+                "delete from product_images where product_id = %s and source_url <> all(%s)",
+                (product_id, list(current_source_urls)),
+            )
+        else:
+            # parsed["images"] came back empty this time -- every
+            # existing row for this product is stale by definition.
+            cur.execute("delete from product_images where product_id = %s", (product_id,))
 
     conn.commit()
     return {"product_id": product_id, "pending_image_jobs": pending_image_jobs}
