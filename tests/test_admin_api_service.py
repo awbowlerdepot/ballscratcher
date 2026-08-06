@@ -258,6 +258,25 @@ class FakeCursor:
                 self._last_result = None
             self.description = [("id",)]
 
+        elif q.startswith("update products p set status = du.status_path"):
+            # backfill_netsuite_status: no params, pure join-and-correct.
+            # Mirrors the real UPDATE ... FROM's WHERE clause exactly:
+            # matched by url, netsuite-only, discovered status_path must be
+            # non-null and actually differ from what's currently stored.
+            discovered = self.db.get("discovered_urls", {})
+            corrected_ids = []
+            for product_id, row in self.db["products"].items():
+                if row.get("source_platform") != "netsuite":
+                    continue
+                status_path = discovered.get(row.get("url"))
+                if status_path is None:
+                    continue
+                if status_path != row.get("status"):
+                    row["status"] = status_path
+                    corrected_ids.append(product_id)
+            self._rows = [(pid,) for pid in corrected_ids]
+            self.description = [("id",)]
+
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
 
@@ -976,6 +995,107 @@ def test_backfill_last_video_discovery_at_handles_multiple_products_independentl
     assert result == {"products_with_video_history": 2, "products_updated": 1}
     assert db["products"]["prod-1"]["last_video_discovery_at"] == "2026-01-05"
     assert db["products"]["prod-2"]["last_video_discovery_at"] == "2026-02-15"  # untouched
+
+
+# --- backfill_netsuite_status: one-off MOTIV status-clobber correction --
+# see service.backfill_netsuite_status's docstring and netsuite_product_
+# scraper's module docstring "REAL INCIDENT" section for the full story.
+
+def test_backfill_netsuite_status_corrects_mismatched_netsuite_products():
+    db = {
+        "products": {
+            "prod-1": {"url": "https://www.motivbowling.com/n_1", "status": "current", "source_platform": "netsuite"},
+        },
+        "discovered_urls": {
+            "https://www.motivbowling.com/n_1": "retired",
+        },
+    }
+    conn = FakeConnection(db)
+
+    result = service.backfill_netsuite_status(conn)
+
+    assert result == {"products_corrected": 1}
+    assert db["products"]["prod-1"]["status"] == "retired"
+    assert conn.committed is True
+
+
+def test_backfill_netsuite_status_leaves_already_correct_products_alone():
+    db = {
+        "products": {
+            "prod-1": {"url": "https://www.motivbowling.com/n_1", "status": "retired", "source_platform": "netsuite"},
+        },
+        "discovered_urls": {
+            "https://www.motivbowling.com/n_1": "retired",
+        },
+    }
+    conn = FakeConnection(db)
+
+    result = service.backfill_netsuite_status(conn)
+
+    assert result == {"products_corrected": 0}
+    assert db["products"]["prod-1"]["status"] == "retired"
+
+
+def test_backfill_netsuite_status_ignores_non_netsuite_products():
+    """A Shopify/Brunswick/etc. product happening to share a url with a
+    discovered_urls row (shouldn't really occur across platforms, but this
+    confirms the source_platform = 'netsuite' scope in the real query is
+    actually load-bearing) must never get touched by this correction."""
+    db = {
+        "products": {
+            "prod-1": {"url": "https://example.com/ball", "status": "current", "source_platform": "shopify"},
+        },
+        "discovered_urls": {
+            "https://example.com/ball": "retired",
+        },
+    }
+    conn = FakeConnection(db)
+
+    result = service.backfill_netsuite_status(conn)
+
+    assert result == {"products_corrected": 0}
+    assert db["products"]["prod-1"]["status"] == "current"
+
+
+def test_backfill_netsuite_status_leaves_products_with_no_discovered_url_alone():
+    """No ground truth to correct against (e.g. a manually-inserted
+    product, same case get_product's discovered_url exposure documents) --
+    left alone rather than guessed at."""
+    db = {
+        "products": {
+            "prod-1": {"url": "https://www.motivbowling.com/n_999", "status": "current", "source_platform": "netsuite"},
+        },
+        "discovered_urls": {},
+    }
+    conn = FakeConnection(db)
+
+    result = service.backfill_netsuite_status(conn)
+
+    assert result == {"products_corrected": 0}
+    assert db["products"]["prod-1"]["status"] == "current"
+
+
+def test_backfill_netsuite_status_handles_multiple_products_independently():
+    db = {
+        "products": {
+            "prod-1": {"url": "https://www.motivbowling.com/n_1", "status": "current", "source_platform": "netsuite"},
+            "prod-2": {"url": "https://www.motivbowling.com/n_2", "status": "current", "source_platform": "netsuite"},
+            "prod-3": {"url": "https://www.motivbowling.com/n_3", "status": "retired", "source_platform": "netsuite"},
+        },
+        "discovered_urls": {
+            "https://www.motivbowling.com/n_1": "retired",
+            "https://www.motivbowling.com/n_2": "current",
+            "https://www.motivbowling.com/n_3": "retired",
+        },
+    }
+    conn = FakeConnection(db)
+
+    result = service.backfill_netsuite_status(conn)
+
+    assert result == {"products_corrected": 1}  # only prod-1 actually disagreed
+    assert db["products"]["prod-1"]["status"] == "retired"
+    assert db["products"]["prod-2"]["status"] == "current"  # already agreed
+    assert db["products"]["prod-3"]["status"] == "retired"  # already agreed
 
 
 # --- resolve_scrape_queue_env_var: pure lookup, no DB/env access ---

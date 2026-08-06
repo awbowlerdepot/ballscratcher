@@ -49,9 +49,26 @@ def test_sigma_status_passed_through_from_job():
     assert _parsed_sigma(status="retired")["status"] == "retired"
 
 
-def test_sigma_status_defaults_to_current_in_handler():
+def test_sigma_status_missing_from_job_no_longer_defaults_blindly():
+    """Real bug fixed this session: a job with no "status" key (the shape
+    admin_api.service.queue_rescrape publishes) used to make _process_one
+    blindly default to "current", silently clobbering any real 'retired'
+    status via upsert_product's unconditional `status = excluded.status`.
+    Confirmed live against MOTIV's catalog: all 202 scraped products
+    showed 'current' despite discovered_urls correctly holding 374
+    'retired' entries.
+
+    This module (parse_product_page) still just takes whatever status
+    string it's handed -- it has no on-page status signal of its own (see
+    test_sigma_status_passed_through_from_job above and this module's
+    docstring). The actual fix -- falling back to discovered_urls.status_path
+    via get_status_for_url() when the job doesn't carry a status -- lives in
+    _process_one, not here, and is covered by
+    tests/test_netsuite_product_scraper_orchestration.py's
+    test_process_one_falls_back_to_discovered_urls_when_status_missing and
+    test_process_one_falls_back_to_current_for_undiscovered_url_with_no_status."""
     job = {"url": SIGMA_URL, "brand_id": "brand-1"}  # no "status" key
-    assert job.get("status", "current") == "current"
+    assert "status" not in job
 
 
 def test_sigma_specs():

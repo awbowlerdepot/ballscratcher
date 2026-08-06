@@ -1138,3 +1138,56 @@ def backfill_last_video_discovery_at(conn) -> dict:
                 updated += 1
     conn.commit()
     return {"products_with_video_history": len(earliest_by_product), "products_updated": updated}
+
+
+# ---------------------------------------------------------------------
+# One-off correction for the MOTIV/netsuite status bug -- see
+# src/netsuite_product_scraper/app.py's module docstring "REAL INCIDENT"
+# section for the full root-cause writeup. Same shape as
+# backfill_last_video_discovery_at above: a single bulk server-side
+# correction, not a per-product loop, fixing rows that already went wrong
+# before the actual code fix (netsuite_product_scraper's new
+# get_status_for_url fallback) landed.
+# ---------------------------------------------------------------------
+
+def backfill_netsuite_status(conn) -> dict:
+    """Corrects products.status for every netsuite-platform (MOTIV) row
+    that was silently clobbered to 'current' by the queue_rescrape bug --
+    see this module's own queue_rescrape and netsuite_product_scraper's
+    module docstring for the full mechanism. discovered_urls.status_path
+    is the ground truth (netsuite_url_discovery classifies it correctly at
+    discovery time, confirmed live: 60 current/374 retired vs. products
+    showing 202/202 'current'); this does one bulk UPDATE ... FROM,
+    matched by url, rather than a per-product loop -- there's no per-row
+    decision to make, every mismatch is corrected the same way.
+
+    Scoped to source_platform = 'netsuite': this is a targeted fix for the
+    one platform this bug actually hit (see netsuite_product_scraper's
+    docstring for why NetSuite specifically was exposed -- no on-page
+    status signal AND upsert_product's non-coalescing status overwrite),
+    not a blanket "trust discovered_urls over products" rule applied
+    catalog-wide.
+
+    Idempotent and safe to re-run: the WHERE clause only matches rows that
+    still disagree with discovered_urls, so a second run naturally
+    corrects nothing further (products_corrected: 0) rather than
+    re-touching already-fixed rows. Does NOT touch any product whose url
+    has no matching discovered_urls row (e.g. a manually-inserted product)
+    -- there's no ground truth to correct it against, so it's left alone
+    rather than guessed at."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            update products p
+            set status = du.status_path, updated_at = now()
+            from discovered_urls du
+            where du.url = p.url
+              and p.source_platform = 'netsuite'
+              and du.status_path is not null
+              and du.status_path <> p.status
+            returning p.id
+            """
+        )
+        corrected_ids = [row[0] for row in cur.fetchall()]
+    conn.commit()
+    return {"products_corrected": len(corrected_ids)}

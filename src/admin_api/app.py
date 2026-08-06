@@ -209,6 +209,23 @@ def backfill_last_video_discovery_at():
         conn.close()
 
 
+@app.post("/admin/backfill-netsuite-status")
+def backfill_netsuite_status():
+    # One-off correction for the MOTIV status bug -- see
+    # service.backfill_netsuite_status's docstring and src/netsuite_
+    # product_scraper/app.py's module docstring "REAL INCIDENT" section
+    # for the full root-cause writeup (confirmed live: 202/202 MOTIV
+    # products showed status='current' despite discovered_urls correctly
+    # holding 374 'retired' entries). No request body, no path param:
+    # catalog-wide by design, same shape as backfill-last-video-discovery-at
+    # above. Safe to call more than once (idempotent, see docstring).
+    conn = service.get_db_connection()
+    try:
+        return service.backfill_netsuite_status(conn)
+    finally:
+        conn.close()
+
+
 @app.get("/cores")
 def get_cores(
     brand_id: Optional[str] = Query(None),

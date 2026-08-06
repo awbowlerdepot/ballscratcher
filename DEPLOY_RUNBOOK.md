@@ -654,6 +654,59 @@ aws sqs get-queue-attributes \
 and see README's "Third manufacturer: MOTIV Bowling" section for the
 next things to try if the cookie-session approach doesn't hold up.
 
+### 6e.5. MOTIV status-clobber bug + fix (real incident, found via a live data-quality pass)
+
+**Requires a Lambda redeploy** (`sam build && sam deploy`) -- this fix is
+backend/`netsuite_product_scraper` code, not admin-site-only.
+
+Al noticed every product on the admin site's MOTIV catalog showed as
+"current", which looked wrong given how many retired balls MOTIV has.
+Confirmed via SQL that `netsuite_url_discovery` had correctly classified
+all 434 MOTIV URLs (60 current, 374 retired), but every one of the 202
+products actually scraped into `products` showed `status = 'current'`.
+Root cause: `netsuite_product_scraper._process_one` used to blindly
+default a missing `job["status"]` to `"current"`. That default is only
+ever wrong for jobs `admin_api`'s `queue_rescrape` publishes (the generic
+"Rescrape" button, and `scripts/backfill_core_ids.py`'s catalog-wide core
+backfill) -- those publish `{"url", "brand_id"}` with no status key at
+all, since Brunswick/SWAG infer status from the page/URL itself and never
+needed one. NetSuite is the one platform that both has no on-page status
+signal AND was blindly defaulting instead of looking one up. Worse,
+`upsert_product`'s `status = excluded.status` unconditionally overwrites
+(no coalesce-preserve-existing fallback the way `release_date`/
+`description`/`core_id` have), so every status-less rescrape permanently
+clobbered a retired MOTIV product back to `"current"` -- most likely
+explanation for how all 202 ended up this way, given this catalog went
+through exactly that catalog-wide core backfill in an earlier session.
+See `src/netsuite_product_scraper/app.py`'s module docstring "REAL
+INCIDENT" section for the full writeup.
+
+**The fix** (already in this codebase as of this commit): added
+`get_status_for_url()` to `netsuite_product_scraper`, mirroring
+`shopify_product_scraper`'s function of the same name -- falls back to
+`discovered_urls.status_path` (looked up by URL) for any job that omits
+`status`, instead of defaulting. This only fixes it going forward for a
+fresh scrape; it does nothing for the 202 rows that already went wrong.
+
+**One-off correction for the already-wrong rows**, after redeploying:
+
+```bash
+export ADMIN_API_URL="https://<your-api-id>.execute-api.us-west-1.amazonaws.com"
+export ADMIN_API_TOKEN="<the same bearer token used elsewhere>"
+python3 scripts/backfill_netsuite_status.py
+```
+
+Calls the new `POST /admin/backfill-netsuite-status` endpoint once (see
+`service.backfill_netsuite_status`'s docstring) -- a single bulk
+`UPDATE ... FROM discovered_urls` that corrects every netsuite-platform
+product whose `status` disagrees with its `discovered_urls.status_path`,
+matched by URL. Idempotent and safe to re-run: a second run reports
+`products_corrected: 0` once everything's caught up. No template.yaml
+changes needed -- reuses `AdminApiFunction`'s existing catch-all proxy
+route, same as `/cores` and `/admin/backfill-last-video-discovery-at`
+before it (confirmed via the CFN-tolerant YAML parser: still 45
+resources).
+
 ### 6f. commercebuild (Storm/Roto Grip/900 Global) -- if any of the three brand ids were set
 
 No schedule wired up for `CommercebuildUrlDiscoveryFunction` yet, same
@@ -1539,5 +1592,6 @@ recheck with the browser-based fetcher.
 | Products never appear in the DB | `ProductScraperFunction` logs, then `bowling-scraper-product-scrape-dlq` |
 | `info_sheet_url`/mass bias never populated | Confirm you're on the commit that fixed `parse_resources()`'s "Download"-link-text bug (see README) |
 | MOTIV products never scrape | `bowling-scraper-netsuite-product-scrape-dlq`, then `fetch_page()`'s docstring in `netsuite_product_scraper/app.py` for next steps |
+| MOTIV products all show `status = 'current'` | Real, confirmed, already-fixed incident -- see 6e.5. Confirm you're on the commit with `get_status_for_url()` in `netsuite_product_scraper/app.py`, redeploy, then run `scripts/backfill_netsuite_status.py` to correct any rows still wrong from before the fix |
 | Images look cropped wrong | Pull a few from `ImageBucket` and eyeball against `image_processor/app.py`'s bbox-detection assumptions |
 | BowlerDepot reconciliation reports nothing, ever | `CUSTOM_FIELD_NAME_CANDIDATES` mapping is probably wrong for your real store -- see step 6h |

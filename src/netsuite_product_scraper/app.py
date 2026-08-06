@@ -161,6 +161,37 @@ Real, confirmed structural facts this module's parsing rests on:
    ajax-loader.gif/coming_soon.jpg skip -- see parse_images()'s
    docstring below for the fix (skip any captured URL with nothing after
    its final "/").
+
+REAL INCIDENT, found via a live data-quality pass (Al noticed every
+product on the admin site's MOTIV catalog showed as "current", which
+looked wrong given how many retired balls MOTIV has): confirmed via
+`select status_path, count(*) from discovered_urls ... group by
+status_path` that discovery had correctly found and classified 434 MOTIV
+URLs (60 current, 374 retired) -- the bug wasn't in netsuite_url_
+discovery. But every single one of the 202 products actually scraped
+into `products` showed status='current', including ones that must have
+originated from a 'retired'-classified discovered_urls row (202 > 60).
+Root cause: `_process_one` used to do `job.get("status", "current")` with
+no other fallback. That's correct for jobs netsuite_url_discovery
+publishes (always includes status), but admin_api's queue_rescrape --
+the generic "Rescrape" button and scripts/backfill_core_ids.py's
+catalog-wide core backfill, shared across all five scraper platforms --
+only ever publishes {"url", "brand_id"}, no status key at all (Brunswick/
+SWAG don't need one; they infer status from the page/URL itself).
+NetSuite was the one platform that both has no on-page status signal
+AND blindly defaulted to "current" instead of looking one up. Worse,
+upsert_product's `status = excluded.status` unconditionally overwrites
+(no coalesce-preserve-existing fallback the way release_date/description/
+core_id have), so every status-less rescrape permanently clobbered a
+retired MOTIV product back to "current" -- most likely explanation for
+how all 202 ended up this way, given this catalog went through exactly
+that catalog-wide core backfill in an earlier session. Fixed by adding
+get_status_for_url() (mirrors shopify_product_scraper's function of the
+same name, same underlying reason: no on-page status signal) as a
+fallback for any job that omits status, rather than blindly defaulting.
+This only fixes it going forward for a fresh scrape -- see scripts/
+backfill_netsuite_status.py for the one-off correction needed to fix the
+202 already-wrong rows without waiting for their next natural re-scrape.
 """
 import logging
 import re
@@ -541,6 +572,46 @@ def get_db_connection():
     )
 
 
+def get_status_for_url(conn, url: str) -> str:
+    """Real, confirmed bug fix: falls back to the status_path
+    netsuite_url_discovery already resolved and stored on discovered_urls
+    (see this module's docstring point 1) for any job that doesn't
+    explicitly carry its own "status". Same lookup shopify_product_
+    scraper.get_status_for_url already does, for the same underlying
+    reason -- neither platform has an on-page status signal of its own.
+
+    Why this was needed: _process_one used to do `job.get("status",
+    "current")` with no fallback at all, which is correct for jobs
+    netsuite_url_discovery publishes (always includes status) but silently
+    wrong for jobs published by admin_api's queue_rescrape (the "Rescrape"
+    button, and scripts/backfill_core_ids.py's catalog-wide core backfill)
+    -- that function is shared across all five scraper platforms and only
+    ever publishes {"url", "brand_id"}, no status key, since Brunswick/SWAG
+    infer status from the page/URL itself and don't need one. NetSuite was
+    the only platform that both (a) has no on-page status signal and (b)
+    blindly defaulted to "current" instead of looking it up -- and
+    upsert_product's `status = excluded.status` has no coalesce-preserve-
+    existing fallback the way release_date/description/core_id do, so
+    every status-less rescrape permanently clobbered a retired MOTIV
+    product back to "current". Confirmed live on MOTIV's actual catalog:
+    every one of 202 scraped products showed status='current' despite
+    discovered_urls correctly holding 374 'retired' vs. 60 'current'
+    entries from the original discovery crawl -- almost certainly the
+    catalog-wide core backfill silently re-flipping all of them.
+
+    Defaults to 'current' when the URL isn't in discovered_urls at all
+    (e.g. a manual/direct scrape of a URL nobody's ever discovered through
+    the normal category-crawl path) -- same "presumably still live" call
+    shopify_product_scraper makes, rather than failing the NOT NULL
+    products.status constraint."""
+    with conn.cursor() as cur:
+        cur.execute("select status_path from discovered_urls where url = %s", (url,))
+        row = cur.fetchone()
+    if row is None or row[0] is None:
+        return "current"
+    return row[0]
+
+
 def get_or_create_core_id(conn, brand_id: str, core_name, core_type=None):
     """Same helper as product_scraper.get_or_create_core_id -- duplicated
     rather than shared, same reasoning as publish_messages elsewhere in
@@ -682,8 +753,15 @@ def _extract_jobs(event: dict) -> list:
     """Same two-shape support (SQS batch or direct invoke) as the other
     two product scrapers. Job dict here also carries "status" (set by
     netsuite_url_discovery, since it's the only reliable status signal
-    for this platform -- see module docstring point 1); defaults to
-    "current" if absent, e.g. for a manual test invocation."""
+    for this platform -- see module docstring point 1) -- REAL BUG,
+    CONFIRMED AND FIXED this session: this used to default to "current"
+    right here when status was absent, correct for a manual test
+    invocation but silently wrong for admin_api's queue_rescrape (the
+    "Rescrape" button / scripts/backfill_core_ids.py), which never
+    includes a status key at all. See get_status_for_url's docstring and
+    _process_one below for the actual fix -- status is no longer defaulted
+    at extraction time; a missing key now falls back to a fresh
+    discovered_urls lookup instead of a blind guess."""
     if "Records" in event:
         return [(json.loads(r["body"]), r["messageId"]) for r in event["Records"]]
     return [(event, None)]
@@ -692,14 +770,23 @@ def _extract_jobs(event: dict) -> list:
 def _process_one(job: dict, sqs_client) -> dict:
     url = job["url"]
     brand_id = job["brand_id"]
-    status = job.get("status", "current")
-
-    logger.info("Scraping %s", url)
-    html = fetch_page(url)
-    parsed = parse_product_page(html, url, status=status)
 
     conn = get_db_connection()
     try:
+        # job["status"] wins when the job explicitly provides one (the
+        # normal netsuite_url_discovery-triggered path). Falls back to
+        # get_status_for_url's discovered_urls lookup otherwise -- see
+        # that function's docstring for the real, confirmed bug this
+        # closes (a status-less rescrape used to silently reset a
+        # product's status to "current", permanently, since upsert_
+        # product's `status = excluded.status` has no coalesce-preserve-
+        # existing fallback).
+        status = job.get("status") or get_status_for_url(conn, url)
+
+        logger.info("Scraping %s (status=%s)", url, status)
+        html = fetch_page(url)
+        parsed = parse_product_page(html, url, status=status)
+
         result = upsert_product(conn, brand_id, parsed)
     finally:
         conn.close()
