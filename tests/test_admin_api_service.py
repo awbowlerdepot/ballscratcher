@@ -1266,6 +1266,146 @@ def test_get_core_returns_none_for_missing_id():
     assert "where c.id = %s" in queries[0]
 
 
+# --- get_product: real ask from Al -- surface every column from every
+# related table (not a curated subset) so a data-quality pass can see
+# gaps by inspection. See service.get_product's docstring for the full
+# reasoning (discovered_urls/bowlerdepot_matches/bowwwl_matches are newly
+# exposed here; product_skus/product_images went from a hand-picked
+# column list to `select *`).
+
+def test_get_product_returns_none_for_missing_id():
+    """Same not-found short-circuit convention as get_core -- the second
+    (skus) query and everything after it never runs."""
+    conn = _QueryCapturingConnection()
+
+    result = service.get_product(conn, "does-not-exist")
+
+    assert result is None
+    queries = conn.cursor().queries
+    assert len(queries) == 1
+    assert "left join cores c on c.id = p.core_id" in queries[0]
+    assert "left join brands b on b.id = p.brand_id" in queries[0]
+    assert "left join manufacturers m on m.id = b.manufacturer_id" in queries[0]
+    assert "where p.id = %s" in queries[0]
+
+
+class _SequencedCursor:
+    """Fakes a real cursor's fetchone()/fetchall()/description across a
+    KNOWN, fixed sequence of queries -- unlike FakeCursor above (which
+    matches on query text so call order doesn't matter), this exists
+    specifically to test get_product's assembly logic: does each of its
+    six sequential queries land in the right key of the final dict. Query
+    text itself isn't inspected here (see test_get_product_returns_none_
+    for_missing_id above for that, via _QueryCapturingConnection) -- this
+    is a complementary test, not a replacement."""
+    def __init__(self, results):
+        self._results = list(results)
+        self._current = None
+        self.queries = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, query, params=None):
+        self.queries.append(" ".join(query.split()))
+        self._current = self._results.pop(0)
+
+    @property
+    def description(self):
+        return [(col,) for col in self._current["columns"]]
+
+    def fetchone(self):
+        return self._current.get("one")
+
+    def fetchall(self):
+        return self._current.get("all", [])
+
+
+class _SequencedConnection:
+    def __init__(self, results):
+        self._cursor = _SequencedCursor(results)
+
+    def cursor(self):
+        return self._cursor
+
+
+def test_get_product_assembles_all_related_data():
+    conn = _SequencedConnection([
+        {  # main products+cores+brands+manufacturers row
+            "columns": ["id", "name", "url", "core_id", "core_name", "core_type",
+                        "brand_id", "brand_name", "manufacturer_name"],
+            "one": ("prod-1", "Absolute", "https://storm.com/absolute", "core-1",
+                    "Collision", "asymmetric", "brand-1", "Storm", "Storm Products"),
+        },
+        {  # product_skus, select *
+            "columns": ["id", "product_id", "weight_lbs", "rg", "differential",
+                        "mass_bias", "part_number", "source", "needs_review",
+                        "created_at", "updated_at"],
+            "all": [("sku-1", "prod-1", 15, "2.500", "0.050", None, None,
+                     "html", False, "t0", "t0")],
+        },
+        {  # product_images, select *
+            "columns": ["id", "product_id", "image_type", "weight_lbs_context",
+                        "source_url", "stored_url", "created_at"],
+            "all": [("img-1", "prod-1", "main", None, "https://cdn/x.jpg", None, "t0")],
+        },
+        {  # discovered_urls, matched by url -- found this time
+            "columns": ["id", "brand_id", "url", "status_path", "sitemap_lastmod",
+                        "first_seen_at", "last_seen_at", "last_scraped_at",
+                        "scrape_status", "created_at"],
+            "one": ("du-1", "brand-1", "https://storm.com/absolute", "current",
+                    "t0", "t0", "t0", "t0", "scraped", "t0"),
+        },
+        {  # bowlerdepot_products
+            "columns": ["id", "product_id", "bigcommerce_product_id", "bigcommerce_sku",
+                        "match_status", "last_synced_at", "created_at"],
+            "all": [],
+        },
+        {  # bowwwl_products
+            "columns": ["id", "product_id", "bowwwl_url", "match_status",
+                        "last_checked_at", "created_at"],
+            "all": [],
+        },
+    ])
+
+    result = service.get_product(conn, "prod-1")
+
+    assert result["name"] == "Absolute"
+    assert result["brand_name"] == "Storm"
+    assert result["manufacturer_name"] == "Storm Products"
+    assert result["core_name"] == "Collision"
+    assert len(result["skus"]) == 1
+    assert result["skus"][0]["rg"] == "2.500"
+    assert result["skus"][0]["id"] == "sku-1"  # id is present now -- select * , not a curated list
+    assert len(result["images"]) == 1
+    assert result["images"][0]["id"] == "img-1"
+    assert result["discovered_url"]["scrape_status"] == "scraped"
+    assert result["bowlerdepot_matches"] == []
+    assert result["bowwwl_matches"] == []
+
+
+def test_get_product_discovered_url_is_none_when_never_crawled():
+    """A product inserted by hand rather than through the normal sitemap/
+    collection crawl (e.g. the Hammerhead product from an earlier
+    session's manual Lambda invoke) has no discovered_urls row at all --
+    this must come back as None, not KeyError or a missing key."""
+    conn = _SequencedConnection([
+        {"columns": ["id", "name", "url"], "one": ("prod-1", "Hammerhead", "https://hammerbowling.com/products/hammerhead")},
+        {"columns": ["id"], "all": []},
+        {"columns": ["id"], "all": []},
+        {"columns": ["id"], "one": None},
+        {"columns": ["id"], "all": []},
+        {"columns": ["id"], "all": []},
+    ])
+
+    result = service.get_product(conn, "prod-1")
+
+    assert result["discovered_url"] is None
+
+
 if __name__ == "__main__":
     # Tiny monkeypatch shim so this file can run standalone the same way
     # as the other manual test runners in this repo, without pytest.

@@ -153,6 +153,15 @@
   .detail-panel textarea { width: 100%; margin: 6px 0; padding: 6px; border: 1px solid var(--border); border-radius: 6px; font-family: inherit; font-size: 13px; }
   .detail-panel input[type=text] { width: 100%; margin-bottom: 6px; padding: 6px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
 
+  /* Raw-fields (all-columns) tables -- see renderRawTable's own comment.
+     kv-key is a fixed-width first column so field names line up across
+     rows instead of the value column pushing them around row to row. */
+  table.kv { margin-bottom: 10px; }
+  td.kv-key { width: 220px; color: var(--muted); white-space: nowrap; }
+  .kv-row { margin-bottom: 8px; }
+  .raw-fields summary { cursor: pointer; font-size: 12px; color: var(--primary); margin: 10px 0 6px; user-select: none; }
+  .raw-fields h4 { font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); margin: 14px 0 4px; }
+
   .image-grid { display: flex; flex-wrap: wrap; gap: 10px; margin: 4px 0 12px; }
   .image-card {
     display: block; width: 110px; text-decoration: none; color: var(--text);
@@ -469,6 +478,49 @@ function escapeHtml(s) {
 function fmtDate(s) {
   if (!s) return '';
   try { return new Date(s).toLocaleString(); } catch (e) { return s; }
+}
+
+// Real ask from Al: he's seeing data issues in the admin UI he suspects
+// trace back to the scrapers, and wants every DB column visible, not just
+// whatever each hand-curated view happened to render, so gaps are visible
+// by inspection. This renders ANY flat object as a field-name/value table
+// generically -- no per-field hardcoding, so it stays complete as columns
+// get added later without anyone remembering to update this function too
+// (the exact problem the previous curated sku/image field lists above
+// had -- see service.get_product's docstring). null/undefined/'' render
+// as an em-dash (a real, visible "this is empty" signal, not a blank cell
+// that reads the same as a rendering bug); arrays/objects (nested rows
+// like skus/images/discovered_url) are JSON-stringified rather than
+// recursed into, since those already get their own dedicated rendering
+// elsewhere -- this is the fallback net underneath the curated views, not
+// a replacement for them.
+function renderRawTable(obj, excludeKeys) {
+  const exclude = excludeKeys || [];
+  const keys = Object.keys(obj || {}).filter(function (k) { return exclude.indexOf(k) === -1; });
+  if (!keys.length) return '<p class="muted small">(no fields)</p>';
+  const rows = keys.map(function (k) {
+    const v = obj[k];
+    let display;
+    if (v === null || v === undefined || v === '') {
+      display = '<span class="muted">&mdash;</span>';
+    } else if (Array.isArray(v) || typeof v === 'object') {
+      display = '<code class="small">' + escapeHtml(JSON.stringify(v)) + '</code>';
+    } else {
+      display = escapeHtml(String(v));
+    }
+    return '<tr><td class="mono small kv-key">' + escapeHtml(k) + '</td><td>' + display + '</td></tr>';
+  }).join('');
+  return '<table class="mini kv"><tbody>' + rows + '</tbody></table>';
+}
+
+// Renders a list of raw objects (e.g. skus/images/bowlerdepot_matches),
+// one mini raw table per row, so "all columns" holds for child rows too,
+// not just the parent product -- same reasoning as renderRawTable above.
+function renderRawTableList(items, emptyLabel) {
+  if (!items || !items.length) return '<p class="muted small">' + escapeHtml(emptyLabel || '(none)') + '</p>';
+  return items.map(function (item, i) {
+    return '<div class="kv-row">' + (items.length > 1 ? '<p class="small muted">#' + (i + 1) + '</p>' : '') + renderRawTable(item) + '</div>';
+  }).join('');
 }
 
 // --------------------------------------------------------------------
@@ -804,6 +856,31 @@ async function toggleProductDetail(id) {
   await loadProductDetailInto(id, row.querySelector('td'));
 }
 
+// All-columns view for a product -- see renderRawTable's own comment for
+// why this exists (Al's data-quality pass across the scrapers). Sits
+// below the curated view above (images/core/description/rollup/skus) as
+// a collapsed <details> block, not a replacement for it: the curated view
+// is still the fast path for normal use, this is the "show me literally
+// everything" escape hatch for when something looks off and the curated
+// view doesn't say why. p.skus/p.images/p.discovered_url/p.bowlerdepot_
+// matches/p.bowwwl_matches are excluded from the top-level product table
+// (they're objects/arrays -- rendered as their own sub-tables instead of
+// JSON-stringified blobs, which would defeat the point).
+function renderProductRawFields(p) {
+  const nestedKeys = ['skus', 'images', 'discovered_url', 'bowlerdepot_matches', 'bowwwl_matches'];
+  return (
+    '<details class="raw-fields"><summary>Show all fields (raw)</summary>' +
+    '<h4>Product</h4>' + renderRawTable(p, nestedKeys) +
+    '<h4>SKUs (' + (p.skus || []).length + ')</h4>' + renderRawTableList(p.skus, 'no SKUs') +
+    '<h4>Images (' + (p.images || []).length + ')</h4>' + renderRawTableList(p.images, 'no images') +
+    '<h4>Discovered URL (crawl record)</h4>' +
+    (p.discovered_url ? renderRawTable(p.discovered_url) : '<p class="muted small">no discovered_urls row -- never crawled through the normal sitemap/collection discovery (e.g. added manually)</p>') +
+    '<h4>BowlerDepot matches (' + (p.bowlerdepot_matches || []).length + ')</h4>' + renderRawTableList(p.bowlerdepot_matches, 'no BowlerDepot reconciliation rows') +
+    '<h4>bowwwl.com matches (' + (p.bowwwl_matches || []).length + ')</h4>' + renderRawTableList(p.bowwwl_matches, 'no bowwwl.com reconciliation rows') +
+    '</details>'
+  );
+}
+
 async function loadProductDetailInto(id, cell) {
   cell.innerHTML = '<p class="muted">Loading&hellip;</p>';
   try {
@@ -848,6 +925,7 @@ async function loadProductDetailInto(id, cell) {
       '<p style="margin-top:14px;"><strong>SKUs:</strong></p>' +
       '<table class="mini"><thead><tr><th>Weight</th><th>RG</th><th>Diff</th><th>Mass Bias</th><th>Source</th><th></th></tr></thead><tbody>' +
       (skuRows || '<tr><td colspan="6" class="muted">none</td></tr>') + '</tbody></table>' +
+      renderProductRawFields(p) +
       '</div>';
   } catch (e) {
     cell.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';

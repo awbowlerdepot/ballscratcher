@@ -329,15 +329,53 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
 
 
 def get_product(conn, product_id: str):
+    """Real ask from Al: he's noticed data issues in the admin UI he
+    suspects trace back to the scrapers, and wants every column visible
+    (not just the curated subset each field previously hand-picked) so
+    gaps become visible by inspection rather than by guessing which
+    column might be the problem. Two changes from the previous version:
+    p.* was already everything on products itself, but product_skus and
+    product_images were each trimmed to a hand-picked column list (missing
+    id/product_id/created_at/updated_at/part_number) -- both are now
+    `select *`, so nothing on those two child tables is hidden either.
+
+    Also newly surfaced here: discovered_urls (this product's own crawl
+    record -- scrape_status/sitemap_lastmod/last_scraped_at, matched by
+    url since that table has no product_id FK, only brand_id+url; null
+    if this product was never discovered through the normal sitemap/
+    collection crawl, e.g. inserted by hand like the Hammerhead product
+    from an earlier session) and bowlerdepot_matches/bowwwl_matches (this
+    product's reconciliation rows against BowlerDepot's BigCommerce
+    catalog and bowwwl.com -- both real tables that migrations 001/003
+    created but that NO admin_api endpoint has ever exposed before this).
+    brand_name/manufacturer_name are also joined on for readability --
+    p.brand_id alone is a bare UUID, not something you can eyeball for a
+    data-quality pass.
+
+    product_videos is deliberately NOT duplicated here even though it's
+    real per-product data too -- GET /video-candidates?product_id=...
+    already exposes it in full (pv.*, see get_video_candidate), and
+    duplicating it here would just be two places to keep in sync for no
+    discovery benefit.
+
+    Like get_core/get_review_item, this real multi-join/multi-query
+    function isn't unit tested against its actual SQL text beyond the
+    not-found short-circuit and a hand-built sequenced-fake covering the
+    assembly logic (see test_get_product_assembles_all_related_data) --
+    no real Postgres in this sandbox to exercise the joins themselves
+    against."""
     with conn.cursor() as cur:
-        # Left join cores (migration 007) so the detail view can show a
-        # human-readable core name/type alongside p.core_id -- p.* still
-        # carries core_id itself, c.name/c.core_type are the added columns.
+        # Left join cores (migration 007), brands, and manufacturers so
+        # the detail view can show human-readable names alongside the
+        # bare id columns p.* already carries (core_id, brand_id).
         cur.execute(
             """
-            select p.*, c.name as core_name, c.core_type as core_type
+            select p.*, c.name as core_name, c.core_type as core_type,
+                   b.name as brand_name, m.name as manufacturer_name
             from products p
             left join cores c on c.id = p.core_id
+            left join brands b on b.id = p.brand_id
+            left join manufacturers m on m.id = b.manufacturer_id
             where p.id = %s
             """,
             (product_id,),
@@ -349,20 +387,43 @@ def get_product(conn, product_id: str):
         product = dict(zip(columns, row))
 
         cur.execute(
-            "select weight_lbs, rg, differential, mass_bias, source, needs_review "
-            "from product_skus where product_id = %s order by weight_lbs desc",
+            "select * from product_skus where product_id = %s order by weight_lbs desc",
             (product_id,),
         )
         sku_columns = [desc[0] for desc in cur.description]
         product["skus"] = [dict(zip(sku_columns, row)) for row in cur.fetchall()]
 
         cur.execute(
-            "select image_type, weight_lbs_context, source_url, stored_url "
-            "from product_images where product_id = %s",
+            "select * from product_images where product_id = %s",
             (product_id,),
         )
         image_columns = [desc[0] for desc in cur.description]
         product["images"] = [dict(zip(image_columns, row)) for row in cur.fetchall()]
+
+        # discovered_urls has no product_id FK (it's brand_id+url, tracking
+        # the crawl itself rather than the parsed product) -- matched here
+        # by this product's own url, the only real link between the two.
+        cur.execute(
+            "select * from discovered_urls where url = %s",
+            (product["url"],),
+        )
+        discovered_url_columns = [desc[0] for desc in cur.description]
+        discovered_url_row = cur.fetchone()
+        product["discovered_url"] = dict(zip(discovered_url_columns, discovered_url_row)) if discovered_url_row else None
+
+        cur.execute(
+            "select * from bowlerdepot_products where product_id = %s",
+            (product_id,),
+        )
+        bowlerdepot_columns = [desc[0] for desc in cur.description]
+        product["bowlerdepot_matches"] = [dict(zip(bowlerdepot_columns, row)) for row in cur.fetchall()]
+
+        cur.execute(
+            "select * from bowwwl_products where product_id = %s",
+            (product_id,),
+        )
+        bowwwl_columns = [desc[0] for desc in cur.description]
+        product["bowwwl_matches"] = [dict(zip(bowwwl_columns, row)) for row in cur.fetchall()]
 
         return product
 

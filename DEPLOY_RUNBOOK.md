@@ -1285,6 +1285,36 @@ whenever it next runs.
     and is labeled "not processed yet" rather than showing a broken image
     or nothing at all.
 
+    **"Show all fields (raw)"** -- real ask from Al: he noticed data
+    issues in the admin UI he suspects trace back to the scrapers, and
+    wanted every DB column visible (not just whatever each hand-curated
+    section above happened to render) so gaps show up by inspection
+    instead of by guessing which field might be wrong. A collapsed
+    `<details>` block at the bottom of each product's detail row expands
+    into a generic field-name/value table built from whatever
+    `GET /products/{id}` actually returns (`renderRawTable` in
+    `admin-site/index.html` -- no per-field hardcoding, so it stays
+    complete as columns get added later without anyone remembering to
+    update this view too). `service.get_product()` was widened to match:
+    `product_skus`/`product_images` went from a hand-picked column list to
+    `select *` (previously missing `id`/`created_at`/`updated_at`/
+    `part_number` off both), and three real tables that NO admin_api
+    endpoint had ever exposed before this are now included per product:
+    `discovered_url` (this product's own crawl record from
+    `discovered_urls` -- `scrape_status`, `sitemap_lastmod`,
+    `last_scraped_at`; matched by `url` since that table has no
+    `product_id` FK; `null` if the product was never crawled through the
+    normal sitemap/collection discovery, e.g. inserted by hand like the
+    Hammerhead product from an earlier session), `bowlerdepot_matches`,
+    and `bowwwl_matches` (this product's reconciliation rows against
+    BowlerDepot's BigCommerce catalog and bowwwl.com, both tables that
+    have existed since migrations 001/003 with no admin API surface at
+    all until now). `brand_name`/`manufacturer_name` are also newly
+    joined on -- `brand_id` alone is a bare UUID, not something you can
+    eyeball for a data-quality pass. No `template.yaml` change needed:
+    `GET /products/{id}` already existed and already routed through the
+    `{proxy+}` GET route.
+
 ### 6j. Home transcript fetcher (residential caption fetching) -- optional, run outside AWS entirely
 
 Real, live-tested finding this session (see
