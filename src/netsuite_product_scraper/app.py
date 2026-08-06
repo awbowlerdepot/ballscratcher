@@ -132,10 +132,20 @@ Real, confirmed structural facts this module's parsing rests on:
    `document.querySelectorAll('img')` inside <main> returns nothing for
    these pages. Real product photos are CSS background-image: url(...)
    inline styles, on <a> tags for the main gallery (3 real photos seen:
-   front, side/back, and a third angle) and on a <div class="image"> for
-   a "core cutaway" shot specifically -- served from a different path,
+   front, side/back, and a third angle).
+
+   HISTORICAL, no longer active (see the "THIRD real finding" section
+   further down this docstring for the removal): this platform ALSO had a
+   "core cutaway" shot on a <div class="image"> inside the per-weight
+   carousel, served from a different path,
    "userfiles/filemanager-format/core-image/<id>", a transform of one of
-   the main gallery's own image ids.
+   the main gallery's own image ids -- i.e. always a redundant, lower-res
+   duplicate of a photo already captured from the main gallery, never a
+   genuinely new one. Confirmed and removed once Al pointed it out
+   directly. The rest of this point's history is kept for context (the
+   empty-path bug below shaped this module's general "skip a known non-
+   image placeholder shape" pattern, still in use elsewhere), even though
+   parse_images() no longer scans that container at all.
 
    Real bug found later via production DLQ investigation (two real
    products failed image processing with a 404 on
@@ -154,9 +164,10 @@ Real, confirmed structural facts this module's parsing rests on:
    bug is in what got stored, not in any transient fetch failure). Same
    "recognize and skip known non-image placeholder shapes" spirit as
    Brunswick's data: URI lazy-load fix and commercebuild's
-   ajax-loader.gif/coming_soon.jpg skip -- see parse_images()'s
-   docstring below for the fix (skip any captured URL with nothing after
-   its final "/").
+   ajax-loader.gif/coming_soon.jpg skip -- see _extract_background_
+   images()'s docstring for the general fix (skip any captured URL with
+   nothing after its final "/"), kept in place even though the specific
+   container that motivated it is no longer scanned.
 
    SECOND real bug, found via a live data-quality pass (Al noticed
    "aggressive" image pulling -- 3 real per-product photos plus "a bunch
@@ -211,6 +222,32 @@ Real, confirmed structural facts this module's parsing rests on:
    deployment that hasn't wired IMAGE_BUCKET onto this function yet just
    logs a warning and skips the S3 cleanup for that run rather than
    erroring; the DB-side fix works regardless.
+
+   THIRD real finding, same thread: Al then asked directly why the
+   core-cutaway shot was even being captured at all, pointing out it's
+   redundant -- and he's right, confirmed by this module's own earlier
+   documentation (point 7 above): the core-image path is "a transform of
+   one of the main gallery's own image ids", i.e. the exact same source
+   photo MOTIV's template already serves (at a different, lower-
+   resolution CDN format) as one of the 3 real gallery photos in
+   div.image-scroll-wrapper. Capturing it separately from div.product-
+   specifications-by-weight never added a genuinely different photo --
+   just a redundant, lower-res duplicate of something already stored,
+   sitting in a per-weight carousel that's below the fold and not
+   something a site visitor scrolls back up to see differently rendered.
+   Removed entirely: parse_images() no longer scans div.product-
+   specifications-by-weight at all, and "core_callout" is no longer a
+   possible image_type this scraper produces. The empty-path placeholder
+   bug this module documented above (point 7's first "real bug") is now
+   moot for the same reason -- there's nothing left that would ever look
+   at that container's markup, empty or not. A rescrape (scripts/
+   rescrape_netsuite_products.py) cleans up any already-stored
+   core_callout rows for free: the existing stale-image DELETE in
+   upsert_product (see its own docstring) already treats any source_url
+   no longer present in the current parse as stale, and core_callout rows
+   will simply never appear in that set again -- including the S3 orphan
+   cleanup this same delete step now triggers (see delete_orphaned_
+   image_objects), no separate migration/backfill needed.
 
 REAL INCIDENT, found via a live data-quality pass (Al noticed every
 product on the admin site's MOTIV catalog showed as "current", which
@@ -541,29 +578,29 @@ def parse_images(soup: BeautifulSoup, base_url: str) -> list:
     that appears on every product page) got wrongly attached to whichever
     product happened to be scraped.
 
-    Scoped to two specific, real containers instead, each confirmed via a
-    live DOM inspection (see module docstring):
-      - div.image-scroll-wrapper: the main gallery (3 real photos: front,
-        side/back, third angle). Al's own real selector was
-        `body > main > section.product > div > div > div >
-        div.image-scroll-wrapper > ul` -- anchored here on just the
-        class-named segment (image-scroll-wrapper) rather than the full
-        child-index chain, since the anonymous wrapper divs around it are
-        exactly the kind of thing that shifts if MOTIV's template changes
-        without the gallery itself moving.
-      - div.product-specifications-by-weight: the per-weight carousel,
-        which is also where the (separate, already-handled) core-cutaway
-        shot lives.
-    Anything with a background-image style outside both of these is never
-    even looked at now, regardless of what path it uses."""
+    Scoped to div.image-scroll-wrapper -- the main gallery (3 real photos:
+    front, side/back, third angle), confirmed via a live DOM inspection.
+    Al's own real selector was `body > main > section.product > div > div
+    > div > div.image-scroll-wrapper > ul` -- anchored here on just the
+    class-named segment (image-scroll-wrapper) rather than the full
+    child-index chain, since the anonymous wrapper divs around it are
+    exactly the kind of thing that shifts if MOTIV's template changes
+    without the gallery itself moving. Anything with a background-image
+    style outside this container is never even looked at, regardless of
+    what path it uses.
+
+    Does NOT also scan div.product-specifications-by-weight for a
+    "core cutaway" shot anymore (see module docstring point 7's
+    "THIRD real finding" -- Al pointed out directly that it was always a
+    redundant, lower-resolution duplicate of a photo already captured
+    from this same gallery, never a genuinely different one, and sitting
+    in a per-weight carousel below the fold that nobody would separately
+    see anyway)."""
     images = []
     seen = set()
 
     gallery = soup.select_one("div.image-scroll-wrapper")
     _extract_background_images(gallery, base_url, seen, images, lambda: "main" if not images else "other")
-
-    weight_carousel = soup.select_one("div.product-specifications-by-weight")
-    _extract_background_images(weight_carousel, base_url, seen, images, lambda: "core_callout")
 
     return images
 

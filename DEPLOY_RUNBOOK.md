@@ -737,12 +737,13 @@ providing the exact selector for the main gallery:
 > ul`. `parse_images()` anchors on the class-named segment
 (`div.image-scroll-wrapper`) rather than the full child-index chain, so
 it isn't fragile to the anonymous wrapper divs around it shifting depth.
-The core-cutaway shot (a separate, already-handled case -- see 6e.5's
+The core-cutaway shot (a separate, already-handled case -- see the
 sibling section in `netsuite_product_scraper/app.py`'s module docstring
-point 7) is scoped to `div.product-specifications-by-weight`, the
-per-weight carousel it actually lives in. Anything with a
-background-image style outside both containers is no longer even looked
-at, regardless of what path it uses.
+point 7) was, at the time of this fix, scoped to
+`div.product-specifications-by-weight`, the per-weight carousel it
+actually lived in -- **later removed entirely, see 6e.7 below**.
+Anything with a background-image style outside both containers is no
+longer even looked at, regardless of what path it uses.
 
 `parse_images()`'s signature changed from `(html: str, base_url: str)` to
 `(soup: BeautifulSoup, base_url: str)` -- it now needs real DOM structure
@@ -809,6 +810,41 @@ risk -- see that script's docstring). It only enqueues; watch
 spot-check a few product detail pages in the admin UI. No template.yaml
 changes needed -- reuses `AdminApiFunction`'s existing catch-all proxy
 route (confirmed via the CFN-tolerant YAML parser: still 45 resources).
+
+### 6e.7. MOTIV core_callout image removed entirely (real incident)
+
+**Requires a Lambda redeploy** (`sam build && sam deploy`) -- backend
+`netsuite_product_scraper` code, not admin-site-only.
+
+Same thread as 6e.6, immediate follow-up. Al asked directly why the
+core-cutaway shot was even being captured, and pointed out it's
+redundant: "that is already in the main section just low res and
+redundant because it is below the fold and you wouldn't see it once you
+have scrolled." He's right, confirmed by this module's own docstring
+(point 7): the core-image path was always documented as "a transform of
+one of the main gallery's own image ids" -- the same photo already
+captured in `div.image-scroll-wrapper`, just at a lower-resolution CDN
+format, sitting in a per-weight carousel below the fold nobody scrolls
+back up to see rendered differently.
+
+Fixed by removing the second `_extract_background_images()` scan of
+`div.product-specifications-by-weight` from `parse_images()` entirely --
+it now only scans `div.image-scroll-wrapper`. `core_callout` is no
+longer a possible `image_type` this scraper produces, and the
+empty-path-placeholder bug 6e.6 documented for that container is now
+moot for the same reason (nothing looks at that container's markup
+anymore, empty or not).
+
+**No separate backfill/migration needed for already-scraped products.**
+The rescrape script from 6e.6 (`scripts/rescrape_netsuite_products.py`)
+already cleans up any previously-stored `core_callout` rows for free:
+the stale-image DELETE added to `upsert_product` in 6e.6 treats any
+`source_url` no longer present in the current parse as stale, and
+`core_callout` rows will simply never appear in that set again --
+including triggering the S3 orphan cleanup from 6e.6 for any that had
+already been mirrored by `image_processor`. If 6e.6's rescrape has
+already been run against the full catalog, running it again after this
+redeploy is sufficient to finish cleaning these up too.
 
 ### 6f. commercebuild (Storm/Roto Grip/900 Global) -- if any of the three brand ids were set
 

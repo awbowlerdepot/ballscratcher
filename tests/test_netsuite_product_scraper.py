@@ -205,44 +205,46 @@ def test_jackal_downloads_different_labels_than_sigma():
     assert "sell_sheet_url" not in p["resources"]  # this ball doesn't have one
 
 
-def test_jackal_images_includes_core_callout():
+def test_jackal_images_no_longer_includes_core_callout():
+    """THIRD real finding this session: Al pointed out the core-cutaway
+    photo (div.product-specifications-by-weight) is always a redundant,
+    lower-res duplicate of a photo already in the main gallery, sitting
+    below the fold where nobody would see it differently anyway. See
+    module docstring point 7's "THIRD real finding" section.
+    parse_images() no longer scans that container at all, so Jackal Onyx
+    -- the one fixture that ever produced a core_callout -- must not
+    produce one anymore."""
     p = _parsed_jackal()
     image_types = [img["image_type"] for img in p["images"]]
-    assert "core_callout" in image_types
-    core_img = next(img for img in p["images"] if img["image_type"] == "core_callout")
-    assert "filemanager-format/core-image" in core_img["source_url"]
+    assert "core_callout" not in image_types
 
 
 def test_jackal_images_excludes_unrelated_related_products_section():
     """Same regression coverage as the Sigma fixture's equivalent test --
-    Jackal Onyx's images list must stay at 4 (3 gallery + 1 core_callout),
-    not 6, once the fixture's related-products section is in play."""
+    Jackal Onyx's images list must stay at 3 (gallery only, no more
+    core_callout -- see test_jackal_images_no_longer_includes_core_callout),
+    not 5, once the fixture's related-products section is in play."""
     p = _parsed_jackal()
-    assert len(p["images"]) == 4
+    assert len(p["images"]) == 3
     assert not any("unrelated" in img["source_url"] for img in p["images"])
 
 
-# Real bug found via production DLQ investigation: two real products
-# (motivbowling.com/n_659670458713337742 "Sapphire Jackal", a
-# Japan-exclusive ball, and n_823175603257004277) 404'd forever in
-# image_processor because their stored core_callout source_url was
-# genuinely empty -- confirmed real via curl against the live Sapphire
-# Jackal page (redirects to
-# products/balls/exclusives/sapphire-jackal.html): its per-weight-slide
-# markup is `<div class="image" style="background-image:
+# Historical context (no longer an active code path): production DLQ
+# investigation once found two real products (motivbowling.com/
+# n_659670458713337742 "Sapphire Jackal", a Japan-exclusive ball, and
+# n_823175603257004277) 404'ing forever in image_processor because their
+# stored core_callout source_url was genuinely empty -- confirmed real via
+# curl against the live Sapphire Jackal page: its per-weight-slide markup
+# is `<div class="image" style="background-image:
 # url(./userfiles/filemanager-format/core-image/)"></div>`, repeated once
-# per weight (16/15/14 all identical, no id after the trailing slash) --
-# a real "no core-cutaway photo for this product" template artifact, not
-# a fetch fluke. The old IMAGE_RE-based parse_images() stored this as a
-# real-looking product_images row that would 404 on every single retry,
-# no matter how many times image_processor tried it, since the bug is in
-# what got captured, not in any transient network issue.
+# per weight, no id after the trailing slash.
 #
-# Wrapped in div.product-specifications-by-weight / div.image-scroll-wrapper
-# here (unlike the original bare-<li> version of this snippet) -- parse_images
-# is now DOM-scoped to those two containers (see its docstring, "SECOND real
-# bug"), so a snippet with no such wrapper would match nothing at all
-# regardless of what this test is actually trying to check.
+# THIRD real finding superseded this entirely: Al pointed out the whole
+# core-cutaway capture was a redundant, lower-res duplicate of a gallery
+# photo, so parse_images() no longer scans div.product-specifications-by-weight
+# at all (see module docstring point 7). This snippet (and the two tests
+# below) now exist purely to confirm that container is ignored wholesale
+# -- empty-path placeholder or not -- not just filtered for empty paths.
 REAL_EMPTY_CORE_IMAGE_SNIPPET = """
 <div class="product-specifications-by-weight">
 <li class="slide"><div class="image" style="background-image: url(./userfiles/filemanager-format/core-image/)"></div><h3 class="weight">16</h3></li>
@@ -255,20 +257,22 @@ REAL_EMPTY_CORE_IMAGE_SNIPPET = """
 """
 
 
-def test_parse_images_skips_empty_core_image_placeholder():
+def test_parse_images_ignores_weight_carousel_entirely_even_with_empty_placeholder():
     soup = app.BeautifulSoup(REAL_EMPTY_CORE_IMAGE_SNIPPET, "lxml")
     images = app.parse_images(soup, "https://www.motivbowling.com/n_659670458713337742")
-    assert len(images) == 1  # the 3 empty-path core-image divs must all be excluded
+    assert len(images) == 1  # only the image-scroll-wrapper photo -- the weight carousel is never scanned
     assert images[0]["source_url"].endswith("c7jih6m40tuusrocuys9")
 
 
-def test_parse_images_still_captures_real_core_callout_with_real_id():
-    """Regression guard: the empty-path skip must not accidentally start
-    excluding Jackal Onyx's real core-image URL (which has a real id after
-    the slash, unlike Sapphire Jackal's empty one)."""
+def test_parse_images_ignores_weight_carousel_even_with_real_core_id():
+    """Regression guard: div.product-specifications-by-weight must stay
+    ignored even when it has a real (non-empty-path) core-image id, not
+    just the empty-placeholder case above. Jackal Onyx's own fixture has
+    a real core-image id in that container and must still produce no
+    core_callout (see test_jackal_images_no_longer_includes_core_callout)."""
     p = _parsed_jackal()
     image_types = [img["image_type"] for img in p["images"]]
-    assert "core_callout" in image_types
+    assert "core_callout" not in image_types
 
 
 # --- Helper functions tested directly ---
