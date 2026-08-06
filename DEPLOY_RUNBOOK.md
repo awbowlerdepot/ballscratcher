@@ -758,6 +758,31 @@ reconstructed (not captured -- see each fixture's own header comment)
 scoping actually excludes something the old unscoped regex would have
 wrongly swept in.
 
+**One-off cleanup for already-scraped products**, after redeploying:
+
+```bash
+export ADMIN_API_URL="https://<your-api-id>.execute-api.us-west-1.amazonaws.com"
+export ADMIN_API_TOKEN="<the same bearer token used elsewhere>"
+python3 scripts/rescrape_netsuite_products.py
+```
+
+Unlike the status-clobber fix (6e.5), there's no targeted SQL correction
+possible here -- a wrongly-attached image row looks like an ordinary
+`product_images` row; nothing in the data itself distinguishes it from a
+real one after the fact. The only fix is a fresh scrape under the
+corrected parser, which naturally replaces whatever image rows it parses
+this time (see `upsert_product`'s `ON CONFLICT` handling). This script
+lists every `source_platform = 'netsuite'` product via the new
+`GET /products?source_platform=netsuite` filter (added to
+`service.list_products` for this) and calls `POST /products/{id}/rescrape`
+for each, same paginate-and-republish shape as `scripts/backfill_core_ids.py`
+(including its retry/backoff for the same Lambda-concurrency-throttle
+risk -- see that script's docstring). It only enqueues; watch
+`NetsuiteProductScraperFunction`'s logs/DLQ (6e) while it drains, then
+spot-check a few product detail pages in the admin UI. No template.yaml
+changes needed -- reuses `AdminApiFunction`'s existing catch-all proxy
+route (confirmed via the CFN-tolerant YAML parser: still 45 resources).
+
 ### 6f. commercebuild (Storm/Roto Grip/900 Global) -- if any of the three brand ids were set
 
 No schedule wired up for `CommercebuildUrlDiscoveryFunction` yet, same
@@ -1644,6 +1669,6 @@ recheck with the browser-based fetcher.
 | `info_sheet_url`/mass bias never populated | Confirm you're on the commit that fixed `parse_resources()`'s "Download"-link-text bug (see README) |
 | MOTIV products never scrape | `bowling-scraper-netsuite-product-scrape-dlq`, then `fetch_page()`'s docstring in `netsuite_product_scraper/app.py` for next steps |
 | MOTIV products all show `status = 'current'` | Real, confirmed, already-fixed incident -- see 6e.5. Confirm you're on the commit with `get_status_for_url()` in `netsuite_product_scraper/app.py`, redeploy, then run `scripts/backfill_netsuite_status.py` to correct any rows still wrong from before the fix |
-| MOTIV products have unrelated/extra images attached | Real, confirmed, already-fixed incident -- see 6e.6. Confirm you're on the commit with the DOM-scoped `parse_images(soup, base_url)` in `netsuite_product_scraper/app.py`, then redeploy and rescrape the affected products (no backfill script for this one -- see 6e.6, the wrong rows just need a fresh scrape, not a targeted DB correction) |
+| MOTIV products have unrelated/extra images attached | Real, confirmed, already-fixed incident -- see 6e.6. Confirm you're on the commit with the DOM-scoped `parse_images(soup, base_url)` in `netsuite_product_scraper/app.py`, redeploy, then run `scripts/rescrape_netsuite_products.py` to force a fresh scrape of every MOTIV product (no DB backfill applies here -- see 6e.6) |
 | Images look cropped wrong | Pull a few from `ImageBucket` and eyeball against `image_processor/app.py`'s bbox-detection assumptions |
 | BowlerDepot reconciliation reports nothing, ever | `CUSTOM_FIELD_NAME_CANDIDATES` mapping is probably wrong for your real store -- see step 6h |

@@ -1367,6 +1367,27 @@ def test_list_products_missing_core_adds_filter_sql():
     assert "p.core_id is null" in query
 
 
+# --- list_products: source_platform filter -- built for
+# scripts/rescrape_netsuite_products.py (the MOTIV image-scoping fix's
+# catalog-wide cleanup, see netsuite_product_scraper's "SECOND real bug"
+# section and DEPLOY_RUNBOOK.md 6e.6).
+
+def test_list_products_source_platform_adds_filter_sql():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, source_platform="netsuite", limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "p.source_platform = %s" in query
+
+
+def test_list_products_omits_source_platform_filter_by_default():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "p.source_platform" not in query
+
+
 # --- list_cores / get_core: the "other direction" view of core_name/
 # core_type (GET /cores, GET /cores/{id}) -- see service.list_cores'
 # docstring for why this exists (multiple products can share one core,

@@ -250,8 +250,20 @@ def list_brands(conn) -> list:
 
 def list_products(conn, published: bool = None, brand_id: str = None, search: str = None,
                    needs_video_summary_refresh: bool = None, has_approved_video_summaries: bool = None,
-                   missing_core: bool = None, limit: int = 50, offset: int = 0) -> list:
-    """needs_video_summary_refresh=True: products with at least one
+                   missing_core: bool = None, source_platform: str = None, limit: int = 50, offset: int = 0) -> list:
+    """source_platform: filters to one scraper platform ('netsuite',
+    'shopify', 'woocommerce', 'commercebuild', 'craft_cms' -- same values
+    as products.source_platform and queue_rescrape's SCRAPE_QUEUE_ENV_VAR_
+    BY_PLATFORM keys). Built for scripts/rescrape_netsuite_products.py
+    (the MOTIV image-scoping fix's catalog-wide cleanup, see that
+    module's docstring and netsuite_product_scraper's "SECOND real bug"
+    section) -- brand_id alone would work too for a single-brand platform
+    like MOTIV today, but source_platform is the more honest filter for
+    "every product this specific scraper touches", robust to a platform
+    someday having more than one brand (this module's own docstring
+    already anticipates that for NetSuite: "MOTIV Bowling to start").
+
+    needs_video_summary_refresh=True: products with at least one
     approved+summarized video, where video_reviews_summary is either
     still unset or stale relative to how many approved+summarized videos
     currently exist (video_reviews_summary_video_count is stored exactly
@@ -335,6 +347,9 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
         """
     if missing_core:
         query += " and p.core_id is null"
+    if source_platform:
+        query += " and p.source_platform = %s"
+        params.append(source_platform)
     # id as a final tiebreaker -- same reason list_video_candidates and
     # fetch_products_to_search needed one (see admin_api/service.py's own
     # earlier fix and video_discovery/app.py's ROTATION section): rows

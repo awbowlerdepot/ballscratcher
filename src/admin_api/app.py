@@ -136,6 +136,7 @@ def get_products(
     needs_video_summary_refresh: Optional[bool] = Query(None),
     has_approved_video_summaries: Optional[bool] = Query(None),
     missing_core: Optional[bool] = Query(None),
+    source_platform: Optional[str] = Query(None),
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
 ):
@@ -145,7 +146,7 @@ def get_products(
             conn, published=published, brand_id=brand_id, search=search,
             needs_video_summary_refresh=needs_video_summary_refresh,
             has_approved_video_summaries=has_approved_video_summaries,
-            missing_core=missing_core,
+            missing_core=missing_core, source_platform=source_platform,
             limit=limit, offset=offset,
         )}
     finally:
