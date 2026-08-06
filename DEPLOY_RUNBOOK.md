@@ -782,10 +782,23 @@ row for a source_url no longer part of what got parsed. Fixed by adding a
 delete step to `upsert_product` (see its own docstring) that removes any
 `product_images` row for the product whose `source_url` isn't in the
 current parse's set, so a rescrape now genuinely REPLACES the image list
-instead of just extending it. One disclosed gap: if a deleted row already
-had a real `stored_url` (already mirrored to S3 by `image_processor`),
-that S3 object is left orphaned -- no cleanup call is made for it; a
-storage-tidiness concern, not a data-correctness one. This script
+instead of just extending it.
+
+Al's immediate next question: does that also clean up the S3 objects a
+deleted row may have already had mirrored by `image_processor`? At first,
+no -- the DB delete alone left those objects orphaned. Fixed by having
+`upsert_product`'s DELETE return the removed rows (`id`, `stored_url`)
+instead of deleting blind, and adding `delete_orphaned_image_objects()`
+(called from `_process_one`, see its own docstring) to remove the
+matching S3 objects -- `product-images/<id>/*` -- for any deleted row
+that actually had a `stored_url` set. `NetsuiteProductScraperFunction`
+now has an `IMAGE_BUCKET` env var (same bucket `ImageProcessorFunction`
+already writes to) plus scoped `s3:ListBucket`/`s3:DeleteObject`
+permissions (narrower than `ImageProcessorFunction`'s full `S3CrudPolicy`
+-- this function only ever cleans up, never writes). Soft-fail if
+`IMAGE_BUCKET` isn't set on a given deployment (logs a warning, skips
+cleanup for that run) -- the DB-side fix works either way, same
+optional-config convention as `IMAGE_PROCESS_QUEUE_URL`. This script
 lists every `source_platform = 'netsuite'` product via the new
 `GET /products?source_platform=netsuite` filter (added to
 `service.list_products` for this) and calls `POST /products/{id}/rescrape`

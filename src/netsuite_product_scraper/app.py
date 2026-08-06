@@ -199,6 +199,19 @@ Real, confirmed structural facts this module's parsing rests on:
    the insert/update loop -- a rescrape now genuinely replaces the image
    set instead of just extending it.
 
+   Al's immediate next question: does that DB delete also clean up the S3
+   objects image_processor may have already mirrored for a since-deleted
+   row? At first, no -- deleting the row didn't touch S3 at all, leaving
+   those objects orphaned. Fixed by having upsert_product's DELETE return
+   the removed rows (id + stored_url) instead of just deleting blind, and
+   adding delete_orphaned_image_objects() (called from _process_one, see
+   its own docstring) to remove the matching S3 objects for any deleted
+   row that actually had one. Gated on a new IMAGE_BUCKET env var --
+   optional/soft-fail, same convention as IMAGE_PROCESS_QUEUE_URL: a
+   deployment that hasn't wired IMAGE_BUCKET onto this function yet just
+   logs a warning and skips the S3 cleanup for that run rather than
+   erroring; the DB-side fix works regardless.
+
 REAL INCIDENT, found via a live data-quality pass (Al noticed every
 product on the admin site's MOTIV catalog showed as "current", which
 looked wrong given how many retired balls MOTIV has): confirmed via
@@ -816,24 +829,33 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
         # rescrape genuinely REPLACE the image set with whatever the
         # current parse actually found, not just extend it.
         #
-        # Known, disclosed gap: this only deletes the product_images row
-        # itself. Any deleted row that already had a real stored_url
-        # (image_processor had already mirrored it to S3) leaves that S3
-        # object orphaned -- no cleanup call is made here. Acceptable for
-        # now (a storage-cost/tidiness concern, not a data-correctness
-        # one); revisit if it matters in practice.
+        # `returning id, stored_url` -- Al's own next question: does this
+        # also clean up the S3 objects those rows may have already been
+        # mirrored to (see image_processor.upload_variants)? A bare DELETE
+        # would leave those orphaned forever, since nothing else in this
+        # codebase ever revisits an already-processed image. Returning the
+        # deleted rows here (rather than a bare DELETE) is what lets
+        # _process_one below actually clean those up -- see
+        # delete_orphaned_image_objects().
         if current_source_urls:
             cur.execute(
-                "delete from product_images where product_id = %s and source_url <> all(%s)",
+                """
+                delete from product_images where product_id = %s and source_url <> all(%s)
+                returning id, stored_url
+                """,
                 (product_id, list(current_source_urls)),
             )
         else:
             # parsed["images"] came back empty this time -- every
             # existing row for this product is stale by definition.
-            cur.execute("delete from product_images where product_id = %s", (product_id,))
+            cur.execute(
+                "delete from product_images where product_id = %s returning id, stored_url",
+                (product_id,),
+            )
+        stale_image_rows = [{"id": row[0], "stored_url": row[1]} for row in cur.fetchall()]
 
     conn.commit()
-    return {"product_id": product_id, "pending_image_jobs": pending_image_jobs}
+    return {"product_id": product_id, "pending_image_jobs": pending_image_jobs, "stale_image_rows": stale_image_rows}
 
 
 def build_image_process_messages(pending_image_jobs: list) -> list:
@@ -851,6 +873,49 @@ def publish_messages(sqs_client, queue_url: str, message_bodies: list) -> int:
         sqs_client.send_message_batch(QueueUrl=queue_url, Entries=entries)
         sent += len(chunk)
     return sent
+
+
+def delete_orphaned_image_objects(s3_client, bucket: str, stale_image_rows: list) -> int:
+    """Real follow-up Al asked for directly: upsert_product's stale-row
+    DELETE (see its own docstring) clears the product_images DB row, but
+    does nothing about the S3 objects image_processor may have already
+    uploaded for that row -- left orphaned otherwise, forever, since
+    nothing else in this codebase ever revisits an already-processed
+    image_id.
+
+    Only bothers with rows that actually have a stored_url (`stored_url
+    is not None` -- see the `stale_image_rows` filtering in
+    _process_one): a row still awaiting image_processor never had
+    anything uploaded for it, so there's nothing in S3 to clean up.
+
+    Mirrors image_processor.upload_variants' real key convention
+    (`product-images/<product_image_id>/<size_name>.png`) rather than
+    importing it -- separate Lambda deployment packages, same "own the
+    whole package" duplication convention as publish_messages above and
+    the other *_product_scraper modules generally. Lists each id's
+    objects (via `list_objects_v2`, paginated) and deletes whatever comes
+    back, rather than hard-coding image_processor's current SIZE_PRESETS
+    name set (thumbnail/catalog/detail) here too -- correct even if that
+    preset list changes later without this module needing to track it.
+
+    Returns the total object count actually deleted, for logging."""
+    s3_paginator = s3_client.get_paginator("list_objects_v2")
+    deleted = 0
+    for row in stale_image_rows:
+        if row["stored_url"] is None:
+            continue
+
+        prefix = f"product-images/{row['id']}/"
+        keys = []
+        for page in s3_paginator.paginate(Bucket=bucket, Prefix=prefix):
+            keys.extend(obj["Key"] for obj in page.get("Contents", []))
+        if not keys:
+            continue
+
+        s3_client.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": k} for k in keys]})
+        deleted += len(keys)
+
+    return deleted
 
 
 def _extract_jobs(event: dict) -> list:
@@ -871,7 +936,7 @@ def _extract_jobs(event: dict) -> list:
     return [(event, None)]
 
 
-def _process_one(job: dict, sqs_client) -> dict:
+def _process_one(job: dict, sqs_client, s3_client=None) -> dict:
     url = job["url"]
     brand_id = job["brand_id"]
 
@@ -904,10 +969,37 @@ def _process_one(job: dict, sqs_client) -> dict:
         messages = build_image_process_messages(result["pending_image_jobs"])
         image_jobs_published = publish_messages(sqs_client, image_queue_url, messages)
 
+    # Real follow-up Al asked for directly: does a rescrape also clean up
+    # the S3 objects a since-deleted product_images row may have already
+    # had mirrored to S3? See upsert_product's stale_image_rows and
+    # delete_orphaned_image_objects's own docstring for the full story.
+    # image_bucket is optional (soft-fails, same convention as
+    # image_queue_url above) -- a deployment that hasn't set IMAGE_BUCKET
+    # on this function yet just skips cleanup and logs why, rather than
+    # erroring; the DB-side fix (the delete itself) already works either
+    # way.
+    orphaned_objects_deleted = 0
+    stale_with_stored_url = [r for r in result["stale_image_rows"] if r["stored_url"] is not None]
+    image_bucket = os.environ.get("IMAGE_BUCKET")
+    if stale_with_stored_url:
+        if s3_client is not None and image_bucket:
+            orphaned_objects_deleted = delete_orphaned_image_objects(s3_client, image_bucket, stale_with_stored_url)
+            logger.info(
+                "Deleted %d orphaned S3 object(s) for %d stale image row(s)",
+                orphaned_objects_deleted, len(stale_with_stored_url),
+            )
+        else:
+            logger.warning(
+                "%d stale product_images row(s) had a stored_url but IMAGE_BUCKET/s3_client "
+                "isn't configured -- their S3 objects are orphaned (not cleaned up this run)",
+                len(stale_with_stored_url),
+            )
+
     return {
         "product_id": str(product_id),
         "sku_count": len(parsed["skus"]),
         "image_jobs_published": image_jobs_published,
+        "orphaned_objects_deleted": orphaned_objects_deleted,
     }
 
 
@@ -925,11 +1017,20 @@ def handler(event, context):
 
         sqs_client = boto3.client("sqs")
 
+    # s3_client for delete_orphaned_image_objects (see _process_one) --
+    # built once here and reused across every job in this batch, same
+    # "build the client once per invocation" pattern as sqs_client above.
+    s3_client = None
+    if os.environ.get("IMAGE_BUCKET"):
+        import boto3
+
+        s3_client = boto3.client("s3")
+
     results = []
     batch_item_failures = []
     for job, message_id in jobs:
         try:
-            results.append(_process_one(job, sqs_client))
+            results.append(_process_one(job, sqs_client, s3_client))
         except Exception:
             logger.exception("Failed to scrape/upsert job: %r", job)
             if message_id is not None:

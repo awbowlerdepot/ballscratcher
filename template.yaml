@@ -1201,12 +1201,38 @@ Resources:
       Environment:
         Variables:
           IMAGE_PROCESS_QUEUE_URL: !Ref ImageProcessQueue
+          # Real, confirmed follow-up fix: upsert_product's stale-image
+          # cleanup (see that function's docstring, the image-scoping
+          # fix's "SECOND real bug" section) deletes stray product_images
+          # DB rows on a rescrape, but Al asked directly whether the
+          # matching S3 objects (image_processor may have already
+          # mirrored them) get cleaned up too -- they didn't, until this.
+          # delete_orphaned_image_objects (called from _process_one) is
+          # gated on this var being set, same optional/soft-fail
+          # convention as IMAGE_PROCESS_QUEUE_URL above -- see that
+          # function's docstring.
+          IMAGE_BUCKET: !Ref ImageBucket
       Policies:
         - Statement:
             - Effect: Allow
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Ref DbSecretArn
+            # Narrower than ImageProcessorFunction's S3CrudPolicy (that
+            # function actually writes the objects this one only ever
+            # cleans up after a stale-row delete) -- ListBucket (for
+            # delete_orphaned_image_objects' list_objects_v2 pagination,
+            # a bucket-level permission) plus DeleteObject scoped to the
+            # product-images/ prefix image_processor.upload_variants
+            # actually writes under, nothing broader.
+            - Effect: Allow
+              Action:
+                - s3:ListBucket
+              Resource: !GetAtt ImageBucket.Arn
+            - Effect: Allow
+              Action:
+                - s3:DeleteObject
+              Resource: !Sub arn:aws:s3:::${ImageBucket}/product-images/*
         - SQSSendMessagePolicy:
             QueueName: !GetAtt ImageProcessQueue.QueueName
       Events:
