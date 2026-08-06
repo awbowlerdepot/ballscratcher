@@ -1315,6 +1315,23 @@ whenever it next runs.
     `GET /products/{id}` already existed and already routed through the
     `{proxy+}` GET route.
 
+    **Brand filter dropdown.** The Products (and Cores) tab's brand
+    filter used to be a raw-UUID text box -- `list_products`/`list_cores`
+    already accepted `brand_id`, but you had to already know or separately
+    look up the UUID to use it. New `GET /brands` endpoint
+    (`service.list_brands` -- unpaginated, no search/filter params; a
+    dozen-ish brands total is nowhere near enough to need any of that,
+    unlike products/cores) backs a real `<select>` populated with brand
+    names, shared by both tabs' `select.brand-filter` elements via one
+    `loadBrandOptions()` call in `admin-site/index.html` (fires on page
+    load and again right after Settings are saved, so a fresh
+    API URL/token doesn't need a manual page reload to see brand names).
+    `list_products`'s query also gained `left join brands b on b.id =
+    p.brand_id` / `b.name as brand_name` so the Products tab's list column
+    shows a real brand name instead of a truncated `brand_id` UUID. No
+    `template.yaml` change needed here either -- `GET /brands` rides the
+    same `{proxy+}` GET route every other admin_api endpoint does.
+
 ### 6j. Home transcript fetcher (residential caption fetching) -- optional, run outside AWS entirely
 
 Real, live-tested finding this session (see

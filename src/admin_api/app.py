@@ -116,6 +116,18 @@ def reject_review_item(review_id: str, body: RejectRequest):
         conn.close()
 
 
+@app.get("/brands")
+def get_brands():
+    # Backs the Products (and Cores) tab's brand filter dropdown -- see
+    # service.list_brands' docstring. No query params: this is a short,
+    # unpaginated lookup list, not a searchable/filterable collection.
+    conn = service.get_db_connection()
+    try:
+        return {"items": service.list_brands(conn)}
+    finally:
+        conn.close()
+
+
 @app.get("/products")
 def get_products(
     published: Optional[bool] = Query(None),

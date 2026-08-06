@@ -233,6 +233,11 @@ class FakeCursor:
             self._last_result = (product_id, row["name"], row["brand_name"], row.get("description")) if row else None
             self.description = [("id",), ("name",), ("brand_name",), ("description",)]
 
+        elif q.startswith("select id, name from brands order by name"):
+            rows = sorted(self.db["brands"].values(), key=lambda b: b["name"])
+            self._rows = [(b["id"], b["name"]) for b in rows]
+            self.description = [("id",), ("name",)]
+
         elif q.startswith("select product_id, min(created_at) from product_videos group by product_id"):
             by_product = {}
             for v in self.db["product_videos"].values():
@@ -1186,6 +1191,35 @@ def test_list_products_has_approved_video_summaries_adds_filter_sql_without_stal
     assert "order by p.updated_at desc, p.id asc" in query
 
 
+# --- list_brands: backs the Products/Cores tab brand filter dropdown
+# (GET /brands) -- see service.list_brands' docstring. Simple enough
+# (single table, no joins/params) for a real FakeCursor test rather than
+# just capturing query text.
+
+def test_list_brands_returns_all_brands_sorted_by_name():
+    db = {
+        "brands": {
+            "brand-1": {"id": "brand-1", "name": "Storm"},
+            "brand-2": {"id": "brand-2", "name": "Brunswick"},
+            "brand-3": {"id": "brand-3", "name": "Ebonite"},
+        },
+    }
+    conn = FakeConnection(db)
+
+    result = service.list_brands(conn)
+
+    assert result == [
+        {"id": "brand-2", "name": "Brunswick"},
+        {"id": "brand-3", "name": "Ebonite"},
+        {"id": "brand-1", "name": "Storm"},
+    ]
+
+
+def test_list_brands_empty_when_none_exist():
+    conn = FakeConnection({"brands": {}})
+    assert service.list_brands(conn) == []
+
+
 # --- list_products: missing_core filter + the cores join (migration 007).
 # The p./c. aliasing above exists specifically because of this join --
 # products and cores both have a plain "name" column, so left-joining
@@ -1200,6 +1234,8 @@ def test_list_products_joins_cores_and_omits_missing_core_filter_by_default():
     query = conn.cursor().queries[0]
     assert "left join cores c on c.id = p.core_id" in query
     assert "c.name as core_name" in query
+    assert "left join brands b on b.id = p.brand_id" in query
+    assert "b.name as brand_name" in query
     assert "core_id is null" not in query
 
 

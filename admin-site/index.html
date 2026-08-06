@@ -286,8 +286,8 @@
         <input id="product-search" type="text" placeholder="e.g. crown">
       </div>
       <div class="field">
-        <label>Brand ID (exact)</label>
-        <input id="product-brand-id" type="text" placeholder="optional uuid">
+        <label>Brand</label>
+        <select id="product-brand-id" class="brand-filter"><option value="">any brand</option></select>
       </div>
       <div class="field">
         <label>Published</label>
@@ -326,8 +326,8 @@
         <input id="core-search" type="text" placeholder="e.g. collision">
       </div>
       <div class="field">
-        <label>Brand ID (exact)</label>
-        <input id="core-brand-id" type="text" placeholder="optional uuid">
+        <label>Brand</label>
+        <select id="core-brand-id" class="brand-filter"><option value="">any brand</option></select>
       </div>
       <button class="btn" type="submit">Filter</button>
     </form>
@@ -403,6 +403,7 @@ function saveSettings() {
   localStorage.setItem(LS_KEYS.by, document.getElementById('cfg-by').value.trim());
   toast('Settings saved');
   checkHealth();
+  loadBrandOptions();
   loadActiveTab();
 }
 
@@ -445,6 +446,34 @@ async function api(method, path, opts) {
     throw new Error(res.status + ': ' + detail);
   }
   return data;
+}
+
+// Real ask from Al: the Products tab's brand filter was a raw-UUID text
+// box, not practically usable without already knowing the brand_id. This
+// populates every `<select class="brand-filter">` on the page (currently
+// Products and Cores tabs share the class) from GET /brands (see
+// service.list_brands) -- one fetch, applied to both dropdowns, rather
+// than each tab fetching its own copy. Best-effort: if settings aren't
+// configured yet (fresh page load, no API URL/token saved) this silently
+// no-ops rather than throwing during page init, same reasoning as
+// checkHealth() below -- the dropdowns just stay at "any brand" until
+// Settings are filled in and the page is reloaded.
+async function loadBrandOptions() {
+  const { apiUrl, token } = getSettings();
+  if (!apiUrl || !token) return;
+  try {
+    const data = await api('GET', '/brands');
+    const options = (data.items || []).map(function (b) {
+      return '<option value="' + escapeHtml(b.id) + '">' + escapeHtml(b.name) + '</option>';
+    }).join('');
+    document.querySelectorAll('select.brand-filter').forEach(function (sel) {
+      sel.innerHTML = '<option value="">any brand</option>' + options;
+    });
+  } catch (e) {
+    // Non-fatal -- filters still work by re-selecting "any brand"; the
+    // dropdown just won't have real brand names until this succeeds
+    // (e.g. after fixing an unreachable API URL and reloading).
+  }
 }
 
 async function checkHealth() {
@@ -822,7 +851,7 @@ function renderProducts(items) {
     const rows = items.map(function (p) {
       return '<tr>' +
         '<td><a href="' + escapeHtml(p.url || '#') + '" target="_blank" rel="noopener">' + escapeHtml(p.name) + '</a></td>' +
-        '<td class="mono small">' + escapeHtml((p.brand_id || '').slice(0, 8)) + '&hellip;</td>' +
+        '<td>' + (p.brand_name ? escapeHtml(p.brand_name) : '<span class="muted mono small">' + escapeHtml((p.brand_id || '').slice(0, 8)) + '&hellip;</span>') + '</td>' +
         '<td>' + escapeHtml(p.status || '') + '</td>' +
         '<td>' + (p.core_name ? escapeHtml(p.core_name) : '<span class="muted">&mdash;</span>') + '</td>' +
         '<td><button class="btn small ' + (p.published ? 'ok' : 'ghost') + '" onclick="togglePublish(\'' + p.id + '\', ' + (!p.published) + ')">' + (p.published ? 'Published' : 'Unpublished') + '</button></td>' +
@@ -831,7 +860,7 @@ function renderProducts(items) {
         '</tr>' +
         '<tr id="product-detail-' + p.id + '" class="detail-row hidden"><td colspan="7"></td></tr>';
     }).join('');
-    listEl.innerHTML = '<table><thead><tr><th>Name</th><th>Brand ID</th><th>Status</th><th>Core</th><th>Published</th><th>Updated</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    listEl.innerHTML = '<table><thead><tr><th>Name</th><th>Brand</th><th>Status</th><th>Core</th><th>Published</th><th>Updated</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
   document.getElementById('product-prev').disabled = productState.offset === 0;
   document.getElementById('product-next').disabled = productState.lastCount < productState.limit;
@@ -1184,6 +1213,7 @@ function stopBatch(kind) {
 document.addEventListener('DOMContentLoaded', function () {
   loadSettingsIntoForm();
   checkHealth();
+  loadBrandOptions();
   loadActiveTab();
 });
 </script>

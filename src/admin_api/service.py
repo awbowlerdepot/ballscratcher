@@ -233,6 +233,21 @@ def get_pending_review_count(conn) -> int:
         return cur.fetchone()[0]
 
 
+def list_brands(conn) -> list:
+    """Real ask from Al: the Products tab's brand filter was a raw-UUID
+    text box ("Brand ID (exact)") -- functional (list_products already
+    took brand_id), but useless unless you already knew or looked up the
+    UUID separately. This backs a real dropdown instead: every brand,
+    name only needed to populate `<option>` tags, so no pagination/search/
+    filtering here -- there are a dozen or so brands total, nowhere near
+    enough to need it (contrast list_products/list_cores, which paginate
+    because a product or core catalog can run into the hundreds)."""
+    with conn.cursor() as cur:
+        cur.execute("select id, name from brands order by name")
+        columns = [desc[0] for desc in cur.description]
+        return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
 def list_products(conn, published: bool = None, brand_id: str = None, search: str = None,
                    needs_video_summary_refresh: bool = None, has_approved_video_summaries: bool = None,
                    missing_core: bool = None, limit: int = 50, offset: int = 0) -> list:
@@ -273,11 +288,18 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     # previously-bare column reference below (name, published, brand_id,
     # updated_at, id) got a p. prefix to stay unambiguous, even though
     # none of them actually change meaning.
+    # join brands too (b.name as brand_name) -- the Products tab used to
+    # show a truncated brand_id UUID in its list column, not useful for
+    # actually recognizing a brand at a glance. Added alongside the new
+    # brand filter dropdown (see list_brands below) so filtering by brand
+    # and reading which brand a row belongs to both work off a real name,
+    # not a UUID you'd have to look up separately.
     query = """
-        select p.id, p.brand_id, p.name, p.url, p.status, p.published, p.updated_at,
+        select p.id, p.brand_id, b.name as brand_name, p.name, p.url, p.status, p.published, p.updated_at,
                p.core_id, c.name as core_name
         from products p
         left join cores c on c.id = p.core_id
+        left join brands b on b.id = p.brand_id
         where 1=1
     """
     params = []
