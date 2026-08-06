@@ -22,14 +22,25 @@
   structural DOM walk that didn't include attribute values). Only used
   here to exercise parse_resources' urljoin/key-building; not asserted
   against as if they were real captured values in the corresponding test.
+
+  UPDATED a later session, for the image-scoping fix (see netsuite_
+  product_scraper/app.py's module docstring point 7, "SECOND real bug",
+  and motiv_sigma_tour_pearl.html's own updated header comment for the
+  full story): wrapper class corrected from the previously-guessed
+  "product-images" to the real "image-scroll-wrapper > ul" Al provided.
+  The three photo urls/ids are unchanged (already real). Also added a
+  reconstructed (not captured) "related products" section for the same
+  regression-coverage reason as the Sigma fixture.
 -->
 <html>
 <body>
 <main>
-  <div class="product-images">
-    <a href="./products/balls/heavy-oil/jackal-onyx.html" style="background-image: url(./userfiles/filemanager/5m6rutrjb5bqyogrjqxo)"></a>
-    <a href="./products/balls/heavy-oil/jackal-onyx.html" style="background-image: url(./userfiles/filemanager/78wt05glb7hd1lw23tai)"></a>
-    <a href="./products/balls/heavy-oil/jackal-onyx.html" style="background-image: url(./userfiles/filemanager/30o5gb84w60g4eyzd10e)"></a>
+  <div class="image-scroll-wrapper">
+    <ul>
+      <li><a href="./products/balls/heavy-oil/jackal-onyx.html" style="background-image: url(./userfiles/filemanager/5m6rutrjb5bqyogrjqxo)"></a></li>
+      <li><a href="./products/balls/heavy-oil/jackal-onyx.html" style="background-image: url(./userfiles/filemanager/78wt05glb7hd1lw23tai)"></a></li>
+      <li><a href="./products/balls/heavy-oil/jackal-onyx.html" style="background-image: url(./userfiles/filemanager/30o5gb84w60g4eyzd10e)"></a></li>
+    </ul>
   </div>
 
   <div class="heading">
@@ -119,6 +130,16 @@
     <ul>
       <li><a href="./userfiles/filemanager/xshelftalkerjko1" target="_blank"><span class="heading">PDF</span><span class="value">Shelf Talker</span></a></li>
       <li><a href="./userfiles/filemanager/xfinishguidejko1" target="_blank"><span class="heading">PDF</span><span class="value">Factory Finish Guide</span></a></li>
+    </ul>
+  </section>
+
+  <!-- Reconstruction, not captured markup -- see this file's header
+       comment and motiv_sigma_tour_pearl.html's matching section. -->
+  <section class="related-products">
+    <h2>You Might Also Like</h2>
+    <ul>
+      <li><a href="./products/balls/medium-oil/sigma-tour-pearl.html" style="background-image: url(./userfiles/filemanager/unrelatedsigmathumb)"></a></li>
+      <li><a href="./products/balls/medium-oil/ascend.html" style="background-image: url(./userfiles/filemanager/unrelatedascendthumb)"></a></li>
     </ul>
   </section>
 </main>

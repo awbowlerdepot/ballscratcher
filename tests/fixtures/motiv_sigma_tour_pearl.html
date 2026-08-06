@@ -32,14 +32,35 @@
   scraper/app.py's parse_description docstring for the full trail,
   including confirmation this text is present in the raw server HTML
   fetch_page() actually receives, not just the client-rendered DOM.
+
+  UPDATED a later session again, for the image-scoping fix (module
+  docstring point 7's "SECOND real bug"): the wrapper class around the 3
+  real gallery photos was previously guessed as "product-images" -- WRONG,
+  per this file's own original caveat that unrelated CSS classes weren't
+  real markup. Corrected to the real selector Al provided from a live DOM
+  inspection: `div.image-scroll-wrapper > ul`. The three photo urls/ids
+  themselves were already real and are unchanged. Also added a "related
+  products" strip below the downloads section with two other MOTIV balls'
+  thumbnail images, also under userfiles/filemanager -- this section's
+  exact real markup/class name was NOT captured this session (no live
+  browser access from here to confirm it), so it's a plausible
+  reconstruction of what Al described ("a bunch that are just on all
+  product pages"), not a captured value like the rest of this file. Its
+  only job is to prove parse_images' new div.image-scroll-wrapper scoping
+  actually excludes something real that the old unscoped regex would have
+  wrongly swept in -- if the real class name turns out to differ, that's
+  fine, since the fix works by exclusion (anything outside the two named
+  containers) rather than by name-matching this section specifically.
 -->
 <html>
 <body>
 <main>
-  <div class="product-images">
-    <a href="./products/balls/medium-oil/sigma-tour-pearl.html" style="background-image: url(./userfiles/filemanager/g7990y7nd5bkbm1xmic9)"></a>
-    <a href="./products/balls/medium-oil/sigma-tour-pearl.html" style="background-image: url(./userfiles/filemanager/43bpcn60kxeunxk8leai)"></a>
-    <a href="./products/balls/medium-oil/sigma-tour-pearl.html" style="background-image: url(./userfiles/filemanager/9sblpywoo92ufjbeq12v)"></a>
+  <div class="image-scroll-wrapper">
+    <ul>
+      <li><a href="./products/balls/medium-oil/sigma-tour-pearl.html" style="background-image: url(./userfiles/filemanager/g7990y7nd5bkbm1xmic9)"></a></li>
+      <li><a href="./products/balls/medium-oil/sigma-tour-pearl.html" style="background-image: url(./userfiles/filemanager/43bpcn60kxeunxk8leai)"></a></li>
+      <li><a href="./products/balls/medium-oil/sigma-tour-pearl.html" style="background-image: url(./userfiles/filemanager/9sblpywoo92ufjbeq12v)"></a></li>
+    </ul>
   </div>
 
   <div class="heading">
@@ -132,6 +153,20 @@
     <ul>
       <li><a href="./userfiles/filemanager/c36cw2r06mwa9gjovr2p" target="_blank"><span class="heading">PDF</span><span class="value">Sell Sheet</span></a></li>
       <li><a href="./userfiles/filemanager/h9s22i72056smvvoxatj" target="_blank"><span class="heading">PDF</span><span class="value">Shelf Talker</span></a></li>
+    </ul>
+  </section>
+
+  <!-- Reconstruction, not captured markup -- see this file's header
+       comment. Represents Al's "a bunch that are just on all product
+       pages" description: other products' thumbnails, also under
+       userfiles/filemanager, living outside div.image-scroll-wrapper.
+       Regression coverage for parse_images' scoping fix, not a real
+       captured section. -->
+  <section class="related-products">
+    <h2>You Might Also Like</h2>
+    <ul>
+      <li><a href="./products/balls/heavy-oil/jackal-onyx.html" style="background-image: url(./userfiles/filemanager/unrelatedjko1thumb)"></a></li>
+      <li><a href="./products/balls/medium-oil/ascend.html" style="background-image: url(./userfiles/filemanager/unrelatedascendthumb)"></a></li>
     </ul>
   </section>
 </main>

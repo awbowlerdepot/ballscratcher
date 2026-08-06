@@ -144,6 +144,22 @@ def test_sigma_images_main_plus_other_no_core_callout():
     assert p["images"][2]["image_type"] == "other"
 
 
+def test_sigma_images_excludes_unrelated_related_products_section():
+    """Real bug fixed this session: Al reported the scraper "aggressively"
+    pulling in images unrelated to the product being scraped -- 3 real
+    photos plus "a bunch that are just on all product pages". The fixture's
+    <section class="related-products"> (see its own header-comment caveat:
+    reconstructed, not captured markup, but standing in for whatever real
+    cross-sell section is actually on the live page) has two other
+    products' thumbnails under the same userfiles/filemanager path the
+    real gallery photos use -- if parse_images were still doing an
+    unscoped sweep of the whole page, these would show up too. They must
+    not."""
+    p = _parsed_sigma()
+    assert len(p["images"]) == 3  # not 5 -- the related-products thumbnails are excluded
+    assert not any("unrelated" in img["source_url"] for img in p["images"])
+
+
 def test_sigma_motion_metrics_captured_not_persisted():
     p = _parsed_sigma()
     assert p["motion_metrics_raw"]["length"] == "67"
@@ -197,6 +213,15 @@ def test_jackal_images_includes_core_callout():
     assert "filemanager-format/core-image" in core_img["source_url"]
 
 
+def test_jackal_images_excludes_unrelated_related_products_section():
+    """Same regression coverage as the Sigma fixture's equivalent test --
+    Jackal Onyx's images list must stay at 4 (3 gallery + 1 core_callout),
+    not 6, once the fixture's related-products section is in play."""
+    p = _parsed_jackal()
+    assert len(p["images"]) == 4
+    assert not any("unrelated" in img["source_url"] for img in p["images"])
+
+
 # Real bug found via production DLQ investigation: two real products
 # (motivbowling.com/n_659670458713337742 "Sapphire Jackal", a
 # Japan-exclusive ball, and n_823175603257004277) 404'd forever in
@@ -212,16 +237,27 @@ def test_jackal_images_includes_core_callout():
 # real-looking product_images row that would 404 on every single retry,
 # no matter how many times image_processor tried it, since the bug is in
 # what got captured, not in any transient network issue.
+#
+# Wrapped in div.product-specifications-by-weight / div.image-scroll-wrapper
+# here (unlike the original bare-<li> version of this snippet) -- parse_images
+# is now DOM-scoped to those two containers (see its docstring, "SECOND real
+# bug"), so a snippet with no such wrapper would match nothing at all
+# regardless of what this test is actually trying to check.
 REAL_EMPTY_CORE_IMAGE_SNIPPET = """
+<div class="product-specifications-by-weight">
 <li class="slide"><div class="image" style="background-image: url(./userfiles/filemanager-format/core-image/)"></div><h3 class="weight">16</h3></li>
 <li class="slide"><div class="image" style="background-image: url(./userfiles/filemanager-format/core-image/)"></div><h3 class="weight">15</h3></li>
 <li class="slide"><div class="image" style="background-image: url(./userfiles/filemanager-format/core-image/)"></div><h3 class="weight">14</h3></li>
+</div>
+<div class="image-scroll-wrapper">
 <a href="#"><span class="image" style="background-image: url(./userfiles/filemanager/c7jih6m40tuusrocuys9)"></span></a>
+</div>
 """
 
 
 def test_parse_images_skips_empty_core_image_placeholder():
-    images = app.parse_images(REAL_EMPTY_CORE_IMAGE_SNIPPET, "https://www.motivbowling.com/n_659670458713337742")
+    soup = app.BeautifulSoup(REAL_EMPTY_CORE_IMAGE_SNIPPET, "lxml")
+    images = app.parse_images(soup, "https://www.motivbowling.com/n_659670458713337742")
     assert len(images) == 1  # the 3 empty-path core-image divs must all be excluded
     assert images[0]["source_url"].endswith("c7jih6m40tuusrocuys9")
 

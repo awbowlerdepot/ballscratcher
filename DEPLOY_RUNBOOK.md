@@ -707,6 +707,57 @@ route, same as `/cores` and `/admin/backfill-last-video-discovery-at`
 before it (confirmed via the CFN-tolerant YAML parser: still 45
 resources).
 
+**Confirmed run against the real catalog**: `products_corrected: 172`
+(fewer than the original 202-product count -- expected, since some had
+already been naturally re-corrected by an ordinary rescrape, e.g. this
+session's own smoke tests, between the original diagnostic query and the
+backfill actually running).
+
+### 6e.6. MOTIV image-scraping over-collection bug + fix (real incident)
+
+**Requires a Lambda redeploy** (`sam build && sam deploy`) -- backend
+`netsuite_product_scraper` code, not admin-site-only.
+
+Al noticed the scraper was pulling in images unrelated to the product
+being scraped -- the 3 real per-ball photos, plus "a bunch that are just
+on all product pages." Root cause: `parse_images()` used to run its
+`IMAGE_RE` regex against the ENTIRE raw page HTML with no DOM scoping,
+only requiring `userfiles/filemanager` to appear in the `url(...)`. That
+path is MOTIV's general photo CDN, used for every product's photos
+site-wide -- not something scoped to just the page being scraped. Any
+other product's photo linked from elsewhere on the page (most likely a
+cross-sell/"related products" strip that appears on every product page,
+though the exact real markup wasn't captured this session) matched just
+as readily as the actual product's own gallery.
+
+Fixed by scoping `parse_images()` to two specific, real containers
+instead of the whole page -- confirmed live via Al inspecting the DOM and
+providing the exact selector for the main gallery:
+`body > main > section.product > div > div > div > div.image-scroll-wrapper
+> ul`. `parse_images()` anchors on the class-named segment
+(`div.image-scroll-wrapper`) rather than the full child-index chain, so
+it isn't fragile to the anonymous wrapper divs around it shifting depth.
+The core-cutaway shot (a separate, already-handled case -- see 6e.5's
+sibling section in `netsuite_product_scraper/app.py`'s module docstring
+point 7) is scoped to `div.product-specifications-by-weight`, the
+per-weight carousel it actually lives in. Anything with a
+background-image style outside both containers is no longer even looked
+at, regardless of what path it uses.
+
+`parse_images()`'s signature changed from `(html: str, base_url: str)` to
+`(soup: BeautifulSoup, base_url: str)` -- it now needs real DOM structure
+to scope against, not just a string to regex-sweep. `parse_product_page`
+was updated to pass its already-built `soup` instead of the raw `html`
+string; no other caller exists. Both test fixtures
+(`tests/fixtures/motiv_sigma_tour_pearl.html` and `motiv_jackal_onyx.html`)
+were corrected from a previously-guessed `div.product-images` wrapper
+class to the real `div.image-scroll-wrapper`, and each gained a
+reconstructed (not captured -- see each fixture's own header comment)
+"related products" section with other balls' thumbnails under
+`userfiles/filemanager`, specifically to regression-test that the new
+scoping actually excludes something the old unscoped regex would have
+wrongly swept in.
+
 ### 6f. commercebuild (Storm/Roto Grip/900 Global) -- if any of the three brand ids were set
 
 No schedule wired up for `CommercebuildUrlDiscoveryFunction` yet, same
@@ -1593,5 +1644,6 @@ recheck with the browser-based fetcher.
 | `info_sheet_url`/mass bias never populated | Confirm you're on the commit that fixed `parse_resources()`'s "Download"-link-text bug (see README) |
 | MOTIV products never scrape | `bowling-scraper-netsuite-product-scrape-dlq`, then `fetch_page()`'s docstring in `netsuite_product_scraper/app.py` for next steps |
 | MOTIV products all show `status = 'current'` | Real, confirmed, already-fixed incident -- see 6e.5. Confirm you're on the commit with `get_status_for_url()` in `netsuite_product_scraper/app.py`, redeploy, then run `scripts/backfill_netsuite_status.py` to correct any rows still wrong from before the fix |
+| MOTIV products have unrelated/extra images attached | Real, confirmed, already-fixed incident -- see 6e.6. Confirm you're on the commit with the DOM-scoped `parse_images(soup, base_url)` in `netsuite_product_scraper/app.py`, then redeploy and rescrape the affected products (no backfill script for this one -- see 6e.6, the wrong rows just need a fresh scrape, not a targeted DB correction) |
 | Images look cropped wrong | Pull a few from `ImageBucket` and eyeball against `image_processor/app.py`'s bbox-detection assumptions |
 | BowlerDepot reconciliation reports nothing, ever | `CUSTOM_FIELD_NAME_CANDIDATES` mapping is probably wrong for your real store -- see step 6h |

@@ -135,11 +135,7 @@ Real, confirmed structural facts this module's parsing rests on:
    front, side/back, and a third angle) and on a <div class="image"> for
    a "core cutaway" shot specifically -- served from a different path,
    "userfiles/filemanager-format/core-image/<id>", a transform of one of
-   the main gallery's own image ids. Both patterns matched via regex
-   against the raw HTML restricted to userfiles/filemanager paths (the
-   site also has plenty of unrelated background-image icons elsewhere in
-   the page under /assets/images/, deliberately excluded by requiring
-   "userfiles/filemanager" in the path).
+   the main gallery's own image ids.
 
    Real bug found later via production DLQ investigation (two real
    products failed image processing with a 404 on
@@ -161,6 +157,32 @@ Real, confirmed structural facts this module's parsing rests on:
    ajax-loader.gif/coming_soon.jpg skip -- see parse_images()'s
    docstring below for the fix (skip any captured URL with nothing after
    its final "/").
+
+   SECOND real bug, found via a live data-quality pass (Al noticed
+   "aggressive" image pulling -- 3 real per-product photos plus "a bunch
+   that are just on all product pages"): the previous version ran
+   IMAGE_RE across the ENTIRE raw HTML with no DOM scoping at all, only
+   requiring "userfiles/filemanager" to appear in the url(...) -- but
+   that's MOTIV's general asset CDN path, used for every product's
+   photos site-wide, not something scoped to just the current page's own
+   ball. Whatever else lives on the page and links to another product's
+   photo under that same path (a cross-sell/"related products" strip,
+   most likely, though the exact section wasn't captured this session --
+   see the new fixture comments for what's confirmed vs. a plausible
+   reconstruction) got vacuumed up as if it belonged to this product.
+   Fixed by scoping to two specific, real containers instead of the whole
+   page -- confirmed live via Al inspecting the real DOM and providing the
+   exact selector: `body > main > section.product > div > div > div >
+   div.image-scroll-wrapper > ul` for the main gallery. That's a deep,
+   fragile-looking path, but `div.image-scroll-wrapper` is the only
+   class-named segment in it and unlikely to collide with anything else
+   on the page, so parse_images() anchors on that one class rather than
+   the full child chain (robust to the anonymous wrapper divs around it
+   changing depth). The core-cutaway shot lives in a separate, already-
+   documented container -- div.product-specifications-by-weight (the
+   per-weight carousel) -- scoped there for the same reason. Anything
+   with a background-image style OUTSIDE both containers is no longer
+   even looked at, regardless of what path it happens to use.
 
 REAL INCIDENT, found via a live data-quality pass (Al noticed every
 product on the admin site's MOTIV catalog showed as "current", which
@@ -445,39 +467,75 @@ def parse_resources(soup: BeautifulSoup, base_url: str) -> dict:
     return resources
 
 
-def parse_images(html: str, base_url: str) -> list:
-    """Regex-based (not BeautifulSoup) since the image is CSS
-    background-image on the style attribute, not an <img> src -- see
-    module docstring point 7.
-
-    Real bug found via production DLQ investigation: products with no
-    real core-cutaway photo get a background-image style with an EMPTY
-    path (confirmed real: `url(./userfiles/filemanager-format/core-image/)`,
-    nothing after the trailing slash) -- this still matches IMAGE_RE (it
-    only requires "userfiles/filemanager" to appear inside the parens)
-    but isn't a real image, and 404s forever in image_processor no matter
-    how many times it's retried. Skipped by requiring at least one
-    non-slash character after the URL's final "/" -- same
-    skip-a-known-non-image-shape spirit as Brunswick's data: URI check."""
-    images = []
-    seen = set()
-    for raw_src in IMAGE_RE.findall(html):
-        src = urljoin(base_url, raw_src)
+def _extract_background_images(container, base_url: str, seen: set, images: list, image_type_for) -> None:
+    """Shared helper for parse_images()'s two scoped containers -- walks
+    every descendant with a style attribute (not just <a>/<div>, so this
+    doesn't care which tag MOTIV's template happens to use) and pulls out
+    any background-image url(...) matching IMAGE_RE (still restricted to
+    userfiles/filemanager paths, on top of the container scoping itself --
+    belt and suspenders). image_type_for is a callable, not a fixed
+    string, since the main gallery's first real photo is "main" and every
+    photo after it is "other" (see parse_images' own docstring)."""
+    if container is None:
+        return
+    for el in container.find_all(style=True):
+        match = IMAGE_RE.search(el["style"])
+        if not match:
+            continue
+        src = urljoin(base_url, match.group(1))
         if src in seen:
             continue
         seen.add(src)
 
+        # Real bug found via production DLQ investigation: products with
+        # no real core-cutaway photo get a background-image style with an
+        # EMPTY path (confirmed real:
+        # `url(./userfiles/filemanager-format/core-image/)`, nothing
+        # after the trailing slash) -- this still matches IMAGE_RE but
+        # isn't a real image, and 404s forever in image_processor no
+        # matter how many times it's retried. Skipped by requiring at
+        # least one non-slash character after the URL's final "/" -- same
+        # skip-a-known-non-image-shape spirit as Brunswick's data: URI
+        # check.
         if src.endswith("/"):
             continue
 
-        if "filemanager-format/core-image" in src:
-            image_type = "core_callout"
-        elif not images:
-            image_type = "main"
-        else:
-            image_type = "other"
+        images.append({"image_type": image_type_for(), "source_url": src})
 
-        images.append({"image_type": image_type, "source_url": src})
+
+def parse_images(soup: BeautifulSoup, base_url: str) -> list:
+    """DOM-scoped (not a raw-HTML regex sweep) -- see module docstring
+    point 7's "SECOND real bug" section for why: the old version matched
+    IMAGE_RE against the entire page, and MOTIV's userfiles/filemanager
+    path is the site's general photo CDN, not something scoped to just
+    the current product -- so anything else on the page linking to
+    ANOTHER product's photo under that same path (e.g. a cross-sell strip
+    that appears on every product page) got wrongly attached to whichever
+    product happened to be scraped.
+
+    Scoped to two specific, real containers instead, each confirmed via a
+    live DOM inspection (see module docstring):
+      - div.image-scroll-wrapper: the main gallery (3 real photos: front,
+        side/back, third angle). Al's own real selector was
+        `body > main > section.product > div > div > div >
+        div.image-scroll-wrapper > ul` -- anchored here on just the
+        class-named segment (image-scroll-wrapper) rather than the full
+        child-index chain, since the anonymous wrapper divs around it are
+        exactly the kind of thing that shifts if MOTIV's template changes
+        without the gallery itself moving.
+      - div.product-specifications-by-weight: the per-weight carousel,
+        which is also where the (separate, already-handled) core-cutaway
+        shot lives.
+    Anything with a background-image style outside both of these is never
+    even looked at now, regardless of what path it uses."""
+    images = []
+    seen = set()
+
+    gallery = soup.select_one("div.image-scroll-wrapper")
+    _extract_background_images(gallery, base_url, seen, images, lambda: "main" if not images else "other")
+
+    weight_carousel = soup.select_one("div.product-specifications-by-weight")
+    _extract_background_images(weight_carousel, base_url, seen, images, lambda: "core_callout")
 
     return images
 
@@ -532,7 +590,7 @@ def parse_product_page(html: str, url: str, status: str = "current") -> dict:
         },
         "skus": parse_weight_slides(soup),
         "resources": parse_resources(soup, url),
-        "images": parse_images(html, url),
+        "images": parse_images(soup, url),
         "description": parse_description(soup),
     }
 
