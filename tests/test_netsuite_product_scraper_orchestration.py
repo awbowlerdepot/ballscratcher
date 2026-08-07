@@ -116,6 +116,21 @@ class FakeCursor:
                 self.db["cores"][key]["core_type"] = core_type
             self._result = (self.db["cores"][key]["id"],)
 
+        elif q.startswith("insert into coverstocks"):
+            brand_id, name, material, cs_type = params
+            key = (brand_id, name)
+            existing = self.db["coverstocks"].get(key)
+            if existing is None:
+                coverstock_id = self.db["_next_coverstock_id"]
+                self.db["_next_coverstock_id"] += 1
+                self.db["coverstocks"][key] = {"id": coverstock_id, "material": material, "type": cs_type}
+            else:
+                if self.db["coverstocks"][key]["material"] is None:
+                    self.db["coverstocks"][key]["material"] = material
+                if self.db["coverstocks"][key]["type"] is None:
+                    self.db["coverstocks"][key]["type"] = cs_type
+            self._result = (self.db["coverstocks"][key]["id"],)
+
         elif q.startswith("insert into products"):
             url = params[2]
             status = params[10]
@@ -198,9 +213,9 @@ class FakeConnection:
 
 def _fresh_db(discovered_urls=None):
     return {
-        "_next_product_id": 1, "_next_image_id": 1, "_next_core_id": 1,
+        "_next_product_id": 1, "_next_image_id": 1, "_next_core_id": 1, "_next_coverstock_id": 1,
         "_products_by_url": {},
-        "products": {}, "product_skus": {}, "product_images": {}, "cores": {},
+        "products": {}, "product_skus": {}, "product_images": {}, "cores": {}, "coverstocks": {},
         "discovered_urls": discovered_urls or {},
     }
 
@@ -271,6 +286,24 @@ def test_get_or_create_core_id_creates_and_reuses():
     conn = FakeConnection(db)
     first_id = app.get_or_create_core_id(conn, "brand-1", "Centrix", "symmetric")
     second_id = app.get_or_create_core_id(conn, "brand-1", "Centrix", "symmetric")
+    assert first_id == second_id
+
+
+# --- get_or_create_coverstock_id (migration 008 -- same shape as
+# get_or_create_core_id above, Al's direct follow-up ask) ---
+
+def test_get_or_create_coverstock_id_returns_none_for_no_coverstock_name():
+    db = _fresh_db()
+    conn = FakeConnection(db)
+    assert app.get_or_create_coverstock_id(conn, "brand-1", None) is None
+    assert db["coverstocks"] == {}
+
+
+def test_get_or_create_coverstock_id_creates_and_reuses():
+    db = _fresh_db()
+    conn = FakeConnection(db)
+    first_id = app.get_or_create_coverstock_id(conn, "brand-1", "Atomic Propulsion Pearl Reactive", "reactive_resin", "pearl")
+    second_id = app.get_or_create_coverstock_id(conn, "brand-1", "Atomic Propulsion Pearl Reactive", "reactive_resin", "pearl")
     assert first_id == second_id
 
 

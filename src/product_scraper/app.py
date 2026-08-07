@@ -572,6 +572,34 @@ def get_or_create_core_id(conn, brand_id: str, core_name, core_type=None):
         return cur.fetchone()[0]
 
 
+def get_or_create_coverstock_id(conn, brand_id: str, coverstock_name, material=None, cs_type=None):
+    """Same shape as get_or_create_core_id above, for coverstocks instead
+    of cores -- see migration 008 for why this table exists. Al's ask,
+    directly parallel to cores: coverstock_name is a shared, brand-scoped
+    marketing name (e.g. "HK22 - Savvy Hook Hybrid") that multiple
+    differently-named products can share, invisible as a many-to-one
+    relationship while it only lived as a repeated free-text column on
+    products. material/type are coalesced the same way core_type is (never
+    overwrite an existing value) -- this project has no observed case of
+    the same coverstock name legitimately reporting two different
+    material/type combinations."""
+    if not coverstock_name:
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into coverstocks (brand_id, name, material, type)
+            values (%s, %s, %s, %s)
+            on conflict (brand_id, name) do update set
+                material = coalesce(coverstocks.material, excluded.material),
+                type = coalesce(coverstocks.type, excluded.type)
+            returning id
+            """,
+            (brand_id, coverstock_name, material, cs_type),
+        )
+        return cur.fetchone()[0]
+
+
 def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
     """Insert or update the products row and its product_skus/product_images
     rows for one scraped page. Returns
@@ -598,6 +626,10 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
     # anywhere on the page (see parse_product_page) -- core_type stays None
     # here, same as it always has. Only core_name is new.
     core_id = get_or_create_core_id(conn, brand_id, parsed.get("core_name"))
+    coverstock_id = get_or_create_coverstock_id(
+        conn, brand_id, parsed.get("coverstock_name"),
+        parsed.get("coverstock_material"), parsed.get("coverstock_type"),
+    )
 
     # discontinued_detected_at logic (see migration 003's comments for the
     # full reasoning): on INSERT, set to now() if the product is already
@@ -613,12 +645,12 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
                 brand_id, name, url, color, coverstock_material, coverstock_type,
                 coverstock_name, factory_finish, part_number, weights_available,
                 status, source_platform, release_date, description, discontinued_detected_at,
-                core_id
+                core_id, coverstock_id
             )
             values (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::int4range, %s, 'craft_cms', %s, %s,
                 case when %s = 'retired' then now() else null end,
-                %s
+                %s, %s
             )
             on conflict (url) do update set
                 name = excluded.name,
@@ -640,6 +672,8 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
                 -- "Core" spec value (page layout hiccup, etc.) shouldn't
                 -- null out a core_id a previous scrape already resolved.
                 core_id = coalesce(excluded.core_id, products.core_id),
+                -- same reasoning again, for coverstock_id (migration 008).
+                coverstock_id = coalesce(excluded.coverstock_id, products.coverstock_id),
                 discontinued_detected_at = case
                     when excluded.status = 'retired' and products.status <> 'retired' then now()
                     when excluded.status = 'current' then null
@@ -653,7 +687,7 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
                 parsed["coverstock_material"], parsed["coverstock_type"],
                 parsed["coverstock_name"], parsed["factory_finish"], parsed["part_number"],
                 weights_range, parsed["status"], parsed["release_date"], parsed["description"],
-                parsed["status"], core_id,
+                parsed["status"], core_id, coverstock_id,
             ),
         )
         product_id = cur.fetchone()[0]

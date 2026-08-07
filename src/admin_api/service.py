@@ -250,7 +250,8 @@ def list_brands(conn) -> list:
 
 def list_products(conn, published: bool = None, brand_id: str = None, search: str = None,
                    needs_video_summary_refresh: bool = None, has_approved_video_summaries: bool = None,
-                   missing_core: bool = None, source_platform: str = None, limit: int = 50, offset: int = 0) -> list:
+                   missing_core: bool = None, missing_coverstock: bool = None, source_platform: str = None,
+                   limit: int = 50, offset: int = 0) -> list:
     """source_platform: filters to one scraper platform ('netsuite',
     'shopify', 'woocommerce', 'commercebuild', 'craft_cms' -- same values
     as products.source_platform and queue_rescrape's SCRAPE_QUEUE_ENV_VAR_
@@ -311,7 +312,23 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     distinct "announced" date separate from release/availability
     anywhere in its HTML, especially not for older/historic balls, so it
     stays unpopulated and out of this column list until a real source
-    turns up."""
+    turns up.
+
+    missing_coverstock=True: products with no coverstock_id set yet
+    (migration 008) -- Al's direct follow-up to the cores work, "can we
+    do the same thing we did for cores for covers, those are also shared
+    across many balls". Same data-quality-visibility purpose as
+    missing_core, though the underlying gap is smaller here: unlike
+    core_id (which needed a live rescrape of every product to backfill,
+    since family_id/core_id was never populated before migration 007),
+    coverstock_id was backfilled for every already-populated
+    coverstock_name in migration 008 itself -- so this filter should only
+    ever catch products whose page genuinely never exposed a parseable
+    coverstock, not a backlog waiting on a rescrape. p.coverstock_id/
+    p.coverstock_name are also now selected (the latter already existed
+    as a real per-product column, see migration 008's own comment on why
+    it wasn't dropped) so the Products tab can show and link into a
+    shared coverstock without a second lookup."""
     # p alias + left join cores: needed once c.name entered the picture --
     # products and cores both have a plain "name" column, so every
     # previously-bare column reference below (name, published, brand_id,
@@ -325,7 +342,7 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     # not a UUID you'd have to look up separately.
     query = """
         select p.id, p.brand_id, b.name as brand_name, p.name, p.url, p.status, p.published, p.updated_at,
-               p.core_id, c.name as core_name, p.release_date
+               p.core_id, c.name as core_name, p.release_date, p.coverstock_id, p.coverstock_name
         from products p
         left join cores c on c.id = p.core_id
         left join brands b on b.id = p.brand_id
@@ -364,6 +381,8 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
         """
     if missing_core:
         query += " and p.core_id is null"
+    if missing_coverstock:
+        query += " and p.coverstock_id is null"
     if source_platform:
         query += " and p.source_platform = %s"
         params.append(source_platform)
@@ -584,6 +603,90 @@ def get_core(conn, core_id: str):
         core["products"] = [dict(zip(product_columns, row)) for row in cur.fetchall()]
 
         return core
+
+
+# ---------------------------------------------------------------------
+# Coverstocks (GET /coverstocks, GET /coverstocks/{id}) -- the exact same
+# "other direction" view as Cores above, one migration later (008): a
+# coverstock_name is a shared, brand-scoped marketing name multiple
+# differently-named products can reuse, invisible from the Products tab
+# alone the same way a shared core was before the Cores tab existed. Al's
+# own framing when he asked for this: "can we do the same thing we did
+# for cores for covers, those are also shared across many balls" --
+# confirmed the shared field would be coverstock_name.
+# ---------------------------------------------------------------------
+
+def list_coverstocks(conn, brand_id: str = None, search: str = None, limit: int = 50, offset: int = 0) -> list:
+    """Same shape as list_cores -- product_count via left join + count/
+    group by, ordered by product_count desc so heavily-reused coverstocks
+    surface first. A coverstock with zero products currently pointing at
+    it (e.g. every referencing product got rescraped under a corrected
+    name) still shows up with product_count=0 rather than being hidden --
+    same "real, useful signal" reasoning as list_cores' docstring."""
+    query = """
+        select cs.id, cs.brand_id, b.name as brand_name, cs.name, cs.material, cs.type,
+               cs.created_at, count(p.id) as product_count
+        from coverstocks cs
+        join brands b on b.id = cs.brand_id
+        left join products p on p.coverstock_id = cs.id
+        where 1=1
+    """
+    params = []
+    if brand_id:
+        query += " and cs.brand_id = %s"
+        params.append(brand_id)
+    if search:
+        query += " and cs.name ilike %s"
+        params.append(f"%{search}%")
+    # cs.id as a final tiebreaker -- same pagination-stability reasoning
+    # as list_cores' c.id tiebreaker.
+    query += """
+        group by cs.id, b.name
+        order by product_count desc, cs.name asc, cs.id asc
+        limit %s offset %s
+    """
+    params += [limit, offset]
+
+    with conn.cursor() as cur:
+        cur.execute(query, params)
+        columns = [desc[0] for desc in cur.description]
+        return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
+def get_coverstock(conn, coverstock_id: str):
+    """Detail view: the coverstock row itself plus every product currently
+    pointing at it, same fields/shape as get_core. Returns None (not an
+    exception) when the id doesn't exist -- app.py maps that to a 404."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select cs.id, cs.brand_id, b.name as brand_name, cs.name, cs.material, cs.type,
+                   cs.created_at
+            from coverstocks cs
+            join brands b on b.id = cs.brand_id
+            where cs.id = %s
+            """,
+            (coverstock_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        columns = [desc[0] for desc in cur.description]
+        coverstock = dict(zip(columns, row))
+
+        cur.execute(
+            """
+            select id, name, url, status, published, updated_at
+            from products
+            where coverstock_id = %s
+            order by name asc
+            """,
+            (coverstock_id,),
+        )
+        product_columns = [desc[0] for desc in cur.description]
+        coverstock["products"] = [dict(zip(product_columns, row)) for row in cur.fetchall()]
+
+        return coverstock
 
 
 # ---------------------------------------------------------------------

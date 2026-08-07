@@ -221,6 +221,7 @@
   <button data-tab="videos" onclick="showTab('videos')">Video Candidates</button>
   <button data-tab="products" onclick="showTab('products')">Products</button>
   <button data-tab="cores" onclick="showTab('cores')">Cores</button>
+  <button data-tab="coverstocks" onclick="showTab('coverstocks')">Coverstocks</button>
   <button data-tab="batch" onclick="showTab('batch')">Batch Jobs</button>
 </nav>
 
@@ -300,6 +301,7 @@
       <label class="checkbox"><input id="product-needs-refresh" type="checkbox"> stale rollup</label>
       <label class="checkbox"><input id="product-has-approved" type="checkbox"> has any summarized video</label>
       <label class="checkbox"><input id="product-missing-core" type="checkbox"> missing core</label>
+      <label class="checkbox"><input id="product-missing-coverstock" type="checkbox"> missing coverstock</label>
       <button class="btn" type="submit">Filter</button>
     </form>
     <div id="product-list"><p class="muted">Set your API URL and token above, then this loads automatically.</p></div>
@@ -336,6 +338,33 @@
       <button id="core-prev" onclick="corePage(-1)" disabled>&larr; Prev</button>
       <span id="core-page-label"></span>
       <button id="core-next" onclick="corePage(1)" disabled>Next &rarr;</button>
+    </div>
+  </section>
+
+  <!-- ============ Coverstocks tab ============ -->
+  <!-- The exact same "other direction" view as the Cores tab above, one
+       migration later (008): a coverstock_name is a shared, brand-scoped
+       marketing name multiple differently-named products can reuse. Al's
+       own framing when he asked for this: "can we do the same thing we
+       did for cores for covers, those are also shared across many
+       balls". -->
+  <section id="tab-coverstocks" class="tab hidden">
+    <form class="filters" onsubmit="applyCoverstockFilters(); return false;">
+      <div class="field">
+        <label>Search coverstock name</label>
+        <input id="coverstock-search" type="text" placeholder="e.g. pearl reactive">
+      </div>
+      <div class="field">
+        <label>Brand</label>
+        <select id="coverstock-brand-id" class="brand-filter"><option value="">any brand</option></select>
+      </div>
+      <button class="btn" type="submit">Filter</button>
+    </form>
+    <div id="coverstock-list"><p class="muted">Set your API URL and token above, then this loads automatically.</p></div>
+    <div class="pager">
+      <button id="coverstock-prev" onclick="coverstockPage(-1)" disabled>&larr; Prev</button>
+      <span id="coverstock-page-label"></span>
+      <button id="coverstock-next" onclick="coverstockPage(1)" disabled>Next &rarr;</button>
     </div>
   </section>
 
@@ -573,7 +602,7 @@ function renderRawTableList(items, emptyLabel) {
 // --------------------------------------------------------------------
 // Tabs
 // --------------------------------------------------------------------
-const TAB_LOADERS = { review: loadReviewQueue, videos: loadVideoCandidates, products: loadProducts, cores: loadCores, batch: null };
+const TAB_LOADERS = { review: loadReviewQueue, videos: loadVideoCandidates, products: loadProducts, cores: loadCores, coverstocks: loadCoverstocks, batch: null };
 let activeTab = 'review';
 
 function showTab(name) {
@@ -822,7 +851,7 @@ async function deleteVideo(id) {
 // --------------------------------------------------------------------
 // Products tab
 // --------------------------------------------------------------------
-const productState = { search: '', brandId: '', published: '', needsRefresh: false, hasApproved: false, missingCore: false, offset: 0, limit: 50, lastCount: 0 };
+const productState = { search: '', brandId: '', published: '', needsRefresh: false, hasApproved: false, missingCore: false, missingCoverstock: false, offset: 0, limit: 50, lastCount: 0 };
 
 function applyProductFilters() {
   productState.search = document.getElementById('product-search').value.trim();
@@ -831,6 +860,7 @@ function applyProductFilters() {
   productState.needsRefresh = document.getElementById('product-needs-refresh').checked;
   productState.hasApproved = document.getElementById('product-has-approved').checked;
   productState.missingCore = document.getElementById('product-missing-core').checked;
+  productState.missingCoverstock = document.getElementById('product-missing-coverstock').checked;
   productState.offset = 0;
   loadProducts();
 }
@@ -853,6 +883,7 @@ async function loadProducts() {
     if (productState.needsRefresh) params.needs_video_summary_refresh = true;
     if (productState.hasApproved) params.has_approved_video_summaries = true;
     if (productState.missingCore) params.missing_core = true;
+    if (productState.missingCoverstock) params.missing_coverstock = true;
     const data = await api('GET', '/products', { params: params });
     renderProducts(data.items || []);
   } catch (e) {
@@ -872,14 +903,15 @@ function renderProducts(items) {
         '<td>' + (p.brand_name ? escapeHtml(p.brand_name) : '<span class="muted mono small">' + escapeHtml((p.brand_id || '').slice(0, 8)) + '&hellip;</span>') + '</td>' +
         '<td>' + escapeHtml(p.status || '') + '</td>' +
         '<td>' + (p.core_name ? escapeHtml(p.core_name) : '<span class="muted">&mdash;</span>') + '</td>' +
+        '<td>' + (p.coverstock_name ? escapeHtml(p.coverstock_name) : '<span class="muted">&mdash;</span>') + '</td>' +
         '<td>' + (p.release_date ? fmtDateOnly(p.release_date) : '<span class="muted">&mdash;</span>') + '</td>' +
         '<td><button class="btn small ' + (p.published ? 'ok' : 'ghost') + '" onclick="togglePublish(\'' + p.id + '\', ' + (!p.published) + ')">' + (p.published ? 'Published' : 'Unpublished') + '</button></td>' +
         '<td>' + fmtDate(p.updated_at) + '</td>' +
         '<td class="actions"><button class="btn small ghost" onclick="toggleProductDetail(\'' + p.id + '\')">Detail</button></td>' +
         '</tr>' +
-        '<tr id="product-detail-' + p.id + '" class="detail-row hidden"><td colspan="8"></td></tr>';
+        '<tr id="product-detail-' + p.id + '" class="detail-row hidden"><td colspan="9"></td></tr>';
     }).join('');
-    listEl.innerHTML = '<table><thead><tr><th>Name</th><th>Brand</th><th>Status</th><th>Core</th><th>Release Date</th><th>Published</th><th>Updated</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    listEl.innerHTML = '<table><thead><tr><th>Name</th><th>Brand</th><th>Status</th><th>Core</th><th>Coverstock</th><th>Release Date</th><th>Published</th><th>Updated</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
   document.getElementById('product-prev').disabled = productState.offset === 0;
   document.getElementById('product-next').disabled = productState.lastCount < productState.limit;
@@ -1097,6 +1129,103 @@ async function loadCoreDetailInto(id, cell) {
     cell.innerHTML =
       '<div class="detail-panel">' +
       '<p><strong>' + escapeHtml(c.products.length) + ' product' + (c.products.length === 1 ? '' : 's') + ' using this core:</strong></p>' +
+      '<table class="mini"><thead><tr><th>Name</th><th>Status</th><th>Published</th><th>Updated</th></tr></thead><tbody>' +
+      (productRows || '<tr><td colspan="4" class="muted">none -- likely an orphaned row, safe to investigate for cleanup</td></tr>') +
+      '</tbody></table>' +
+      '</div>';
+  } catch (e) {
+    cell.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
+  }
+}
+
+// --------------------------------------------------------------------
+// Coverstocks tab -- the exact same shape as the Cores tab above, one
+// migration later (008). See that section's HTML comment for the
+// reasoning; this is a straight copy of loadCores/renderCores/
+// toggleCoreDetail/loadCoreDetailInto with core -> coverstock, plus
+// material/type shown instead of a single core_type column.
+// --------------------------------------------------------------------
+const coverstockState = { search: '', brandId: '', offset: 0, limit: 50, lastCount: 0 };
+
+function applyCoverstockFilters() {
+  coverstockState.search = document.getElementById('coverstock-search').value.trim();
+  coverstockState.brandId = document.getElementById('coverstock-brand-id').value.trim();
+  coverstockState.offset = 0;
+  loadCoverstocks();
+}
+
+function coverstockPage(delta) {
+  coverstockState.offset = Math.max(0, coverstockState.offset + delta * coverstockState.limit);
+  loadCoverstocks();
+}
+
+async function loadCoverstocks() {
+  const listEl = document.getElementById('coverstock-list');
+  listEl.innerHTML = '<p class="muted">Loading&hellip;</p>';
+  try {
+    const data = await api('GET', '/coverstocks', { params: {
+      search: coverstockState.search, brand_id: coverstockState.brandId,
+      limit: coverstockState.limit, offset: coverstockState.offset,
+    }});
+    renderCoverstocks(data.items || []);
+  } catch (e) {
+    listEl.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
+  }
+}
+
+function renderCoverstocks(items) {
+  coverstockState.lastCount = items.length;
+  const listEl = document.getElementById('coverstock-list');
+  if (!items.length) {
+    listEl.innerHTML = '<p class="muted">No coverstocks match.</p>';
+  } else {
+    const rows = items.map(function (cs) {
+      const countBadge = cs.product_count > 0
+        ? '<span class="badge ok">' + cs.product_count + '</span>'
+        : '<span class="badge muted">0</span>';
+      return '<tr>' +
+        '<td>' + escapeHtml(cs.brand_name || '') + '</td>' +
+        '<td>' + escapeHtml(cs.name) + '</td>' +
+        '<td>' + (cs.material ? escapeHtml(cs.material) : '<span class="muted">&mdash;</span>') + '</td>' +
+        '<td>' + (cs.type ? escapeHtml(cs.type) : '<span class="muted">&mdash;</span>') + '</td>' +
+        '<td>' + countBadge + '</td>' +
+        '<td>' + fmtDate(cs.created_at) + '</td>' +
+        '<td class="actions"><button class="btn small ghost" onclick="toggleCoverstockDetail(\'' + cs.id + '\')">Products</button></td>' +
+        '</tr>' +
+        '<tr id="coverstock-detail-' + cs.id + '" class="detail-row hidden"><td colspan="7"></td></tr>';
+    }).join('');
+    listEl.innerHTML = '<table><thead><tr><th>Brand</th><th>Coverstock Name</th><th>Material</th><th>Type</th><th>Products</th><th>Created</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+  document.getElementById('coverstock-prev').disabled = coverstockState.offset === 0;
+  document.getElementById('coverstock-next').disabled = coverstockState.lastCount < coverstockState.limit;
+  document.getElementById('coverstock-page-label').textContent = items.length ? ('showing ' + (coverstockState.offset + 1) + '–' + (coverstockState.offset + items.length)) : '';
+}
+
+async function toggleCoverstockDetail(id) {
+  const row = document.getElementById('coverstock-detail-' + id);
+  if (!row) return;
+  const opening = row.classList.contains('hidden');
+  if (!opening) { row.classList.add('hidden'); return; }
+  row.classList.remove('hidden');
+  await loadCoverstockDetailInto(id, row.querySelector('td'));
+}
+
+async function loadCoverstockDetailInto(id, cell) {
+  cell.innerHTML = '<p class="muted">Loading&hellip;</p>';
+  try {
+    const cs = await api('GET', '/coverstocks/' + id);
+    const productRows = (cs.products || []).map(function (p) {
+      const publishedBadge = p.published ? '<span class="badge ok">published</span>' : '<span class="badge muted">unpublished</span>';
+      return '<tr>' +
+        '<td><a href="' + escapeHtml(p.url || '#') + '" target="_blank" rel="noopener">' + escapeHtml(p.name) + '</a></td>' +
+        '<td>' + escapeHtml(p.status || '') + '</td>' +
+        '<td>' + publishedBadge + '</td>' +
+        '<td>' + fmtDate(p.updated_at) + '</td>' +
+        '</tr>';
+    }).join('');
+    cell.innerHTML =
+      '<div class="detail-panel">' +
+      '<p><strong>' + escapeHtml(cs.products.length) + ' product' + (cs.products.length === 1 ? '' : 's') + ' using this coverstock:</strong></p>' +
       '<table class="mini"><thead><tr><th>Name</th><th>Status</th><th>Published</th><th>Updated</th></tr></thead><tbody>' +
       (productRows || '<tr><td colspan="4" class="muted">none -- likely an orphaned row, safe to investigate for cleanup</td></tr>') +
       '</tbody></table>' +

@@ -758,6 +758,28 @@ def get_or_create_core_id(conn, brand_id: str, core_name, core_type=None):
         return cur.fetchone()[0]
 
 
+def get_or_create_coverstock_id(conn, brand_id: str, coverstock_name, material=None, cs_type=None):
+    """Same helper as product_scraper.get_or_create_coverstock_id --
+    duplicated rather than shared, same reasoning as
+    get_or_create_core_id above. See migration 008 for why this table
+    exists."""
+    if not coverstock_name:
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into coverstocks (brand_id, name, material, type)
+            values (%s, %s, %s, %s)
+            on conflict (brand_id, name) do update set
+                material = coalesce(coverstocks.material, excluded.material),
+                type = coalesce(coverstocks.type, excluded.type)
+            returning id
+            """,
+            (brand_id, coverstock_name, material, cs_type),
+        )
+        return cur.fetchone()[0]
+
+
 def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
     """Returns {"product_id": ..., "pending_image_jobs": [...]}, same
     shape as product_scraper.upsert_product -- see that module for why
@@ -770,6 +792,10 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
         weights_range = f"[{low},{high}]"
 
     core_id = get_or_create_core_id(conn, brand_id, parsed.get("core_name"))
+    coverstock_id = get_or_create_coverstock_id(
+        conn, brand_id, parsed.get("coverstock_name"),
+        parsed.get("coverstock_material"), parsed.get("coverstock_type"),
+    )
 
     # See product_scraper.upsert_product / migration 003 for the
     # discontinued_detected_at reasoning -- same logic here. Extra
@@ -784,12 +810,12 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
                 brand_id, name, url, color, coverstock_material, coverstock_type,
                 coverstock_name, factory_finish, part_number, weights_available,
                 status, source_platform, release_date, description, discontinued_detected_at,
-                core_id
+                core_id, coverstock_id
             )
             values (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::int4range, %s, 'netsuite', %s, %s,
                 case when %s = 'retired' then now() else null end,
-                %s
+                %s, %s
             )
             on conflict (url) do update set
                 name = excluded.name,
@@ -804,6 +830,7 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
                 release_date = coalesce(excluded.release_date, products.release_date),
                 description = coalesce(excluded.description, products.description),
                 core_id = coalesce(excluded.core_id, products.core_id),
+                coverstock_id = coalesce(excluded.coverstock_id, products.coverstock_id),
                 discontinued_detected_at = case
                     when excluded.status = 'retired' and products.status <> 'retired' then now()
                     when excluded.status = 'current' then null
@@ -817,7 +844,7 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
                 parsed["coverstock_material"], parsed["coverstock_type"],
                 parsed["coverstock_name"], parsed["factory_finish"], parsed["part_number"],
                 weights_range, parsed["status"], parsed["release_date"], parsed["description"],
-                parsed["status"], core_id,
+                parsed["status"], core_id, coverstock_id,
             ),
         )
         product_id = cur.fetchone()[0]

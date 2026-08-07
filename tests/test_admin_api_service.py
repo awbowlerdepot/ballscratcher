@@ -1460,6 +1460,84 @@ def test_get_core_returns_none_for_missing_id():
     assert "where c.id = %s" in queries[0]
 
 
+# --- list_products: missing_coverstock filter + coverstock_id/name
+# columns (migration 008) -- Al's direct follow-up to the cores work,
+# "can we do the same thing we did for cores for covers, those are also
+# shared across many balls".
+
+def test_list_products_selects_coverstock_id_and_name():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "p.coverstock_id" in query
+    assert "p.coverstock_name" in query
+
+
+def test_list_products_missing_coverstock_adds_filter_sql():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, missing_coverstock=True, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "p.coverstock_id is null" in query
+
+
+def test_list_products_omits_missing_coverstock_filter_by_default():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "p.coverstock_id is null" not in query
+
+
+# --- list_coverstocks / get_coverstock: the exact same "other direction"
+# view as list_cores/get_core above, one migration later (008). Same
+# SQL-text-capturing convention, same reasoning (no real Postgres in this
+# sandbox).
+
+def test_list_coverstocks_default_query_joins_brands_and_counts_products():
+    conn = _QueryCapturingConnection()
+    service.list_coverstocks(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "join brands b on b.id = cs.brand_id" in query
+    assert "left join products p on p.coverstock_id = cs.id" in query
+    assert "count(p.id) as product_count" in query
+    assert "group by cs.id, b.name" in query
+    assert "order by product_count desc, cs.name asc, cs.id asc" in query
+    assert "cs.brand_id = %s" not in query  # not real SQL, guards against copy-paste
+    assert "cs.name ilike %s" not in query
+
+
+def test_list_coverstocks_brand_id_filter_adds_clause():
+    conn = _QueryCapturingConnection()
+    service.list_coverstocks(conn, brand_id="brand-abc", limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "and cs.brand_id = %s" in query
+
+
+def test_list_coverstocks_search_filter_adds_ilike_clause():
+    conn = _QueryCapturingConnection()
+    service.list_coverstocks(conn, search="Pearl Reactive", limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "and cs.name ilike %s" in query
+
+
+def test_get_coverstock_returns_none_for_missing_id():
+    """Same not-found short-circuit convention as get_core."""
+    conn = _QueryCapturingConnection()
+
+    result = service.get_coverstock(conn, "does-not-exist")
+
+    assert result is None
+    queries = conn.cursor().queries
+    assert len(queries) == 1
+    assert "join brands b on b.id = cs.brand_id" in queries[0]
+    assert "where cs.id = %s" in queries[0]
+
+
 # --- get_product: real ask from Al -- surface every column from every
 # related table (not a curated subset) so a data-quality pass can see
 # gaps by inspection. See service.get_product's docstring for the full

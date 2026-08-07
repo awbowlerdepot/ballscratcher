@@ -760,6 +760,27 @@ def get_or_create_core_id(conn, brand_id: str, core_name, core_type=None):
         return cur.fetchone()[0]
 
 
+def get_or_create_coverstock_id(conn, brand_id: str, coverstock_name, material=None, cs_type=None):
+    """Same helper as product_scraper.get_or_create_coverstock_id --
+    duplicated rather than shared, same reasoning as get_or_create_core_id
+    above. See migration 008 for why this table exists."""
+    if not coverstock_name:
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into coverstocks (brand_id, name, material, type)
+            values (%s, %s, %s, %s)
+            on conflict (brand_id, name) do update set
+                material = coalesce(coverstocks.material, excluded.material),
+                type = coalesce(coverstocks.type, excluded.type)
+            returning id
+            """,
+            (brand_id, coverstock_name, material, cs_type),
+        )
+        return cur.fetchone()[0]
+
+
 def upsert_product(conn, brand_id: str, parsed: dict, pdf_skus: list, mismatches: list) -> dict:
     """Insert/update the products row, its product_skus rows (sourced
     from the Tech Data PDF -- source='pdf', the schema's existing
@@ -779,6 +800,10 @@ def upsert_product(conn, brand_id: str, parsed: dict, pdf_skus: list, mismatches
     CONFLICT update as well, so a product correctly flips to 'retired' if
     a later re-scrape finds it's moved to the archive listing."""
     core_id = get_or_create_core_id(conn, brand_id, parsed.get("core_name"), parsed.get("core_type"))
+    coverstock_id = get_or_create_coverstock_id(
+        conn, brand_id, parsed.get("coverstock_name"),
+        parsed.get("coverstock_material"), parsed.get("coverstock_type"),
+    )
 
     with conn.cursor() as cur:
         cur.execute(
@@ -786,9 +811,9 @@ def upsert_product(conn, brand_id: str, parsed: dict, pdf_skus: list, mismatches
             insert into products (
                 brand_id, name, url, color, coverstock_material, coverstock_type,
                 coverstock_name, factory_finish, part_number, status, source_platform,
-                release_date, description, core_id
+                release_date, description, core_id, coverstock_id
             )
-            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'commercebuild', %s, %s, %s)
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'commercebuild', %s, %s, %s, %s)
             on conflict (url) do update set
                 name = excluded.name,
                 color = excluded.color,
@@ -801,6 +826,7 @@ def upsert_product(conn, brand_id: str, parsed: dict, pdf_skus: list, mismatches
                 release_date = coalesce(excluded.release_date, products.release_date),
                 description = coalesce(excluded.description, products.description),
                 core_id = coalesce(excluded.core_id, products.core_id),
+                coverstock_id = coalesce(excluded.coverstock_id, products.coverstock_id),
                 updated_at = now()
             returning id
             """,
@@ -808,7 +834,7 @@ def upsert_product(conn, brand_id: str, parsed: dict, pdf_skus: list, mismatches
                 brand_id, parsed["name"], parsed["url"], parsed["color"],
                 parsed["coverstock_material"], parsed["coverstock_type"],
                 parsed["coverstock_name"], parsed["factory_finish"], parsed["sku_code"],
-                parsed["status"], parsed["release_date"], parsed["description"], core_id,
+                parsed["status"], parsed["release_date"], parsed["description"], core_id, coverstock_id,
             ),
         )
         product_id = cur.fetchone()[0]

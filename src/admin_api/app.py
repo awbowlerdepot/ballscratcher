@@ -136,6 +136,7 @@ def get_products(
     needs_video_summary_refresh: Optional[bool] = Query(None),
     has_approved_video_summaries: Optional[bool] = Query(None),
     missing_core: Optional[bool] = Query(None),
+    missing_coverstock: Optional[bool] = Query(None),
     source_platform: Optional[str] = Query(None),
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
@@ -146,7 +147,8 @@ def get_products(
             conn, published=published, brand_id=brand_id, search=search,
             needs_video_summary_refresh=needs_video_summary_refresh,
             has_approved_video_summaries=has_approved_video_summaries,
-            missing_core=missing_core, source_platform=source_platform,
+            missing_core=missing_core, missing_coverstock=missing_coverstock,
+            source_platform=source_platform,
             limit=limit, offset=offset,
         )}
     finally:
@@ -255,6 +257,38 @@ def get_core(core_id: str):
         if core is None:
             raise HTTPException(status_code=404, detail="core not found")
         return core
+    finally:
+        conn.close()
+
+
+@app.get("/coverstocks")
+def get_coverstocks(
+    brand_id: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    limit: int = Query(50, le=200),
+    offset: int = Query(0, ge=0),
+):
+    # Same "other direction" view as GET /cores, one migration later
+    # (008) -- see service.list_coverstocks' docstring. One row per
+    # coverstock (not per product), with a product_count so a
+    # many-products-to-one-coverstock case is visible at a glance instead
+    # of only inferable by noticing several Products-tab rows share a
+    # coverstock name.
+    conn = service.get_db_connection()
+    try:
+        return {"items": service.list_coverstocks(conn, brand_id=brand_id, search=search, limit=limit, offset=offset)}
+    finally:
+        conn.close()
+
+
+@app.get("/coverstocks/{coverstock_id}")
+def get_coverstock(coverstock_id: str):
+    conn = service.get_db_connection()
+    try:
+        coverstock = service.get_coverstock(conn, coverstock_id)
+        if coverstock is None:
+            raise HTTPException(status_code=404, detail="coverstock not found")
+        return coverstock
     finally:
         conn.close()
 

@@ -33,7 +33,7 @@ Any Postgres 13+ instance works (RDS is the obvious choice, but this
 repo doesn't assume it). Note the connection details -- you'll need them
 for step 3's `DbSecretArn` secret and to run migrations directly.
 
-## 2. Run the seven migrations, in order
+## 2. Run the eight migrations, in order
 
 ```bash
 psql "$DATABASE_URL" -f db/migrations/001_init_schema.sql
@@ -43,6 +43,7 @@ psql "$DATABASE_URL" -f db/migrations/004_product_videos.sql
 psql "$DATABASE_URL" -f db/migrations/005_products_last_video_discovery_at.sql
 psql "$DATABASE_URL" -f db/migrations/006_products_video_reviews_summary.sql
 psql "$DATABASE_URL" -f db/migrations/007_cores_table.sql
+psql "$DATABASE_URL" -f db/migrations/008_coverstocks_table.sql
 ```
 
 (If you already ran an earlier subset in a prior deploy, just run whatever
@@ -607,6 +608,62 @@ fields), so nothing was actually broken by this in practice. Removed the
 dead entry; `get_product()` now left-joins `cores` so the admin API
 returns `core_name`/`core_type` for the detail view, and `admin-site/
 index.html`'s product detail panel shows it.
+
+**Coverstock normalized too (migration 008), same shape as cores.** Al's
+direct follow-up ask: "can we do the same thing we did for cores for
+covers, those are also shared across many balls" -- confirmed the shared
+field would be `coverstock_name`, products' existing free-text marketing
+name column (e.g. MOTIV's "Atomic Propulsion Pearl Reactive", Brunswick's
+"HK22 - Savvy Hook Hybrid"). Same real shape as cores: one named
+coverstock formulation, scoped to a brand, reused across many
+differently-named products.
+
+**One real difference from the cores rollout, worth calling out because
+it changes the deploy story:** `ball_families`/`cores` existed in the
+schema from day one but was never wired into any scraper, so `core_id`
+needed a live rescrape of every product to backfill (see above --
+`scripts/backfill_core_ids.py`, the whole `POST /rescrape` mechanism,
+the concurrency-throttle incident). `coverstock_name`/`coverstock_material`/
+`coverstock_type`, by contrast, have been real, populated columns on
+every `products` row since `001_init_schema.sql`, written by every one
+of the five scrapers (`product_scraper`, `commercebuild_product_scraper`,
+`woocommerce_product_scraper`, `netsuite_product_scraper`,
+`shopify_product_scraper`) on every scrape. That means migration 008
+backfills `coverstock_id` for every already-scraped product **in the
+migration itself**, from data that already exists -- one `insert ...
+select distinct` plus one `update ... from`, no rescrape, no backfill
+script, no admin_api endpoint needed for the one-time catch-up. There is
+deliberately no "Backfill missing coverstock info" Batch Jobs panel to
+match the cores one -- there's nothing to backfill that the migration
+didn't already handle.
+
+`products.coverstock_name`/`coverstock_material`/`coverstock_type` are
+left in place, unchanged, still written by every scraper on every scrape
+-- they're real per-product data other code already depends on directly
+(`bowlerdepot_reconciliation`'s field mapping, `pdf_parser`,
+`bowwwl_cross_check`), not just a foreign key's shadow. `coverstock_id`
+is additive: each scraper's `upsert_product` now also calls a duplicated
+`get_or_create_coverstock_id()` (same "own the whole package" convention
+as `get_or_create_core_id`, and the same coalesce-never-overwrite
+handling for `material`/`type`), and `list_products` now also selects
+`p.coverstock_id`/`p.coverstock_name` and accepts a `missing_coverstock`
+filter -- ongoing data-quality visibility for the (expected to be rare)
+case of a page that genuinely never exposed a parseable coverstock, not
+a backlog waiting on anything.
+
+**Coverstocks tab**, exact copy of the Cores tab's shape one migration
+later: `GET /coverstocks` (paginated, `brand_id`/`search`, one row per
+coverstock with a `product_count`, ordered `product_count desc` so
+heavily-reused coverstocks surface first) and `GET /coverstocks/{id}`
+(that coverstock's row plus every product currently pointing at it).
+Same "no `template.yaml` change needed" reasoning as `/cores` -- rides
+`AdminApiFunction`'s existing `/{proxy+}` catch-all (confirmed via the
+CFN-tolerant YAML parser: still 45 resources). `admin-site/index.html`
+gets a new Coverstocks tab (Brand/Coverstock Name/Material/Type/
+Products-count/Created, "Products" detail-row button per coverstock via
+`GET /coverstocks/{id}`), and the Products tab gains a Coverstock column
+and a "missing coverstock" filter checkbox alongside the existing Core
+column/"missing core" checkbox.
 
 ### 6d. SWAG (if `SwagBrandId` was set)
 
