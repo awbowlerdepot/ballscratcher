@@ -303,6 +303,26 @@ def test_parse_coverstock_returns_none_when_missing():
     assert result == {"coverstock_material": None, "coverstock_type": None}
 
 
+# --- _normalize_coverstock_name: real duplicate-data bug Al found in the
+# coverstocks table (migration 008/009) -- a manufacturer page adds a TM/
+# R/C symbol to a coverstock name sometimes but not always for the exact
+# same coverstock, which used to create two coverstocks rows for one real
+# coverstock.
+
+def test_normalize_coverstock_name_strips_trademark_symbol():
+    assert app._normalize_coverstock_name("Atomic Propulsion Pearl Reactive™") == "Atomic Propulsion Pearl Reactive"
+
+
+def test_normalize_coverstock_name_matches_already_clean_text():
+    assert app._normalize_coverstock_name("Atomic Propulsion Pearl Reactive™") == \
+        app._normalize_coverstock_name("Atomic Propulsion Pearl Reactive")
+
+
+def test_normalize_coverstock_name_returns_none_for_empty():
+    assert app._normalize_coverstock_name(None) is None
+    assert app._normalize_coverstock_name("") is None
+
+
 def test_parse_release_date_strips_available_prefix():
     import datetime
     assert app.parse_release_date("AVAILABLE 7/8/2026") == datetime.date(2026, 7, 8)

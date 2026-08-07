@@ -33,7 +33,7 @@ Any Postgres 13+ instance works (RDS is the obvious choice, but this
 repo doesn't assume it). Note the connection details -- you'll need them
 for step 3's `DbSecretArn` secret and to run migrations directly.
 
-## 2. Run the eight migrations, in order
+## 2. Run the nine migrations, in order
 
 ```bash
 psql "$DATABASE_URL" -f db/migrations/001_init_schema.sql
@@ -44,6 +44,7 @@ psql "$DATABASE_URL" -f db/migrations/005_products_last_video_discovery_at.sql
 psql "$DATABASE_URL" -f db/migrations/006_products_video_reviews_summary.sql
 psql "$DATABASE_URL" -f db/migrations/007_cores_table.sql
 psql "$DATABASE_URL" -f db/migrations/008_coverstocks_table.sql
+psql "$DATABASE_URL" -f db/migrations/009_normalize_coverstock_names.sql
 ```
 
 (If you already ran an earlier subset in a prior deploy, just run whatever
@@ -664,6 +665,45 @@ Products-count/Created, "Products" detail-row button per coverstock via
 `GET /coverstocks/{id}`), and the Products tab gains a Coverstock column
 and a "missing coverstock" filter checkbox alongside the existing Core
 column/"missing core" checkbox.
+
+**Real duplicate-data bug found immediately after 008, fixed in migration
+009:** Al reported the coverstocks table already had real duplicates --
+manufacturer pages add a trademark/registered/copyright symbol to a
+coverstock name sometimes but not always for the exact same coverstock
+(e.g. "R2S Solid Reactive" on one product's page, "R2S™ Solid Reactive"
+on another), and 008's exact-text `unique (brand_id, name)` constraint
+let both spellings in as separate rows -- same intent, different text.
+
+Two-part fix, same "raw data on the product, validated/normalized on the
+shared record" split Al specifically asked to keep (see the discussion
+in this session): each scraper's `get_or_create_coverstock_id` now runs
+the lookup/create key through a new `_normalize_coverstock_name()`
+(strips ™/®/©, collapses whitespace) before touching the `coverstocks`
+table -- duplicated per scraper, same convention as every other helper
+in this project. `products.coverstock_name` is completely untouched by
+this -- it keeps storing exactly what the page said, TM symbol or not.
+
+**Migration 009** (`db/migrations/009_normalize_coverstock_names.sql`)
+is the one-time catch-up for whatever migration 008's backfill (or any
+scrape before this fix shipped) already created from the raw,
+un-normalized text: normalizes every `coverstocks.name` in place, then
+merges any rows that collapse onto the same `(brand_id, name)` as a
+result -- repointing every `products.coverstock_id` from a merged-away
+row onto the survivor, backfilling `material`/`type` onto the survivor
+from any referencing product that has a real value it's missing, then
+deleting the merged-away rows. Written to be safe to run whether or not
+008 has actually been applied yet on a given database, and safe to run
+more than once (every step is a no-op on already-clean data) -- see the
+migration's own header comment for the full reasoning.
+
+```bash
+psql "$DATABASE_URL" -f db/migrations/009_normalize_coverstock_names.sql
+```
+
+Requires the same Lambda redeploy as the rest of this section (the
+`_normalize_coverstock_name` fix lives in scraper code, not just the
+migration) before new scrapes stop recreating the duplicate going
+forward.
 
 ### 6d. SWAG (if `SwagBrandId` was set)
 

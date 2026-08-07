@@ -758,12 +758,32 @@ def get_or_create_core_id(conn, brand_id: str, core_name, core_type=None):
         return cur.fetchone()[0]
 
 
+def _normalize_coverstock_name(name):
+    """Same helper as product_scraper._normalize_coverstock_name --
+    duplicated rather than shared, same reasoning as get_or_create_core_id
+    above. Strips TM/R/C marks and collapses whitespace before a
+    coverstock_name is used as the coverstocks table's lookup/create key
+    -- Al directly reported real duplicate coverstocks rows where the
+    exact same formulation shows up with a trailing (TM)/(R)/(C) symbol
+    on some scrapes/products and not others (a manufacturer page
+    inconsistency, not a scraper bug). Only the coverstocks table's
+    canonical name is normalized this way -- the raw, as-scraped text
+    still goes into products.coverstock_name completely unchanged."""
+    if not name:
+        return None
+    cleaned = re.sub(r"[™®©]", "", name)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned or None
+
+
 def get_or_create_coverstock_id(conn, brand_id: str, coverstock_name, material=None, cs_type=None):
     """Same helper as product_scraper.get_or_create_coverstock_id --
     duplicated rather than shared, same reasoning as
     get_or_create_core_id above. See migration 008 for why this table
-    exists."""
-    if not coverstock_name:
+    exists, and _normalize_coverstock_name above for why the lookup key
+    isn't just coverstock_name verbatim."""
+    normalized_name = _normalize_coverstock_name(coverstock_name)
+    if not normalized_name:
         return None
     with conn.cursor() as cur:
         cur.execute(
@@ -775,7 +795,7 @@ def get_or_create_coverstock_id(conn, brand_id: str, coverstock_name, material=N
                 type = coalesce(coverstocks.type, excluded.type)
             returning id
             """,
-            (brand_id, coverstock_name, material, cs_type),
+            (brand_id, normalized_name, material, cs_type),
         )
         return cur.fetchone()[0]
 

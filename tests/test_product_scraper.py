@@ -38,6 +38,7 @@ from app import (  # noqa: E402
     parse_description,
     _nearby_label_text,
     _resolve_img_src,
+    _normalize_coverstock_name,
 )
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
@@ -246,6 +247,28 @@ def test_parse_coverstock_bare_polyester_no_type():
 
 def test_parse_weights_available_handles_period_and_lbs_suffix():
     assert parse_weights_available("16-12 lbs.") == (12, 16)
+
+
+# --- _normalize_coverstock_name: real duplicate-data bug Al found in the
+# coverstocks table (migration 008/009) -- a manufacturer page adds a TM/
+# R/C symbol to a coverstock name sometimes but not always for the exact
+# same coverstock, which used to create two coverstocks rows for one real
+# coverstock.
+
+def test_normalize_coverstock_name_strips_trademark_symbol():
+    assert _normalize_coverstock_name("R2S™ Solid Reactive") == "R2S Solid Reactive"
+
+
+def test_normalize_coverstock_name_matches_already_clean_text():
+    """The whole point: the TM and non-TM spellings of the same coverstock
+    must normalize to the identical string, so they resolve to the same
+    coverstocks row."""
+    assert _normalize_coverstock_name("R2S™ Solid Reactive") == _normalize_coverstock_name("R2S Solid Reactive")
+
+
+def test_normalize_coverstock_name_returns_none_for_empty():
+    assert _normalize_coverstock_name(None) is None
+    assert _normalize_coverstock_name("") is None
 
 
 def test_parse_weights_available_returns_none_for_unexpected_format():

@@ -572,6 +572,25 @@ def get_or_create_core_id(conn, brand_id: str, core_name, core_type=None):
         return cur.fetchone()[0]
 
 
+def _normalize_coverstock_name(name):
+    """Strips TM/R/C marks and collapses whitespace before using a
+    coverstock_name as the coverstocks table's lookup/create key -- Al
+    directly reported real duplicate coverstocks rows where the exact
+    same formulation shows up with a trailing (TM)/(R)/(C) symbol on some
+    scrapes/products and not others (a manufacturer page inconsistency,
+    not a scraper bug): "R2S Solid Reactive" and "R2S™ Solid Reactive"
+    were creating two coverstocks rows for what's really one coverstock.
+    Only the coverstocks table's canonical name is normalized this way --
+    the raw, as-scraped text still goes into products.coverstock_name
+    completely unchanged (see migration 008's own comment on why that
+    column stays raw)."""
+    if not name:
+        return None
+    cleaned = re.sub(r"[™®©]", "", name)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned or None
+
+
 def get_or_create_coverstock_id(conn, brand_id: str, coverstock_name, material=None, cs_type=None):
     """Same shape as get_or_create_core_id above, for coverstocks instead
     of cores -- see migration 008 for why this table exists. Al's ask,
@@ -582,8 +601,13 @@ def get_or_create_coverstock_id(conn, brand_id: str, coverstock_name, material=N
     products. material/type are coalesced the same way core_type is (never
     overwrite an existing value) -- this project has no observed case of
     the same coverstock name legitimately reporting two different
-    material/type combinations."""
-    if not coverstock_name:
+    material/type combinations.
+
+    The lookup/create key is _normalize_coverstock_name(coverstock_name),
+    not the raw value -- see that function's docstring for why (real TM-
+    symbol inconsistency Al found in the data)."""
+    normalized_name = _normalize_coverstock_name(coverstock_name)
+    if not normalized_name:
         return None
     with conn.cursor() as cur:
         cur.execute(
@@ -595,7 +619,7 @@ def get_or_create_coverstock_id(conn, brand_id: str, coverstock_name, material=N
                 type = coalesce(coverstocks.type, excluded.type)
             returning id
             """,
-            (brand_id, coverstock_name, material, cs_type),
+            (brand_id, normalized_name, material, cs_type),
         )
         return cur.fetchone()[0]
 

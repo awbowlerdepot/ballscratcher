@@ -81,6 +81,25 @@ def test_coverstock_split_across_two_fields():
     assert p["coverstock_type"] == "solid"
 
 
+# --- _normalize_coverstock_name: real duplicate-data bug Al found in the
+# coverstocks table (migration 008/009) -- a manufacturer page adds a TM/
+# R/C symbol to a coverstock name sometimes but not always for the exact
+# same coverstock, which used to create two coverstocks rows for one real
+# coverstock.
+
+def test_normalize_coverstock_name_strips_trademark_symbol():
+    assert app._normalize_coverstock_name("Reactor Solid™") == "Reactor Solid"
+
+
+def test_normalize_coverstock_name_matches_already_clean_text():
+    assert app._normalize_coverstock_name("Reactor Solid™") == app._normalize_coverstock_name("Reactor Solid")
+
+
+def test_normalize_coverstock_name_returns_none_for_empty():
+    assert app._normalize_coverstock_name(None) is None
+    assert app._normalize_coverstock_name("") is None
+
+
 def test_weights_available_from_multivalue_attribute():
     p = _parsed_fusion()
     assert p["weights_available"] == (13, 16)
