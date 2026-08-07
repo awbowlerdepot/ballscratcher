@@ -696,22 +696,36 @@ given database, and safe to run more than once (every step is a no-op on
 already-clean data) -- see the migration's own header comment for the
 full reasoning.
 
-**Real incident, found on the first actual run against the real
-database:** the first version of this migration normalized every name
-FIRST, then merged whatever collided -- and hit `duplicate key value
-violates unique constraint "coverstocks_brand_id_name_key" ... Key
-(brand_id, name)=(..., Activator Plus) already exists` immediately,
-confirming real TM-suffix duplicates existed. Root cause: Postgres
-checks a plain (non-deferred) unique constraint per row as it's written,
-not once at the end of the statement -- a single `UPDATE` that tries to
-rename both "Activator Plus™" and the already-existing "Activator Plus"
-onto the same text trips the constraint the moment the second row is
-written, well before any merge/delete step runs. Fixed by reordering:
-merge and delete duplicates FIRST (using each row's still-distinct
-original name -- deleting a row can never violate a unique constraint,
-no matter what it's named), and only rename the sole remaining survivor
-per group afterward, once nothing else in that group is left to collide
-with.
+**Two real incidents, both found by actually running this against the
+real database** (nothing in this sandbox can execute SQL against a live
+Postgres, so this migration's syntax was reviewed by hand until Al ran
+it for real -- see step 2's own caveat about that):
+
+1. The first version normalized every name FIRST, then merged whatever
+   collided -- and hit `duplicate key value violates unique constraint
+   "coverstocks_brand_id_name_key" ... Key (brand_id, name)=(...,
+   Activator Plus) already exists` immediately, confirming real
+   TM-suffix duplicates existed. Root cause: Postgres checks a plain
+   (non-deferred) unique constraint per row as it's written, not once at
+   the end of the statement -- a single `UPDATE` that tries to rename
+   both "Activator Plus™" and the already-existing "Activator Plus" onto
+   the same text trips the constraint the moment the second row is
+   written, well before any merge/delete step runs. Fixed by reordering:
+   merge and delete duplicates FIRST (using each row's still-distinct
+   original name -- deleting a row can never violate a unique
+   constraint, no matter what it's named), and only rename the sole
+   remaining survivor per group afterward, once nothing else in that
+   group is left to collide with.
+2. The very next run then hit `function min(uuid) does not exist` --
+   `coverstocks.id` is `uuid`, and Postgres's built-in `MIN`/`MAX`
+   aggregates are only defined for a specific set of types (numeric,
+   string, date/time, a few others); `uuid` isn't one of them, even
+   though it fully supports ordering/comparison via its normal btree
+   operator class. Fixed by picking the survivor with
+   `first_value(id) over (partition by ... order by id)` instead of
+   `min(id) over (partition by ...)` -- `first_value` only needs an
+   `ORDER BY` (comparison), not the `MIN` aggregate specifically, so it
+   works on any orderable type including `uuid`.
 
 ```bash
 psql "$DATABASE_URL" -f db/migrations/009_normalize_coverstock_names.sql

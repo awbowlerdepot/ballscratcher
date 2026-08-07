@@ -13,7 +13,7 @@
 -- safe to run even if 008 hasn't been applied yet on this database (the
 -- table will just be empty), and safe to run more than once.
 --
--- REAL INCIDENT, found on first run against the actual database: the
+-- REAL INCIDENT #1, found on first run against the actual database: the
 -- original version of this migration normalized coverstocks.name in
 -- place FIRST, then merged/deleted whatever collided as a result. That
 -- failed immediately -- `duplicate key value violates unique constraint
@@ -32,6 +32,17 @@
 -- one row left, rename that survivor to its normalized form. At that
 -- point the rename can never collide with anything, because the group
 -- it belongs to no longer has any other row.
+--
+-- REAL INCIDENT #2, found on the very next run: `function min(uuid) does
+-- not exist`. `coverstocks.id` is uuid, and Postgres's built-in MIN/MAX
+-- aggregates are only defined for a specific set of types (numeric,
+-- string, date/time, a few others) -- uuid isn't one of them, even
+-- though uuid fully supports ordering/comparison (it has a normal btree
+-- operator class, so `<`, `>`, `order by` all work fine on it). Fixed by
+-- picking the survivor via `first_value(id) over (... order by id)`
+-- instead of `min(id) over (...)` -- first_value only needs an ORDER BY
+-- (comparison), not the MIN aggregate specifically, so it works on any
+-- orderable type including uuid.
 --
 -- Three parts:
 --
@@ -74,7 +85,7 @@ with grouped as (
 ),
 survivors as (
     select id, brand_id, norm_name,
-           min(id) over (partition by brand_id, norm_name) as survivor_id
+           first_value(id) over (partition by brand_id, norm_name order by id) as survivor_id
     from grouped
 )
 update products p
@@ -114,7 +125,7 @@ with grouped as (
 ),
 survivors as (
     select id,
-           min(id) over (partition by brand_id, norm_name) as survivor_id
+           first_value(id) over (partition by brand_id, norm_name order by id) as survivor_id
     from grouped
 )
 delete from coverstocks c
