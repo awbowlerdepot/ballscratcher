@@ -13,25 +13,47 @@
 -- safe to run even if 008 hasn't been applied yet on this database (the
 -- table will just be empty), and safe to run more than once.
 --
--- Two parts:
+-- REAL INCIDENT, found on first run against the actual database: the
+-- original version of this migration normalized coverstocks.name in
+-- place FIRST, then merged/deleted whatever collided as a result. That
+-- failed immediately -- `duplicate key value violates unique constraint
+-- "coverstocks_brand_id_name_key" ... Key (brand_id, name)=(...,
+-- Activator Plus) already exists.` -- because Postgres checks a plain
+-- (non-deferred) unique constraint per row as it's written, not once at
+-- the end of the statement. A single UPDATE that tries to rename both
+-- "Activator Plus(TM)" and the already-existing "Activator Plus" onto the
+-- same text hits the constraint the moment the second row is written,
+-- long before any merge/delete step ever runs.
 --
--- 1. Normalize every coverstocks.name in place: strip TM (™), R
---    (®), C (©) symbols and collapse whitespace. This mirrors
---    _normalize_coverstock_name() in every scraper (see that function's
---    docstring) -- added there in the same pass as this migration, so
---    future scrapes resolve straight to the normalized name and never
---    recreate the duplicate. This migration is the one-time catch-up for
---    whatever migration 008's backfill (or any scrape before this fix)
---    already created from the raw, un-normalized text.
+-- Fixed by reordering: identify duplicate groups and merge/delete them
+-- FIRST, using each row's still-distinct original name (deleting a row
+-- never conflicts with a unique constraint, no matter what its name is)
+-- -- only THEN, once every (brand_id, normalized-name) group has exactly
+-- one row left, rename that survivor to its normalized form. At that
+-- point the rename can never collide with anything, because the group
+-- it belongs to no longer has any other row.
 --
--- 2. Normalizing can make two previously-distinct rows collide onto the
---    same (brand_id, name) -- that's the whole point, it's exactly the
---    duplicate this migration exists to fix. Merge those: pick the
---    lowest id per (brand_id, name) group as the survivor, repoint every
---    products.coverstock_id from a merged-away row to the survivor, carry
---    over material/type onto the survivor if it's missing either (a
---    products row that referenced the merged-away row may have a real
---    value the survivor never got), then delete the merged-away rows.
+-- Three parts:
+--
+-- 1. Group existing rows by (brand_id, normalized name) -- normalizing
+--    means stripping TM (™), R (®), C (©) symbols and collapsing
+--    whitespace, mirroring _normalize_coverstock_name() in every scraper
+--    (see that function's docstring, added in the same pass as this
+--    migration so future scrapes resolve straight to the normalized name
+--    and never recreate the duplicate). Pick the lowest id per group as
+--    the survivor -- purely a deterministic tiebreaker, no other
+--    significance.
+--
+-- 2. Repoint every products.coverstock_id off a merged-away row onto its
+--    group's survivor, backfill material/type onto the survivor from any
+--    referencing product if the survivor is missing either (a product
+--    that referenced the merged-away row may have a real value the
+--    survivor never got), then delete the merged-away rows -- all while
+--    every row's `name` is still untouched, so nothing here can ever hit
+--    the unique constraint.
+--
+-- 3. Only now, with each (brand_id, normalized-name) group down to a
+--    single row, rename that row to its normalized form.
 --
 -- Deliberately NOT touching products.coverstock_name/coverstock_material/
 -- coverstock_type anywhere in this migration -- those stay exactly the
@@ -41,23 +63,25 @@
 
 begin;
 
--- Step 1: normalize in place.
-update coverstocks
-set name = trim(regexp_replace(regexp_replace(name, '[™®©]', '', 'g'), '\s+', ' ', 'g'))
-where name <> trim(regexp_replace(regexp_replace(name, '[™®©]', '', 'g'), '\s+', ' ', 'g'));
-
--- Step 2a: repoint products.coverstock_id off any row that's about to be
--- merged away, onto the (brand_id, name) group's survivor.
+-- Step 1/2a: repoint products.coverstock_id off any row that's about to
+-- be merged away, onto its (brand_id, normalized name) group's survivor.
+-- Grouping is computed fresh here (not persisted) since coverstocks.name
+-- hasn't been touched yet at this point.
 with grouped as (
-    select id, brand_id, name,
-           min(id) over (partition by brand_id, name) as survivor_id
+    select id, brand_id,
+           trim(regexp_replace(regexp_replace(name, '[™®©]', '', 'g'), '\s+', ' ', 'g')) as norm_name
     from coverstocks
+),
+survivors as (
+    select id, brand_id, norm_name,
+           min(id) over (partition by brand_id, norm_name) as survivor_id
+    from grouped
 )
 update products p
-set coverstock_id = g.survivor_id
-from grouped g
-where p.coverstock_id = g.id
-  and g.id <> g.survivor_id;
+set coverstock_id = s.survivor_id
+from survivors s
+where p.coverstock_id = s.id
+  and s.id <> s.survivor_id;
 
 -- Step 2b: backfill material/type onto each survivor from any product
 -- still pointing at it (post-repoint) with a real value, in case the
@@ -79,15 +103,31 @@ from coverstock_specs s
 where c.id = s.coverstock_id
   and (c.material is null or c.type is null);
 
--- Step 2c: delete the now-unreferenced merged-away rows.
+-- Step 2c: delete the merged-away rows. Still operating on each row's
+-- original, un-normalized name here -- deleting a row can never violate
+-- a unique constraint, so this is safe regardless of what any name looks
+-- like.
 with grouped as (
-    select id, brand_id, name,
-           min(id) over (partition by brand_id, name) as survivor_id
+    select id, brand_id,
+           trim(regexp_replace(regexp_replace(name, '[™®©]', '', 'g'), '\s+', ' ', 'g')) as norm_name
     from coverstocks
+),
+survivors as (
+    select id,
+           min(id) over (partition by brand_id, norm_name) as survivor_id
+    from grouped
 )
 delete from coverstocks c
-using grouped g
-where c.id = g.id
-  and g.id <> g.survivor_id;
+using survivors s
+where c.id = s.id
+  and s.id <> s.survivor_id;
+
+-- Step 3: NOW normalize the remaining (already duplicate-free) rows'
+-- names in place. Every (brand_id, normalized-name) group has exactly
+-- one row left at this point, by construction -- this rename can never
+-- collide with another row's name.
+update coverstocks
+set name = trim(regexp_replace(regexp_replace(name, '[™®©]', '', 'g'), '\s+', ' ', 'g'))
+where name <> trim(regexp_replace(regexp_replace(name, '[™®©]', '', 'g'), '\s+', ' ', 'g'));
 
 commit;

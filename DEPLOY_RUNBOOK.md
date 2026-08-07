@@ -686,15 +686,32 @@ this -- it keeps storing exactly what the page said, TM symbol or not.
 **Migration 009** (`db/migrations/009_normalize_coverstock_names.sql`)
 is the one-time catch-up for whatever migration 008's backfill (or any
 scrape before this fix shipped) already created from the raw,
-un-normalized text: normalizes every `coverstocks.name` in place, then
-merges any rows that collapse onto the same `(brand_id, name)` as a
-result -- repointing every `products.coverstock_id` from a merged-away
-row onto the survivor, backfilling `material`/`type` onto the survivor
-from any referencing product that has a real value it's missing, then
-deleting the merged-away rows. Written to be safe to run whether or not
-008 has actually been applied yet on a given database, and safe to run
-more than once (every step is a no-op on already-clean data) -- see the
-migration's own header comment for the full reasoning.
+un-normalized text: merges rows that collide once normalized -- repoints
+every `products.coverstock_id` from a merged-away row onto the survivor,
+backfills `material`/`type` onto the survivor from any referencing
+product that has a real value it's missing, deletes the merged-away
+rows, then renames the sole survivor to its normalized form. Written to
+be safe to run whether or not 008 has actually been applied yet on a
+given database, and safe to run more than once (every step is a no-op on
+already-clean data) -- see the migration's own header comment for the
+full reasoning.
+
+**Real incident, found on the first actual run against the real
+database:** the first version of this migration normalized every name
+FIRST, then merged whatever collided -- and hit `duplicate key value
+violates unique constraint "coverstocks_brand_id_name_key" ... Key
+(brand_id, name)=(..., Activator Plus) already exists` immediately,
+confirming real TM-suffix duplicates existed. Root cause: Postgres
+checks a plain (non-deferred) unique constraint per row as it's written,
+not once at the end of the statement -- a single `UPDATE` that tries to
+rename both "Activator Plus™" and the already-existing "Activator Plus"
+onto the same text trips the constraint the moment the second row is
+written, well before any merge/delete step runs. Fixed by reordering:
+merge and delete duplicates FIRST (using each row's still-distinct
+original name -- deleting a row can never violate a unique constraint,
+no matter what it's named), and only rename the sole remaining survivor
+per group afterward, once nothing else in that group is left to collide
+with.
 
 ```bash
 psql "$DATABASE_URL" -f db/migrations/009_normalize_coverstock_names.sql
