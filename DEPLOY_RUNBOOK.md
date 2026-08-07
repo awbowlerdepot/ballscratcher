@@ -736,6 +736,38 @@ Requires the same Lambda redeploy as the rest of this section (the
 migration) before new scrapes stop recreating the duplicate going
 forward.
 
+**`scripts/backfill_coverstock_ids.py`**, exact mirror of
+`backfill_core_ids.py`: real bug Al found (2026-08-07) against a live
+Hammer product, `Raw Hammer - Black / Grey` -- missing its own
+`coverstock_id`, and the `coverstocks` row it should map to ("Juiced
+Solid") had a null `material`. Investigation confirmed today's live page
+parses cleanly end-to-end (`coverstock_name="Juiced Solid"`,
+`material=reactive_resin`, `type=solid` via `parse_coverstock`) -- no
+scraper bug. The product's own `updated_at` from Shopify was today's
+date, meaning the page was edited recently and this product simply
+hasn't been rescraped since (nothing else re-triggers a scrape for an
+already-known product on its own). Unlike migration 008's own backfill
+(which covered every product that already had `coverstock_name` data at
+migration time), a product missing `coverstock_id` *now* needs an actual
+rescrape to fix -- there's no free SQL-only backfill for data that was
+never captured in the first place. `scripts/backfill_coverstock_ids.py`
+queues one via `GET /products?missing_coverstock=true` +
+`POST /products/{id}/rescrape`, same shape as the cores version. A
+rescrape fixes both halves of Al's report in one pass: the product's own
+`coverstock_id` gets set, and -- for free, via
+`get_or_create_coverstock_id`'s existing
+`coalesce(coverstocks.material, excluded.material)` -- the shared
+`coverstocks` row's `material`/`type` gets backfilled too if it was
+missing. Same "Backfill missing coverstock info" panel added to the
+Batch Jobs tab as the cores version (`missing_coverstock` filter param,
+same queued/reason result shape).
+
+```bash
+export ADMIN_API_URL="https://<your-api-id>.execute-api.us-west-1.amazonaws.com"
+export ADMIN_API_TOKEN="<the same bearer token used elsewhere>"
+python3 scripts/backfill_coverstock_ids.py
+```
+
 ### 6d. SWAG (if `SwagBrandId` was set)
 
 No schedule wired up for `WooCommerceUrlDiscoveryFunction` yet -- invoke

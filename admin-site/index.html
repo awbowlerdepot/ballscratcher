@@ -404,6 +404,15 @@
       <div id="batch-stats-core" class="mono small muted" style="margin-top:8px;"></div>
       <pre id="batch-log-core" class="scrollbox" style="margin-top:6px;"></pre>
     </div>
+
+    <div class="panel">
+      <h3>Backfill missing coverstock info</h3>
+      <p class="muted">Equivalent of scripts/backfill_coverstock_ids.py (missing_coverstock filter): queues a rescrape for every product with no coverstock_id set yet. Unlike cores, migration 008 already backfilled coverstock_id for every product that had coverstock_name at the time -- a product shows up here only if its own scrape never captured a coverstock (or the manufacturer's page has since changed and it hasn't been rescraped since). A rescrape also backfills material/type onto a shared coverstocks row for free if some earlier scrape created it without either (get_or_create_coverstock_id's coalesce). Only enqueues -- re-run later (or re-filter the Products tab) to see how much is left.</p>
+      <button id="batch-start-coverstock" class="btn" onclick="runBatch('coverstock')">Start</button>
+      <button id="batch-stop-coverstock" class="btn ghost" onclick="stopBatch('coverstock')" disabled>Stop</button>
+      <div id="batch-stats-coverstock" class="mono small muted" style="margin-top:8px;"></div>
+      <pre id="batch-log-coverstock" class="scrollbox" style="margin-top:6px;"></pre>
+    </div>
   </section>
 
 </main>
@@ -1243,7 +1252,7 @@ async function loadCoverstockDetailInto(id, cell) {
 // behind the two filters (needs_video_summary_refresh vs
 // has_approved_video_summaries / REFRESH_ALL).
 // --------------------------------------------------------------------
-const batchRunning = { stale: false, all: false, core: false };
+const batchRunning = { stale: false, all: false, core: false, coverstock: false };
 
 async function batchRefreshSingle() {
   const id = document.getElementById('batch-single-id').value.trim();
@@ -1281,6 +1290,12 @@ const BATCH_CONFIGS = {
   },
   core: {
     filterParam: 'missing_core',
+    call: function (id) { return api('POST', '/products/' + id + '/rescrape'); },
+    isSuccess: function (r) { return !!r.queued; },
+    describe: function (r) { return r.queued ? 'queued for rescrape' : r.reason; },
+  },
+  coverstock: {
+    filterParam: 'missing_coverstock',
     call: function (id) { return api('POST', '/products/' + id + '/rescrape'); },
     isSuccess: function (r) { return !!r.queued; },
     describe: function (r) { return r.queued ? 'queued for rescrape' : r.reason; },
