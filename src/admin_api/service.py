@@ -294,7 +294,24 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     Built for scripts/backfill_core_ids.py -- see that script and
     queue_rescrape() below. Every product scraped before the cores table
     was wired up matches this, plus any product whose page genuinely
-    doesn't expose a parseable core name."""
+    doesn't expose a parseable core name.
+
+    p.release_date: Al asked directly whether MOTIV's on-page "available"
+    date could show up as a release date column on Products -- turned out
+    every scraper (product_scraper/commercebuild/woocommerce/netsuite) was
+    already parsing and persisting this via each platform's own
+    parse_release_date + upsert_product's coalesce-preserve-existing
+    pattern (see 003_date_tracking_and_bowwwl.sql), it just wasn't
+    selected here or rendered anywhere -- this curated column list is
+    hand-picked, not select *, unlike get_product's p.* (see that
+    function's own docstring). Added here so it's actually visible, not a
+    new data source. announced_date is the harder, separate ask Al flagged
+    himself (a real, different manufacturer-published concept -- see
+    003's own comment on that reserved column) -- no platform exposes a
+    distinct "announced" date separate from release/availability
+    anywhere in its HTML, especially not for older/historic balls, so it
+    stays unpopulated and out of this column list until a real source
+    turns up."""
     # p alias + left join cores: needed once c.name entered the picture --
     # products and cores both have a plain "name" column, so every
     # previously-bare column reference below (name, published, brand_id,
@@ -308,7 +325,7 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     # not a UUID you'd have to look up separately.
     query = """
         select p.id, p.brand_id, b.name as brand_name, p.name, p.url, p.status, p.published, p.updated_at,
-               p.core_id, c.name as core_name
+               p.core_id, c.name as core_name, p.release_date
         from products p
         left join cores c on c.id = p.core_id
         left join brands b on b.id = p.brand_id

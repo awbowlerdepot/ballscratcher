@@ -509,6 +509,24 @@ function fmtDate(s) {
   try { return new Date(s).toLocaleString(); } catch (e) { return s; }
 }
 
+// release_date (and any other plain DATE-typed column, no time-of-day) --
+// deliberately NOT fmtDate() above: `new Date("2026-07-08")` parses a
+// bare ISO date as UTC midnight, and .toLocaleString() in a negative-UTC-
+// offset timezone can then display the PREVIOUS calendar day, which is a
+// real bug for a manufacturer-published date, not a cosmetic one. Reads
+// the y/m/d parts straight off the ISO string instead of going through
+// Date parsing at all, so the displayed date always matches what's
+// actually stored.
+const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function fmtDateOnly(s) {
+  if (!s) return '';
+  const parts = String(s).split('-');
+  if (parts.length !== 3) return s;
+  const [y, m, d] = parts;
+  const mi = parseInt(m, 10) - 1;
+  return (MONTH_ABBR[mi] || m) + ' ' + parseInt(d, 10) + ', ' + y;
+}
+
 // Real ask from Al: he's seeing data issues in the admin UI he suspects
 // trace back to the scrapers, and wants every DB column visible, not just
 // whatever each hand-curated view happened to render, so gaps are visible
@@ -854,13 +872,14 @@ function renderProducts(items) {
         '<td>' + (p.brand_name ? escapeHtml(p.brand_name) : '<span class="muted mono small">' + escapeHtml((p.brand_id || '').slice(0, 8)) + '&hellip;</span>') + '</td>' +
         '<td>' + escapeHtml(p.status || '') + '</td>' +
         '<td>' + (p.core_name ? escapeHtml(p.core_name) : '<span class="muted">&mdash;</span>') + '</td>' +
+        '<td>' + (p.release_date ? fmtDateOnly(p.release_date) : '<span class="muted">&mdash;</span>') + '</td>' +
         '<td><button class="btn small ' + (p.published ? 'ok' : 'ghost') + '" onclick="togglePublish(\'' + p.id + '\', ' + (!p.published) + ')">' + (p.published ? 'Published' : 'Unpublished') + '</button></td>' +
         '<td>' + fmtDate(p.updated_at) + '</td>' +
         '<td class="actions"><button class="btn small ghost" onclick="toggleProductDetail(\'' + p.id + '\')">Detail</button></td>' +
         '</tr>' +
-        '<tr id="product-detail-' + p.id + '" class="detail-row hidden"><td colspan="7"></td></tr>';
+        '<tr id="product-detail-' + p.id + '" class="detail-row hidden"><td colspan="8"></td></tr>';
     }).join('');
-    listEl.innerHTML = '<table><thead><tr><th>Name</th><th>Brand</th><th>Status</th><th>Core</th><th>Published</th><th>Updated</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    listEl.innerHTML = '<table><thead><tr><th>Name</th><th>Brand</th><th>Status</th><th>Core</th><th>Release Date</th><th>Published</th><th>Updated</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
   document.getElementById('product-prev').disabled = productState.offset === 0;
   document.getElementById('product-next').disabled = productState.lastCount < productState.limit;

@@ -1524,6 +1524,31 @@ whenever it next runs.
     `template.yaml` change needed here either -- `GET /brands` rides the
     same `{proxy+}` GET route every other admin_api endpoint does.
 
+    **Release Date column.** Al asked whether MOTIV's on-page "available"
+    date could show up as a release date column on Products -- turned out
+    every scraper (`product_scraper`/`commercebuild_product_scraper`/
+    `woocommerce_product_scraper`/`netsuite_product_scraper`) was already
+    parsing and persisting this via each platform's own
+    `parse_release_date` + `upsert_product`'s coalesce-preserve-existing
+    pattern (see 003_date_tracking_and_bowwwl.sql, which added the
+    `release_date` column's doc comment and the code-side parsing in the
+    same pass) -- `list_products` just wasn't selecting it, and nothing
+    rendered it. Added `p.release_date` to `list_products`'s SELECT
+    (`service.py`) and a "Release Date" column to the Products tab table.
+    Rendered via a new `fmtDateOnly()` helper rather than the existing
+    `fmtDate()` -- `release_date` is a plain `DATE` column with no
+    time-of-day, and `fmtDate()`'s `new Date(s).toLocaleString()` parses a
+    bare ISO date as UTC midnight, which can display as the previous
+    calendar day in negative-UTC-offset timezones; `fmtDateOnly()` reads
+    the y/m/d parts straight off the ISO string instead. No `template.yaml`
+    change needed -- same `{proxy+}` GET route as everything else in this
+    list. `announced_date` is the harder, separate ask Al flagged himself
+    -- no platform exposes a distinct "announced" date separate from
+    release/availability anywhere in its HTML, especially not for
+    older/historic balls, so it stays unpopulated and out of this column
+    list until a real source turns up (see 003's own comment on that
+    reserved column).
+
 ### 6j. Home transcript fetcher (residential caption fetching) -- optional, run outside AWS entirely
 
 Real, live-tested finding this session (see

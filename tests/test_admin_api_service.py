@@ -1388,6 +1388,23 @@ def test_list_products_omits_source_platform_filter_by_default():
     assert "p.source_platform" not in query
 
 
+# --- list_products: p.release_date column -- real ask from Al ("can we
+# pull in the available date from the motiv product page as a release
+# date column on products"). Every scraper already parsed and persisted
+# this (see 003_date_tracking_and_bowwwl.sql + each *_product_scraper
+# module's parse_release_date/upsert_product), it just wasn't in this
+# curated SELECT list or rendered anywhere -- this confirms it's actually
+# selected now. No filter/params involved, so a plain query-text check is
+# enough, same convention as the cores-join test above.
+
+def test_list_products_selects_release_date():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "p.release_date" in query
+
+
 # --- list_cores / get_core: the "other direction" view of core_name/
 # core_type (GET /cores, GET /cores/{id}) -- see service.list_cores'
 # docstring for why this exists (multiple products can share one core,
