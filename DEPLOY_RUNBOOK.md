@@ -1909,6 +1909,63 @@ with them to search for candidates again." Two additions:
    existing `/{proxy+}` catch-all (confirmed via the CFN-tolerant YAML
    parser: still 45 resources).
 
+**Reassign/delete no longer let the same video resurface on rescan.**
+Al, after using the two tools above to clean up Combat Solid: "i just
+cleaned up combat solid and then did a search again and all the video i
+just cleaned up came back... now im going to reject them and then they
+will just come back." A real second-order bug, found by using the
+feature exactly as intended:
+
+- `insert_candidates` (`video_discovery/app.py`) is idempotent via
+  `ON CONFLICT (product_id, youtube_video_id) DO NOTHING` -- its own
+  docstring already says a video already stored "in any status" is left
+  untouched, not reset back to pending. That means a row's mere
+  *presence* at a given `(product_id, youtube_video_id)` slot is what
+  blocks reinsertion, regardless of its `status`.
+- `reassign_video_candidate` used to literally `UPDATE product_videos SET
+  product_id = ...` -- moving the row. That frees up the *origin*
+  product's slot, so the next rescan of the origin has nothing left to
+  conflict with, and the exact same false-positive video comes right
+  back as a fresh 'pending' row. `delete_video_candidate` has the
+  identical problem for the identical reason (deleting frees the slot
+  too) -- so Al's instinct that reject would "come back" was actually
+  backwards: reject alone is safe (it leaves the row, tombstoned, in
+  place); it was reassign and delete that were unsafe.
+- Fix, in `service.reassign_video_candidate`: reassigning now *always*
+  leaves the origin row behind as a `status='rejected'` tombstone (same
+  update `reject_video_candidate` does, applied directly since reassign
+  must work from any starting status, not just pending) -- that
+  permanently blocks the video from resurfacing under the wrong product.
+  The actual content (title/transcript/summary/status) is copied to a
+  **new** row on the target product.
+- Al's second report, same message: reassigning to a product that
+  already has its own row for that video used to raise a 422 and require
+  manually deleting one of the two duplicates -- which had the exact same
+  resurfacing bug, since the delete-based cleanup removes a blocking
+  tombstone. Reassign no longer errors on that conflict: it merges
+  instead, backfilling only the target row's *null*
+  `transcript`/`summary`/`transcript_note` fields from the origin (so
+  review work already done under the wrong product isn't lost) without
+  ever touching the target's own `status` -- an admin who already
+  reviewed the target's copy shouldn't have that judgment silently
+  overwritten by a merge.
+- Response shape changed accordingly: `{"video_id": ..., "product_id":
+  ..., "origin_video_id": ..., "merged_with_existing": true|false}` --
+  `video_id` is now the TARGET row's id (a new id in the no-conflict
+  case), not the id that was passed in. `delete_video_candidate` is no
+  longer reassign's conflict-cleanup step (its docstring's updated to
+  say so) -- reserve it for genuine duplicate cleanup only, not for
+  "this video doesn't belong here" (use reject or reassign for that, both
+  of which now correctly prevent resurfacing).
+- `ReassignRequest` gained an optional `resolved_by` field, stamped on
+  the origin's tombstone only (audit: who reassigned this away from
+  here) -- admin-site's reassign buttons (both the Video Candidates tab
+  and the new product-detail Videos section) now send it, same
+  `getSettings().resolvedBy` value approve/reject already use.
+- No `template.yaml` or migration change -- `product_videos`' existing
+  `unique(product_id, youtube_video_id)` constraint (004) already
+  supports this; the fix is entirely in how `service.py` uses it.
+
 ### 6j. Home transcript fetcher (residential caption fetching) -- optional, run outside AWS entirely
 
 Real, live-tested finding this session (see

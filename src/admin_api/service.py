@@ -1107,7 +1107,7 @@ def reject_video_candidate(conn, video_id: str, resolved_by: str, reason: str = 
     return {"video_id": video_id, "status": "rejected"}
 
 
-def reassign_video_candidate(conn, video_id: str, new_product_id: str) -> dict:
+def reassign_video_candidate(conn, video_id: str, new_product_id: str, resolved_by: str = None) -> dict:
     """Moves a video candidate to a different product. Built for a real,
     known failure mode of video_discovery's score_match heuristic (see its
     module docstring): 'high' confidence only requires the brand name plus
@@ -1117,62 +1117,155 @@ def reassign_video_candidate(conn, video_id: str, new_product_id: str) -> dict:
     auto-approving 'high' matches in bulk (see
     scripts/auto_approve_video_candidates.py's docstring), not something
     this function tries to prevent. This is the correction tool for when
-    it happens: works regardless of status (pending/approved/rejected),
-    and deliberately does NOT touch transcript/transcript_note/summary --
-    if a transcript was already fetched under the wrong product, it's
-    still a real transcript of that same YouTube video, no reason to lose
-    it and refetch under the correct product.
+    it happens: works regardless of status (pending/approved/rejected).
 
-    Checked, not caught: looks for an existing (new_product_id,
-    youtube_video_id) row before updating, rather than attempting the
-    update and catching a unique-constraint violation from the DB driver --
-    a clearer, more actionable error this way ("one already exists over
-    there, delete a duplicate first") than a raw IntegrityError, and this
-    is an admin tool used by one person at a time, so the small
-    check-then-act race window is an acceptable tradeoff. If that
-    conflict fires, delete_video_candidate below is the cleanup path."""
+    Real report from Al, second-order bug found while cleaning up Combat
+    Solid: reassigning used to just UPDATE the row's product_id in place.
+    That frees up the origin product's (product_id, youtube_video_id)
+    uniqueness slot, and insert_candidates' ON CONFLICT DO NOTHING (see
+    video_discovery/app.py) only suppresses re-insertion when a row still
+    occupies that slot -- so the exact same false-positive video came right
+    back on the very next rescan of the origin product. Deleting instead of
+    reassigning has the identical problem, for the identical reason (see
+    delete_video_candidate's docstring above this one).
+
+    Fix: reassigning now ALWAYS leaves a rejected tombstone behind at the
+    origin (product_id, youtube_video_id) slot -- same status='rejected'
+    update reject_video_candidate does, just applied directly here since
+    reject_video_candidate itself only allows pending -> rejected and this
+    must work from any starting status. That tombstone is what permanently
+    blocks video_discovery from reinserting this video under the wrong
+    product again. The actual content moves to the target product as
+    either:
+      - a brand-new product_videos row, carrying over title/channel/
+        transcript/summary/status, if the target has no row for this
+        youtube_video_id yet; or
+      - a merge into the target's EXISTING row, if one already exists
+        there (a real, legitimate case -- the target's own video_discovery
+        run may have independently found the same video). No IntegrityError
+        avoidance trick here: this used to require the admin to manually
+        delete one of the two duplicates before retrying, which is exactly
+        what caused the resurfacing bug in the first place, since deleting
+        the origin row removed its blocking tombstone. Merging instead of
+        erroring removes that whole manual step. The merge only backfills
+        the target row's transcript/transcript_note/summary where they're
+        currently null (so review work already done under the wrong
+        product isn't lost) and never touches the target's own status --
+        an admin who already reviewed the target's copy shouldn't have that
+        judgment silently overwritten by a merge.
+
+    resolved_by is optional and, if given, is stamped on the origin's
+    tombstone (same field approve/reject use) purely for audit -- "who
+    reassigned this away from here." It intentionally does NOT get stamped
+    onto the target row when a fresh copy is inserted; that copy keeps
+    whatever status (and therefore whatever resolved_by) it already had."""
     with conn.cursor() as cur:
-        cur.execute("select id, youtube_video_id from product_videos where id = %s", (video_id,))
+        cur.execute(
+            """
+            select product_id, youtube_video_id, title, channel_title, published_at,
+                   thumbnail_url, match_query, match_confidence, transcript,
+                   transcript_note, summary, status, source
+            from product_videos where id = %s
+            """,
+            (video_id,),
+        )
         row = cur.fetchone()
         if row is None:
             raise LookupError(f"No product_videos row with id {video_id}")
-        youtube_video_id = row[1]
+        (origin_product_id, youtube_video_id, title, channel_title, published_at,
+         thumbnail_url, match_query, match_confidence, transcript,
+         transcript_note, summary, status, source) = row
+
+        if origin_product_id == new_product_id:
+            raise ValueError(f"product_videos row {video_id} is already assigned to product {new_product_id}")
 
         cur.execute("select id from products where id = %s", (new_product_id,))
         if cur.fetchone() is None:
             raise LookupError(f"No products row with id {new_product_id}")
 
         cur.execute(
-            "select id from product_videos where product_id = %s and youtube_video_id = %s",
+            "select id, transcript, summary, status from product_videos where product_id = %s and youtube_video_id = %s",
             (new_product_id, youtube_video_id),
         )
         conflict = cur.fetchone()
-        if conflict is not None:
-            raise ValueError(
-                f"product {new_product_id} already has a product_videos row for "
-                f"youtube_video_id={youtube_video_id} (id={conflict[0]}) -- delete "
-                f"one of the two duplicates first (see delete_video_candidate), "
-                f"then retry the reassignment"
-            )
 
-        cur.execute("update product_videos set product_id = %s where id = %s", (new_product_id, video_id))
+        if conflict is None:
+            cur.execute(
+                """
+                insert into product_videos
+                    (product_id, youtube_video_id, title, channel_title, published_at,
+                     thumbnail_url, match_query, match_confidence, transcript,
+                     transcript_note, summary, status, source)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                returning id
+                """,
+                (new_product_id, youtube_video_id, title, channel_title, published_at,
+                 thumbnail_url, match_query, match_confidence, transcript,
+                 transcript_note, summary, status, source),
+            )
+            target_video_id = cur.fetchone()[0]
+            merged_with_existing = False
+        else:
+            conflict_id, conflict_transcript, conflict_summary, _conflict_status = conflict
+            backfill_columns = []
+            backfill_values = []
+            if conflict_transcript is None and transcript is not None:
+                backfill_columns.append("transcript")
+                backfill_values.append(transcript)
+            if conflict_summary is None and summary is not None:
+                backfill_columns.append("summary")
+                backfill_values.append(summary)
+                backfill_columns.append("transcript_note")
+                backfill_values.append(transcript_note)
+            if backfill_columns:
+                set_clause = ", ".join(f"{col} = %s" for col in backfill_columns)
+                cur.execute(
+                    f"update product_videos set {set_clause} where id = %s returning id",
+                    (*backfill_values, conflict_id),
+                )
+            target_video_id = conflict_id
+            merged_with_existing = True
+
+        # Tombstone the origin -- see this function's docstring. Identical
+        # SQL text to reject_video_candidate's own update, applied directly
+        # here (not via reject_video_candidate) because that function only
+        # permits pending -> rejected and this must work from any status.
+        cur.execute(
+            "update product_videos set status = 'rejected', resolved_at = now(), resolved_by = %s where id = %s",
+            (resolved_by, video_id),
+        )
     conn.commit()
-    return {"video_id": video_id, "product_id": new_product_id}
+    return {
+        "video_id": target_video_id,
+        "product_id": new_product_id,
+        "origin_video_id": video_id,
+        "merged_with_existing": merged_with_existing,
+    }
 
 
 def delete_video_candidate(conn, video_id: str) -> dict:
     """Hard delete -- distinct from reject_video_candidate, which only
-    marks status='rejected' and keeps the row for audit. Built as the
-    cleanup step for reassign_video_candidate's conflict case above: two
-    product_videos rows for the same (product_id, youtube_video_id) pair
-    can't coexist (see 004_product_videos.sql's unique constraint), but two
-    DIFFERENT products can each have their own row for the same YouTube
-    video (a real, legitimate case -- one review video can genuinely cover
-    two products), or a video can get moved to the correct product while a
-    stale duplicate is left sitting under the wrong one. Deleting the
-    wrong copy is a normal, expected cleanup action here, not a mistake to
-    guard against with extra confirmation steps -- same one-admin-at-a-time
-    reasoning as reassign_video_candidate above."""
+    marks status='rejected' and keeps the row for audit.
+
+    CAUTION, and the reason reassign_video_candidate no longer uses this as
+    its conflict-cleanup step: deleting a product_videos row frees up that
+    row's (product_id, youtube_video_id) uniqueness slot, and
+    insert_candidates' ON CONFLICT DO NOTHING (video_discovery/app.py) only
+    suppresses re-insertion while a row still occupies that slot. Delete a
+    row to get rid of a wrong video, and the very next rescan of that
+    product can bring the exact same video right back as a fresh 'pending'
+    candidate -- a real, reported bug (see reassign_video_candidate's
+    docstring for the full story). Prefer reject_video_candidate (or
+    reassign_video_candidate, which now tombstones the origin
+    automatically) for "this video doesn't belong here" -- both leave a
+    row behind that blocks reinsertion. Reserve this function for true
+    duplicate cleanup: two DIFFERENT products can legitimately each hold
+    their own row for the same YouTube video (one review can genuinely
+    cover two products), and reassign_video_candidate's merge path can
+    still leave a stale extra copy in rare hand-edited cases -- deleting
+    the redundant copy there is safe, since the video's real slot (on
+    whichever product actually keeps it) is still occupied by the
+    surviving row."""
     with conn.cursor() as cur:
         cur.execute("select id from product_videos where id = %s", (video_id,))
         if cur.fetchone() is None:

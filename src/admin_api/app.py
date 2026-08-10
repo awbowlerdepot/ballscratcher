@@ -55,6 +55,10 @@ class ImageReorderRequest(BaseModel):
 
 class ReassignRequest(BaseModel):
     product_id: str
+    # Optional: stamped on the ORIGIN row's rejected tombstone only (see
+    # service.reassign_video_candidate's docstring), not on the target --
+    # same "who did this" audit field approve/reject use elsewhere.
+    resolved_by: Optional[str] = None
 
 
 class TranscriptSubmitRequest(BaseModel):
@@ -449,10 +453,12 @@ def reassign_video_candidate(video_id: str, body: ReassignRequest):
     # Correction tool for score_match's known false-positive shape (see
     # service.reassign_video_candidate's docstring) -- e.g. a video for
     # "Storm Absolute Power" that landed on the "Storm Absolute" product.
-    # Moves the row, keeps any transcript/summary already fetched.
+    # Copies (or merges) the content onto the target product and leaves a
+    # rejected tombstone at the origin so it can't resurface there on the
+    # next rescan.
     conn = service.get_db_connection()
     try:
-        return service.reassign_video_candidate(conn, video_id, body.product_id)
+        return service.reassign_video_candidate(conn, video_id, body.product_id, body.resolved_by)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:

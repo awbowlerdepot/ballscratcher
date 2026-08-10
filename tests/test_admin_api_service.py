@@ -191,20 +191,71 @@ class FakeCursor:
             self._last_result = (product_id,) if product_id in self.db["products"] else None
             self.description = [("id",)]
 
-        elif q.startswith("select id from product_videos where product_id = %s and youtube_video_id = %s"):
+        elif q.startswith("select id, transcript, summary, status from product_videos where product_id = %s and youtube_video_id = %s"):
+            # reassign_video_candidate's conflict-lookup at the target product.
             target_product_id, youtube_video_id = params
             match = next(
                 (v for v in self.db["product_videos"].values()
                  if v["product_id"] == target_product_id and v["youtube_video_id"] == youtube_video_id),
                 None,
             )
-            self._last_result = (match["id"],) if match else None
+            self._last_result = (
+                (match["id"], match.get("transcript"), match.get("summary"), match["status"]) if match else None
+            )
+            self.description = [("id",), ("transcript",), ("summary",), ("status",)]
+
+        elif q.startswith("select product_id, youtube_video_id, title, channel_title, published_at"):
+            # reassign_video_candidate's full-row fetch of the origin row.
+            (video_id,) = params
+            row = self.db["product_videos"].get(video_id)
+            self._last_result = (
+                (row["product_id"], row["youtube_video_id"], row.get("title"), row.get("channel_title"),
+                 row.get("published_at"), row.get("thumbnail_url"), row.get("match_query"),
+                 row.get("match_confidence"), row.get("transcript"), row.get("transcript_note"),
+                 row.get("summary"), row["status"], row.get("source"))
+                if row else None
+            )
+            self.description = [
+                ("product_id",), ("youtube_video_id",), ("title",), ("channel_title",), ("published_at",),
+                ("thumbnail_url",), ("match_query",), ("match_confidence",), ("transcript",),
+                ("transcript_note",), ("summary",), ("status",), ("source",),
+            ]
+
+        elif q.startswith("insert into product_videos") and "returning id" in q:
+            # reassign_video_candidate's no-conflict path: a fresh row on
+            # the target product carrying over the origin's content.
+            (product_id, youtube_video_id, title, channel_title, published_at,
+             thumbnail_url, match_query, match_confidence, transcript,
+             transcript_note, summary, status, source) = params
+            self.db.setdefault("_video_id_seq", 0)
+            self.db["_video_id_seq"] += 1
+            new_id = f"vid-new-{self.db['_video_id_seq']}"
+            self.db["product_videos"][new_id] = {
+                "id": new_id, "product_id": product_id, "youtube_video_id": youtube_video_id,
+                "title": title, "channel_title": channel_title, "published_at": published_at,
+                "thumbnail_url": thumbnail_url, "match_query": match_query, "match_confidence": match_confidence,
+                "transcript": transcript, "transcript_note": transcript_note, "summary": summary,
+                "status": status, "source": source,
+            }
+            self._last_result = (new_id,)
             self.description = [("id",)]
 
-        elif q.startswith("update product_videos set product_id = %s"):
-            new_product_id, video_id = params
-            self.db["product_videos"][video_id]["product_id"] = new_product_id
-            self._last_result = None
+        elif q.startswith("update product_videos set") and "returning id" in q:
+            # reassign_video_candidate's merge-into-existing-target-row
+            # backfill -- dynamic column list, same pattern as
+            # update_product_image's fake branch above. Last param is
+            # always the target row's id.
+            video_id = params[-1]
+            set_clause_text = q.split("set ", 1)[1].split(" where", 1)[0]
+            columns = [c.split(" =", 1)[0].strip() for c in set_clause_text.split(",")]
+            row = self.db["product_videos"].get(video_id)
+            if row is not None:
+                for column, value in zip(columns, params[:-1]):
+                    row[column] = value
+                self._last_result = (video_id,)
+            else:
+                self._last_result = None
+            self.description = [("id",)]
 
         elif q.startswith("select id from product_videos where id = %s"):
             (video_id,) = params
@@ -594,14 +645,39 @@ def _fake_db_with_two_products_and_one_video():
     return db
 
 
-def test_reassign_video_candidate_moves_to_new_product():
+def test_reassign_video_candidate_creates_new_row_and_tombstones_origin():
+    """No conflict at the destination: a fresh row is created on prod-2
+    carrying over the video's content/status, and the origin row (vid-1,
+    still under prod-1) becomes a rejected tombstone rather than being
+    moved or deleted -- that tombstone is what stops video_discovery's
+    ON CONFLICT DO NOTHING from reinserting this exact video under prod-1
+    on the next rescan (the real bug Al hit: reassigned videos were coming
+    back)."""
     db = _fake_db_with_two_products_and_one_video()
+    db["product_videos"]["vid-1"]["status"] = "approved"
+    db["product_videos"]["vid-1"]["summary"] = "Great ball for medium oil."
     conn = FakeConnection(db)
 
-    result = service.reassign_video_candidate(conn, "vid-1", "prod-2")
+    result = service.reassign_video_candidate(conn, "vid-1", "prod-2", resolved_by="al@bringyourbest.co")
 
-    assert result == {"video_id": "vid-1", "product_id": "prod-2"}
-    assert db["product_videos"]["vid-1"]["product_id"] == "prod-2"
+    assert result["product_id"] == "prod-2"
+    assert result["origin_video_id"] == "vid-1"
+    assert result["merged_with_existing"] is False
+    new_id = result["video_id"]
+    assert new_id != "vid-1"
+
+    # Origin: tombstoned, not moved -- still under prod-1, now rejected.
+    origin = db["product_videos"]["vid-1"]
+    assert origin["product_id"] == "prod-1"
+    assert origin["status"] == "rejected"
+    assert origin["resolved_by"] == "al@bringyourbest.co"
+
+    # Target: new row, content carried over.
+    target = db["product_videos"][new_id]
+    assert target["product_id"] == "prod-2"
+    assert target["youtube_video_id"] == "abc123"
+    assert target["status"] == "approved"
+    assert target["summary"] == "Great ball for medium oil."
     assert conn.committed is True
 
 
@@ -624,28 +700,77 @@ def test_reassign_to_missing_product_raises():
     except LookupError:
         pass
     assert db["product_videos"]["vid-1"]["product_id"] == "prod-1"  # unchanged
+    assert db["product_videos"]["vid-1"]["status"] == "pending"  # not tombstoned
 
 
-def test_reassign_raises_on_existing_duplicate_at_destination():
-    """The real scenario this guards: the video already has its own row
-    under the destination product (maybe from a separate, correct
-    discovery run) -- reassigning would collide with product_videos'
-    (product_id, youtube_video_id) unique constraint. Checked up front for
-    a clear error, not left to a raw IntegrityError."""
+def test_reassign_to_same_product_raises():
     db = _fake_db_with_two_products_and_one_video()
+    conn = FakeConnection(db)
+    try:
+        service.reassign_video_candidate(conn, "vid-1", "prod-1")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+    assert db["product_videos"]["vid-1"]["status"] == "pending"  # not tombstoned
+
+
+def test_reassign_merges_into_existing_row_at_destination_and_tombstones_origin():
+    """The real scenario this replaces a hard error with: the video
+    already has its own row under the destination product (maybe from a
+    separate, correct discovery run there). Used to force the admin to
+    manually delete one of the two duplicates before retrying -- which
+    had the same resurfacing problem as this whole fix addresses, since
+    deleting the origin row removes its blocking tombstone. Now it just
+    merges: origin's transcript/summary backfill onto the target's row
+    (which has neither yet here) without touching the target's own
+    status, and the origin still gets tombstoned."""
+    db = _fake_db_with_two_products_and_one_video()
+    db["product_videos"]["vid-1"]["transcript"] = "full transcript text"
+    db["product_videos"]["vid-1"]["summary"] = "Great ball for medium oil."
+    db["product_videos"]["vid-1"]["transcript_note"] = None
     db["product_videos"]["vid-2"] = {
         "id": "vid-2", "product_id": "prod-2",
         "youtube_video_id": "abc123",  # same video, already under prod-2
-        "status": "pending",
+        "status": "pending", "transcript": None, "summary": None,
     }
     conn = FakeConnection(db)
 
-    try:
-        service.reassign_video_candidate(conn, "vid-1", "prod-2")
-        assert False, "expected ValueError"
-    except ValueError as e:
-        assert "vid-2" in str(e)
-    assert db["product_videos"]["vid-1"]["product_id"] == "prod-1"  # unchanged
+    result = service.reassign_video_candidate(conn, "vid-1", "prod-2")
+
+    assert result["video_id"] == "vid-2"
+    assert result["merged_with_existing"] is True
+
+    target = db["product_videos"]["vid-2"]
+    assert target["transcript"] == "full transcript text"
+    assert target["summary"] == "Great ball for medium oil."
+    assert target["status"] == "pending"  # untouched by the merge
+
+    origin = db["product_videos"]["vid-1"]
+    assert origin["product_id"] == "prod-1"  # tombstoned in place, not moved
+    assert origin["status"] == "rejected"
+
+
+def test_reassign_merge_does_not_overwrite_existing_target_content():
+    """The target's own transcript/summary (and status) are never
+    clobbered by a merge -- only null fields get backfilled. An admin who
+    already reviewed the target's copy shouldn't have that judgment
+    silently overwritten."""
+    db = _fake_db_with_two_products_and_one_video()
+    db["product_videos"]["vid-1"]["transcript"] = "origin transcript"
+    db["product_videos"]["vid-1"]["summary"] = "origin summary"
+    db["product_videos"]["vid-2"] = {
+        "id": "vid-2", "product_id": "prod-2",
+        "youtube_video_id": "abc123",
+        "status": "approved", "transcript": "target's own transcript", "summary": "target's own summary",
+    }
+    conn = FakeConnection(db)
+
+    service.reassign_video_candidate(conn, "vid-1", "prod-2")
+
+    target = db["product_videos"]["vid-2"]
+    assert target["transcript"] == "target's own transcript"
+    assert target["summary"] == "target's own summary"
+    assert target["status"] == "approved"
 
 
 def test_delete_video_candidate_removes_row():

@@ -845,9 +845,13 @@ async function rejectVideo(id) {
 async function reassignVideo(id) {
   const productId = prompt('New product_id to reassign this video to:');
   if (!productId) return;
+  const by = getSettings().resolvedBy;
   try {
-    await api('POST', '/video-candidates/' + id + '/reassign', { body: { product_id: productId.trim() } });
-    toast('Reassigned');
+    const result = await api('POST', '/video-candidates/' + id + '/reassign', { body: { product_id: productId.trim(), resolved_by: by } });
+    // The origin row is now a rejected tombstone (blocks this video from
+    // resurfacing here on the next rescan -- see service.reassign_video_candidate's
+    // docstring), so it just falls out of this pending-filtered list.
+    toast(result.merged_with_existing ? 'Reassigned (merged with an existing entry on that product)' : 'Reassigned');
     loadVideoCandidates();
   } catch (e) { toast(e.message, true); }
 }
@@ -1174,15 +1178,20 @@ async function rejectVideoForProduct(productId, videoId) {
 
 async function reassignVideoForProduct(productId, videoId) {
   // The actual fix for a mismatch like Al's Combat Solid report (see
-  // loadProductDetailInto's comment) -- moves this candidate to a
-  // different product_id, keeping any transcript/summary already fetched.
+  // loadProductDetailInto's comment) -- copies this candidate's content
+  // onto the target product (or merges into an existing entry there) and
+  // leaves a rejected tombstone behind on THIS product, so it can't come
+  // back on the next "Search for videos again" (see
+  // service.reassign_video_candidate's docstring). That's why the video
+  // still shows up below after this refreshes -- now as rejected, not gone.
   const newProductId = prompt('New product_id to reassign this video to:');
   if (!newProductId) return;
+  const by = getSettings().resolvedBy;
   const row = document.getElementById('product-detail-' + productId);
   const cell = row ? row.querySelector('td') : null;
   try {
-    await api('POST', '/video-candidates/' + videoId + '/reassign', { body: { product_id: newProductId.trim() } });
-    toast('Reassigned');
+    const result = await api('POST', '/video-candidates/' + videoId + '/reassign', { body: { product_id: newProductId.trim(), resolved_by: by } });
+    toast(result.merged_with_existing ? 'Reassigned (merged with an existing entry on that product)' : 'Reassigned');
     if (cell) await loadProductDetailInto(productId, cell);
   } catch (e) { toast(e.message, true); }
 }
