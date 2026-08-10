@@ -823,6 +823,54 @@ Omit `SOURCE_PLATFORM` to run catalog-wide as before -- unchanged default
 behavior, and existing callers (including the Batch Jobs panel, which
 doesn't set it) are unaffected.
 
+**Correction, same day: it WAS a scraper bug after all.** Al ran the
+backfill above and reported back: "interesting enough the combats are
+still missing the core." That's real signal the "just needs a rescrape"
+diagnosis above was wrong, since a rescrape had just happened. Re-dug in
+and found the actual bug: `_find_table_by_row_labels` (used to locate the
+real spec table) returns the FIRST `<table>` clearing `min_matches=3`
+against `SPEC_TABLE_LABELS` -- and `SPEC_TABLE_LABELS` includes
+`"rg"`/`"diff"`/`"asy"`/`"mb"` (needed for the single-value-spec-row
+fallback case, see `defender.html`). Every Brunswick product page has a
+separate per-weight "Core Numbers" table (RG/DIFF/ASY breakdown) BEFORE
+the real spec table in document order. For most balls that table only has
+RG/DIFF rows (2 matches, under threshold) so it's harmlessly skipped --
+confirmed via `crown_78u.html`'s fixture, which has exactly this shape
+and has always passed. But an asymmetric-core ball's Core Numbers table
+also reports ASY (mass bias) per weight -- a 3rd row, clearing the exact
+same threshold the real spec table needs to clear -- and since it comes
+first, IT won -- reproduced locally with a two-table fixture mirroring
+Combat Solid's real page and confirmed `core_name`/`coverstock_name`
+(and every other spec field) came back `None`, exactly Al's report.
+Combat's whole family (asymmetric core) hits this on every single
+product; most of Brunswick's catalog (symmetric-core, no ASY row) never
+did, which is exactly why this looked like an isolated, narrow gap
+rather than what it actually is.
+
+**Fix:** `_find_table_by_row_labels` now returns the table with the MOST
+matching labels, not just the first one past the threshold -- the real
+spec table has up to 10 possible matches (level, part number, color,
+core, coverstock, cover type, finish, weights, warranty, release date)
+against the Core Numbers table's max of 4 (rg, diff, asy, mb), so it wins
+outright whenever both are present. Verified against a new
+`tests/fixtures/combat_solid.html` (built from a live fetch of
+`brunswickbowling.com/products/balls/current/combat-solid` this session)
+plus re-confirmed both existing real fixtures (`crown_78u.html`,
+`defender.html`) still parse identically to before -- nothing regressed
+for the products that were already working. New tests in
+`tests/test_product_scraper.py`: end-to-end via the Combat Solid fixture,
+plus direct unit tests of `_find_table_by_row_labels` itself (prefers the
+better match, still works with only one candidate table, still returns
+`None` below the threshold).
+
+**Requires a Lambda redeploy** (`sam build ProductScraperFunction && sam
+deploy`) before this actually takes effect -- unlike the backfill-script
+fix above, this is a code change to the deployed
+`ProductScraperFunction`, not just an admin_api-triggered rescrape. Once
+redeployed, re-run the `SOURCE_PLATFORM=craft_cms` backfill commands
+above (or the Products tab's per-product "Rescrape" button) to actually
+pick up Combat/Combat Solid/Combat Hybrid now that the parser is fixed.
+
 **Stale-image DELETE + S3 orphan cleanup ported from MOTIV (6e.6/6e.7).**
 Al: "brunswick needs an image cleanup like motiv did." Confirmed
 `product_scraper/app.py` (Brunswick) had the exact same gap

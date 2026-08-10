@@ -114,8 +114,43 @@ def _clean(text: str) -> str:
 
 
 def _find_table_by_row_labels(soup: BeautifulSoup, known_labels: set, min_matches: int = 3):
-    """Return the first <table> where at least `min_matches` row-label cells
-    (case-insensitive) are found in `known_labels`."""
+    """Return the <table> with the MOST row-label cells (case-insensitive)
+    found in `known_labels`, provided it clears `min_matches` -- not just
+    the first table to reach that threshold.
+
+    Real, confirmed bug this fixes (Al, 2026-08-10: "we are also missing a
+    bunch of cores from the brunswick brand also their coverstocks. the
+    combats are one of them"): SPEC_TABLE_LABELS includes "rg"/"diff"/
+    "asy"/"mb" so the single-value fallback case (a page with no separate
+    per-weight breakdown, just one RG/DIFF/ASY row inline in the real spec
+    table -- see defender.html) gets found correctly. But on an
+    asymmetric-core ball whose separate Core Numbers table (the per-weight
+    RG/DIFF/ASY breakdown -- see _find_core_numbers_table) happens to
+    report all three of RG, DIFF, AND ASY as its own rows, THAT table also
+    clears min_matches=3 on its own -- and since it always appears before
+    the real spec table in document order on every Brunswick product page
+    (confirmed via a live fetch of brunswickbowling.com/products/balls/
+    current/combat-solid, and reproduced with a matching two-table HTML
+    fixture), first-match-wins returned the Core Numbers table instead,
+    leaving spec = {"rg":..., "diff":..., "asy":...} with no core/
+    coverstock/color/etc. at all -- core_name and coverstock_name (and
+    every other spec field) silently came back None.
+
+    This didn't affect every product: crown_78u.html's Core Numbers table
+    only has RG/DIFF rows (no inline mass bias there), 2 matches, under
+    the threshold, so it was correctly skipped even before this fix. It's
+    specifically asymmetric-core balls reporting mass bias per-weight --
+    Combat's whole family among them -- that tripped this.
+
+    Picking the table with the most matches instead is robust to this: the
+    real spec table has up to 10 possible matching labels (level, part
+    number, color, core, coverstock, cover type, finish, weights,
+    warranty, release date) against the Core Numbers table's max of 4 (rg,
+    diff, asy, mb), so it wins outright whenever both tables are present.
+    Ties keep the first table found (document order), same as the old
+    behavior when there's no competing table at all."""
+    best_table = None
+    best_matches = 0
     for table in soup.find_all("table"):
         matches = 0
         for row in table.find_all("tr"):
@@ -125,9 +160,10 @@ def _find_table_by_row_labels(soup: BeautifulSoup, known_labels: set, min_matche
             label = _clean(cells[0].get_text()).lower()
             if label in known_labels:
                 matches += 1
-        if matches >= min_matches:
-            return table
-    return None
+        if matches >= min_matches and matches > best_matches:
+            best_table = table
+            best_matches = matches
+    return best_table
 
 
 def _find_core_numbers_table(soup: BeautifulSoup):

@@ -1,0 +1,60 @@
+<!--
+  Reconstructed, not a byte-for-byte capture -- same anti-exfiltration
+  limit as crown_78u.html/defender.html's header comments explain. Every
+  value here was directly read off a real fetch of
+  https://brunswickbowling.com/products/balls/current/combat-solid this
+  session (2026-08-10, via a direct HTTP fetch, not Claude in Chrome this
+  time -- the page is plain server-rendered HTML, no JS needed, same as
+  every other Brunswick product page this project scrapes).
+
+  This is the fixture that exposed a real, previously-undetected bug:
+  Combat Solid's "Core Numbers" table (the per-weight RG/DIFF/ASY
+  breakdown below) reports all three of RG, DIFF, AND ASY as their own
+  rows -- unlike crown_78u.html's Core Numbers table, which only has
+  RG/DIFF (2 matches, under _find_table_by_row_labels' min_matches=3
+  threshold). Combat Solid's Core Numbers table clears that threshold on
+  its own, and since it always appears BEFORE the real spec table in
+  document order, the old first-table-past-the-threshold logic picked it
+  instead of the real spec table -- leaving core_name/coverstock_name (and
+  every other spec field) silently None. See
+  src/product_scraper/app.py's _find_table_by_row_labels docstring for
+  the full story and the fix (most-matches-wins instead of first-match).
+
+  Al's report that surfaced this (2026-08-10): "we are also missing a
+  bunch of cores from the brunswick brand also their coverstocks. the
+  combats are one of them." -- this fixture is Combat Solid specifically;
+  Combat and Combat Hybrid share the identical structural pattern (own
+  live fetches this session confirmed the same Core Numbers-then-Spec-
+  Table shape and an ASY row present on both), so this one fixture stands
+  in for the whole family rather than three near-identical files.
+-->
+<html>
+<body>
+<h1>Combat Solid</h1>
+
+<table>
+  <tr><th></th><th>16 lb</th><th>15 lb</th><th>14 lb</th><th>13 lb</th><th>12 lb</th></tr>
+  <tr><td>RG</td><td>2.515</td><td>2.502</td><td>2.513</td><td>2.597</td><td>2.593</td></tr>
+  <tr><td>DIFF</td><td>0.043</td><td>0.051</td><td>0.051</td><td>0.041</td><td>0.041</td></tr>
+  <tr><td>ASY</td><td>0.016</td><td>0.019</td><td>0.019</td><td>0.014</td><td>0.014</td></tr>
+</table>
+
+<table>
+  <tr><td>Level</td><td>Pro</td></tr>
+  <tr><td>Part Number</td><td>60-108683-93X</td></tr>
+  <tr><td>Color</td><td>Navy / Blue / Slate / Purple</td></tr>
+  <tr><td>Core</td><td>Rampart</td></tr>
+  <tr><td>Coverstock</td><td>HK22C&sup2; - Alpha Premier Solid</td></tr>
+  <tr><td>Cover Type</td><td>Solid Reactive</td></tr>
+  <tr><td>Finish</td><td>500, 1500 Siaair Micro Pad</td></tr>
+  <tr><td>Weights</td><td>16-12 lbs.</td></tr>
+  <tr><td>Warranty</td><td>Two years from purchase date</td></tr>
+  <tr><td>Release Date</td><td>August 13, 2026</td></tr>
+</table>
+
+<img src="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/transforms/bowlerproducts/Products/Balls/Pro/839884/Combat_Solid_1600x1600_18694ddcf445590f9b69434f3e02c496.png" alt="A navy, blue, slate, and purple colored bowling ball with the Combat logo in neon green centered prominently.">
+<img src="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/transforms/bowlerproducts/Products/Balls/Pro/839889/Combat_Solid_16-14_lb_Core_1600x1600_callout_18694ddcf445590f9b69434f3e02c496.png" alt="The Combat Solid core for sixteen to fourteen pound bowling balls.">
+<img src="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/transforms/bowlerproducts/Products/Balls/Pro/839888/Combat_Solid_13-12_lb_Core_1600x1600_callout_18694ddcf445590f9b69434f3e02c496.png" alt="The Combat Solid core for thirteen to twelve pound bowling balls.">
+
+</body>
+</html>

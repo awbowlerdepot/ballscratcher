@@ -39,6 +39,8 @@ from app import (  # noqa: E402
     _nearby_label_text,
     _resolve_img_src,
     _normalize_coverstock_name,
+    _find_table_by_row_labels,
+    SPEC_TABLE_LABELS,
 )
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
@@ -54,6 +56,12 @@ def crown_78u():
 def defender():
     html = (FIXTURES / "defender.html").read_text()
     return parse_product_page(html, "https://brunswickbowling.com/products/balls/retired/defender")
+
+
+@pytest.fixture
+def combat_solid():
+    html = (FIXTURES / "combat_solid.html").read_text()
+    return parse_product_page(html, "https://brunswickbowling.com/products/balls/current/combat-solid")
 
 
 # --- Crown 78U: current ball, full per-weight table, no inline mass bias ---
@@ -196,6 +204,92 @@ def test_defender_missing_release_date_does_not_break_parsing(defender):
     assert "release_date_raw" in defender
     assert defender["release_date_raw"] is None
     assert defender["release_date"] is None
+
+
+# --- Combat Solid: real, confirmed bug -- an asymmetric-core ball whose
+# separate Core Numbers table reports RG, DIFF, AND ASY as their own rows
+# (unlike Crown 78U's, which only has RG/DIFF) used to get mistaken for
+# the real spec table by _find_table_by_row_labels, since it cleared the
+# same min_matches=3 threshold on its own and always sits before the real
+# spec table in document order. Result: core_name/coverstock_name/color/
+# etc. all silently came back None. Al: "we are also missing a bunch of
+# cores from the brunswick brand also their coverstocks. the combats are
+# one of them." See app.py's _find_table_by_row_labels docstring for the
+# full story and fix (most-matches-wins, not first-past-the-threshold).
+
+def test_combat_solid_core_and_coverstock_not_swallowed_by_core_numbers_table(combat_solid):
+    """The actual regression: before the fix, every field below came back
+    None because the wrong table was selected as the spec table."""
+    assert combat_solid["core_name"] == "Rampart"
+    assert combat_solid["coverstock_name"] == "HK22C\xb2 - Alpha Premier Solid"
+    assert combat_solid["color"] == "Navy / Blue / Slate / Purple"
+    assert combat_solid["part_number"] == "60-108683-93X"
+
+
+def test_combat_solid_full_weight_breakdown_still_correct(combat_solid):
+    """Confirms the fix didn't disturb the OTHER table -- skus still come
+    from the real Core Numbers table via _find_core_numbers_table (a
+    separate lookup, not the one this bug was in), full 5-weight
+    breakdown including mass bias (this ball's whole point is an
+    asymmetric core, so ASY must be present, unlike Crown 78U)."""
+    skus = {s["weight_lbs"]: s for s in combat_solid["skus"]}
+    assert set(skus.keys()) == {16, 15, 14, 13, 12}
+    assert skus[16]["rg"] == 2.515
+    assert skus[16]["differential"] == 0.043
+    assert skus[16]["mass_bias"] == 0.016
+
+
+def test_find_table_by_row_labels_prefers_more_matches_over_first_match():
+    """Direct unit test of the fix itself, isolated from the rest of
+    parse_product_page -- a decoy table clearing min_matches first, with
+    a better-matching real table appearing after it, must not win just by
+    being first."""
+    soup = BeautifulSoup(
+        """
+        <table>
+          <tr><td>RG</td><td>2.515</td></tr>
+          <tr><td>DIFF</td><td>0.043</td></tr>
+          <tr><td>ASY</td><td>0.016</td></tr>
+        </table>
+        <table>
+          <tr><td>Level</td><td>Pro</td></tr>
+          <tr><td>Part Number</td><td>60-108683-93X</td></tr>
+          <tr><td>Color</td><td>Navy</td></tr>
+          <tr><td>Core</td><td>Rampart</td></tr>
+          <tr><td>Coverstock</td><td>Alpha Premier Solid</td></tr>
+        </table>
+        """,
+        "lxml",
+    )
+    table = _find_table_by_row_labels(soup, SPEC_TABLE_LABELS)
+    row_labels = [tr.find_all(["th", "td"])[0].get_text().strip() for tr in table.find_all("tr")]
+    assert "Core" in row_labels  # the real spec table, not the 3-match decoy
+
+
+def test_find_table_by_row_labels_still_finds_only_table_when_no_competitor():
+    """defender.html's real shape: a single table with everything
+    (including RG/DIFF/ASY inline) -- confirms the fix doesn't require a
+    second table to exist, same as before this change."""
+    soup = BeautifulSoup(
+        """
+        <table>
+          <tr><td>Core</td><td>Portal X</td></tr>
+          <tr><td>RG</td><td>2.473</td></tr>
+          <tr><td>DIFF</td><td>0.054</td></tr>
+          <tr><td>ASY</td><td>0.015</td></tr>
+        </table>
+        """,
+        "lxml",
+    )
+    table = _find_table_by_row_labels(soup, SPEC_TABLE_LABELS)
+    assert table is not None
+    first_row_label = table.find_all("tr")[0].find_all(["th", "td"])[0].get_text()
+    assert first_row_label == "Core"
+
+
+def test_find_table_by_row_labels_returns_none_below_threshold():
+    soup = BeautifulSoup("<table><tr><td>RG</td><td>2.515</td></tr></table>", "lxml")
+    assert _find_table_by_row_labels(soup, SPEC_TABLE_LABELS) is None
 
 
 def test_parse_release_date_day_precision_real_crown_78u_value():
