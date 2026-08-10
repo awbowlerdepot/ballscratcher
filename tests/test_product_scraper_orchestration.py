@@ -80,9 +80,19 @@ def test_extract_jobs_sqs_batch():
 # --- Fake DB matching upsert_product's actual queries ---
 
 class FakeCursor:
+    """Gains cores/coverstocks/stale-image-delete support here (previously
+    a known, pre-existing gap -- see this session's DEPLOY_RUNBOOK.md
+    history -- that made this whole file's DB-touching tests fail before
+    upsert_product ever reached the query they actually meant to exercise).
+    Fixed now, mirroring test_netsuite_product_scraper_orchestration.py's
+    FakeCursor exactly, so this file can actually run the new stale-image
+    DELETE + S3 orphan cleanup end to end rather than just being hand-
+    reviewed."""
+
     def __init__(self, db):
         self.db = db
         self._result = None
+        self._rows = []
 
     def __enter__(self):
         return self
@@ -94,7 +104,34 @@ class FakeCursor:
         q = " ".join(query.split())
         params = params or []
 
-        if q.startswith("insert into products"):
+        if q.startswith("insert into cores"):
+            brand_id, name, core_type = params
+            key = (brand_id, name)
+            existing = self.db["cores"].get(key)
+            if existing is None:
+                core_id = self.db["_next_core_id"]
+                self.db["_next_core_id"] += 1
+                self.db["cores"][key] = {"id": core_id, "core_type": core_type}
+            elif self.db["cores"][key]["core_type"] is None:
+                self.db["cores"][key]["core_type"] = core_type
+            self._result = (self.db["cores"][key]["id"],)
+
+        elif q.startswith("insert into coverstocks"):
+            brand_id, name, material, cs_type = params
+            key = (brand_id, name)
+            existing = self.db["coverstocks"].get(key)
+            if existing is None:
+                coverstock_id = self.db["_next_coverstock_id"]
+                self.db["_next_coverstock_id"] += 1
+                self.db["coverstocks"][key] = {"id": coverstock_id, "material": material, "type": cs_type}
+            else:
+                if self.db["coverstocks"][key]["material"] is None:
+                    self.db["coverstocks"][key]["material"] = material
+                if self.db["coverstocks"][key]["type"] is None:
+                    self.db["coverstocks"][key]["type"] = cs_type
+            self._result = (self.db["coverstocks"][key]["id"],)
+
+        elif q.startswith("insert into products"):
             url = params[2]
             existing_id = self.db["_products_by_url"].get(url)
             product_id = existing_id or self.db["_next_product_id"]
@@ -124,11 +161,37 @@ class FakeCursor:
             row = self.db["product_images"][key]
             self._result = (row["id"], row["stored_url"])
 
+        elif q == "delete from product_images where product_id = %s and source_url <> all(%s) returning id, stored_url":
+            # upsert_product's stale-image cleanup, ported from
+            # netsuite_product_scraper (see that module's docstring):
+            # removes any row for this product_id whose source_url isn't
+            # in the just-parsed set, so a rescrape genuinely replaces the
+            # image list rather than just adding to it. Returns the
+            # deleted rows' (id, stored_url) -- needed by _process_one/
+            # delete_orphaned_image_objects to know which ones (if any)
+            # also need their S3 objects cleaned up.
+            del_product_id, keep_urls = params
+            keep_urls = set(keep_urls)
+            to_delete = [k for k in self.db["product_images"] if k[0] == del_product_id and k[1] not in keep_urls]
+            self._rows = [(self.db["product_images"][k]["id"], self.db["product_images"][k]["stored_url"]) for k in to_delete]
+            for key in to_delete:
+                del self.db["product_images"][key]
+
+        elif q == "delete from product_images where product_id = %s returning id, stored_url":
+            (del_product_id,) = params
+            to_delete = [k for k in self.db["product_images"] if k[0] == del_product_id]
+            self._rows = [(self.db["product_images"][k]["id"], self.db["product_images"][k]["stored_url"]) for k in to_delete]
+            for key in to_delete:
+                del self.db["product_images"][key]
+
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
 
     def fetchone(self):
         return self._result
+
+    def fetchall(self):
+        return self._rows
 
 
 class FakeConnection:
@@ -149,8 +212,9 @@ class FakeConnection:
 
 def _fresh_db():
     return {
-        "_next_product_id": 1, "_next_image_id": 1, "_products_by_url": {},
-        "products": {}, "product_skus": {}, "product_images": {},
+        "_next_product_id": 1, "_next_image_id": 1, "_next_core_id": 1, "_next_coverstock_id": 1,
+        "_products_by_url": {},
+        "products": {}, "product_skus": {}, "product_images": {}, "cores": {}, "coverstocks": {},
     }
 
 
@@ -160,6 +224,33 @@ class FakeSqs:
 
     def send_message_batch(self, QueueUrl, Entries):
         self.sent.append((QueueUrl, [e["MessageBody"] for e in Entries]))
+
+
+class _FakeS3Paginator:
+    def __init__(self, client):
+        self.client = client
+
+    def paginate(self, Bucket, Prefix):
+        keys = self.client.objects_by_prefix.get(Prefix, [])
+        # Mirrors real boto3: a zero-match page omits "Contents" entirely
+        # rather than including an empty list -- delete_orphaned_image_
+        # objects' `.get("Contents", [])` exists specifically to handle
+        # that shape, so this fake reproduces it rather than always
+        # including the key.
+        yield {"Contents": [{"Key": k} for k in keys]} if keys else {}
+
+
+class FakeS3Client:
+    def __init__(self, objects_by_prefix=None):
+        self.objects_by_prefix = objects_by_prefix or {}
+        self.delete_calls = []
+
+    def get_paginator(self, operation_name):
+        assert operation_name == "list_objects_v2"
+        return _FakeS3Paginator(self)
+
+    def delete_objects(self, Bucket, Delete):
+        self.delete_calls.append({"Bucket": Bucket, "Keys": [o["Key"] for o in Delete["Objects"]]})
 
 
 def _crown_78u_html():
@@ -230,6 +321,258 @@ def test_process_one_does_not_republish_image_job_for_already_processed_image(mo
     assert second["image_jobs_published"] == 0
 
 
+# --- stale-image DELETE + S3 orphan cleanup, ported from
+# netsuite_product_scraper (MOTIV) -- see upsert_product's docstring for
+# the full incident this closes.
+
+def test_process_one_removes_stale_image_rows_no_longer_matched(monkeypatch):
+    """Al confirmed Brunswick has the same gap MOTIV had: a plain
+    insert-on-conflict-update never deletes a row for a source_url that's
+    no longer part of the current parse, so a rescrape would just add the
+    correct photos alongside whatever wrong/old one was already sitting
+    there. This seeds exactly that scenario -- a stale row for this
+    product_id under a url the real crown_78u fixture never contains --
+    and confirms _process_one's rescrape clears it."""
+    db = _fresh_db()
+    crown_url = "https://brunswickbowling.com/products/balls/current/crown-78u"
+    db["_products_by_url"][crown_url] = 1
+    db["_next_product_id"] = 2
+    db["products"][1] = {"url": crown_url}
+    stale_key = (1, "https://brunswickbowling.com/userfiles/unrelated-thumb.png")
+    db["product_images"][stale_key] = {
+        "id": 999, "image_type": "other", "stored_url": "https://s3.example/already-mirrored.png",
+    }
+
+    monkeypatch.setattr(app, "fetch_page", lambda url: _crown_78u_html())
+    monkeypatch.setattr(app, "get_db_connection", lambda: FakeConnection(db))
+    monkeypatch.delenv("IMAGE_PROCESS_QUEUE_URL", raising=False)
+    monkeypatch.delenv("PDF_PARSE_QUEUE_URL", raising=False)
+
+    job = {"url": crown_url, "brand_id": "brand-1"}
+    app._process_one(job, None)
+
+    remaining = {url for (pid, url) in db["product_images"] if pid == 1}
+    assert stale_key[1] not in remaining
+    assert len(remaining) == 3  # only the 3 real crown_78u images remain
+
+
+def test_process_one_empty_image_parse_clears_all_existing_rows(monkeypatch):
+    """Edge case for the same cleanup fix: if a rescrape genuinely finds
+    zero images this time, every existing row for that product is stale
+    by definition and should be cleared too, not left behind forever."""
+    db = _fresh_db()
+    crown_url = "https://brunswickbowling.com/products/balls/current/crown-78u"
+    db["_products_by_url"][crown_url] = 1
+    db["_next_product_id"] = 2
+    db["products"][1] = {"url": crown_url}
+    db["product_images"][(1, "https://brunswickbowling.com/userfiles/stale1.png")] = {
+        "id": 1, "image_type": "main", "stored_url": None,
+    }
+
+    _real_parse_product_page = app.parse_product_page
+    monkeypatch.setattr(app, "fetch_page", lambda url: _crown_78u_html())
+    monkeypatch.setattr(app, "get_db_connection", lambda: FakeConnection(db))
+    monkeypatch.setattr(app, "parse_product_page", lambda html, url: {
+        **_real_parse_product_page(html, url), "images": [],
+    })
+    monkeypatch.delenv("IMAGE_PROCESS_QUEUE_URL", raising=False)
+    monkeypatch.delenv("PDF_PARSE_QUEUE_URL", raising=False)
+
+    job = {"url": crown_url, "brand_id": "brand-1"}
+    app._process_one(job, None)
+
+    remaining = {url for (pid, url) in db["product_images"] if pid == 1}
+    assert remaining == set()
+
+
+# --- delete_orphaned_image_objects: the S3 half of the stale-image
+# cleanup fix -- see that function's docstring for the full story.
+
+def test_delete_orphaned_image_objects_deletes_every_variant_for_stale_rows():
+    s3 = FakeS3Client(objects_by_prefix={
+        "product-images/img-1/": [
+            "product-images/img-1/thumbnail.png",
+            "product-images/img-1/catalog.png",
+            "product-images/img-1/detail.png",
+        ],
+    })
+    stale_rows = [{"id": "img-1", "stored_url": "https://bucket.s3.amazonaws.com/product-images/img-1/detail.png"}]
+
+    deleted = app.delete_orphaned_image_objects(s3, "my-bucket", stale_rows)
+
+    assert deleted == 3
+    assert len(s3.delete_calls) == 1
+    assert s3.delete_calls[0]["Bucket"] == "my-bucket"
+    assert set(s3.delete_calls[0]["Keys"]) == {
+        "product-images/img-1/thumbnail.png",
+        "product-images/img-1/catalog.png",
+        "product-images/img-1/detail.png",
+    }
+
+
+def test_delete_orphaned_image_objects_skips_rows_with_no_stored_url():
+    s3 = FakeS3Client(objects_by_prefix={"product-images/img-2/": ["product-images/img-2/detail.png"]})
+    stale_rows = [{"id": "img-2", "stored_url": None}]
+
+    deleted = app.delete_orphaned_image_objects(s3, "my-bucket", stale_rows)
+
+    assert deleted == 0
+    assert s3.delete_calls == []
+
+
+def test_delete_orphaned_image_objects_handles_multiple_rows_independently():
+    s3 = FakeS3Client(objects_by_prefix={
+        "product-images/img-1/": ["product-images/img-1/detail.png"],
+        "product-images/img-3/": ["product-images/img-3/detail.png", "product-images/img-3/thumbnail.png"],
+    })
+    stale_rows = [
+        {"id": "img-1", "stored_url": "https://bucket.s3.amazonaws.com/product-images/img-1/detail.png"},
+        {"id": "img-2", "stored_url": None},  # skipped -- never processed
+        {"id": "img-3", "stored_url": "https://bucket.s3.amazonaws.com/product-images/img-3/detail.png"},
+    ]
+
+    deleted = app.delete_orphaned_image_objects(s3, "my-bucket", stale_rows)
+
+    assert deleted == 3  # 1 + 2, img-2 contributes nothing
+    assert len(s3.delete_calls) == 2
+
+
+def test_delete_orphaned_image_objects_no_op_when_nothing_stale():
+    s3 = FakeS3Client()
+    deleted = app.delete_orphaned_image_objects(s3, "my-bucket", [])
+    assert deleted == 0
+    assert s3.delete_calls == []
+
+
+def test_delete_orphaned_image_objects_handles_already_missing_s3_objects():
+    """Real edge case: the DB row had a stored_url, but the S3 objects for
+    it are already gone somehow -- list_objects_v2 finds nothing under
+    that prefix. Must NOT call delete_objects with an empty Objects list
+    -- a real, confirmed boto3 requirement: Delete.Objects needs at least
+    one entry, or the call raises."""
+    s3 = FakeS3Client(objects_by_prefix={})
+    stale_rows = [{"id": "img-1", "stored_url": "https://bucket.s3.amazonaws.com/product-images/img-1/detail.png"}]
+
+    deleted = app.delete_orphaned_image_objects(s3, "my-bucket", stale_rows)
+
+    assert deleted == 0
+    assert s3.delete_calls == []
+
+
+# --- _process_one: the S3 cleanup wired end to end ---
+
+def test_process_one_cleans_up_orphaned_s3_objects_for_stale_rows(monkeypatch):
+    """End-to-end version of the fix: seeds a stale row that already has a
+    real stored_url, and confirms _process_one's S3 cleanup actually fires
+    and reports the deleted count."""
+    db = _fresh_db()
+    crown_url = "https://brunswickbowling.com/products/balls/current/crown-78u"
+    db["_products_by_url"][crown_url] = 1
+    db["_next_product_id"] = 2
+    db["products"][1] = {"url": crown_url}
+    stale_key = (1, "https://brunswickbowling.com/userfiles/unrelated-thumb.png")
+    db["product_images"][stale_key] = {
+        "id": "img-stale", "image_type": "other",
+        "stored_url": "https://bucket.s3.amazonaws.com/product-images/img-stale/detail.png",
+    }
+
+    monkeypatch.setattr(app, "fetch_page", lambda url: _crown_78u_html())
+    monkeypatch.setattr(app, "get_db_connection", lambda: FakeConnection(db))
+    monkeypatch.delenv("IMAGE_PROCESS_QUEUE_URL", raising=False)
+    monkeypatch.delenv("PDF_PARSE_QUEUE_URL", raising=False)
+    monkeypatch.setenv("IMAGE_BUCKET", "my-bucket")
+
+    s3 = FakeS3Client(objects_by_prefix={
+        "product-images/img-stale/": [
+            "product-images/img-stale/thumbnail.png",
+            "product-images/img-stale/catalog.png",
+            "product-images/img-stale/detail.png",
+        ],
+    })
+
+    job = {"url": crown_url, "brand_id": "brand-1"}
+    result = app._process_one(job, None, s3_client=s3)
+
+    assert result["orphaned_objects_deleted"] == 3
+    assert len(s3.delete_calls) == 1
+
+
+def test_process_one_skips_s3_cleanup_without_s3_client(monkeypatch):
+    """Soft-fail path: no s3_client passed (mirrors handler() not building
+    one when IMAGE_BUCKET isn't configured on this deployment) -- the
+    DB-side delete still happens, S3 cleanup is just skipped (and logged),
+    not an error."""
+    db = _fresh_db()
+    crown_url = "https://brunswickbowling.com/products/balls/current/crown-78u"
+    db["_products_by_url"][crown_url] = 1
+    db["_next_product_id"] = 2
+    db["products"][1] = {"url": crown_url}
+    stale_key = (1, "https://brunswickbowling.com/userfiles/unrelated-thumb.png")
+    db["product_images"][stale_key] = {
+        "id": "img-stale", "image_type": "other",
+        "stored_url": "https://bucket.s3.amazonaws.com/product-images/img-stale/detail.png",
+    }
+
+    monkeypatch.setattr(app, "fetch_page", lambda url: _crown_78u_html())
+    monkeypatch.setattr(app, "get_db_connection", lambda: FakeConnection(db))
+    monkeypatch.delenv("IMAGE_PROCESS_QUEUE_URL", raising=False)
+    monkeypatch.delenv("PDF_PARSE_QUEUE_URL", raising=False)
+    monkeypatch.delenv("IMAGE_BUCKET", raising=False)
+
+    job = {"url": crown_url, "brand_id": "brand-1"}
+    result = app._process_one(job, None)  # no s3_client passed
+
+    assert result["orphaned_objects_deleted"] == 0
+    remaining = {url for (pid, url) in db["product_images"] if pid == 1}
+    assert stale_key[1] not in remaining  # DB row still removed regardless
+
+
+def test_handler_builds_s3_client_when_image_bucket_configured(monkeypatch):
+    """handler() mirrors sqs_client's existing conditional-build pattern
+    for s3_client -- confirmed here by checking _process_one actually
+    receives a non-None s3_client when IMAGE_BUCKET is set. boto3 itself
+    isn't installed in this sandbox, so handler()'s
+    `import boto3; boto3.client("s3")` is faked via sys.modules, same
+    approach test_netsuite_product_scraper_orchestration.py's analogous
+    test uses."""
+    db = _fresh_db()
+    crown_url = "https://brunswickbowling.com/products/balls/current/crown-78u"
+
+    monkeypatch.setattr(app, "fetch_page", lambda url: _crown_78u_html())
+    monkeypatch.setattr(app, "get_db_connection", lambda: FakeConnection(db))
+    monkeypatch.delenv("IMAGE_PROCESS_QUEUE_URL", raising=False)
+    monkeypatch.delenv("PDF_PARSE_QUEUE_URL", raising=False)
+    monkeypatch.setenv("IMAGE_BUCKET", "my-bucket")
+
+    received = {}
+
+    def fake_process_one(job, sqs_client, s3_client=None):
+        received["s3_client"] = s3_client
+        return {
+            "product_id": "1", "sku_count": 0, "pdf_jobs_published": 0,
+            "image_jobs_published": 0, "orphaned_objects_deleted": 0,
+        }
+
+    monkeypatch.setattr(app, "_process_one", fake_process_one)
+
+    class _FakeBoto3:
+        def client(self, name):
+            assert name == "s3"
+            return FakeS3Client()
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    try:
+        app.handler({"url": crown_url, "brand_id": "brand-1"}, None)
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+
+    assert received["s3_client"] is not None
+
+
 def test_handler_sqs_batch_reports_only_failed_message(monkeypatch):
     """One job succeeds, one raises -- confirms batchItemFailures contains
     only the failed message's id, not the successful one's, so SQS only
@@ -283,6 +626,10 @@ if __name__ == "__main__":
         def setenv(self, name, value):
             self._env.append((name, os.environ.get(name)))
             os.environ[name] = value
+
+        def delenv(self, name, raising=True):
+            self._env.append((name, os.environ.get(name)))
+            os.environ.pop(name, None)
 
         def undo(self):
             for obj, name, value in reversed(self._sets):

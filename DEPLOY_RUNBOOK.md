@@ -768,6 +768,63 @@ export ADMIN_API_TOKEN="<the same bearer token used elsewhere>"
 python3 scripts/backfill_coverstock_ids.py
 ```
 
+**Stale-image DELETE + S3 orphan cleanup ported from MOTIV (6e.6/6e.7).**
+Al: "brunswick needs an image cleanup like motiv did." Confirmed
+`product_scraper/app.py` (Brunswick) had the exact same gap
+`netsuite_product_scraper` (MOTIV) had before 6e.6: `upsert_product`'s
+image upsert (`INSERT ... ON CONFLICT (product_id, source_url) DO
+UPDATE`) only ever inserts a row for a `source_url` still present on the
+page or updates one that already matches -- it never deletes a row for a
+photo the current parse no longer found. A rescrape after a page's photos
+changed (or after any future scraper fix that stops collecting a wrong
+photo, same shape as 6e.7's `core_callout` removal) would just add
+whatever the current parse found alongside whatever stale rows were
+already sitting there.
+
+Ported both halves of MOTIV's fix (see 6e.6 for the full original
+incident writeup) exactly:
+
+1. `upsert_product` now deletes any `product_images` row for the product
+   whose `source_url` isn't in the current parse's set (or, if the parse
+   found zero images this time, every existing row), returning the
+   deleted `(id, stored_url)` pairs so a rescrape genuinely REPLACES the
+   image list instead of just extending it.
+2. `delete_orphaned_image_objects()` (same function, ported verbatim --
+   own key-listing/delete logic, not shared/imported, matching this
+   project's "each Lambda owns its whole package" convention) removes the
+   matching `product-images/<id>/*` S3 objects for any deleted row that
+   had already been mirrored by `image_processor`, called from
+   `_process_one`. `ProductScraperFunction` gained the same `IMAGE_BUCKET`
+   env var and scoped `s3:ListBucket`/`s3:DeleteObject` policy
+   `NetsuiteProductScraperFunction` has -- soft-fails (logs a warning,
+   skips cleanup) if `IMAGE_BUCKET` isn't set on a given deployment, same
+   optional-config convention as `IMAGE_PROCESS_QUEUE_URL`; the DB-side
+   delete always works regardless.
+
+Also fixed, as a side effect of actually running
+`tests/test_product_scraper_orchestration.py` end to end to verify this:
+that file's `FakeCursor` was missing `insert into cores`/`insert into
+coverstocks` support, a pre-existing gap (present since the cores/
+coverstocks features shipped, not caused by this change) that made every
+DB-touching test in that file raise `NotImplementedError` before ever
+reaching the query it meant to exercise. Fixed by porting the same
+`FakeCursor` branches `test_netsuite_product_scraper_orchestration.py`
+already has. `test_woocommerce_product_scraper_orchestration.py` has the
+identical gap and is still unfixed -- out of scope for this change, left
+as a known pre-existing issue same as before.
+
+**Requires a Lambda redeploy** (`sam build && sam deploy`) --
+`ProductScraperFunction` code and `template.yaml` both changed. No
+migration needed -- this only changes what a future rescrape does, not
+any existing data. To actually clear out any stale Brunswick image rows
+already sitting in the DB from before this fix, rescrape the affected
+products (same `POST /products/{id}/rescrape` mechanism as everywhere
+else in this project -- there's no Brunswick-specific backfill script
+for this yet, unlike 6e.6's `scripts/rescrape_netsuite_products.py`,
+since Al reported this as "needs the same fix," not "here's a known list
+of affected products" -- add one the same way if a full-catalog sweep
+turns out to be needed).
+
 ### 6d. SWAG (if `SwagBrandId` was set)
 
 No schedule wired up for `WooCommerceUrlDiscoveryFunction` yet -- invoke

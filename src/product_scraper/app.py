@@ -627,11 +627,20 @@ def get_or_create_coverstock_id(conn, brand_id: str, coverstock_name, material=N
 def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
     """Insert or update the products row and its product_skus/product_images
     rows for one scraped page. Returns
-    {"product_id": ..., "pending_image_jobs": [{"product_image_id", "source_url"}, ...]}
-    -- the latter is every product_images row (new or pre-existing) that
-    still has stored_url = null, i.e. still needs the image pipeline to
-    run on it, which is what the handler uses to fan out image-process
-    jobs without a separate query.
+    {"product_id": ..., "pending_image_jobs": [...], "stale_image_rows": [...]}
+    -- pending_image_jobs is every product_images row (new or pre-existing)
+    that still has stored_url = null, i.e. still needs the image pipeline
+    to run on it, which is what the handler uses to fan out image-process
+    jobs without a separate query. stale_image_rows is every product_images
+    row that existed before this scrape but whose source_url isn't in the
+    current parse -- i.e. a photo the page no longer has -- deleted here
+    and returned (rather than just deleted) so _process_one can also clean
+    up any S3 objects already mirrored for those rows via
+    delete_orphaned_image_objects. Ported from netsuite_product_scraper's
+    identical fix (see DEPLOY_RUNBOOK.md's MOTIV image-cleanup writeup):
+    without this, a plain upsert never removes a row for a photo that's no
+    longer on the page, so a rescrape only ever adds to the image set,
+    never actually replaces it.
 
     Mismatches between a re-scrape and the stored value aren't silently
     overwritten for SKU fields sourced from html when a prior value came
@@ -731,12 +740,14 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
             )
 
         pending_image_jobs = []
+        current_source_urls = set()
         for image in parsed["images"]:
             # Changed from the original "on conflict do nothing" to "do
             # update" (re-setting image_type to its own value) purely so
             # this can RETURNING id/stored_url on every row, whether it was
             # just inserted or already existed -- needed to know which
             # rows still need an image-process job without a second query.
+            current_source_urls.add(image["source_url"])
             cur.execute(
                 """
                 insert into product_images (product_id, image_type, source_url)
@@ -750,8 +761,44 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
             if stored_url is None:
                 pending_image_jobs.append({"product_image_id": str(image_id), "source_url": image["source_url"]})
 
+        # Real cleanup step, ported from netsuite_product_scraper (MOTIV) --
+        # see that module's upsert_product docstring for the full incident
+        # this closes. A plain upsert on its own never REMOVES a row -- it
+        # only inserts new source_urls or updates ones still present. Al
+        # confirmed Brunswick has the same gap MOTIV had: a rescrape after
+        # a page's photos changed (or after a scraper fix that stops
+        # collecting a wrong photo) just adds whatever the current parse
+        # found alongside whatever wrong/stale rows were already sitting
+        # there, never removing them. This makes a rescrape genuinely
+        # REPLACE the image set with whatever the current parse actually
+        # found, not just extend it.
+        #
+        # `returning id, stored_url` -- same reasoning as netsuite's
+        # version: a bare DELETE would leave any already-uploaded S3
+        # objects for these rows orphaned forever, since nothing else in
+        # this codebase ever revisits an already-processed image. Returning
+        # the deleted rows here (rather than a bare DELETE) is what lets
+        # _process_one below actually clean those up via
+        # delete_orphaned_image_objects().
+        if current_source_urls:
+            cur.execute(
+                """
+                delete from product_images where product_id = %s and source_url <> all(%s)
+                returning id, stored_url
+                """,
+                (product_id, list(current_source_urls)),
+            )
+        else:
+            # parsed["images"] came back empty this time -- every existing
+            # row for this product is stale by definition.
+            cur.execute(
+                "delete from product_images where product_id = %s returning id, stored_url",
+                (product_id,),
+            )
+        stale_image_rows = [{"id": row[0], "stored_url": row[1]} for row in cur.fetchall()]
+
     conn.commit()
-    return {"product_id": product_id, "pending_image_jobs": pending_image_jobs}
+    return {"product_id": product_id, "pending_image_jobs": pending_image_jobs, "stale_image_rows": stale_image_rows}
 
 
 def build_pdf_parse_message(product_id: str, info_sheet_url: str) -> str:
@@ -779,6 +826,48 @@ def publish_messages(sqs_client, queue_url: str, message_bodies: list) -> int:
     return sent
 
 
+def delete_orphaned_image_objects(s3_client, bucket: str, stale_image_rows: list) -> int:
+    """Ported from netsuite_product_scraper/app.py -- see that module's own
+    docstring for the full story (Al asked directly whether a rescrape
+    also cleans up the S3 objects image_processor may have already
+    uploaded for a now-stale product_images row; without this, the answer
+    was no, and those objects would be orphaned forever).
+
+    Only bothers with rows that actually have a stored_url (`stored_url is
+    not None` -- see the `stale_image_rows` filtering in _process_one): a
+    row still awaiting image_processor never had anything uploaded for it,
+    so there's nothing in S3 to clean up.
+
+    Mirrors image_processor.upload_variants' real key convention
+    (`product-images/<product_image_id>/<size_name>.png`) rather than
+    importing it -- separate Lambda deployment packages, same "own the
+    whole package" duplication convention as publish_messages above.
+    Lists each id's objects (via `list_objects_v2`, paginated) and deletes
+    whatever comes back, rather than hard-coding image_processor's current
+    SIZE_PRESETS name set (thumbnail/catalog/detail) here too -- correct
+    even if that preset list changes later without this module needing to
+    track it.
+
+    Returns the total object count actually deleted, for logging."""
+    s3_paginator = s3_client.get_paginator("list_objects_v2")
+    deleted = 0
+    for row in stale_image_rows:
+        if row["stored_url"] is None:
+            continue
+
+        prefix = f"product-images/{row['id']}/"
+        keys = []
+        for page in s3_paginator.paginate(Bucket=bucket, Prefix=prefix):
+            keys.extend(obj["Key"] for obj in page.get("Contents", []))
+        if not keys:
+            continue
+
+        s3_client.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": k} for k in keys]})
+        deleted += len(keys)
+
+    return deleted
+
+
 def _extract_jobs(event: dict) -> list:
     """Supports two invocation shapes: a real SQS trigger
     ({"Records": [{"body": "<json>", "messageId": "..."}, ...]}) and a
@@ -791,7 +880,7 @@ def _extract_jobs(event: dict) -> list:
     return [(event, None)]
 
 
-def _process_one(job: dict, sqs_client) -> dict:
+def _process_one(job: dict, sqs_client, s3_client=None) -> dict:
     """Scrapes and upserts one product page, then fans out follow-up jobs.
     Raised exceptions propagate to the caller (handler), which decides how
     to report the failure -- kept separate so handler can catch per-job
@@ -825,11 +914,36 @@ def _process_one(job: dict, sqs_client) -> dict:
         messages = build_image_process_messages(result["pending_image_jobs"])
         image_jobs_published = publish_messages(sqs_client, image_queue_url, messages)
 
+    # Ported from netsuite_product_scraper/app.py's _process_one -- see
+    # upsert_product's stale_image_rows and delete_orphaned_image_objects's
+    # own docstring for the full story. image_bucket is optional (soft-
+    # fails, same convention as image_queue_url above) -- a deployment
+    # that hasn't set IMAGE_BUCKET on this function yet just skips cleanup
+    # and logs why, rather than erroring; the DB-side fix (the delete
+    # itself, in upsert_product) already works either way.
+    orphaned_objects_deleted = 0
+    stale_with_stored_url = [r for r in result["stale_image_rows"] if r["stored_url"] is not None]
+    image_bucket = os.environ.get("IMAGE_BUCKET")
+    if stale_with_stored_url:
+        if s3_client is not None and image_bucket:
+            orphaned_objects_deleted = delete_orphaned_image_objects(s3_client, image_bucket, stale_with_stored_url)
+            logger.info(
+                "Deleted %d orphaned S3 object(s) for %d stale image row(s)",
+                orphaned_objects_deleted, len(stale_with_stored_url),
+            )
+        else:
+            logger.warning(
+                "%d stale product_images row(s) had a stored_url but IMAGE_BUCKET/s3_client "
+                "isn't configured -- their S3 objects are orphaned (not cleaned up this run)",
+                len(stale_with_stored_url),
+            )
+
     return {
         "product_id": str(product_id),
         "sku_count": len(parsed["skus"]),
         "pdf_jobs_published": pdf_jobs_published,
         "image_jobs_published": image_jobs_published,
+        "orphaned_objects_deleted": orphaned_objects_deleted,
     }
 
 
@@ -849,11 +963,21 @@ def handler(event, context):
 
         sqs_client = boto3.client("sqs")
 
+    # s3_client for delete_orphaned_image_objects (see _process_one) --
+    # built once here and reused across every job in this batch, same
+    # "build the client once per invocation" pattern as sqs_client above.
+    # Ported from netsuite_product_scraper/app.py's handler.
+    s3_client = None
+    if os.environ.get("IMAGE_BUCKET"):
+        import boto3
+
+        s3_client = boto3.client("s3")
+
     results = []
     batch_item_failures = []
     for job, message_id in jobs:
         try:
-            results.append(_process_one(job, sqs_client))
+            results.append(_process_one(job, sqs_client, s3_client))
         except Exception:
             logger.exception("Failed to scrape/upsert job: %r", job)
             if message_id is not None:
