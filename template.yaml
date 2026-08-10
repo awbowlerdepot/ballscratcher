@@ -968,6 +968,13 @@ Resources:
           NETSUITE_PRODUCT_SCRAPE_QUEUE_URL: !Ref NetsuiteProductScrapeQueue
           COMMERCEBUILD_PRODUCT_SCRAPE_QUEUE_URL: !Ref CommercebuildProductScrapeQueue
           SHOPIFY_PRODUCT_SCRAPE_QUEUE_URL: !Ref ShopifyProductScrapeQueue
+          # Read by service.py's queue_video_discovery (POST
+          # /products/{id}/discover-videos) -- unlike the scrape queues
+          # above, VideoDiscoveryFunction has no queue in front of it to
+          # publish onto (manual/direct invoke only, see its own module
+          # docstring), so this is a function NAME for a direct
+          # lambda:InvokeFunction call, not a queue URL.
+          VIDEO_DISCOVERY_FUNCTION_NAME: !Ref VideoDiscoveryFunction
       Policies:
         - Statement:
             - Effect: Allow
@@ -1017,6 +1024,16 @@ Resources:
             QueueName: !GetAtt CommercebuildProductScrapeQueue.QueueName
         - SQSSendMessagePolicy:
             QueueName: !GetAtt ShopifyProductScrapeQueue.QueueName
+        # For queue_video_discovery (POST /products/{id}/discover-videos)
+        # -- scoped to exactly VideoDiscoveryFunction's own ARN, not a
+        # blanket lambda:InvokeFunction grant, same "narrowest permission
+        # that actually does the job" convention as the S3 policies on
+        # the product scraper functions above.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource: !GetAtt VideoDiscoveryFunction.Arn
       # Four explicit per-method routes instead of a single `Method: ANY`
       # -- found via a real live test (curl OPTIONS /health with no
       # Authorization header returned a bare 401 "Unauthorized" from API

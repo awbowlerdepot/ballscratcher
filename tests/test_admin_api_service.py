@@ -466,6 +466,38 @@ def test_list_video_candidates_orders_by_id_as_tiebreaker():
     assert "order by pv.match_confidence asc, pv.created_at asc, pv.id asc" in query
 
 
+# --- list_video_candidates status=None (status="all" at the app.py layer)
+# -- added for the product detail view's Videos section, Al: "can we add
+# the video candidates for products into the product details view."
+
+def test_list_video_candidates_status_none_omits_status_filter():
+    conn = _QueryCapturingConnection()
+    service.list_video_candidates(conn, status=None, product_id="prod-1", limit=200, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "pv.status = %s" not in query  # pv.status is still selected, just not filtered on
+    assert "pv.product_id = %s" in query
+    assert "where" in query  # product_id condition still present, just not status
+
+
+def test_list_video_candidates_status_pending_still_filters_by_default():
+    """Confirms the default/existing behavior (Video Candidates tab, every
+    other current caller) is unchanged by the status=None addition."""
+    conn = _QueryCapturingConnection()
+    service.list_video_candidates(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "pv.status = %s" in query
+
+
+def test_list_video_candidates_status_none_without_product_id_omits_where_entirely():
+    conn = _QueryCapturingConnection()
+    service.list_video_candidates(conn, status=None, limit=200, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "where" not in query
+
+
 # --- Video candidates (YouTube content enrichment): approve/reject flow ---
 # Same fake-cursor-shaped-DB approach as review_queue above.
 # approve_video_candidate deliberately does NOT publish to
@@ -1300,6 +1332,86 @@ def test_queue_rescrape_missing_queue_env_var_returns_not_queued():
     result = service.queue_rescrape(conn, "prod-1")
 
     assert result == {"queued": False, "reason": "COMMERCEBUILD_PRODUCT_SCRAPE_QUEUE_URL is not configured on this deployment"}
+
+
+# --- queue_video_discovery (POST /products/{id}/discover-videos) -- the
+# "search for candidates again" button Al asked for on the product detail
+# view. Same fake-boto3-via-sys.modules approach as queue_rescrape above,
+# just invoking a Lambda directly (InvocationType='Event') instead of
+# publishing to an SQS queue -- VideoDiscoveryFunction has no queue in
+# front of it (manual/direct invoke only).
+
+class _FakeLambdaClient:
+    def __init__(self):
+        self.invocations = []
+
+    def invoke(self, FunctionName, InvocationType, Payload):
+        self.invocations.append({"FunctionName": FunctionName, "InvocationType": InvocationType, "Payload": Payload})
+
+
+def test_queue_video_discovery_invokes_function_with_product_ids_scope():
+    db = _fake_db_with_product()
+    conn = FakeConnection(db)
+    fake_lambda = _FakeLambdaClient()
+
+    class _FakeBoto3:
+        def client(self, name):
+            assert name == "lambda"
+            return fake_lambda
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    os.environ["VIDEO_DISCOVERY_FUNCTION_NAME"] = "bowling-scraper-video-discovery"
+    try:
+        result = service.queue_video_discovery(conn, "prod-1")
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+        del os.environ["VIDEO_DISCOVERY_FUNCTION_NAME"]
+
+    assert result == {"queued": True, "product_id": "prod-1"}
+    assert len(fake_lambda.invocations) == 1
+    call = fake_lambda.invocations[0]
+    assert call["FunctionName"] == "bowling-scraper-video-discovery"
+    assert call["InvocationType"] == "Event"  # async -- see docstring, VideoDiscoveryFunction can take a while
+    assert json.loads(call["Payload"]) == {"product_ids": ["prod-1"]}
+
+
+def test_queue_video_discovery_missing_product_raises():
+    db = _fake_db_with_product()
+    conn = FakeConnection(db)
+    try:
+        service.queue_video_discovery(conn, "does-not-exist")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def test_queue_video_discovery_missing_function_name_returns_not_queued():
+    """Deployment hasn't set VIDEO_DISCOVERY_FUNCTION_NAME -- graceful
+    response, not a KeyError, same soft-fail convention as queue_rescrape's
+    missing-queue-env-var case. Confirms boto3 is never even touched."""
+    db = _fake_db_with_product()
+    conn = FakeConnection(db)
+    os.environ.pop("VIDEO_DISCOVERY_FUNCTION_NAME", None)  # confirm truly unset
+
+    class _ExplodingBoto3:
+        def client(self, name):
+            raise AssertionError("should never be called when the function name isn't configured")
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _ExplodingBoto3()
+    try:
+        result = service.queue_video_discovery(conn, "prod-1")
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+
+    assert result == {"queued": False, "reason": "VIDEO_DISCOVERY_FUNCTION_NAME is not configured on this deployment"}
 
 
 # --- list_products: needs_video_summary_refresh filter -- confirms the SQL

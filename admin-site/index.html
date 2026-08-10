@@ -977,7 +977,21 @@ function renderProductRawFields(p) {
 async function loadProductDetailInto(id, cell) {
   cell.innerHTML = '<p class="muted">Loading&hellip;</p>';
   try {
-    const p = await api('GET', '/products/' + id);
+    // Fetched alongside the product itself (not lazily on demand) -- Al:
+    // "can we add the video candidates for products into the product
+    // details view. i think having them there is a good idea." status:
+    // 'all' (see service.list_video_candidates' docstring) so this shows
+    // pending/approved/rejected together, which is what actually surfaces
+    // a bad match -- Al's own example: Combat Solid had videos approved
+    // for it that were really for the Combat/Combat Hybrid siblings
+    // (score_match's documented any-one-token false-positive shape, see
+    // reassign_video_candidate's docstring), and wouldn't have been
+    // visible from a pending-only view once already approved.
+    const [p, videoData] = await Promise.all([
+      api('GET', '/products/' + id),
+      api('GET', '/video-candidates', { params: { product_id: id, status: 'all', limit: 200 } }),
+    ]);
+    const videos = videoData.items || [];
     const skuRows = (p.skus || []).map(function (s) {
       return '<tr><td>' + s.weight_lbs + 'lb</td><td>' + (s.rg === null || s.rg === undefined ? '—' : s.rg) +
         '</td><td>' + (s.differential === null || s.differential === undefined ? '—' : s.differential) +
@@ -1030,6 +1044,26 @@ async function loadProductDetailInto(id, cell) {
         '</div>' +
         '</div>';
     }).join('');
+    // Video candidates section -- see this function's opening comment for
+    // why status:'all' is fetched (pending/approved/rejected together).
+    // Row shape/actions mirror the Video Candidates tab's renderVideoCandidates,
+    // just scoped to this one product and refreshing this panel afterward
+    // (via the ProductVideo* handlers below) instead of that tab's list.
+    const videoRows = videos.map(function (v) {
+      const statusCell = v.status === 'pending'
+        ? '<button class="btn small" onclick="approveVideoForProduct(\'' + id + '\', \'' + v.id + '\')">Approve</button>' +
+          '<button class="btn small danger" onclick="rejectVideoForProduct(\'' + id + '\', \'' + v.id + '\')">Reject</button>'
+        : '<span class="badge ' + escapeHtml(v.status) + '">' + escapeHtml(v.status) + '</span>';
+      return '<tr>' +
+        '<td><a href="https://www.youtube.com/watch?v=' + encodeURIComponent(v.youtube_video_id) + '" target="_blank" rel="noopener">' + escapeHtml(v.title) + '</a>' +
+        '<div class="muted small">' + escapeHtml(v.channel_title || '') + '</div></td>' +
+        '<td>' + (v.match_confidence !== null && v.match_confidence !== undefined ? Number(v.match_confidence).toFixed(2) : '—') + '</td>' +
+        '<td>' + (v.has_summary ? '<span class="badge ok">yes</span>' : '<span class="badge muted">no</span>') + '</td>' +
+        '<td class="actions">' + statusCell +
+        '<button class="btn small ghost" onclick="reassignVideoForProduct(\'' + id + '\', \'' + v.id + '\')">Reassign</button>' +
+        '<button class="btn small ghost danger" onclick="deleteVideoForProduct(\'' + id + '\', \'' + v.id + '\')">Delete</button></td>' +
+        '</tr>';
+    }).join('');
     cell.innerHTML =
       '<div class="detail-panel">' +
       '<p><strong>Images</strong> (' + (p.images || []).length + '):</p>' +
@@ -1039,6 +1073,12 @@ async function loadProductDetailInto(id, cell) {
         ' <button class="btn small ghost" onclick="rescrapeProduct(\'' + id + '\')">Rescrape</button></p>' +
       '<p id="rescrape-result-' + id + '" class="muted small"></p>' +
       '<p><strong>Description:</strong></p><pre class="scrollbox">' + escapeHtml(p.description || '(none scraped yet)') + '</pre>' +
+      '<p style="margin-top:14px;"><strong>Video candidates</strong> (' + videos.length + '):' +
+        ' <button class="btn small ghost" onclick="discoverVideosForProduct(\'' + id + '\')">Search for videos again</button></p>' +
+      '<p id="discover-videos-result-' + id + '" class="muted small"></p>' +
+      (videoRows
+        ? '<table class="mini"><thead><tr><th>Video</th><th>Match</th><th>Summarized</th><th>Actions</th></tr></thead><tbody>' + videoRows + '</tbody></table>'
+        : '<p class="muted">no candidates found yet</p>') +
       '<p><strong>Video review rollup</strong> (' + videoCount + ' video' + (videoCount === 1 ? '' : 's') + ', generated ' + (fmtDate(p.video_reviews_summary_generated_at) || 'never') + '):</p>' +
       '<pre class="scrollbox">' + escapeHtml(p.video_reviews_summary || '(none yet)') + '</pre>' +
       '<button class="btn small" onclick="refreshRollup(\'' + id + '\')">Refresh rollup now</button>' +
@@ -1095,6 +1135,90 @@ async function toggleProductImageVisibility(productId, imageId, currentlyVisible
     if (cell) await loadProductDetailInto(productId, cell);
   } catch (e) {
     toast(e.message, true);
+  }
+}
+
+// Product detail Videos section -- see loadProductDetailInto's opening
+// comment. Mirror the Video Candidates tab's approveVideo/rejectVideo/
+// reassignVideo/deleteVideo (same admin_api calls), but refresh THIS
+// product's detail panel afterward instead of that tab's list -- kept as
+// separate functions rather than reusing those directly since the two
+// call sites need different post-mutation refresh targets.
+
+async function approveVideoForProduct(productId, videoId) {
+  const by = getSettings().resolvedBy;
+  if (!by) { toast('Set "Your name" in Settings first.', true); return; }
+  if (!confirm('Approve this video candidate? This queues it for transcript+summary.')) return;
+  const row = document.getElementById('product-detail-' + productId);
+  const cell = row ? row.querySelector('td') : null;
+  try {
+    await api('POST', '/video-candidates/' + videoId + '/approve', { body: { resolved_by: by } });
+    toast('Approved');
+    if (cell) await loadProductDetailInto(productId, cell);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function rejectVideoForProduct(productId, videoId) {
+  const by = getSettings().resolvedBy;
+  if (!by) { toast('Set "Your name" in Settings first.', true); return; }
+  const reason = prompt('Reason for rejecting (optional):');
+  if (reason === null) return;
+  const row = document.getElementById('product-detail-' + productId);
+  const cell = row ? row.querySelector('td') : null;
+  try {
+    await api('POST', '/video-candidates/' + videoId + '/reject', { body: { resolved_by: by, reason: reason || undefined } });
+    toast('Rejected');
+    if (cell) await loadProductDetailInto(productId, cell);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function reassignVideoForProduct(productId, videoId) {
+  // The actual fix for a mismatch like Al's Combat Solid report (see
+  // loadProductDetailInto's comment) -- moves this candidate to a
+  // different product_id, keeping any transcript/summary already fetched.
+  const newProductId = prompt('New product_id to reassign this video to:');
+  if (!newProductId) return;
+  const row = document.getElementById('product-detail-' + productId);
+  const cell = row ? row.querySelector('td') : null;
+  try {
+    await api('POST', '/video-candidates/' + videoId + '/reassign', { body: { product_id: newProductId.trim() } });
+    toast('Reassigned');
+    if (cell) await loadProductDetailInto(productId, cell);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function deleteVideoForProduct(productId, videoId) {
+  if (!confirm('Permanently delete this video candidate? This cannot be undone.')) return;
+  const row = document.getElementById('product-detail-' + productId);
+  const cell = row ? row.querySelector('td') : null;
+  try {
+    await api('DELETE', '/video-candidates/' + videoId);
+    toast('Deleted');
+    if (cell) await loadProductDetailInto(productId, cell);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function discoverVideosForProduct(id) {
+  // "if we could add a button with them to search for candidates again."
+  // On-demand equivalent of a direct `aws lambda invoke bowling-scraper-
+  // video-discovery --payload '{"product_ids": ["' + id + '"]}'` -- see
+  // service.queue_video_discovery's docstring. Async/fire-and-forget on
+  // the server side (VideoDiscoveryFunction can take a while -- real
+  // YouTube per-minute rate-limit backoff, see that function's own module
+  // docstring), so this just confirms it was queued and reminds the user
+  // to check back, rather than blocking/polling for new candidates here.
+  const out = document.getElementById('discover-videos-result-' + id);
+  if (out) out.textContent = 'Queuing…';
+  try {
+    const result = await api('POST', '/products/' + id + '/discover-videos');
+    const msg = result.queued
+      ? 'Queued -- check back in a bit and reopen this product for any new candidates.'
+      : ('Not queued: ' + result.reason);
+    toast(msg, !result.queued);
+    if (out) out.textContent = msg;
+  } catch (e) {
+    toast(e.message, true);
+    if (out) out.textContent = 'Error: ' + e.message;
   }
 }
 

@@ -209,6 +209,24 @@ def rescrape_product(product_id: str):
         conn.close()
 
 
+@app.post("/products/{product_id}/discover-videos")
+def discover_videos(product_id: str):
+    # On-demand equivalent of a direct `aws lambda invoke
+    # bowling-scraper-video-discovery --payload '{"product_ids": [...]}'`
+    # -- see service.queue_video_discovery's docstring. No request body:
+    # this always scopes to exactly this one product_id. Returns 200 with
+    # queued=False (not a 4xx/5xx) when VIDEO_DISCOVERY_FUNCTION_NAME isn't
+    # configured on this deployment -- an expected, non-error outcome,
+    # same convention as POST /products/{id}/rescrape above.
+    conn = service.get_db_connection()
+    try:
+        return service.queue_video_discovery(conn, product_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
 @app.patch("/products/{product_id}/images/{image_id}")
 def update_product_image(product_id: str, image_id: str, body: ImageUpdateRequest):
     # Per-image visibility/thumbnail toggles (migration 010) -- see
@@ -369,9 +387,19 @@ def get_video_candidates(
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
 ):
+    # status="all" -- new sentinel for the product detail view's Videos
+    # section (see admin-site's loadProductDetailInto and service.
+    # list_video_candidates' docstring): shows a product's candidates
+    # across every status at once rather than one at a time, which is
+    # what actually surfaces a bad approve/auto-approve (e.g. Al's Combat
+    # Solid report -- videos approved for it that are really for the
+    # Combat/Combat Hybrid siblings). Every other caller of this route is
+    # unaffected -- "pending" (the existing default) and any other literal
+    # status value still filter exactly as before.
+    query_status = None if status == "all" else status
     conn = service.get_db_connection()
     try:
-        items = service.list_video_candidates(conn, status=status, product_id=product_id, limit=limit, offset=offset)
+        items = service.list_video_candidates(conn, status=query_status, product_id=product_id, limit=limit, offset=offset)
         pending_count = service.get_pending_video_count(conn) if status == "pending" else None
         return {"items": items, "pending_count": pending_count}
     finally:

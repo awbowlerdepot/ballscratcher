@@ -776,6 +776,54 @@ def queue_rescrape(conn, product_id: str) -> dict:
     return {"queued": True, "product_id": product_id, "url": url, "queue_env_var": env_var}
 
 
+def queue_video_discovery(conn, product_id: str) -> dict:
+    """On-demand "search for videos again" trigger (POST
+    /products/{id}/discover-videos), built for the product detail view's
+    new Videos section -- Al: "if we could add a button with them to
+    search for candidates again." VideoDiscoveryFunction already accepts a
+    {"product_ids": [...]} scope for exactly this (see its own module
+    docstring's job-shape list); this is just the first thing in this
+    project to actually invoke it from admin_api rather than by hand via
+    `aws lambda invoke`.
+
+    Unlike queue_rescrape (which publishes to an SQS queue a scraper
+    Lambda is already subscribed to), there's no queue in front of
+    VideoDiscoveryFunction to publish onto -- it's invoke-only, so this
+    calls lambda:InvokeFunction directly with InvocationType='Event'
+    (async/fire-and-forget). Deliberately async: a real single-product
+    search.list call plus DB writes can take a few seconds, and
+    VideoDiscoveryFunction's own Timeout is 280s (see template.yaml's
+    comment on the real per-minute YouTube rate-limit incident that
+    number is sized for) -- far past what's reasonable to block
+    AdminApiFunction's own request/response cycle on. Same soft-fail
+    convention as queue_rescrape: returns {"queued": False, "reason"} --
+    not an exception -- when VIDEO_DISCOVERY_FUNCTION_NAME isn't
+    configured on this deployment, so a caller can build a graceful
+    response instead of a 500.
+
+    Raises LookupError if product_id itself doesn't exist -- same
+    "caller error, not an expected outcome" distinction queue_rescrape
+    draws for its own not-found case."""
+    with conn.cursor() as cur:
+        cur.execute("select id from products where id = %s", (product_id,))
+        if cur.fetchone() is None:
+            raise LookupError(f"No product with id {product_id}")
+
+    function_name = os.environ.get("VIDEO_DISCOVERY_FUNCTION_NAME")
+    if not function_name:
+        return {"queued": False, "reason": "VIDEO_DISCOVERY_FUNCTION_NAME is not configured on this deployment"}
+
+    import boto3
+
+    lambda_client = boto3.client("lambda")
+    lambda_client.invoke(
+        FunctionName=function_name,
+        InvocationType="Event",
+        Payload=json.dumps({"product_ids": [product_id]}),
+    )
+    return {"queued": True, "product_id": product_id}
+
+
 def set_product_published(conn, product_id: str, published: bool) -> dict:
     with conn.cursor() as cur:
         cur.execute(
@@ -924,7 +972,23 @@ def list_video_candidates(conn, status: str = "pending", product_id: str = None,
     real 422 the second time it showed up) and, by the same instability,
     could just as easily have skipped a different row entirely without any
     visible error. `pv.id` is added as a final, always-unique tiebreaker so
-    the ordering -- and therefore the pagination -- is fully deterministic."""
+    the ordering -- and therefore the pagination -- is fully deterministic.
+
+    status=None omits the status filter entirely -- added for the product
+    detail view's "Videos" section (see admin-site's loadProductDetailInto),
+    which deliberately wants to show a product's candidates across every
+    status (pending/approved/rejected), not just one. Real motivating case,
+    Al: "the combat solid has a bunch of videos approved for it that are
+    for the original combat and combat hybrid but the new videos for it
+    are not there" -- exactly the known false-positive shape
+    reassign_video_candidate's own docstring already documents (score_match
+    matches on ANY ONE product-name token, so "Combat"/"Combat Hybrid"
+    review videos can score 'high' for the "Combat Solid" product too).
+    Seeing approved/pending/rejected together, scoped to one product, is
+    what actually lets an admin spot and fix that kind of mismatch -- the
+    existing Video Candidates tab only ever shows one status at a time and
+    isn't scoped to a product by default, so a bad reassignment like this
+    could sit unnoticed indefinitely."""
     query = """
         select pv.id, pv.product_id, p.name as product_name, b.name as brand_name,
                pv.youtube_video_id, pv.title, pv.channel_title, pv.published_at,
@@ -935,12 +999,17 @@ def list_video_candidates(conn, status: str = "pending", product_id: str = None,
         from product_videos pv
         join products p on p.id = pv.product_id
         join brands b on b.id = p.brand_id
-        where pv.status = %s
     """
-    params = [status]
+    params = []
+    conditions = []
+    if status is not None:
+        conditions.append("pv.status = %s")
+        params.append(status)
     if product_id:
-        query += " and pv.product_id = %s"
+        conditions.append("pv.product_id = %s")
         params.append(product_id)
+    if conditions:
+        query += " where " + " and ".join(conditions)
     query += " order by pv.match_confidence asc, pv.created_at asc, pv.id asc limit %s offset %s"
     params += [limit, offset]
 

@@ -1835,6 +1835,80 @@ whenever it next runs.
     list until a real source turns up (see 003's own comment on that
     reserved column).
 
+**Video candidates + rescan in the product detail view.** Al: "can we
+add the video candidates for products into the product details view. i
+think having them there is a good idea. also if we could add a button
+with them to search for candidates again." Two additions:
+
+1. `loadProductDetailInto` now also fetches `GET /video-candidates
+   ?product_id={id}&status=all&limit=200` alongside the product itself
+   (in parallel, `Promise.all`) and renders a "Video candidates" table
+   right in the detail panel -- title/channel, match score, summarized
+   yes/no, and the same Approve/Reject/Reassign/Delete actions the Video
+   Candidates tab has, just refreshing this panel afterward instead of
+   that tab's list. `status=all` is a new sentinel `service.
+   list_video_candidates` (and `GET /video-candidates`) understands --
+   `status=None` omits the WHERE clause entirely, showing pending/
+   approved/rejected together. Every other existing caller is unaffected
+   (`status` still defaults to `"pending"`, and any literal status value
+   still filters exactly as before).
+
+   **Why "all" statuses together, specifically:** Al's own example --
+   "the combat solid has a bunch of videos approved for it that are for
+   the original combat and combat hybrid but the new videos for it are
+   not there." This is the exact false-positive shape `reassign_video_
+   candidate`'s own docstring already documents: `score_match` scores
+   'high' confidence on the brand name plus ANY ONE significant
+   product-name token, so a review titled just "Combat" or "Combat
+   Hybrid" scores 'high' for the "Combat Solid" product too (all three
+   share the "combat" token), and `scripts/auto_approve_video_
+   candidates.py` auto-approves 'high' matches in bulk without a human
+   looking first -- a known, accepted tradeoff, not a new bug, and
+   `reassign_video_candidate`/`delete_video_candidate` already exist as
+   the correction tools for exactly this. What was missing was
+   visibility: the Video Candidates tab only ever shows one status at a
+   time and isn't scoped to a product by default, so a bad auto-approval
+   like this could sit unnoticed indefinitely. Seeing a product's
+   approved AND pending candidates side by side, scoped to just that
+   product, is what actually lets an admin spot "wait, these two
+   'approved' ones are for the wrong ball" and fix it on the spot.
+
+2. **"Search for videos again" button**, `POST /products/{id}/discover-
+   videos` -> `service.queue_video_discovery`. `VideoDiscoveryFunction`
+   already accepted a `{"product_ids": [...]}` scope (see its own module
+   docstring's job-shape list) -- this is just the first thing to
+   actually invoke it from `admin_api` instead of by hand via `aws lambda
+   invoke`. Unlike `queue_rescrape` (publishes onto an SQS queue a
+   scraper Lambda already consumes), there's no queue in front of
+   `VideoDiscoveryFunction` -- this calls `lambda:InvokeFunction`
+   directly with `InvocationType='Event'` (async/fire-and-forget), since
+   a real search.list call plus DB writes can take a few seconds and
+   `VideoDiscoveryFunction`'s own `Timeout` is 280s (sized for YouTube's
+   per-minute rate-limit backoff, see that function's module docstring)
+   -- far past what's reasonable to block `AdminApiFunction`'s
+   request/response cycle on. Directly relevant to Al's Combat Solid
+   report's other half ("the new videos for it are not there"): the most
+   likely explanation is simple staleness -- `video_discovery`'s rotation
+   only reaches a given product again once the rest of the catalog has
+   been searched (see `fetch_products_to_search`'s `last_video_discovery_
+   at asc nulls first` ordering) -- and this button is exactly the "check
+   this one product again right now" escape hatch for that, without
+   waiting on the rotation or running a manual `aws lambda invoke`.
+
+   `AdminApiFunction` gained a `VIDEO_DISCOVERY_FUNCTION_NAME` env var
+   (`!Ref VideoDiscoveryFunction`, the function name, not its ARN -- SAM/
+   CloudFormation `Ref` on a Lambda function resource returns the name)
+   and a scoped `lambda:InvokeFunction` policy statement (exactly
+   `VideoDiscoveryFunction`'s own ARN, not a blanket grant). Same
+   soft-fail convention as `queue_rescrape`: returns `{"queued": false,
+   "reason": ...}`, not a 500, if `VIDEO_DISCOVERY_FUNCTION_NAME` isn't
+   configured on a given deployment.
+
+   No other `template.yaml` change needed for either half of this --
+   `POST /products/{id}/discover-videos` rides `AdminApiFunction`'s
+   existing `/{proxy+}` catch-all (confirmed via the CFN-tolerant YAML
+   parser: still 45 resources).
+
 ### 6j. Home transcript fetcher (residential caption fetching) -- optional, run outside AWS entirely
 
 Real, live-tested finding this session (see
