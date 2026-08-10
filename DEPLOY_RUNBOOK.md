@@ -816,14 +816,24 @@ as a known pre-existing issue same as before.
 **Requires a Lambda redeploy** (`sam build && sam deploy`) --
 `ProductScraperFunction` code and `template.yaml` both changed. No
 migration needed -- this only changes what a future rescrape does, not
-any existing data. To actually clear out any stale Brunswick image rows
-already sitting in the DB from before this fix, rescrape the affected
-products (same `POST /products/{id}/rescrape` mechanism as everywhere
-else in this project -- there's no Brunswick-specific backfill script
-for this yet, unlike 6e.6's `scripts/rescrape_netsuite_products.py`,
-since Al reported this as "needs the same fix," not "here's a known list
-of affected products" -- add one the same way if a full-catalog sweep
-turns out to be needed).
+any existing data.
+
+**`scripts/rescrape_brunswick_products.py`**, exact mirror of 6e.6's
+`scripts/rescrape_netsuite_products.py`, added right after so a
+catalog-wide sweep is actually available rather than one-product-at-a-
+time via the admin UI. Scoped by `GET /products?source_platform=craft_cms`
+rather than a Brunswick-specific filter -- `craft_cms` already covers
+Brunswick/Radical/DV8 together, since all three share one
+`ProductScraperFunction`/`ProductScrapeQueue` (see
+`service.py`'s `SCRAPE_QUEUE_ENV_VAR_BY_PLATFORM` comment). Only enqueues
+rescrapes; watch `ProductScraperFunction`'s logs/DLQ while it drains,
+then spot-check a few product detail pages in the admin UI.
+
+```bash
+export ADMIN_API_URL="https://<your-api-id>.execute-api.us-west-1.amazonaws.com"
+export ADMIN_API_TOKEN="<the same bearer token used elsewhere>"
+python3 scripts/rescrape_brunswick_products.py
+```
 
 ### 6d. SWAG (if `SwagBrandId` was set)
 
