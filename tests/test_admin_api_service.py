@@ -258,6 +258,44 @@ class FakeCursor:
                 self._last_result = None
             self.description = [("id",)]
 
+        elif q.startswith("update product_images set is_thumbnail = false where product_id"):
+            product_id, keep_image_id = params
+            for row in self.db.get("product_images", {}).values():
+                if row["product_id"] == product_id and row["id"] != keep_image_id:
+                    row["is_thumbnail"] = False
+            self._last_result = None
+
+        elif q.startswith("update product_images set display_order"):
+            display_order, image_id, product_id = params
+            row = self.db.get("product_images", {}).get(image_id)
+            if row is not None and row["product_id"] == product_id:
+                row["display_order"] = display_order
+            self._last_result = None
+
+        elif q.startswith("update product_images set") and "returning id" in q:
+            # Dynamic column list (see service.update_product_image) --
+            # the last two params are always (image_id, product_id); every
+            # param before that maps positionally onto the SET clauses
+            # this query text was built with, in the same order.
+            image_id, product_id = params[-2], params[-1]
+            set_clause_text = q.split("set ", 1)[1].split(" where", 1)[0]
+            columns = [c.split(" =", 1)[0].strip() for c in set_clause_text.split(",")]
+            row = self.db.get("product_images", {}).get(image_id)
+            if row is not None and row["product_id"] == product_id:
+                for column, value in zip(columns, params[:-2]):
+                    row[column] = value
+                self._last_result = (image_id,)
+            else:
+                self._last_result = None
+            self.description = [("id",)]
+
+        elif q.startswith("select id from product_images where id = %s and product_id = %s"):
+            image_id, product_id = params
+            row = self.db.get("product_images", {}).get(image_id)
+            found = row is not None and row["product_id"] == product_id
+            self._last_result = (image_id,) if found else None
+            self.description = [("id",)]
+
         elif q.startswith("update products p set status = du.status_path"):
             # backfill_netsuite_status: no params, pure join-and-correct.
             # Mirrors the real UPDATE ... FROM's WHERE clause exactly:
@@ -1676,6 +1714,128 @@ def test_get_product_discovered_url_is_none_when_never_crawled():
     result = service.get_product(conn, "prod-1")
 
     assert result["discovered_url"] is None
+
+
+# --- Product image curation (migration 010): display_order/is_thumbnail/
+# is_visible -- Al, looking ahead to a customer-facing site: "once we
+# actually have a customer facing site we will want to order the images,
+# set a thumbnail image and control visibility." See service.
+# update_product_image/reorder_product_images docstrings for the full
+# reasoning.
+
+def _fake_db_with_product_images():
+    return {
+        "product_images": {
+            "img-1": {"id": "img-1", "product_id": "prod-1", "display_order": 0, "is_thumbnail": True, "is_visible": True},
+            "img-2": {"id": "img-2", "product_id": "prod-1", "display_order": 1, "is_thumbnail": False, "is_visible": True},
+            "img-3": {"id": "img-3", "product_id": "prod-1", "display_order": 2, "is_thumbnail": False, "is_visible": True},
+            "img-other": {"id": "img-other", "product_id": "prod-2", "display_order": 0, "is_thumbnail": True, "is_visible": True},
+        },
+    }
+
+
+def test_update_product_image_sets_visibility_only():
+    db = _fake_db_with_product_images()
+    conn = FakeConnection(db)
+
+    result = service.update_product_image(conn, "prod-1", "img-2", is_visible=False)
+
+    assert result == {"image_id": "img-2", "product_id": "prod-1", "is_visible": False}
+    assert db["product_images"]["img-2"]["is_visible"] is False
+    assert db["product_images"]["img-2"]["is_thumbnail"] is False  # untouched
+    assert conn.committed is True
+
+
+def test_update_product_image_setting_thumbnail_unsets_others_on_same_product():
+    db = _fake_db_with_product_images()
+    conn = FakeConnection(db)
+
+    result = service.update_product_image(conn, "prod-1", "img-2", is_thumbnail=True)
+
+    assert result == {"image_id": "img-2", "product_id": "prod-1", "is_thumbnail": True}
+    assert db["product_images"]["img-1"]["is_thumbnail"] is False  # was the old thumbnail
+    assert db["product_images"]["img-2"]["is_thumbnail"] is True
+    assert db["product_images"]["img-3"]["is_thumbnail"] is False  # was already false, stays false
+
+
+def test_update_product_image_setting_thumbnail_does_not_touch_other_products():
+    db = _fake_db_with_product_images()
+    conn = FakeConnection(db)
+
+    service.update_product_image(conn, "prod-1", "img-2", is_thumbnail=True)
+
+    assert db["product_images"]["img-other"]["is_thumbnail"] is True  # different product, untouched
+
+
+def test_update_product_image_can_set_both_fields_in_one_call():
+    db = _fake_db_with_product_images()
+    conn = FakeConnection(db)
+
+    result = service.update_product_image(conn, "prod-1", "img-2", is_visible=False, is_thumbnail=True)
+
+    assert result == {"image_id": "img-2", "product_id": "prod-1", "is_visible": False, "is_thumbnail": True}
+    assert db["product_images"]["img-2"]["is_visible"] is False
+    assert db["product_images"]["img-2"]["is_thumbnail"] is True
+    assert db["product_images"]["img-1"]["is_thumbnail"] is False
+
+
+def test_update_product_image_missing_image_raises():
+    db = _fake_db_with_product_images()
+    conn = FakeConnection(db)
+    try:
+        service.update_product_image(conn, "prod-1", "does-not-exist", is_visible=False)
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def test_update_product_image_wrong_product_scoping_raises():
+    """img-other belongs to prod-2, not prod-1 -- a caller passing a
+    mismatched (product_id, image_id) pair must not be able to mutate a
+    different product's image."""
+    db = _fake_db_with_product_images()
+    conn = FakeConnection(db)
+    try:
+        service.update_product_image(conn, "prod-1", "img-other", is_visible=False)
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+    assert db["product_images"]["img-other"]["is_visible"] is True  # untouched
+
+
+def test_update_product_image_no_fields_provided_still_validates_existence():
+    db = _fake_db_with_product_images()
+    conn = FakeConnection(db)
+
+    result = service.update_product_image(conn, "prod-1", "img-2")
+
+    assert result == {"image_id": "img-2", "product_id": "prod-1"}
+
+
+def test_reorder_product_images_rewrites_display_order_by_position():
+    db = _fake_db_with_product_images()
+    conn = FakeConnection(db)
+
+    result = service.reorder_product_images(conn, "prod-1", ["img-3", "img-1", "img-2"])
+
+    assert result == {"product_id": "prod-1", "image_ids": ["img-3", "img-1", "img-2"]}
+    assert db["product_images"]["img-3"]["display_order"] == 0
+    assert db["product_images"]["img-1"]["display_order"] == 1
+    assert db["product_images"]["img-2"]["display_order"] == 2
+    assert conn.committed is True
+
+
+def test_reorder_product_images_ignores_ids_from_other_products():
+    """A stray/mistyped id belonging to a different product must not have
+    its display_order repointed by this product's reorder call."""
+    db = _fake_db_with_product_images()
+    conn = FakeConnection(db)
+
+    service.reorder_product_images(conn, "prod-1", ["img-2", "img-other", "img-1"])
+
+    assert db["product_images"]["img-other"]["display_order"] == 0  # untouched, still its original value
+    assert db["product_images"]["img-2"]["display_order"] == 0
+    assert db["product_images"]["img-1"]["display_order"] == 2
 
 
 if __name__ == "__main__":

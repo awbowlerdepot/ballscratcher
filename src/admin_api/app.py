@@ -40,6 +40,19 @@ class PublishRequest(BaseModel):
     published: bool
 
 
+class ImageUpdateRequest(BaseModel):
+    # Both optional/independent -- a caller sets whichever it's actually
+    # changing (see service.update_product_image's docstring). Pydantic's
+    # default None for an unset Optional field is what lets service.py
+    # distinguish "not provided" from "explicitly set to False".
+    is_visible: Optional[bool] = None
+    is_thumbnail: Optional[bool] = None
+
+
+class ImageReorderRequest(BaseModel):
+    image_ids: list[str]
+
+
 class ReassignRequest(BaseModel):
     product_id: str
 
@@ -192,6 +205,39 @@ def rescrape_product(product_id: str):
         return service.queue_rescrape(conn, product_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.patch("/products/{product_id}/images/{image_id}")
+def update_product_image(product_id: str, image_id: str, body: ImageUpdateRequest):
+    # Per-image visibility/thumbnail toggles (migration 010) -- see
+    # service.update_product_image's docstring, in particular why
+    # is_thumbnail=True is handled as an atomic "unset every other image
+    # on this product, then set this one" operation rather than a bare
+    # column write. Distinct from PATCH /products/{id}/published above --
+    # that flag controls whether the PRODUCT is visible to the consumer
+    # site at all; this one controls whether one specific IMAGE is shown
+    # once the product itself is visible.
+    conn = service.get_db_connection()
+    try:
+        return service.update_product_image(conn, product_id, image_id, body.is_visible, body.is_thumbnail)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/products/{product_id}/images/reorder")
+def reorder_product_images(product_id: str, body: ImageReorderRequest):
+    # Whole-list reorder, not incremental swap endpoints -- see
+    # service.reorder_product_images' docstring for why (sidesteps two
+    # concurrent partial-swap calls racing each other). No 404 case: an id
+    # in image_ids that doesn't belong to product_id is silently ignored
+    # rather than erroring, same reasoning as that function's docstring.
+    conn = service.get_db_connection()
+    try:
+        return service.reorder_product_images(conn, product_id, body.image_ids)
     finally:
         conn.close()
 

@@ -164,9 +164,10 @@
 
   .image-grid { display: flex; flex-wrap: wrap; gap: 10px; margin: 4px 0 12px; }
   .image-card {
-    display: block; width: 110px; text-decoration: none; color: var(--text);
+    display: block; width: 130px; text-decoration: none; color: var(--text);
     border: 1px solid var(--border); border-radius: 6px; background: #fff; overflow: hidden;
   }
+  .image-card.image-hidden { opacity: .5; }
   .image-card .thumb {
     width: 100%; height: 90px; display: flex; align-items: center; justify-content: center;
     background: #fafbfc; overflow: hidden;
@@ -174,6 +175,9 @@
   .image-card .thumb img { max-width: 100%; max-height: 100%; object-fit: contain; }
   .image-card .caption { padding: 4px 6px; font-size: 10px; line-height: 1.3; color: var(--muted); }
   .image-card .caption .pending { color: var(--danger); }
+  .image-card .caption .thumbnail-badge { color: var(--primary); font-weight: 600; }
+  .image-card .image-controls { display: flex; flex-wrap: wrap; gap: 2px; padding: 0 4px 4px; }
+  .image-card .image-controls .btn { padding: 2px 4px; font-size: 9px; }
 
   .pager { display: flex; align-items: center; gap: 10px; margin-top: 10px; font-size: 12px; color: var(--muted); }
 
@@ -981,7 +985,16 @@ async function loadProductDetailInto(id, cell) {
         '</td><td>' + escapeHtml(s.source || '') + '</td><td>' + (s.needs_review ? '⚠️' : '') + '</td></tr>';
     }).join('');
     const videoCount = p.video_reviews_summary_video_count === null || p.video_reviews_summary_video_count === undefined ? 0 : p.video_reviews_summary_video_count;
-    const imageCards = (p.images || []).map(function (img) {
+    const images = p.images || [];
+    // Ordering, thumbnail, and visibility controls (migration 010) --
+    // Al, looking ahead to a customer-facing site: "we will want to order
+    // the images, set a thumbnail image and control visibility." Server
+    // already returns images pre-sorted by display_order (see
+    // service.get_product), so "move up/down" here is purely a client-
+    // side array swap followed by a single reorder call with the whole
+    // resulting id list -- see reorderProductImage's own comment for why
+    // a whole-list resubmit rather than incremental swap calls.
+    const imageCards = images.map(function (img, idx) {
       // stored_url (when set) is the "detail" size variant -- see
       // image_processor/app.py's storage-convention comment. The
       // "thumbnail" variant lives at the same S3 key prefix with
@@ -994,10 +1007,28 @@ async function loadProductDetailInto(id, cell) {
       const thumb = img.stored_url ? img.stored_url.replace(/detail\.png$/, "thumbnail.png") : img.source_url;
       const label = (img.image_type || "image") + (img.weight_lbs_context ? " (" + img.weight_lbs_context + "lb)" : "");
       const pendingNote = img.stored_url ? "" : '<div class="pending">not processed yet</div>';
-      return '<a class="image-card" href="' + escapeHtml(full) + '" target="_blank" rel="noopener">' +
+      const thumbnailNote = img.is_thumbnail ? '<div class="thumbnail-badge">thumbnail</div>' : '';
+      const hiddenNote = img.is_visible === false ? '<div class="pending">hidden</div>' : '';
+      // Nested interactive elements (a <button> inside an <a>) are bad
+      // HTML/UX -- clicking a control button would also trigger the
+      // full-size-image link. Card is a <div>; only the thumbnail image
+      // itself is wrapped in its own <a> for "view full size".
+      return '<div class="image-card' + (img.is_visible === false ? ' image-hidden' : '') + '">' +
+        '<a href="' + escapeHtml(full) + '" target="_blank" rel="noopener">' +
         '<div class="thumb"><img src="' + escapeHtml(thumb) + '" loading="lazy" alt="' + escapeHtml(label) + '"></div>' +
-        '<div class="caption">' + escapeHtml(label) + pendingNote + '</div>' +
-        '</a>';
+        '</a>' +
+        '<div class="caption">' + escapeHtml(label) + pendingNote + thumbnailNote + hiddenNote + '</div>' +
+        '<div class="image-controls">' +
+        '<button class="btn small ghost" ' + (idx === 0 ? 'disabled' : '') +
+          ' onclick="moveProductImage(\'' + id + '\', ' + idx + ', -1)">Up</button>' +
+        '<button class="btn small ghost" ' + (idx === images.length - 1 ? 'disabled' : '') +
+          ' onclick="moveProductImage(\'' + id + '\', ' + idx + ', 1)">Down</button>' +
+        '<button class="btn small ghost" ' + (img.is_thumbnail ? 'disabled' : '') +
+          ' onclick="setProductImageThumbnail(\'' + id + '\', \'' + img.id + '\')">Set thumbnail</button>' +
+        '<button class="btn small ghost" onclick="toggleProductImageVisibility(\'' + id + '\', \'' + img.id + '\', ' + (img.is_visible !== false) + ')">' +
+          (img.is_visible === false ? 'Show' : 'Hide') + '</button>' +
+        '</div>' +
+        '</div>';
     }).join('');
     cell.innerHTML =
       '<div class="detail-panel">' +
@@ -1018,6 +1049,52 @@ async function loadProductDetailInto(id, cell) {
       '</div>';
   } catch (e) {
     cell.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
+  }
+}
+
+// Image ordering/thumbnail/visibility controls (migration 010) -- see
+// this file's imageCards comment above and service.py's
+// update_product_image/reorder_product_images docstrings for the
+// server-side half of each of these.
+
+async function moveProductImage(productId, index, delta) {
+  const row = document.getElementById('product-detail-' + productId);
+  const cell = row ? row.querySelector('td') : null;
+  try {
+    const p = await api('GET', '/products/' + productId);
+    const images = p.images || [];
+    const target = index + delta;
+    if (target < 0 || target >= images.length) return;  // shouldn't happen (buttons are disabled at the edges), but guard anyway
+    const ids = images.map(function (img) { return img.id; });
+    const tmp = ids[index];
+    ids[index] = ids[target];
+    ids[target] = tmp;
+    await api('POST', '/products/' + productId + '/images/reorder', { body: { image_ids: ids } });
+    if (cell) await loadProductDetailInto(productId, cell);
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+async function setProductImageThumbnail(productId, imageId) {
+  const row = document.getElementById('product-detail-' + productId);
+  const cell = row ? row.querySelector('td') : null;
+  try {
+    await api('PATCH', '/products/' + productId + '/images/' + imageId, { body: { is_thumbnail: true } });
+    if (cell) await loadProductDetailInto(productId, cell);
+  } catch (e) {
+    toast(e.message, true);
+  }
+}
+
+async function toggleProductImageVisibility(productId, imageId, currentlyVisible) {
+  const row = document.getElementById('product-detail-' + productId);
+  const cell = row ? row.querySelector('td') : null;
+  try {
+    await api('PATCH', '/products/' + productId + '/images/' + imageId, { body: { is_visible: !currentlyVisible } });
+    if (cell) await loadProductDetailInto(productId, cell);
+  } catch (e) {
+    toast(e.message, true);
   }
 }
 

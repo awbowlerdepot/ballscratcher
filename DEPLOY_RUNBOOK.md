@@ -33,7 +33,7 @@ Any Postgres 13+ instance works (RDS is the obvious choice, but this
 repo doesn't assume it). Note the connection details -- you'll need them
 for step 3's `DbSecretArn` secret and to run migrations directly.
 
-## 2. Run the nine migrations, in order
+## 2. Run the ten migrations, in order
 
 ```bash
 psql "$DATABASE_URL" -f db/migrations/001_init_schema.sql
@@ -45,6 +45,7 @@ psql "$DATABASE_URL" -f db/migrations/006_products_video_reviews_summary.sql
 psql "$DATABASE_URL" -f db/migrations/007_cores_table.sql
 psql "$DATABASE_URL" -f db/migrations/008_coverstocks_table.sql
 psql "$DATABASE_URL" -f db/migrations/009_normalize_coverstock_names.sql
+psql "$DATABASE_URL" -f db/migrations/010_product_images_ordering_thumbnail_visibility.sql
 ```
 
 (If you already ran an earlier subset in a prior deploy, just run whatever
@@ -833,6 +834,64 @@ then spot-check a few product detail pages in the admin UI.
 export ADMIN_API_URL="https://<your-api-id>.execute-api.us-west-1.amazonaws.com"
 export ADMIN_API_TOKEN="<the same bearer token used elsewhere>"
 python3 scripts/rescrape_brunswick_products.py
+```
+
+**Image ordering/thumbnail/visibility (migration 010).** Al, looking
+ahead: "once we actually have a customer facing site we will want to
+order the images, set a thumbnail image and control visibility." Not
+platform-specific -- applies to `product_images` regardless of which
+scraper populated a row, so it's documented here (image handling, same
+neighborhood as `image_processor` above) rather than under any one
+brand's section.
+
+Three additive columns: `display_order` (int, backfilled to each
+product's existing/insertion order so nothing visibly reshuffles the
+moment this migration runs), `is_thumbnail` (bool, backfilled true on one
+`main`-typed image per product where one exists -- `main` is already the
+highest-signal `image_type` every scraper produces -- so every existing
+product starts with a sensible thumbnail rather than requiring a manual
+catalog-wide pass; enforced to at most one true per `product_id` via a
+partial unique index), `is_visible` (bool, defaults true -- nothing
+about current behavior changes until an admin explicitly hides a row).
+None of the five scrapers touch any of these three fields -- purely an
+admin-curated layer on top of the raw scraped data, same "raw vs.
+curated" split as `coverstock_name` vs. `coverstocks.name` (008/009).
+Distinct from the existing `products.published` flag/`PATCH
+/products/{id}/published` endpoint: that controls whether the whole
+PRODUCT is visible to the consumer site; `is_visible` here controls
+whether one specific IMAGE is shown once the product itself is visible.
+
+`admin_api` gained two endpoints, both scoped to `(product_id, image_id)`
+so a caller can never mutate a different product's image by passing a
+mismatched pair:
+
+- `PATCH /products/{id}/images/{image_id}` -- body `{"is_visible": bool}`
+  and/or `{"is_thumbnail": bool}`, either or both. Setting
+  `is_thumbnail: true` is handled as an atomic "unset every other image
+  on this product, then set this one" operation (two `UPDATE`s in one
+  transaction) rather than a bare column write, since the partial unique
+  index would reject a second `true` row otherwise.
+- `POST /products/{id}/images/reorder` -- body `{"image_ids": [...]}`,
+  rewrites `display_order` to match each id's position in the list.
+  Whole-list resubmit rather than incremental swap endpoints, so two
+  concurrent partial edits can't race each other -- the admin-site "Up"/
+  "Down" buttons just reorder the just-loaded array client-side and
+  resend the full list.
+
+`admin-site`'s product detail image grid gained per-image "Up"/"Down"/
+"Set thumbnail"/"Hide"/"Show" controls (image cards changed from `<a>` to
+`<div>` to avoid nesting buttons inside a link -- the thumbnail image
+itself is still wrapped in its own `<a>` for "view full size"), a
+"thumbnail" badge, and dimmed styling for a hidden image.
+`service.get_product`'s image query now orders by `display_order` so the
+grid renders in the admin-curated order.
+
+No `template.yaml` change needed -- both new routes ride
+`AdminApiFunction`'s existing `/{proxy+}` catch-all (confirmed via the
+CFN-tolerant YAML parser: still 45 resources).
+
+```bash
+psql "$DATABASE_URL" -f db/migrations/010_product_images_ordering_thumbnail_visibility.sql
 ```
 
 ### 6d. SWAG (if `SwagBrandId` was set)

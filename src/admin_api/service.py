@@ -466,8 +466,15 @@ def get_product(conn, product_id: str):
         sku_columns = [desc[0] for desc in cur.description]
         product["skus"] = [dict(zip(sku_columns, row)) for row in cur.fetchall()]
 
+        # Ordered by display_order (migration 010) so the admin-site image
+        # grid renders in the admin-curated order rather than whatever
+        # order Postgres happens to return rows in -- id as a stable
+        # tiebreaker for any row sharing a display_order value (shouldn't
+        # normally happen post-migration, but reorder_product_images only
+        # writes positions for the ids it's given, so a row untouched by
+        # a partial reorder could theoretically collide with one that was).
         cur.execute(
-            "select * from product_images where product_id = %s",
+            "select * from product_images where product_id = %s order by display_order, id",
             (product_id,),
         )
         image_columns = [desc[0] for desc in cur.description]
@@ -780,6 +787,117 @@ def set_product_published(conn, product_id: str, published: bool) -> dict:
             raise LookupError(f"No product with id {product_id}")
     conn.commit()
     return {"product_id": product_id, "published": published}
+
+
+# ---------------------------------------------------------------------
+# Product image curation (migration 010) -- looking ahead to an eventual
+# customer-facing site, Al: "once we actually have a customer facing site
+# we will want to order the images, set a thumbnail image and control
+# visibility." Nothing about this touches the scraper side (display_order/
+# is_thumbnail/is_visible are purely admin-curated -- upsert_product's
+# on-conflict path for product_images only ever touches image_type, same
+# "raw scraped data vs. admin-curated data" split as coverstock_name vs.
+# coverstocks.name).
+# ---------------------------------------------------------------------
+
+def update_product_image(conn, product_id: str, image_id: str, is_visible: bool = None,
+                          is_thumbnail: bool = None) -> dict:
+    """Partial update -- only the fields actually passed (not None) get
+    written, same convention as this file's other set_*/update_* helpers.
+    Both fields are independent toggles a caller can set in the same call
+    or separately.
+
+    is_thumbnail=True is handled as an atomic "make this the one
+    thumbnail for this product" operation, not a bare column write:
+    migration 010's partial unique index (`... where is_thumbnail`)
+    enforces at most one true row per product_id, so setting a second row
+    true without first clearing the old one would violate that constraint
+    -- this unsets every other image on the same product_id inside the
+    same transaction before setting the requested row, so the two
+    UPDATEs commit together or not at all rather than racing each other
+    across two separate admin_api calls. is_thumbnail=False is a plain
+    single-row write (unsetting the current thumbnail, leaving the
+    product with none, is allowed -- a caller can immediately set a
+    different row true in a follow-up call).
+
+    Raises LookupError if image_id doesn't exist or doesn't belong to
+    product_id -- scoping the WHERE clause to both (not just image_id)
+    means a caller can never accidentally mutate a different product's
+    image by passing a mismatched pair."""
+    with conn.cursor() as cur:
+        if is_thumbnail is True:
+            cur.execute(
+                "update product_images set is_thumbnail = false where product_id = %s and id <> %s",
+                (product_id, image_id),
+            )
+
+        set_clauses = []
+        params = []
+        if is_visible is not None:
+            set_clauses.append("is_visible = %s")
+            params.append(is_visible)
+        if is_thumbnail is not None:
+            set_clauses.append("is_thumbnail = %s")
+            params.append(is_thumbnail)
+
+        if not set_clauses:
+            # Nothing to change -- still confirm the row exists/belongs to
+            # this product, same not-found behavior as a real update would
+            # give, rather than silently succeeding on a no-op.
+            cur.execute(
+                "select id from product_images where id = %s and product_id = %s",
+                (image_id, product_id),
+            )
+            if cur.fetchone() is None:
+                raise LookupError(f"No image {image_id} on product {product_id}")
+            conn.commit()
+            return {"image_id": image_id, "product_id": product_id}
+
+        params += [image_id, product_id]
+        cur.execute(
+            f"update product_images set {', '.join(set_clauses)} where id = %s and product_id = %s returning id",
+            params,
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError(f"No image {image_id} on product {product_id}")
+
+    conn.commit()
+    result = {"image_id": image_id, "product_id": product_id}
+    if is_visible is not None:
+        result["is_visible"] = is_visible
+    if is_thumbnail is not None:
+        result["is_thumbnail"] = is_thumbnail
+    return result
+
+
+def reorder_product_images(conn, product_id: str, image_ids: list) -> dict:
+    """Rewrites display_order to match the position of each id in
+    image_ids (0-based) -- the admin-site "move up/move down" controls
+    reorder the array client-side and resubmit the whole list rather than
+    sending incremental swaps, which sidesteps any question of what two
+    concurrent partial-swap calls should do to each other.
+
+    Scoped to product_id the same way update_product_image is: an id in
+    image_ids that doesn't actually belong to product_id is silently
+    ignored (not applied, not an error) -- this only ever touches rows
+    that are both in the list AND belong to this product, so a stray/
+    mistyped id from a stale client-side list can't repoint another
+    product's image ordering. Any of this product's own images NOT
+    present in image_ids keep their existing display_order untouched --
+    callers are expected to pass the full current list (that's what the
+    admin-site UI always does, since it starts from the just-loaded
+    image set), but a partial list is handled gracefully rather than
+    raising, since a caller reordering a product with images added by a
+    concurrent rescrape mid-edit shouldn't discover that as an error."""
+    with conn.cursor() as cur:
+        for position, image_id in enumerate(image_ids):
+            cur.execute(
+                "update product_images set display_order = %s where id = %s and product_id = %s",
+                (position, image_id, product_id),
+            )
+    conn.commit()
+    return {"product_id": product_id, "image_ids": image_ids}
 
 
 # ---------------------------------------------------------------------
