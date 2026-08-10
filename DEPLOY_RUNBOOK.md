@@ -510,6 +510,28 @@ already-scraped, unchanged product on its own. Three ways to trigger it:
    export ADMIN_API_TOKEN="<the same bearer token used elsewhere>"
    python3 scripts/backfill_core_ids.py
    ```
+
+   **Optional `SOURCE_PLATFORM` scoping**, added for Al's report (2026-08-10):
+   "we are also missing a bunch of cores from the brunswick brand also
+   their coverstocks. the combats are one of them." Investigated by
+   fetching the live Combat Solid page directly
+   (`brunswickbowling.com/products/balls/current/combat-solid`) and
+   confirming its spec table (`Core: Rampart`, `Coverstock: HK22C² - Alpha
+   Premier Solid`) parses cleanly against `product_scraper`'s current
+   `SPEC_TABLE_LABELS`/`parse_spec_table` -- no scraper bug, same
+   "never rescraped since the cores/coverstocks wiring went in" gap as the
+   Raw Hammer coverstock report below. Since these two backfill scripts
+   are exactly the fix, and a catalog-wide run is the thing that caused
+   the 503 throttling incident right below this, both scripts now accept
+   an optional `SOURCE_PLATFORM` env var that adds `&source_platform=...`
+   to the `GET /products` filter -- scope a run to just Brunswick/Radical/
+   DV8 (they all share `source_platform='craft_cms'`) instead of fanning
+   out to every platform's scraper queue at once:
+   ```bash
+   export SOURCE_PLATFORM="craft_cms"
+   python3 scripts/backfill_core_ids.py
+   ```
+   Omit it to run catalog-wide as before -- unchanged default behavior.
 3. `admin-site/index.html`'s Products tab has a "missing core" filter
    checkbox and a Core column, plus a per-product "Rescrape" button in the
    detail view; the Batch Jobs tab has a "Backfill missing core info"
@@ -768,6 +790,38 @@ export ADMIN_API_URL="https://<your-api-id>.execute-api.us-west-1.amazonaws.com"
 export ADMIN_API_TOKEN="<the same bearer token used elsewhere>"
 python3 scripts/backfill_coverstock_ids.py
 ```
+
+**Brunswick core/coverstock gap (2026-08-10) -- same class of bug, same
+fix, plus a new `SOURCE_PLATFORM` scoping option on both backfill
+scripts.** Al: "we are also missing a bunch of cores from the brunswick
+brand also their coverstocks. the combats are one of them." Investigated
+the same way as the Raw Hammer report above -- fetched the live Combat
+Solid page (`brunswickbowling.com/products/balls/current/combat-solid`)
+directly and confirmed its spec table (`Core: Rampart`, `Coverstock:
+HK22C² - Alpha Premier Solid`, `Cover Type: Solid Reactive`) parses
+cleanly end-to-end against `product_scraper`'s current
+`SPEC_TABLE_LABELS`/`parse_spec_table` -- no scraper bug. Same
+never-rescraped-since-the-wiring-went-in gap; the two backfill scripts
+above are exactly the fix, no code change needed for Brunswick's parsing
+itself.
+
+Since a catalog-wide run is exactly what caused the 503-throttling
+incident documented above (fans out to all five platforms' scraper
+queues at once against a 10-slot account concurrency limit), and Al's
+report is specifically about Brunswick, both `backfill_core_ids.py` and
+`backfill_coverstock_ids.py` now accept an optional `SOURCE_PLATFORM` env
+var that adds `&source_platform=...` to their `GET /products` filter.
+Brunswick/Radical/DV8 all share `source_platform='craft_cms'`:
+```bash
+export ADMIN_API_URL="https://<your-api-id>.execute-api.us-west-1.amazonaws.com"
+export ADMIN_API_TOKEN="<the same bearer token used elsewhere>"
+export SOURCE_PLATFORM="craft_cms"
+python3 scripts/backfill_core_ids.py
+python3 scripts/backfill_coverstock_ids.py
+```
+Omit `SOURCE_PLATFORM` to run catalog-wide as before -- unchanged default
+behavior, and existing callers (including the Batch Jobs panel, which
+doesn't set it) are unaffected.
 
 **Stale-image DELETE + S3 orphan cleanup ported from MOTIV (6e.6/6e.7).**
 Al: "brunswick needs an image cleanup like motiv did." Confirmed

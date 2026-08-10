@@ -60,9 +60,20 @@ Service Quotas -- 10 total concurrent executions across an account
 running five-plus Lambda functions is going to keep being tight even
 with both mitigations in place.
 
+SOURCE_PLATFORM (optional): scopes the run to one scraper platform instead
+of the whole catalog -- same values as products.source_platform ('netsuite',
+'shopify', 'woocommerce', 'commercebuild', 'craft_cms'). Real motivating
+case, Al (2026-08-10): "we are also missing a bunch of cores from the
+brunswick brand also their coverstocks" -- Brunswick/Radical/DV8 all share
+source_platform='craft_cms' (see SCRAPE_QUEUE_ENV_VAR_BY_PLATFORM). Scoping
+to just that platform both targets the actual report and sidesteps the
+"TRANSIENT 503s" issue below by only fanning out to one platform's scraper
+Lambda instead of all five at once. Omit it to run catalog-wide as before.
+
 Usage:
     export ADMIN_API_URL="https://<your-api-id>.execute-api.us-west-1.amazonaws.com"
     export ADMIN_API_TOKEN="<the same bearer token used elsewhere>"
+    export SOURCE_PLATFORM="craft_cms"  # optional -- e.g. Brunswick/Radical/DV8 only
     python3 scripts/backfill_core_ids.py
 """
 import logging
@@ -113,22 +124,31 @@ def get_requests_session():
 
 
 def list_products_missing_core(admin_api_url: str, token: str, page_limit: int = DEFAULT_PAGE_LIMIT,
-                                session=None) -> list:
+                                session=None, source_platform: str = None) -> list:
     """Paginates GET /products?missing_core=true -- same pagination shape
     as every other script in this project (backfill_video_review_rollups.
     list_products_needing_refresh, home_transcript_fetcher.
     list_candidates_needing_transcripts, auto_approve_video_candidates.
     list_pending_candidates). session defaults to a fresh retry-enabled
     one (see get_requests_session) but is overridable so tests can inject
-    a fake transport instead of hitting the network."""
+    a fake transport instead of hitting the network.
+
+    source_platform (optional): adds &source_platform=... to scope the
+    catalog-wide filter down to one scraper platform -- see this module's
+    own docstring for why (Al's Brunswick/craft_cms report, and the
+    throttling risk of touching all five platforms' queues at once)."""
     session = session if session is not None else get_requests_session()
+
+    params = {"missing_core": "true", "limit": page_limit}
+    if source_platform:
+        params["source_platform"] = source_platform
 
     items = []
     offset = 0
     while True:
         resp = session.get(
             f"{admin_api_url}/products",
-            params={"missing_core": "true", "limit": page_limit, "offset": offset},
+            params={**params, "offset": offset},
             headers={"Authorization": f"Bearer {token}"},
             timeout=30,
         )
@@ -153,18 +173,22 @@ def rescrape_product(admin_api_url: str, token: str, product_id: str, session=No
     return resp.json()
 
 
-def run(admin_api_url: str, token: str, list_fn=None, rescrape_fn=None) -> dict:
+def run(admin_api_url: str, token: str, list_fn=None, rescrape_fn=None, source_platform: str = None) -> dict:
     """Tolerates per-product errors -- one bad URL or a transient SQS
     hiccup shouldn't stop the rest of the batch, same principle as every
     other batch script in this project. A {"queued": False, ...} result
     (unsupported platform, misconfigured queue) is logged and counted
     separately from a real error -- it's an expected outcome, not a
-    failure."""
+    failure.
+
+    source_platform (optional): forwarded to list_products_missing_core to
+    scope the run -- see this module's docstring."""
     list_products = list_fn if list_fn is not None else list_products_missing_core
     rescrape = rescrape_fn if rescrape_fn is not None else rescrape_product
 
-    products = list_products(admin_api_url, token)
-    logger.info("Found %d product(s) missing a core_id", len(products))
+    products = list_products(admin_api_url, token, source_platform=source_platform)
+    logger.info("Found %d product(s) missing a core_id%s", len(products),
+                f" (source_platform={source_platform})" if source_platform else "")
 
     queued = 0
     skipped = 0
@@ -193,8 +217,9 @@ def main():
     if not admin_api_url or not token:
         logger.error("ADMIN_API_URL and ADMIN_API_TOKEN must both be set -- see this script's module docstring for setup.")
         sys.exit(1)
+    source_platform = os.environ.get("SOURCE_PLATFORM") or None
 
-    summary = run(admin_api_url, token)
+    summary = run(admin_api_url, token, source_platform=source_platform)
     logger.info("Done: %s", summary)
 
     if summary["total"] > 0 and summary["queued"] == 0 and summary["errors"] > 0:

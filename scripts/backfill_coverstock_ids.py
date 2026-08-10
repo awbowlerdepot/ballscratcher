@@ -36,9 +36,14 @@ the "Juiced Solid" symptom Al reported. No separate migration or manual
 UPDATE needed for that half of the bug; a fresh scrape resolves both at
 once.
 
+SOURCE_PLATFORM (optional): scopes the run to one scraper platform -- see
+backfill_core_ids.py's module docstring for the full reasoning (Al's
+Brunswick/craft_cms report, throttling). Identical env var here.
+
 Usage:
     export ADMIN_API_URL="https://<your-api-id>.execute-api.us-west-1.amazonaws.com"
     export ADMIN_API_TOKEN="<the same bearer token used elsewhere>"
+    export SOURCE_PLATFORM="craft_cms"  # optional -- e.g. Brunswick/Radical/DV8 only
     python3 scripts/backfill_coverstock_ids.py
 """
 import logging
@@ -82,18 +87,23 @@ def get_requests_session():
 
 
 def list_products_missing_coverstock(admin_api_url: str, token: str, page_limit: int = DEFAULT_PAGE_LIMIT,
-                                      session=None) -> list:
+                                      session=None, source_platform: str = None) -> list:
     """Paginates GET /products?missing_coverstock=true. See
     backfill_core_ids.list_products_missing_core for the identical
-    pagination shape this mirrors."""
+    pagination shape this mirrors, including the optional source_platform
+    scoping param."""
     session = session if session is not None else get_requests_session()
+
+    params = {"missing_coverstock": "true", "limit": page_limit}
+    if source_platform:
+        params["source_platform"] = source_platform
 
     items = []
     offset = 0
     while True:
         resp = session.get(
             f"{admin_api_url}/products",
-            params={"missing_coverstock": "true", "limit": page_limit, "offset": offset},
+            params={**params, "offset": offset},
             headers={"Authorization": f"Bearer {token}"},
             timeout=30,
         )
@@ -118,14 +128,16 @@ def rescrape_product(admin_api_url: str, token: str, product_id: str, session=No
     return resp.json()
 
 
-def run(admin_api_url: str, token: str, list_fn=None, rescrape_fn=None) -> dict:
+def run(admin_api_url: str, token: str, list_fn=None, rescrape_fn=None, source_platform: str = None) -> dict:
     """Tolerates per-product errors -- see backfill_core_ids.run's
-    docstring for the reasoning, identical here."""
+    docstring for the reasoning, identical here. source_platform
+    (optional): forwarded to list_products_missing_coverstock."""
     list_products = list_fn if list_fn is not None else list_products_missing_coverstock
     rescrape = rescrape_fn if rescrape_fn is not None else rescrape_product
 
-    products = list_products(admin_api_url, token)
-    logger.info("Found %d product(s) missing a coverstock_id", len(products))
+    products = list_products(admin_api_url, token, source_platform=source_platform)
+    logger.info("Found %d product(s) missing a coverstock_id%s", len(products),
+                f" (source_platform={source_platform})" if source_platform else "")
 
     queued = 0
     skipped = 0
@@ -154,8 +166,9 @@ def main():
     if not admin_api_url or not token:
         logger.error("ADMIN_API_URL and ADMIN_API_TOKEN must both be set -- see this script's module docstring for setup.")
         sys.exit(1)
+    source_platform = os.environ.get("SOURCE_PLATFORM") or None
 
-    summary = run(admin_api_url, token)
+    summary = run(admin_api_url, token, source_platform=source_platform)
     logger.info("Done: %s", summary)
 
     if summary["total"] > 0 and summary["queued"] == 0 and summary["errors"] > 0:

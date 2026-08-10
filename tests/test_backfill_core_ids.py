@@ -68,6 +68,27 @@ def test_list_products_missing_core_paginates():
     assert fake.get_calls[0]["headers"]["Authorization"] == "Bearer tok"
 
 
+def test_list_products_missing_core_source_platform_adds_param():
+    """Al's Brunswick report -- scoping to source_platform='craft_cms'
+    (Brunswick/Radical/DV8) instead of touching every platform's queue."""
+    fake = _FakeSession(pages=[{"items": [{"id": "prod-1", "name": "Combat Solid"}]}])
+
+    script.list_products_missing_core("https://admin.example", "tok", page_limit=200, session=fake,
+                                       source_platform="craft_cms")
+
+    assert fake.get_calls[0]["params"] == {
+        "missing_core": "true", "limit": 200, "offset": 0, "source_platform": "craft_cms",
+    }
+
+
+def test_list_products_missing_core_omits_source_platform_param_by_default():
+    fake = _FakeSession(pages=[{"items": []}])
+
+    script.list_products_missing_core("https://admin.example", "tok", page_limit=200, session=fake)
+
+    assert "source_platform" not in fake.get_calls[0]["params"]
+
+
 def test_list_products_missing_core_single_page_stops_immediately():
     fake = _FakeSession(pages=[{"items": [{"id": "prod-1", "name": "Absolute"}]}])
 
@@ -126,7 +147,7 @@ def test_run_queues_every_listed_product(monkeypatch):
         {"id": "prod-1", "name": "Absolute"},
         {"id": "prod-2", "name": "Nightroad"},
     ]
-    monkeypatch.setattr(script, "list_products_missing_core", lambda url, token: products)
+    monkeypatch.setattr(script, "list_products_missing_core", lambda url, token, source_platform=None: products)
 
     rescraped_calls = []
 
@@ -142,13 +163,26 @@ def test_run_queues_every_listed_product(monkeypatch):
     assert rescraped_calls == ["prod-1", "prod-2"]
 
 
+def test_run_forwards_source_platform_to_list_products(monkeypatch):
+    """Al's Brunswick report -- confirms run() actually threads
+    source_platform through to the listing call, not just accepts it."""
+    seen = []
+    monkeypatch.setattr(script, "list_products_missing_core",
+                         lambda url, token, source_platform=None: (seen.append(source_platform), [])[1])
+    monkeypatch.setattr(script, "rescrape_product", lambda url, token, pid: {"queued": True})
+
+    script.run("https://admin.example", "tok", source_platform="craft_cms")
+
+    assert seen == ["craft_cms"]
+
+
 def test_run_counts_unsupported_platform_as_skipped_not_errored(monkeypatch):
     """A real, expected outcome (see queue_rescrape's docstring): a product
     on a platform with no scraper deployed yet (shopify) returns
     queued=False with a reason, not an exception -- shouldn't count as an
     error, and shouldn't inflate the 'queued' count either."""
     products = [{"id": "prod-1", "name": "Some Hammer Ball"}]
-    monkeypatch.setattr(script, "list_products_missing_core", lambda url, token: products)
+    monkeypatch.setattr(script, "list_products_missing_core", lambda url, token, source_platform=None: products)
     monkeypatch.setattr(script, "rescrape_product", lambda url, token, pid:
                          {"queued": False, "reason": "no scraper deployed for source_platform='shopify' yet"})
 
@@ -163,7 +197,7 @@ def test_run_tolerates_per_product_rescrape_errors(monkeypatch):
     run(), auto_approve_video_candidates.run(), home_transcript_fetcher.
     run()."""
     products = [{"id": "prod-1", "name": "Absolute"}, {"id": "prod-2", "name": "Nightroad"}]
-    monkeypatch.setattr(script, "list_products_missing_core", lambda url, token: products)
+    monkeypatch.setattr(script, "list_products_missing_core", lambda url, token, source_platform=None: products)
 
     def flaky_rescrape(url, token, product_id):
         if product_id == "prod-1":
@@ -178,7 +212,7 @@ def test_run_tolerates_per_product_rescrape_errors(monkeypatch):
 
 
 def test_run_with_no_products_missing_core():
-    summary = script.run("https://admin.example", "tok", list_fn=lambda url, token: [])
+    summary = script.run("https://admin.example", "tok", list_fn=lambda url, token, source_platform=None: [])
     assert summary == {"total": 0, "queued": 0, "skipped": 0, "errors": 0}
 
 
