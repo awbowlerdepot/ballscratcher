@@ -139,7 +139,15 @@ class FakeCursor:
             if existing_id is None:
                 self.db["_next_product_id"] += 1
                 self.db["_products_by_url"][url] = product_id
-            self.db["products"][product_id] = {"url": url, "status": status}
+            # Real ON CONFLICT DO UPDATE never lists oil_rating/motion_
+            # rating/oil_motion_source (migrations 011/012) among its SET
+            # clauses -- preserve them across a rescrape's reset here too.
+            preserved = {
+                k: self.db["products"][product_id][k]
+                for k in ("oil_rating", "motion_rating", "oil_motion_source")
+                if product_id in self.db["products"] and k in self.db["products"][product_id]
+            }
+            self.db["products"][product_id] = {"url": url, "status": status, **preserved}
             self._result = (product_id,)
 
         elif q.startswith("insert into product_skus"):
@@ -188,6 +196,24 @@ class FakeCursor:
             self._rows = [(self.db["product_images"][k]["id"], self.db["product_images"][k]["stored_url"]) for k in to_delete]
             for key in to_delete:
                 del self.db["product_images"][key]
+
+        elif q == "select core_type from cores where id = %s":
+            (core_id,) = params
+            match = next((c for c in self.db["cores"].values() if c["id"] == core_id), None)
+            self._result = (match["core_type"],) if match else None
+
+        elif q == "select has_particle from products where id = %s":
+            (pid,) = params
+            self._result = (self.db["products"][pid].get("has_particle", False),)
+
+        elif q.startswith("update products set oil_rating"):
+            oil, motion, pid = params
+            row = self.db["products"].get(pid)
+            if row is not None and row.get("oil_rating") is None:
+                row["oil_rating"] = oil
+                row["motion_rating"] = motion
+                row["oil_motion_source"] = "estimated"
+            self._result = None
 
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
@@ -542,6 +568,47 @@ def test_delete_orphaned_image_objects_handles_already_missing_s3_objects():
 
     assert deleted == 0
     assert s3.delete_calls == []
+
+
+# --- Estimate-on-scrape plotter position (migrations 011/012) -- Al's
+# ask: "estimate on scrape if not set".
+
+def test_process_one_writes_estimated_plotter_position_when_unset(monkeypatch):
+    db = _fresh_db()
+    monkeypatch.setattr(app, "fetch_page", lambda url: _sigma_html())
+    monkeypatch.setattr(app, "get_db_connection", lambda: FakeConnection(db))
+    monkeypatch.delenv("IMAGE_PROCESS_QUEUE_URL", raising=False)
+    monkeypatch.delenv("PDF_PARSE_QUEUE_URL", raising=False)
+
+    job = {"url": SIGMA_URL, "brand_id": "brand-1", "status": "current"}
+    app._process_one(job, None)
+
+    product = next(iter(db["products"].values()))
+    assert product["oil_rating"] is not None
+    assert product["motion_rating"] is not None
+    assert product["oil_motion_source"] == "estimated"
+
+
+def test_process_one_never_overwrites_existing_plotter_position(monkeypatch):
+    db = _fresh_db()
+    monkeypatch.setattr(app, "fetch_page", lambda url: _sigma_html())
+    monkeypatch.setattr(app, "get_db_connection", lambda: FakeConnection(db))
+    monkeypatch.delenv("IMAGE_PROCESS_QUEUE_URL", raising=False)
+    monkeypatch.delenv("PDF_PARSE_QUEUE_URL", raising=False)
+
+    job = {"url": SIGMA_URL, "brand_id": "brand-1", "status": "current"}
+    app._process_one(job, None)  # lands an 'estimated' position
+
+    product_id = next(iter(db["products"]))
+    db["products"][product_id]["oil_rating"] = 6
+    db["products"][product_id]["motion_rating"] = 18
+    db["products"][product_id]["oil_motion_source"] = "chart"  # simulate a chart match landing afterward
+
+    app._process_one(job, None)  # rescrape
+
+    assert db["products"][product_id]["oil_rating"] == 6
+    assert db["products"][product_id]["motion_rating"] == 18
+    assert db["products"][product_id]["oil_motion_source"] == "chart"
 
 
 # --- _process_one: the S3 cleanup wired end to end ---

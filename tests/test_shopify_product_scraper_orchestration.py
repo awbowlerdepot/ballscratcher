@@ -119,7 +119,15 @@ class FakeCursor:
             if existing_id is None:
                 self.db["_next_product_id"] += 1
                 self.db["_products_by_url"][url] = product_id
-            self.db["products"][product_id] = {"url": url}
+            # Real ON CONFLICT DO UPDATE never lists oil_rating/motion_
+            # rating/oil_motion_source (migrations 011/012) among its SET
+            # clauses -- preserve them across a rescrape's reset here too.
+            preserved = {
+                k: self.db["products"][product_id][k]
+                for k in ("oil_rating", "motion_rating", "oil_motion_source")
+                if product_id in self.db["products"] and k in self.db["products"][product_id]
+            }
+            self.db["products"][product_id] = {"url": url, **preserved}
             self._result = (product_id,)
 
         elif q.startswith("insert into product_skus"):
@@ -145,6 +153,24 @@ class FakeCursor:
                 self.db["product_images"][key]["image_type"] = image_type
             row = self.db["product_images"][key]
             self._result = (row["id"], row["stored_url"])
+
+        elif q == "select core_type from cores where id = %s":
+            (core_id,) = params
+            match = next((c for c in self.db["cores"].values() if c["id"] == core_id), None)
+            self._result = (match["core_type"],) if match else None
+
+        elif q == "select has_particle from products where id = %s":
+            (pid,) = params
+            self._result = (self.db["products"][pid].get("has_particle", False),)
+
+        elif q.startswith("update products set oil_rating"):
+            oil, motion, pid = params
+            row = self.db["products"].get(pid)
+            if row is not None and row.get("oil_rating") is None:
+                row["oil_rating"] = oil
+                row["motion_rating"] = motion
+                row["oil_motion_source"] = "estimated"
+            self._result = None
 
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
@@ -290,6 +316,44 @@ def test_process_one_does_not_republish_image_job_for_already_processed_image(mo
     sqs2 = FakeSqs()
     second = app._process_one(job, sqs2)
     assert second["image_jobs_published"] == 0
+
+
+# --- Estimate-on-scrape plotter position (migrations 011/012) -- Al's
+# ask: "estimate on scrape if not set".
+
+def test_process_one_writes_estimated_plotter_position_when_unset(monkeypatch):
+    db = _fresh_db(discovered_urls={BWD_URL: "current"})
+    monkeypatch.setattr(app, "fetch_product_json", lambda url: _bwd_product())
+    monkeypatch.setattr(app, "get_db_connection", lambda: FakeConnection(db))
+    monkeypatch.delenv("IMAGE_PROCESS_QUEUE_URL", raising=False)
+
+    job = {"url": BWD_URL, "brand_id": "brand-1"}
+    result = app._process_one(job, None)
+    product_id = int(result["product_id"])
+
+    assert db["products"][product_id]["oil_rating"] is not None
+    assert db["products"][product_id]["motion_rating"] is not None
+    assert db["products"][product_id]["oil_motion_source"] == "estimated"
+
+
+def test_process_one_never_overwrites_existing_plotter_position(monkeypatch):
+    db = _fresh_db(discovered_urls={BWD_URL: "current"})
+    monkeypatch.setattr(app, "fetch_product_json", lambda url: _bwd_product())
+    monkeypatch.setattr(app, "get_db_connection", lambda: FakeConnection(db))
+    monkeypatch.delenv("IMAGE_PROCESS_QUEUE_URL", raising=False)
+
+    job = {"url": BWD_URL, "brand_id": "brand-1"}
+    first = app._process_one(job, None)  # lands an 'estimated' position
+    product_id = int(first["product_id"])
+    db["products"][product_id]["oil_rating"] = 6
+    db["products"][product_id]["motion_rating"] = 18
+    db["products"][product_id]["oil_motion_source"] = "chart"  # simulate a chart match landing afterward
+
+    app._process_one(job, None)  # rescrape
+
+    assert db["products"][product_id]["oil_rating"] == 6
+    assert db["products"][product_id]["motion_rating"] == 18
+    assert db["products"][product_id]["oil_motion_source"] == "chart"
 
 
 def test_handler_sqs_batch_reports_only_failed_message(monkeypatch):

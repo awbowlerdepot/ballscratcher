@@ -574,20 +574,33 @@ def list_plotter_positions(conn, status: str = "current") -> list:
     few hundred products at most), so the same shape carries over rather
     than adding pagination this page doesn't need.
 
-    Every returned product gets a real (oil, motion) position: the
-    authoritative chart value (products.oil_rating/motion_rating, migration
-    011) when scripts/backfill_plotter_chart_positions.py has matched it,
-    otherwise estimate_oil_motion's heuristic. oil_motion_source
-    ('chart' | 'estimated') tells the frontend which kind it got, so the
-    two can be rendered differently (e.g. a filled vs. outlined marker)
-    rather than implying false precision on the estimated majority."""
+    oil_rating/motion_rating/oil_motion_source (migrations 011/012) are
+    READ here, not computed -- Al's own direct follow-up after this
+    function originally called estimate_oil_motion live on every request:
+    "it will cause for potential inconsistencies, i would prefer for it
+    to just back fill the values once in the DB and then estimate on
+    scrape if not set". The persisted value now comes from one of three
+    places: a chart match (scripts/backfill_plotter_chart_positions.py,
+    oil_motion_source='chart'), an estimate written automatically the
+    first time a product was scraped with no position yet (every
+    upsert_product across all five scraper Lambdas, 'estimated'), or an
+    admin's manual correction (PATCH /products/{id}/plotter-position,
+    'manual'). estimate_oil_motion is still called below, but ONLY as a
+    last-resort defensive fallback for a product that genuinely has
+    neither -- predates this whole feature and hasn't been rescraped or
+    covered by admin_api.backfill_estimated_plotter_positions yet. That
+    fallback value is intentionally never written back to the row here
+    (this module has no write access by design -- see this file's own
+    header comment); it just keeps the plotter page from ever silently
+    dropping a product, until a real backfill/rescrape lands a persisted
+    value for it."""
     with conn.cursor() as cur:
         cur.execute(
             """
             select p.id, p.name, p.url,
                    b.name as brand_name,
                    c.core_type, p.coverstock_type, p.coverstock_material, p.has_particle,
-                   p.oil_rating, p.motion_rating,
+                   p.oil_rating, p.motion_rating, p.oil_motion_source,
                    coalesce(
                        p.primary_image_url,
                        (
@@ -623,7 +636,7 @@ def list_plotter_positions(conn, status: str = "current") -> list:
     results = []
     for p in products:
         if p["oil_rating"] is not None and p["motion_rating"] is not None:
-            oil, motion, source = p["oil_rating"], p["motion_rating"], "chart"
+            oil, motion, source = p["oil_rating"], p["motion_rating"], p["oil_motion_source"] or "estimated"
         else:
             ref_sku = _reference_sku(skus_by_product.get(p["id"], []))
             estimate = estimate_oil_motion(

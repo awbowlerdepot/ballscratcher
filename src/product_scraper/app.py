@@ -660,6 +660,91 @@ def get_or_create_coverstock_id(conn, brand_id: str, coverstock_name, material=N
         return cur.fetchone()[0]
 
 
+# --------------------------------------------------------------------
+# Ball motion plotter: estimate-on-scrape (migrations 011/012) --
+# duplicated from public_api/service.py's estimate_oil_motion rather
+# than shared (each Lambda here is its own independent deployment
+# package -- see publish_messages' docstring below for the same
+# reasoning applied elsewhere in this file). MUST stay in sync with
+# public_api's copy: an estimate written here at scrape time and one
+# public_api would compute for the same inputs must always agree. See
+# public_api/service.py's module-level comment above its own
+# estimate_oil_motion for the full reasoning behind every constant here,
+# and migration 012's header comment for why this hook exists at all --
+# Al's direct ask: "estimate on scrape if not set".
+# --------------------------------------------------------------------
+
+OIL_BASE_BY_MATERIAL = {
+    "polyester_plastic": 2,
+    "urethane": 5,
+    "reactive_resin": 10,
+}
+OIL_ADJUST_BY_TYPE = {
+    "pearl": -3,
+    "hybrid": 0,
+    "solid": 3,
+}
+OIL_PARTICLE_BONUS = 2
+
+MOTION_BASE_BY_CORE_TYPE = {
+    "symmetric": 7,
+    "asymmetric": 12,
+}
+MOTION_BASE_UNKNOWN_CORE = 9
+MOTION_DIFF_MIDPOINT = 0.02
+MOTION_DIFF_SCALE = 0.045
+MOTION_DIFF_WEIGHT = 6
+MOTION_ADJUST_BY_COVERSTOCK_TYPE = {
+    "pearl": 1,
+    "solid": -1,
+    "hybrid": 0,
+}
+
+OIL_MIN, OIL_MAX = 1, 16
+MOTION_MIN, MOTION_MAX = 1, 18
+
+
+def _clamp_oil_motion(value: float, low: int, high: int) -> int:
+    return max(low, min(high, round(value)))
+
+
+def estimate_oil_motion(core_type: str = None, coverstock_type: str = None,
+                         coverstock_material: str = None, has_particle: bool = False,
+                         differential: float = None) -> dict:
+    """Identical logic to public_api.service.estimate_oil_motion -- see
+    that module for the full reasoning. Duplicated, not imported."""
+    oil = OIL_BASE_BY_MATERIAL.get(coverstock_material, (OIL_MIN + OIL_MAX) / 2)
+    oil += OIL_ADJUST_BY_TYPE.get(coverstock_type, 0)
+    if has_particle:
+        oil += OIL_PARTICLE_BONUS
+    oil = _clamp_oil_motion(oil, OIL_MIN, OIL_MAX)
+
+    motion = MOTION_BASE_BY_CORE_TYPE.get(core_type, MOTION_BASE_UNKNOWN_CORE)
+    if differential is not None:
+        motion += ((float(differential) - MOTION_DIFF_MIDPOINT) / MOTION_DIFF_SCALE) * MOTION_DIFF_WEIGHT
+    motion += MOTION_ADJUST_BY_COVERSTOCK_TYPE.get(coverstock_type, 0)
+    motion = _clamp_oil_motion(motion, MOTION_MIN, MOTION_MAX)
+
+    return {"oil": oil, "motion": motion}
+
+
+def _reference_differential(skus: list):
+    """Picks the differential of the SKU that best represents this
+    product overall, straight off the just-parsed skus list (no DB
+    round-trip needed -- upsert_product already has it in hand). Same
+    15lb-preferred convention as public_api._reference_sku (see
+    001_init_schema.sql's own stated convention): prefer the real 15lb
+    row, else the row closest to 15lb, else None if nothing here has a
+    usable weight+differential pair."""
+    usable = [s for s in skus if s.get("differential") is not None and s.get("weight_lbs") is not None]
+    if not usable:
+        return None
+    for sku in usable:
+        if sku["weight_lbs"] == 15:
+            return sku["differential"]
+    return min(usable, key=lambda s: abs(s["weight_lbs"] - 15))["differential"]
+
+
 def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
     """Insert or update the products row and its product_skus/product_images
     rows for one scraped page. Returns
@@ -857,6 +942,37 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
                 (product_id,),
             )
         stale_image_rows = [{"id": row[0], "stored_url": row[1]} for row in cur.fetchall()]
+
+    # Estimate-on-scrape plotter position (migrations 011/012) -- only
+    # ever touches a product with NO plotter position at all yet ("where
+    # oil_rating is null" guards against clobbering a chart match from
+    # scripts/backfill_plotter_chart_positions.py or an admin's manual
+    # correction on a rescrape). core_type isn't in `parsed` for this
+    # platform (see the comment above get_or_create_core_id's call site
+    # a few lines up -- Brunswick's own pages don't expose a dedicated
+    # symmetric/asymmetric field), so it's read back from the cores row
+    # itself, which may have picked one up from a different platform's
+    # scrape of the same shared core or an admin correction.
+    with conn.cursor() as cur:
+        core_type = None
+        if core_id is not None:
+            cur.execute("select core_type from cores where id = %s", (core_id,))
+            row = cur.fetchone()
+            core_type = row[0] if row else None
+        cur.execute("select has_particle from products where id = %s", (product_id,))
+        has_particle = cur.fetchone()[0]
+        estimate = estimate_oil_motion(
+            core_type=core_type,
+            coverstock_type=parsed["coverstock_type"],
+            coverstock_material=parsed["coverstock_material"],
+            has_particle=has_particle,
+            differential=_reference_differential(parsed["skus"]),
+        )
+        cur.execute(
+            "update products set oil_rating = %s, motion_rating = %s, oil_motion_source = 'estimated' "
+            "where id = %s and oil_rating is null",
+            (estimate["oil"], estimate["motion"], product_id),
+        )
 
     conn.commit()
     return {"product_id": product_id, "pending_image_jobs": pending_image_jobs, "stale_image_rows": stale_image_rows}

@@ -16,7 +16,7 @@ pending review_queue rows, approve (applies the proposed value) or reject
 publish-toggle surface for managing the `published` flag the consumer site
 and BowlerDepot sync will read.
 """
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Query
 from mangum import Mangum
@@ -54,11 +54,17 @@ class ImageReorderRequest(BaseModel):
 
 
 class PlotterPositionRequest(BaseModel):
-    # Both required, not independently-optional like ImageUpdateRequest's
-    # fields -- see service.set_plotter_position's docstring for why a
-    # chart position is meaningless with only one axis set.
+    # oil_rating/motion_rating both required, not independently-optional
+    # like ImageUpdateRequest's fields -- see service.set_plotter_
+    # position's docstring for why a plotter position is meaningless with
+    # only one axis set. source defaults to 'manual' -- an admin correcting
+    # an estimate via the admin site never has to think about this field;
+    # scripts/backfill_plotter_chart_positions.py is the one caller that
+    # passes 'chart' explicitly (see migration 012's header comment for
+    # the three source values and what each means).
     oil_rating: int
     motion_rating: int
+    source: Literal["chart", "estimated", "manual"] = "manual"
 
 
 class ReassignRequest(BaseModel):
@@ -271,7 +277,7 @@ def set_plotter_position(product_id: str, body: PlotterPositionRequest):
     # 404 a genuinely missing product_id gets.
     conn = service.get_db_connection()
     try:
-        return service.set_plotter_position(conn, product_id, body.oil_rating, body.motion_rating)
+        return service.set_plotter_position(conn, product_id, body.oil_rating, body.motion_rating, body.source)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
@@ -316,6 +322,24 @@ def backfill_last_video_discovery_at():
     conn = service.get_db_connection()
     try:
         return service.backfill_last_video_discovery_at(conn)
+    finally:
+        conn.close()
+
+
+@app.post("/admin/backfill-estimated-plotter-positions")
+def backfill_estimated_plotter_positions():
+    # One-time (idempotent, safe to re-run) catalog-wide backfill for
+    # every product with no plotter position yet -- see service.backfill_
+    # estimated_plotter_positions' docstring. Al's own ask after the
+    # estimate was being recomputed live on every plotter API call:
+    # "back fill the values once in the DB". No request body, no path
+    # param: catalog-wide by design, same shape as backfill-last-video-
+    # discovery-at above. Run this once after migration 012 deploys, then
+    # each scraper's own estimate-on-scrape hook keeps new products
+    # covered from here on.
+    conn = service.get_db_connection()
+    try:
+        return service.backfill_estimated_plotter_positions(conn)
     finally:
         conn.close()
 

@@ -117,15 +117,61 @@ class FakeCursor:
             row["video_reviews_summary_updated_at"] = "now"
             self._last_result = None
 
-        elif q.startswith("update products set oil_rating"):
+        elif q.startswith("update products set oil_rating") and "oil_motion_source = 'estimated'" in q:
+            # backfill_estimated_plotter_positions' per-row write -- more
+            # specific than (and must be checked before) set_plotter_
+            # position's own branch below: literal 'estimated' in the SQL
+            # itself (not a %s placeholder), 3 params, and the "and
+            # oil_rating is null" not-clobber guard baked into the query
+            # text rather than passed as a parameter.
             oil_rating, motion_rating, product_id = params
+            row = self.db["products"].get(product_id)
+            self._last_result = None
+            if row is not None and row.get("oil_rating") is None:
+                row["oil_rating"] = oil_rating
+                row["motion_rating"] = motion_rating
+                row["oil_motion_source"] = "estimated"
+                self._last_result = (product_id,)
+            self.description = [("id",)]
+
+        elif q.startswith("update products set oil_rating"):
+            # set_plotter_position -- source is now a real 4th param
+            # (migration 012), not hardcoded.
+            oil_rating, motion_rating, source, product_id = params
             row = self.db["products"].get(product_id)
             self._last_result = None
             if row is not None:
                 row["oil_rating"] = oil_rating
                 row["motion_rating"] = motion_rating
+                row["oil_motion_source"] = source
                 self._last_result = (product_id,)
             self.description = [("id",)]
+
+        elif q.startswith("select p.id, c.core_type, p.coverstock_type, p.coverstock_material, p.has_particle"):
+            # backfill_estimated_plotter_positions' missing-position scan.
+            # The fake models this as a flat read off each product dict's
+            # own core_type/coverstock_type/coverstock_material/has_particle
+            # keys (test fixtures set these directly) rather than a real
+            # cores join -- same simplification every other product-row
+            # fake in this file already uses.
+            missing = [
+                (pid, row.get("core_type"), row.get("coverstock_type"),
+                 row.get("coverstock_material"), row.get("has_particle"))
+                for pid, row in self.db["products"].items()
+                if row.get("oil_rating") is None
+            ]
+            self._rows = missing
+            self.description = [("id",), ("core_type",), ("coverstock_type",), ("coverstock_material",), ("has_particle",)]
+
+        elif q.startswith("select product_id, weight_lbs, differential from product_skus"):
+            (product_ids,) = params
+            rows = [
+                (sku["product_id"], sku["weight_lbs"], sku["differential"])
+                for sku in self.db.get("product_skus_plotter", [])
+                if sku["product_id"] in product_ids and sku["differential"] is not None
+            ]
+            self._rows = rows
+            self.description = [("product_id",), ("weight_lbs",), ("differential",)]
 
         elif q.startswith("update products set") and "returning id" not in q:
             column = q.split("set ", 1)[1].split(" =", 1)[0]
@@ -2107,10 +2153,11 @@ def test_reorder_product_images_ignores_ids_from_other_products():
     assert db["product_images"]["img-1"]["display_order"] == 2
 
 
-# --- Plotter chart position (migration 011): the AUTHORITATIVE oil/motion
-# position digitized from Brunswick's own published Ball Motion Comparison
-# Chart, set by scripts/backfill_plotter_chart_positions.py's one-time
-# matching pass. See service.set_plotter_position's docstring.
+# --- Plotter position (migrations 011/012): oil_rating/motion_rating plus
+# oil_motion_source ('chart' | 'estimated' | 'manual'). See service.
+# set_plotter_position's docstring -- source defaults to 'manual' (an
+# admin's correction), scripts/backfill_plotter_chart_positions.py passes
+# 'chart' explicitly.
 
 def test_set_plotter_position_writes_both_fields():
     db = {"products": {"prod-1": {"id": "prod-1"}}}
@@ -2120,8 +2167,22 @@ def test_set_plotter_position_writes_both_fields():
 
     assert db["products"]["prod-1"]["oil_rating"] == 6
     assert db["products"]["prod-1"]["motion_rating"] == 18
-    assert result == {"product_id": "prod-1", "oil_rating": 6, "motion_rating": 18}
+    assert db["products"]["prod-1"]["oil_motion_source"] == "manual"  # default, no source given
+    assert result == {"product_id": "prod-1", "oil_rating": 6, "motion_rating": 18, "oil_motion_source": "manual"}
     assert conn.committed
+
+
+def test_set_plotter_position_writes_given_source():
+    """scripts/backfill_plotter_chart_positions.py's real call shape --
+    passes source='chart' explicitly rather than taking the 'manual'
+    default."""
+    db = {"products": {"prod-1": {"id": "prod-1"}}}
+    conn = FakeConnection(db)
+
+    result = service.set_plotter_position(conn, "prod-1", 6, 18, source="chart")
+
+    assert db["products"]["prod-1"]["oil_motion_source"] == "chart"
+    assert result["oil_motion_source"] == "chart"
 
 
 def test_set_plotter_position_missing_product_raises():
@@ -2133,6 +2194,96 @@ def test_set_plotter_position_missing_product_raises():
         assert False, "expected LookupError"
     except LookupError:
         pass
+
+
+# --- estimate_oil_motion / _reference_sku: duplicated from public_api/
+# service.py, must behave identically -- spot checks, not the full
+# exhaustive sweep (that already lives in test_public_api_service.py).
+
+def test_estimate_oil_motion_matches_public_api_shape():
+    result = service.estimate_oil_motion(
+        core_type="asymmetric", coverstock_type="solid",
+        coverstock_material="reactive_resin", has_particle=False, differential=0.055,
+    )
+    assert result == {"oil": 13, "motion": 16}
+
+
+def test_reference_sku_prefers_15lb():
+    skus = [
+        {"weight_lbs": 14, "differential": 0.01},
+        {"weight_lbs": 15, "differential": 0.05},
+        {"weight_lbs": 16, "differential": 0.09},
+    ]
+    assert service._reference_sku(skus)["weight_lbs"] == 15
+
+
+# --- backfill_estimated_plotter_positions: the "once" half of Al's ask
+# ("back fill the values once in the DB and then estimate on scrape if
+# not set") -- covers every product that predates the scrapers' own
+# estimate-on-scrape hook.
+
+def test_backfill_estimated_plotter_positions_fills_missing_only():
+    db = {
+        "products": {
+            "prod-1": {
+                "id": "prod-1", "core_type": "asymmetric", "coverstock_type": "solid",
+                "coverstock_material": "reactive_resin", "has_particle": False,
+            },
+            "prod-2": {
+                "id": "prod-2", "oil_rating": 6, "motion_rating": 18, "oil_motion_source": "chart",
+                "core_type": "symmetric", "coverstock_type": "pearl", "coverstock_material": "urethane",
+                "has_particle": False,
+            },
+        },
+        "product_skus_plotter": [
+            {"product_id": "prod-1", "weight_lbs": 15, "differential": 0.055},
+        ],
+    }
+    conn = FakeConnection(db)
+
+    result = service.backfill_estimated_plotter_positions(conn)
+
+    assert result == {"products_missing_position": 1, "products_updated": 1}
+    assert db["products"]["prod-1"]["oil_rating"] is not None
+    assert db["products"]["prod-1"]["oil_motion_source"] == "estimated"
+    # prod-2 already had a chart position -- untouched.
+    assert db["products"]["prod-2"]["oil_rating"] == 6
+    assert db["products"]["prod-2"]["oil_motion_source"] == "chart"
+    assert conn.committed
+
+
+def test_backfill_estimated_plotter_positions_handles_no_usable_skus():
+    """A product with no differential data anywhere still gets a real
+    (rounder, less-informed) estimate -- estimate_oil_motion always
+    returns a usable position, never skips a product for lack of SKU
+    data."""
+    db = {
+        "products": {
+            "prod-1": {"id": "prod-1", "core_type": None, "coverstock_type": None, "coverstock_material": None, "has_particle": False},
+        },
+        "product_skus_plotter": [],
+    }
+    conn = FakeConnection(db)
+
+    result = service.backfill_estimated_plotter_positions(conn)
+
+    assert result["products_updated"] == 1
+    assert db["products"]["prod-1"]["oil_rating"] is not None
+    assert db["products"]["prod-1"]["motion_rating"] is not None
+
+
+def test_backfill_estimated_plotter_positions_no_op_when_nothing_missing():
+    db = {
+        "products": {
+            "prod-1": {"id": "prod-1", "oil_rating": 6, "motion_rating": 18, "oil_motion_source": "manual"},
+        },
+        "product_skus_plotter": [],
+    }
+    conn = FakeConnection(db)
+
+    result = service.backfill_estimated_plotter_positions(conn)
+
+    assert result == {"products_missing_position": 0, "products_updated": 0}
 
 
 if __name__ == "__main__":

@@ -308,7 +308,7 @@ class _FakeCursor:
             status = params[0]
             self._description = [(c,) for c in (
                 "id", "name", "url", "brand_name", "core_type", "coverstock_type", "coverstock_material",
-                "has_particle", "oil_rating", "motion_rating", "primary_image_url",
+                "has_particle", "oil_rating", "motion_rating", "oil_motion_source", "primary_image_url",
             )]
             rows = []
             for pid, p in self.db["products"].items():
@@ -318,7 +318,7 @@ class _FakeCursor:
                         pid, p["name"], p["url"], self.db["brands"][p["brand_id"]]["name"],
                         core.get("core_type"), p.get("coverstock_type"), p.get("coverstock_material"),
                         p.get("has_particle", False), p.get("oil_rating"), p.get("motion_rating"),
-                        p.get("primary_image_url"),
+                        p.get("oil_motion_source"), p.get("primary_image_url"),
                     ))
             self._result_rows = rows
 
@@ -571,7 +571,7 @@ def test_list_plotter_positions_uses_chart_value_when_set():
     db = _fresh_db()
     pid = _seed_published_current_product(
         db, core_id="core-a", coverstock_type="solid", coverstock_material="reactive_resin",
-        oil_rating=6, motion_rating=18,
+        oil_rating=6, motion_rating=18, oil_motion_source="chart",
     )
     db["cores"]["core-a"] = {"name": "Some Core", "core_type": "asymmetric"}
     db["skus"][pid] = [{"weight_lbs": 15, "rg": 2.50, "differential": 0.050}]
@@ -582,6 +582,26 @@ def test_list_plotter_positions_uses_chart_value_when_set():
     assert results[0]["oil"] == 6
     assert results[0]["motion"] == 18
     assert results[0]["oil_motion_source"] == "chart"
+
+
+def test_list_plotter_positions_reads_manual_source_unchanged():
+    """A manually-corrected position (admin PATCH .../plotter-position,
+    migration 012) must come through as 'manual', not get relabeled
+    'chart' just because it has real values set -- oil_motion_source is
+    READ, never inferred from whether the rating columns are non-null."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(
+        db, core_id="core-a", coverstock_type="solid", coverstock_material="reactive_resin",
+        oil_rating=9, motion_rating=11, oil_motion_source="manual",
+    )
+    db["cores"]["core-a"] = {"name": "Some Core", "core_type": "asymmetric"}
+    db["skus"][pid] = [{"weight_lbs": 15, "rg": 2.50, "differential": 0.050}]
+
+    results = service.list_plotter_positions(_FakeConnection(db))
+
+    assert results[0]["oil"] == 9
+    assert results[0]["motion"] == 11
+    assert results[0]["oil_motion_source"] == "manual"
 
 
 def test_list_plotter_positions_estimates_when_chart_value_unset():

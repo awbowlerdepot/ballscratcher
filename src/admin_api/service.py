@@ -935,39 +935,190 @@ def update_product_image(conn, product_id: str, image_id: str, is_visible: bool 
     return result
 
 
-def set_plotter_position(conn, product_id: str, oil_rating: int, motion_rating: int) -> dict:
-    """Writes products.oil_rating/motion_rating (migration 011) --
-    the AUTHORITATIVE position digitized from Brunswick's own published
-    Ball Motion Comparison Chart, never the algorithmic estimate
-    public_api.estimate_oil_motion computes for everything else on the
-    fly. Built for scripts/backfill_plotter_chart_positions.py's one-time
-    matching pass against scripts/data/brunswick_chart_positions.json
-    (the 56-ball dataset Al's existing plotter shipped with), but usable
-    for a manual correction later too -- both callers just need a
-    product_id and the two chart values, nothing plotter-specific about
-    how the caller obtained them.
+# --------------------------------------------------------------------
+# estimate_oil_motion / _reference_sku -- duplicated from public_api/
+# service.py rather than shared (same "each Lambda is its own
+# independent deployment package" reasoning as every other duplicated
+# helper in this project -- see e.g. product_scraper.publish_messages'
+# docstring). MUST stay in sync with public_api's copy: a visitor's
+# plotter page and an admin's backfill run should never disagree about
+# what a given core/coverstock combination estimates to. See public_api/
+# service.py's module-level comment above its own estimate_oil_motion
+# for the full reasoning behind every constant below.
+# --------------------------------------------------------------------
 
-    Both values are required (not independently-optional like
-    update_product_image's fields) -- a chart position is meaningless
-    with only one axis set, so this always writes both together rather
-    than allowing a half-set state to persist. Range validation (1-16 /
-    1-18) happens at the database level via migration 011's own CHECK
-    constraints; a caller passing an out-of-range value gets a real
-    psycopg2 error rather than this function silently clamping or
-    guessing what was meant.
+OIL_BASE_BY_MATERIAL = {
+    "polyester_plastic": 2,
+    "urethane": 5,
+    "reactive_resin": 10,
+}
+OIL_ADJUST_BY_TYPE = {
+    "pearl": -3,
+    "hybrid": 0,
+    "solid": 3,
+}
+OIL_PARTICLE_BONUS = 2
+
+MOTION_BASE_BY_CORE_TYPE = {
+    "symmetric": 7,
+    "asymmetric": 12,
+}
+MOTION_BASE_UNKNOWN_CORE = 9
+MOTION_DIFF_MIDPOINT = 0.02
+MOTION_DIFF_SCALE = 0.045
+MOTION_DIFF_WEIGHT = 6
+MOTION_ADJUST_BY_COVERSTOCK_TYPE = {
+    "pearl": 1,
+    "solid": -1,
+    "hybrid": 0,
+}
+
+OIL_MIN, OIL_MAX = 1, 16
+MOTION_MIN, MOTION_MAX = 1, 18
+
+
+def _clamp_oil_motion(value: float, low: int, high: int) -> int:
+    return max(low, min(high, round(value)))
+
+
+def estimate_oil_motion(core_type: str = None, coverstock_type: str = None,
+                         coverstock_material: str = None, has_particle: bool = False,
+                         differential: float = None) -> dict:
+    """Pure function, identical logic to public_api.service.estimate_oil_
+    motion -- see that module for the full reasoning. Duplicated (not
+    imported) since admin_api and public_api are separate Lambda
+    packages."""
+    oil = OIL_BASE_BY_MATERIAL.get(coverstock_material, (OIL_MIN + OIL_MAX) / 2)
+    oil += OIL_ADJUST_BY_TYPE.get(coverstock_type, 0)
+    if has_particle:
+        oil += OIL_PARTICLE_BONUS
+    oil = _clamp_oil_motion(oil, OIL_MIN, OIL_MAX)
+
+    motion = MOTION_BASE_BY_CORE_TYPE.get(core_type, MOTION_BASE_UNKNOWN_CORE)
+    if differential is not None:
+        motion += ((float(differential) - MOTION_DIFF_MIDPOINT) / MOTION_DIFF_SCALE) * MOTION_DIFF_WEIGHT
+    motion += MOTION_ADJUST_BY_COVERSTOCK_TYPE.get(coverstock_type, 0)
+    motion = _clamp_oil_motion(motion, MOTION_MIN, MOTION_MAX)
+
+    return {"oil": oil, "motion": motion}
+
+
+def _reference_sku(skus: list):
+    """Same 15lb-preferred convention as public_api._reference_sku -- see
+    that function's docstring. skus is a list of dicts with at least
+    weight_lbs/differential, pre-filtered to non-null differential."""
+    if not skus:
+        return None
+    for sku in skus:
+        if sku["weight_lbs"] == 15:
+            return sku
+    return min(skus, key=lambda s: abs(s["weight_lbs"] - 15))
+
+
+def set_plotter_position(conn, product_id: str, oil_rating: int, motion_rating: int,
+                          source: str = "manual") -> dict:
+    """Writes products.oil_rating/motion_rating/oil_motion_source
+    (migrations 011/012). source defaults to 'manual' -- this endpoint's
+    main real-world caller is an admin correcting an estimate to
+    something more accurate (Al's own ask: "adjusted in the admin api to
+    a value that is more accurate if necessary"), so that's the sensible
+    default rather than requiring every manual PATCH call to also pass
+    source explicitly. scripts/backfill_plotter_chart_positions.py is the
+    one caller that passes source='chart' explicitly.
+
+    Both oil_rating/motion_rating are required together (not
+    independently-optional like update_product_image's fields) -- a
+    plotter position is meaningless with only one axis set. Range
+    validation (1-16 / 1-18) happens at the database level via migration
+    011's own CHECK constraints; a caller passing an out-of-range value
+    gets a real psycopg2 error rather than this function silently
+    clamping or guessing what was meant.
 
     Raises LookupError if product_id doesn't exist, same not-found
     convention as every other single-row setter in this module."""
     with conn.cursor() as cur:
         cur.execute(
-            "update products set oil_rating = %s, motion_rating = %s where id = %s returning id",
-            (oil_rating, motion_rating, product_id),
+            "update products set oil_rating = %s, motion_rating = %s, oil_motion_source = %s "
+            "where id = %s returning id",
+            (oil_rating, motion_rating, source, product_id),
         )
         row = cur.fetchone()
         if row is None:
             raise LookupError(f"No product {product_id}")
     conn.commit()
-    return {"product_id": product_id, "oil_rating": oil_rating, "motion_rating": motion_rating}
+    return {"product_id": product_id, "oil_rating": oil_rating, "motion_rating": motion_rating, "oil_motion_source": source}
+
+
+def backfill_estimated_plotter_positions(conn) -> dict:
+    """One-time (but idempotent, safe to re-run) catalog-wide backfill for
+    every product with no plotter position at all yet -- Al's direct ask,
+    after finding out the estimate was being recomputed live on every
+    plotter API call: "i would prefer for it to just back fill the values
+    once in the DB and then estimate on scrape if not set". This function
+    is the "once" half; each scraper's upsert_product now has its own
+    matching hook that covers "on scrape if not set" for anything scraped
+    from here on. This function exists for whatever predates that hook --
+    every product already in the catalog the moment this migration/
+    deploy lands.
+
+    Never touches a product that already has ANY plotter position (chart
+    match, an earlier estimate, or a manual correction) -- 'where
+    oil_rating is null' on the write is the same not-clobber guard as
+    every scraper's own hook and as backfill_last_video_discovery_at
+    above. Scoped to every product regardless of published/status -- a
+    plotter position is scrape-derived metadata, not a publish-gated
+    feature, so a product still under review gets a real position ready
+    for whenever it's published, same reasoning the scrapers' hook uses.
+
+    Two passes (read missing + their SKUs, then write), same shape as
+    backfill_last_video_discovery_at above and for the same reason: stays
+    correct even if a real scrape lands an estimate for one of these
+    products between this function's SELECT and its UPDATE -- that
+    product's oil_rating is no longer null by the time the UPDATE's WHERE
+    clause runs, so it's naturally skipped instead of overwritten."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select p.id, c.core_type, p.coverstock_type, p.coverstock_material, p.has_particle
+            from products p
+            left join cores c on c.id = p.core_id
+            where p.oil_rating is null
+            """
+        )
+        columns = [desc[0] for desc in cur.description]
+        missing = [dict(zip(columns, row)) for row in cur.fetchall()]
+
+        product_ids = [p["id"] for p in missing]
+        skus_by_product = {}
+        if product_ids:
+            cur.execute(
+                "select product_id, weight_lbs, differential from product_skus "
+                "where product_id = any(%s) and differential is not null",
+                (product_ids,),
+            )
+            sku_columns = [desc[0] for desc in cur.description]
+            for row in cur.fetchall():
+                sku = dict(zip(sku_columns, row))
+                skus_by_product.setdefault(sku["product_id"], []).append(sku)
+
+    updated = 0
+    with conn.cursor() as cur:
+        for p in missing:
+            ref_sku = _reference_sku(skus_by_product.get(p["id"], []))
+            estimate = estimate_oil_motion(
+                core_type=p["core_type"], coverstock_type=p["coverstock_type"],
+                coverstock_material=p["coverstock_material"], has_particle=p["has_particle"],
+                differential=ref_sku["differential"] if ref_sku else None,
+            )
+            cur.execute(
+                "update products set oil_rating = %s, motion_rating = %s, oil_motion_source = 'estimated' "
+                "where id = %s and oil_rating is null returning id",
+                (estimate["oil"], estimate["motion"], p["id"]),
+            )
+            if cur.fetchone() is not None:
+                updated += 1
+    conn.commit()
+    return {"products_missing_position": len(missing), "products_updated": updated}
 
 
 def reorder_product_images(conn, product_id: str, image_ids: list) -> dict:

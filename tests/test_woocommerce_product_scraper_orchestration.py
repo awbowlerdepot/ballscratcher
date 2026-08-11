@@ -86,14 +86,56 @@ class FakeCursor:
         q = " ".join(query.split())
         params = params or []
 
-        if q.startswith("insert into products"):
+        if q.startswith("insert into cores"):
+            # Pre-existing gap in this fake found while adding the new
+            # plotter-position hook tests below: swag_fusion.html's
+            # core_name is non-empty, so upsert_product's get_or_create_
+            # core_id call was always hitting this branch -- it just
+            # happened that no test in this file exercised a code path
+            # after that call until now. Same shape as every other
+            # scraper's FakeCursor in this project.
+            brand_id, name, core_type = params
+            key = (brand_id, name)
+            existing = self.db.setdefault("cores", {}).get(key)
+            if existing is None:
+                core_id = self.db.setdefault("_next_core_id", 1)
+                self.db["_next_core_id"] = core_id + 1
+                self.db["cores"][key] = {"id": core_id, "core_type": core_type}
+            elif self.db["cores"][key]["core_type"] is None:
+                self.db["cores"][key]["core_type"] = core_type
+            self._result = (self.db["cores"][key]["id"],)
+
+        elif q.startswith("insert into coverstocks"):
+            brand_id, name, material, cs_type = params
+            key = (brand_id, name)
+            existing = self.db.setdefault("coverstocks", {}).get(key)
+            if existing is None:
+                coverstock_id = self.db.setdefault("_next_coverstock_id", 1)
+                self.db["_next_coverstock_id"] = coverstock_id + 1
+                self.db["coverstocks"][key] = {"id": coverstock_id, "material": material, "type": cs_type}
+            else:
+                if self.db["coverstocks"][key]["material"] is None:
+                    self.db["coverstocks"][key]["material"] = material
+                if self.db["coverstocks"][key]["type"] is None:
+                    self.db["coverstocks"][key]["type"] = cs_type
+            self._result = (self.db["coverstocks"][key]["id"],)
+
+        elif q.startswith("insert into products"):
             url = params[2]
             existing_id = self.db["_products_by_url"].get(url)
             product_id = existing_id or self.db["_next_product_id"]
             if existing_id is None:
                 self.db["_next_product_id"] += 1
                 self.db["_products_by_url"][url] = product_id
-            self.db["products"][product_id] = {"url": url}
+            # Real ON CONFLICT DO UPDATE never lists oil_rating/motion_
+            # rating/oil_motion_source (migrations 011/012) among its SET
+            # clauses -- preserve them across a rescrape's reset here too.
+            preserved = {
+                k: self.db["products"][product_id][k]
+                for k in ("oil_rating", "motion_rating", "oil_motion_source")
+                if product_id in self.db["products"] and k in self.db["products"][product_id]
+            }
+            self.db["products"][product_id] = {"url": url, **preserved}
             self._result = (product_id,)
 
         elif q.startswith("insert into product_skus"):
@@ -119,6 +161,24 @@ class FakeCursor:
                 self.db["product_images"][key]["image_type"] = image_type
             row = self.db["product_images"][key]
             self._result = (row["id"], row["stored_url"])
+
+        elif q == "select core_type from cores where id = %s":
+            (core_id,) = params
+            match = next((c for c in self.db.get("cores", {}).values() if c["id"] == core_id), None)
+            self._result = (match["core_type"],) if match else None
+
+        elif q == "select has_particle from products where id = %s":
+            (pid,) = params
+            self._result = (self.db["products"][pid].get("has_particle", False),)
+
+        elif q.startswith("update products set oil_rating"):
+            oil, motion, pid = params
+            row = self.db["products"].get(pid)
+            if row is not None and row.get("oil_rating") is None:
+                row["oil_rating"] = oil
+                row["motion_rating"] = motion
+                row["oil_motion_source"] = "estimated"
+            self._result = None
 
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
@@ -213,6 +273,45 @@ def test_process_one_skips_image_publish_when_queue_url_not_set(monkeypatch):
     result = app._process_one(job, None)
     assert result["image_jobs_published"] == 0
     assert result["sku_count"] == 1
+
+
+# --- Estimate-on-scrape plotter position (migrations 011/012) -- Al's
+# ask: "estimate on scrape if not set".
+
+def test_process_one_writes_estimated_plotter_position_when_unset(monkeypatch):
+    db = _fresh_db()
+    monkeypatch.setattr(app, "fetch_page", lambda url: _fusion_html())
+    monkeypatch.setattr(app, "get_db_connection", lambda: FakeConnection(db))
+    monkeypatch.delenv("IMAGE_PROCESS_QUEUE_URL", raising=False)
+
+    job = {"url": FUSION_URL, "brand_id": "brand-1"}
+    app._process_one(job, None)
+
+    product = next(iter(db["products"].values()))
+    assert product["oil_rating"] is not None
+    assert product["motion_rating"] is not None
+    assert product["oil_motion_source"] == "estimated"
+
+
+def test_process_one_never_overwrites_existing_plotter_position(monkeypatch):
+    db = _fresh_db()
+    monkeypatch.setattr(app, "fetch_page", lambda url: _fusion_html())
+    monkeypatch.setattr(app, "get_db_connection", lambda: FakeConnection(db))
+    monkeypatch.delenv("IMAGE_PROCESS_QUEUE_URL", raising=False)
+
+    job = {"url": FUSION_URL, "brand_id": "brand-1"}
+    app._process_one(job, None)  # lands an 'estimated' position
+
+    product_id = next(iter(db["products"]))
+    db["products"][product_id]["oil_rating"] = 6
+    db["products"][product_id]["motion_rating"] = 18
+    db["products"][product_id]["oil_motion_source"] = "chart"  # simulate a chart match landing afterward
+
+    app._process_one(job, None)  # rescrape
+
+    assert db["products"][product_id]["oil_rating"] == 6
+    assert db["products"][product_id]["motion_rating"] == 18
+    assert db["products"][product_id]["oil_motion_source"] == "chart"
 
 
 def test_handler_sqs_batch_reports_only_failed_message(monkeypatch):

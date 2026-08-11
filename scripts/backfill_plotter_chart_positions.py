@@ -106,10 +106,14 @@ def search_products(admin_api_url: str, token: str, brand_id: str, name: str, se
 
 def set_plotter_position(admin_api_url: str, token: str, product_id: str, oil_rating: int,
                           motion_rating: int, session=None) -> dict:
+    # source="chart" explicitly -- migration 012 added a default of
+    # 'manual' to this endpoint (an admin correcting an estimate by hand
+    # is its main real-world caller now), so this script has to say what
+    # it actually is or every chart match would get mislabeled 'manual'.
     session = session if session is not None else get_requests_session()
     resp = session.patch(
         f"{admin_api_url}/products/{product_id}/plotter-position",
-        json={"oil_rating": oil_rating, "motion_rating": motion_rating},
+        json={"oil_rating": oil_rating, "motion_rating": motion_rating, "source": "chart"},
         headers={"Authorization": f"Bearer {token}"},
         timeout=30,
     )

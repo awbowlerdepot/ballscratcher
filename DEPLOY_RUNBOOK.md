@@ -33,7 +33,7 @@ Any Postgres 13+ instance works (RDS is the obvious choice, but this
 repo doesn't assume it). Note the connection details -- you'll need them
 for step 3's `DbSecretArn` secret and to run migrations directly.
 
-## 2. Run the eleven migrations, in order
+## 2. Run the twelve migrations, in order
 
 ```bash
 psql "$DATABASE_URL" -f db/migrations/001_init_schema.sql
@@ -47,6 +47,7 @@ psql "$DATABASE_URL" -f db/migrations/008_coverstocks_table.sql
 psql "$DATABASE_URL" -f db/migrations/009_normalize_coverstock_names.sql
 psql "$DATABASE_URL" -f db/migrations/010_product_images_ordering_thumbnail_visibility.sql
 psql "$DATABASE_URL" -f db/migrations/011_products_plotter_chart_position.sql
+psql "$DATABASE_URL" -f db/migrations/012_products_oil_motion_source.sql
 ```
 
 (If you already ran an earlier subset in a prior deploy, just run whatever
@@ -2628,32 +2629,114 @@ scorer's `RG_RANGE`/`DIFF_RANGE` constants (6l above).
 
 **`GET /products/plotter?status=current`** (`public_api`) -- everything
 the standalone plotter page needs in one unpaginated call: id/name/url/
-brand_name/image plus `oil`/`motion`/`oil_motion_source` ('chart' when
-migration 011's columns are set, 'estimated' otherwise) for every
-published product matching `status`. The frontend should render the two
-sources differently (e.g. filled vs. outlined marker) rather than
-implying false precision on the estimated majority.
+brand_name/image plus `oil`/`motion`/`oil_motion_source` for every
+published product matching `status`.
+
+#### Persist-once revision (migration 012)
+
+Originally `GET /products/plotter` called `estimate_oil_motion` live, on
+every request, for any product without a chart position. Al's own
+direct follow-up after that shipped: *"while i think that is a good
+approach it will cause for potential inconsistencies, i would prefer for
+it to just back fill the values once in the DB and then estimate on
+scrape if not set and then they can be adjusted in the admin api to a
+value that is more accurate if necessary."* Recomputing live meant the
+same product could report a different estimated position across two
+calls if any input changed in between (a cores backfill landing,
+a rescrape correcting coverstock fields, etc.) -- not wrong exactly, but
+not the stable, pin-it-down behavior a real plotter page should have.
+
+**Migration 012** adds `products.oil_motion_source text` (CHECK IN
+`'chart'`/`'estimated'`/`'manual'`), plus a table CHECK tying it to the
+two rating columns (both null together, or both set together with a
+source). This is what makes "an admin's real correction" distinguishable
+from "still just our own guess" after the fact -- the two rating columns
+alone can't tell those apart once both are just integers.
+
+`oil_rating`/`motion_rating` are now written to ONCE, from one of three
+places, and read as-is from then on:
+- **`'chart'`** -- unchanged, `scripts/backfill_plotter_chart_positions.py`.
+  Its own `set_plotter_position` HTTP call now passes `source: "chart"`
+  explicitly in the PATCH body.
+- **`'estimated'`** -- NEW: every scraper's `upsert_product` (all five
+  platform families: Brunswick/`product_scraper`, Shopify/Hammer+Track+
+  Ebonite, Netsuite/MOTIV, WooCommerce/SWAG, commercebuild/Storm+Roto
+  Grip+900 Global) now writes an estimate the first time it upserts a
+  product with no plotter position yet -- `estimate_oil_motion` and a
+  `_reference_differential` SKU picker duplicated into each scraper
+  module (same "each Lambda is its own independent deployment package"
+  reasoning as every other duplicated helper in this project -- MUST stay
+  in sync with `public_api`'s copy). The write is guarded
+  `where oil_rating is null`, so a rescrape never clobbers a chart match
+  or a manual correction. `admin_api.backfill_estimated_plotter_positions`
+  (new `POST /admin/backfill-estimated-plotter-positions`, no body,
+  catalog-wide, idempotent) is the "once" half of Al's ask -- covers
+  every product that predates this hook. Run it once after migration 012
+  deploys; every product scraped from then on is covered automatically.
+- **`'manual'`** -- NEW default for `PATCH /products/{id}/plotter-position`
+  (`admin_api`) when no `source` is given in the request body -- an
+  admin correcting an estimate "to a value that is more accurate", per
+  Al's own phrasing.
+
+`public_api.list_plotter_positions` now reads `oil_rating`/`motion_rating`/
+`oil_motion_source` straight off the row. `estimate_oil_motion` is still
+called there, but only as a last-resort defensive fallback for a product
+that genuinely has neither value yet (predates both the scrape hook and
+the backfill) -- that fallback is never written back, just keeps the
+page from ever silently dropping a product.
+
+Migration 012 also backfills `oil_motion_source = 'chart'` for any row
+that already has a rating from before this migration ran (the only
+writer at that point), so the new consistency CHECK doesn't fail against
+existing data.
 
 Tests: `tests/test_admin_api_service.py` gained
-`test_set_plotter_position_writes_both_fields`/
-`test_set_plotter_position_missing_product_raises` (105/105 total).
-`tests/test_public_api_service.py` gained coverage for
-`estimate_oil_motion` (range/direction sanity checks across every
-material/type/core combination) and `list_plotter_positions` (chart vs.
-estimated, published-current-only scoping) -- 29/29 total.
-`tests/test_backfill_plotter_chart_positions.py` (new, 11/11) covers the
-matching logic (`match_entry`) and orchestration (`run`) against fakes,
-including confirming a `no_match`/`ambiguous` entry is never written.
-Full catalog-wide sweep re-run after this addition: no regressions, same
-3 pre-existing unrelated failures as every prior sweep this session.
+`test_set_plotter_position_writes_given_source`,
+`test_estimate_oil_motion_matches_public_api_shape`,
+`test_reference_sku_prefers_15lb`, and three
+`backfill_estimated_plotter_positions` tests (111/111 total).
+`tests/test_public_api_service.py` gained
+`test_list_plotter_positions_reads_manual_source_unchanged` (30/30
+total). Each scraper's own orchestration test file
+(`test_product_scraper_orchestration.py`,
+`test_shopify_product_scraper_orchestration.py`,
+`test_netsuite_product_scraper_orchestration.py`,
+`test_woocommerce_product_scraper_orchestration.py`) gained
+`test_process_one_writes_estimated_plotter_position_when_unset` and
+`test_process_one_never_overwrites_existing_plotter_position`, run
+end-to-end through `_process_one`/`upsert_product` against each file's
+fake DB (each fake's `insert into products` branch was also fixed to
+preserve `oil_rating`/`motion_rating`/`oil_motion_source` across a
+rescrape's row reset, matching real `ON CONFLICT DO UPDATE`, which never
+lists those columns). `test_woocommerce_product_scraper_orchestration.py`
+was also missing `insert into cores`/`insert into coverstocks` fake
+support entirely -- a real pre-existing gap in that file (confirmed by
+running its original, unmodified version and seeing the identical
+`NotImplementedError`), unrelated to this feature but blocking these new
+tests from running at all; fixed alongside, same shape as every other
+scraper's fake. **`commercebuild_product_scraper`'s hook has no live-DB
+test** -- `test_commercebuild_product_scraper.py` only ever tested
+parsing logic (no `_process_one`/`upsert_product` fake-DB coverage
+existed before this feature either), so there's no existing harness to
+extend; the hook there is the same duplicated code already covered by
+the other four scrapers' tests. Full catalog-wide sweep re-run after
+this addition: no regressions, same 2 pre-existing unrelated
+`ModuleNotFoundError: No module named 'pytest'` failures as every prior
+sweep this session.
 
 No `template.yaml` change needed -- `PublicApiFunction`/`AdminApiFunction`
-already exist and route through their own catch-all proxies. Redeploy
-both once this migration has run:
+and all five scraper functions already exist. Deploy order:
 ```bash
+psql "$DATABASE_URL" -f db/migrations/012_products_oil_motion_source.sql
 sam build PublicApiFunction
 sam build AdminApiFunction
+sam build BrunswickProductScraperFunction   # + each other scraper function
 sam deploy
+```
+Then run the one-time backfill for whatever predates the scrape hook:
+```bash
+curl -X POST "$ADMIN_API_URL/admin/backfill-estimated-plotter-positions" \
+  -H "Authorization: Bearer $ADMIN_API_TOKEN"
 ```
 
 **Still not built:** the actual plotter UI as a React page (styled

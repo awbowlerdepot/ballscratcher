@@ -138,7 +138,17 @@ class FakeCursor:
             if existing_id is None:
                 self.db["_next_product_id"] += 1
                 self.db["_products_by_url"][url] = product_id
-            self.db["products"][product_id] = {"url": url}
+            # Real ON CONFLICT DO UPDATE never lists oil_rating/motion_
+            # rating/oil_motion_source (migrations 011/012) among its SET
+            # clauses -- only the estimate-on-scrape hook and set_plotter_
+            # position ever touch those columns. Preserve them across a
+            # rescrape's reset rather than wiping them, matching that.
+            preserved = {
+                k: self.db["products"][product_id][k]
+                for k in ("oil_rating", "motion_rating", "oil_motion_source")
+                if product_id in self.db["products"] and k in self.db["products"][product_id]
+            }
+            self.db["products"][product_id] = {"url": url, **preserved}
             self._result = (product_id,)
 
         elif q.startswith("insert into product_skus"):
@@ -190,6 +200,28 @@ class FakeCursor:
             self._rows = [(self.db["product_images"][k]["id"], self.db["product_images"][k]["stored_url"]) for k in to_delete]
             for key in to_delete:
                 del self.db["product_images"][key]
+
+        elif q == "select core_type from cores where id = %s":
+            # Estimate-on-scrape's core_type lookup (migrations 011/012) --
+            # reads back the coalesced value from whichever cores row
+            # core_id points at, keyed here by id (not the (brand_id,
+            # name) tuple insert into cores uses).
+            (core_id,) = params
+            match = next((c for c in self.db["cores"].values() if c["id"] == core_id), None)
+            self._result = (match["core_type"],) if match else None
+
+        elif q == "select has_particle from products where id = %s":
+            (pid,) = params
+            self._result = (self.db["products"][pid].get("has_particle", False),)
+
+        elif q.startswith("update products set oil_rating"):
+            oil, motion, pid = params
+            row = self.db["products"].get(pid)
+            if row is not None and row.get("oil_rating") is None:
+                row["oil_rating"] = oil
+                row["motion_rating"] = motion
+                row["oil_motion_source"] = "estimated"
+            self._result = None
 
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
@@ -618,6 +650,56 @@ def test_handler_direct_invocation_raises_on_failure(monkeypatch):
         assert False, "expected RuntimeError to propagate"
     except RuntimeError:
         pass
+
+
+# --- Estimate-on-scrape plotter position (migrations 011/012) -- Al's
+# ask: "estimate on scrape if not set". See app.estimate_oil_motion's
+# module comment for the full reasoning.
+
+def test_process_one_writes_estimated_plotter_position_when_unset(monkeypatch):
+    db = _fresh_db()
+    monkeypatch.setattr(app, "fetch_page", lambda url: _crown_78u_html())
+    monkeypatch.setattr(app, "get_db_connection", lambda: FakeConnection(db))
+    monkeypatch.delenv("IMAGE_PROCESS_QUEUE_URL", raising=False)
+    monkeypatch.delenv("PDF_PARSE_QUEUE_URL", raising=False)
+
+    job = {"url": "https://brunswickbowling.com/products/balls/current/crown-78u", "brand_id": "brand-1"}
+    app._process_one(job, None)
+
+    product = next(iter(db["products"].values()))
+    assert product["oil_rating"] is not None
+    assert product["motion_rating"] is not None
+    assert product["oil_motion_source"] == "estimated"
+
+
+def test_process_one_never_overwrites_existing_plotter_position(monkeypatch):
+    """A rescrape must never clobber a chart match (or a manual
+    correction) with a fresh estimate -- the "where oil_rating is null"
+    guard in the hook itself, exercised end to end here. Seeds the chart
+    value AFTER an initial scrape (rather than before it) since the fake
+    "insert into products" upsert branch -- mirroring this project's real
+    ON CONFLICT DO UPDATE, which never touches oil_rating/motion_rating/
+    oil_motion_source at all -- resets the row dict on first insert."""
+    db = _fresh_db()
+    crown_url = "https://brunswickbowling.com/products/balls/current/crown-78u"
+    monkeypatch.setattr(app, "fetch_page", lambda url: _crown_78u_html())
+    monkeypatch.setattr(app, "get_db_connection", lambda: FakeConnection(db))
+    monkeypatch.delenv("IMAGE_PROCESS_QUEUE_URL", raising=False)
+    monkeypatch.delenv("PDF_PARSE_QUEUE_URL", raising=False)
+
+    job = {"url": crown_url, "brand_id": "brand-1"}
+    app._process_one(job, None)  # first scrape -- lands an 'estimated' position
+
+    product_id = next(iter(db["products"]))
+    db["products"][product_id]["oil_rating"] = 6
+    db["products"][product_id]["motion_rating"] = 18
+    db["products"][product_id]["oil_motion_source"] = "chart"  # simulate a chart match landing afterward
+
+    app._process_one(job, None)  # rescrape
+
+    assert db["products"][product_id]["oil_rating"] == 6
+    assert db["products"][product_id]["motion_rating"] == 18
+    assert db["products"][product_id]["oil_motion_source"] == "chart"
 
 
 if __name__ == "__main__":
