@@ -420,25 +420,45 @@ input[type="text"] {
   display: block;
 }
 .axis-line {
-  stroke: var(--color-border);
-  stroke-width: 1;
+  stroke: #b9bec9;
+  stroke-width: 2;
 }
 .axis-label {
   font-size: 12px;
   fill: var(--color-muted);
 }
-.plotter-dot {
+.plotter-gridline {
+  stroke: var(--color-border);
+  stroke-width: 1;
+}
+.plotter-tick {
+  font-size: 10px;
+  fill: var(--color-muted);
+}
+.plotter-ball {
   cursor: pointer;
-  fill: var(--color-accent);
-  fill-opacity: 0.75;
+}
+.plotter-ball image {
+  pointer-events: none;
+}
+.plotter-ball-placeholder {
+  fill: #eee;
+}
+.plotter-ball-ring {
+  stroke-width: 2;
+  transition: stroke-width 0.1s;
+}
+.plotter-ball:hover .plotter-ball-ring {
+  stroke-width: 3;
+}
+.plotter-ball-ring-chart {
   stroke: var(--color-accent);
 }
-.plotter-dot-estimated {
-  fill: transparent;
-  stroke-width: 1.5;
+.plotter-ball-ring-estimated {
+  stroke: var(--color-accent);
+  stroke-dasharray: 3 2;
 }
-.plotter-dot-manual {
-  fill: var(--color-retired);
+.plotter-ball-ring-manual {
   stroke: var(--color-retired);
 }
 

@@ -7,16 +7,21 @@ import type { PlotterPoint, ProductStatus } from "../api/types";
 // should fit into the site (not the main Browse view, not the
 // comparison-page picker). Data comes straight off GET /products/
 // plotter -- oil (1 light -> 16 heavy) on X, motion (1 smooth -> 18
-// angular) on Y, chart-sourced positions rendered as filled circles and
-// algorithmic-estimate positions as outlined ones so a visitor isn't
-// given false precision on the estimated majority (see public_api.
-// list_plotter_positions' own docstring).
+// angular) on Y.
 //
-// This is a functional first pass, not the final design -- Al's
-// original plotter (see reference/plotter_reference.html in the main
-// repo) has real polish (brand-filter chips, a size slider, label
-// toggle, hover tooltips styled to match) that's worth porting here as
-// a follow-up rather than blocking this page on that work.
+// Gridlines + ball-image markers ported from Al's original
+// (reference/plotter_reference.html's grid()/build() functions) --
+// one vertical line per integer oil unit, one horizontal line per
+// integer motion unit, and each point rendered as the ball's own
+// product photo (clipped to a circle) instead of a plain dot, with a
+// colored ring around the image standing in for the original's
+// solid-vs-dashed source distinction (chart-digitized vs our own
+// algorithmic estimate vs an admin-set manual value) since a photo
+// can't be "filled vs outlined" the way a bare circle could.
+//
+// Still not ported from the original: brand-filter chips (a plain
+// <select> stands in for now), the search box, size slider, and label
+// toggle -- worth doing as a follow-up but not blocking on.
 const WIDTH = 900;
 const HEIGHT = 640;
 const MARGIN = { top: 24, right: 24, bottom: 56, left: 56 };
@@ -24,6 +29,8 @@ const OIL_MIN = 1;
 const OIL_MAX = 16;
 const MOTION_MIN = 1;
 const MOTION_MAX = 18;
+const RADIUS = 14;
+const RADIUS_HOVER = 19;
 
 function xFor(oil: number) {
   const t = (oil - OIL_MIN) / (OIL_MAX - OIL_MIN);
@@ -66,9 +73,9 @@ export default function PlotterPage() {
     <div className="page plotter-page">
       <h1>Ball motion plotter</h1>
       <p className="hint">
-        Oil (light &rarr; heavy) across the bottom, motion shape (smooth &rarr; angular) up the side. Filled dots are
-        positions digitized from a manufacturer's own published chart; outlined dots are our own estimate from each
-        ball's core and coverstock.
+        Oil (light &rarr; heavy) across the bottom, motion shape (smooth &rarr; angular) up the side. A solid ring
+        around a ball is a position digitized from a manufacturer's own published chart; a dashed ring is our own
+        estimate from that ball's core and coverstock; an amber ring has been set manually.
       </p>
 
       <div className="plotter-controls">
@@ -103,6 +110,37 @@ export default function PlotterPage() {
       ) : (
         <div className="plotter-chart-wrap">
           <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="plotter-svg" role="img" aria-label="Ball motion plotter">
+            {/* Gridlines -- one per integer oil/motion unit, same
+                density as the original's grid() function. */}
+            {Array.from({ length: OIL_MAX - OIL_MIN + 1 }, (_, i) => OIL_MIN + i).map((x) => (
+              <g key={`vx-${x}`}>
+                <line
+                  x1={xFor(x)}
+                  y1={MARGIN.top}
+                  x2={xFor(x)}
+                  y2={HEIGHT - MARGIN.bottom}
+                  className="plotter-gridline"
+                />
+                <text x={xFor(x)} y={HEIGHT - MARGIN.bottom + 16} textAnchor="middle" className="plotter-tick">
+                  {x}
+                </text>
+              </g>
+            ))}
+            {Array.from({ length: MOTION_MAX - MOTION_MIN + 1 }, (_, i) => MOTION_MIN + i).map((y) => (
+              <g key={`hy-${y}`}>
+                <line
+                  x1={MARGIN.left}
+                  y1={yFor(y)}
+                  x2={WIDTH - MARGIN.right}
+                  y2={yFor(y)}
+                  className="plotter-gridline"
+                />
+                <text x={MARGIN.left - 10} y={yFor(y)} dominantBaseline="middle" textAnchor="end" className="plotter-tick">
+                  {y}
+                </text>
+              </g>
+            ))}
+
             {/* Axes */}
             <line x1={MARGIN.left} y1={HEIGHT - MARGIN.bottom} x2={WIDTH - MARGIN.right} y2={HEIGHT - MARGIN.bottom} className="axis-line" />
             <line x1={MARGIN.left} y1={MARGIN.top} x2={MARGIN.left} y2={HEIGHT - MARGIN.bottom} className="axis-line" />
@@ -119,23 +157,56 @@ export default function PlotterPage() {
               Motion (smooth &rarr; angular)
             </text>
 
-            {visible.map((p) => (
-              <circle
-                key={p.id}
-                cx={xFor(p.oil)}
-                cy={yFor(p.motion)}
-                r={hovered?.id === p.id ? 8 : 6}
-                className={`plotter-dot plotter-dot-${p.oil_motion_source}`}
-                onMouseEnter={() => setHovered(p)}
-                onMouseLeave={() => setHovered((h) => (h?.id === p.id ? null : h))}
-                onClick={() => navigate(`/balls/${p.id}`)}
-              >
-                <title>
-                  {p.brand_name} {p.name} (oil {p.oil}, motion {p.motion}
-                  {p.oil_motion_source === "estimated" ? ", estimated" : ""})
-                </title>
-              </circle>
-            ))}
+            {/* Ball markers -- the ball's own product photo, clipped to
+                a circle, standing in for the original's rounded <img>
+                markers. A plain filled circle is the fallback for a
+                product with no image yet (see BrowsePage's identical
+                placeholder reasoning). */}
+            {visible.map((p) => {
+              const cx = xFor(p.oil);
+              const cy = yFor(p.motion);
+              const r = hovered?.id === p.id ? RADIUS_HOVER : RADIUS;
+              const clipId = `plotter-clip-${p.id}`;
+              return (
+                <g
+                  key={p.id}
+                  className="plotter-ball"
+                  onMouseEnter={() => setHovered(p)}
+                  onMouseLeave={() => setHovered((h) => (h?.id === p.id ? null : h))}
+                  onClick={() => navigate(`/balls/${p.id}`)}
+                >
+                  <title>
+                    {p.brand_name} {p.name} (oil {p.oil}, motion {p.motion}
+                    {p.oil_motion_source === "estimated" ? ", estimated" : ""})
+                  </title>
+                  {p.primary_image_url ? (
+                    <>
+                      <clipPath id={clipId}>
+                        <circle cx={cx} cy={cy} r={r} />
+                      </clipPath>
+                      <image
+                        href={p.primary_image_url}
+                        x={cx - r}
+                        y={cy - r}
+                        width={r * 2}
+                        height={r * 2}
+                        clipPath={`url(#${clipId})`}
+                        preserveAspectRatio="xMidYMid slice"
+                      />
+                    </>
+                  ) : (
+                    <circle cx={cx} cy={cy} r={r} className="plotter-ball-placeholder" />
+                  )}
+                  <circle
+                    cx={cx}
+                    cy={cy}
+                    r={r}
+                    fill="none"
+                    className={`plotter-ball-ring plotter-ball-ring-${p.oil_motion_source}`}
+                  />
+                </g>
+              );
+            })}
           </svg>
 
           {hovered && (
