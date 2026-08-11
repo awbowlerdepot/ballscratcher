@@ -212,17 +212,25 @@ class _FakeCursor:
                 self._description = [(c,) for c in (
                     "id", "name", "url", "color", "coverstock_material", "coverstock_type",
                     "coverstock_name", "has_particle", "has_custom_graphic", "factory_finish",
-                    "part_number", "weights_available", "usbc_approval_date", "release_date",
+                    "part_number", "weights_min", "weights_max", "usbc_approval_date", "release_date",
                     "description", "status", "primary_image_url", "video_reviews_summary",
                     "video_reviews_summary_video_count", "video_reviews_summary_updated_at",
                     "brand_id", "brand_name", "manufacturer_name", "core_id", "core_name", "core_type",
                     "coverstock_id", "coverstock_full_name",
                 )]
+                # Fixture stores weights_available as a plain (min, max)
+                # tuple -- real Postgres/psycopg2 returns lower()/upper()
+                # as separate int columns per the ::uuid[]-style fix in
+                # service.get_product (see its comment); simulate the
+                # same two-column shape here rather than the raw range
+                # value so this fixture can't mask the bug it caused.
+                weights = p.get("weights_available")
+                weights_min, weights_max = weights if weights else (None, None)
                 self._result_row = (
                     pid, p["name"], p["url"], p.get("color"), p.get("coverstock_material"),
                     p.get("coverstock_type"), p.get("coverstock_name"), p.get("has_particle", False),
                     p.get("has_custom_graphic", False), p.get("factory_finish"), p.get("part_number"),
-                    p.get("weights_available"), p.get("usbc_approval_date"), p.get("release_date"),
+                    weights_min, weights_max, p.get("usbc_approval_date"), p.get("release_date"),
                     p.get("description"), p["status"], p.get("primary_image_url"),
                     p.get("video_reviews_summary"), p.get("video_reviews_summary_video_count", 0),
                     p.get("video_reviews_summary_updated_at"), p["brand_id"],
@@ -417,6 +425,33 @@ def test_get_product_assembles_skus_images_and_approved_summarized_videos():
 
     assert len(product["videos"]) == 1  # only approved + summary is not null
     assert product["videos"][0]["youtube_video_id"] == "yt-approved"
+
+
+def test_get_product_formats_weights_available_as_string_not_range_object():
+    """Regression test for the real bug Al hit: selecting p.weights_available
+    directly (an int4range column) let a raw range value reach FastAPI's
+    jsonable_encoder, which serialized it as "{}" -- an empty object the
+    consumer site's React detail page then crashed trying to render
+    ("Objects are not valid as a React child"). get_product must return a
+    plain human-readable string (or None), never anything object-shaped.
+    Postgres stores a discrete range in exclusive-upper canonical form, so
+    (12, 17) here represents a ball available in 12-16 lb."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, weights_available=(12, 17))
+
+    product = service.get_product(_FakeConnection(db), pid)
+
+    assert product["weights_available"] == "12-16 lb"
+    assert isinstance(product["weights_available"], str)
+
+
+def test_get_product_weights_available_none_when_unset():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db)
+
+    product = service.get_product(_FakeConnection(db), pid)
+
+    assert product["weights_available"] is None
 
 
 # get_products_compare

@@ -187,7 +187,10 @@ def get_product(conn, product_id: str):
             select p.id, p.name, p.url, p.color,
                    p.coverstock_material, p.coverstock_type, p.coverstock_name,
                    p.has_particle, p.has_custom_graphic, p.factory_finish,
-                   p.part_number, p.weights_available, p.usbc_approval_date,
+                   p.part_number,
+                   lower(p.weights_available) as weights_min,
+                   upper(p.weights_available) as weights_max,
+                   p.usbc_approval_date,
                    p.release_date, p.description, p.status,
                    p.primary_image_url,
                    p.video_reviews_summary, p.video_reviews_summary_video_count,
@@ -210,6 +213,25 @@ def get_product(conn, product_id: str):
             return None
         columns = [desc[0] for desc in cur.description]
         product = dict(zip(columns, row))
+
+        # weights_available is stored as an int4range (see
+        # 001_init_schema.sql), not a plain string -- selecting p.
+        # weights_available directly and handing the raw range value to
+        # FastAPI's jsonable_encoder produced "{}" on the wire (a real bug
+        # caught by Al: the consumer site's product detail page crashed
+        # with "Objects are not valid as a React child" trying to render
+        # that empty object). Pulling lower()/upper() as plain ints here
+        # and formatting a human string sidesteps the range-type
+        # serialization problem entirely. Postgres normalizes a discrete
+        # range to canonical form on write ("[12,16]" in becomes
+        # "[12,17)" stored), so upper() is exclusive -- subtract 1 to get
+        # the real max weight back.
+        weights_min = product.pop("weights_min", None)
+        weights_max = product.pop("weights_max", None)
+        if weights_min is not None and weights_max is not None:
+            product["weights_available"] = f"{weights_min}-{weights_max - 1} lb"
+        else:
+            product["weights_available"] = None
 
         cur.execute(
             """
