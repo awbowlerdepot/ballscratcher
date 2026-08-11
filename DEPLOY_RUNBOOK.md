@@ -2739,12 +2739,84 @@ curl -X POST "$ADMIN_API_URL/admin/backfill-estimated-plotter-positions" \
   -H "Authorization: Bearer $ADMIN_API_TOKEN"
 ```
 
-**Still not built:** the actual plotter UI as a React page (styled
-scatter chart, brand-chip filters, hover tooltips, click-through to the
-real product detail page) -- this session's work is the data layer
-(`GET /products/plotter`) it will call. The original `index.html`/
-`balls.js`/CSS from Al's shared project is a solid visual reference to
-port from once the React app itself is scaffolded (task still pending).
+**Update:** the React SPA is now scaffolded (see 6n below) with a
+functional `/plotter` page wired to this endpoint. Its visual design is
+still a plain first pass, not a port of Al's original chart -- see 6n's
+own "what's not done yet" note.
+
+### 6n. Consumer site (React SPA)
+
+`consumer-site/` -- Vite + React + TypeScript, client-side routed
+(`react-router-dom`), talking directly to `PublicApiFunction`. Answers
+Al's original ask in full: "a single page like site for quick
+navigation and not a ton of full page reloads", a ball detail page with
+"sections for the high level details and summary of summary and then
+easy ways to dive into each video and play them in an embeded player",
+"an intuitive way to populate a ball comparison page", and "a focus on
+current bowling balls and a way to still view retired balls and suggest
+current balls that best compare to the retired balls".
+
+Four routes, one shell (`App.tsx`/`Nav.tsx`) -- see `consumer-site/
+README.md` for the full page-by-page breakdown:
+- `/` -- Browse (status toggle, brand filter, search, "add to compare").
+- `/balls/:id` -- detail page: specs, video-summary rollup, embedded
+  YouTube reviews, and (retired products only) suggested current balls
+  via `GET /products/{id}/similar`.
+- `/compare` -- add up to 6 balls (`useCompareList` hook, localStorage-
+  backed, shared across pages, mirrored into `?ids=` so a compare set is
+  a real link), spec table side by side.
+- `/plotter` -- `GET /products/plotter` wired up, functional but plain
+  (see below).
+
+**Build:**
+```bash
+cd consumer-site
+npm install
+cp .env.example .env.local   # VITE_PUBLIC_API_URL = the PublicApiUrl stack output
+npm run build                 # outputs to consumer-site/dist/
+```
+
+**Deploy** (after `sam deploy` has created `ConsumerSiteBucket`/
+`ConsumerSiteDistribution` -- see template.yaml):
+```bash
+BUCKET=$(aws cloudformation describe-stacks --stack-name <your-stack-name> \
+  --query "Stacks[0].Outputs[?OutputKey=='ConsumerSiteBucketName'].OutputValue" --output text)
+DIST_ID=$(aws cloudformation describe-stacks --stack-name <your-stack-name> \
+  --query "Stacks[0].Outputs[?OutputKey=='ConsumerSiteDistributionId'].OutputValue" --output text)
+
+aws s3 sync consumer-site/dist/ "s3://$BUCKET/" --delete
+aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*"
+```
+`ConsumerSiteUrl` (stack output) is the CloudFront domain to open
+afterward.
+
+**Hosting infra** (`template.yaml`): private `ConsumerSiteBucket` (S3,
+all public access blocked) behind `ConsumerSiteDistribution`
+(CloudFront) via Origin Access Control -- not the older OAI, and not
+public-read S3 like `ImageBucket` (that one's public-read is
+deliberate, direct product-image URLs; this is a real site that needs
+HTTPS + caching in front of it). `CustomErrorResponses` rewrites both
+403 and 404 to `/index.html` with a 200 -- required for client-side
+routing: a direct load of `/balls/<id>` or a refresh on `/compare` has
+no matching S3 object, so without this rewrite the visitor would see a
+raw CloudFront/S3 error page instead of react-router taking over.
+
+**What's not done yet:**
+- The plotter page's real visual design -- Al's original tool
+  (`reference/plotter_reference.html`/`plotter_reference_balls.js`) has
+  brand-filter chips, a size slider, a label toggle, and styled hover
+  tooltips; the current `/plotter` page is a plain SVG scatter with a
+  brand dropdown and a title-attribute tooltip. Data-correct, not yet
+  the polished port.
+- No custom domain on CloudFront (plain `*.cloudfront.net` URL for now).
+- No automated frontend tests, and `npm install`/a real build were never
+  run in this session -- this sandbox has no network access to the npm
+  registry (`npm ping` returns `403 blocked-by-allowlist`). Every file
+  was hand-written and manually proofread (brace/paren balance checked
+  file by file) but not compiled or executed. Run `npm run build`
+  yourself before deploying and treat any TypeScript error it surfaces
+  as a real bug to fix, not a false positive.
+- No SEO/meta-tag work or analytics.
 
 ## 7. Ongoing operations
 

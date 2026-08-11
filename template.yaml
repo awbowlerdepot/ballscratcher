@@ -1933,6 +1933,94 @@ Resources:
       # disabled-but-defined schedule is more honest than one that's
       # "on" but guaranteed to error on every invocation.
 
+  # --- Consumer site static hosting (consumer-site/, the React SPA) ---
+  #
+  # Private S3 bucket + CloudFront in front of it via Origin Access
+  # Control (OAC, the current-recommended approach -- not the older
+  # OAI), unlike ImageBucket above which is deliberately public-read for
+  # direct S3 URLs. The SPA itself needs HTTPS + a CDN in front of it
+  # (browsers won't run a real site off a bare S3 website endpoint
+  # cleanly, and CloudFront gives free HTTPS + caching + eventually a
+  # custom domain), so this one goes through CloudFront from the start
+  # rather than being public-read S3 like the images bucket.
+  ConsumerSiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub bowling-scraper-consumer-site-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  ConsumerSiteOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub bowling-scraper-consumer-site-oac-${AWS::AccountId}
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  ConsumerSiteDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        PriceClass: PriceClass_100
+        HttpVersion: http2
+        Origins:
+          - Id: ConsumerSiteBucketOrigin
+            DomainName: !GetAtt ConsumerSiteBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt ConsumerSiteOAC.Id
+            # No OriginAccessIdentity block -- that's the legacy OAI
+            # mechanism, superseded here by OriginAccessControlId above.
+            # S3OriginConfig with an empty OriginAccessIdentity is still
+            # the required shape CloudFront expects even when using OAC.
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: ConsumerSiteBucketOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          # Managed-CachingOptimized -- AWS's own recommended cache
+          # policy id for static site assets, avoids hand-rolling TTL/
+          # cache-key config for a straightforward SPA build.
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+        # SPA client-side routing fallback -- a direct load of e.g.
+        # /balls/<id> or /compare has no matching object in the bucket
+        # (only index.html/assets/* exist), so S3 (behind CloudFront)
+        # returns 403 (no ListBucket permission) or 404. Both get
+        # rewritten to index.html with a 200 so react-router's own route
+        # table takes over client-side instead of the visitor seeing a
+        # raw S3 error page.
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+
+  ConsumerSiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ConsumerSiteBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub arn:aws:s3:::${ConsumerSiteBucket}/*
+            # Scoped to THIS distribution specifically -- without this
+            # condition any CloudFront distribution in the account could
+            # read the bucket, not just this one.
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${ConsumerSiteDistribution}
+
 Outputs:
   UrlDiscoveryFunctionArn:
     Value: !GetAtt UrlDiscoveryFunction.Arn
@@ -1952,6 +2040,12 @@ Outputs:
     Value: !Sub "https://${AdminHttpApi}.execute-api.${AWS::Region}.amazonaws.com/"
   PublicApiUrl:
     Value: !Sub "https://${PublicHttpApi}.execute-api.${AWS::Region}.amazonaws.com/"
+  ConsumerSiteBucketName:
+    Value: !Ref ConsumerSiteBucket
+  ConsumerSiteDistributionId:
+    Value: !Ref ConsumerSiteDistribution
+  ConsumerSiteUrl:
+    Value: !Sub "https://${ConsumerSiteDistribution.DomainName}"
   AdminApiAuthorizerFunctionArn:
     Value: !GetAtt AdminApiAuthorizerFunction.Arn
   ProductScrapeDLQUrl:
