@@ -223,15 +223,41 @@ Parameters:
       description for the shared-platform reasoning.
   TrackCollectionHandles:
     Type: String
-    Default: "high-performance,upper-mid-performance,mid-performance,polyester,retired-balls"
+    Default: "balls,retired-balls"
     Description: >
-      Confirmed live this session via trackbowling.com/collections.json --
-      deliberately NOT the same set as HammerCollectionHandles's default:
-      Track has no lower-mid-performance collection at all (confirmed
-      absent from collections.json, not just empty), and correctly spells
-      "mid-performance" (Hammer's default has the "mide-performance" typo,
-      which is real but specific to Hammer's own site -- copying it here
-      would silently 0-discover Track's mid-tier ball).
+      REAL INCIDENT, updated this session: Al reported "track is missing
+      balls" on the admin site. Refetched trackbowling.com/collections.json
+      live and found high-performance/upper-mid-performance/mid-performance
+      all now report products_count: 0 -- Track restructured its site at
+      some point after the tier-handle set below was originally confirmed,
+      consolidating every current ball into one real collection instead
+      (handle "balls", products_count: 7, sibling site Ebonite's own
+      collections.json literally titles the equivalent collection "Current
+      Ball Lineup" -- same handle, same role, confirms this is the right
+      one to use). Only "polyester" (1 product) was still being found under
+      the old tier-handle config below, so TrackUrlDiscoveryFunction was
+      silently discovering just 1 of Track's ~7 current balls. Confirmed
+      this is Track-specific, not a platform-wide Shopify-theme change:
+      Hammer's and Ebonite's own tier collections (high-performance,
+      mide-performance/mid-performance, lower-mid-performance,
+      pro-performance, etc.) still report real non-zero counts live, and
+      Ebonite's tier-handle sum (1+6+3+1=11) exactly matches its own
+      "balls" collection count (11), confirming Ebonite's config is still
+      complete and doesn't need this same fix.
+
+      Old default (now stale, kept here in history for context): "high-
+      performance,upper-mid-performance,mid-performance,polyester,
+      retired-balls" -- confirmed live via trackbowling.com/collections.json
+      when Track was first onboarded (Track had no lower-mid-performance
+      collection at all then, and correctly spelled "mid-performance"
+      unlike Hammer's "mide-performance" typo) -- accurate at the time,
+      just overtaken by Track's own later site reorganization into a
+      single collection. build_entries() in shopify_url_discovery/app.py
+      treats any handle not in RETIRED_COLLECTION_HANDLES as a current-tier
+      signal, so switching to "balls" here needs no code change, just this
+      config update (plus the matching samconfig.toml parameter_overrides
+      value, which is the one that actually took effect on the last real
+      deploy).
   TrackBrandId:
     Type: String
     Default: ""

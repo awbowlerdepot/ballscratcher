@@ -1450,6 +1450,65 @@ first run:
   for all three brands, since `ShopifyProductScraperFunction` itself is
   shared).
 
+### 6f.7. Track missing balls -- stale collection-handle config (real incident)
+
+Al: "track is missing balls." Refetched trackbowling.com/collections.json
+live rather than trusting the confirmed-at-onboarding set from 6f.6 above,
+and found `high-performance`/`upper-mid-performance`/`mid-performance` all
+now report `products_count: 0`. Track reorganized its site at some point
+after onboarding: every current ball now lives under one real collection,
+handle `balls` (`products_count: 7`) -- confirmed by fetching a couple of
+its actual products (Theorem Delta, Kinetic Sapphire Ice, both real
+current balls with full spec tables) and by Ebonite's own
+collections.json literally titling the equivalent collection "Current
+Ball Lineup" for the same handle, same role. Only `polyester` (1 product)
+was still resolving under the old tier-handle config, so
+`TrackUrlDiscoveryFunction` was silently discovering just 1 of Track's ~7
+current balls -- a config drift, not a code bug: `build_entries()` in
+`shopify_url_discovery/app.py` already treats any handle outside
+`RETIRED_COLLECTION_HANDLES` as a current-tier signal, so nothing there
+needed to change.
+
+Confirmed this is Track-specific, not a platform-wide Shopify theme
+change: Hammer's and Ebonite's own tier collections still report real
+non-zero counts live, and Ebonite's tier-handle sum (pro-performance 3 +
+high-performance 1 + mid-performance 6 + polyester 1 = 11) exactly
+matches its own `balls` collection's `products_count` (11) -- Ebonite's
+config is still complete, doesn't need this fix.
+
+**Fix:** `TrackCollectionHandles` updated from `"high-performance,upper-
+mid-performance,mid-performance,polyester,retired-balls"` to
+`"balls,retired-balls"` in both `template.yaml`'s Parameter Default and
+`samconfig.toml`'s `parameter_overrides` (the value that actually took
+effect on the last real deploy -- template Defaults only apply to a fresh
+stack with no override). `shopify_url_discovery/app.py`'s module
+docstring updated with the same incident writeup and a reminder that
+collection-handle sets are a live per-brand merchandising decision, not a
+stable platform contract -- worth re-confirming live if Hammer or Ebonite
+are ever reported missing balls too, not just at initial onboarding.
+
+No test changes needed (no test encoded the old handle set as a literal).
+Full `test_shopify_product_scraper.py` (46/46),
+`test_shopify_product_scraper_orchestration.py` (15/15), and
+`test_shopify_url_discovery.py` (11/11) suites still pass.
+
+**Requires redeploying `TrackUrlDiscoveryFunction`** with the new
+parameter value:
+```bash
+sam build TrackUrlDiscoveryFunction
+sam deploy
+```
+(`sam deploy` re-reads `samconfig.toml`'s `parameter_overrides`, so the
+new `TrackCollectionHandles` value takes effect on this deploy regardless
+of which function was rebuilt -- rebuilding just `TrackUrlDiscoveryFunction`
+is enough here since no code changed, only the env var it reads. Given
+the fastapi/build-cache scare earlier this session, `sam build && sam
+deploy` remains the safer fallback if there's any doubt.) After
+redeploying, invoke it directly (see 6f.6's `aws lambda invoke` command
+above) and confirm Track's current-ball count in the admin site's
+Products tab (filter: Brand = Track, Status = current) jumps from ~1 to
+~7.
+
 ### 6g. bowwwl.com cross-check
 
 Runs weekly on its own schedule once there are `published = true`,

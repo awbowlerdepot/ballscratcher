@@ -64,17 +64,36 @@ instance of this same CodeUri, not a rewrite.
 
 Collection-handle sets are NOT identical across the three brands --
 confirmed live, each store's own collections.json was fetched and checked
-directly rather than assumed: Track has no lower-mid-performance
-collection at all (high-performance/upper-mid-performance/mid-performance/
-polyester/retired-balls only), while Ebonite has no upper-mid-performance
+directly rather than assumed. Ebonite has no upper-mid-performance
 collection but does have a pro-performance tier Hammer/Track don't
 (pro-performance/high-performance/mid-performance/lower-mid-performance/
-polyester/retired-balls) -- see TrackCollectionHandles/
-EboniteCollectionHandles in template.yaml for the exact confirmed sets.
-Also note Track spells its mid-tier collection "mid-performance"
-correctly, unlike Hammer's confirmed "mide-performance" typo -- copying
-Hammer's DEFAULT_COLLECTION_HANDLES verbatim for Track would silently
-0-discover its mid-tier ball.
+polyester/retired-balls) -- see EboniteCollectionHandles in template.yaml
+for the exact confirmed set, still accurate as of this writing (its
+tier-handle sum matches its own "balls" collection's product_count
+exactly, a live cross-check worth re-running if Ebonite is ever reported
+missing balls the way Track was below).
+
+REAL INCIDENT: Track's own per-tier collections (high-performance/
+upper-mid-performance/mid-performance) were confirmed live and correct
+when Track was first onboarded, but Track later reorganized its site and
+those tier collections all now report product_count: 0 on
+trackbowling.com/collections.json -- everything current lives under one
+real collection instead (handle "balls", matching what Ebonite's own
+collections.json literally titles "Current Ball Lineup" for the
+equivalent collection). Al reported "track is missing balls" on the
+admin site; refetching collections.json live confirmed only Track's
+"polyester" handle (1 product) was still resolving under the old
+tier-handle config, so TrackUrlDiscoveryFunction was silently discovering
+1 of Track's ~7 current balls. TrackCollectionHandles' default in
+template.yaml (and the matching samconfig.toml override, the value that
+actually took effect) were updated to "balls,retired-balls" -- no code
+change needed here, build_entries() below already treats any handle
+outside RETIRED_COLLECTION_HANDLES as a current-tier signal, this was
+purely a stale per-brand config value. Worth remembering for Hammer/
+Ebonite too: collection-handle sets are a live merchandising decision on
+each brand's own site, not a stable platform contract -- confirm-live-
+don't-assume applies to re-checking these later, not just the initial
+onboarding.
 """
 import json
 import logging
