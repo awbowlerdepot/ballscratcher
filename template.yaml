@@ -1115,6 +1115,75 @@ Resources:
       # function directly (bypassing API Gateway -- e.g. a test harness,
       # a second trigger), that path would skip the authorizer entirely.
 
+  # --- Public read-only API (consumer-facing site) ---
+  #
+  # Al: "let's start on the consumer facing site... single page like
+  # site... a page to view the bowling ball details... an intuitive way
+  # to populate a ball comparison page... focus on current bowling balls
+  # and a way to still view retired balls and suggest current balls that
+  # best compare to the retired balls." See src/public_api/service.py's
+  # module docstring for the full "why a separate function/HttpApi from
+  # AdminApiFunction/AdminHttpApi" reasoning -- short version: this one is
+  # meant to be wide open, no auth at all, and every query is hard-scoped
+  # to products.published = true (that column exists specifically for
+  # this, see 001_init_schema.sql's own comment on it).
+
+  PublicHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      # Deliberately NO Auth block at all -- unlike AdminHttpApi, this API
+      # has no authorizer to attach; every route is public by design.
+      # AllowOrigins: "*" is safe here for the same reason it's safe on
+      # AdminHttpApi (see that resource's own CORS comment): no
+      # AllowCredentials, no cookie-based auth, nothing a malicious origin
+      # could steal by being allowed to read the response.
+      CorsConfiguration:
+        AllowOrigins:
+          - "*"
+        AllowMethods:
+          - GET
+          - OPTIONS
+        AllowHeaders:
+          - Content-Type
+      # Explicit HttpApi resource (rather than the implicit one SAM
+      # creates from a bare Type: HttpApi function event) purely for
+      # consistency with AdminHttpApi and so PublicApiUrl below has a
+      # stable logical id to reference -- no authorizer requires this the
+      # way it did for AdminHttpApi.
+
+  PublicApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-public-api
+      CodeUri: src/public_api/
+      Handler: app.handler
+      Timeout: 30
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+      # Single explicit GET route (not Method: ANY) -- same reasoning as
+      # AdminApiFunction's four explicit method routes below: an explicit
+      # route claims only that method, leaving OPTIONS unclaimed so
+      # PublicHttpApi's CorsConfiguration above auto-generates the
+      # preflight response instead of the request falling through to this
+      # function (which has no OPTIONS route registered in app.py and
+      # would 404 on one). This function only ever defines GET routes
+      # (read-only API, no POST/PATCH/DELETE), so one explicit method is
+      # enough -- unlike AdminApiFunction, which needed four.
+      Events:
+        PublicApiGet:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref PublicHttpApi
+            Path: /{proxy+}
+            Method: GET
+      # FastAPI + Mangum, same shape as AdminApiFunction. No auth
+      # validation of any kind happens in this function or in front of
+      # it -- see PublicHttpApi's own comment above.
+
   # --- WooCommerce brand family (SWAG Bowling to start) ---
   #
   # A genuinely different platform from everything above, added this
@@ -1881,6 +1950,8 @@ Outputs:
     Value: !Ref ImageBucket
   AdminApiUrl:
     Value: !Sub "https://${AdminHttpApi}.execute-api.${AWS::Region}.amazonaws.com/"
+  PublicApiUrl:
+    Value: !Sub "https://${PublicHttpApi}.execute-api.${AWS::Region}.amazonaws.com/"
   AdminApiAuthorizerFunctionArn:
     Value: !GetAtt AdminApiAuthorizerFunction.Arn
   ProductScrapeDLQUrl:

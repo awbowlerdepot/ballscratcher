@@ -2448,6 +2448,127 @@ too (via the shared `run()`) -- a candidate that already has a
 re-tried automatically. Clear it manually via `psql` (see 6j) to force a
 recheck with the browser-based fetcher.
 
+### 6l. Public read-only API (consumer-facing site, foundation)
+
+Al: "let's start on the consumer facing site... single page like site...
+a page to view the bowling ball details with sections for the high level
+details and summary of summary and then easy ways to dive into each
+video and play them in an embedded player... an intuitive way to
+populate a ball comparison page... a focus on current bowling balls and
+a way to still view retired balls and suggest current balls that best
+compare to the retired balls." This section covers the first piece: a
+new, separate, unauthenticated `PublicApiFunction`/`PublicHttpApi` --
+the data source the eventual React frontend (still to be scaffolded)
+will call. No frontend exists yet as of this writeup; this is
+backend-only.
+
+**Why a whole separate function instead of new routes on `AdminApiFunction`:**
+see `src/public_api/service.py`'s own module docstring for the full
+reasoning. Short version: `AdminApiFunction` sits behind
+`AdminHttpApi`'s shared-secret authorizer -- every route there is meant
+to require a bearer token. This one is the opposite, meant to be wide
+open with no auth at all, callable directly from a browser on someone
+else's computer. Mixing those two trust levels behind one function is a
+foot-gun; a separate function/HttpApi resource makes "no auth here, by
+design" structurally obvious rather than something to remember.
+
+**Every query is hard-scoped to `products.published = true`**, not a
+parameter a caller can override -- `products.published` exists
+specifically for this (migration 001's own comment: "gates what the
+consumer site / BowlerDepot sync can see"). This is the first real
+consumer of that gate since it was added.
+
+Endpoints (`src/public_api/app.py`, logic in `service.py`):
+- `GET /health` -- shallow liveness check, no DB round-trip.
+- `GET /brands` -- brands with at least one published product (browse
+  filter facet).
+- `GET /products?status=current&brand_id=&core_id=&coverstock_id=&search=&limit=&offset=` --
+  card-shaped browse results. `status` defaults to `'current'`, not
+  "everything" -- Al's direct ask ("a focus on current bowling balls and
+  a way to still view retired balls") means a caller has to explicitly
+  pass `status=retired` to see the retired catalog.
+- `GET /products/{id}` -- full detail payload: specs, all SKUs (RG/DIFF/
+  mass bias per weight), visible images (admin-curated order,
+  `is_thumbnail` flagged), `video_reviews_summary` (the "summary of
+  summaries" -- already existed on `products` since migration 006,
+  written by `video_summarizer.refresh_video_reviews_rollup`, just never
+  had a public consumer before this), and every approved +
+  already-summarized video (`youtube_video_id`, title, channel, summary
+  -- enough for the frontend to render a card and embed the actual
+  player). Returns 404 for both a nonexistent id AND an existing-but-
+  unpublished one -- deliberately identical, so a public detail page
+  can't be used to probe for unpublished product ids the way
+  `admin_api.get_product` (admin-only, allowed to know the difference)
+  can.
+- `GET /products/compare?ids=id1,id2,id3` -- batch fetch for the
+  comparison page, same per-product shape as the detail endpoint, order-
+  preserving, capped at `service.MAX_COMPARE_IDS` (6), missing/
+  unpublished ids silently dropped rather than erroring the whole batch.
+- `GET /products/{id}/similar?limit=5` -- the retired-to-current
+  suggestion feature. Candidates are always `published=true,
+  status='current'`, excluding the source itself. Scored in Python (not
+  SQL -- the published current catalog is small enough that this doesn't
+  need to be database-side, and a plain, independently-tested
+  `score_similarity` function is easier to trust than an equivalent SQL
+  expression) via a normalized RG/DIFF distance (see `RG_RANGE`/
+  `DIFF_RANGE` in `service.py`) plus categorical mismatch penalties for
+  core type / coverstock type / coverstock material. **These are
+  documented, round starting-point constants, not fit against any real
+  "these balls actually play alike" dataset** -- worth revisiting once
+  Al's own plotter (mentioned when this feature was requested: "I have
+  already created an interactive bowling ball plotter... in another
+  cowork project", not yet integrated into this repo) is wired in, since
+  reusing that tool's own notion of ball-motion distance would be
+  better than running two different similarity answers on the same
+  site.
+
+Infra (`template.yaml`): `PublicHttpApi` (no `Auth` block at all --
+every route public by design; `CorsConfiguration` with `AllowOrigins:
+"*"`, safe here for the same reason it's safe on `AdminHttpApi`, no
+credentialed requests involved) and `PublicApiFunction` (FastAPI +
+Mangum, same shape as `AdminApiFunction`, one explicit `Method: GET`
+route on `/{proxy+}` -- not `Method: ANY` -- so `OPTIONS` stays
+unclaimed and `CorsConfiguration` auto-generates the preflight response,
+same fix `AdminApiFunction` needed for the same reason, see 6a's own
+CORS section). `DB_SECRET_ARN` comes from `Globals.Function.Environment`
+like every other function; its own `Policies` block grants
+`secretsmanager:GetSecretValue` on `DbSecretArn`, the only permission
+this function needs (read-only, no queues, no S3, no Bedrock).
+
+`tests/test_public_api_service.py`: 21/21 passing -- pure-function tests
+for `score_similarity`/`_reference_sku`, filter-SQL-shape tests for
+`list_products`/`list_brands` (confirming `published = true` is baked
+into the query text, never a bind param), and full multi-query-assembly
+tests for `get_product`/`get_products_compare`/`list_similar_products`
+against a hand-built fake cursor (no real Postgres available in this
+sandbox, same limitation as every other module here). Full catalog-wide
+test sweep re-run after this addition: no regressions (same 3 pre-
+existing, unrelated failures as before -- `test_product_scraper.py`/
+`test_url_discovery.py` need `pytest`, not installed in this sandbox;
+`test_woocommerce_product_scraper_orchestration.py` fails at the
+already-documented `insert into cores` FakeCursor gap, unrelated to this
+change).
+
+No smoke test yet -- this is backend-only as of this writeup, no
+frontend calls it yet. Once deployed, a manual sanity check:
+```bash
+sam build PublicApiFunction
+sam deploy
+
+PUBLIC_API_URL=$(aws cloudformation describe-stacks --stack-name bowling-scraper \
+  --query "Stacks[0].Outputs[?OutputKey=='PublicApiUrl'].OutputValue" --output text)
+
+curl -i "${PUBLIC_API_URL}health"                 # expect 200, no auth needed
+curl -i "${PUBLIC_API_URL}products?limit=5"        # expect 200, published current balls only
+curl -i "${PUBLIC_API_URL}products/<some-id>"      # expect 200 for a published id, 404 for anything else
+```
+
+**Still to do** (tracked as this session's Cowork task list, not yet
+built): scaffold the actual React SPA that calls this API, integrate
+Al's existing bowling-ball plotter (blocked on him sharing that other
+project's code), and build the Browse/Detail/Compare pages themselves.
+This section is the foundation those sit on top of.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
