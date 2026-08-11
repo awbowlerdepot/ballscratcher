@@ -1663,6 +1663,28 @@ def test_list_products_omits_source_platform_filter_by_default():
     assert "p.source_platform" not in query
 
 
+# --- list_products: status filter -- Al's direct ask after the Combat/
+# display_order investigation, to filter the Products tab down to just
+# current (or just retired) product lines. Same shape as source_platform
+# above: adds "p.status = %s" only when passed, param-bound (not string-
+# interpolated), no validation against the enum's two values.
+
+def test_list_products_status_adds_filter_sql():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, status="current", limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "p.status = %s" in query
+
+
+def test_list_products_omits_status_filter_by_default():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "p.status = %s" not in query
+
+
 # --- list_products: p.release_date column -- real ask from Al ("can we
 # pull in the available date from the motiv product page as a release
 # date column on products"). Every scraper already parsed and persisted

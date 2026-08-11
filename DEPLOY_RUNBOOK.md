@@ -2148,6 +2148,46 @@ redeployed, re-run `backfill_core_ids.py`/`backfill_coverstock_ids.py`
 (or any pending rescrape) -- this was the actual blocker the whole time,
 not anything specific to Brunswick's parsing.
 
+### 6i.5. Products tab: status (current/retired) filter
+
+Al's direct ask right after the P0 `display_order` investigation above,
+now that all five scrapers correctly populate `products.status` off
+each page's `/current/` vs `/retired/` URL path (or platform
+equivalent): filter the Products tab down to just current or just
+retired product lines instead of scrolling the whole catalog.
+
+`GET /products` gained a `status` query param (`admin_api/service.py`'s
+`list_products`, `admin_api/app.py`'s route) -- adds `and p.status = %s`
+only when passed, same param-bound pattern as the existing
+`source_platform` filter right next to it, no validation against the
+enum's two values (`current`/`retired`, migration 001's `product_status`
+type) -- an unrecognized value just matches zero rows rather than
+erroring, consistent with how every other string filter on this endpoint
+already behaves.
+
+`admin-site/index.html`'s Products tab gained a "Status" dropdown
+(any/current/retired) next to the existing "Published" dropdown, wired
+into `productState.status` and `loadProducts`'s params the same way.
+`p.status` was already selected and rendered as its own list column, so
+no other UI change was needed.
+
+Two new tests in `tests/test_admin_api_service.py`
+(`test_list_products_status_adds_filter_sql`,
+`test_list_products_omits_status_filter_by_default`), same
+`_QueryCapturingConnection` SQL-text-capture pattern as the
+`source_platform` tests right above them (no real Postgres in this
+sandbox). Full `test_admin_api_service.py` suite: 103/103 passing.
+
+No `template.yaml` change needed -- `GET /products` already exists and
+routes through `AdminHttpApi`'s catch-all proxy. Requires redeploying
+only `AdminApiFunction`:
+```bash
+sam build AdminApiFunction
+sam deploy
+```
+(No admin-site redeploy step exists in this project -- it's a static
+file Al opens directly/hosts himself, not a Lambda-fronted deployable.)
+
 ### 6j. Home transcript fetcher (residential caption fetching) -- optional, run outside AWS entirely
 
 Real, live-tested finding this session (see

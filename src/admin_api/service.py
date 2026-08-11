@@ -251,8 +251,21 @@ def list_brands(conn) -> list:
 def list_products(conn, published: bool = None, brand_id: str = None, search: str = None,
                    needs_video_summary_refresh: bool = None, has_approved_video_summaries: bool = None,
                    missing_core: bool = None, missing_coverstock: bool = None, source_platform: str = None,
+                   status: str = None,
                    limit: int = 50, offset: int = 0) -> list:
-    """source_platform: filters to one scraper platform ('netsuite',
+    """status: filters to products.status ('current' or 'retired' -- see
+    migration 001's product_status enum). Al's direct ask after the
+    Combat/display_order investigation: with five scrapers now writing
+    status off each page's /current/ vs /retired/ URL path (product_
+    scraper's STATUS_FROM_URL_RE, mirrored per-platform), he wants to
+    filter the Products tab down to just current (or just retired)
+    product lines rather than scrolling the whole catalog. No validation
+    against the enum's two values here, same as source_platform below --
+    an unrecognized value just matches zero rows rather than erroring,
+    consistent with how every other string filter on this endpoint
+    behaves.
+
+    source_platform: filters to one scraper platform ('netsuite',
     'shopify', 'woocommerce', 'commercebuild', 'craft_cms' -- same values
     as products.source_platform and queue_rescrape's SCRAPE_QUEUE_ENV_VAR_
     BY_PLATFORM keys). Built for scripts/rescrape_netsuite_products.py
@@ -386,6 +399,9 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     if source_platform:
         query += " and p.source_platform = %s"
         params.append(source_platform)
+    if status:
+        query += " and p.status = %s"
+        params.append(status)
     # id as a final tiebreaker -- same reason list_video_candidates and
     # fetch_products_to_search needed one (see admin_api/service.py's own
     # earlier fix and video_discovery/app.py's ROTATION section): rows

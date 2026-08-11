@@ -302,6 +302,14 @@
           <option value="false">unpublished</option>
         </select>
       </div>
+      <div class="field">
+        <label>Status</label>
+        <select id="product-status">
+          <option value="">any</option>
+          <option value="current">current</option>
+          <option value="retired">retired</option>
+        </select>
+      </div>
       <label class="checkbox"><input id="product-needs-refresh" type="checkbox"> stale rollup</label>
       <label class="checkbox"><input id="product-has-approved" type="checkbox"> has any summarized video</label>
       <label class="checkbox"><input id="product-missing-core" type="checkbox"> missing core</label>
@@ -868,12 +876,13 @@ async function deleteVideo(id) {
 // --------------------------------------------------------------------
 // Products tab
 // --------------------------------------------------------------------
-const productState = { search: '', brandId: '', published: '', needsRefresh: false, hasApproved: false, missingCore: false, missingCoverstock: false, offset: 0, limit: 50, lastCount: 0 };
+const productState = { search: '', brandId: '', published: '', status: '', needsRefresh: false, hasApproved: false, missingCore: false, missingCoverstock: false, offset: 0, limit: 50, lastCount: 0 };
 
 function applyProductFilters() {
   productState.search = document.getElementById('product-search').value.trim();
   productState.brandId = document.getElementById('product-brand-id').value.trim();
   productState.published = document.getElementById('product-published').value;
+  productState.status = document.getElementById('product-status').value;
   productState.needsRefresh = document.getElementById('product-needs-refresh').checked;
   productState.hasApproved = document.getElementById('product-has-approved').checked;
   productState.missingCore = document.getElementById('product-missing-core').checked;
@@ -897,6 +906,7 @@ async function loadProducts() {
     };
     if (productState.published === 'true') params.published = true;
     if (productState.published === 'false') params.published = false;
+    if (productState.status) params.status = productState.status;
     if (productState.needsRefresh) params.needs_video_summary_refresh = true;
     if (productState.hasApproved) params.has_approved_video_summaries = true;
     if (productState.missingCore) params.missing_core = true;
