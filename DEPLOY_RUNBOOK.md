@@ -2068,6 +2068,86 @@ feature exactly as intended:
   `unique(product_id, youtube_video_id)` constraint (004) already
   supports this; the fix is entirely in how `service.py` uses it.
 
+**P0 INCIDENT (2026-08-11): every scraper's product_images INSERT was
+silently aborting the ENTIRE upsert_product transaction, catalog-wide,
+across all five scrapers, since migration 010 went live.** Found while
+chasing why Combat's `core_id` still wasn't set after fixing
+`_find_table_by_row_labels` (see the entry above) -- Al ran the redeploy,
+re-ran the backfill, and it was STILL missing. Checked
+`bowling-scraper-product-scraper`'s CloudWatch logs directly and found
+the real error on nearly every single job in the batch, Brunswick AND
+DV8 alike:
+
+```
+psycopg2.errors.NotNullViolation: null value in column "display_order" of relation "product_images" violates not-null constraint
+```
+
+Root cause: migration 010 added `product_images.display_order integer not
+null` with **no database-level default** -- by design, per that
+migration's own comment ("no scraper touches any of these three fields").
+That assumption was wrong in practice: every scraper still has to supply
+*some* value for a NOT NULL column with no default when INSERTing a new
+row, even one it never otherwise reads or writes. None of the five
+scrapers' raw `insert into product_images (product_id, image_type,
+source_url) values (...)` statements were ever updated when that
+migration landed. The image insert happens *inside* `upsert_product`,
+before the final `conn.commit()` -- so the exception didn't just drop the
+one image row, it aborted the whole transaction: the products row
+upsert, `core_id`/`coverstock_id` writes, SKU inserts, all of it, for
+**every product with at least one image being inserted or updated** --
+which is effectively every product on every rescrape, and every brand-new
+product. This has silently been breaking every scraper Lambda
+(`bowling-scraper-product-scraper` [Brunswick/Radical/DV8],
+`bowling-scraper-shopify-product-scraper` [Hammer/Track/Ebonite],
+`bowling-scraper-woocommerce-product-scraper` [SWAG],
+`bowling-scraper-netsuite-product-scraper` [MOTIV],
+`bowling-scraper-commercebuild-product-scraper` [Storm/Roto Grip/900
+Global]) since that migration's redeploy -- not a Brunswick-specific or
+Combat-specific issue at all, just discovered via Combat because that's
+what was actively being rescraped and checked.
+
+**Fix, identical in all five scrapers' `upsert_product`:** give the
+INSERT a computed `display_order` via a correlated subquery,
+`coalesce((select max(display_order) + 1 from product_images where
+product_id = %s), 0)` -- appends new images after whatever's already
+there for that product (0-based, matching migration 010's convention),
+first image for a product gets 0. Only affects the INSERT branch; the
+existing `on conflict (product_id, source_url) do update set image_type =
+excluded.image_type` branch for an already-present row is untouched, so
+this can never clobber an admin's prior manual reordering (`admin_api.
+reorder_product_images`). `commercebuild_product_scraper`'s single-image
+insert got the same fix (no orchestration-level FakeCursor test exists
+for that scraper in this repo to verify against -- confirmed by direct
+`ast.parse` only, a pre-existing test gap, not something newly
+introduced here).
+
+Updated FakeCursor branches in `test_product_scraper_orchestration.py`,
+`test_shopify_product_scraper_orchestration.py`, `test_netsuite_product_
+scraper_orchestration.py`, and `test_woocommerce_product_scraper_
+orchestration.py` for the new 4th param (product_id again, for the
+subquery) -- all four suites pass (20/20, 15/15, 27/27, and 4/5 with the
+5th being the pre-existing, already-documented, unrelated woocommerce
+`insert into cores` FakeCursor gap that fails before ever reaching the
+image insert).
+
+**Requires redeploying all five scraper Lambdas** -- this is a shared
+bug pattern fixed independently in each scraper's own `app.py`, not a
+single shared module:
+```bash
+sam build ProductScraperFunction
+sam build ShopifyProductScraperFunction
+sam build WooCommerceProductScraperFunction
+sam build NetsuiteProductScraperFunction
+sam build CommercebuildProductScraperFunction
+sam deploy
+```
+Or just `sam build && sam deploy` for a full rebuild if there's any doubt
+about local build-cache state (see the `fastapi` packaging incident just
+above this section for why that doubt is reasonable right now). Once
+redeployed, re-run `backfill_core_ids.py`/`backfill_coverstock_ids.py`
+(or any pending rescrape) -- this was the actual blocker the whole time,
+not anything specific to Brunswick's parsing.
+
 ### 6j. Home transcript fetcher (residential caption fetching) -- optional, run outside AWS entirely
 
 Real, live-tested finding this session (see

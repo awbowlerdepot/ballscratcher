@@ -783,15 +783,40 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
             # this can RETURNING id/stored_url on every row, whether it was
             # just inserted or already existed -- needed to know which
             # rows still need an image-process job without a second query.
+            #
+            # display_order is REQUIRED here -- real, confirmed production
+            # incident (2026-08-11): migration 010 added product_images.
+            # display_order as NOT NULL with no database default (by
+            # design -- see that migration's own comment, "no scraper
+            # touches any of these three fields", which turned out to be
+            # wrong: every scraper still has to INSERT a value for a
+            # NOT NULL column with no default, even one it never reads).
+            # Without this, every new-image insert raised
+            # psycopg2.errors.NotNullViolation, which aborted this entire
+            # upsert_product transaction (this INSERT runs before the
+            # final commit) -- not just the image row. Found while
+            # investigating why Combat's core_id still wasn't set even
+            # after fixing _find_table_by_row_labels: the parser was
+            # already correct, but the whole upsert was silently rolling
+            # back on every single product, catalog-wide, across all five
+            # scrapers (this same insert shape exists in each one).
+            # coalesce(max(display_order)+1 over this product's existing
+            # rows, 0) keeps new images appended after whatever's already
+            # there, matching migration 010's 0-based per-product
+            # ordering -- an admin's prior manual reordering (see
+            # admin_api.reorder_product_images) is never disturbed, since
+            # this only ever assigns a value to a brand-new row (the ON
+            # CONFLICT DO UPDATE branch for an existing row doesn't touch
+            # display_order at all).
             current_source_urls.add(image["source_url"])
             cur.execute(
                 """
-                insert into product_images (product_id, image_type, source_url)
-                values (%s, %s, %s)
+                insert into product_images (product_id, image_type, source_url, display_order)
+                values (%s, %s, %s, coalesce((select max(display_order) + 1 from product_images where product_id = %s), 0))
                 on conflict (product_id, source_url) do update set image_type = excluded.image_type
                 returning id, stored_url
                 """,
-                (product_id, image["image_type"], image["source_url"]),
+                (product_id, image["image_type"], image["source_url"], product_id),
             )
             image_id, stored_url = cur.fetchone()
             if stored_url is None:

@@ -149,7 +149,14 @@ class FakeCursor:
             self._result = None
 
         elif q.startswith("insert into product_images"):
-            product_id, image_type, source_url = params
+            # 4th param is product_id again, for the correlated
+            # display_order subquery (coalesce(max(display_order)+1, 0) --
+            # see product_scraper/app.py's upsert_product docstring for
+            # the NotNullViolation incident this fixed). Not modeled with
+            # real ordering semantics here since nothing in this test file
+            # asserts on display_order -- just unpacked so the real 4-arg
+            # call shape doesn't blow up a positional unpack.
+            product_id, image_type, source_url, _product_id_again = params
             key = (product_id, source_url)
             existing = self.db["product_images"].get(key)
             if existing is None:

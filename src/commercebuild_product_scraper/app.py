@@ -876,14 +876,23 @@ def upsert_product(conn, brand_id: str, parsed: dict, pdf_skus: list, mismatches
 
         pending_image_jobs = []
         if parsed.get("main_image_url"):
+            # display_order is REQUIRED -- see product_scraper/app.py's
+            # (Brunswick) identical fix for the full incident: migration
+            # 010 added this column NOT NULL with no database default, so
+            # every scraper's INSERT here was silently aborting the whole
+            # upsert_product transaction (NotNullViolation, not just this
+            # row) until this was added. coalesce(max+1, 0) appends after
+            # whatever's already there without disturbing any admin
+            # reordering (only affects the brand-new-row INSERT branch,
+            # never the ON CONFLICT DO UPDATE branch).
             cur.execute(
                 """
-                insert into product_images (product_id, image_type, source_url)
-                values (%s, 'main', %s)
+                insert into product_images (product_id, image_type, source_url, display_order)
+                values (%s, 'main', %s, coalesce((select max(display_order) + 1 from product_images where product_id = %s), 0))
                 on conflict (product_id, source_url) do update set image_type = excluded.image_type
                 returning id, stored_url
                 """,
-                (product_id, parsed["main_image_url"]),
+                (product_id, parsed["main_image_url"], product_id),
             )
             image_id, stored_url = cur.fetchone()
             if stored_url is None:
