@@ -355,6 +355,44 @@ string still fails closed per the authorizer's design, so this would
 point at something more structurally wrong -- check
 `AdminApiAuthorizerFunction`'s CloudWatch logs first).
 
+### 6a.5. Recurring incident: scoped `sam build AdminApiFunction` ships a broken zip (missing `fastapi`)
+
+**CONFIRMED TWICE NOW** -- treat `sam build AdminApiFunction` on its own
+as unreliable in this environment, full stop.
+
+First occurrence: after being told to redeploy just `AdminApiFunction`
+for a cores-backfill fix, Al hit `500 Server Error` calling `GET
+/products?missing_core=true`. CloudWatch logs
+(`/aws/lambda/bowling-scraper-admin-api`) showed:
+```
+[ERROR] Runtime.ImportModuleError: Unable to import module 'app': No module named 'fastapi'
+```
+Root cause: `sam build <LogicalId>` only rebuilds that one resource and
+reuses whatever's already in `.aws-sam/build/` for every other resource
+-- but it turned out `AdminApiFunction`'s OWN scoped build was itself
+producing an incomplete dependency layer (fastapi silently missing from
+the packaged zip), not a stale-other-function problem. Fixed at the time
+by a full unscoped `sam build && sam deploy`, confirmed working.
+
+Second occurrence, this session, right after the Status filter feature
+(6i.5) was committed and Al was told to run `sam build AdminApiFunction
+&& sam deploy`: admin site started 500ing again. Same exact CloudWatch
+error, same function, same fix (`sam build && sam deploy`, full rebuild).
+
+Two-for-two on the same scoped-build command producing the same failure
+-- this isn't a one-off fluke, `sam build AdminApiFunction` alone should
+not be used going forward. **Always use `sam build && sam deploy` (no
+logical ID) when redeploying AdminApiFunction specifically**, even though
+scoped builds are fine for the five scraper functions (no repeat failures
+there across several real redeploys this session). If a 500 shows up on
+the admin site after any deploy, check
+`/aws/lambda/bowling-scraper-admin-api` first for this exact
+`ImportModuleError` before looking anywhere else -- it's the most likely
+cause given this history:
+```bash
+aws logs tail /aws/lambda/bowling-scraper-admin-api --follow
+```
+
 ### 6b. Brunswick pipeline (most-verified scraper this session)
 
 `UrlDiscoveryFunction` runs on its own daily schedule, but don't wait a
