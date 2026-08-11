@@ -53,6 +53,14 @@ class ImageReorderRequest(BaseModel):
     image_ids: list[str]
 
 
+class PlotterPositionRequest(BaseModel):
+    # Both required, not independently-optional like ImageUpdateRequest's
+    # fields -- see service.set_plotter_position's docstring for why a
+    # chart position is meaningless with only one axis set.
+    oil_rating: int
+    motion_rating: int
+
+
 class ReassignRequest(BaseModel):
     product_id: str
     # Optional: stamped on the ORIGIN row's rejected tombstone only (see
@@ -247,6 +255,37 @@ def update_product_image(product_id: str, image_id: str, body: ImageUpdateReques
         return service.update_product_image(conn, product_id, image_id, body.is_visible, body.is_thumbnail)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.patch("/products/{product_id}/plotter-position")
+def set_plotter_position(product_id: str, body: PlotterPositionRequest):
+    # Writes the AUTHORITATIVE oil/motion chart position (migration 011,
+    # digitized from Brunswick's own published Ball Motion Comparison
+    # Chart) -- see service.set_plotter_position's docstring. Built for
+    # scripts/backfill_plotter_chart_positions.py's one-time matching
+    # pass, but works for a manual correction too. 422 (not 404) on an
+    # out-of-range value -- psycopg2 surfaces migration 011's own CHECK
+    # constraint violation as a real database error, distinct from the
+    # 404 a genuinely missing product_id gets.
+    conn = service.get_db_connection()
+    try:
+        return service.set_plotter_position(conn, product_id, body.oil_rating, body.motion_rating)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        # psycopg2's CheckViolation for an out-of-range rating -- caught
+        # broadly (not a specific psycopg2 import) since app.py otherwise
+        # has no direct psycopg2 dependency, same pattern as this file's
+        # other routes that only ever expect LookupError/ValueError from
+        # service.py and treat anything else as a genuine 500 -- except
+        # here an out-of-range rating is a real, expected caller mistake
+        # (migration 011's CHECK constraint doing its job), worth a 422
+        # rather than a bare 500.
+        if "check constraint" in str(e).lower() or "products_oil_rating_range" in str(e) or "products_motion_rating_range" in str(e):
+            raise HTTPException(status_code=422, detail="oil_rating must be 1-16 and motion_rating must be 1-18")
+        raise
     finally:
         conn.close()
 

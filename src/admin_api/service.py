@@ -935,6 +935,41 @@ def update_product_image(conn, product_id: str, image_id: str, is_visible: bool 
     return result
 
 
+def set_plotter_position(conn, product_id: str, oil_rating: int, motion_rating: int) -> dict:
+    """Writes products.oil_rating/motion_rating (migration 011) --
+    the AUTHORITATIVE position digitized from Brunswick's own published
+    Ball Motion Comparison Chart, never the algorithmic estimate
+    public_api.estimate_oil_motion computes for everything else on the
+    fly. Built for scripts/backfill_plotter_chart_positions.py's one-time
+    matching pass against scripts/data/brunswick_chart_positions.json
+    (the 56-ball dataset Al's existing plotter shipped with), but usable
+    for a manual correction later too -- both callers just need a
+    product_id and the two chart values, nothing plotter-specific about
+    how the caller obtained them.
+
+    Both values are required (not independently-optional like
+    update_product_image's fields) -- a chart position is meaningless
+    with only one axis set, so this always writes both together rather
+    than allowing a half-set state to persist. Range validation (1-16 /
+    1-18) happens at the database level via migration 011's own CHECK
+    constraints; a caller passing an out-of-range value gets a real
+    psycopg2 error rather than this function silently clamping or
+    guessing what was meant.
+
+    Raises LookupError if product_id doesn't exist, same not-found
+    convention as every other single-row setter in this module."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "update products set oil_rating = %s, motion_rating = %s where id = %s returning id",
+            (oil_rating, motion_rating, product_id),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError(f"No product {product_id}")
+    conn.commit()
+    return {"product_id": product_id, "oil_rating": oil_rating, "motion_rating": motion_rating}
+
+
 def reorder_product_images(conn, product_id: str, image_ids: list) -> dict:
     """Rewrites display_order to match the position of each id in
     image_ids (0-based) -- the admin-site "move up/move down" controls

@@ -33,7 +33,7 @@ Any Postgres 13+ instance works (RDS is the obvious choice, but this
 repo doesn't assume it). Note the connection details -- you'll need them
 for step 3's `DbSecretArn` secret and to run migrations directly.
 
-## 2. Run the ten migrations, in order
+## 2. Run the eleven migrations, in order
 
 ```bash
 psql "$DATABASE_URL" -f db/migrations/001_init_schema.sql
@@ -46,6 +46,7 @@ psql "$DATABASE_URL" -f db/migrations/007_cores_table.sql
 psql "$DATABASE_URL" -f db/migrations/008_coverstocks_table.sql
 psql "$DATABASE_URL" -f db/migrations/009_normalize_coverstock_names.sql
 psql "$DATABASE_URL" -f db/migrations/010_product_images_ordering_thumbnail_visibility.sql
+psql "$DATABASE_URL" -f db/migrations/011_products_plotter_chart_position.sql
 ```
 
 (If you already ran an earlier subset in a prior deploy, just run whatever
@@ -2568,6 +2569,99 @@ built): scaffold the actual React SPA that calls this API, integrate
 Al's existing bowling-ball plotter (blocked on him sharing that other
 project's code), and build the Browse/Detail/Compare pages themselves.
 This section is the foundation those sit on top of.
+
+### 6m. Ball motion plotter (consumer site, standalone page)
+
+Al shared an existing interactive plotter he'd built in another Cowork
+project (`/Users/awolfe3/Downloads/site` -- `index.html` + `balls.js` +
+per-ball placeholder pages/images): a scatter chart, X axis = oil the
+ball reads best on (1 light -> 16 heavy), Y axis = motion shape (1
+smooth -> 18 angular), positions hand-digitized from Brunswick's own
+published "Ball Motion Comparison Chart" PDF (Form #0526-19, Jul/Aug
+2026) -- 56 balls across Brunswick/Hammer/Track/Ebonite/Radical/DV8.
+Asked Al directly how to integrate it: **standalone page** (not the main
+Browse view, not the comparison-page picker), and for the ~85%+ of the
+catalog the chart doesn't cover, **estimate algorithmically** rather
+than only showing the curated 56 or building a full admin-editable-field
+workflow.
+
+**Migration 011** adds `products.oil_rating`/`motion_rating` (nullable
+smallint, CHECK-constrained to 1-16 / 1-18) -- holds ONLY the
+authoritative, chart-sourced values, never the algorithmic estimate.
+Keeps "this came from Brunswick's own published chart" and "this is our
+own heuristic guess" structurally distinct rather than indistinguishable
+integers in one column.
+
+**`scripts/data/brunswick_chart_positions.json`** -- the plotter's own
+56-entry dataset (brand/name/oil/motion), extracted directly from its
+`balls.js`.
+
+**`scripts/backfill_plotter_chart_positions.py`** -- one-time matching
+pass: resolves each chart entry's brand via `GET /brands`, searches `GET
+/products?brand_id=...&search=<name>` (admin_api's ilike substring
+search), and writes via the new `PATCH /products/{id}/plotter-position`
+endpoint (`admin_api/service.py`'s `set_plotter_position`) ONLY on an
+exact case-insensitive name match. Zero or multiple candidates are
+logged for manual review and never guessed at -- a wrong auto-match
+would silently mislabel a real product with someone else's chart
+position, worse than the honestly-flagged algorithmic estimate. Usage:
+```bash
+export ADMIN_API_URL="https://<your-api-id>.execute-api.us-west-1.amazonaws.com"
+export ADMIN_API_TOKEN="<the same bearer token used elsewhere>"
+python3 scripts/backfill_plotter_chart_positions.py
+```
+Review its log output for `no_match`/`ambiguous`/`no_brand` entries and
+resolve those by hand (a direct `PATCH /products/{id}/plotter-position`
+call, or update the product's name first if it's a real typo/mismatch).
+
+**`public_api/service.py`'s `estimate_oil_motion`** -- the algorithmic
+fallback for everything migration 011 doesn't cover. A documented, ROUND
+starting-point heuristic (not fit against real data -- there is none for
+most of the catalog), from general bowling-industry domain knowledge:
+oil is driven by coverstock material/type/particle (friction/traction),
+motion is driven by core type (symmetric/asymmetric) and differential
+magnitude, with a small secondary nudge from coverstock type. See that
+function's own module comment for the full reasoning and every constant.
+**Worth revisiting once there's a real reference to validate or replace
+it against** -- same caveat as the retired-to-current similarity
+scorer's `RG_RANGE`/`DIFF_RANGE` constants (6l above).
+
+**`GET /products/plotter?status=current`** (`public_api`) -- everything
+the standalone plotter page needs in one unpaginated call: id/name/url/
+brand_name/image plus `oil`/`motion`/`oil_motion_source` ('chart' when
+migration 011's columns are set, 'estimated' otherwise) for every
+published product matching `status`. The frontend should render the two
+sources differently (e.g. filled vs. outlined marker) rather than
+implying false precision on the estimated majority.
+
+Tests: `tests/test_admin_api_service.py` gained
+`test_set_plotter_position_writes_both_fields`/
+`test_set_plotter_position_missing_product_raises` (105/105 total).
+`tests/test_public_api_service.py` gained coverage for
+`estimate_oil_motion` (range/direction sanity checks across every
+material/type/core combination) and `list_plotter_positions` (chart vs.
+estimated, published-current-only scoping) -- 29/29 total.
+`tests/test_backfill_plotter_chart_positions.py` (new, 11/11) covers the
+matching logic (`match_entry`) and orchestration (`run`) against fakes,
+including confirming a `no_match`/`ambiguous` entry is never written.
+Full catalog-wide sweep re-run after this addition: no regressions, same
+3 pre-existing unrelated failures as every prior sweep this session.
+
+No `template.yaml` change needed -- `PublicApiFunction`/`AdminApiFunction`
+already exist and route through their own catch-all proxies. Redeploy
+both once this migration has run:
+```bash
+sam build PublicApiFunction
+sam build AdminApiFunction
+sam deploy
+```
+
+**Still not built:** the actual plotter UI as a React page (styled
+scatter chart, brand-chip filters, hover tooltips, click-through to the
+real product detail page) -- this session's work is the data layer
+(`GET /products/plotter`) it will call. The original `index.html`/
+`balls.js`/CSS from Al's shared project is a solid visual reference to
+port from once the React app itself is scaffolded (task still pending).
 
 ## 7. Ongoing operations
 

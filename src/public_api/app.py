@@ -62,6 +62,17 @@ def get_products(
         conn.close()
 
 
+@app.get("/products/plotter")
+def get_products_plotter(status: str = Query("current")):
+    # Same literal-path-before-{product_id}-param ordering reasoning as
+    # /products/compare below.
+    conn = service.get_db_connection()
+    try:
+        return {"items": service.list_plotter_positions(conn, status=status)}
+    finally:
+        conn.close()
+
+
 @app.get("/products/compare")
 def get_products_compare(ids: str = Query(..., description="Comma-separated product ids")):
     # A real, deliberate ordering dependency: this route is declared

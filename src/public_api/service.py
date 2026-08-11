@@ -470,3 +470,171 @@ def list_similar_products(conn, product_id: str, limit: int = 5) -> list:
         candidate["similarity_score"] = round(score, 4)
         results.append(candidate)
     return results
+
+
+# --------------------------------------------------------------------
+# Ball motion plotter (Al's existing tool, integrated as a standalone
+# page -- see products.oil_rating/motion_rating's migration 011 and this
+# module's own header comment for the full backstory)
+# --------------------------------------------------------------------
+
+# estimate_oil_motion is a documented, ROUND, starting-point heuristic,
+# same spirit and same caveat as RG_RANGE/DIFF_RANGE above -- not fit
+# against any real "where would Brunswick actually place this ball"
+# data (there is none for the ~85%+ of the catalog their own chart
+# doesn't cover), built from general, common bowling-industry domain
+# knowledge about what drives each axis:
+#
+#   oil (1 light -> 16 heavy) is primarily a COVERSTOCK friction/traction
+#   question -- higher-friction covers hook earlier and need more oil on
+#   the lane to be controllable, lower-friction covers skid further and
+#   suit lighter/drier conditions. Material dominates (polyester <
+#   urethane < reactive resin), and within reactive resin, type matters
+#   too (pearl skids more than solid). Particle coverstocks push further
+#   into heavy-oil territory than any of those alone.
+#
+#   motion (1 smooth -> 18 angular) is primarily a CORE question --
+#   asymmetric cores create a sharper, more defined direction change than
+#   symmetric ones, and that effect scales with differential (more flare
+#   potential = more angular). Coverstock type gets a smaller secondary
+#   nudge in the opposite direction from what oil-traction intuition
+#   might suggest: a solid cover reads EARLIER and arcs more smoothly
+#   overall, while a pearl skids further before breaking sharply at the
+#   end -- pearls tend to look more angular on a motion chart even though
+#   they're lower-traction, not more.
+#
+# Revisit this whole function once Al's own plotter data (or some other
+# real reference) can be used to validate or replace it -- see this
+# module's docstring for the same point made about the similarity scorer.
+
+OIL_BASE_BY_MATERIAL = {
+    "polyester_plastic": 2,
+    "urethane": 5,
+    "reactive_resin": 10,
+}
+OIL_ADJUST_BY_TYPE = {
+    "pearl": -3,
+    "hybrid": 0,
+    "solid": 3,
+}
+OIL_PARTICLE_BONUS = 2
+
+MOTION_BASE_BY_CORE_TYPE = {
+    "symmetric": 7,
+    "asymmetric": 12,
+}
+MOTION_BASE_UNKNOWN_CORE = 9  # neutral default when core_type is unset
+MOTION_DIFF_MIDPOINT = 0.02   # roughly the low end of a typical differential range
+MOTION_DIFF_SCALE = 0.045     # roughly the typical differential range's span
+MOTION_DIFF_WEIGHT = 6        # how many motion points a full-range differential swing is worth
+MOTION_ADJUST_BY_COVERSTOCK_TYPE = {
+    "pearl": 1,
+    "solid": -1,
+    "hybrid": 0,
+}
+
+OIL_MIN, OIL_MAX = 1, 16
+MOTION_MIN, MOTION_MAX = 1, 18
+
+
+def _clamp(value: float, low: int, high: int) -> int:
+    return max(low, min(high, round(value)))
+
+
+def estimate_oil_motion(core_type: str = None, coverstock_type: str = None,
+                         coverstock_material: str = None, has_particle: bool = False,
+                         differential: float = None) -> dict:
+    """Pure function (no DB) -- see the module-level comment above this
+    for the reasoning behind every constant here. Always returns a
+    usable (oil, motion) pair, even with every input missing (falls back
+    to the middle of each axis) -- a product this sparse is rare (every
+    scraper always writes coverstock_material/coverstock_type at
+    minimum) but the frontend shouldn't have to special-case a missing
+    plotter position for a published, presumably-real product."""
+    oil = OIL_BASE_BY_MATERIAL.get(coverstock_material, (OIL_MIN + OIL_MAX) / 2)
+    oil += OIL_ADJUST_BY_TYPE.get(coverstock_type, 0)
+    if has_particle:
+        oil += OIL_PARTICLE_BONUS
+    oil = _clamp(oil, OIL_MIN, OIL_MAX)
+
+    motion = MOTION_BASE_BY_CORE_TYPE.get(core_type, MOTION_BASE_UNKNOWN_CORE)
+    if differential is not None:
+        motion += ((float(differential) - MOTION_DIFF_MIDPOINT) / MOTION_DIFF_SCALE) * MOTION_DIFF_WEIGHT
+    motion += MOTION_ADJUST_BY_COVERSTOCK_TYPE.get(coverstock_type, 0)
+    motion = _clamp(motion, MOTION_MIN, MOTION_MAX)
+
+    return {"oil": oil, "motion": motion}
+
+
+def list_plotter_positions(conn, status: str = "current") -> list:
+    """Everything the standalone plotter page needs in one unpaginated
+    call -- Al's original tool (see this module's header comment) loaded
+    its whole 56-ball dataset up front rather than paginating, and the
+    published current catalog here is a similar order of magnitude (a
+    few hundred products at most), so the same shape carries over rather
+    than adding pagination this page doesn't need.
+
+    Every returned product gets a real (oil, motion) position: the
+    authoritative chart value (products.oil_rating/motion_rating, migration
+    011) when scripts/backfill_plotter_chart_positions.py has matched it,
+    otherwise estimate_oil_motion's heuristic. oil_motion_source
+    ('chart' | 'estimated') tells the frontend which kind it got, so the
+    two can be rendered differently (e.g. a filled vs. outlined marker)
+    rather than implying false precision on the estimated majority."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select p.id, p.name, p.url,
+                   b.name as brand_name,
+                   c.core_type, p.coverstock_type, p.coverstock_material, p.has_particle,
+                   p.oil_rating, p.motion_rating,
+                   coalesce(
+                       p.primary_image_url,
+                       (
+                           select pi.stored_url from product_images pi
+                           where pi.product_id = p.id and pi.is_visible = true
+                           order by pi.display_order, pi.id
+                           limit 1
+                       )
+                   ) as primary_image_url
+            from products p
+            join brands b on b.id = p.brand_id
+            left join cores c on c.id = p.core_id
+            where p.published = true and p.status = %s
+            """,
+            (status,),
+        )
+        columns = [desc[0] for desc in cur.description]
+        products = [dict(zip(columns, row)) for row in cur.fetchall()]
+
+        product_ids = [p["id"] for p in products]
+        skus_by_product = {}
+        if product_ids:
+            cur.execute(
+                "select product_id, weight_lbs, rg, differential from product_skus "
+                "where product_id = any(%s) and differential is not null",
+                (product_ids,),
+            )
+            sku_columns = [desc[0] for desc in cur.description]
+            for row in cur.fetchall():
+                sku = dict(zip(sku_columns, row))
+                skus_by_product.setdefault(sku["product_id"], []).append(sku)
+
+    results = []
+    for p in products:
+        if p["oil_rating"] is not None and p["motion_rating"] is not None:
+            oil, motion, source = p["oil_rating"], p["motion_rating"], "chart"
+        else:
+            ref_sku = _reference_sku(skus_by_product.get(p["id"], []))
+            estimate = estimate_oil_motion(
+                core_type=p["core_type"], coverstock_type=p["coverstock_type"],
+                coverstock_material=p["coverstock_material"], has_particle=p["has_particle"],
+                differential=ref_sku["differential"] if ref_sku else None,
+            )
+            oil, motion, source = estimate["oil"], estimate["motion"], "estimated"
+        results.append({
+            "id": p["id"], "name": p["name"], "url": p["url"], "brand_name": p["brand_name"],
+            "primary_image_url": p["primary_image_url"],
+            "oil": oil, "motion": motion, "oil_motion_source": source,
+        })
+    return results

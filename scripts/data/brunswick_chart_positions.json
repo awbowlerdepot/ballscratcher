@@ -1,0 +1,338 @@
+[
+  {
+    "brand": "Brunswick",
+    "name": "Crown Victory",
+    "oil": 6,
+    "motion": 18
+  },
+  {
+    "brand": "Hammer",
+    "name": "Zero Mercy",
+    "oil": 14,
+    "motion": 18
+  },
+  {
+    "brand": "Brunswick",
+    "name": "Crown Victory Pearl",
+    "oil": 8,
+    "motion": 18
+  },
+  {
+    "brand": "Hammer",
+    "name": "Black Widow Mania",
+    "oil": 9,
+    "motion": 17
+  },
+  {
+    "brand": "Track",
+    "name": "Kinetic",
+    "oil": 6,
+    "motion": 17
+  },
+  {
+    "brand": "Hammer",
+    "name": "Full Effect",
+    "oil": 12,
+    "motion": 17
+  },
+  {
+    "brand": "Hammer",
+    "name": "Hammerhead",
+    "oil": 7,
+    "motion": 16
+  },
+  {
+    "brand": "Brunswick",
+    "name": "Infinity Quest",
+    "oil": 8,
+    "motion": 16
+  },
+  {
+    "brand": "Track",
+    "name": "Theorem Delta",
+    "oil": 10,
+    "motion": 16
+  },
+  {
+    "brand": "Ebonite",
+    "name": "Spartan Pearl",
+    "oil": 11,
+    "motion": 16
+  },
+  {
+    "brand": "Brunswick",
+    "name": "Danger Zone Purple Ice",
+    "oil": 3,
+    "motion": 16
+  },
+  {
+    "brand": "Hammer",
+    "name": "Bubblegum Vibe",
+    "oil": 4,
+    "motion": 15
+  },
+  {
+    "brand": "Hammer",
+    "name": "Black Widow 3.0",
+    "oil": 12,
+    "motion": 15
+  },
+  {
+    "brand": "Brunswick",
+    "name": "Strategy",
+    "oil": 10,
+    "motion": 15
+  },
+  {
+    "brand": "Hammer",
+    "name": "Vibe Deep Ocean",
+    "oil": 5,
+    "motion": 14
+  },
+  {
+    "brand": "Radical",
+    "name": "Outer Limits Black Hole",
+    "oil": 7,
+    "motion": 14
+  },
+  {
+    "brand": "Hammer",
+    "name": "Raw Hammer Red / White / Purple",
+    "oil": 1,
+    "motion": 14
+  },
+  {
+    "brand": "Radical",
+    "name": "Evil Eye",
+    "oil": 9,
+    "motion": 14
+  },
+  {
+    "brand": "Hammer",
+    "name": "Spawn",
+    "oil": 14,
+    "motion": 14
+  },
+  {
+    "brand": "Hammer",
+    "name": "Zero Mercy Solid",
+    "oil": 16,
+    "motion": 14
+  },
+  {
+    "brand": "Radical",
+    "name": "Revenge Solid",
+    "oil": 3,
+    "motion": 14
+  },
+  {
+    "brand": "Brunswick",
+    "name": "Fury Orange / Red",
+    "oil": 4,
+    "motion": 13
+  },
+  {
+    "brand": "Track",
+    "name": "Paragon Fire",
+    "oil": 10,
+    "motion": 13
+  },
+  {
+    "brand": "Track",
+    "name": "Synthesis",
+    "oil": 14,
+    "motion": 13
+  },
+  {
+    "brand": "Brunswick",
+    "name": "Rhino Carbon / Lime / Silver",
+    "oil": 1,
+    "motion": 12
+  },
+  {
+    "brand": "Brunswick",
+    "name": "Danger Zone Solid",
+    "oil": 6,
+    "motion": 12
+  },
+  {
+    "brand": "DV8",
+    "name": "Intense Collision",
+    "oil": 9,
+    "motion": 12
+  },
+  {
+    "brand": "Brunswick",
+    "name": "Warning Alert",
+    "oil": 5,
+    "motion": 12
+  },
+  {
+    "brand": "Track",
+    "name": "Stealth Mode",
+    "oil": 8,
+    "motion": 12
+  },
+  {
+    "brand": "Hammer",
+    "name": "Maximum Effect",
+    "oil": 14,
+    "motion": 12
+  },
+  {
+    "brand": "Brunswick",
+    "name": "Combat Solid",
+    "oil": 15,
+    "motion": 12
+  },
+  {
+    "brand": "Radical",
+    "name": "Vexed",
+    "oil": 7,
+    "motion": 12
+  },
+  {
+    "brand": "DV8",
+    "name": "Double Trouble",
+    "oil": 8,
+    "motion": 11
+  },
+  {
+    "brand": "Ebonite",
+    "name": "Spartan",
+    "oil": 15,
+    "motion": 11
+  },
+  {
+    "brand": "Radical",
+    "name": "Revenge Pearl",
+    "oil": 4,
+    "motion": 11
+  },
+  {
+    "brand": "DV8",
+    "name": "Dark Side Curse",
+    "oil": 5,
+    "motion": 11
+  },
+  {
+    "brand": "Hammer",
+    "name": "Widow Tour V1",
+    "oil": 6,
+    "motion": 11
+  },
+  {
+    "brand": "Brunswick",
+    "name": "Alert",
+    "oil": 7,
+    "motion": 10
+  },
+  {
+    "brand": "Radical",
+    "name": "Guru Oracle",
+    "oil": 8,
+    "motion": 10
+  },
+  {
+    "brand": "Hammer",
+    "name": "Fallout",
+    "oil": 10,
+    "motion": 10
+  },
+  {
+    "brand": "Radical",
+    "name": "Deep Impact",
+    "oil": 11,
+    "motion": 10
+  },
+  {
+    "brand": "DV8",
+    "name": "Heckler Taunt",
+    "oil": 12,
+    "motion": 10
+  },
+  {
+    "brand": "Brunswick",
+    "name": "Combat Hybrid",
+    "oil": 13,
+    "motion": 10
+  },
+  {
+    "brand": "Brunswick",
+    "name": "Fury Emerald / Black",
+    "oil": 5,
+    "motion": 10
+  },
+  {
+    "brand": "Hammer",
+    "name": "Raw Hammer Solid",
+    "oil": 3,
+    "motion": 9
+  },
+  {
+    "brand": "Brunswick",
+    "name": "Twist",
+    "oil": 1,
+    "motion": 9
+  },
+  {
+    "brand": "Ebonite",
+    "name": "Game Breaker 5 Hybrid",
+    "oil": 10,
+    "motion": 9
+  },
+  {
+    "brand": "Brunswick",
+    "name": "Rhino Solid Purple / Black",
+    "oil": 3,
+    "motion": 8
+  },
+  {
+    "brand": "Radical",
+    "name": "No Doubt Hybrid",
+    "oil": 9,
+    "motion": 8
+  },
+  {
+    "brand": "Hammer",
+    "name": "NU 2.0",
+    "oil": 5,
+    "motion": 6
+  },
+  {
+    "brand": "Hammer",
+    "name": "Purple Pearl Urethane 78D",
+    "oil": 6,
+    "motion": 3
+  },
+  {
+    "brand": "Brunswick",
+    "name": "Crown 78U",
+    "oil": 5,
+    "motion": 2
+  },
+  {
+    "brand": "Hammer",
+    "name": "Black Pearl Urethane 78D",
+    "oil": 3,
+    "motion": 1
+  },
+  {
+    "brand": "Radical",
+    "name": "Intel Tour",
+    "oil": 9,
+    "motion": 6
+  },
+  {
+    "brand": "Ebonite",
+    "name": "Turbo X NU",
+    "oil": 7,
+    "motion": 5
+  },
+  {
+    "brand": "Hammer",
+    "name": "Purple Pearl Urethane",
+    "oil": 7,
+    "motion": 2
+  }
+]

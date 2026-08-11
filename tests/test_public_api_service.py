@@ -294,7 +294,7 @@ class _FakeCursor:
                     ))
             self._result_rows = rows
 
-        elif q.startswith("select product_id, weight_lbs, rg, differential from product_skus where product_id = any(%s)"):
+        elif q.startswith("select product_id, weight_lbs, rg, differential from product_skus where product_id = any(%s) and rg is not null"):
             ids = set(params[0])
             self._description = [("product_id",), ("weight_lbs",), ("rg",), ("differential",)]
             rows = []
@@ -302,6 +302,34 @@ class _FakeCursor:
                 for s in self.db["skus"].get(pid, []):
                     if s.get("rg") is not None:
                         rows.append((pid, s["weight_lbs"], s["rg"], s.get("differential")))
+            self._result_rows = rows
+
+        elif q.startswith("select p.id, p.name, p.url, b.name as brand_name, c.core_type, p.coverstock_type, p.coverstock_material, p.has_particle,"):
+            status = params[0]
+            self._description = [(c,) for c in (
+                "id", "name", "url", "brand_name", "core_type", "coverstock_type", "coverstock_material",
+                "has_particle", "oil_rating", "motion_rating", "primary_image_url",
+            )]
+            rows = []
+            for pid, p in self.db["products"].items():
+                if p["published"] and p["status"] == status:
+                    core = self.db["cores"].get(p.get("core_id"), {})
+                    rows.append((
+                        pid, p["name"], p["url"], self.db["brands"][p["brand_id"]]["name"],
+                        core.get("core_type"), p.get("coverstock_type"), p.get("coverstock_material"),
+                        p.get("has_particle", False), p.get("oil_rating"), p.get("motion_rating"),
+                        p.get("primary_image_url"),
+                    ))
+            self._result_rows = rows
+
+        elif q.startswith("select product_id, weight_lbs, rg, differential from product_skus where product_id = any(%s) and differential is not null"):
+            ids = set(params[0])
+            self._description = [("product_id",), ("weight_lbs",), ("rg",), ("differential",)]
+            rows = []
+            for pid in ids:
+                for s in self.db["skus"].get(pid, []):
+                    if s.get("differential") is not None:
+                        rows.append((pid, s["weight_lbs"], s.get("rg"), s["differential"]))
             self._result_rows = rows
 
         else:
@@ -489,6 +517,101 @@ def test_list_similar_products_respects_limit():
 
     results = service.list_similar_products(_FakeConnection(db), source, limit=3)
     assert len(results) == 3
+
+
+# --- estimate_oil_motion: pure, no DB ---
+
+def test_estimate_oil_motion_within_valid_ranges_for_every_material_type_combo():
+    materials = [None, "polyester_plastic", "urethane", "reactive_resin"]
+    types = [None, "solid", "pearl", "hybrid"]
+    core_types = [None, "symmetric", "asymmetric"]
+    for m in materials:
+        for t in types:
+            for c in core_types:
+                for particle in (True, False):
+                    for diff in (None, 0.01, 0.065):
+                        result = service.estimate_oil_motion(
+                            core_type=c, coverstock_type=t, coverstock_material=m,
+                            has_particle=particle, differential=diff,
+                        )
+                        assert service.OIL_MIN <= result["oil"] <= service.OIL_MAX
+                        assert service.MOTION_MIN <= result["motion"] <= service.MOTION_MAX
+
+
+def test_estimate_oil_motion_heavier_material_and_particle_increase_oil():
+    poly = service.estimate_oil_motion(coverstock_material="polyester_plastic")
+    solid_resin = service.estimate_oil_motion(coverstock_type="solid", coverstock_material="reactive_resin")
+    particle_solid_resin = service.estimate_oil_motion(
+        coverstock_type="solid", coverstock_material="reactive_resin", has_particle=True,
+    )
+    assert poly["oil"] < solid_resin["oil"] < particle_solid_resin["oil"]
+
+
+def test_estimate_oil_motion_pearl_skids_more_than_solid():
+    solid = service.estimate_oil_motion(coverstock_type="solid", coverstock_material="reactive_resin")
+    pearl = service.estimate_oil_motion(coverstock_type="pearl", coverstock_material="reactive_resin")
+    assert pearl["oil"] < solid["oil"]
+
+
+def test_estimate_oil_motion_asymmetric_and_higher_differential_increase_motion():
+    sym_low_diff = service.estimate_oil_motion(core_type="symmetric", differential=0.015)
+    asym_high_diff = service.estimate_oil_motion(core_type="asymmetric", differential=0.06)
+    assert sym_low_diff["motion"] < asym_high_diff["motion"]
+
+
+def test_estimate_oil_motion_no_inputs_falls_back_to_midrange():
+    result = service.estimate_oil_motion()
+    assert service.OIL_MIN < result["oil"] < service.OIL_MAX
+    assert service.MOTION_MIN < result["motion"] < service.MOTION_MAX
+
+
+# --- list_plotter_positions: multi-query assembly, chart vs. estimated ---
+
+def test_list_plotter_positions_uses_chart_value_when_set():
+    db = _fresh_db()
+    pid = _seed_published_current_product(
+        db, core_id="core-a", coverstock_type="solid", coverstock_material="reactive_resin",
+        oil_rating=6, motion_rating=18,
+    )
+    db["cores"]["core-a"] = {"name": "Some Core", "core_type": "asymmetric"}
+    db["skus"][pid] = [{"weight_lbs": 15, "rg": 2.50, "differential": 0.050}]
+
+    results = service.list_plotter_positions(_FakeConnection(db))
+
+    assert len(results) == 1
+    assert results[0]["oil"] == 6
+    assert results[0]["motion"] == 18
+    assert results[0]["oil_motion_source"] == "chart"
+
+
+def test_list_plotter_positions_estimates_when_chart_value_unset():
+    db = _fresh_db()
+    pid = _seed_published_current_product(
+        db, core_id="core-a", coverstock_type="pearl", coverstock_material="reactive_resin",
+    )
+    db["cores"]["core-a"] = {"name": "Some Core", "core_type": "symmetric"}
+    db["skus"][pid] = [{"weight_lbs": 15, "rg": 2.50, "differential": 0.020}]
+
+    results = service.list_plotter_positions(_FakeConnection(db))
+
+    assert len(results) == 1
+    assert results[0]["oil_motion_source"] == "estimated"
+    assert service.OIL_MIN <= results[0]["oil"] <= service.OIL_MAX
+    assert service.MOTION_MIN <= results[0]["motion"] <= service.MOTION_MAX
+
+
+def test_list_plotter_positions_only_published_current_by_default():
+    db = _fresh_db()
+    _seed_published_current_product(db, pid="current-1", status="current")
+    db["skus"]["current-1"] = [{"weight_lbs": 15, "rg": 2.50, "differential": 0.050}]
+    _seed_published_current_product(db, pid="retired-1", status="retired")
+    db["skus"]["retired-1"] = [{"weight_lbs": 15, "rg": 2.50, "differential": 0.050}]
+    _seed_published_current_product(db, pid="unpublished-1", published=False)
+    db["skus"]["unpublished-1"] = [{"weight_lbs": 15, "rg": 2.50, "differential": 0.050}]
+
+    results = service.list_plotter_positions(_FakeConnection(db))
+
+    assert [r["id"] for r in results] == ["current-1"]
 
 
 if __name__ == "__main__":

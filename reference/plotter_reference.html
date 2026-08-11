@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Ball Motion Comparison — Interactive</title>
+<style>
+  :root{ --red:#c8102e; --ink:#1a1a1f; --grid:#d9dce3; --panel:#ffffff; --bg:#eef1f6; }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--ink)}
+  header{background:var(--red);color:#fff;padding:14px 20px}
+  header h1{margin:0;font-size:20px;letter-spacing:.5px;font-weight:800;text-transform:uppercase}
+  header p{margin:4px 0 0;font-size:12px;opacity:.9}
+  .wrap{max-width:1180px;margin:0 auto;padding:16px}
+  .controls{display:flex;flex-wrap:wrap;gap:14px;align-items:center;background:var(--panel);border:1px solid #e2e5ec;border-radius:10px;padding:12px 14px;margin-bottom:14px}
+  .controls .group{display:flex;align-items:center;gap:8px;font-size:13px}
+  .chips{display:flex;flex-wrap:wrap;gap:6px}
+  .chip{border:1px solid #cfd3dc;background:#f6f7fa;border-radius:999px;padding:4px 11px;font-size:12px;cursor:pointer;user-select:none;transition:.15s}
+  .chip.off{opacity:.35;text-decoration:line-through}
+  input[type=search]{border:1px solid #cfd3dc;border-radius:8px;padding:6px 10px;font-size:13px;width:180px}
+  input[type=range]{width:120px}
+  .plotcard{background:var(--panel);border:1px solid #e2e5ec;border-radius:12px;padding:10px 10px 6px;position:relative;overflow:hidden}
+  .yaxis{position:absolute;left:4px;top:14px;bottom:44px;width:18px;display:flex;flex-direction:column;justify-content:space-between;align-items:center;background:linear-gradient(#6b2fb3,#c39be8);border-radius:9px;padding:8px 0}
+  .yaxis span{writing-mode:vertical-rl;transform:rotate(180deg);font-weight:800;color:#fff;font-size:12px;letter-spacing:1px}
+  .plotgrid{position:relative;margin:6px 26px 40px 40px}
+  .plot{position:relative;width:100%;padding-top:112%;background:#fff;border-left:2px solid #b9bec9;border-bottom:2px solid #b9bec9}
+  .plot .inner{position:absolute;inset:0}
+  .gline{position:absolute;background:var(--grid)}
+  .gline.v{width:1px;top:0;bottom:0}
+  .gline.h{height:1px;left:0;right:0}
+  .tick{position:absolute;font-size:10px;color:#8a8f9a}
+  .tick.x{bottom:-18px;transform:translateX(-50%)}
+  .tick.y{left:-16px;transform:translateY(-50%)}
+  .axcap{position:absolute;font-size:11px;font-weight:800;color:#fff;background:linear-gradient(90deg,#f0842a,#e0531f);padding:3px 9px;border-radius:4px;bottom:-34px}
+  .axcap.left{left:0}.axcap.right{right:0}
+  .ball{position:absolute;transform:translate(-50%,-50%);cursor:pointer;transition:filter .12s, z-index 0s;z-index:1}
+  .ball img{display:block;width:100%;height:100%;border-radius:50%;box-shadow:0 1px 3px rgba(0,0,0,.35);pointer-events:none}
+  .ball:hover{filter:drop-shadow(0 0 0 #fff);z-index:50}
+  .ball:hover img{outline:3px solid var(--red);outline-offset:1px}
+  .ball .lab{position:absolute;top:100%;left:50%;transform:translateX(-50%);margin-top:1px;font-size:9px;white-space:nowrap;background:rgba(255,255,255,.85);padding:0 3px;border-radius:3px;pointer-events:none}
+  .hide{display:none!important}
+  #tip{position:fixed;pointer-events:none;background:#1a1a1f;color:#fff;padding:7px 10px;border-radius:7px;font-size:12px;z-index:999;opacity:0;transition:opacity .1s;max-width:200px}
+  #tip b{color:#ff8fa0}
+  #tip .m{opacity:.8}
+  .count{font-size:12px;color:#6b7280;margin-left:auto}
+  footer{max-width:1180px;margin:0 auto;padding:6px 16px 24px;font-size:11px;color:#9aa0ab}
+</style>
+</head>
+<body>
+<header>
+  <h1>Ball Motion Comparison Chart — Interactive</h1>
+  <p>X-axis: oil the ball is good on (Light → Heavy) &nbsp;•&nbsp; Y-axis: ball motion (Smooth → Angular). Hover for details, click a ball to open its page.</p>
+</header>
+
+<div class="wrap">
+  <div class="controls">
+    <div class="group"><strong>Brand:</strong><div class="chips" id="brandChips"></div></div>
+    <div class="group"><label>Search <input type="search" id="search" placeholder="ball name…"/></label></div>
+    <div class="group"><label>Size <input type="range" id="size" min="20" max="72" value="42"/></label></div>
+    <div class="group"><label><input type="checkbox" id="labels"/> Labels</label></div>
+    <div class="count" id="count"></div>
+  </div>
+
+  <div class="plotcard">
+    <div class="yaxis"><span>ANGULAR</span><span>SMOOTH</span></div>
+    <div class="plotgrid">
+      <div class="plot"><div class="inner" id="plot"></div></div>
+      <div class="axcap left">LIGHT OIL</div>
+      <div class="axcap right">HEAVY OIL</div>
+    </div>
+  </div>
+</div>
+<footer>Positions digitized from the Brunswick “Ball Motion Comparison Chart” (Form #0526-19, Jul/Aug 2026). Data is editable in <code>balls.js</code>. Ball links point to <code>balls/&lt;slug&gt;.html</code> by default.</footer>
+
+<div id="tip"></div>
+<script src="balls.js"></script>
+<script>
+const OIL_MIN=1, OIL_MAX=16, MOT_MIN=1, MOT_MAX=18;
+const PADX=0.5, PADY=0.5; // padding in grid units so edge balls aren't clipped
+const plot=document.getElementById('plot');
+const tip=document.getElementById('tip');
+const state={brands:new Set(), size:42, labels:false, q:''};
+
+// build gridlines + ticks
+function grid(){
+  for(let x=OIL_MIN;x<=OIL_MAX;x++){
+    const l=document.createElement('div'); l.className='gline v';
+    l.style.left=px(x)+'%'; plot.appendChild(l);
+    const t=document.createElement('div'); t.className='tick x'; t.style.left=px(x)+'%'; t.textContent=x; plot.appendChild(t);
+  }
+  for(let y=MOT_MIN;y<=MOT_MAX;y++){
+    const l=document.createElement('div'); l.className='gline h';
+    l.style.top=py(y)+'%'; plot.appendChild(l);
+    const t=document.createElement('div'); t.className='tick y'; t.style.top=py(y)+'%'; t.textContent=y; plot.appendChild(t);
+  }
+}
+function px(oil){ return ( (oil-(OIL_MIN-PADX)) / ((OIL_MAX+PADX)-(OIL_MIN-PADX)) )*100; }
+function py(mot){ return ( 1-(mot-(MOT_MIN-PADY)) / ((MOT_MAX+PADY)-(MOT_MIN-PADY)) )*100; }
+
+const BRAND_COLORS={Brunswick:'#c8102e',DV8:'#e23b2e',Ebonite:'#0aa',Hammer:'#e08a00',Radical:'#d11',Track:'#333'};
+let nodes=[];
+function build(){
+  const brands=[...new Set(BALLS.map(b=>b.brand))].sort();
+  brands.forEach(br=>state.brands.add(br));
+  const chips=document.getElementById('brandChips');
+  brands.forEach(br=>{
+    const c=document.createElement('span'); c.className='chip'; c.textContent=br;
+    c.style.borderColor=BRAND_COLORS[br]||'#999';
+    c.onclick=()=>{ c.classList.toggle('off'); if(state.brands.has(br))state.brands.delete(br); else state.brands.add(br); render(); };
+    chips.appendChild(c);
+  });
+  BALLS.forEach(b=>{
+    const el=document.createElement('a');
+    el.className='ball'; el.href=b.url||'#'; el.target='_blank'; el.rel='noopener';
+    el.style.left=px(b.oil)+'%'; el.style.top=py(b.motion)+'%';
+    const img=document.createElement('img'); img.src=b.image; img.alt=b.name; img.loading='lazy';
+    const lab=document.createElement('span'); lab.className='lab'; lab.textContent=b.name;
+    el.appendChild(img); el.appendChild(lab);
+    el.addEventListener('mousemove',e=>showTip(e,b));
+    el.addEventListener('mouseleave',()=>{tip.style.opacity=0;});
+    plot.appendChild(el); nodes.push({el,lab,b});
+  });
+}
+function showTip(e,b){
+  tip.innerHTML=`<b>${b.name}</b><br><span class="m">${b.brand}</span><br>Oil: ${b.oil}/16 &nbsp; Motion: ${b.motion}/18`;
+  tip.style.opacity=1;
+  let x=e.clientX+14,y=e.clientY+14;
+  if(x+210>innerWidth)x=e.clientX-210; if(y+70>innerHeight)y=e.clientY-70;
+  tip.style.left=x+'px'; tip.style.top=y+'px';
+}
+function render(){
+  let shown=0;
+  nodes.forEach(({el,lab,b})=>{
+    const ok=state.brands.has(b.brand) && (!state.q || b.name.toLowerCase().includes(state.q));
+    el.classList.toggle('hide',!ok);
+    if(ok)shown++;
+    el.style.width=state.size+'px'; el.style.height=state.size+'px';
+    lab.classList.toggle('hide',!state.labels);
+  });
+  document.getElementById('count').textContent=shown+' of '+BALLS.length+' balls';
+}
+document.getElementById('search').oninput=e=>{state.q=e.target.value.trim().toLowerCase();render();};
+document.getElementById('size').oninput=e=>{state.size=+e.target.value;render();};
+document.getElementById('labels').onchange=e=>{state.labels=e.target.checked;render();};
+grid(); build(); render();
+</script>
+</body>
+</html>

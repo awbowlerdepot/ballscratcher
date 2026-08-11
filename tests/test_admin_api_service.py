@@ -117,6 +117,16 @@ class FakeCursor:
             row["video_reviews_summary_updated_at"] = "now"
             self._last_result = None
 
+        elif q.startswith("update products set oil_rating"):
+            oil_rating, motion_rating, product_id = params
+            row = self.db["products"].get(product_id)
+            self._last_result = None
+            if row is not None:
+                row["oil_rating"] = oil_rating
+                row["motion_rating"] = motion_rating
+                self._last_result = (product_id,)
+            self.description = [("id",)]
+
         elif q.startswith("update products set") and "returning id" not in q:
             column = q.split("set ", 1)[1].split(" =", 1)[0]
             value, product_id = params
@@ -2095,6 +2105,34 @@ def test_reorder_product_images_ignores_ids_from_other_products():
     assert db["product_images"]["img-other"]["display_order"] == 0  # untouched, still its original value
     assert db["product_images"]["img-2"]["display_order"] == 0
     assert db["product_images"]["img-1"]["display_order"] == 2
+
+
+# --- Plotter chart position (migration 011): the AUTHORITATIVE oil/motion
+# position digitized from Brunswick's own published Ball Motion Comparison
+# Chart, set by scripts/backfill_plotter_chart_positions.py's one-time
+# matching pass. See service.set_plotter_position's docstring.
+
+def test_set_plotter_position_writes_both_fields():
+    db = {"products": {"prod-1": {"id": "prod-1"}}}
+    conn = FakeConnection(db)
+
+    result = service.set_plotter_position(conn, "prod-1", 6, 18)
+
+    assert db["products"]["prod-1"]["oil_rating"] == 6
+    assert db["products"]["prod-1"]["motion_rating"] == 18
+    assert result == {"product_id": "prod-1", "oil_rating": 6, "motion_rating": 18}
+    assert conn.committed
+
+
+def test_set_plotter_position_missing_product_raises():
+    db = {"products": {}}
+    conn = FakeConnection(db)
+
+    try:
+        service.set_plotter_position(conn, "no-such-id", 6, 18)
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
 
 
 if __name__ == "__main__":
