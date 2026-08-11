@@ -1093,7 +1093,7 @@ def backfill_estimated_plotter_positions(conn) -> dict:
         if product_ids:
             cur.execute(
                 "select product_id, weight_lbs, differential from product_skus "
-                "where product_id = any(%s) and differential is not null",
+                "where product_id = any(%s::uuid[]) and differential is not null",
                 (product_ids,),
             )
             sku_columns = [desc[0] for desc in cur.description]

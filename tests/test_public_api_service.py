@@ -294,7 +294,7 @@ class _FakeCursor:
                     ))
             self._result_rows = rows
 
-        elif q.startswith("select product_id, weight_lbs, rg, differential from product_skus where product_id = any(%s) and rg is not null"):
+        elif q.startswith("select product_id, weight_lbs, rg, differential from product_skus where product_id = any(%s::uuid[]) and rg is not null"):
             ids = set(params[0])
             self._description = [("product_id",), ("weight_lbs",), ("rg",), ("differential",)]
             rows = []
@@ -322,7 +322,7 @@ class _FakeCursor:
                     ))
             self._result_rows = rows
 
-        elif q.startswith("select product_id, weight_lbs, rg, differential from product_skus where product_id = any(%s) and differential is not null"):
+        elif q.startswith("select product_id, weight_lbs, rg, differential from product_skus where product_id = any(%s::uuid[]) and differential is not null"):
             ids = set(params[0])
             self._description = [("product_id",), ("weight_lbs",), ("rg",), ("differential",)]
             rows = []

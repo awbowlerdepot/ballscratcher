@@ -448,7 +448,7 @@ def list_similar_products(conn, product_id: str, limit: int = 5) -> list:
         if candidate_ids:
             cur.execute(
                 "select product_id, weight_lbs, rg, differential from product_skus "
-                "where product_id = any(%s) and rg is not null",
+                "where product_id = any(%s::uuid[]) and rg is not null",
                 (candidate_ids,),
             )
             sku_columns2 = [desc[0] for desc in cur.description]
@@ -625,7 +625,7 @@ def list_plotter_positions(conn, status: str = "current") -> list:
         if product_ids:
             cur.execute(
                 "select product_id, weight_lbs, rg, differential from product_skus "
-                "where product_id = any(%s) and differential is not null",
+                "where product_id = any(%s::uuid[]) and differential is not null",
                 (product_ids,),
             )
             sku_columns = [desc[0] for desc in cur.description]
