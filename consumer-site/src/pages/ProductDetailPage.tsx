@@ -90,6 +90,27 @@ export default function ProductDetailPage() {
           )}
         </div>
 
+        {/* Additional-images rail, to the right of the hero -- the
+            hero's box height (see .product-detail-media in index.css)
+            is now sized to match this rail's height plus the hero's
+            own original height combined, since the two used to be
+            stacked as separate rows and are now side by side. */}
+        {otherImages.length > 0 && (
+          <div className="product-detail-gallery">
+            {otherImages.map((img) => (
+              <button
+                key={img.id}
+                type="button"
+                className="product-detail-gallery-thumb"
+                onClick={() => setSelectedImageUrl(img.stored_url)}
+                aria-label={`Show ${img.image_type.replace(/_/g, " ")} image`}
+              >
+                <img src={img.stored_url} alt={`${product.name} -- ${img.image_type.replace(/_/g, " ")}`} loading="lazy" />
+              </button>
+            ))}
+          </div>
+        )}
+
         <div className="product-detail-heading">
           <div className="product-card-brand">{product.brand_name}</div>
           <h1>{product.name}</h1>
@@ -104,22 +125,6 @@ export default function ProductDetailPage() {
           </button>
         </div>
       </div>
-
-      {otherImages.length > 0 && (
-        <div className="product-detail-gallery">
-          {otherImages.map((img) => (
-            <button
-              key={img.id}
-              type="button"
-              className="product-detail-gallery-thumb"
-              onClick={() => setSelectedImageUrl(img.stored_url)}
-              aria-label={`Show ${img.image_type.replace(/_/g, " ")} image`}
-            >
-              <img src={img.stored_url} alt={`${product.name} -- ${img.image_type.replace(/_/g, " ")}`} loading="lazy" />
-            </button>
-          ))}
-        </div>
-      )}
 
       {/* High-level details */}
       <section className="detail-section">

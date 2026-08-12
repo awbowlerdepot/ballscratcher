@@ -203,8 +203,7 @@ input[type="text"] {
   display: flex;
   flex-direction: column;
 }
-.product-card-media,
-.product-detail-media {
+.product-card-media {
   aspect-ratio: 1 / 1;
   background: #f2f2f2;
   display: block;
@@ -256,16 +255,34 @@ input[type="text"] {
   margin-bottom: 1rem;
 }
 
+/* Hero image + additional-images rail sit side by side, both fixed to
+   --detail-hero-height -- that height is deliberately the OLD hero's
+   260px plus the old below-the-fold gallery row's ~72px thumbnails
+   and the gap between them, now that the two are combined into one
+   row instead of stacked as two (Al: "the large image is the current
+   height of the two combined"). */
+:root {
+  --detail-hero-height: 352px;
+}
+
 .product-detail-header {
-  display: grid;
-  grid-template-columns: 260px 1fr;
-  gap: 1.5rem;
+  display: flex;
+  align-items: flex-start;
+  gap: 1rem;
   margin-bottom: 1.25rem;
+  flex-wrap: wrap;
 }
 .product-detail-media {
+  width: 260px;
+  height: var(--detail-hero-height);
+  flex: 0 0 auto;
   border-radius: var(--radius);
   overflow: hidden;
   border: 1px solid var(--color-border);
+  background: #f2f2f2;
+}
+.product-detail-heading {
+  flex: 1 1 240px;
 }
 .product-detail-heading h1 {
   margin-top: 0.25rem;
@@ -273,13 +290,17 @@ input[type="text"] {
 
 .product-detail-gallery {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
+  flex: 0 0 auto;
   gap: 0.6rem;
-  margin-bottom: 2rem;
+  height: var(--detail-hero-height);
+  overflow-y: auto;
+  padding-right: 0.15rem;
 }
 .product-detail-gallery-thumb {
   width: 72px;
   height: 72px;
+  flex: 0 0 auto;
   padding: 0;
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
@@ -554,6 +575,20 @@ input[type="text"] {
 
 @media (max-width: 640px) {
   .product-detail-header {
-    grid-template-columns: 1fr;
+    flex-direction: column;
+  }
+  .product-detail-media {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1 / 1;
+  }
+  .product-detail-gallery {
+    flex-direction: row;
+    width: 100%;
+    height: auto;
+    overflow-x: auto;
+    overflow-y: visible;
+    padding-right: 0;
+    padding-bottom: 0.15rem;
   }
 }
