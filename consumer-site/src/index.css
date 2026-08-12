@@ -189,10 +189,63 @@ input[type="text"] {
   gap: 0.4rem;
 }
 
+.browse-view-toggle {
+  margin-left: auto;
+}
+
 .product-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
   gap: 1.1rem;
+}
+
+/* List view -- same ProductCard markup as the grid, just reflowed via
+   descendant selectors so the component itself doesn't need a layout-
+   aware prop. One row per ball: a small square thumbnail, brand/name/
+   meta inline, compare button pinned to the right. */
+.product-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.product-list .product-card {
+  flex-direction: row;
+  align-items: center;
+}
+.product-list .product-card-media {
+  width: 84px;
+  height: 84px;
+  flex: 0 0 auto;
+}
+.product-list .product-card-body {
+  flex-direction: row;
+  align-items: center;
+  flex: 1;
+  gap: 1rem;
+  padding: 0.6rem 1rem;
+  min-width: 0;
+}
+.product-list .product-card-brand {
+  flex: 0 0 120px;
+}
+.product-list .product-card-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.product-list .product-card-meta {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.product-list .product-card-video-count {
+  flex: 0 0 160px;
+  white-space: nowrap;
+}
+.product-list .product-card .btn-compare {
+  flex: 0 0 auto;
+  margin-top: 0;
 }
 
 .product-card {
@@ -597,5 +650,18 @@ input[type="text"] {
     overflow-y: visible;
     padding-right: 0;
     padding-bottom: 0.15rem;
+  }
+  .product-list .product-card {
+    flex-wrap: wrap;
+  }
+  .product-list .product-card-body {
+    flex-wrap: wrap;
+    padding: 0.5rem 0.75rem;
+  }
+  .product-list .product-card-brand {
+    flex: 1 1 100%;
+  }
+  .product-list .product-card-video-count {
+    flex: 1 1 100%;
   }
 }

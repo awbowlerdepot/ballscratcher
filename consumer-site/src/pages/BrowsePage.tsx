@@ -6,6 +6,22 @@ import ProductCard from "../components/ProductCard";
 
 const PAGE_SIZE = 24;
 
+type ViewMode = "grid" | "list";
+const VIEW_STORAGE_KEY = "bbd_browse_view";
+
+// A layout preference, not filter data -- unlike status/brand_id/q
+// this has no business in the shareable URL (a link to "Brunswick
+// balls, current" should look the same whether the person who opens
+// it prefers grid or list), so it's plain localStorage instead, same
+// reasoning as useCompareList's persistence.
+function readStoredView(): ViewMode {
+  try {
+    return localStorage.getItem(VIEW_STORAGE_KEY) === "list" ? "list" : "grid";
+  } catch {
+    return "grid";
+  }
+}
+
 // Al's ask: "a focus on current bowling balls and a way to still view
 // retired balls". status defaults to 'current' (matches public_api.
 // list_products' own default) -- a visitor has to explicitly switch the
@@ -26,6 +42,16 @@ export default function BrowsePage() {
   const [hasMore, setHasMore] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [view, setView] = useState<ViewMode>(readStoredView);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(VIEW_STORAGE_KEY, view);
+    } catch {
+      // Private browsing / storage disabled -- the toggle still works
+      // for this session, it just won't stick across visits.
+    }
+  }, [view]);
 
   useEffect(() => {
     getBrands().then(setBrands).catch(() => setBrands([]));
@@ -124,6 +150,25 @@ export default function BrowsePage() {
             Search
           </button>
         </form>
+
+        <div className="status-toggle browse-view-toggle" role="tablist" aria-label="Layout">
+          <button
+            type="button"
+            className={view === "grid" ? "active" : ""}
+            onClick={() => setView("grid")}
+            aria-pressed={view === "grid"}
+          >
+            Grid
+          </button>
+          <button
+            type="button"
+            className={view === "list" ? "active" : ""}
+            onClick={() => setView("list")}
+            aria-pressed={view === "list"}
+          >
+            List
+          </button>
+        </div>
       </div>
 
       <h1>{heading}</h1>
@@ -136,7 +181,7 @@ export default function BrowsePage() {
         </p>
       )}
 
-      <div className="product-grid">
+      <div className={view === "list" ? "product-list" : "product-grid"}>
         {products.map((p) => (
           <ProductCard key={p.id} product={p} />
         ))}
