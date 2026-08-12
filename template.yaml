@@ -361,11 +361,34 @@ Parameters:
       CloudFormation has no string-strip function to derive this from
       BedrockModelId automatically, hence the second parameter -- keep the
       two in sync if you ever change the model.
+  ConsumerSiteDomainName:
+    Type: String
+    Default: ""
+    Description: >
+      Custom domain for the consumer site's CloudFront distribution (e.g.
+      data.bowleriq.com). Left blank, the site is only reachable at its
+      default *.cloudfront.net domain -- both this AND
+      ConsumerSiteCertificateArn have to be set together for CloudFront to
+      accept the alias (see DEPLOY_RUNBOOK.md's custom-domain section for
+      the full one-time setup: requesting/validating the ACM certificate,
+      then the CNAME record this domain needs to point at the distribution).
+  ConsumerSiteCertificateArn:
+    Type: String
+    Default: ""
+    Description: >
+      ARN of an ACM certificate covering ConsumerSiteDomainName. Must be
+      requested in us-east-1 REGARDLESS of what region this stack itself is
+      deployed to -- that's a hard CloudFront requirement, not a choice made
+      here. Not created by this template (ACM DNS validation needs a CNAME
+      record added at whatever registrar/DNS provider actually hosts the
+      domain, which this template has no way to reach or verify) -- request
+      and validate it yourself first, then pass the resulting ARN here.
 
 Conditions:
   HasBigCommerceSecret: !Not [!Equals [!Ref BigCommerceSecretArn, ""]]
   HasAdminApiToken: !Not [!Equals [!Ref AdminApiTokenSecretArn, ""]]
   HasYouTubeApiKeySecret: !Not [!Equals [!Ref YouTubeApiKeySecretArn, ""]]
+  HasConsumerSiteDomain: !Not [!Equals [!Ref ConsumerSiteDomainName, ""]]
 
 Resources:
   ImageBucket:
@@ -1970,6 +1993,22 @@ Resources:
         DefaultRootObject: index.html
         PriceClass: PriceClass_100
         HttpVersion: http2
+        # Both blank by default -- the distribution is perfectly usable at
+        # its default *.cloudfront.net domain with no custom domain set up
+        # at all (see ConsumerSiteDomainName/ConsumerSiteCertificateArn's
+        # own descriptions above). CloudFront rejects Aliases without a
+        # matching non-default ViewerCertificate, so these two conditions
+        # are wired together on purpose, not independently.
+        Aliases: !If
+          - HasConsumerSiteDomain
+          - - !Ref ConsumerSiteDomainName
+          - !Ref AWS::NoValue
+        ViewerCertificate: !If
+          - HasConsumerSiteDomain
+          - AcmCertificateArn: !Ref ConsumerSiteCertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
         Origins:
           - Id: ConsumerSiteBucketOrigin
             DomainName: !GetAtt ConsumerSiteBucket.RegionalDomainName

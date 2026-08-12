@@ -2802,21 +2802,97 @@ no matching S3 object, so without this rewrite the visitor would see a
 raw CloudFront/S3 error page instead of react-router taking over.
 
 **What's not done yet:**
-- The plotter page's real visual design -- Al's original tool
-  (`reference/plotter_reference.html`/`plotter_reference_balls.js`) has
-  brand-filter chips, a size slider, a label toggle, and styled hover
-  tooltips; the current `/plotter` page is a plain SVG scatter with a
-  brand dropdown and a title-attribute tooltip. Data-correct, not yet
-  the polished port.
-- No custom domain on CloudFront (plain `*.cloudfront.net` URL for now).
+- The plotter page's search box and label toggle -- gridlines, ball-image
+  markers, the size slider, brand-toggle chips, hover/click hit-testing,
+  and clipping-safe margins are all ported now (see below); only the
+  search box and label toggle from `reference/plotter_reference.html`
+  remain unported.
 - No automated frontend tests, and `npm install`/a real build were never
-  run in this session -- this sandbox has no network access to the npm
-  registry (`npm ping` returns `403 blocked-by-allowlist`). Every file
-  was hand-written and manually proofread (brace/paren balance checked
-  file by file) but not compiled or executed. Run `npm run build`
-  yourself before deploying and treat any TypeScript error it surfaces
-  as a real bug to fix, not a false positive.
+  run against the live npm registry from inside this sandbox -- earlier
+  sessions had no network access to it at all (`npm ping` returned `403
+  blocked-by-allowlist`); this sandbox instance can reach the registry
+  and `npx tsc -b` typechecks clean, but `npm run build`'s rollup bundle
+  step still fails here on a platform-mismatched
+  `@rollup/rollup-linux-arm64-gnu` native binary -- unrelated to code
+  correctness, doesn't reproduce on Al's own machine. Run `npm run
+  build` yourself before deploying and treat any TypeScript error it
+  surfaces as a real bug to fix, not a false positive.
 - No SEO/meta-tag work or analytics.
+
+**Custom domain (`data.bowleriq.com`) on CloudFront:**
+
+CloudFront needs an ACM certificate that covers the domain, and that
+certificate has to live in `us-east-1` no matter which region this
+stack itself is deployed to -- a hard CloudFront requirement, not a
+choice made in this template. CloudFormation can't create resources in
+a second region from inside one template, so the certificate is
+requested and validated by hand, once, outside `sam deploy`, and its
+ARN is passed in as a parameter.
+
+1. **Request the certificate in `us-east-1`:**
+   ```bash
+   aws acm request-certificate \
+     --domain-name data.bowleriq.com \
+     --validation-method DNS \
+     --region us-east-1
+   ```
+   This prints a `CertificateArn` -- save it.
+
+2. **Get the DNS validation record:**
+   ```bash
+   aws acm describe-certificate \
+     --certificate-arn <arn-from-step-1> \
+     --region us-east-1 \
+     --query "Certificate.DomainValidationOptions[0].ResourceRecord"
+   ```
+   This returns a `Name`/`Type`/`Value` -- add it as a CNAME record at
+   whatever DNS provider actually hosts `bowleriq.com` (GoDaddy,
+   Cloudflare, Namecheap, etc. -- this template has no way to reach or
+   verify that provider, so this step is manual regardless of which one
+   you use). Note: some providers want the record `Name` entered
+   without the trailing `.bowleriq.com` (i.e. just the host label) --
+   check your provider's CNAME UI if the exact value from `describe-
+   certificate` gets rejected.
+
+3. **Wait for validation** (DNS propagation, usually a few minutes to
+   ~30):
+   ```bash
+   aws acm describe-certificate \
+     --certificate-arn <arn-from-step-1> \
+     --region us-east-1 \
+     --query "Certificate.Status"
+   ```
+   Don't move on until this prints `"ISSUED"`.
+
+4. **Deploy with the new parameters:**
+   ```bash
+   sam deploy --parameter-overrides \
+     ConsumerSiteDomainName=data.bowleriq.com \
+     ConsumerSiteCertificateArn=<arn-from-step-1>
+   ```
+   (add any other `--parameter-overrides` you already pass today --
+   this replaces the full list, it doesn't merge with a previous
+   deploy's overrides). This sets `Aliases`/`ViewerCertificate` on
+   `ConsumerSiteDistribution` -- see `HasConsumerSiteDomain` in
+   template.yaml's `Conditions:` block.
+
+5. **Point the domain at CloudFront:** add a second CNAME record at
+   your DNS provider -- `data.bowleriq.com` -> the value of the
+   `ConsumerSiteUrl` stack output with the `https://` stripped off
+   (that's `ConsumerSiteDistribution`'s own `*.cloudfront.net` domain
+   name):
+   ```bash
+   aws cloudformation describe-stacks --stack-name <your-stack-name> \
+     --query "Stacks[0].Outputs[?OutputKey=='ConsumerSiteUrl'].OutputValue" --output text
+   ```
+   Once that CNAME resolves, `https://data.bowleriq.com` serves the
+   site directly; the `*.cloudfront.net` URL keeps working too (both
+   are valid `Aliases`/default-domain hosts on the same distribution).
+
+Leaving `ConsumerSiteDomainName`/`ConsumerSiteCertificateArn` unset (the
+default) keeps the distribution on its plain `*.cloudfront.net` URL with
+`CloudFrontDefaultCertificate: true` -- no action needed if you don't
+want a custom domain yet.
 
 ## 7. Ongoing operations
 
