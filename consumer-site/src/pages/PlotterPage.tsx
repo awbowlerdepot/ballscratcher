@@ -248,6 +248,16 @@ export default function PlotterPage() {
                     fill="none"
                     className={`plotter-ball-ring plotter-ball-ring-${p.oil_motion_source}`}
                   />
+                  {/* Dedicated hit target, drawn last (on top) so it
+                      owns pointer events across the WHOLE circle. The
+                      ring above is fill="none", which by default only
+                      registers hover/click on its thin stroked edge --
+                      that's the "only works on the edge" bug. A
+                      transparent (not "none") fill still counts as
+                      painted for hit-testing, so this circle catches
+                      hover/click everywhere inside the marker, not
+                      just a couple of pixels of outline. */}
+                  <circle cx={cx} cy={cy} r={r} fill="transparent" className="plotter-ball-hit" />
                 </g>
               );
             })}

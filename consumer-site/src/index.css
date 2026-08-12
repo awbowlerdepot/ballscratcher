@@ -482,6 +482,9 @@ input[type="text"] {
 .plotter-ball image {
   pointer-events: none;
 }
+.plotter-ball-hit {
+  pointer-events: all;
+}
 .plotter-ball-placeholder {
   fill: #eee;
 }
