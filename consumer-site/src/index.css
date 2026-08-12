@@ -273,7 +273,10 @@ input[type="text"] {
   flex-wrap: wrap;
 }
 .product-detail-media {
-  width: 260px;
+  /* Square, not a portrait rectangle -- both dimensions pinned to
+     --detail-hero-height so width grows to match the taller height
+     instead of staying at the old 260px. */
+  width: var(--detail-hero-height);
   height: var(--detail-hero-height);
   flex: 0 0 auto;
   border-radius: var(--radius);
