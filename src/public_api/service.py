@@ -114,12 +114,20 @@ def list_products(conn, status: str = "current", brand_id: str = None, core_id: 
 
     Card fields: id/name/url/color/status, brand_name, core_name/
     core_type, coverstock_name/coverstock_type/coverstock_material,
-    release_date, primary_image_url (falls back to the first visible
-    product_images row's stored_url if primary_image_url itself is unset
-    -- see _primary_image_subquery), and video_reviews_summary_video_
-    count (so a card can show "based on N video reviews" without a
-    second round-trip -- video_reviews_summary's actual TEXT is left for
-    the detail page, a card has no room for it)."""
+    release_date, primary_image_url (prefers the visible product_images
+    row an admin has flagged is_thumbnail -- see migration 010's own
+    comment for why that flag, not the raw products.primary_image_url
+    column, is the actual source of truth for "which image is the hero
+    image": an admin can retarget the thumbnail via PATCH /products/
+    {id}/images/{image_id} at any time without that column ever being
+    touched, so reading it directly here could show a stale image Al
+    had already re-flagged away from in the admin UI. Falls back to
+    the first visible image by display_order if nothing is flagged,
+    then to the raw column as a last resort for a legacy row with no
+    product_images rows at all), and video_reviews_summary_video_count
+    (so a card can show "based on N video reviews" without a second
+    round-trip -- video_reviews_summary's actual TEXT is left for the
+    detail page, a card has no room for it)."""
     query = """
         select p.id, p.name, p.url, p.color, p.status,
                b.name as brand_name,
@@ -127,13 +135,13 @@ def list_products(conn, status: str = "current", brand_id: str = None, core_id: 
                p.coverstock_name, p.coverstock_type, p.coverstock_material,
                p.release_date,
                coalesce(
-                   p.primary_image_url,
                    (
                        select pi.stored_url from product_images pi
                        where pi.product_id = p.id and pi.is_visible = true
-                       order by pi.display_order, pi.id
+                       order by pi.is_thumbnail desc, pi.display_order, pi.id
                        limit 1
-                   )
+                   ),
+                   p.primary_image_url
                ) as primary_image_url,
                p.video_reviews_summary_video_count
         from products p
@@ -192,7 +200,15 @@ def get_product(conn, product_id: str):
                    upper(p.weights_available) as weights_max,
                    p.usbc_approval_date,
                    p.release_date, p.description, p.status,
-                   p.primary_image_url,
+                   coalesce(
+                       (
+                           select pi.stored_url from product_images pi
+                           where pi.product_id = p.id and pi.is_visible = true
+                           order by pi.is_thumbnail desc, pi.display_order, pi.id
+                           limit 1
+                       ),
+                       p.primary_image_url
+                   ) as primary_image_url,
                    p.video_reviews_summary, p.video_reviews_summary_video_count,
                    p.video_reviews_summary_updated_at,
                    b.id as brand_id, b.name as brand_name,
@@ -447,13 +463,13 @@ def list_similar_products(conn, product_id: str, limit: int = 5) -> list:
                    b.name as brand_name,
                    c.core_type, p.coverstock_type, p.coverstock_material, p.coverstock_name,
                    coalesce(
-                       p.primary_image_url,
                        (
                            select pi.stored_url from product_images pi
                            where pi.product_id = p.id and pi.is_visible = true
-                           order by pi.display_order, pi.id
+                           order by pi.is_thumbnail desc, pi.display_order, pi.id
                            limit 1
-                       )
+                       ),
+                       p.primary_image_url
                    ) as primary_image_url
             from products p
             join brands b on b.id = p.brand_id
@@ -624,13 +640,13 @@ def list_plotter_positions(conn, status: str = "current") -> list:
                    c.core_type, p.coverstock_type, p.coverstock_material, p.has_particle,
                    p.oil_rating, p.motion_rating, p.oil_motion_source,
                    coalesce(
-                       p.primary_image_url,
                        (
                            select pi.stored_url from product_images pi
                            where pi.product_id = p.id and pi.is_visible = true
-                           order by pi.display_order, pi.id
+                           order by pi.is_thumbnail desc, pi.display_order, pi.id
                            limit 1
-                       )
+                       ),
+                       p.primary_image_url
                    ) as primary_image_url
             from products p
             join brands b on b.id = p.brand_id

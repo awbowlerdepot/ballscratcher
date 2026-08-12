@@ -156,6 +156,23 @@ def test_list_brands_only_brands_with_published_products():
 # --- get_product / get_products_compare / list_similar_products:
 # multi-query assembly against a hand-built fake cursor ---
 
+def _derive_primary_image_url(db, pid, p):
+    """Mirrors the real SQL's coalesce(...) exactly (see service.py's
+    four query sites, all identical since Al's ask: "the images have
+    hidden and thumbnail attributes and sorting... use the thumbnail
+    for the main image") -- prefer the visible image an admin flagged
+    is_thumbnail, then the first visible image by display_order, then
+    the raw (can-go-stale) products.primary_image_url column as a last
+    resort. A naive `p.get("primary_image_url")` pass-through here
+    would silently mask exactly the bug Al hit: the fixture agreeing
+    with itself while the real query behaves differently."""
+    visible = [img for img in db["images"].get(pid, []) if img.get("is_visible", True)]
+    if visible:
+        visible.sort(key=lambda img: (0 if img.get("is_thumbnail") else 1, img["display_order"], img["id"]))
+        return visible[0].get("stored_url")
+    return p.get("primary_image_url")
+
+
 class _FakeCursor:
     def __init__(self, db):
         self.db = db
@@ -190,7 +207,7 @@ class _FakeCursor:
                         self.db["brands"][p["brand_id"]]["name"],
                         core.get("name"), core.get("core_type"),
                         p.get("coverstock_name"), p.get("coverstock_type"), p.get("coverstock_material"),
-                        p.get("release_date"), p.get("primary_image_url"),
+                        p.get("release_date"), _derive_primary_image_url(self.db, pid, p),
                         p.get("video_reviews_summary_video_count", 0),
                     ))
             self._description = [(c,) for c in (
@@ -231,7 +248,7 @@ class _FakeCursor:
                     p.get("coverstock_type"), p.get("coverstock_name"), p.get("has_particle", False),
                     p.get("has_custom_graphic", False), p.get("factory_finish"), p.get("part_number"),
                     weights_min, weights_max, p.get("usbc_approval_date"), p.get("release_date"),
-                    p.get("description"), p["status"], p.get("primary_image_url"),
+                    p.get("description"), p["status"], _derive_primary_image_url(self.db, pid, p),
                     p.get("video_reviews_summary"), p.get("video_reviews_summary_video_count", 0),
                     p.get("video_reviews_summary_updated_at"), p["brand_id"],
                     self.db["brands"][p["brand_id"]]["name"],
@@ -298,7 +315,7 @@ class _FakeCursor:
                     rows.append((
                         pid, p["name"], p["url"], p.get("color"), self.db["brands"][p["brand_id"]]["name"],
                         core.get("core_type"), p.get("coverstock_type"), p.get("coverstock_material"),
-                        p.get("coverstock_name"), p.get("primary_image_url"),
+                        p.get("coverstock_name"), _derive_primary_image_url(self.db, pid, p),
                     ))
             self._result_rows = rows
 
@@ -326,7 +343,7 @@ class _FakeCursor:
                         pid, p["name"], p["url"], self.db["brands"][p["brand_id"]]["name"],
                         core.get("core_type"), p.get("coverstock_type"), p.get("coverstock_material"),
                         p.get("has_particle", False), p.get("oil_rating"), p.get("motion_rating"),
-                        p.get("oil_motion_source"), p.get("primary_image_url"),
+                        p.get("oil_motion_source"), _derive_primary_image_url(self.db, pid, p),
                     ))
             self._result_rows = rows
 
@@ -452,6 +469,70 @@ def test_get_product_weights_available_none_when_unset():
     product = service.get_product(_FakeConnection(db), pid)
 
     assert product["weights_available"] is None
+
+
+def test_get_product_uses_thumbnail_flagged_image_not_stale_primary_image_url_column():
+    """Regression test for Al's ask: "the images have hidden and
+    thumbnail attributes and sorting... use the thumbnail for the main
+    image". products.primary_image_url is a separate column an admin's
+    PATCH /products/{id}/images/{image_id} thumbnail toggle never
+    touches (see admin_api.update_product_image), so it can go stale
+    relative to whichever image is actually flagged is_thumbnail --
+    get_product (and every other public_api query surfacing primary_
+    image_url) must prefer the flagged image over that raw column."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, primary_image_url="https://s3/stale-main.png")
+    db["images"][pid] = [
+        {"id": "img-1", "image_type": "main", "stored_url": "https://s3/stale-main.png",
+         "is_thumbnail": False, "display_order": 0, "is_visible": True},
+        {"id": "img-2", "image_type": "other", "stored_url": "https://s3/actual-thumb.png",
+         "is_thumbnail": True, "display_order": 1, "is_visible": True},
+    ]
+
+    product = service.get_product(_FakeConnection(db), pid)
+
+    assert product["primary_image_url"] == "https://s3/actual-thumb.png"
+
+
+def test_get_product_falls_back_to_first_visible_image_when_no_thumbnail_flagged():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, primary_image_url="https://s3/stale-main.png")
+    db["images"][pid] = [
+        {"id": "img-1", "image_type": "main", "stored_url": "https://s3/first.png",
+         "is_thumbnail": False, "display_order": 0, "is_visible": True},
+        {"id": "img-2", "image_type": "other", "stored_url": "https://s3/second.png",
+         "is_thumbnail": False, "display_order": 1, "is_visible": True},
+    ]
+
+    product = service.get_product(_FakeConnection(db), pid)
+
+    assert product["primary_image_url"] == "https://s3/first.png"
+
+
+def test_get_product_falls_back_to_raw_column_when_no_images_at_all():
+    """A legacy row predating product_images tracking (or one where
+    every image is hidden) still needs SOME image rather than None."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, primary_image_url="https://s3/legacy.png")
+
+    product = service.get_product(_FakeConnection(db), pid)
+
+    assert product["primary_image_url"] == "https://s3/legacy.png"
+
+
+def test_list_products_uses_thumbnail_flagged_image():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, primary_image_url="https://s3/stale.png")
+    db["images"][pid] = [
+        {"id": "img-1", "image_type": "main", "stored_url": "https://s3/stale.png",
+         "is_thumbnail": False, "display_order": 0, "is_visible": True},
+        {"id": "img-2", "image_type": "other", "stored_url": "https://s3/thumb.png",
+         "is_thumbnail": True, "display_order": 1, "is_visible": True},
+    ]
+
+    results = service.list_products(_FakeConnection(db))
+
+    assert results[0]["primary_image_url"] == "https://s3/thumb.png"
 
 
 # get_products_compare

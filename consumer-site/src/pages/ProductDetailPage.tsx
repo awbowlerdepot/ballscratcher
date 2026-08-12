@@ -17,6 +17,13 @@ export default function ProductDetailPage() {
   const [similar, setSimilar] = useState<SimilarProduct[]>([]);
   const [notFound, setNotFound] = useState(false);
   const [loading, setLoading] = useState(true);
+  // Which image is shown in the header -- null means "use the default"
+  // (product.primary_image_url, which the API now derives from the
+  // admin-curated is_thumbnail flag on product_images, not the raw,
+  // can-go-stale products.primary_image_url column). Clicking a photo
+  // in the "Additional images" strip below overrides this so a visitor
+  // can browse the full-size gallery without leaving the page.
+  const [selectedImageUrl, setSelectedImageUrl] = useState<string | null>(null);
   const { ids, toggle, isFull } = useCompare();
 
   useEffect(() => {
@@ -24,6 +31,7 @@ export default function ProductDetailPage() {
     setLoading(true);
     setNotFound(false);
     setProduct(null);
+    setSelectedImageUrl(null);
     getProduct(id)
       .then(setProduct)
       .catch((err) => {
@@ -59,6 +67,13 @@ export default function ProductDetailPage() {
   }
 
   const inCompare = ids.includes(product.id);
+  const heroImageUrl = selectedImageUrl ?? product.primary_image_url ?? null;
+  // Every other visible image (the header already shows the hero one)
+  // -- Al's ask: "the images have hidden and thumbnail attributes and
+  // sorting... add the additional images to the product details page".
+  // product.images is already visibility-filtered and display_order-
+  // sorted server-side (see public_api.get_product).
+  const otherImages = product.images.filter((img) => img.stored_url !== heroImageUrl);
 
   return (
     <div className="page product-detail-page">
@@ -68,8 +83,8 @@ export default function ProductDetailPage() {
 
       <div className="product-detail-header">
         <div className="product-detail-media">
-          {product.primary_image_url ? (
-            <img src={product.primary_image_url} alt={product.name} />
+          {heroImageUrl ? (
+            <img src={heroImageUrl} alt={product.name} />
           ) : (
             <div className="product-card-media-placeholder" aria-hidden="true" />
           )}
@@ -89,6 +104,22 @@ export default function ProductDetailPage() {
           </button>
         </div>
       </div>
+
+      {otherImages.length > 0 && (
+        <div className="product-detail-gallery">
+          {otherImages.map((img) => (
+            <button
+              key={img.id}
+              type="button"
+              className="product-detail-gallery-thumb"
+              onClick={() => setSelectedImageUrl(img.stored_url)}
+              aria-label={`Show ${img.image_type.replace(/_/g, " ")} image`}
+            >
+              <img src={img.stored_url} alt={`${product.name} -- ${img.image_type.replace(/_/g, " ")}`} loading="lazy" />
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* High-level details */}
       <section className="detail-section">
