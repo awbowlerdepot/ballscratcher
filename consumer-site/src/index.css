@@ -403,8 +403,49 @@ input[type="text"] {
 .plotter-controls {
   display: flex;
   gap: 0.75rem;
-  margin-bottom: 1rem;
+  align-items: center;
+  margin-bottom: 0.75rem;
   flex-wrap: wrap;
+}
+
+.plotter-size-control {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+  color: var(--color-muted);
+}
+
+.plotter-count {
+  font-size: 0.85rem;
+  color: var(--color-muted);
+  margin-left: auto;
+}
+
+.plotter-brand-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 1rem;
+}
+.plotter-brand-chips-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  margin-right: 0.15rem;
+}
+.chip {
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  border-radius: 999px;
+  padding: 0.25rem 0.75rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+  color: var(--color-text);
+}
+.chip.chip-off {
+  opacity: 0.4;
+  text-decoration: line-through;
 }
 
 .plotter-chart-wrap {

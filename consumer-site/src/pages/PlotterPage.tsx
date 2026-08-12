@@ -19,9 +19,10 @@ import type { PlotterPoint, ProductStatus } from "../api/types";
 // algorithmic estimate vs an admin-set manual value) since a photo
 // can't be "filled vs outlined" the way a bare circle could.
 //
-// Still not ported from the original: brand-filter chips (a plain
-// <select> stands in for now), the search box, size slider, and label
-// toggle -- worth doing as a follow-up but not blocking on.
+// Brand toggle chips and the size slider are now ported too (multi-
+// select chips replace the single <select>; the slider drives ball
+// marker diameter same as the original's #size range input, default
+// 42, range 20-72). Still not ported: the search box and label toggle.
 const WIDTH = 900;
 const HEIGHT = 640;
 const MARGIN = { top: 24, right: 24, bottom: 56, left: 56 };
@@ -29,8 +30,9 @@ const OIL_MIN = 1;
 const OIL_MAX = 16;
 const MOTION_MIN = 1;
 const MOTION_MAX = 18;
-const RADIUS = 14;
-const RADIUS_HOVER = 19;
+const SIZE_MIN = 20;
+const SIZE_MAX = 72;
+const SIZE_DEFAULT = 42;
 
 function xFor(oil: number) {
   const t = (oil - OIL_MIN) / (OIL_MAX - OIL_MIN);
@@ -49,13 +51,22 @@ export default function PlotterPage() {
   const [points, setPoints] = useState<PlotterPoint[]>([]);
   const [loading, setLoading] = useState(true);
   const [hovered, setHovered] = useState<PlotterPoint | null>(null);
-  const [brandFilter, setBrandFilter] = useState("");
+  const [size, setSize] = useState(SIZE_DEFAULT);
+  // Chip-based brand toggle, like the original's state.brands Set --
+  // a brand is shown unless explicitly toggled off. Reset to "every
+  // brand on" whenever the underlying point set changes (a status
+  // toggle swaps in a whole different catalog) rather than trying to
+  // carry toggles across an unrelated dataset.
+  const [enabledBrands, setEnabledBrands] = useState<Set<string>>(new Set());
   const navigate = useNavigate();
 
   useEffect(() => {
     setLoading(true);
     getPlotterPositions(status)
-      .then(setPoints)
+      .then((data) => {
+        setPoints(data);
+        setEnabledBrands(new Set(data.map((p) => p.brand_name)));
+      })
       .finally(() => setLoading(false));
   }, [status]);
 
@@ -65,9 +76,18 @@ export default function PlotterPage() {
   );
 
   const visible = useMemo(
-    () => (brandFilter ? points.filter((p) => p.brand_name === brandFilter) : points),
-    [points, brandFilter],
+    () => points.filter((p) => enabledBrands.has(p.brand_name)),
+    [points, enabledBrands],
   );
+
+  function toggleBrand(name: string) {
+    setEnabledBrands((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }
 
   return (
     <div className="page plotter-page">
@@ -95,14 +115,37 @@ export default function PlotterPage() {
             Retired
           </button>
         </div>
-        <select value={brandFilter} onChange={(e) => setBrandFilter(e.target.value)}>
-          <option value="">All brands</option>
-          {brands.map((b) => (
-            <option key={b} value={b}>
-              {b}
-            </option>
-          ))}
-        </select>
+
+        <label className="plotter-size-control">
+          Size
+          <input
+            type="range"
+            min={SIZE_MIN}
+            max={SIZE_MAX}
+            value={size}
+            onChange={(e) => setSize(Number(e.target.value))}
+            aria-label="Ball image size"
+          />
+        </label>
+
+        <span className="plotter-count">
+          {visible.length} of {points.length} balls shown
+        </span>
+      </div>
+
+      <div className="plotter-brand-chips">
+        <span className="plotter-brand-chips-label">Brand:</span>
+        {brands.map((b) => (
+          <button
+            key={b}
+            type="button"
+            className={enabledBrands.has(b) ? "chip" : "chip chip-off"}
+            onClick={() => toggleBrand(b)}
+            aria-pressed={enabledBrands.has(b)}
+          >
+            {b}
+          </button>
+        ))}
       </div>
 
       {loading ? (
@@ -165,7 +208,8 @@ export default function PlotterPage() {
             {visible.map((p) => {
               const cx = xFor(p.oil);
               const cy = yFor(p.motion);
-              const r = hovered?.id === p.id ? RADIUS_HOVER : RADIUS;
+              const radius = size / 2;
+              const r = hovered?.id === p.id ? radius + 5 : radius;
               const clipId = `plotter-clip-${p.id}`;
               return (
                 <g
