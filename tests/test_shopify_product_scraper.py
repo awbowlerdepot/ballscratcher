@@ -177,6 +177,51 @@ def test_fallout_main_image_with_no_alt_still_classified_main_by_position():
     assert p["images"][0]["image_type"] == "main"
 
 
+# --- Raw Hammer - Black/Grey: real bug, Al reported product
+# e4627a24-3b68-4d42-93fc-fb31340d3495 "is missing core and cover data".
+# Root cause, confirmed against the live page via Claude in Chrome: the
+# entry-level Raw Hammer line's <h3> heading is "BALL SPEC" (no trailing
+# S) while every other Hammer product uses "BALL SPECS" -- _find_section's
+# old ("BALL SPECS", "SPECIFICATIONS") prefix tuple could never match the
+# shorter "BALL SPEC" text, so specs_section came back None and every
+# BALL_SPEC_LABEL_MAP field silently stayed null, even though the real
+# page has all of them. RG/DIFF still parsed fine (separate "RG" heading),
+# which is exactly the signature Al's report showed: skus/images present,
+# core_name/coverstock_name/color/factory_finish/part_number/
+# weights_available all null. Fixture captured directly off the live page
+# (https://hammerbowling.com/products/raw-hammer-black-grey.json) --
+# body_html length matches the live page's exactly (4180 chars).
+
+RAW_HAMMER_URL = "https://hammerbowling.com/products/raw-hammer-black-grey"
+
+
+def test_raw_hammer_ball_spec_singular_heading_still_parses_core_and_coverstock():
+    p = _parsed("hammer_raw_hammer_black_grey.json", RAW_HAMMER_URL)
+    assert p["core_name"] == "Raw Hammer"
+    assert p["coverstock_name"] == "Juiced Solid"
+    assert p["coverstock_type"] == "solid"
+    assert p["coverstock_material"] == "reactive_resin"
+    assert p["color"] == "Black / Grey"
+    assert p["factory_finish"] == "500, 1500, 3000 Siaair Micro Pad"
+    assert p["part_number"] == "60-108607-93X"
+
+
+def test_raw_hammer_weights_available_and_release_date():
+    p = _parsed("hammer_raw_hammer_black_grey.json", RAW_HAMMER_URL)
+    assert p["weights_available"] == (10, 16)
+    assert str(p["release_date"]) == "2026-05-14"
+
+
+def test_raw_hammer_rg_diff_still_parsed_under_separate_heading():
+    """The RG/DIFF numbers were never affected by the BALL SPEC/BALL SPECS
+    bug -- they're matched by a completely separate "RG" heading. Confirms
+    the fix didn't (and the original bug never did) touch this part."""
+    p = _parsed("hammer_raw_hammer_black_grey.json", RAW_HAMMER_URL)
+    assert len(p["skus"]) == 7
+    sixteen = next(s for s in p["skus"] if s["weight_lbs"] == 16)
+    assert sixteen == {"weight_lbs": 16, "rg": 2.543, "differential": 0.033, "mass_bias": None}
+
+
 # --- 3-D Offset: older retired, explicit CORE TYPE field ---
 
 def test_3d_offset_explicit_core_type_wins_over_inference():

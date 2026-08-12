@@ -831,6 +831,62 @@ export ADMIN_API_TOKEN="<the same bearer token used elsewhere>"
 python3 scripts/backfill_coverstock_ids.py
 ```
 
+**Correction, 2026-08-12: it WAS a scraper bug after all -- same lesson as
+the Brunswick correction below, different root cause.** Al reported the
+exact same product again by id (`e4627a24-3b68-4d42-93fc-fb31340d3495`,
+`Raw Hammer - Black / Grey`): "is missing core and cover data." The admin
+API record showed `core_id`/`coverstock_id`/`color`/`factory_finish`/
+`part_number`/`weights_available` all still null, and -- the real
+tell -- `updated_at` (2026-08-07) was already after the original "just
+needs a rescrape" diagnosis above, meaning a rescrape (or several) had
+already happened and it was *still* null. That ruled out "hasn't been
+rescraped yet" as the explanation this time.
+
+Re-investigated the same way as the Brunswick correction (Claude in
+Chrome, `javascript_exec` against `raw-hammer-black-grey.json`'s real
+`body_html`, not assumed): the heading `shopify_product_scraper`'s
+`_find_section` looks for is `<h3>BALL SPEC</h3>` on this product --
+singular, no trailing S -- while every other Hammer product this
+scraper had fixtures for (Fallout, Black Widow 3.0 Dynasty, etc.) uses
+`<h3>BALL SPECS</h3>`, plural. `_find_section` matches by
+`heading.startswith(prefix)`, and the old prefix tuple was `("BALL
+SPECS", "SPECIFICATIONS")` -- a *longer* string than "BALL SPEC" can
+never be a prefix match for it, so `specs_section` came back `None` for
+this product specifically, and every `BALL_SPEC_LABEL_MAP`-derived field
+silently stayed null. The RG/DIFF numbers (present and correct in Al's
+report) were never affected, since those are matched by an entirely
+separate "RG" heading -- exactly the signature that made this look like
+a missing-data problem rather than a parsing one.
+
+**Fix:** `parse_product_page`'s spec-heading prefix changed from `"BALL
+SPECS"` to `"BALL SPEC"` (drop the trailing S) -- matches both spellings,
+since anything starting with "BALL SPECS" also starts with "BALL SPEC".
+One-line change in `src/shopify_product_scraper/app.py`. New fixture
+`tests/fixtures/hammer_raw_hammer_black_grey.json`, captured directly off
+the live page (`body_html` length matches the live page's exactly, 4180
+chars) -- confirms the real page actually has every field
+(`core_name="Raw Hammer"`, `coverstock_name="Juiced Solid"`, etc.), so
+this was purely a parsing gap, not missing source data. Three new tests
+in `tests/test_shopify_product_scraper.py` cover the spec fields, weights/
+release date, and (regression guard) that RG/DIFF parsing was untouched.
+Full suite re-run clean (49/49).
+
+**Requires a Lambda redeploy** (`sam build ShopifyProductScraperFunction
+&& sam deploy`), then re-run the coverstock (and core) backfill scripts
+above -- same shape as before, but this time the rescrape they trigger
+will actually pick up the fix:
+```bash
+export ADMIN_API_URL="https://<your-api-id>.execute-api.us-west-1.amazonaws.com"
+export ADMIN_API_TOKEN="<the same bearer token used elsewhere>"
+python3 scripts/backfill_core_ids.py
+python3 scripts/backfill_coverstock_ids.py
+```
+Since Raw Hammer is an entire product line (not a one-off), check
+`GET /products?missing_core=true&source_platform=shopify` after
+redeploying to see how many Raw Hammer products this affected beyond the
+one Al flagged -- the backfill script above sweeps all of them in one
+run regardless of count.
+
 **Brunswick core/coverstock gap (2026-08-10) -- same class of bug, same
 fix, plus a new `SOURCE_PLATFORM` scoping option on both backfill
 scripts.** Al: "we are also missing a bunch of cores from the brunswick

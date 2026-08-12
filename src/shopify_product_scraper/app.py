@@ -505,7 +505,25 @@ def parse_product_page(product: dict, url: str) -> dict:
     brand landing on either shape needs no changes here."""
     soup = BeautifulSoup(product.get("body_html") or "", "lxml")
 
-    specs_section = _find_section(soup, ("BALL SPECS", "SPECIFICATIONS"))
+    # "BALL SPEC" (no trailing S), not "BALL SPECS" -- real bug, found via
+    # Claude in Chrome against the live page for a real Al report ("product
+    # e4627a24... is missing core and cover data"): the entry-level Raw
+    # Hammer line's live body_html heading is <h3>BALL SPEC</h3>, singular,
+    # while every other Hammer product this scraper had fixtures for uses
+    # the plural "BALL SPECS". _find_section matches by heading.startswith
+    # (prefix), so the old "BALL SPECS" prefix (longer than the actual
+    # heading text) could never match "BALL SPEC" -- specs_section came
+    # back None, and every BALL_SPEC_LABEL_MAP-derived field (core_name,
+    # coverstock_name, color, factory_finish, part_number,
+    # weights_available, ...) silently stayed null even though the real
+    # page has all of them (confirmed live: CORE="Raw Hammer",
+    # COVERSTOCK="Juiced Solid", etc. -- see
+    # tests/fixtures/hammer_raw_hammer_black_grey.json, captured directly
+    # off the live page). The RG/DIFF numbers still parsed fine because
+    # that section is matched by a completely separate heading ("RG").
+    # "BALL SPEC" as the prefix matches both spellings (any string starting
+    # with "BALL SPECS" also starts with "BALL SPEC").
+    specs_section = _find_section(soup, ("BALL SPEC", "SPECIFICATIONS"))
     if specs_section is not None and specs_section.name == "table":
         raw = parse_ball_specs_table(specs_section)
     else:
