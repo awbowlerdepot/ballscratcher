@@ -66,6 +66,48 @@ def test_match_entry_no_search_results_at_all():
     assert result["candidates"] == []
 
 
+def test_match_entry_uses_name_override_when_chart_name_differs_from_catalog():
+    """Real gap found 2026-08-12 (Al: some plotter balls missing their
+    'actual' values) -- five chart entries' own name text doesn't
+    byte-for-byte match the catalog's real product.name (dash convention,
+    word order, a missing "Black" prefix), so the strict exact-match check
+    always failed even though the real product genuinely exists and the
+    substring search already finds it as a candidate. NAME_OVERRIDES swaps
+    in the real catalog name only for the exact-match comparison -- search
+    still runs against the chart's own original name text."""
+    brands = {"hammer": {"id": "brand-1", "name": "Hammer"}}
+    search_calls = []
+
+    def fake_search(brand_id, name):
+        search_calls.append((brand_id, name))
+        return [
+            {"id": "prod-1", "name": "Raw Hammer - Red / White / Purple"},
+            {"id": "prod-2", "name": "Raw Hammer - Black / Grey"},
+        ]
+
+    result = script.match_entry(
+        {"brand": "Hammer", "name": "Raw Hammer Red / White / Purple"}, brands, fake_search,
+    )
+
+    assert result["status"] == "matched"
+    assert result["product"]["id"] == "prod-1"
+    # search itself still uses the chart's own original (un-overridden) name
+    assert search_calls == [("brand-1", "Raw Hammer Red / White / Purple")]
+
+
+def test_match_entry_name_override_is_a_no_op_for_entries_without_one():
+    """Confirms NAME_OVERRIDES only affects the five specific (brand, name)
+    pairs it lists -- every other chart entry's exact-match behavior is
+    completely unchanged."""
+    brands = {"brunswick": {"id": "brand-1", "name": "Brunswick"}}
+    result = script.match_entry(
+        {"brand": "Brunswick", "name": "Crown Victory"}, brands,
+        search_fn=lambda bid, name: [{"id": "prod-1", "name": "Crown Victory"}],
+    )
+    assert result["status"] == "matched"
+    assert result["product"]["id"] == "prod-1"
+
+
 def test_match_entry_multiple_exact_matches_flagged_ambiguous():
     """Shouldn't really happen (products.name is not unique but two
     identically-named products on the same brand would be a real data

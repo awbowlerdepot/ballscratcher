@@ -2732,6 +2732,54 @@ Review its log output for `no_match`/`ambiguous`/`no_brand` entries and
 resolve those by hand (a direct `PATCH /products/{id}/plotter-position`
 call, or update the product's name first if it's a real typo/mismatch).
 
+**Name-mismatch gap found 2026-08-12 (Al: "some of the balls on the
+example plotter are missing their actual values").** Checked the live
+`GET /products/plotter` output against the 56-entry chart dataset by
+hand: 32/56 had matched onto `'chart'`, 24 hadn't. Most of those 24 are
+genuinely retired/unpublished right now (not a bug) or ambiguous (a
+chart entry with an extra word in the live product name that could be
+the same colorway or a different one -- deliberately left alone rather
+than guessed, e.g. chart's "Infinity Quest" vs. the catalog's "Infinity
+Quest Pearl"). Five, though, are real, currently-published products this
+script's strict exact-match rejected purely over a punctuation/word-
+order difference from the chart's own name text: "Raw Hammer Red / White
+/ Purple" / "Fury Orange / Red" / "Fury Emerald / Black" (catalog uses a
+dash: "... - Red / White / Purple"), "Vibe Deep Ocean" (catalog:
+"Deep Ocean Vibe", word order swapped), and "Widow Tour V1" (catalog:
+"Black Widow Tour V1", missing the "Black" prefix every other Black
+Widow product carries). New `NAME_OVERRIDES` dict in
+`backfill_plotter_chart_positions.py` maps each of those five (brand,
+chart-name) pairs to the real catalog name for the exact-match
+comparison only -- the search call itself still uses the chart's
+original name text (already finds the real product fine via substring
+match). Two new tests
+(`test_match_entry_uses_name_override_when_chart_name_differs_from_catalog`,
+`test_match_entry_name_override_is_a_no_op_for_entries_without_one`),
+full suite re-run clean (13/13). Re-run the script (see command above)
+to pick these five up -- pure data fix, no redeploy needed, this only
+touches the standalone script.
+
+**Estimate-vs-actual accuracy, spot-checked 2026-08-12 (Al: "it would be
+interesting to see how accurate the estimate is compared to the
+actuals").** One-time ad-hoc analysis, not a shipped feature/endpoint:
+for all 32 products with a real chart position, computed what
+`estimate_oil_motion` would have guessed from that same product's real
+core/coverstock/differential data and compared. Across those 32: oil
+mean absolute error 3.3 (on the 1-16 scale), motion mean absolute error
+2.8 (on the 1-18 scale); only 2/32 exact oil matches and 3/32 exact
+motion matches, though 13/32 land within +/-2 on oil and 18/32 within
++/-2 on motion. Biggest misses cluster on oil for asymmetric
+reactive-resin solids (Revenge Solid, actual oil 3 vs. estimated 13;
+Dark Side Curse, actual 5 vs. estimated 13; Crown Victory, actual 6 vs.
+estimated 10) -- the heuristic's flat `+3` solid-coverstock adjustment
+overshoots hard for this whole class of ball, real signal toward
+revisiting `OIL_ADJUST_BY_TYPE`/`OIL_BASE_BY_MATERIAL` specifically
+(see `estimate_oil_motion`'s own "revisit once there's a real reference"
+note) rather than the motion side, which fares noticeably better. Not
+acted on beyond this spot-check -- flagging for a future pass now that
+there's an actual number to aim at, rather than guessing at new
+constants without re-validating.
+
 **`public_api/service.py`'s `estimate_oil_motion`** -- the algorithmic
 fallback for everything migration 011 doesn't cover. A documented, ROUND
 starting-point heuristic (not fit against real data -- there is none for

@@ -48,6 +48,44 @@ logger = logging.getLogger("backfill_plotter_chart_positions")
 
 CHART_DATA_PATH = os.path.join(os.path.dirname(__file__), "data", "brunswick_chart_positions.json")
 
+# Real gap found 2026-08-12 (Al: "some of the balls on the example plotter
+# are missing their actual values"): a first run of this script left 24 of
+# 56 chart entries unmatched. Manually cross-checked every one against the
+# live GET /products/plotter data (not guessed) and found most of those 24
+# are genuinely retired/unpublished right now -- correctly left as
+# 'estimated', not a bug. But five are real, currently-published products
+# that this script's strict exact-match rejected purely because the
+# chart's own name text (transcribed from balls.js, itself hand-typed off
+# Brunswick's PDF) doesn't byte-for-byte match this catalog's real
+# product.name -- a punctuation or word-order difference, same ball
+# either way, confirmed by brand + oil/motion context and (for the Raw
+# Hammer/Fury cases) the live product page's own name field:
+# - "Raw Hammer Red / White / Purple" -> catalog has the brand's own
+#   dash convention, "Raw Hammer - Red / White / Purple".
+# - "Fury Orange / Red" / "Fury Emerald / Black" -> same dash convention,
+#   "Fury - Orange / Red" / "Fury - Emerald / Black".
+# - "Vibe Deep Ocean" -> catalog's real name is word-order-swapped,
+#   "Deep Ocean Vibe".
+# - "Widow Tour V1" -> catalog's real name has the "Black" prefix every
+#   other Black Widow-line product also carries, "Black Widow Tour V1".
+#
+# Deliberately NOT included here (stayed 'estimated', on purpose): a
+# handful of other near-misses were genuinely ambiguous rather than a
+# clear rename -- e.g. chart's plain "Infinity Quest"/"Danger Zone"/"Guru
+# Oracle"/"Zero Mercy" each have exactly one live product candidate whose
+# name has an *extra* word ("... Pearl", "... Solid"), but there's no way
+# to confirm from the data alone whether that's the same colorway the
+# chart meant or a genuinely different one the chart doesn't cover -- per
+# this script's whole design principle (never guess), those are left for
+# a human to resolve by hand, not silently absorbed into this dict.
+NAME_OVERRIDES = {
+    ("Hammer", "Raw Hammer Red / White / Purple"): "Raw Hammer - Red / White / Purple",
+    ("Brunswick", "Fury Orange / Red"): "Fury - Orange / Red",
+    ("Brunswick", "Fury Emerald / Black"): "Fury - Emerald / Black",
+    ("Hammer", "Vibe Deep Ocean"): "Deep Ocean Vibe",
+    ("Hammer", "Widow Tour V1"): "Black Widow Tour V1",
+}
+
 # Same retry posture as every other backfill script in this project -- see
 # backfill_core_ids.py's module docstring for the full story on the
 # 503-from-Lambda-throttle issue this guards against.
@@ -132,8 +170,16 @@ def match_entry(entry: dict, brands_by_name_lower: dict, search_fn) -> dict:
     if brand is None:
         return {"status": "no_brand"}
 
+    # NAME_OVERRIDES swaps in the catalog's real product.name for a known
+    # handful of chart entries whose own name text doesn't match it
+    # byte-for-byte (see NAME_OVERRIDES's own comment) -- search still
+    # casts its net with the original chart name (ilike substring, so it
+    # finds the real product either way), only the exact-match comparison
+    # target changes.
+    match_name = NAME_OVERRIDES.get((entry["brand"], entry["name"]), entry["name"])
+
     candidates = search_fn(brand["id"], entry["name"])
-    exact = [c for c in candidates if c["name"].strip().lower() == entry["name"].strip().lower()]
+    exact = [c for c in candidates if c["name"].strip().lower() == match_name.strip().lower()]
 
     if len(exact) == 1:
         return {"status": "matched", "product": exact[0]}
