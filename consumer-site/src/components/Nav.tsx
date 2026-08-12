@@ -12,7 +12,7 @@ export default function Nav() {
     <header className="site-header">
       <div className="site-header-inner">
         <NavLink to="/" className="brand" end>
-          Bowler Depot Ball Finder
+          BowlerIQ Data Aggregator
         </NavLink>
         <nav className="main-nav">
           <NavLink to="/" end className={({ isActive }) => (isActive ? "active" : "")}>
