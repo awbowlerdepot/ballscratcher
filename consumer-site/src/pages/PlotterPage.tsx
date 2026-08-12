@@ -25,7 +25,14 @@ import type { PlotterPoint, ProductStatus } from "../api/types";
 // 42, range 20-72). Still not ported: the search box and label toggle.
 const WIDTH = 900;
 const HEIGHT = 640;
-const MARGIN = { top: 24, right: 24, bottom: 56, left: 56 };
+// top/bottom padded generously beyond the axis area itself -- at the
+// max size-slider setting (72px diameter, radius 36, +5 more on hover)
+// a ball plotted right at the motion=18 or motion=1 edge needs real
+// clearance or it gets clipped by the <svg> root's own viewBox bounds
+// (SVG's default overflow: hidden crops anything drawn above y=0 or
+// below y=HEIGHT). 48/72 comfortably fit a hovered max-size ball at
+// either edge with room to spare.
+const MARGIN = { top: 48, right: 24, bottom: 72, left: 56 };
 const OIL_MIN = 1;
 const OIL_MAX = 16;
 const MOTION_MIN = 1;
