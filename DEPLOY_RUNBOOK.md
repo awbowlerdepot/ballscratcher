@@ -978,6 +978,67 @@ export ADMIN_API_TOKEN="<the same bearer token used elsewhere>"
 python3 scripts/rescrape_brunswick_products.py
 ```
 
+**Video-thumbnail + low-res duplicate images fixed (`parse_images()`).**
+Al: "it looks like we are scraping a video thumbnail and the low res
+version of the ball and core images. we should only be pulling in the
+high res bowling ball images." Root-caused via Claude in Chrome
+(`javascript_exec` against the raw fetched HTML of a live product page,
+not the post-render DOM, to match what this scraper's `requests.get(...).
+text` actually receives) against `brunswickbowling.com/products/balls/
+current/combat`: every product page carries 7 `<img>` tags, not 3.
+
+1. 3 real gallery images (main ball + 2 core callouts) -- `srcset`
+   offering "700w, 1400w".
+2. 3 duplicate thumbnail-nav-strip `<img>` tags of the exact same 3
+   subjects -- same filename shape (`..._1600x1600_<hash>.png`, core
+   callouts still matching the `16-14_lb_Core` filename pattern
+   `parse_images` classifies on), just a different `<hash>` and a much
+   smaller `srcset` ("64w, 128w"). Filename alone can't tell these apart
+   from the real ones -- the literal `1600x1600` in the filename is a
+   fixed label the CMS uses regardless of actual rendition, not the real
+   dimensions.
+3. 1 video-teaser background image, for the "Watch the Combat in Action!"
+   section -- a real product-adjacent photo it is not; alt text varies per
+   product ("Pro Level Pin Splash Video Background" on Combat), but the
+   URL always has a `/video_backgrounds/` path segment.
+
+Fix, both in `src/product_scraper/app.py`'s `parse_images()`:
+- New `_srcset_max_width()` helper reads the largest `<n>w` descriptor
+  out of an `<img>`'s `srcset`. Any image whose max declared width is
+  under `MIN_IMAGE_WIDTH` (300, comfortably below the real gallery's
+  700w+ and above the thumb-strip's 128w ceiling) is dropped before
+  classification. An `<img>` with no `srcset` at all (unknown width) is
+  never dropped by this check -- only a *known-small* width counts,
+  matching every other product's plain-`src` core-callout images (e.g.
+  the Crown 78U fixture), which still have no `srcset` and must keep
+  working.
+- Any resolved URL containing `/video_backgrounds/` is dropped outright.
+
+This does **not** retroactively fix already-scraped Brunswick/Radical/DV8
+products -- same reasoning as the stale-image-DELETE fix above: a code
+change only affects what a *future* scrape returns. Verified via new
+tests in `tests/test_product_scraper.py`, built from the exact 7 real
+`<img>` tags captured off Combat's live page (not reconstructed):
+`test_parse_images_combat_real_page_shape_drops_dupes_and_video_bg` (all
+7 in, exactly 3 real ones out, low-res/video URLs never appear),
+`test_srcset_max_width_reads_largest_declared_width`,
+`test_parse_images_drops_video_background_image_alone`, and
+`test_parse_images_keeps_image_with_no_srcset_regardless_of_width`
+(regression guard for the no-`srcset` case above). Full suite re-run
+clean (43/43) after the change.
+
+**Requires a Lambda redeploy** (`sam build ProductScraperFunction && sam
+deploy`) before this takes effect, then the existing stale-image-DELETE +
+S3 orphan cleanup (above) does the actual retroactive cleanup for free --
+run `scripts/rescrape_brunswick_products.py` again after redeploying and
+every already-scraped Brunswick/Radical/DV8 product gets re-parsed under
+the fixed code; the video-thumbnail/low-res rows this bug already wrote
+are, by definition, `source_url`s the corrected parse no longer returns,
+so `upsert_product`'s stale-row DELETE removes them (and
+`delete_orphaned_image_objects` cleans up their mirrored S3 objects)
+automatically -- no separate one-off cleanup script needed for this fix
+specifically.
+
 **Image ordering/thumbnail/visibility (migration 010).** Al, looking
 ahead: "once we actually have a customer facing site we will want to
 order the images, set a thumbnail image and control visibility." Not

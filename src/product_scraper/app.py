@@ -454,17 +454,66 @@ def _resolve_img_src(img, base_url: str):
     return None
 
 
+# Product pages carry two <img> tags per real product photo: one in the
+# main gallery (srcset offering full-size renditions, e.g. "700w, 1400w")
+# and a duplicate in the thumbnail-nav strip underneath it (srcset topping
+# out around "64w, 128w") -- both point at files literally named
+# "..._1600x1600_<hash>.png" regardless of which rendition they actually
+# are, so filename alone can't tell them apart. Confirmed by inspecting
+# the live DOM (Combat, current Brunswick product): 7 <img> tags per page,
+# 3 real (gallery) + 3 duplicate (nav thumbnails, same 3 subjects) + 1
+# video-teaser background. Any <img> whose largest declared srcset
+# candidate is under this width is the nav-strip thumbnail, not the real
+# photo -- the real gallery images clear it by a wide margin (>=700w).
+MIN_IMAGE_WIDTH = 300
+
+
+def _srcset_max_width(img):
+    """Largest width descriptor declared in this <img>'s srcset (0 if no
+    srcset, or a srcset with no "<n>w" descriptors) -- used only to filter
+    out the low-res thumbnail-nav duplicates in parse_images(), kept
+    separate from _resolve_img_src() so that function's existing contract
+    (and tests) don't have to change."""
+    srcset = img.get("srcset")
+    if not srcset:
+        return 0
+    widths = []
+    for part in srcset.split(","):
+        bits = part.strip().split()
+        if len(bits) > 1 and bits[1].endswith("w"):
+            try:
+                widths.append(int(bits[1][:-1]))
+            except ValueError:
+                pass
+    return max(widths) if widths else 0
+
+
 def parse_images(soup: BeautifulSoup, base_url: str) -> list:
     """Main product image plus per-weight-range core callout images, matched
     by filename pattern rather than alt text -- alt text spells weights out
     in words ("sixteen to fourteen pound") inconsistently, filenames use the
-    reliable "16-14" numeric pattern."""
+    reliable "16-14" numeric pattern.
+
+    Two kinds of non-product <img> tags get filtered out before
+    classification (see MIN_IMAGE_WIDTH's comment for how this was
+    diagnosed against the live site):
+    - Low-res thumbnail-nav duplicates of the real gallery images --
+      excluded by srcset width via _srcset_max_width().
+    - The "Watch in Action" video-teaser background image -- excluded by
+      its stable "/video_backgrounds/" URL path segment, not by alt text
+      (alt text varies per product, e.g. "Pro Level Pin Splash Video
+      Background").
+    """
     images = []
     seen_urls = set()
 
     for img in soup.find_all("img"):
         src = _resolve_img_src(img, base_url)
         if src is None:
+            continue
+        if "/video_backgrounds/" in src.lower():
+            continue
+        if 0 < _srcset_max_width(img) < MIN_IMAGE_WIDTH:
             continue
         if src in seen_urls:
             continue

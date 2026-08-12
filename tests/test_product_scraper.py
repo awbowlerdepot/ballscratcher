@@ -439,8 +439,110 @@ def test_parse_images_skips_placeholder_and_resolves_lazy_image():
     assert images[0]["image_type"] == "main"
     assert images[0]["source_url"] == "https://brunswickbowling.com/main.png"
     assert images[1]["image_type"] == "other"
-    assert images[1]["source_url"].endswith("ball-pi_1360w.png")
-    assert all(not img["source_url"].startswith("data:") for img in images)
+
+
+# --- Real bug, found via live DOM inspection of brunswickbowling.com's
+# Combat page (Claude in Chrome, javascript_exec against the raw fetched
+# HTML -- not the post-render DOM, to match what this scraper actually
+# receives): every product page carries 7 <img> tags, not 3. Al's report:
+# "it looks like we are scraping a video thumbnail and the low res version
+# of the ball and core images." Confirmed both parts:
+#
+# 1. Three REAL gallery images (main ball + 2 core callouts), srcset
+#    offering "700w, 1400w" -- these are what parse_images() should keep.
+# 2. Three DUPLICATE thumbnail-nav-strip images of the exact same three
+#    subjects, srcset only offering "64w, 128w" -- same filename shape
+#    ("..._1600x1600_<hash>.png", core callouts still matching the
+#    "16-14_lb_Core" pattern) as the real ones, just a different <hash>
+#    and a much smaller srcset, which is the only signal that
+#    distinguishes them. This is what MIN_IMAGE_WIDTH / _srcset_max_width
+#    filter out.
+# 3. One video-teaser background image (class="c-feature__background-
+#    image", under a "/video_backgrounds/" URL path segment) for the
+#    "Watch the Combat in Action!" section -- not a product photo at all.
+#    This is what the "/video_backgrounds/" path check filters out.
+_COMBAT_REAL_GALLERY_IMGS = """
+<img class="" src="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/transforms/bowlerproducts/Products/Balls/Pro/786086/Combat_1600x1600_18694ddcf445590f9b69434f3e02c496.png" srcset="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/transforms/bowlerproducts/Products/Balls/Pro/786086/Combat_1600x1600_18694ddcf445590f9b69434f3e02c496.png 700w, https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/transforms/bowlerproducts/Products/Balls/Pro/786086/Combat_1600x1600_17f4986ac7f4990eb3b95b1b30d5f652.png 1400w" sizes="100vw" alt="Combat bowling ball" />
+<img class="" src="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/transforms/bowlerproducts/Products/Balls/Pro/786088/Combat_16-14_lb_Core_1600x1600_callout_18694ddcf445590f9b69434f3e02c496.png" srcset="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/transforms/bowlerproducts/Products/Balls/Pro/786088/Combat_16-14_lb_Core_1600x1600_callout_18694ddcf445590f9b69434f3e02c496.png 700w, https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/transforms/bowlerproducts/Products/Balls/Pro/786088/Combat_16-14_lb_Core_1600x1600_callout_17f4986ac7f4990eb3b95b1b30d5f652.png 1400w" sizes="100vw" alt="Combat core for 16 to 14 pound bowling balls" />
+<img class="" src="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/transforms/bowlerproducts/Products/Balls/Pro/786087/Combat_13-12_lb_Core_1600x1600_callout_18694ddcf445590f9b69434f3e02c496.png" srcset="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/transforms/bowlerproducts/Products/Balls/Pro/786087/Combat_13-12_lb_Core_1600x1600_callout_18694ddcf445590f9b69434f3e02c496.png 700w, https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/transforms/bowlerproducts/Products/Balls/Pro/786087/Combat_13-12_lb_Core_1600x1600_callout_17f4986ac7f4990eb3b95b1b30d5f652.png 1400w" sizes="100vw" alt="Combat core for 13 to 12 pound bowling balls" />
+"""
+
+_COMBAT_THUMB_NAV_DUPES = """
+<img class="" src="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/transforms/bowlerproducts/Products/Balls/Pro/786086/Combat_1600x1600_b86c0772d9cce16087e71e8b67b29a9c.png" srcset="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/transforms/bowlerproducts/Products/Balls/Pro/786086/Combat_1600x1600_b86c0772d9cce16087e71e8b67b29a9c.png 64w, https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/transforms/bowlerproducts/Products/Balls/Pro/786086/Combat_1600x1600_69ba3fad9a0be5f1c970879ad74e14c5.png 128w" sizes="100vw" alt="Combat bowling ball" />
+<img class="" src="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/transforms/bowlerproducts/Products/Balls/Pro/786088/Combat_16-14_lb_Core_1600x1600_callout_b86c0772d9cce16087e71e8b67b29a9c.png" srcset="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/transforms/bowlerproducts/Products/Balls/Pro/786088/Combat_16-14_lb_Core_1600x1600_callout_b86c0772d9cce16087e71e8b67b29a9c.png 64w, https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/transforms/bowlerproducts/Products/Balls/Pro/786088/Combat_16-14_lb_Core_1600x1600_callout_69ba3fad9a0be5f1c970879ad74e14c5.png 128w" sizes="100vw" alt="Combat core for 16 to 14 pound bowling balls" />
+<img class="" src="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/transforms/bowlerproducts/Products/Balls/Pro/786087/Combat_13-12_lb_Core_1600x1600_callout_b86c0772d9cce16087e71e8b67b29a9c.png" srcset="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/transforms/bowlerproducts/Products/Balls/Pro/786087/Combat_13-12_lb_Core_1600x1600_callout_b86c0772d9cce16087e71e8b67b29a9c.png 64w, https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/transforms/bowlerproducts/Products/Balls/Pro/786087/Combat_13-12_lb_Core_1600x1600_callout_69ba3fad9a0be5f1c970879ad74e14c5.png 128w" sizes="100vw" alt="Combat core for 13 to 12 pound bowling balls" />
+"""
+
+_COMBAT_VIDEO_BACKGROUND_IMG = """
+<img src="https://brunswickbowling.nyc3.cdn.digitaloceanspaces.com/production/transforms/bowlerproducts/Products/Balls/video_backgrounds/3910/video_bkgd_2060x890_pro_pin-splash_d4ee164b438e2e3476a57d951858c6b2.jpg" alt="Pro Level Pin Splash Video Background" class="c-feature__background-image" />
+"""
+
+_COMBAT_FULL_PAGE_IMGS = (
+    _COMBAT_REAL_GALLERY_IMGS + _COMBAT_THUMB_NAV_DUPES + _COMBAT_VIDEO_BACKGROUND_IMG
+)
+
+
+def test_srcset_max_width_reads_largest_declared_width():
+    from app import _srcset_max_width
+
+    soup = BeautifulSoup(_COMBAT_REAL_GALLERY_IMGS, "lxml")
+    assert _srcset_max_width(soup.find_all("img")[0]) == 1400
+
+    soup = BeautifulSoup(_COMBAT_THUMB_NAV_DUPES, "lxml")
+    assert _srcset_max_width(soup.find_all("img")[0]) == 128
+
+
+def test_srcset_max_width_zero_when_no_srcset():
+    from app import _srcset_max_width
+
+    soup = BeautifulSoup('<img src="/x.png" alt="no srcset">', "lxml")
+    assert _srcset_max_width(soup.find("img")) == 0
+
+
+def test_parse_images_combat_real_page_shape_drops_dupes_and_video_bg():
+    """The actual bug report, reproduced end-to-end: parse_images() against
+    all 7 real <img> tags from Combat's live page must return only the 3
+    real product photos -- never the 3 low-res thumbnail-nav duplicates,
+    and never the video-teaser background."""
+    soup = BeautifulSoup(_COMBAT_FULL_PAGE_IMGS, "lxml")
+    images = parse_images(soup, "https://brunswickbowling.com/products/balls/current/combat")
+
+    assert len(images) == 3
+
+    main = images[0]
+    assert main["image_type"] == "main"
+    assert main["source_url"].endswith("Combat_1600x1600_17f4986ac7f4990eb3b95b1b30d5f652.png")
+
+    callouts = [img for img in images if img["image_type"] == "core_callout"]
+    assert len(callouts) == 2
+    assert {(c["weight_lbs_context_low"], c["weight_lbs_context_high"]) for c in callouts} == {(14, 16), (12, 13)}
+    for c in callouts:
+        # the real (1400w) hash, never the thumb-nav (128w) hash
+        assert c["source_url"].endswith("_17f4986ac7f4990eb3b95b1b30d5f652.png")
+
+    # neither the 64w/128w thumb-nav dupes nor the video background ever appear
+    for img in images:
+        assert "b86c0772d9cce16087e71e8b67b29a9c" not in img["source_url"]
+        assert "69ba3fad9a0be5f1c970879ad74e14c5" not in img["source_url"]
+        assert "video_backgrounds" not in img["source_url"]
+
+
+def test_parse_images_drops_video_background_image_alone():
+    soup = BeautifulSoup(_COMBAT_VIDEO_BACKGROUND_IMG, "lxml")
+    images = parse_images(soup, "https://brunswickbowling.com/products/balls/current/combat")
+    assert images == []
+
+
+def test_parse_images_keeps_image_with_no_srcset_regardless_of_width():
+    """An <img> with only a plain `src` (no srcset at all) has an unknown
+    width -- _srcset_max_width returns 0 for it, and the `0 < width <
+    MIN_IMAGE_WIDTH` filter must not treat "unknown" as "too small". Real
+    scrapes see plain-src images (e.g. the Crown 78U fixture's core
+    callouts), and those must keep working."""
+    soup = BeautifulSoup('<img src="/main.png" alt="main product shot">', "lxml")
+    images = parse_images(soup, "https://brunswickbowling.com/x")
+    assert len(images) == 1
+    assert images[0]["image_type"] == "main"
 
 
 # --- _nearby_label_text: the fix for the real "Download"-link-text bug ---
