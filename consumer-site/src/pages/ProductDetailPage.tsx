@@ -68,12 +68,15 @@ export default function ProductDetailPage() {
 
   const inCompare = ids.includes(product.id);
   const heroImageUrl = selectedImageUrl ?? product.primary_image_url ?? null;
-  // Every other visible image (the header already shows the hero one)
-  // -- Al's ask: "the images have hidden and thumbnail attributes and
-  // sorting... add the additional images to the product details page".
-  // product.images is already visibility-filtered and display_order-
-  // sorted server-side (see public_api.get_product).
-  const otherImages = product.images.filter((img) => img.stored_url !== heroImageUrl);
+  // Every visible image, including whichever one is currently shown as
+  // the hero -- Al: "have all the thumbnails there and just move one
+  // to the large box and not swap them it makes it confusing". The
+  // active thumbnail stays in the rail (highlighted, not removed) so
+  // clicking it again or clicking a different one is a plain toggle,
+  // not a shrinking/reordering list. product.images is already
+  // visibility-filtered and display_order-sorted server-side (see
+  // public_api.get_product).
+  const galleryImages = product.images;
 
   return (
     <div className="page product-detail-page">
@@ -95,15 +98,20 @@ export default function ProductDetailPage() {
             is now sized to match this rail's height plus the hero's
             own original height combined, since the two used to be
             stacked as separate rows and are now side by side. */}
-        {otherImages.length > 0 && (
+        {galleryImages.length > 1 && (
           <div className="product-detail-gallery">
-            {otherImages.map((img) => (
+            {galleryImages.map((img) => (
               <button
                 key={img.id}
                 type="button"
-                className="product-detail-gallery-thumb"
+                className={
+                  img.stored_url === heroImageUrl
+                    ? "product-detail-gallery-thumb active"
+                    : "product-detail-gallery-thumb"
+                }
                 onClick={() => setSelectedImageUrl(img.stored_url)}
                 aria-label={`Show ${img.image_type.replace(/_/g, " ")} image`}
+                aria-pressed={img.stored_url === heroImageUrl}
               >
                 <img src={img.stored_url} alt={`${product.name} -- ${img.image_type.replace(/_/g, " ")}`} loading="lazy" />
               </button>

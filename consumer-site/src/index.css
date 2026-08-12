@@ -314,6 +314,10 @@ input[type="text"] {
 .product-detail-gallery-thumb:hover {
   border-color: var(--color-accent);
 }
+.product-detail-gallery-thumb.active {
+  border-color: var(--color-accent);
+  border-width: 2px;
+}
 .product-detail-gallery-thumb img {
   width: 100%;
   height: 100%;
