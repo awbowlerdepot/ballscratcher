@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { getPlotterPositions } from "../api/client";
 import type { PlotterPoint, ProductStatus } from "../api/types";
+import { useCompare } from "../context/CompareContext";
 
 // Standalone page, per Al's own decision when asked how the plotter
 // should fit into the site (not the main Browse view, not the
@@ -41,6 +42,16 @@ const SIZE_MIN = 20;
 const SIZE_MAX = 72;
 const SIZE_DEFAULT = 42;
 
+// Third tablist option alongside the two real ProductStatus values -- Al:
+// "add a tablist toggle to the ball motion plotter that is 'compare' and
+// plots the currently selected balls in the compare feature." Kept in the
+// same "status" URL param as Current/Retired rather than a separate query
+// param -- it's still exactly one active tab at a time, same as those two,
+// and reusing the param means an existing bookmarked/shared link shape
+// (?status=...) just gained a third valid value instead of needing a
+// second param plumbed through everywhere status already is.
+type PlotterView = ProductStatus | "compare";
+
 function xFor(oil: number) {
   const t = (oil - OIL_MIN) / (OIL_MAX - OIL_MIN);
   return MARGIN.left + t * (WIDTH - MARGIN.left - MARGIN.right);
@@ -54,28 +65,41 @@ function yFor(motion: number) {
 
 export default function PlotterPage() {
   const [searchParams, setSearchParams] = useSearchParams();
-  const status = (searchParams.get("status") as ProductStatus) || "current";
+  const view = (searchParams.get("status") as PlotterView) || "current";
+  const { ids: compareIds } = useCompare();
   const [points, setPoints] = useState<PlotterPoint[]>([]);
   const [loading, setLoading] = useState(true);
   const [hovered, setHovered] = useState<PlotterPoint | null>(null);
   const [size, setSize] = useState(SIZE_DEFAULT);
   // Chip-based brand toggle, like the original's state.brands Set --
   // a brand is shown unless explicitly toggled off. Reset to "every
-  // brand on" whenever the underlying point set changes (a status
+  // brand on" whenever the underlying point set changes (a status/view
   // toggle swaps in a whole different catalog) rather than trying to
   // carry toggles across an unrelated dataset.
   const [enabledBrands, setEnabledBrands] = useState<Set<string>>(new Set());
   const navigate = useNavigate();
 
   useEffect(() => {
+    // Compare tab with nothing in the compare list yet -- skip the fetch
+    // entirely rather than falling through to getPlotterPositions, which
+    // would otherwise ignore an empty ids array and silently plot the
+    // whole "current" catalog instead of an honest empty state (see
+    // getPlotterPositions' own ids.length > 0 check).
+    if (view === "compare" && compareIds.length === 0) {
+      setPoints([]);
+      setEnabledBrands(new Set());
+      setLoading(false);
+      return;
+    }
     setLoading(true);
-    getPlotterPositions(status)
+    const request = view === "compare" ? getPlotterPositions("current", compareIds) : getPlotterPositions(view);
+    request
       .then((data) => {
         setPoints(data);
         setEnabledBrands(new Set(data.map((p) => p.brand_name)));
       })
       .finally(() => setLoading(false));
-  }, [status]);
+  }, [view, compareIds]);
 
   const brands = useMemo(
     () => Array.from(new Set(points.map((p) => p.brand_name))).sort(),
@@ -106,58 +130,77 @@ export default function PlotterPage() {
       </p>
 
       <div className="plotter-controls">
-        <div className="status-toggle" role="tablist" aria-label="Ball status">
+        <div className="status-toggle" role="tablist" aria-label="Plotter view">
           <button
             type="button"
-            className={status === "current" ? "active" : ""}
+            role="tab"
+            aria-selected={view === "current"}
+            className={view === "current" ? "active" : ""}
             onClick={() => setSearchParams({ status: "current" })}
           >
             Current
           </button>
           <button
             type="button"
-            className={status === "retired" ? "active" : ""}
+            role="tab"
+            aria-selected={view === "retired"}
+            className={view === "retired" ? "active" : ""}
             onClick={() => setSearchParams({ status: "retired" })}
           >
             Retired
           </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "compare"}
+            className={view === "compare" ? "active" : ""}
+            onClick={() => setSearchParams({ status: "compare" })}
+          >
+            Compare{compareIds.length > 0 ? ` (${compareIds.length})` : ""}
+          </button>
         </div>
 
-        <label className="plotter-size-control">
-          Size
-          <input
-            type="range"
-            min={SIZE_MIN}
-            max={SIZE_MAX}
-            value={size}
-            onChange={(e) => setSize(Number(e.target.value))}
-            aria-label="Ball image size"
-          />
-        </label>
+        {points.length > 0 && (
+          <>
+            <label className="plotter-size-control">
+              Size
+              <input
+                type="range"
+                min={SIZE_MIN}
+                max={SIZE_MAX}
+                value={size}
+                onChange={(e) => setSize(Number(e.target.value))}
+                aria-label="Ball image size"
+              />
+            </label>
 
-        <span className="plotter-count">
-          {visible.length} of {points.length} balls shown
-        </span>
+            <span className="plotter-count">
+              {visible.length} of {points.length} balls shown
+            </span>
+          </>
+        )}
       </div>
 
-      <div className="plotter-brand-chips">
-        <span className="plotter-brand-chips-label">Brand:</span>
-        {brands.map((b) => (
-          <button
-            key={b}
-            type="button"
-            className={enabledBrands.has(b) ? "chip" : "chip chip-off"}
-            onClick={() => toggleBrand(b)}
-            aria-pressed={enabledBrands.has(b)}
-          >
-            {b}
-          </button>
-        ))}
-      </div>
+      {points.length > 0 && (
+        <div className="plotter-brand-chips">
+          <span className="plotter-brand-chips-label">Brand:</span>
+          {brands.map((b) => (
+            <button
+              key={b}
+              type="button"
+              className={enabledBrands.has(b) ? "chip" : "chip chip-off"}
+              onClick={() => toggleBrand(b)}
+              aria-pressed={enabledBrands.has(b)}
+            >
+              {b}
+            </button>
+          ))}
+        </div>
+      )}
 
       {loading ? (
         <p>Loading...</p>
-      ) : (
+      ) : view === "compare" && compareIds.length === 0 ? null : (
         <div className="plotter-chart-wrap">
           <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} className="plotter-svg" role="img" aria-label="Ball motion plotter">
             {/* Gridlines -- one per integer oil/motion unit, same
@@ -286,7 +329,15 @@ export default function PlotterPage() {
         </div>
       )}
 
-      {!loading && visible.length === 0 && <p className="empty-state">No balls to plot for this filter.</p>}
+      {!loading && visible.length === 0 && view === "compare" && (
+        <p className="empty-state">
+          Nothing to plot yet. <Link to="/">Browse balls</Link> and add a few to compare, or add some from{" "}
+          <Link to="/compare">the compare page</Link>.
+        </p>
+      )}
+      {!loading && visible.length === 0 && view !== "compare" && (
+        <p className="empty-state">No balls to plot for this filter.</p>
+      )}
     </div>
   );
 }

@@ -330,14 +330,30 @@ class _FakeCursor:
             self._result_rows = rows
 
         elif q.startswith("select p.id, p.name, p.url, b.name as brand_name, c.core_type, p.coverstock_type, p.coverstock_material, p.has_particle,"):
-            status = params[0]
+            # Same select list for both branches list_plotter_positions can
+            # build (status-filtered vs. ids-filtered) -- see that
+            # function's own comment on why the WHERE clause is the only
+            # thing that differs. Distinguish by looking for the ids-branch
+            # WHERE text rather than by params shape (a status string and a
+            # one-element ids list would otherwise be indistinguishable).
+            if "p.id = any(" in q:
+                wanted = set(params[0])
+
+                def _matches(pid, p):
+                    return p["published"] and pid in wanted
+            else:
+                status = params[0]
+
+                def _matches(pid, p):
+                    return p["published"] and p["status"] == status
+
             self._description = [(c,) for c in (
                 "id", "name", "url", "brand_name", "core_type", "coverstock_type", "coverstock_material",
                 "has_particle", "oil_rating", "motion_rating", "oil_motion_source", "primary_image_url",
             )]
             rows = []
             for pid, p in self.db["products"].items():
-                if p["published"] and p["status"] == status:
+                if _matches(pid, p):
                     core = self.db["cores"].get(p.get("core_id"), {})
                     rows.append((
                         pid, p["name"], p["url"], self.db["brands"][p["brand_id"]]["name"],
@@ -746,6 +762,73 @@ def test_list_plotter_positions_only_published_current_by_default():
     db["skus"]["unpublished-1"] = [{"weight_lbs": 15, "rg": 2.50, "differential": 0.050}]
 
     results = service.list_plotter_positions(_FakeConnection(db))
+
+    assert [r["id"] for r in results] == ["current-1"]
+
+
+# --- list_plotter_positions(ids=...): the plotter page's Compare tab --
+# Al: "add a tablist toggle to the ball motion plotter that is 'compare'
+# and plots the currently selected balls in the compare feature."
+
+def test_list_plotter_positions_with_ids_ignores_status():
+    """The compare list is arbitrary ids a visitor picked while browsing
+    -- not necessarily all 'current' -- so ids must be able to pull in a
+    retired product too, unlike the default status-filtered call."""
+    db = _fresh_db()
+    _seed_published_current_product(db, pid="current-1", status="current")
+    _seed_published_current_product(db, pid="retired-1", status="retired")
+    _seed_published_current_product(db, pid="not-selected", status="current")
+
+    results = service.list_plotter_positions(_FakeConnection(db), ids=["retired-1", "current-1"])
+
+    assert {r["id"] for r in results} == {"retired-1", "current-1"}
+
+
+def test_list_plotter_positions_with_ids_preserves_input_order():
+    db = _fresh_db()
+    _seed_published_current_product(db, pid="prod-a")
+    _seed_published_current_product(db, pid="prod-b")
+    _seed_published_current_product(db, pid="prod-c")
+
+    results = service.list_plotter_positions(_FakeConnection(db), ids=["prod-c", "prod-a", "prod-b"])
+
+    assert [r["id"] for r in results] == ["prod-c", "prod-a", "prod-b"]
+
+
+def test_list_plotter_positions_with_ids_silently_drops_missing_and_unpublished():
+    db = _fresh_db()
+    _seed_published_current_product(db, pid="prod-a")
+    _seed_published_current_product(db, pid="prod-unpublished", published=False)
+
+    results = service.list_plotter_positions(
+        _FakeConnection(db), ids=["prod-a", "prod-unpublished", "no-such-id"],
+    )
+
+    assert [r["id"] for r in results] == ["prod-a"]
+
+
+def test_list_plotter_positions_with_ids_caps_at_max_compare_ids():
+    db = _fresh_db()
+    ids = [f"prod-{i}" for i in range(service.MAX_COMPARE_IDS + 3)]
+    for pid in ids:
+        _seed_published_current_product(db, pid=pid)
+
+    results = service.list_plotter_positions(_FakeConnection(db), ids=ids)
+
+    assert len(results) == service.MAX_COMPARE_IDS
+    assert [r["id"] for r in results] == ids[: service.MAX_COMPARE_IDS]
+
+
+def test_list_plotter_positions_empty_ids_list_falls_back_to_status():
+    """An empty list (as opposed to None) still means 'no ids given' --
+    the Compare tab's own empty-compare-list state is handled entirely on
+    the frontend (it never calls this with ids=[] in practice), but the
+    function itself shouldn't return an empty result set silently if it
+    ever is."""
+    db = _fresh_db()
+    _seed_published_current_product(db, pid="current-1", status="current")
+
+    results = service.list_plotter_positions(_FakeConnection(db), ids=[])
 
     assert [r["id"] for r in results] == ["current-1"]
 

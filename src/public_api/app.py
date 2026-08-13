@@ -63,12 +63,16 @@ def get_products(
 
 
 @app.get("/products/plotter")
-def get_products_plotter(status: str = Query("current")):
+def get_products_plotter(
+    status: str = Query("current"),
+    ids: Optional[str] = Query(None, description="Comma-separated product ids -- overrides status, backs the plotter page's Compare tab"),
+):
     # Same literal-path-before-{product_id}-param ordering reasoning as
     # /products/compare below.
     conn = service.get_db_connection()
     try:
-        return {"items": service.list_plotter_positions(conn, status=status)}
+        id_list = [i.strip() for i in ids.split(",") if i.strip()] if ids else None
+        return {"items": service.list_plotter_positions(conn, status=status, ids=id_list)}
     finally:
         conn.close()
 

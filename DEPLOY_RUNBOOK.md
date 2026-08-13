@@ -3022,6 +3022,60 @@ raw CloudFront/S3 error page instead of react-router taking over.
   surfaces as a real bug to fix, not a false positive.
 - No SEO/meta-tag work or analytics.
 
+**Plotter "Compare" tab (2026-08-12).** Al: "can we add a tablist toggle
+to the ball motion plotter that is 'compare' and plots the currently
+selected balls in the compare feature." A third option alongside
+Current/Retired in `PlotterPage.tsx`'s existing `role="tablist"` -- same
+`?status=` URL param (now typed `PlotterView = ProductStatus | "compare"`
+rather than adding a second query param for what's still exactly one
+active tab at a time), showing the visitor's live compare-list count in
+the tab label (`Compare (3)`) via the shared `useCompare()` hook already
+powering the Browse/Detail "add to compare" buttons and the `/compare`
+page itself.
+
+Needed a small backend extension, not just frontend wiring:
+`list_plotter_positions` (`src/public_api/service.py`) only ever accepted
+a `status` filter, but the compare list is an arbitrary set of ids a
+visitor picked while browsing (which can mix current and retired
+products), not "everything of one status" -- the exact same shape problem
+`get_products_compare` already solved for the `/compare` page itself.
+Gave `list_plotter_positions` an optional `ids` param with the identical
+contract: capped at `MAX_COMPARE_IDS` (6), missing/unpublished ids
+silently dropped rather than erroring, input order preserved on the way
+out, and `status` ignored entirely when `ids` is given. The SQL is one
+query with a swapped `WHERE` clause (`p.id = any(%s::uuid[])` vs.
+`p.status = %s`) rather than two near-duplicate query strings, since both
+branches share the exact same `SELECT` list. `GET /products/plotter`
+gained a matching optional `ids` query param (comma-separated, same shape
+as `/products/compare`'s own `ids` param) -- no `template.yaml` change,
+same single `{proxy+}` GET route every other `public_api` endpoint rides.
+Five new tests in `tests/test_public_api_service.py` cover the ids branch
+(status-ignored, order-preserved, missing/unpublished dropped, capped at
+6, and an empty list falling back to `status` rather than silently
+returning nothing) -- full suite re-run clean at 41/41.
+
+`api/client.ts`'s `getPlotterPositions` gained a matching optional `ids`
+second argument (ids present and non-empty wins over `status`, mirroring
+the backend). `PlotterPage.tsx`'s data-fetch `useEffect` now branches on
+the active tab: Compare with an empty compare list skips the fetch
+entirely and shows an empty state ("Nothing to plot yet. Browse balls...
+or add some from the compare page.") rather than falling through to
+`getPlotterPositions`'s own "no ids -> use status" default, which would
+otherwise have silently plotted the whole current catalog instead of
+being honest about there being nothing selected yet. The size slider,
+brand-toggle chips, and ball count are also hidden (not just empty) in
+that same zero-point state, on any tab -- a small pre-existing polish gap
+this touched anyway (a "Retired" filter that matched nothing showed a
+bare "Brand:" label with no chips and a "0 of 0 balls shown" count next
+to the empty-state message; now that whole controls row only renders once
+there's actually something to control).
+
+`npx tsc -b` typechecks clean against these changes -- see this section's
+own "What's not done yet" note above for why `npm run build`'s bundle
+step itself can't be exercised in this sandbox (unrelated rollup native-
+binary issue, not a code problem). Run `npm run build` yourself before
+redeploying the consumer site.
+
 **Custom domain (`data.bowleriq.com`) on CloudFront:**
 
 CloudFront needs an ACM certificate that covers the domain, and that

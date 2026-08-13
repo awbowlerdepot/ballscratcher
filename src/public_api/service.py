@@ -604,7 +604,7 @@ def estimate_oil_motion(core_type: str = None, coverstock_type: str = None,
     return {"oil": oil, "motion": motion}
 
 
-def list_plotter_positions(conn, status: str = "current") -> list:
+def list_plotter_positions(conn, status: str = "current", ids: list = None) -> list:
     """Everything the standalone plotter page needs in one unpaginated
     call -- Al's original tool (see this module's header comment) loaded
     its whole 56-ball dataset up front rather than paginating, and the
@@ -631,10 +631,29 @@ def list_plotter_positions(conn, status: str = "current") -> list:
     (this module has no write access by design -- see this file's own
     header comment); it just keeps the plotter page from ever silently
     dropping a product, until a real backfill/rescrape lands a persisted
-    value for it."""
+    value for it.
+
+    ids (optional): when given, returns positions for exactly this set of
+    product ids instead of the whole status-filtered catalog -- backs the
+    plotter page's "Compare" tab (Al: "add a tablist toggle to the ball
+    motion plotter that is 'compare' and plots the currently selected
+    balls in the compare feature"). The compare list is arbitrary ids a
+    visitor picked while browsing, not necessarily all the same status,
+    so `status` is ignored entirely when `ids` is given -- same contract
+    as get_products_compare above (capped at MAX_COMPARE_IDS, missing or
+    unpublished ids silently dropped rather than erroring, input id order
+    preserved on the way out so the two features' compare sets stay in
+    the same visible order)."""
+    ids = ids[:MAX_COMPARE_IDS] if ids else None
     with conn.cursor() as cur:
+        if ids:
+            where_clause = "p.published = true and p.id = any(%s::uuid[])"
+            params = (ids,)
+        else:
+            where_clause = "p.published = true and p.status = %s"
+            params = (status,)
         cur.execute(
-            """
+            f"""
             select p.id, p.name, p.url,
                    b.name as brand_name,
                    c.core_type, p.coverstock_type, p.coverstock_material, p.has_particle,
@@ -651,9 +670,9 @@ def list_plotter_positions(conn, status: str = "current") -> list:
             from products p
             join brands b on b.id = p.brand_id
             left join cores c on c.id = p.core_id
-            where p.published = true and p.status = %s
+            where {where_clause}
             """,
-            (status,),
+            params,
         )
         columns = [desc[0] for desc in cur.description]
         products = [dict(zip(columns, row)) for row in cur.fetchall()]
@@ -688,4 +707,12 @@ def list_plotter_positions(conn, status: str = "current") -> list:
             "primary_image_url": p["primary_image_url"],
             "oil": oil, "motion": motion, "oil_motion_source": source,
         })
+
+    if ids:
+        # Preserve the caller's own ordering (same reasoning as
+        # get_products_compare) -- an id that didn't resolve (unknown or
+        # unpublished) is silently dropped rather than erroring.
+        by_id = {r["id"]: r for r in results}
+        results = [by_id[i] for i in ids if i in by_id]
+
     return results

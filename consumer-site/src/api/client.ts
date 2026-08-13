@@ -104,6 +104,15 @@ export function getCompareProducts(ids: string[]): Promise<ProductDetail[]> {
   return apiGet<{ items: ProductDetail[] }>("/products/compare", { ids: ids.join(",") }).then((r) => r.items);
 }
 
-export function getPlotterPositions(status: ProductStatus = "current"): Promise<PlotterPoint[]> {
-  return apiGet<{ items: PlotterPoint[] }>("/products/plotter", { status }).then((r) => r.items);
+// ids (optional): when given, overrides status entirely -- backs the
+// plotter page's Compare tab, which wants positions for exactly the
+// visitor's current compare-list ids (which may mix current/retired),
+// not the whole status-filtered catalog. Mirrors getCompareProducts'
+// comma-joined ids shape above; server-side cap/order/drop-missing
+// behavior lives in public_api.list_plotter_positions, not duplicated
+// here.
+export function getPlotterPositions(status: ProductStatus = "current", ids?: string[]): Promise<PlotterPoint[]> {
+  const params: Record<string, string | number | undefined> =
+    ids && ids.length > 0 ? { ids: ids.join(",") } : { status };
+  return apiGet<{ items: PlotterPoint[] }>("/products/plotter", params).then((r) => r.items);
 }
