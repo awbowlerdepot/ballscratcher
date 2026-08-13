@@ -3069,6 +3069,26 @@ already exists in this AWS account from some other project -- redeploy
 again with `CreateGitHubOidcProvider=false` added to the same
 `--parameter-overrides` and nothing else changes.
 
+**Real incident, first live deploy attempt:** `sam deploy` failed
+outright with `Requires capabilities : [CAPABILITY_NAMED_IAM]` before
+even reaching a changeset review. Root cause: `ConsumerSiteDeployRole`
+sets an explicit `RoleName` (`bowling-scraper-consumer-site-deploy-
+${AWS::AccountId}`) rather than letting CloudFormation auto-generate one
+-- every other IAM resource this template has ever created (e.g. each
+Lambda's execution role) lets CloudFormation pick the name, which only
+needs the plain `CAPABILITY_IAM` acknowledgment `samconfig.toml` already
+had. A *named* IAM resource needs the stronger `CAPABILITY_NAMED_IAM`
+acknowledgment instead (CloudFormation's own distinction: a
+CloudFormation-generated name can't collide with anything you'd
+recognize or depend on elsewhere in the account, so it's considered
+lower-risk than a template that gets to claim a specific, human-chosen
+IAM name). Fixed by changing `samconfig.toml`'s `capabilities` from
+`"CAPABILITY_IAM"` to `"CAPABILITY_IAM CAPABILITY_NAMED_IAM"` (both,
+space-separated -- `sam deploy` accepts a list here, and every other
+resource in this template still only needs the plain one). Re-run `sam
+deploy` after this edit; no template.yaml change was needed, this was
+purely a local deploy-config gap.
+
 **Hosting infra** (`template.yaml`): private `ConsumerSiteBucket` (S3,
 all public access blocked) behind `ConsumerSiteDistribution`
 (CloudFront) via Origin Access Control -- not the older OAI, and not
