@@ -3089,6 +3089,34 @@ resource in this template still only needs the plain one). Re-run `sam
 deploy` after this edit; no template.yaml change was needed, this was
 purely a local deploy-config gap.
 
+**Real incident, first live CI run:** the deploy stack came up fine,
+`CONSUMER_SITE_DEPLOY_ROLE_ARN` and the other 4 repo Variables were set,
+and a push to `main` triggered the workflow -- but the "Configure AWS
+credentials" step failed every time with `Error: Could not assume role
+with OIDC: Not authorized to perform sts:AssumeRoleWithWebIdentity`.
+Ruled out the obvious suspects first: `aws iam get-role` showed
+`ConsumerSiteDeployRole`'s trust policy exactly matching `template.yaml`
+(correct `Federated` principal, correct `aud`/`sub` conditions,
+`repo:awbowlerdepot/ballscratcher:ref:refs/heads/main`), the run really
+was a push-triggered run on `main` (not a stray `workflow_dispatch` on
+some other branch), and `aws iam get-open-id-connect-provider` showed
+the OIDC provider itself correctly configured too (`sts.amazonaws.com`
+in `ClientIDList`, a populated `ThumbprintList`). None of that was it.
+
+Root cause was in the debug log, one line above the error:
+`7 role session tags are being used`. `aws-actions/configure-aws-
+credentials@v4` tags the assumed session (repo, ref, actor, workflow,
+etc.) by default unless told not to -- and passing `Tags` to
+`AssumeRoleWithWebIdentity` requires the trust policy to separately
+authorize `sts:TagSession`, on top of `sts:AssumeRoleWithWebIdentity`
+itself. `ConsumerSiteDeployRole`'s trust policy only grants the latter,
+on purpose (least-privilege, and this workflow's two real steps -- S3
+sync, CloudFront invalidation -- have no use for session tags at all).
+Fixed by adding `role-skip-session-tagging: true` to the "Configure AWS
+credentials" step in `.github/workflows/deploy-consumer-site.yml`,
+rather than widening the trust policy (and needing another `sam
+deploy`) for a capability nothing here needs.
+
 **Hosting infra** (`template.yaml`): private `ConsumerSiteBucket` (S3,
 all public access blocked) behind `ConsumerSiteDistribution`
 (CloudFront) via Origin Access Control -- not the older OAI, and not

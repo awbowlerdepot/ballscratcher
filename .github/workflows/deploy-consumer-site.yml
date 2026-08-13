@@ -71,6 +71,18 @@ jobs:
         with:
           role-to-assume: ${{ vars.CONSUMER_SITE_DEPLOY_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
+          # configure-aws-credentials tags the assumed session (repo, ref,
+          # actor, etc.) by default. Tagging during AssumeRoleWithWebIdentity
+          # is a separate permission from the assume itself -- IAM requires
+          # the trust policy to allow sts:TagSession too, or the whole call
+          # gets rejected with "Not authorized to perform
+          # sts:AssumeRoleWithWebIdentity" (confirmed via a real failed run:
+          # the log line "7 role session tags are being used" right before
+          # that error). ConsumerSiteDeployRole's trust policy only grants
+          # sts:AssumeRoleWithWebIdentity on purpose (see template.yaml) --
+          # nothing this workflow does needs session tags, so skip them
+          # here instead of widening the trust policy for no benefit.
+          role-skip-session-tagging: true
 
       - name: Sync to S3
         run: aws s3 sync dist/ "s3://${{ vars.CONSUMER_SITE_BUCKET }}/" --delete
