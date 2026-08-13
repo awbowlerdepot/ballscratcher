@@ -847,6 +847,21 @@ def get_price_history(product_id: str, days: int = Query(90, gt=0)):
         conn.close()
 
 
+@app.get("/products/{product_id}/sku-stock-history")
+def get_sku_stock_history(product_id: str, days: int = Query(90, gt=0)):
+    # Read side for per-SKU quantity charting (017_price_tracking_sku_
+    # stock.sql) -- see service.get_sku_stock_history's docstring. Al:
+    # "for the instock i was refering to actual number of each sku
+    # instock." Returns this product's own SKUs (for a legend) plus the
+    # raw quantity readings, across all of them at once, same shape as
+    # price-history immediately above.
+    conn = service.get_db_connection()
+    try:
+        return service.get_sku_stock_history(conn, product_id, days=days)
+    finally:
+        conn.close()
+
+
 @app.post("/products/{product_id}/discover-price-sources")
 def discover_price_sources(product_id: str):
     # On-demand "search for price sources" trigger, mirroring discover-

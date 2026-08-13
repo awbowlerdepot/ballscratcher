@@ -445,7 +445,7 @@ def check_sources(conn, sources: list, session=None) -> dict:
             succeeded += 1
 
     if api_sources:
-        results_by_source_id = check_bigcommerce_sources(api_sources, session=session)
+        results_by_source_id = check_bigcommerce_sources(conn, api_sources, session=session)
         for source in api_sources:
             result = results_by_source_id.get(
                 source["id"], {"price": None, "raw_price_text": None, "error": "no result returned for this source"}
@@ -479,11 +479,19 @@ def build_bigcommerce_products_by_id_url(store_hash: str, ids: list, page: int =
     BigCommerce's documented id:in filter -- price_checker already knows
     exactly which BigCommerce products it needs (from bowlerdepot_products,
     see list_bowlerdepot_matches) and, unlike the reconciliation job, has
-    no reason to page through the entire catalog on every daily run."""
+    no reason to page through the entire catalog on every daily run.
+
+    include=custom_fields,variants (017_price_tracking_sku_stock.sql --
+    Al: "for the instock i was refering to actual number of each sku
+    instock") -- each product response now embeds its own variants array
+    (id, sku, inventory_level, option_values) in this SAME batched call,
+    so per-SKU stock quantities cost nothing extra over one more query
+    param; see match_sku_weights_to_variants for how those variants get
+    matched back to our own product_skus rows."""
     ids_param = ",".join(str(i) for i in ids)
     return (
         f"{BIGCOMMERCE_API_BASE}/stores/{store_hash}/v3/catalog/products"
-        f"?id:in={ids_param}&page={page}&limit={limit}&include=custom_fields"
+        f"?id:in={ids_param}&page={page}&limit={limit}&include=custom_fields,variants"
     )
 
 
@@ -525,47 +533,140 @@ def fetch_bigcommerce_products_by_ids(store_hash: str, auth_token: str, ids: lis
     return products_by_id
 
 
-def determine_in_stock(product: dict):
-    """Derives in-stock from BigCommerce's inventory fields. inventory_
-    tracking='none' means BigCommerce isn't tracking a count at all for
-    this product, so the only signal is the availability field
-    ('available' vs 'disabled'/'preorder'); 'product' or 'variant' tracking
-    means inventory_level is meaningful, so a positive count means in
-    stock. Returns None (not a guess) when the fields needed for the
-    product's own tracking mode aren't present, rather than defaulting to
-    either True or False.
+# 017_price_tracking_sku_stock.sql -- Al, clarifying 016's product-level
+# in_stock boolean: "for the instock i was refering to actual number of
+# each sku instock." determine_in_stock (product-level BigCommerce
+# inventory_tracking/availability heuristic) is SUPERSEDED by
+# determine_in_stock_from_sku_quantities below -- the old function is
+# removed rather than left dead, since it was never actually a correct
+# per-SKU signal to begin with (see its own former docstring's KNOWN
+# CAVEAT: inventory_tracking='variant' inventory_level is a rollup across
+# ALL weight variants, not the one weight this project sells as a SKU).
+_WEIGHT_LABEL_RE = re.compile(r"(\d+(?:\.\d+)?)")
 
-    KNOWN CAVEAT (can't be resolved without a real store account, same
-    posture as this module's other BigCommerce-shape assumptions): for
-    inventory_tracking='variant' -- plausible here, since weight is
-    modeled as a variant (see bowlerdepot_reconciliation's own docstring)
-    -- the PRODUCT-level inventory_level BigCommerce returns is a rollup
-    across all weight variants, not the specific weight this project
-    actually stocks/sells as one SKU. This is documented rather than
-    silently assumed correct; see 016_price_tracking_bigcommerce.sql's
-    comment on product_price_history.in_stock for the same caveat
-    surfaced to the admin side."""
-    tracking = product.get("inventory_tracking")
-    if tracking == "none":
-        availability = product.get("availability")
-        if availability is None:
-            return None
-        return availability == "available"
-    if tracking in ("product", "variant"):
-        level = product.get("inventory_level")
-        if level is None:
-            return None
-        return level > 0
-    return None
+
+def _extract_weight_from_variant(variant: dict):
+    """Pulls a numeric weight (matching product_skus.weight_lbs' unit) out
+    of one BigCommerce variant's option_values. BowlerDepot models weight
+    as a variant option (see bowlerdepot_reconciliation's own docstring);
+    the option's display name varies enough between BigCommerce catalogs
+    ('Weight', 'Ball Weight', ...) that this matches on the option whose
+    display name CONTAINS 'weight' first, and falls back to "the only
+    option this variant has" when there's exactly one (the expected shape
+    for this project, since weight is the only variant axis BowlerDepot
+    lists) -- never guesses among multiple same-named-nothing options.
+    Returns None (not a guess) when neither approach finds a candidate, or
+    the candidate's own label has no parseable number in it, so callers
+    can tell "no weight option on this variant" apart from "weight option
+    present but somehow zero"."""
+    option_values = variant.get("option_values") or []
+    weight_option = None
+    for option_value in option_values:
+        display_name = (option_value.get("option_display_name") or "").lower()
+        if "weight" in display_name:
+            weight_option = option_value
+            break
+    if weight_option is None and len(option_values) == 1:
+        weight_option = option_values[0]
+    if weight_option is None:
+        return None
+    label = weight_option.get("label")
+    if not label:
+        return None
+    match = _WEIGHT_LABEL_RE.search(str(label))
+    return float(match.group(1)) if match else None
+
+
+def match_sku_weights_to_variants(skus: list, variants: list) -> dict:
+    """Pure matching logic, no DB/network -- pairs our own product_skus
+    rows (list_product_skus_for_stock's per-product list) against one
+    BigCommerce product's own variants array (now fetched alongside
+    price/cost, see build_bigcommerce_products_by_id_url's include=
+    ...,variants) by weight, rounded to 2 decimal places so a variant
+    label like "14.0" or "14 lbs" still matches a weight_lbs of 14 without
+    silently treating a genuinely different weight as the same SKU.
+
+    Al: "the weights on bigcommerce should match what we have and if they
+    don't something should keep track of that so we can fix whatever is
+    causing the discrepency" -- our_only/bigcommerce_only below are
+    exactly that discrepancy, in both directions, for
+    write_sku_weight_mismatch_reviews to surface via review_queue.
+
+    Returns:
+      matched: [{"product_sku_id", "weight_lbs", "variant_id", "quantity"}, ...]
+                quantity is variant.get("inventory_level") preserved as-is
+                (including None -- "BigCommerce isn't tracking this
+                variant's inventory," never coerced to 0; see 017's own
+                migration comment on product_sku_stock_history.quantity).
+      our_only: weight_lbs values we track that had no matching variant
+                this check -- "we track a weight BigCommerce doesn't sell."
+      bigcommerce_only: weight_lbs values from variants that matched no
+                product_skus row -- "BigCommerce sells a weight we don't
+                track."."""
+    variant_weights = []
+    for variant in variants:
+        weight = _extract_weight_from_variant(variant)
+        if weight is not None:
+            variant_weights.append((round(weight, 2), variant))
+
+    matched = []
+    matched_variant_ids = set()
+    our_only = []
+
+    for sku in skus:
+        weight = sku.get("weight_lbs")
+        if weight is None:
+            continue
+        rounded = round(float(weight), 2)
+        hit = next((v for w, v in variant_weights if w == rounded and v["id"] not in matched_variant_ids), None)
+        if hit is None:
+            our_only.append(weight)
+            continue
+        matched_variant_ids.add(hit["id"])
+        matched.append({
+            "product_sku_id": sku["id"],
+            "weight_lbs": weight,
+            "variant_id": hit["id"],
+            "quantity": hit.get("inventory_level"),
+        })
+
+    bigcommerce_only = [w for w, v in variant_weights if v["id"] not in matched_variant_ids]
+
+    return {"matched": matched, "our_only": our_only, "bigcommerce_only": bigcommerce_only}
+
+
+def determine_in_stock_from_sku_quantities(quantities: list):
+    """quantities: the list of quantity readings (int-or-None) for every
+    matched SKU from THIS check (match_sku_weights_to_variants' own
+    'matched' list, one entry's ["quantity"] per element). Al: "the
+    current instock can still exist but should follow the quantities and
+    once 0 it should be false." True if any matched SKU has a confirmed
+    quantity above zero; False only once every matched SKU with a real
+    (non-null) reading is confirmed at exactly zero; None (not a guess)
+    when there's nothing usable to derive from at all -- no matched SKUs
+    this check, or every matched SKU's own reading was itself unknown/null
+    -- same "null means unknown, never collapsed into false" convention
+    this module's parse_price/(the now-removed) determine_in_stock already
+    followed."""
+    known = [q for q in quantities if q is not None]
+    if not known:
+        return None
+    return any(q > 0 for q in known)
 
 
 def extract_bigcommerce_price_fields(product: dict, base_url: str = None) -> dict:
-    """Pulls price/cost_price/in_stock/product_url out of one BigCommerce
-    product dict -- the API-fetch_method sibling of extract_price (scrape
-    path). raw_price_text is always None here (there's no raw matched-
-    text to preserve; the API returns a real numeric field, not scraped
-    text to parse), kept as a key anyway so the returned dict has the same
-    shape record_price_check/check_price_source's result dicts do.
+    """Pulls price/cost_price/product_url out of one BigCommerce product
+    dict -- the API-fetch_method sibling of extract_price (scrape path).
+    raw_price_text is always None here (there's no raw matched-text to
+    preserve; the API returns a real numeric field, not scraped text to
+    parse), kept as a key anyway so the returned dict has the same shape
+    record_price_check/check_price_source's result dicts do.
+
+    NO LONGER returns in_stock (017_price_tracking_sku_stock.sql) -- that
+    key is now populated by check_bigcommerce_sources itself, from
+    determine_in_stock_from_sku_quantities' per-SKU derivation, since this
+    function only ever sees one product dict and has no reason to also
+    know about product_skus/review_queue.
 
     product_url resolves product['custom_url']['url'] (BigCommerce's
     documented relative storefront path) against base_url via urljoin
@@ -584,30 +685,182 @@ def extract_bigcommerce_price_fields(product: dict, base_url: str = None) -> dic
     return {
         "price": float(price) if price is not None else None,
         "cost_price": float(cost_price) if cost_price is not None else None,
-        "in_stock": determine_in_stock(product),
         "product_url": product_url,
         "raw_price_text": None,
         "error": None,
     }
 
 
-def check_bigcommerce_sources(sources: list, session=None) -> dict:
+def list_product_skus_for_stock(conn, product_ids: list) -> dict:
+    """Returns {product_id: [{"id", "weight_lbs"}, ...]} for every
+    product_skus row belonging to any of product_ids -- match_sku_weights_
+    to_variants' "our side" input. A NEW query, not a reuse of
+    bowlerdepot_reconciliation.get_product_skus -- that function selects
+    different columns and has no `id` in its result, and this feature
+    needs each row's own id as product_sku_stock_history.product_sku_id's
+    FK target; see this module's own "each Lambda is its own deploy
+    package" convention for why that's duplicated rather than shared.
+    Same `= any(%s::uuid[])` cast list_price_sources_for_products already
+    needed a real Postgres instance to catch missing (see that function's
+    own docstring) -- written with the cast from the start here."""
+    if not product_ids:
+        return {}
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select id, product_id, weight_lbs
+            from product_skus
+            where product_id = any(%s::uuid[])
+            order by product_id asc, weight_lbs asc
+            """,
+            (product_ids,),
+        )
+        rows = cur.fetchall()
+    by_product = {}
+    for sku_id, product_id, weight_lbs in rows:
+        by_product.setdefault(product_id, []).append({"id": sku_id, "weight_lbs": weight_lbs})
+    return by_product
+
+
+def record_sku_stock_history(conn, price_source_id: str, matched: list) -> None:
+    """Writes one product_sku_stock_history row per matched SKU from THIS
+    check (match_sku_weights_to_variants' own 'matched' list) -- the
+    per-SKU-quantity sibling of record_price_check, same append-only
+    "store the raw reading, compute deltas at read time" shape (see 017_
+    price_tracking_sku_stock.sql's own header comment for the full "how do
+    we answer 'how many sold/when restocked'" reasoning). A no-op (no
+    rows, no commit) when matched is empty -- e.g. every one of this
+    product's SKUs weight-mismatched this check, so there was nothing to
+    record a quantity for."""
+    if not matched:
+        return
+    with conn.cursor() as cur:
+        for m in matched:
+            cur.execute(
+                """
+                insert into product_sku_stock_history (product_sku_id, price_source_id, quantity)
+                values (%s, %s, %s)
+                """,
+                (m["product_sku_id"], price_source_id, m["quantity"]),
+            )
+    conn.commit()
+
+
+def _write_one_review_if_new(cur, product_id, field_name, current_value, proposed_value, reason) -> int:
+    """DEDUP GUARD -- deliberate difference from bowwwl_cross_check.
+    write_review_items and bowlerdepot_reconciliation's own review writer
+    (both insert a fresh review_queue row unconditionally on every run):
+    price_checker runs DAILY, not weekly, and an unresolved weight
+    mismatch is expected to often persist across many checks -- inserting
+    unconditionally here would write a fresh row every single day forever.
+    Skips the insert if a PENDING row already exists for this exact
+    (product_id, field_name, source='price_checker', current_value,
+    proposed_value); an admin resolving that row (approve/reject) is what
+    clears the way for a fresh one the next time the same mismatch is
+    (re)found. coalesce(..., '') on both sides of the value comparison so
+    a None on either side (only one direction is ever set per mismatch
+    kind, see write_sku_weight_mismatch_reviews) compares equal to itself
+    rather than SQL's usual "NULL = NULL is never true"."""
+    cur.execute(
+        """
+        select id from review_queue
+        where product_id = %s and field_name = %s and source = 'price_checker' and status = 'pending'
+          and coalesce(current_value, '') = coalesce(%s, '') and coalesce(proposed_value, '') = coalesce(%s, '')
+        """,
+        (product_id, field_name, current_value, proposed_value),
+    )
+    if cur.fetchone():
+        return 0
+    cur.execute(
+        """
+        insert into review_queue (product_id, field_name, current_value, proposed_value, source, reason, status)
+        values (%s, %s, %s, %s, 'price_checker', %s, 'pending')
+        """,
+        (product_id, field_name, current_value, proposed_value, reason),
+    )
+    return 1
+
+
+def write_sku_weight_mismatch_reviews(conn, product_id: str, our_only: list, bigcommerce_only: list) -> int:
+    """Surfaces match_sku_weights_to_variants' own our_only/bigcommerce_
+    only lists as review_queue rows -- reusing review_queue rather than a
+    new table, same role it already plays for bowlerdepot_reconciliation's
+    accuracy mismatches and bowwwl_cross_check's own findings (both admin-
+    resolvable via the same approve/reject/restore workflow, and GET
+    /review-queue already surfaces any source= value with zero new
+    admin_api work). source='price_checker' is new. Two distinct
+    field_names (rather than one shared 'sku_weight') so an admin can
+    filter/scan which direction a mismatch runs in without reading each
+    row's own reason text. See _write_one_review_if_new for the dedup
+    guard that makes this safe to call on every daily check."""
+    if not our_only and not bigcommerce_only:
+        return 0
+    written = 0
+    with conn.cursor() as cur:
+        for weight in our_only:
+            written += _write_one_review_if_new(
+                cur, product_id, "sku_weight_missing_in_bigcommerce",
+                current_value=str(weight), proposed_value=None,
+                reason=f"We track a {weight} lb SKU that BigCommerce has no matching variant for.",
+            )
+        for weight in bigcommerce_only:
+            written += _write_one_review_if_new(
+                cur, product_id, "sku_weight_missing_in_our_catalog",
+                current_value=None, proposed_value=str(weight),
+                reason=f"BigCommerce sells a {weight} lb variant we have no matching SKU for.",
+            )
+    if written:
+        conn.commit()
+    return written
+
+
+def record_sku_stock_and_get_in_stock(conn, product_id: str, price_source_id: str,
+                                       skus: list, variants: list):
+    """Orchestrates one source's own SKU-quantity side of a BigCommerce
+    check: matches our SKUs against this product's variants, records a
+    product_sku_stock_history row per match, surfaces any weight
+    discrepancy to review_queue, and derives the product-level in_stock
+    value THIS check should record -- the three things Al's design answer
+    asked for in one call ("stored... efficiently", "current instock...
+    should follow the quantities", "weights... should match... if they
+    don't something should keep track of that"). Returns just the in_stock
+    value (True/False/None); check_bigcommerce_sources is the only caller
+    and only needs that one value back for this source's result dict."""
+    match = match_sku_weights_to_variants(skus, variants)
+    record_sku_stock_history(conn, price_source_id, match["matched"])
+    if match["our_only"] or match["bigcommerce_only"]:
+        write_sku_weight_mismatch_reviews(conn, product_id, match["our_only"], match["bigcommerce_only"])
+    return determine_in_stock_from_sku_quantities([m["quantity"] for m in match["matched"]])
+
+
+def check_bigcommerce_sources(conn, sources: list, session=None) -> dict:
     """The 'api' fetch_method sibling of check_price_source, batched over
     the WHOLE list of sources at once (one get_bigcommerce_credentials()
     call + one fetch_bigcommerce_products_by_ids() call covering every
-    source's external_product_id) rather than per-source -- unlike a
-    scrape site's product_url (an arbitrary third-party page, no reason
-    two sources would ever share a request), BigCommerce's own API
+    source's external_product_id, PLUS one list_product_skus_for_stock()
+    call covering every source's product_id) rather than per-source --
+    unlike a scrape site's product_url (an arbitrary third-party page, no
+    reason two sources would ever share a request), BigCommerce's own API
     supports fetching many product ids in one call, and every 'api' source
     in this project is the same BowlerDepot store, so there's no reason to
     pay for N separate round-trips.
+
+    Now takes `conn` (017_price_tracking_sku_stock.sql) -- the per-SKU
+    quantity side (record_sku_stock_and_get_in_stock) needs to both read
+    product_skus and write product_sku_stock_history/review_queue, unlike
+    the price/cost side which was previously stateless here (writes only
+    happened later, in record_price_check).
 
     NEVER raises, same "one bad row can't stop the batch" convention as
     check_price_source: if credentials are missing/invalid or the
     BigCommerce request itself fails, every source in this batch gets the
     same {"error": "..."} result rather than a partial/silent failure.
-    Returns {source_id: result_dict} so check_sources can look up each
-    source's own outcome after the fact."""
+    A per-source SKU-matching/stock-recording failure (caught around just
+    that one source's own call) never blocks that source's own price/cost
+    result from still being recorded -- in_stock simply falls back to None
+    (unknown) for that one source, never guessed at. Returns
+    {source_id: result_dict} so check_sources can look up each source's
+    own outcome after the fact."""
     try:
         store_hash, auth_token = get_bigcommerce_credentials()
     except Exception as exc:
@@ -620,6 +873,12 @@ def check_bigcommerce_sources(sources: list, session=None) -> dict:
     except Exception as exc:
         error = f"BigCommerce fetch failed: {exc}"
         return {source["id"]: {"price": None, "raw_price_text": None, "error": error} for source in sources}
+
+    product_ids = list({source["product_id"] for source in sources if source.get("product_id")})
+    try:
+        skus_by_product = list_product_skus_for_stock(conn, product_ids)
+    except Exception:
+        skus_by_product = {}
 
     results = {}
     for source in sources:
@@ -642,12 +901,18 @@ def check_bigcommerce_sources(sources: list, session=None) -> dict:
         # sources.product_url, set once at discovery time), so it's simply
         # not overwritten with a re-resolved value.
         fields = extract_bigcommerce_price_fields(product)
+        try:
+            skus = skus_by_product.get(source.get("product_id"), [])
+            variants = product.get("variants", []) or []
+            in_stock = record_sku_stock_and_get_in_stock(conn, source.get("product_id"), source["id"], skus, variants)
+        except Exception:
+            in_stock = None
         results[source["id"]] = {
             "price": fields["price"],
             "raw_price_text": fields["raw_price_text"],
             "error": fields["error"],
             "cost_price": fields["cost_price"],
-            "in_stock": fields["in_stock"],
+            "in_stock": in_stock,
         }
 
     return results

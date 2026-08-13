@@ -2494,6 +2494,59 @@ def get_price_history(conn, product_id: str, days: int = 90) -> dict:
     return {"sources": sources, "history": history}
 
 
+def get_sku_stock_history(conn, product_id: str, days: int = 90) -> dict:
+    """Read side of 017_price_tracking_sku_stock.sql -- Al: "for the
+    instock i was refering to actual number of each sku instock... track
+    how many are being sold and when are they restocked." Same two-query
+    shape as get_price_history immediately above: first this product's own
+    SKUs (for a legend/label lookup, one row per weight), then the raw
+    quantity readings within the trailing `days` window across ALL of this
+    product's SKUs at once, so the admin UI can draw one line per weight
+    on a single chart without N separate calls.
+
+    "How many sold / when restocked" (Al's own framing) is intentionally
+    NOT computed here -- this returns the raw readings in checked_at order
+    and leaves the day-over-day delta (a drop is sold-since-last-check, a
+    rise is a restock) to the caller/chart layer, same live-computed-not-
+    stored posture this project already takes for popularity_score/
+    latest_price elsewhere; see 017's own migration header comment for the
+    full reasoning and its "can't fully distinguish 12 sold/0 restocked
+    from 2 sold/10 restocked on the same day" honesty note.
+
+    quantity rides through as-is, including null (BigCommerce not
+    tracking that variant's inventory that check) -- never coerced to 0;
+    see product_sku_stock_history.quantity's own column comment."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select id, weight_lbs
+            from product_skus
+            where product_id = %s
+            order by weight_lbs asc
+            """,
+            (product_id,),
+        )
+        skus = [{"id": r[0], "weight_lbs": r[1]} for r in cur.fetchall()]
+
+        cur.execute(
+            """
+            select h.product_sku_id, h.price_source_id, h.quantity, h.checked_at
+            from product_sku_stock_history h
+            join product_skus sk on sk.id = h.product_sku_id
+            where sk.product_id = %s
+              and h.checked_at >= now() - (%s || ' days')::interval
+            order by h.checked_at asc
+            """,
+            (product_id, days),
+        )
+        history = [
+            {"product_sku_id": r[0], "price_source_id": r[1], "quantity": r[2], "checked_at": r[3]}
+            for r in cur.fetchall()
+        ]
+
+    return {"skus": skus, "history": history}
+
+
 def queue_price_check(conn, product_id: str) -> dict:
     """On-demand "check price now" trigger for one product's configured
     sources -- same shape as queue_video_discovery immediately above

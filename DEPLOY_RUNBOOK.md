@@ -33,7 +33,7 @@ Any Postgres 13+ instance works (RDS is the obvious choice, but this
 repo doesn't assume it). Note the connection details -- you'll need them
 for step 3's `DbSecretArn` secret and to run migrations directly.
 
-## 2. Run the sixteen migrations, in order
+## 2. Run the seventeen migrations, in order
 
 ```bash
 psql "$DATABASE_URL" -f db/migrations/001_init_schema.sql
@@ -52,6 +52,7 @@ psql "$DATABASE_URL" -f db/migrations/013_product_videos_stats.sql
 psql "$DATABASE_URL" -f db/migrations/014_price_tracking.sql
 psql "$DATABASE_URL" -f db/migrations/015_products_last_price_discovery_at.sql
 psql "$DATABASE_URL" -f db/migrations/016_price_tracking_bigcommerce.sql
+psql "$DATABASE_URL" -f db/migrations/017_price_tracking_sku_stock.sql
 ```
 
 (If you already ran an earlier subset in a prior deploy, just run whatever
@@ -337,7 +338,7 @@ Here's what to give it:
 | `TrackBrandId` | Only if enabling Track | Track's id from step 4, else leave blank |
 | `EboniteStoreDomain` / `EboniteCollectionHandles` | No | Default to Ebonite's real domain/collection handles (confirmed live this session -- differs from both Hammer and Track, has a pro-performance tier but no upper-mid-performance) |
 | `EboniteBrandId` | Only if enabling Ebonite | Ebonite's id from step 4, else leave blank |
-| `BigCommerceSecretArn` | No, but recommended | `arn:aws:secretsmanager:us-west-1:563981859606:secret:bowling-scraper-bigcommerce-caCBX7` (see step 3) -- unlocks both 6h's BowlerDepot reconciliation and 6o.5's BowlerDepot price/cost/stock tracking; leave blank to skip both |
+| `BigCommerceSecretArn` | No, but recommended | `arn:aws:secretsmanager:us-west-1:563981859606:secret:bowling-scraper-bigcommerce-caCBX7` (see step 3) -- unlocks 6h's BowlerDepot reconciliation and 6o.5/6o.6's BowlerDepot price/cost/stock and per-SKU stock tracking; leave blank to skip all three |
 
 Accept the SAM CLI's other prompts (stack name, region, confirm changes,
 allow IAM role creation) as appropriate for your environment. Once it
@@ -4175,13 +4176,16 @@ below is done).
    the product's Price Tracking section shows `cost $X.XX` and an
    in-stock/out-of-stock badge next to BowlerDepot's price -- both are
    `null`/absent for every other (scrape-sourced) site's rows, by design
-   (see migration 016's header comment). In-stock is derived from
-   BigCommerce's `inventory_tracking`/`inventory_level`/`availability`
-   fields (see `price_checker.determine_in_stock`'s own docstring for its
-   one known caveat: variant-level inventory tracking's product-level
-   `inventory_level` may be a rollup across weight variants, not the
-   specific weight this project stocks as one SKU -- unverifiable without
-   a real store account).
+   (see migration 016's header comment). **UPDATED by migration 017**
+   (see 6o.6 immediately below): in-stock is no longer derived from
+   BigCommerce's product-level `inventory_tracking`/`inventory_level`/
+   `availability` fields (that heuristic, `price_checker.
+   determine_in_stock`, is gone) -- it's now derived from this same
+   check's own per-SKU quantity readings instead, via `price_checker.
+   determine_in_stock_from_sku_quantities`. This directly fixes the old
+   heuristic's one known caveat (product-level `inventory_level` being a
+   rollup across every weight variant, not the one weight this project
+   sells as a SKU).
 
 5. **Let it run daily.** Cost/stock history only becomes useful the
    longer it accumulates (Al: "obviously the over time will gain value as
@@ -4190,6 +4194,71 @@ below is done).
    future") -- once a BowlerDepot source is approved, `PriceCheckerFunction`'s
    existing `DailyPriceCheck` schedule picks it up automatically, no
    separate schedule needed for this source type.
+
+### 6o.6. Per-SKU stock quantities (migration 017)
+
+Al, clarifying 6o.5's in-stock boolean: "for the instock i was refering
+to actual number of each sku instock." Extends 6o.5 with real per-weight
+quantity tracking rather than a single product-level true/false --
+answered via a follow-up design conversation: "the per-sku quantities
+should be stored in the best way to track them over time effeciently.
+something we want to track with this is how many are being sold and when
+are they restocked and things like that. the current instock can still
+exist but should follow the quantities and once 0 it should be false.
+the weights on bigcommerce should match what we have and if they don't
+something should keep track of that so we can fix whatever is causing
+the discrepency." See `db/migrations/017_price_tracking_sku_stock.sql`'s
+header comment for the full design writeup (new `product_sku_stock_history`
+table, why a new table rather than a JSON column, and the weight-mismatch
+`review_queue` dedup guard).
+
+Requires migration 017 (see step 2 above) and the same BigCommerce
+credentials 6o.5 already uses -- nothing new to provision. Every
+BowlerDepot check now also fetches each product's `variants` array in the
+same batched BigCommerce API call (`include=custom_fields,variants`,
+`price_checker.build_bigcommerce_products_by_id_url`), matches each
+variant's weight against this product's own `product_skus` rows
+(`price_checker.match_sku_weights_to_variants`), and records a
+`product_sku_stock_history` row per matched SKU.
+
+1. **Nothing to configure.** Unlike 6o.5's Price Sites setup, this piggybacks
+   on the exact same BowlerDepot source/checks already approved in 6o.5 --
+   there's no separate site, discovery step, or schedule.
+
+2. **Check a BowlerDepot-tracked product's price** (6o.5 step 3's "Check
+   prices now" button, or wait for the daily schedule) and open its
+   product detail view in the admin site.
+
+3. **Confirm the new "SKU stock" table + chart appear**, below the
+   existing SKUs table. Each row shows one of this product's weights with
+   its latest recorded quantity (or "unknown" if BigCommerce isn't
+   tracking that variant's inventory -- `quantity` stays `null`, never
+   coerced to 0) and when it was last checked. The chart below plots
+   quantity over time, one line per weight, same hand-rolled SVG approach
+   as the price chart (no charting library).
+
+4. **Confirm in-stock now follows the quantities.** The Price Tracking
+   section's in-stock/out-of-stock badge (6o.5 step 4) should now flip to
+   "out of stock" only once every one of this product's matched SKUs
+   reads a confirmed `0` -- not from a single product-level field
+   anymore.
+
+5. **If a weight mismatch exists, confirm it lands in the Review Queue.**
+   If BigCommerce sells a weight this project doesn't have a `product_skus`
+   row for, or vice versa, a new `review_queue` row appears (`source:
+   'price_checker'`, field name `sku_weight_missing_in_our_catalog` or
+   `sku_weight_missing_in_bigcommerce`) -- the existing Review Queue tab
+   already surfaces any `source` value with zero new admin_api work (see
+   `service.list_review_queue`). Re-running the check the next day should
+   NOT insert a second row for the same still-unresolved mismatch (the
+   dedup guard in `price_checker.write_sku_weight_mismatch_reviews`) --
+   only resolving (approving/rejecting) the existing row, or a genuinely
+   different mismatch, produces a new one.
+
+6. **Let it run daily**, same reasoning as 6o.5 step 5 -- "how many sold /
+   when restocked" is intentionally computed at read time from consecutive
+   quantity readings, not stored as its own event, so this data becomes
+   more useful the longer it accumulates.
 
 ## 7. Ongoing operations
 

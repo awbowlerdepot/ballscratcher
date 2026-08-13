@@ -1665,7 +1665,7 @@ async function loadProductDetailInto(id, cell) {
     // (score_match's documented any-one-token false-positive shape, see
     // reassign_video_candidate's docstring), and wouldn't have been
     // visible from a pending-only view once already approved.
-    const [p, videoData, priceSourcesData, priceHistoryData, priceSites] = await Promise.all([
+    const [p, videoData, priceSourcesData, priceHistoryData, priceSites, skuStockHistoryData] = await Promise.all([
       api('GET', '/products/' + id),
       api('GET', '/video-candidates', { params: { product_id: id, status: 'all', limit: 200 } }),
       // Price tracking (migration 014/015) -- Al: "id like to start a
@@ -1681,6 +1681,11 @@ async function loadProductDetailInto(id, cell) {
       api('GET', '/products/' + id + '/price-sources'),
       api('GET', '/products/' + id + '/price-history', { params: { days: 90 } }),
       ensurePriceSitesLoaded(),
+      // Per-SKU stock quantities (017_price_tracking_sku_stock.sql) --
+      // Al: "for the instock i was refering to actual number of each sku
+      // instock." Same "fetch alongside everything else" reasoning as
+      // price-history above.
+      api('GET', '/products/' + id + '/sku-stock-history', { params: { days: 90 } }),
     ]);
     const videos = videoData.items || [];
     const priceSources = priceSourcesData.items || [];
@@ -1789,6 +1794,7 @@ async function loadProductDetailInto(id, cell) {
         '</div>'
       : '';
     const priceTrackingHtml = buildPriceTrackingSection(id, priceSources, priceHistoryData, priceSites);
+    const skuStockHtml = buildSkuStockSection(skuStockHistoryData);
     cell.innerHTML =
       '<div class="detail-panel">' +
       '<p><strong>Images</strong> (' + (p.images || []).length + '):</p>' +
@@ -1812,6 +1818,7 @@ async function loadProductDetailInto(id, cell) {
       '<p style="margin-top:14px;"><strong>SKUs:</strong></p>' +
       '<table class="mini"><thead><tr><th>Weight</th><th>RG</th><th>Diff</th><th>Mass Bias</th><th>Source</th><th></th></tr></thead><tbody>' +
       (skuRows || '<tr><td colspan="6" class="muted">none</td></tr>') + '</tbody></table>' +
+      skuStockHtml +
       renderProductRawFields(p) +
       '</div>';
     updateProductVideoBulkToolbar(id);
@@ -1938,6 +1945,96 @@ function buildPriceChartSvg(historyData) {
     '<line x1="' + left + '" y1="' + (top + plotH) + '" x2="' + (left + plotW) + '" y2="' + (top + plotH) + '" stroke="#e0e2e7"></line>' +
     '<text x="2" y="' + (top + 8) + '" font-size="10" fill="#6b7280">$' + yMax.toFixed(2) + '</text>' +
     '<text x="2" y="' + (top + plotH) + '" font-size="10" fill="#6b7280">$' + yMin.toFixed(2) + '</text>' +
+    paths + '</svg>' +
+    '<div class="chart-legend">' + legend + '</div>';
+}
+
+// --------------------------------------------------------------------
+// Product detail SKU Stock section (017_price_tracking_sku_stock.sql) --
+// Al, clarifying the price tracker's in_stock boolean: "for the instock i
+// was refering to actual number of each sku instock... track how many
+// are being sold and when are they restocked." Renders a latest-quantity
+// table (one row per weight) plus a plain-SVG quantity-over-time chart,
+// one polyline per weight -- same "no charting library" posture as
+// buildPriceChartSvg above, reusing its exact axis/legend approach with
+// quantity instead of price on the y-axis.
+// --------------------------------------------------------------------
+
+function buildSkuStockSection(skuStockHistoryData) {
+  const skus = (skuStockHistoryData && skuStockHistoryData.skus) || [];
+  const history = (skuStockHistoryData && skuStockHistoryData.history) || [];
+  // Latest reading per SKU (by checked_at) for the summary table --
+  // there can be more than one price_source_id per SKU in principle, but
+  // in practice only a BowlerDepot/'api' source ever writes to this
+  // table, so "latest across all sources for this weight" is the
+  // meaningful number to show, not a per-source breakdown.
+  const latestBySku = {};
+  history.forEach(function (h) {
+    const prev = latestBySku[h.product_sku_id];
+    if (!prev || new Date(h.checked_at) > new Date(prev.checked_at)) latestBySku[h.product_sku_id] = h;
+  });
+  const rows = skus.map(function (s) {
+    const latest = latestBySku[s.id];
+    const qtyCell = !latest || latest.quantity === null || latest.quantity === undefined
+      ? '<span class="muted">unknown</span>'
+      : (latest.quantity > 0 ? latest.quantity : '<span class="badge muted">0</span>');
+    return '<tr><td>' + s.weight_lbs + 'lb</td><td>' + qtyCell + '</td>' +
+      '<td class="muted small">' + (latest ? fmtDate(latest.checked_at) : 'never checked') + '</td></tr>';
+  }).join('');
+  return '<p style="margin-top:14px;"><strong>SKU stock</strong> (BowlerDepot, per weight):</p>' +
+    (rows
+      ? '<table class="mini"><thead><tr><th>Weight</th><th>Quantity</th><th>Last checked</th></tr></thead><tbody>' + rows + '</tbody></table>'
+      : '<p class="muted">no SKU stock data yet -- recorded alongside a BowlerDepot price check once a SKU\'s weight matches a variant</p>') +
+    buildSkuStockChartSvg(skus, history);
+}
+
+// Readings with a null quantity (BigCommerce not tracking that variant's
+// inventory -- see product_sku_stock_history.quantity's own column
+// comment) are skipped when plotting, same "skip what we don't know"
+// stance buildPriceChartSvg already takes for a source with no
+// successful checks.
+function buildSkuStockChartSvg(skus, history) {
+  const known = history.filter(function (h) { return h.quantity !== null && h.quantity !== undefined; });
+  if (!skus.length || !known.length) {
+    return '<p class="muted">No SKU stock quantities recorded yet -- once a BowlerDepot check matches a SKU\'s weight, its quantity charts here.</p>';
+  }
+  const quantities = known.map(function (h) { return h.quantity; });
+  const times = known.map(function (h) { return new Date(h.checked_at).getTime(); });
+  const qMax = Math.max.apply(null, quantities.concat([1]));
+  const yMin = 0, yMax = qMax + Math.max(qMax * 0.1, 1);
+  const tMin = Math.min.apply(null, times), tMax = Math.max.apply(null, times);
+  const tSpan = (tMax - tMin) || 1;
+
+  const w = 600, h = 170, left = 46, right = 12, top = 10, bottom = 10;
+  const plotW = w - left - right, plotH = h - top - bottom;
+  const colors = ['#2563eb', '#16a34a', '#dc2626', '#a855f7', '#f59e0b', '#0891b2'];
+
+  let paths = '';
+  let legend = '';
+  skus.forEach(function (s, i) {
+    const rows = known
+      .filter(function (r) { return r.product_sku_id === s.id; })
+      .slice()
+      .sort(function (a, b) { return new Date(a.checked_at) - new Date(b.checked_at); });
+    if (!rows.length) return;
+    const color = colors[i % colors.length];
+    const points = rows.map(function (r) {
+      const x = left + ((new Date(r.checked_at).getTime() - tMin) / tSpan) * plotW;
+      const y = top + plotH - ((r.quantity - yMin) / (yMax - yMin)) * plotH;
+      return x.toFixed(1) + ',' + y.toFixed(1);
+    }).join(' ');
+    paths += '<polyline points="' + points + '" fill="none" stroke="' + color + '" stroke-width="2"></polyline>';
+    legend += '<span class="chart-legend-item"><span class="chart-legend-dot" style="background:' + color + ';"></span>' + s.weight_lbs + 'lb</span>';
+  });
+  if (!paths) {
+    return '<p class="muted">No SKU stock quantities recorded yet -- once a BowlerDepot check matches a SKU\'s weight, its quantity charts here.</p>';
+  }
+
+  return '<svg viewBox="0 0 ' + w + ' ' + h + '" class="price-chart">' +
+    '<line x1="' + left + '" y1="' + top + '" x2="' + left + '" y2="' + (top + plotH) + '" stroke="#e0e2e7"></line>' +
+    '<line x1="' + left + '" y1="' + (top + plotH) + '" x2="' + (left + plotW) + '" y2="' + (top + plotH) + '" stroke="#e0e2e7"></line>' +
+    '<text x="2" y="' + (top + 8) + '" font-size="10" fill="#6b7280">' + yMax.toFixed(0) + '</text>' +
+    '<text x="2" y="' + (top + plotH) + '" font-size="10" fill="#6b7280">' + yMin.toFixed(0) + '</text>' +
     paths + '</svg>' +
     '<div class="chart-legend">' + legend + '</div>';
 }

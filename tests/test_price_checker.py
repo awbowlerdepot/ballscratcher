@@ -129,7 +129,8 @@ class _FakeCursor:
     test_admin_api_service.py's FakeCursor already uses elsewhere in this
     project for overlapping query prefixes."""
 
-    def __init__(self, sources=None, sites=None, products=None, known_candidate_keys=None, bowlerdepot_matches=None):
+    def __init__(self, sources=None, sites=None, products=None, known_candidate_keys=None, bowlerdepot_matches=None,
+                 skus=None, review_queue_rows=None):
         self.sources = sources or []  # list of dicts: id, product_id, product_url, css_selector, is_active, is_site_active, last_checked_at, fetch_method, external_product_id
         self.sites = sites or []  # list of dicts: id, name, search_url_template, result_link_selector, default_css_selector, fetch_method, api_provider, base_url
         self.products = products or []  # list of dicts: id, name, brand_name
@@ -138,6 +139,15 @@ class _FakeCursor:
         # bowlerdepot_products rows list_bowlerdepot_matches reads
         # (016_price_tracking_bigcommerce.sql).
         self.bowlerdepot_matches = bowlerdepot_matches or []
+        # list of dicts: id, product_id, weight_lbs -- product_skus rows
+        # list_product_skus_for_stock reads (017_price_tracking_sku_stock.sql).
+        self.skus = skus or []
+        # list of dicts: id, product_id, field_name, current_value,
+        # proposed_value, source, status -- seeded "already pending" rows
+        # for dedup-guard tests, ALSO appended to by the insert-review_queue
+        # branch below so a second write_sku_weight_mismatch_reviews call
+        # within the same test sees its own prior insert.
+        self.review_queue_rows = review_queue_rows or []
         self.executed = []
         self.description = None
         self.rowcount = 0
@@ -145,6 +155,9 @@ class _FakeCursor:
         self.history_inserts = []  # list of (price_source_id, price, raw_price_text, error, cost_price, in_stock)
         self.last_checked_at_updates = []  # list of price_source_id
         self.last_discovery_marked = []  # list of product_id
+        self.sku_stock_inserts = []  # list of (product_sku_id, price_source_id, quantity)
+        self.review_queue_inserts = []  # list of (product_id, field_name, current_value, proposed_value, reason)
+        self._next_review_queue_id = 1
 
     def execute(self, query, params=None):
         params = params or []
@@ -218,11 +231,51 @@ class _FakeCursor:
             self.description = [("product_id",), ("external_product_id",), ("match_status",)]
             self._rows = [(m["product_id"], m["external_product_id"], m["match_status"]) for m in self.bowlerdepot_matches]
 
+        elif q.startswith("select id, product_id, weight_lbs from product_skus"):
+            (product_ids,) = params
+            matched = [s for s in self.skus if s["product_id"] in product_ids]
+            matched.sort(key=lambda s: (s["product_id"], s["weight_lbs"]))
+            self._rows = [(s["id"], s["product_id"], s["weight_lbs"]) for s in matched]
+            self.description = [("id",), ("product_id",), ("weight_lbs",)]
+
+        elif q.startswith("insert into product_sku_stock_history"):
+            self.sku_stock_inserts.append(tuple(params))
+
+        elif q.startswith("select id from review_queue"):
+            product_id, field_name, current_value, proposed_value = params
+            current_norm = current_value if current_value is not None else ""
+            proposed_norm = proposed_value if proposed_value is not None else ""
+            hit = next(
+                (
+                    r for r in self.review_queue_rows
+                    if r["product_id"] == product_id and r["field_name"] == field_name
+                    and r.get("source") == "price_checker" and r.get("status") == "pending"
+                    and (r.get("current_value") or "") == current_norm
+                    and (r.get("proposed_value") or "") == proposed_norm
+                ),
+                None,
+            )
+            self._rows = [(hit["id"],)] if hit else []
+            self.description = [("id",)]
+
+        elif q.startswith("insert into review_queue"):
+            product_id, field_name, current_value, proposed_value, reason = params
+            self.review_queue_inserts.append((product_id, field_name, current_value, proposed_value, reason))
+            self.review_queue_rows.append({
+                "id": f"rq-{self._next_review_queue_id}", "product_id": product_id, "field_name": field_name,
+                "current_value": current_value, "proposed_value": proposed_value,
+                "source": "price_checker", "status": "pending",
+            })
+            self._next_review_queue_id += 1
+
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
 
     def fetchall(self):
         return self._rows
+
+    def fetchone(self):
+        return self._rows[0] if self._rows else None
 
     def __enter__(self):
         return self
@@ -232,8 +285,10 @@ class _FakeCursor:
 
 
 class _FakeConn:
-    def __init__(self, sources=None, sites=None, products=None, known_candidate_keys=None, bowlerdepot_matches=None):
-        self._cursor = _FakeCursor(sources, sites, products, known_candidate_keys, bowlerdepot_matches)
+    def __init__(self, sources=None, sites=None, products=None, known_candidate_keys=None, bowlerdepot_matches=None,
+                 skus=None, review_queue_rows=None):
+        self._cursor = _FakeCursor(sources, sites, products, known_candidate_keys, bowlerdepot_matches,
+                                    skus, review_queue_rows)
         self.committed = False
         self.closed = False
 
@@ -767,31 +822,113 @@ class _FakeBigCommerceSession:
         })
 
 
-def test_determine_in_stock_none_tracking_uses_availability():
-    assert app.determine_in_stock({"inventory_tracking": "none", "availability": "available"}) is True
-    assert app.determine_in_stock({"inventory_tracking": "none", "availability": "disabled"}) is False
+# --- 017_price_tracking_sku_stock.sql: per-SKU quantity tracking. Al,
+# clarifying 016's product-level in_stock boolean: "for the instock i was
+# refering to actual number of each sku instock." The old product-level
+# determine_in_stock (inventory_tracking/availability heuristic) is gone --
+# superseded by determine_in_stock_from_sku_quantities below, derived from
+# THIS check's own matched per-SKU quantities instead. ---
+
+def test_extract_weight_from_variant_matches_option_named_weight():
+    variant = {"option_values": [
+        {"option_display_name": "Color", "label": "Blue"},
+        {"option_display_name": "Weight", "label": "14 lbs"},
+    ]}
+    assert app._extract_weight_from_variant(variant) == 14.0
 
 
-def test_determine_in_stock_none_tracking_missing_availability_is_none():
-    assert app.determine_in_stock({"inventory_tracking": "none"}) is None
+def test_extract_weight_from_variant_single_option_no_name_match_needed():
+    variant = {"option_values": [{"option_display_name": "Ball Weight", "label": "15"}]}
+    assert app._extract_weight_from_variant(variant) == 15.0
 
 
-def test_determine_in_stock_product_or_variant_tracking_uses_inventory_level():
-    assert app.determine_in_stock({"inventory_tracking": "product", "inventory_level": 5}) is True
-    assert app.determine_in_stock({"inventory_tracking": "product", "inventory_level": 0}) is False
-    assert app.determine_in_stock({"inventory_tracking": "variant", "inventory_level": 1}) is True
+def test_extract_weight_from_variant_no_option_values_is_none():
+    assert app._extract_weight_from_variant({}) is None
+    assert app._extract_weight_from_variant({"option_values": []}) is None
 
 
-def test_determine_in_stock_unknown_or_missing_tracking_is_none():
-    assert app.determine_in_stock({}) is None
-    assert app.determine_in_stock({"inventory_tracking": "something_new"}) is None
+def test_extract_weight_from_variant_multiple_unnamed_options_is_none():
+    # Ambiguous -- more than one option_value and none of them is
+    # identifiably "weight" -- never guesses which one it is.
+    variant = {"option_values": [{"label": "Blue"}, {"label": "Matte"}]}
+    assert app._extract_weight_from_variant(variant) is None
+
+
+def test_extract_weight_from_variant_unparseable_label_is_none():
+    variant = {"option_values": [{"option_display_name": "Weight", "label": "N/A"}]}
+    assert app._extract_weight_from_variant(variant) is None
+
+
+def test_match_sku_weights_to_variants_matches_on_rounded_weight():
+    skus = [{"id": "sku-14", "weight_lbs": 14.0}, {"id": "sku-15", "weight_lbs": 15.0}]
+    variants = [
+        {"id": 1, "inventory_level": 3, "option_values": [{"option_display_name": "Weight", "label": "14 lbs"}]},
+        {"id": 2, "inventory_level": 0, "option_values": [{"option_display_name": "Weight", "label": "15.0"}]},
+    ]
+    result = app.match_sku_weights_to_variants(skus, variants)
+    assert result["our_only"] == []
+    assert result["bigcommerce_only"] == []
+    matched = {m["product_sku_id"]: m for m in result["matched"]}
+    assert matched["sku-14"]["quantity"] == 3
+    assert matched["sku-14"]["variant_id"] == 1
+    assert matched["sku-15"]["quantity"] == 0
+
+
+def test_match_sku_weights_to_variants_our_only_when_no_matching_variant():
+    skus = [{"id": "sku-16", "weight_lbs": 16.0}]
+    variants = [{"id": 1, "inventory_level": 2, "option_values": [{"option_display_name": "Weight", "label": "14"}]}]
+    result = app.match_sku_weights_to_variants(skus, variants)
+    assert result["our_only"] == [16.0]
+    assert result["matched"] == []
+    assert result["bigcommerce_only"] == [14.0]
+
+
+def test_match_sku_weights_to_variants_preserves_null_quantity_as_unknown():
+    # BigCommerce not tracking inventory for a variant (inventory_level
+    # absent) must stay None, never coerced to 0 -- see 017's own migration
+    # comment on product_sku_stock_history.quantity.
+    skus = [{"id": "sku-14", "weight_lbs": 14.0}]
+    variants = [{"id": 1, "option_values": [{"option_display_name": "Weight", "label": "14"}]}]
+    result = app.match_sku_weights_to_variants(skus, variants)
+    assert result["matched"][0]["quantity"] is None
+
+
+def test_match_sku_weights_to_variants_skips_sku_with_null_weight():
+    skus = [{"id": "sku-x", "weight_lbs": None}]
+    variants = [{"id": 1, "inventory_level": 2, "option_values": [{"option_display_name": "Weight", "label": "14"}]}]
+    result = app.match_sku_weights_to_variants(skus, variants)
+    assert result["matched"] == []
+    assert result["our_only"] == []  # not "we track a weight BC doesn't have" -- we don't track a weight at all here
+    assert result["bigcommerce_only"] == [14.0]
+
+
+def test_determine_in_stock_from_sku_quantities_any_positive_is_true():
+    assert app.determine_in_stock_from_sku_quantities([0, 0, 3]) is True
+
+
+def test_determine_in_stock_from_sku_quantities_all_confirmed_zero_is_false():
+    assert app.determine_in_stock_from_sku_quantities([0, 0, 0]) is False
+
+
+def test_determine_in_stock_from_sku_quantities_all_null_is_none():
+    assert app.determine_in_stock_from_sku_quantities([None, None]) is None
+
+
+def test_determine_in_stock_from_sku_quantities_empty_list_is_none():
+    assert app.determine_in_stock_from_sku_quantities([]) is None
+
+
+def test_determine_in_stock_from_sku_quantities_mixed_null_and_zero_is_false():
+    # Al: "once 0 it should be false" -- an unknown reading alongside
+    # otherwise-confirmed-zero readings shouldn't block the false.
+    assert app.determine_in_stock_from_sku_quantities([None, 0]) is False
 
 
 def test_build_bigcommerce_products_by_id_url_uses_id_in_filter():
     url = app.build_bigcommerce_products_by_id_url("store123", [1, 2, 3])
     assert url == (
         "https://api.bigcommerce.com/stores/store123/v3/catalog/products"
-        "?id:in=1,2,3&page=1&limit=250&include=custom_fields"
+        "?id:in=1,2,3&page=1&limit=250&include=custom_fields,variants"
     )
 
 
@@ -817,12 +954,14 @@ def test_fetch_bigcommerce_products_by_ids_batches_large_id_lists():
 def test_extract_bigcommerce_price_fields_resolves_relative_url_against_base():
     product = {
         "price": 149.99, "cost_price": 80.0,
-        "inventory_tracking": "none", "availability": "available",
         "custom_url": {"url": "/storm-alpha-crux/"},
     }
     fields = app.extract_bigcommerce_price_fields(product, base_url="https://www.bowlerdepot.com")
+    # No in_stock key -- 017_price_tracking_sku_stock.sql moved that
+    # derivation to check_bigcommerce_sources (per-SKU quantities), out of
+    # this single-product-dict function's own scope.
     assert fields == {
-        "price": 149.99, "cost_price": 80.0, "in_stock": True,
+        "price": 149.99, "cost_price": 80.0,
         "product_url": "https://www.bowlerdepot.com/storm-alpha-crux/",
         "raw_price_text": None, "error": None,
     }
@@ -854,29 +993,65 @@ def test_list_bowlerdepot_matches_shape():
 def test_check_bigcommerce_sources_returns_price_cost_stock_per_source(monkeypatch):
     monkeypatch.setattr(app, "get_bigcommerce_credentials", lambda: ("store123", "tok"))
     session = _FakeBigCommerceSession([
-        {"id": 100, "price": 149.99, "cost_price": 80.0, "inventory_tracking": "none", "availability": "available"},
+        {"id": 100, "price": 149.99, "cost_price": 80.0, "variants": [
+            {"id": 1, "inventory_level": 3, "option_values": [{"option_display_name": "Weight", "label": "14"}]},
+        ]},
     ])
-    sources = [{"id": "src-1", "external_product_id": "100"}]
-    results = app.check_bigcommerce_sources(sources, session=session)
+    conn = _FakeConn(skus=[{"id": "sku-14", "product_id": "prod-1", "weight_lbs": 14.0}])
+    sources = [{"id": "src-1", "product_id": "prod-1", "external_product_id": "100"}]
+    results = app.check_bigcommerce_sources(conn, sources, session=session)
     assert results["src-1"]["price"] == 149.99
     assert results["src-1"]["cost_price"] == 80.0
-    assert results["src-1"]["in_stock"] is True
+    assert results["src-1"]["in_stock"] is True  # derived from the matched SKU's own quantity (3), not a product-level field
     assert results["src-1"]["error"] is None
+    assert conn.cursor().sku_stock_inserts == [("sku-14", "src-1", 3)]
+
+
+def test_check_bigcommerce_sources_all_matched_skus_confirmed_zero_is_false(monkeypatch):
+    monkeypatch.setattr(app, "get_bigcommerce_credentials", lambda: ("store123", "tok"))
+    session = _FakeBigCommerceSession([
+        {"id": 100, "price": 149.99, "variants": [
+            {"id": 1, "inventory_level": 0, "option_values": [{"option_display_name": "Weight", "label": "14"}]},
+        ]},
+    ])
+    conn = _FakeConn(skus=[{"id": "sku-14", "product_id": "prod-1", "weight_lbs": 14.0}])
+    sources = [{"id": "src-1", "product_id": "prod-1", "external_product_id": "100"}]
+    results = app.check_bigcommerce_sources(conn, sources, session=session)
+    assert results["src-1"]["in_stock"] is False
+
+
+def test_check_bigcommerce_sources_weight_mismatch_writes_review_queue(monkeypatch):
+    # Al: "the weights on bigcommerce should match what we have and if
+    # they don't something should keep track of that."
+    monkeypatch.setattr(app, "get_bigcommerce_credentials", lambda: ("store123", "tok"))
+    session = _FakeBigCommerceSession([
+        {"id": 100, "price": 149.99, "variants": [
+            {"id": 1, "inventory_level": 3, "option_values": [{"option_display_name": "Weight", "label": "16"}]},
+        ]},
+    ])
+    conn = _FakeConn(skus=[{"id": "sku-14", "product_id": "prod-1", "weight_lbs": 14.0}])
+    sources = [{"id": "src-1", "product_id": "prod-1", "external_product_id": "100"}]
+    app.check_bigcommerce_sources(conn, sources, session=session)
+    inserts = conn.cursor().review_queue_inserts
+    field_names = sorted(r[1] for r in inserts)
+    assert field_names == ["sku_weight_missing_in_bigcommerce", "sku_weight_missing_in_our_catalog"]
 
 
 def test_check_bigcommerce_sources_missing_external_id_is_an_error_not_a_crash(monkeypatch):
     monkeypatch.setattr(app, "get_bigcommerce_credentials", lambda: ("store123", "tok"))
     session = _FakeBigCommerceSession([])
-    sources = [{"id": "src-1", "external_product_id": None}]
-    results = app.check_bigcommerce_sources(sources, session=session)
+    conn = _FakeConn()
+    sources = [{"id": "src-1", "product_id": "prod-1", "external_product_id": None}]
+    results = app.check_bigcommerce_sources(conn, sources, session=session)
     assert results["src-1"]["error"] == "no external_product_id set"
 
 
 def test_check_bigcommerce_sources_product_no_longer_in_bigcommerce_is_an_error(monkeypatch):
     monkeypatch.setattr(app, "get_bigcommerce_credentials", lambda: ("store123", "tok"))
     session = _FakeBigCommerceSession([])  # empty -- id 100 was deleted/unpublished
-    sources = [{"id": "src-1", "external_product_id": "100"}]
-    results = app.check_bigcommerce_sources(sources, session=session)
+    conn = _FakeConn()
+    sources = [{"id": "src-1", "product_id": "prod-1", "external_product_id": "100"}]
+    results = app.check_bigcommerce_sources(conn, sources, session=session)
     assert "no longer has product id 100" in results["src-1"]["error"]
 
 
@@ -885,8 +1060,9 @@ def test_check_bigcommerce_sources_credentials_failure_errors_every_source_never
         raise RuntimeError("no secret configured")
 
     monkeypatch.setattr(app, "get_bigcommerce_credentials", _boom)
+    conn = _FakeConn()
     sources = [{"id": "src-1", "external_product_id": "100"}, {"id": "src-2", "external_product_id": "200"}]
-    results = app.check_bigcommerce_sources(sources, session=None)
+    results = app.check_bigcommerce_sources(conn, sources, session=None)
     assert "BigCommerce credentials unavailable" in results["src-1"]["error"]
     assert "BigCommerce credentials unavailable" in results["src-2"]["error"]
 
@@ -898,9 +1074,129 @@ def test_check_bigcommerce_sources_fetch_failure_errors_every_source_never_raise
         raise ConnectionError("timed out")
 
     monkeypatch.setattr(app, "fetch_bigcommerce_products_by_ids", _boom)
+    conn = _FakeConn()
     sources = [{"id": "src-1", "external_product_id": "100"}]
-    results = app.check_bigcommerce_sources(sources, session=None)
+    results = app.check_bigcommerce_sources(conn, sources, session=None)
     assert "BigCommerce fetch failed" in results["src-1"]["error"]
+
+
+def test_check_bigcommerce_sources_sku_matching_failure_does_not_block_price_result(monkeypatch):
+    # "One bad row can't stop the batch" -- a SKU-matching blowup for one
+    # source must still leave that source's own price/cost result intact,
+    # just with in_stock falling back to None (unknown), never a crash.
+    monkeypatch.setattr(app, "get_bigcommerce_credentials", lambda: ("store123", "tok"))
+    session = _FakeBigCommerceSession([{"id": 100, "price": 149.99, "variants": []}])
+    conn = _FakeConn()
+
+    def _boom(c, product_id, price_source_id, skus, variants):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(app, "record_sku_stock_and_get_in_stock", _boom)
+    sources = [{"id": "src-1", "product_id": "prod-1", "external_product_id": "100"}]
+    results = app.check_bigcommerce_sources(conn, sources, session=session)
+    assert results["src-1"]["price"] == 149.99
+    assert results["src-1"]["error"] is None
+    assert results["src-1"]["in_stock"] is None
+
+
+# --- list_product_skus_for_stock / record_sku_stock_history /
+# write_sku_weight_mismatch_reviews: DB-facing halves of the above ---
+
+def test_list_product_skus_for_stock_groups_by_product():
+    conn = _FakeConn(skus=[
+        {"id": "sku-14", "product_id": "prod-1", "weight_lbs": 14.0},
+        {"id": "sku-15", "product_id": "prod-1", "weight_lbs": 15.0},
+        {"id": "sku-16", "product_id": "prod-2", "weight_lbs": 16.0},
+    ])
+    result = app.list_product_skus_for_stock(conn, ["prod-1", "prod-2"])
+    assert [s["id"] for s in result["prod-1"]] == ["sku-14", "sku-15"]
+    assert [s["id"] for s in result["prod-2"]] == ["sku-16"]
+
+
+def test_list_product_skus_for_stock_empty_ids_returns_empty_without_query():
+    conn = _FakeConn()
+    result = app.list_product_skus_for_stock(conn, [])
+    assert result == {}
+    assert conn._cursor.executed == []
+
+
+def test_record_sku_stock_history_writes_one_row_per_matched_sku():
+    conn = _FakeConn()
+    matched = [
+        {"product_sku_id": "sku-14", "weight_lbs": 14.0, "variant_id": 1, "quantity": 3},
+        {"product_sku_id": "sku-15", "weight_lbs": 15.0, "variant_id": 2, "quantity": None},
+    ]
+    app.record_sku_stock_history(conn, "src-1", matched)
+    assert conn.cursor().sku_stock_inserts == [("sku-14", "src-1", 3), ("sku-15", "src-1", None)]
+    assert conn.committed is True
+
+
+def test_record_sku_stock_history_empty_matched_is_a_noop():
+    conn = _FakeConn()
+    app.record_sku_stock_history(conn, "src-1", [])
+    assert conn.cursor().sku_stock_inserts == []
+    assert conn.committed is False
+
+
+def test_write_sku_weight_mismatch_reviews_inserts_both_directions():
+    conn = _FakeConn()
+    written = app.write_sku_weight_mismatch_reviews(conn, "prod-1", our_only=[16.0], bigcommerce_only=[14.0])
+    assert written == 2
+    field_names = sorted(r[1] for r in conn.cursor().review_queue_inserts)
+    assert field_names == ["sku_weight_missing_in_bigcommerce", "sku_weight_missing_in_our_catalog"]
+    assert conn.committed is True
+
+
+def test_write_sku_weight_mismatch_reviews_no_mismatches_is_a_noop():
+    conn = _FakeConn()
+    written = app.write_sku_weight_mismatch_reviews(conn, "prod-1", our_only=[], bigcommerce_only=[])
+    assert written == 0
+    assert conn.cursor().review_queue_inserts == []
+    assert conn.committed is False
+
+
+def test_write_sku_weight_mismatch_reviews_dedup_skips_existing_pending_row():
+    # price_checker runs DAILY -- a persisting mismatch must not spam a
+    # fresh review_queue row every single day forever.
+    conn = _FakeConn(review_queue_rows=[{
+        "id": "rq-existing", "product_id": "prod-1", "field_name": "sku_weight_missing_in_bigcommerce",
+        "current_value": "16.0", "proposed_value": None, "source": "price_checker", "status": "pending",
+    }])
+    written = app.write_sku_weight_mismatch_reviews(conn, "prod-1", our_only=[16.0], bigcommerce_only=[])
+    assert written == 0
+    assert conn.cursor().review_queue_inserts == []
+
+
+def test_write_sku_weight_mismatch_reviews_different_weight_still_writes():
+    # A DIFFERENT weight mismatch for the same product/field must not be
+    # swallowed by an unrelated existing pending row.
+    conn = _FakeConn(review_queue_rows=[{
+        "id": "rq-existing", "product_id": "prod-1", "field_name": "sku_weight_missing_in_bigcommerce",
+        "current_value": "16.0", "proposed_value": None, "source": "price_checker", "status": "pending",
+    }])
+    written = app.write_sku_weight_mismatch_reviews(conn, "prod-1", our_only=[17.0], bigcommerce_only=[])
+    assert written == 1
+
+
+def test_write_sku_weight_mismatch_reviews_resolved_row_does_not_block_reinsert():
+    # A row an admin already approved/rejected (status != 'pending') must
+    # not suppress a freshly re-found mismatch.
+    conn = _FakeConn(review_queue_rows=[{
+        "id": "rq-old", "product_id": "prod-1", "field_name": "sku_weight_missing_in_bigcommerce",
+        "current_value": "16.0", "proposed_value": None, "source": "price_checker", "status": "approved",
+    }])
+    written = app.write_sku_weight_mismatch_reviews(conn, "prod-1", our_only=[16.0], bigcommerce_only=[])
+    assert written == 1
+
+
+def test_record_sku_stock_and_get_in_stock_orchestrates_match_record_and_derive():
+    conn = _FakeConn()
+    skus = [{"id": "sku-14", "weight_lbs": 14.0}]
+    variants = [{"id": 1, "inventory_level": 5, "option_values": [{"option_display_name": "Weight", "label": "14"}]}]
+    in_stock = app.record_sku_stock_and_get_in_stock(conn, "prod-1", "src-1", skus, variants)
+    assert in_stock is True
+    assert conn.cursor().sku_stock_inserts == [("sku-14", "src-1", 5)]
+    assert conn.cursor().review_queue_inserts == []
 
 
 # --- check_sources: partitions scrape vs api sources (016_price_tracking_
@@ -910,7 +1206,7 @@ def test_check_sources_routes_scrape_and_api_sources_separately(monkeypatch):
     monkeypatch.setattr(app, "check_price_source", lambda source, session=None: {
         "price": 1.0, "raw_price_text": "$1.00", "error": None,
     })
-    monkeypatch.setattr(app, "check_bigcommerce_sources", lambda sources, session=None: {
+    monkeypatch.setattr(app, "check_bigcommerce_sources", lambda conn, sources, session=None: {
         s["id"]: {"price": 2.0, "raw_price_text": None, "error": None, "cost_price": 1.5, "in_stock": True}
         for s in sources
     })
@@ -950,7 +1246,7 @@ def test_check_sources_no_api_sources_never_calls_check_bigcommerce_sources(monk
         "price": 1.0, "raw_price_text": "$1.00", "error": None,
     })
     monkeypatch.setattr(app, "check_bigcommerce_sources",
-                         lambda sources, session=None: (_ for _ in ()).throw(AssertionError("must not be called")))
+                         lambda conn, sources, session=None: (_ for _ in ()).throw(AssertionError("must not be called")))
     conn = _FakeConn()
     result = app.check_sources(conn, [{"id": "sc-1", "fetch_method": "scrape", "product_url": "u", "css_selector": ".p"}])
     assert result["sources_checked"] == 1
