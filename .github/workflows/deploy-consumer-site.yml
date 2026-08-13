@@ -1,0 +1,79 @@
+# Push-to-deploy for consumer-site/ -- see DEPLOY_RUNBOOK.md's CI section
+# for the one-time AWS + GitHub setup this pairs with (template.yaml's
+# ConsumerSiteDeployRole/GitHubOidcProvider, and the repo Variables this
+# workflow reads below). No AWS credentials live in this repo at all --
+# aws-actions/configure-aws-credentials exchanges GitHub's own short-lived
+# OIDC token for temporary AWS credentials scoped to exactly that one role.
+name: Deploy consumer site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "consumer-site/**"
+      - ".github/workflows/deploy-consumer-site.yml"
+  # Manual re-run without needing a throwaway commit -- e.g. after
+  # rotating VITE_PUBLIC_API_URL or just to force a fresh CloudFront
+  # invalidation.
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write # required to request the OIDC token
+  contents: read # required for actions/checkout
+
+# Two pushes to main in quick succession shouldn't run two concurrent
+# deploys against the same S3 bucket/CloudFront distribution -- queue
+# behind whichever is already running rather than cancel-in-progress
+# (a cancelled mid-sync deploy could leave dist/ and the live bucket in a
+# half-updated, mismatched state).
+concurrency:
+  group: deploy-consumer-site
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: consumer-site
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: consumer-site/package-lock.json
+
+      - run: npm ci
+
+      # VITE_PUBLIC_API_URL has to be present at BUILD time, not just at
+      # deploy time -- Vite inlines import.meta.env.VITE_* values into the
+      # bundled JS during `vite build`, there's no runtime env lookup in
+      # the browser afterward (see consumer-site/.env.example's own
+      # comment on the equivalent local-dev setup).
+      - name: Build
+        env:
+          VITE_PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+        run: npm run build
+
+      # role-to-assume/aws-region/bucket/distribution-id are all plain
+      # repo Variables (Settings -> Secrets and variables -> Actions ->
+      # Variables), not Secrets -- none of them are sensitive (an IAM role
+      # ARN grants nothing on its own without the OIDC trust conditions
+      # already enforced server-side by AWS; the bucket name, distribution
+      # id, and public API URL are all either already public or freely
+      # discoverable from the deployed stack's own Outputs). Nothing this
+      # workflow touches needs GitHub Secrets at all, which is the whole
+      # point of OIDC over long-lived access keys.
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.CONSUMER_SITE_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Sync to S3
+        run: aws s3 sync dist/ "s3://${{ vars.CONSUMER_SITE_BUCKET }}/" --delete
+
+      - name: Invalidate CloudFront cache
+        run: aws cloudfront create-invalidation --distribution-id "${{ vars.CONSUMER_SITE_DISTRIBUTION_ID }}" --paths "/*"

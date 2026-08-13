@@ -2993,6 +2993,82 @@ aws cloudfront create-invalidation --distribution-id "$DIST_ID" --paths "/*"
 `ConsumerSiteUrl` (stack output) is the CloudFront domain to open
 afterward.
 
+**CI: push-to-deploy via GitHub Actions (2026-08-12).** Al: "lets get
+back to the CI for the consumer-site." Answers this project's own
+earlier open question (IAM access keys vs. OIDC role, never resolved
+until now) -- went with **OIDC federation**: GitHub's own short-lived
+token gets exchanged for temporary AWS credentials scoped to one narrow
+IAM role, so no AWS access key/secret ever exists as a GitHub secret to
+leak or rotate. `.github/workflows/deploy-consumer-site.yml` runs on
+every push to `main` that touches `consumer-site/**` (or manually via
+`workflow_dispatch`): `npm ci`, `npm run build` (with
+`VITE_PUBLIC_API_URL` baked in at build time -- Vite inlines
+`import.meta.env.VITE_*` into the bundle, there's no runtime env lookup
+in the browser afterward), `aws s3 sync dist/ ... --delete`, then a full
+CloudFront invalidation (`--paths "/*"`). Concurrency-grouped
+(`cancel-in-progress: false`) so two rapid pushes queue rather than one
+cancelling mid-sync and leaving the bucket half-updated.
+
+`template.yaml` gained the AWS-side half: `ConsumerSiteDeployRole` (IAM
+role, trust-restricted via `token.actions.githubusercontent.com:sub` to
+`repo:<owner>/<repo>:ref:refs/heads/main` -- pushes to `main` in exactly
+that repo, not any branch/fork/PR) and `GitHubOidcProvider`
+(`AWS::IAM::OIDCProvider` for `token.actions.githubusercontent.com`,
+gated behind its own `CreateGitHubOidcProvider` flag since that provider
+is an **AWS-account-level singleton** -- only one per URL per account,
+so if a different project in this same account already created one for
+GitHub Actions, set `CreateGitHubOidcProvider=false` here and this
+role's trust policy still works unchanged, since the provider's ARN is
+computed from `AWS::AccountId` directly rather than referencing the
+conditional resource). `ConsumerSiteDeployRole`'s own policy is scoped
+to exactly what the workflow's two AWS steps need -- `s3:ListBucket`/
+`PutObject`/`DeleteObject` on `ConsumerSiteBucket` alone, and
+`cloudfront:CreateInvalidation` on `ConsumerSiteDistribution` alone.
+Nothing broader (no `cloudformation:*`, no other bucket) -- deploying
+`template.yaml` itself is still a human running `sam deploy`, this role
+only ever touches the already-provisioned site infra.
+
+Both new resources are gated behind `GitHubRepo` (blank by default, same
+"blank param = feature off" convention as `ConsumerSiteDomainName`/
+`SwagBrandId` elsewhere in this template), so a deploy that hasn't set
+it up yet is completely unaffected.
+
+**One-time setup:**
+1. Redeploy with `GitHubRepo` set to `"<owner>/<repo>"` (e.g.
+   `awbowlerdepot/ballscratcher`):
+   ```bash
+   sam deploy --parameter-overrides GitHubRepo=awbowlerdepot/ballscratcher ...
+   ```
+   (keep every other existing `--parameter-overrides` value the same --
+   `sam deploy` doesn't merge with the last deploy's values on its own;
+   see this runbook's earlier troubleshooting note on that exact gotcha
+   if `samconfig.toml` already has `parameter_overrides` cached from a
+   previous deploy).
+2. Grab the new role ARN:
+   ```bash
+   aws cloudformation describe-stacks --stack-name <your-stack-name> \
+     --query "Stacks[0].Outputs[?OutputKey=='ConsumerSiteDeployRoleArn'].OutputValue" --output text
+   ```
+3. In the GitHub repo: **Settings -> Secrets and variables -> Actions ->
+   Variables** (repo Variables, not Secrets -- none of these five values
+   are sensitive on their own; see the workflow file's own comment on
+   why), add:
+   - `CONSUMER_SITE_DEPLOY_ROLE_ARN` -- the ARN from step 2.
+   - `AWS_REGION` -- whatever region this stack is deployed to.
+   - `CONSUMER_SITE_BUCKET` -- the `ConsumerSiteBucketName` stack output.
+   - `CONSUMER_SITE_DISTRIBUTION_ID` -- the `ConsumerSiteDistributionId`
+     stack output.
+   - `PUBLIC_API_URL` -- the `PublicApiUrl` stack output.
+4. Push anything under `consumer-site/` to `main` (or run the workflow
+   manually from GitHub's Actions tab) -- it deploys itself from there
+   on.
+
+If IAM rejects the `sam deploy` in step 1 with an error creating
+`GitHubOidcProvider` (`EntityAlreadyExists`), a GitHub OIDC provider
+already exists in this AWS account from some other project -- redeploy
+again with `CreateGitHubOidcProvider=false` added to the same
+`--parameter-overrides` and nothing else changes.
+
 **Hosting infra** (`template.yaml`): private `ConsumerSiteBucket` (S3,
 all public access blocked) behind `ConsumerSiteDistribution`
 (CloudFront) via Origin Access Control -- not the older OAI, and not

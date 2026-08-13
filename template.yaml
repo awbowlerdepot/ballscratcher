@@ -383,12 +383,44 @@ Parameters:
       record added at whatever registrar/DNS provider actually hosts the
       domain, which this template has no way to reach or verify) -- request
       and validate it yourself first, then pass the resulting ARN here.
+  GitHubRepo:
+    Type: String
+    Default: ""
+    Description: >
+      "owner/repo" (e.g. awbowlerdepot/ballscratcher) that's allowed to
+      deploy the consumer site via GitHub Actions. Left blank (the
+      default), ConsumerSiteDeployRole below isn't created at all -- same
+      "blank param = feature off" convention as SwagBrandId/
+      ConsumerSiteDomainName elsewhere in this template. Set once, before
+      wiring up .github/workflows/deploy-consumer-site.yml (see
+      DEPLOY_RUNBOOK.md's CI section for the full one-time setup -- this
+      param alone isn't enough, the workflow also needs a few repo-level
+      GitHub Variables set from this stack's own outputs).
+  CreateGitHubOidcProvider:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: >
+      Whether to create the AWS::IAM::OIDCProvider for
+      token.actions.githubusercontent.com. This provider is an AWS-ACCOUNT-
+      LEVEL SINGLETON, not scoped to this stack -- an account can only have
+      one OIDC provider per URL, so if a different project/stack in this
+      same AWS account already created one for GitHub Actions, creating a
+      second one here will fail with EntityAlreadyExists. Set this to
+      "false" in that case (ConsumerSiteDeployRole's trust policy computes
+      the provider's ARN directly from AWS::AccountId either way, so it
+      doesn't matter which stack actually created the provider resource
+      itself). Only takes effect when GitHubRepo above is also set.
 
 Conditions:
   HasBigCommerceSecret: !Not [!Equals [!Ref BigCommerceSecretArn, ""]]
   HasAdminApiToken: !Not [!Equals [!Ref AdminApiTokenSecretArn, ""]]
   HasYouTubeApiKeySecret: !Not [!Equals [!Ref YouTubeApiKeySecretArn, ""]]
   HasConsumerSiteDomain: !Not [!Equals [!Ref ConsumerSiteDomainName, ""]]
+  HasGitHubRepo: !Not [!Equals [!Ref GitHubRepo, ""]]
+  ShouldCreateGitHubOidcProvider: !And
+    - !Condition HasGitHubRepo
+    - !Equals [!Ref CreateGitHubOidcProvider, "true"]
 
 Resources:
   ImageBucket:
@@ -2060,6 +2092,92 @@ Resources:
               StringEquals:
                 AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${ConsumerSiteDistribution}
 
+  # --- GitHub Actions CI/CD for the consumer site -----------------------
+  #
+  # Al: "lets get back to the CI for the consumer-site" -- push-to-deploy
+  # for consumer-site/ via GitHub Actions. Chose OIDC federation over a
+  # long-lived IAM access key pair stored as a GitHub secret: no AWS
+  # credential ever leaves AWS, GitHub's own short-lived token is what gets
+  # exchanged for temporary credentials scoped to exactly this role, and
+  # there's nothing to rotate if a secret ever leaked (there isn't one).
+  # See DEPLOY_RUNBOOK.md's CI section for the full one-time setup this
+  # pairs with (the actual .github/workflows/deploy-consumer-site.yml, and
+  # the GitHub repo Variables it needs).
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: ShouldCreateGitHubOidcProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      # No ThumbprintList -- optional as of the current AWS::IAM::OIDCProvider
+      # spec. AWS verifies the IdP's TLS certificate against its own trusted
+      # root CA store now (GitHub's cert chains up to one), only falling back
+      # to thumbprint comparison if that verification isn't possible -- see
+      # https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_create_oidc.html.
+      # Confirmed via that same page: IAM auto-fetches the thumbprint itself
+      # when this property is omitted.
+
+  ConsumerSiteDeployRole:
+    Type: AWS::IAM::Role
+    Condition: HasGitHubRepo
+    Properties:
+      RoleName: !Sub bowling-scraper-consumer-site-deploy-${AWS::AccountId}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              # Computed directly from AWS::AccountId rather than !GetAtt/
+              # !Ref'd off GitHubOidcProvider above -- that resource is
+              # itself conditional (ShouldCreateGitHubOidcProvider), and
+              # this role has to work identically whether THIS stack
+              # created the account's one GitHub OIDC provider or a
+              # different stack already did (see CreateGitHubOidcProvider's
+              # own parameter description). The ARN shape is deterministic
+              # either way.
+              Federated: !Sub arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              # Restricted to pushes on main specifically (not "any branch",
+              # not "any PR") -- a fork's PR workflow run carries a
+              # different sub claim shape and would already be rejected by
+              # this, but being explicit about the exact ref is the actual
+              # security boundary here, not an accident of the claim
+              # format. workflow_dispatch (manual trigger) on main also
+              # satisfies this same sub claim, so that stays usable too.
+              StringLike:
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepo}:ref:refs/heads/main
+      # Least-privilege, scoped to exactly what deploy-consumer-site.yml's
+      # two real steps need -- nothing broader like sam deploy/
+      # cloudformation:* here on purpose. A separate, human-run deploy
+      # (see this section's own Build/Deploy steps above) is still how
+      # template.yaml itself gets deployed; this role only ever touches
+      # the already-provisioned ConsumerSiteBucket/Distribution.
+      Policies:
+        - PolicyName: consumer-site-deploy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: !GetAtt ConsumerSiteBucket.Arn
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:DeleteObject
+                # aws s3 sync --delete needs both: PutObject for new/
+                # changed files, DeleteObject for ones removed from
+                # dist/ since the last deploy.
+                Resource: !Sub arn:aws:s3:::${ConsumerSiteBucket}/*
+              - Effect: Allow
+                Action:
+                  - cloudfront:CreateInvalidation
+                Resource: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${ConsumerSiteDistribution}
+
 Outputs:
   UrlDiscoveryFunctionArn:
     Value: !GetAtt UrlDiscoveryFunction.Arn
@@ -2085,6 +2203,9 @@ Outputs:
     Value: !Ref ConsumerSiteDistribution
   ConsumerSiteUrl:
     Value: !Sub "https://${ConsumerSiteDistribution.DomainName}"
+  ConsumerSiteDeployRoleArn:
+    Condition: HasGitHubRepo
+    Value: !GetAtt ConsumerSiteDeployRole.Arn
   AdminApiAuthorizerFunctionArn:
     Value: !GetAtt AdminApiAuthorizerFunction.Arn
   ProductScrapeDLQUrl:
