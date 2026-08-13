@@ -2550,6 +2550,52 @@ sam deploy
 (No admin-site redeploy step, same as every other admin-site change --
 it's a static file, not a Lambda-fronted deployable.)
 
+**Follow-up, real incident**: Al noticed stats were "coming in but
+pretty slow" after using this feature for a while. Root cause wasn't a
+bug -- it's that both of `VideoDiscoveryFunction`'s relevant job shapes
+were manual-invoke only (see 6i's own "no automated schedule" note,
+which predates this feature): new candidates only get stats when the
+SEARCH job shape happens to run and reach that product (capped at
+70/invocation by the confirmed 100-searches/day quota), and existing
+candidates only get refreshed when someone clicks "Refresh stats" (or
+runs `scripts/refresh_video_stats.py`), which caps at
+`DEFAULT_REFRESH_STATS_LIMIT=200` rows per click -- slow to work through
+a real backlog (every `product_videos` row that existed before this
+feature shipped started with `stats_fetched_at = null`).
+
+Fix: `template.yaml`'s `VideoDiscoveryFunction` gained a
+`DailyStatsRefresh` `Events: Schedule` (`rate(1 day)`) with an explicit
+`Input: '{"refresh_stats": true, "limit": 1000}'` -- SAM/EventBridge
+replaces the whole invocation event with that `Input` JSON, so this is
+functionally identical to a manual `aws lambda invoke ... --payload
+'{"refresh_stats": true, "limit": 1000}'` running once a day, no code
+change needed. `limit=1000`, not the button's own 200 default -- `videos.
+list` isn't the constrained resource `search.list` is (cheap, flat-cost
+per call regardless of batch size, see `fetch_video_statistics`'s
+docstring), so there's no quota reason to be conservative here, and even
+1000 rows (20 `videos.list` calls of up to 50 ids each) is nowhere near
+this function's 280s `Timeout`. The SEARCH job shapes ({}/`brand_id`/
+`product_ids`) deliberately stay manual-only -- they DO burn the scarce
+`search.list` quota, and Al already made the deliberate "subset-first,
+invoke when ready" call on those (see 6i's own docstring reference).
+
+This doesn't eliminate the backlog instantly -- `select_video_ids_
+needing_stats_refresh` orders `stats_fetched_at asc nulls first`, so a
+large existing backlog still takes a few days of runs to fully clear
+(1000/day), and the schedule doesn't speed up how fast brand-new
+candidates get discovered in the first place, only how current their
+stats stay once they exist. No new tests -- this is pure infra
+(`template.yaml`'s `Events` block), verified by re-parsing the template
+with the same CFN-tolerant PyYAML loader used throughout this project
+and confirming `Input` is valid JSON.
+
+Requires a real `sam deploy` (not just `sam build`) to actually create
+the EventBridge rule, same as any other `Events:` addition:
+```bash
+sam build VideoDiscoveryFunction
+sam deploy
+```
+
 ### 6j. Home transcript fetcher (residential caption fetching) -- optional, run outside AWS entirely
 
 Real, live-tested finding this session (see
@@ -3633,13 +3679,17 @@ want a custom domain yet.
   value; already-warm `AdminApiAuthorizerFunction` containers cache the
   old token for their remaining lifetime (see that module's docstring) --
   not instant revocation, by design, acceptable for a shared token.
-- **`VideoDiscoveryFunction` has no automated schedule either**, same
-  reasoning as the other discovery functions, plus a real quota reason:
-  the confirmed 100-searches/day cap (70/invocation, see 6i) means "run it
-  on everything every day" isn't actually sane math yet against a full
-  catalog. Invoke it manually with
-  an explicit `product_ids`/`brand_id` scope (see 6i) until you've decided
-  how you actually want to spread coverage across the catalog over time.
+- **`VideoDiscoveryFunction`'s SEARCH job shapes still have no automated
+  schedule**, same reasoning as the other discovery functions, plus a
+  real quota reason: the confirmed 100-searches/day cap (70/invocation,
+  see 6i) means "run it on everything every day" isn't actually sane math
+  yet against a full catalog. Invoke it manually with an explicit
+  `product_ids`/`brand_id` scope (see 6i) until you've decided how you
+  actually want to spread coverage across the catalog over time.
+  **The `{"refresh_stats": true}` job shape is different and now IS
+  scheduled** (daily, see 6i.6's own writeup) -- `videos.list` isn't the
+  constrained resource `search.list` is, so there was no quota reason to
+  keep it manual-only once Al noticed stats "coming in but pretty slow."
 
 ## Troubleshooting quick reference
 

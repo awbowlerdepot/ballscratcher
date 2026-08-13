@@ -1531,11 +1531,36 @@ Resources:
                 - HasYouTubeApiKeySecret
                 - !Ref YouTubeApiKeySecretArn
                 - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:unused-*"
-      # Manual/direct invoke only, same as the other discovery functions --
-      # no schedule wired up. Invoke with {} (all published+current
-      # products, capped), {"brand_id": "..."}, or {"product_ids": [...]}
-      # -- see module docstring for the subset-first reasoning and the
-      # real ~90-searches/day quota ceiling this respects.
+      # The SEARCH job shapes ({}, {"brand_id": ...}, {"product_ids": ...})
+      # stay manual/direct-invoke only, same as the other discovery
+      # functions -- deliberately NOT scheduled, since they burn
+      # search.list quota (the confirmed 100-calls/day hard ceiling, see
+      # module docstring's HARD QUOTA CONSTRAINT section) and Al
+      # explicitly chose a subset-first, invoke-when-ready approach over
+      # an automated full-catalog crawl.
+      #
+      # {"refresh_stats": true} is different: Al's real ask after seeing
+      # stats "coming in but pretty slow" -- videos.list (what this job
+      # shape calls) is NOT the constrained resource search.list is (cheap,
+      # flat-cost per call regardless of batch size, see fetch_video_
+      # statistics's docstring), so there's no quota reason to keep it
+      # manual-only the way search is. limit=1000 here (not DEFAULT_
+      # REFRESH_STATS_LIMIT=200, which stays the admin-site button's own
+      # default so a manual click stays fast) -- generous on purpose so
+      # one daily run can clear a real backlog (every product_videos row
+      # from before this feature existed started with stats_fetched_at =
+      # null) in addition to keeping already-fetched rows current; even at
+      # 1000 rows (20 videos.list calls of up to 50 ids each) this is
+      # nowhere near this function's 280s Timeout.
+      Events:
+        DailyStatsRefresh:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 day)
+            Name: bowling-scraper-video-discovery-stats-refresh-daily
+            Description: Re-pulls view/like/comment/duration stats for existing product_videos rows, oldest-fetched-first (see refresh_video_stats).
+            Input: '{"refresh_stats": true, "limit": 1000}'
+            Enabled: true
 
   VideoTranscriptFetcherFunction:
     Type: AWS::Serverless::Function
