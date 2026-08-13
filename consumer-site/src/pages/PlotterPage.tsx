@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { getPlotterPositions } from "../api/client";
 import type { PlotterPoint, ProductStatus } from "../api/types";
@@ -32,11 +32,12 @@ const HEIGHT = 640;
 // clearance or it gets clipped by the <svg> root's own viewBox bounds
 // (SVG's default overflow: hidden crops anything drawn above y=0 or
 // below y=HEIGHT). 48/72 comfortably fit a hovered max-size ball at
-// either edge with room to spare. Known, accepted gap: a large exploded
-// cluster (see `positions` below) sitting right in a corner can still
-// push a member or two past this margin -- rare in practice (needs both
-// a same-position pile-up AND a corner grid position) and not worth the
-// extra complexity of clamping ring positions back into bounds for.
+// either edge with room to spare. Known, accepted gap: a large hover-
+// exploded cluster (see explodeOffsets below) sitting right in a corner
+// can still push a member or two past this margin -- rare in practice
+// (needs both a same-position pile-up AND a corner grid position) and
+// not worth the extra complexity of clamping ring positions back into
+// bounds for.
 const MARGIN = { top: 48, right: 24, bottom: 72, left: 56 };
 const OIL_MIN = 1;
 const OIL_MAX = 16;
@@ -117,33 +118,47 @@ export default function PlotterPage() {
 
   // Multiple balls can land on the exact same (oil, motion) position --
   // round-number estimates collide constantly, and chart/manual values
-  // aren't guaranteed unique either. Stacked exactly on top of each
-  // other, only the last-drawn one would ever be visible or clickable.
-  // Al: "explode out the balls that are on top of each other if there
-  // are multiple with the same values." Groups by the literal oil/motion
-  // pair and, for any group bigger than one, fans its members out evenly
-  // around the true grid position on a small ring. Depends on `size`
-  // (not `hovered`) -- the ring has to grow with the marker diameter the
-  // slider controls, but a hover shouldn't reflow anyone's position, only
-  // which one paints on top (see renderOrder below) and its own radius.
+  // aren't guaranteed unique either. Al first asked for these to always
+  // fan out; on seeing that, he preferred them "overlapped and then on
+  // hover animate them out so they are visible" -- so a group stays
+  // stacked exactly on the true grid position at rest, and only spreads
+  // into a small ring while the stack is being hovered, easing back
+  // together on mouse-out. Grouped by the literal oil/motion pair.
   // p.oil/p.motion themselves (used everywhere else: tooltip, title,
-  // click-through) are never touched -- this is purely a render position.
-  const positions = useMemo(() => {
-    const groups = new Map<string, PlotterPoint[]>();
+  // click-through) are never touched -- this only ever computes a render
+  // offset layered on top of the real grid position.
+  const groups = useMemo(() => {
+    const map = new Map<string, PlotterPoint[]>();
     for (const p of visible) {
       const key = `${p.oil}:${p.motion}`;
-      const group = groups.get(key);
+      const group = map.get(key);
       if (group) group.push(p);
-      else groups.set(key, [p]);
+      else map.set(key, [p]);
     }
+    return map;
+  }, [visible]);
 
+  const groupKeyOf = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const [key, group] of groups) {
+      for (const p of group) map.set(p.id, key);
+    }
+    return map;
+  }, [groups]);
+
+  // Per-ball (dx, dy) offset from its true grid position, applied via a
+  // `--dx`/`--dy` CSS custom property + `transform: translate(...)` (see
+  // .plotter-ball-offset/.plotter-group in index.css) instead of being
+  // baked into cx/cy directly -- that's what turns the explode into a
+  // hover-driven CSS transition rather than a permanent layout change.
+  // Singletons get a zero offset and skip the group wrapper entirely
+  // (nothing to spread apart, nothing to hover-trigger).
+  const explodeOffsets = useMemo(() => {
     const radius = size / 2;
-    const result = new Map<string, { cx: number; cy: number }>();
+    const result = new Map<string, { dx: number; dy: number }>();
     for (const group of groups.values()) {
-      const baseCx = xFor(group[0].oil);
-      const baseCy = yFor(group[0].motion);
       if (group.length === 1) {
-        result.set(group[0].id, { cx: baseCx, cy: baseCy });
+        result.set(group[0].id, { dx: 0, dy: 0 });
         continue;
       }
       // Stable order (by id) so a re-render never reshuffles which ball
@@ -158,26 +173,26 @@ export default function PlotterPage() {
       ordered.forEach((p, i) => {
         const angle = (2 * Math.PI * i) / n - Math.PI / 2; // start straight up, then clockwise
         result.set(p.id, {
-          cx: baseCx + explodeRadius * Math.cos(angle),
-          cy: baseCy + explodeRadius * Math.sin(angle),
+          dx: explodeRadius * Math.cos(angle),
+          dy: explodeRadius * Math.sin(angle),
         });
       });
     }
     return result;
-  }, [visible, size]);
+  }, [groups, size]);
 
-  // Bring the hovered ball to front -- SVG paint order is purely
+  // Bring the hovered ball's whole group to the front, and the hovered
+  // ball to the front within that group -- SVG paint order is purely
   // document order (no independent z-index the way CSS box layout has),
-  // so "on top" means "rendered last". Al: "change the z index of the
-  // hovered ball on the plotter to be on top." Only reorders the array
-  // that gets mapped over below; never changes what's plotted or its
-  // computed position.
-  const renderOrder = useMemo(() => {
-    if (!hovered) return visible;
-    const rest = visible.filter((p) => p.id !== hovered.id);
-    const found = visible.find((p) => p.id === hovered.id);
-    return found ? [...rest, found] : visible;
-  }, [visible, hovered]);
+  // so "on top" means "drawn last". Only reorders which <g> comes last
+  // in the SVG; never changes what's plotted or its computed position.
+  const orderedGroupKeys = useMemo(() => {
+    const keys = Array.from(groups.keys());
+    const hoveredKey = hovered ? groupKeyOf.get(hovered.id) : undefined;
+    if (!hoveredKey) return keys;
+    const rest = keys.filter((k) => k !== hoveredKey);
+    return [...rest, hoveredKey];
+  }, [groups, groupKeyOf, hovered]);
 
   function toggleBrand(name: string) {
     setEnabledBrands((prev) => {
@@ -322,67 +337,107 @@ export default function PlotterPage() {
                 a circle, standing in for the original's rounded <img>
                 markers. A plain filled circle is the fallback for a
                 product with no image yet (see BrowsePage's identical
-                placeholder reasoning). Mapped over renderOrder (not
-                visible directly) so the hovered ball paints last/on top
-                -- see renderOrder's own comment. Position comes from the
-                precomputed `positions` map (see its own comment) rather
-                than xFor/yFor directly, so balls sharing an exact oil/
-                motion value fan out instead of stacking exactly on top
-                of each other. */}
-            {renderOrder.map((p) => {
-              const pos = positions.get(p.id)!;
-              const cx = pos.cx;
-              const cy = pos.cy;
+                placeholder reasoning). Balls are always drawn at their
+                true grid position (cx/cy from xFor/yFor); a group sharing
+                one oil/motion value stays visually stacked there until
+                hovered, at which point CSS spreads its members out along
+                `--dx`/`--dy` (see explodeOffsets and .plotter-group in
+                index.css). A group of more than one also gets an
+                invisible "halo" hit circle sized to cover the whole
+                fanned-out area, so hovering anywhere near the stack keeps
+                it exploded even after the individual balls have animated
+                out from under the pointer -- a bare per-ball :hover would
+                drop the instant a ball's own hit circle moves out from
+                under a stationary cursor, since a moving element doesn't
+                get re-hit-tested without an actual mouse move. Mapped
+                over orderedGroupKeys/membersOrdered (not the raw groups)
+                so the hovered ball's group, and the hovered ball within
+                it, both paint last/on top -- see orderedGroupKeys' own
+                comment. */}
+            {orderedGroupKeys.map((key) => {
+              const group = groups.get(key)!;
+              const baseCx = xFor(group[0].oil);
+              const baseCy = yFor(group[0].motion);
               const radius = size / 2;
-              const r = hovered?.id === p.id ? radius + 5 : radius;
-              const clipId = `plotter-clip-${p.id}`;
+              const exploded = group.length > 1;
+              const haloRadius = exploded
+                ? (radius / Math.sin(Math.PI / group.length)) * 1.15 + radius
+                : 0;
+              const membersOrdered =
+                hovered && groupKeyOf.get(hovered.id) === key
+                  ? [...group.filter((p) => p.id !== hovered.id), group.find((p) => p.id === hovered.id)!]
+                  : group;
               return (
-                <g
-                  key={p.id}
-                  className="plotter-ball"
-                  onMouseEnter={() => setHovered(p)}
-                  onMouseLeave={() => setHovered((h) => (h?.id === p.id ? null : h))}
-                  onClick={() => navigate(`/balls/${p.id}`)}
-                >
-                  <title>
-                    {p.brand_name} {p.name} (oil {p.oil}, motion {p.motion}
-                    {p.oil_motion_source === "estimated" ? ", estimated" : ""})
-                  </title>
-                  {p.primary_image_url ? (
-                    <>
-                      <clipPath id={clipId}>
-                        <circle cx={cx} cy={cy} r={r} />
-                      </clipPath>
-                      <image
-                        href={p.primary_image_url}
-                        x={cx - r}
-                        y={cy - r}
-                        width={r * 2}
-                        height={r * 2}
-                        clipPath={`url(#${clipId})`}
-                        preserveAspectRatio="xMidYMid slice"
-                      />
-                    </>
-                  ) : (
-                    <circle cx={cx} cy={cy} r={r} className="plotter-ball-placeholder" />
+                <g key={key} className={exploded ? "plotter-group" : undefined}>
+                  {exploded && (
+                    <circle
+                      cx={baseCx}
+                      cy={baseCy}
+                      r={haloRadius}
+                      fill="transparent"
+                      className="plotter-group-halo"
+                    />
                   )}
-                  <circle
-                    cx={cx}
-                    cy={cy}
-                    r={r}
-                    fill="none"
-                    className={`plotter-ball-ring plotter-ball-ring-${p.oil_motion_source}`}
-                  />
-                  {/* Dedicated hit target, drawn last (on top) so it
-                      owns pointer events across the WHOLE circle. The
-                      ring above is fill="none", which by default only
-                      registers hover/click on its thin stroked edge --
-                      that's the "only works on the edge" bug. A
-                      transparent (not "none") fill still counts as
-                      painted for hit-testing, so this circle catches
-                      hover/click everywhere inside the marker, not
-                      just a couple of pixels of outline. */}
-                  <circle cx={cx} cy={cy} r={r} fill="transparent" className="plotter-ball-hit" />
+                  {membersOrdered.map((p) => {
+                    const off = explodeOffsets.get(p.id)!;
+                    const r = hovered?.id === p.id ? radius + 5 : radius;
+                    const clipId = `plotter-clip-${p.id}`;
+                    return (
+                      <g
+                        key={p.id}
+                        className={exploded ? "plotter-ball plotter-ball-offset" : "plotter-ball"}
+                        style={
+                          exploded
+                            ? ({ "--dx": `${off.dx}px`, "--dy": `${off.dy}px` } as CSSProperties)
+                            : undefined
+                        }
+                        onMouseEnter={() => setHovered(p)}
+                        onMouseLeave={() => setHovered((h) => (h?.id === p.id ? null : h))}
+                        onClick={() => navigate(`/balls/${p.id}`)}
+                      >
+                        <title>
+                          {p.brand_name} {p.name} (oil {p.oil}, motion {p.motion}
+                          {p.oil_motion_source === "estimated" ? ", estimated" : ""})
+                        </title>
+                        {p.primary_image_url ? (
+                          <>
+                            <clipPath id={clipId}>
+                              <circle cx={baseCx} cy={baseCy} r={r} />
+                            </clipPath>
+                            <image
+                              href={p.primary_image_url}
+                              x={baseCx - r}
+                              y={baseCy - r}
+                              width={r * 2}
+                              height={r * 2}
+                              clipPath={`url(#${clipId})`}
+                              preserveAspectRatio="xMidYMid slice"
+                            />
+                          </>
+                        ) : (
+                          <circle cx={baseCx} cy={baseCy} r={r} className="plotter-ball-placeholder" />
+                        )}
+                        <circle
+                          cx={baseCx}
+                          cy={baseCy}
+                          r={r}
+                          fill="none"
+                          className={`plotter-ball-ring plotter-ball-ring-${p.oil_motion_source}`}
+                        />
+                        {/* Dedicated hit target, drawn last (on top) so
+                            it owns pointer events across the WHOLE
+                            circle. The ring above is fill="none", which
+                            by default only registers hover/click on its
+                            thin stroked edge -- that's the "only works
+                            on the edge" bug. A transparent (not "none")
+                            fill still counts as painted for hit-testing,
+                            so this circle catches hover/click everywhere
+                            inside the marker, not just a couple of
+                            pixels of outline. */}
+                        <circle cx={baseCx} cy={baseCy} r={r} fill="transparent" className="plotter-ball-hit" />
+                      </g>
+                    );
+                  })}
                 </g>
               );
             })}

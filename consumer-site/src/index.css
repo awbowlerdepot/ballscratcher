@@ -612,6 +612,29 @@ input[type="text"] {
 .plotter-ball-ring-manual {
   stroke: var(--color-retired);
 }
+/* Balls sharing an exact oil/motion value sit stacked at rest (offset
+   0,0) and only spread apart while the group is being hovered -- see
+   PlotterPage.tsx's explodeOffsets/orderedGroupKeys comments. --dx/--dy
+   are set per-ball as inline custom properties; the translate itself
+   only activates via the ancestor .plotter-group:hover rule below, and
+   eases back together the same way on mouse-out. */
+.plotter-ball-offset {
+  transform: translate(0, 0);
+  transition: transform 0.22s ease;
+}
+.plotter-group:hover .plotter-ball-offset {
+  transform: translate(var(--dx), var(--dy));
+}
+/* Invisible circle covering the group's whole fanned-out footprint.
+   Needed because a moving element (a ball animating out from under a
+   stationary cursor) doesn't get re-hit-tested without an actual mouse
+   move -- without this, :hover on the group would drop the instant the
+   balls slid out from under the pointer. This halo stays put the whole
+   time, so :hover (and the explode it drives) persists as long as the
+   cursor is anywhere near the stack. */
+.plotter-group-halo {
+  pointer-events: all;
+}
 
 .plotter-tooltip {
   position: absolute;
