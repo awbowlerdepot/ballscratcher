@@ -1996,12 +1996,19 @@ def list_price_sites(conn) -> list:
     """Every configured retailer site, active or not -- the admin UI's
     Price Sites tab needs to show inactive ones too (so they can be
     re-activated), unlike most other list_* filters in this file that
-    default to hiding inactive/rejected/retired rows."""
+    default to hiding inactive/rejected/retired rows.
+
+    fetch_method/api_provider/base_url (016_price_tracking_bigcommerce.sql)
+    let the admin UI show/edit an 'api' site's different config shape
+    (no search_url_template/result_link_selector/default_css_selector --
+    those are nullable now, see that migration -- but api_provider/
+    base_url instead)."""
     with conn.cursor() as cur:
         cur.execute(
             """
             select id, name, search_url_template, result_link_selector,
-                   default_css_selector, notes, is_active, created_at
+                   default_css_selector, notes, is_active, created_at,
+                   fetch_method, api_provider, base_url
             from price_sites
             order by name asc
             """
@@ -2012,13 +2019,15 @@ def list_price_sites(conn) -> list:
             "id": r[0], "name": r[1], "search_url_template": r[2],
             "result_link_selector": r[3], "default_css_selector": r[4],
             "notes": r[5], "is_active": r[6], "created_at": r[7],
+            "fetch_method": r[8], "api_provider": r[9], "base_url": r[10],
         }
         for r in rows
     ]
 
 
-def create_price_site(conn, name: str, search_url_template: str, result_link_selector: str,
-                       default_css_selector: str, notes: str = None) -> dict:
+def create_price_site(conn, name: str, search_url_template: str = None, result_link_selector: str = None,
+                       default_css_selector: str = None, notes: str = None,
+                       fetch_method: str = "scrape", api_provider: str = None, base_url: str = None) -> dict:
     """Adding a new retailer site is just this -- one INSERT, no new
     Lambda/deploy. search_url_template + result_link_selector are the
     site-SEARCH config discovery uses to find candidate product URLs
@@ -2026,34 +2035,56 @@ def create_price_site(conn, name: str, search_url_template: str, result_link_sel
     the price-page config checking uses once a candidate is approved.
     name is unique (migration 014's constraint) so a typo'd duplicate add
     surfaces as a clear IntegrityError rather than two confusingly-
-    similar rows."""
+    similar rows.
+
+    fetch_method defaults to 'scrape' (016_price_tracking_bigcommerce.sql)
+    -- every existing caller that doesn't know about the new column keeps
+    creating a scrape site exactly as before. The three scrape-only
+    fields are optional here (nullable in the DB now, but still REQUIRED
+    for a 'scrape' row and api_provider REQUIRED for an 'api' row, per
+    that migration's price_sites_fetch_method_fields_check) -- this
+    function deliberately doesn't re-validate that combination itself,
+    same "let the DB constraint be the source of truth for the field
+    combination, surface as a clear IntegrityError" posture this project
+    already takes elsewhere (e.g. price_sites.name's own unique
+    constraint, right above)."""
     with conn.cursor() as cur:
         cur.execute(
             """
-            insert into price_sites (name, search_url_template, result_link_selector, default_css_selector, notes)
-            values (%s, %s, %s, %s, %s)
+            insert into price_sites
+                (name, search_url_template, result_link_selector, default_css_selector, notes,
+                 fetch_method, api_provider, base_url)
+            values (%s, %s, %s, %s, %s, %s, %s, %s)
             returning id
             """,
-            (name, search_url_template, result_link_selector, default_css_selector, notes),
+            (name, search_url_template, result_link_selector, default_css_selector, notes,
+             fetch_method, api_provider, base_url),
         )
         site_id = cur.fetchone()[0]
     conn.commit()
     return {
         "id": site_id, "name": name, "search_url_template": search_url_template,
         "result_link_selector": result_link_selector, "default_css_selector": default_css_selector,
-        "notes": notes,
+        "notes": notes, "fetch_method": fetch_method, "api_provider": api_provider, "base_url": base_url,
     }
 
 
 def update_price_site(conn, site_id: str, name: str = None, search_url_template: str = None,
                        result_link_selector: str = None, default_css_selector: str = None,
-                       notes: str = None, is_active: bool = None) -> dict:
+                       notes: str = None, is_active: bool = None,
+                       fetch_method: str = None, api_provider: str = None, base_url: str = None) -> dict:
     """Partial update, same not-None-means-set convention as
     update_product_image above. is_active=False is how a site gets
     retired without deleting it (and the product_price_sources/history
     rows that reference it) -- see delete_price_site for the actually-
     destructive option; it also stops the site from being searched on
-    the next discovery pass (see price_checker.list_active_price_sites)."""
+    the next discovery pass (see price_checker.list_active_price_sites).
+
+    fetch_method/api_provider/base_url (016_price_tracking_bigcommerce.sql)
+    follow the same not-None-means-set convention as every other field
+    here -- same DB-constraint-is-the-source-of-truth posture as
+    create_price_site for validating the fetch_method/field combination,
+    not re-checked in this layer."""
     with conn.cursor() as cur:
         set_clauses = []
         params = []
@@ -2075,6 +2106,15 @@ def update_price_site(conn, site_id: str, name: str = None, search_url_template:
         if is_active is not None:
             set_clauses.append("is_active = %s")
             params.append(is_active)
+        if fetch_method is not None:
+            set_clauses.append("fetch_method = %s")
+            params.append(fetch_method)
+        if api_provider is not None:
+            set_clauses.append("api_provider = %s")
+            params.append(api_provider)
+        if base_url is not None:
+            set_clauses.append("base_url = %s")
+            params.append(base_url)
 
         if not set_clauses:
             cur.execute("select id from price_sites where id = %s", (site_id,))
@@ -2129,10 +2169,17 @@ def list_product_price_sources(conn, product_id: str, status: str = None) -> lis
     pending/approved/rejected together -- so an admin reviewing one
     product's price tracking can see a rejected mismatch sitting next to
     the approved source that replaced it, not just whichever one
-    happens to be active right now."""
+    happens to be active right now.
+
+    fetch_method (ps.fetch_method) plus latest_cost_price/latest_in_stock
+    (016_price_tracking_bigcommerce.sql, same correlated-subquery pattern
+    as latest_price/latest_checked_at/latest_error) let the admin-site
+    show BowlerDepot's cost/stock data next to its price without a second
+    call -- both are simply null for a scrape-sourced row, same as
+    latest_price is null for a source that's never been checked yet."""
     query = """
         select
-            pps.id, pps.price_site_id, ps.name as site_name, pps.product_url,
+            pps.id, pps.price_site_id, ps.name as site_name, ps.fetch_method, pps.product_url,
             coalesce(pps.css_selector, ps.default_css_selector) as css_selector,
             pps.match_query, pps.match_confidence, pps.status, pps.source,
             pps.is_active, pps.last_checked_at, pps.created_at, pps.resolved_at, pps.resolved_by,
@@ -2141,7 +2188,11 @@ def list_product_price_sources(conn, product_id: str, status: str = None) -> lis
             (select h.checked_at from product_price_history h
              where h.price_source_id = pps.id order by h.checked_at desc limit 1) as latest_checked_at,
             (select h.error from product_price_history h
-             where h.price_source_id = pps.id order by h.checked_at desc limit 1) as latest_error
+             where h.price_source_id = pps.id order by h.checked_at desc limit 1) as latest_error,
+            (select h.cost_price from product_price_history h
+             where h.price_source_id = pps.id order by h.checked_at desc limit 1) as latest_cost_price,
+            (select h.in_stock from product_price_history h
+             where h.price_source_id = pps.id order by h.checked_at desc limit 1) as latest_in_stock
         from product_price_sources pps
         join price_sites ps on ps.id = pps.price_site_id
         where pps.product_id = %s
@@ -2157,11 +2208,12 @@ def list_product_price_sources(conn, product_id: str, status: str = None) -> lis
         rows = cur.fetchall()
     return [
         {
-            "id": r[0], "price_site_id": r[1], "site_name": r[2], "product_url": r[3],
-            "css_selector": r[4], "match_query": r[5], "match_confidence": r[6],
-            "status": r[7], "source": r[8], "is_active": r[9], "last_checked_at": r[10],
-            "created_at": r[11], "resolved_at": r[12], "resolved_by": r[13],
-            "latest_price": r[14], "latest_checked_at": r[15], "latest_error": r[16],
+            "id": r[0], "price_site_id": r[1], "site_name": r[2], "fetch_method": r[3], "product_url": r[4],
+            "css_selector": r[5], "match_query": r[6], "match_confidence": r[7],
+            "status": r[8], "source": r[9], "is_active": r[10], "last_checked_at": r[11],
+            "created_at": r[12], "resolved_at": r[13], "resolved_by": r[14],
+            "latest_price": r[15], "latest_checked_at": r[16], "latest_error": r[17],
+            "latest_cost_price": r[18], "latest_in_stock": r[19],
         }
         for r in rows
     ]
@@ -2288,7 +2340,8 @@ def restore_price_source(conn, source_id: str) -> dict:
 
 
 def create_product_price_source(conn, product_id: str, price_site_id: str, product_url: str,
-                                 css_selector: str = None, resolved_by: str = None) -> dict:
+                                 css_selector: str = None, resolved_by: str = None,
+                                 external_product_id: str = None) -> dict:
     """The manual-override path -- Al: "admin can fix mismatches manually
     after the fact if a match is wrong." Not the primary way sources get
     created (that's price_checker's discovery job, see this section's own
@@ -2302,7 +2355,14 @@ def create_product_price_source(conn, product_id: str, price_site_id: str, produ
     bad id surfaces as a clear 404-shaped LookupError instead of an
     opaque IntegrityError from the FK constraint. css_selector is
     optional -- null means "use this site's default_css_selector" (see
-    price_checker.list_price_sources_due's coalesce)."""
+    price_checker.list_price_sources_due's coalesce).
+
+    external_product_id (016_price_tracking_bigcommerce.sql) is only
+    meaningful for a manual override against an 'api'-fetch_method site
+    (e.g. an admin manually attaching a BowlerDepot product this system's
+    own discovery pass missed) -- optional and null by default, harmless
+    for a 'scrape' site where price_checker's checking path never reads
+    it."""
     with conn.cursor() as cur:
         cur.execute("select id from products where id = %s", (product_id,))
         if cur.fetchone() is None:
@@ -2314,16 +2374,18 @@ def create_product_price_source(conn, product_id: str, price_site_id: str, produ
         cur.execute(
             """
             insert into product_price_sources
-                (product_id, price_site_id, product_url, css_selector, status, source, resolved_at, resolved_by)
-            values (%s, %s, %s, %s, 'approved', 'manual', now(), %s)
+                (product_id, price_site_id, product_url, css_selector, external_product_id,
+                 status, source, resolved_at, resolved_by)
+            values (%s, %s, %s, %s, %s, 'approved', 'manual', now(), %s)
             returning id
             """,
-            (product_id, price_site_id, product_url, css_selector, resolved_by),
+            (product_id, price_site_id, product_url, css_selector, external_product_id, resolved_by),
         )
         source_id = cur.fetchone()[0]
     conn.commit()
     return {"id": source_id, "product_id": product_id, "price_site_id": price_site_id,
-            "product_url": product_url, "status": "approved", "source": "manual"}
+            "product_url": product_url, "external_product_id": external_product_id,
+            "status": "approved", "source": "manual"}
 
 
 def update_product_price_source(conn, source_id: str, product_url: str = None,
@@ -2390,7 +2452,13 @@ def get_price_history(conn, product_id: str, days: int = 90) -> dict:
     same "a failed check is still visible" stance product_price_history
     itself takes (see migration 014's header comment); it's the chart-
     rendering layer's job to decide how to draw a gap or a marker for
-    those, not this query's job to hide them."""
+    those, not this query's job to hide them.
+
+    cost_price/in_stock (016_price_tracking_bigcommerce.sql) ride along
+    in the same history rows -- null for every scrape-sourced check, real
+    values for a BowlerDepot/'api' check -- so a caller building a
+    BowlerDepot-specific cost/stock-over-time view doesn't need a second
+    query against this same table."""
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -2406,7 +2474,7 @@ def get_price_history(conn, product_id: str, days: int = 90) -> dict:
 
         cur.execute(
             """
-            select h.price_source_id, h.price, h.error, h.checked_at
+            select h.price_source_id, h.price, h.error, h.checked_at, h.cost_price, h.in_stock
             from product_price_history h
             join product_price_sources pps on pps.id = h.price_source_id
             where pps.product_id = %s
@@ -2416,7 +2484,10 @@ def get_price_history(conn, product_id: str, days: int = 90) -> dict:
             (product_id, days),
         )
         history = [
-            {"price_source_id": r[0], "price": r[1], "error": r[2], "checked_at": r[3]}
+            {
+                "price_source_id": r[0], "price": r[1], "error": r[2], "checked_at": r[3],
+                "cost_price": r[4], "in_stock": r[5],
+            }
             for r in cur.fetchall()
         ]
 

@@ -487,12 +487,24 @@
   <section id="tab-pricesites" class="tab hidden">
     <div class="panel">
       <h3>Add a price site</h3>
-      <p class="muted small">search_url_template needs a <code>{query}</code> placeholder (e.g. <code>https://example.com/search?q={query}</code>) -- price_checker substitutes the product's brand+name there. result_link_selector matches the &lt;a&gt; tags on that search-results page whose href is a candidate product URL. default_css_selector is where the price text sits on this site's own product pages.</p>
+      <p class="muted small">Fetch method &quot;Scrape&quot; is the original generic site-search + CSS-selector design -- search_url_template needs a <code>{query}</code> placeholder (e.g. <code>https://example.com/search?q={query}</code>), price_checker substitutes the product's brand+name there; result_link_selector matches the &lt;a&gt; tags on that search-results page whose href is a candidate product URL; default_css_selector is where the price text sits on this site's own product pages. Fetch method &quot;API&quot; is for a site we have direct platform API access to (currently only BowlerDepot, via BigCommerce) -- no search config needed, price_checker instead reads bowlerdepot_products' existing match data directly. See 016_price_tracking_bigcommerce.sql.</p>
       <div class="filters">
         <div class="field"><label>Name</label><input id="pricesite-new-name" type="text" placeholder="e.g. BowlingBall.com"></div>
-        <div class="field"><label>Search URL template</label><input id="pricesite-new-search-url" type="text" placeholder="https://example.com/search?q={query}" style="min-width:260px;"></div>
-        <div class="field"><label>Result link selector</label><input id="pricesite-new-result-selector" type="text" placeholder=".product-item-link"></div>
-        <div class="field"><label>Default price selector</label><input id="pricesite-new-price-selector" type="text" placeholder="[itemprop=price]"></div>
+        <div class="field"><label>Fetch method</label>
+          <select id="pricesite-new-fetch-method" onchange="togglePriceSiteFetchMethodFields()">
+            <option value="scrape">Scrape (search + CSS selector)</option>
+            <option value="api">API (e.g. BowlerDepot/BigCommerce)</option>
+          </select>
+        </div>
+        <div id="pricesite-new-scrape-fields">
+          <div class="field"><label>Search URL template</label><input id="pricesite-new-search-url" type="text" placeholder="https://example.com/search?q={query}" style="min-width:260px;"></div>
+          <div class="field"><label>Result link selector</label><input id="pricesite-new-result-selector" type="text" placeholder=".product-item-link"></div>
+          <div class="field"><label>Default price selector</label><input id="pricesite-new-price-selector" type="text" placeholder="[itemprop=price]"></div>
+        </div>
+        <div id="pricesite-new-api-fields" class="hidden">
+          <div class="field"><label>API provider</label><input id="pricesite-new-api-provider" type="text" placeholder="bigcommerce"></div>
+          <div class="field"><label>Storefront base URL</label><input id="pricesite-new-base-url" type="text" placeholder="https://www.bowlerdepot.com"></div>
+        </div>
         <div class="field"><label>Notes (optional)</label><input id="pricesite-new-notes" type="text"></div>
         <button class="btn" type="button" onclick="createPriceSite()">Add site</button>
       </div>
@@ -1835,11 +1847,23 @@ function buildPriceTrackingSection(id, priceSources, priceHistoryData, priceSite
     const latest = s.latest_price !== null && s.latest_price !== undefined
       ? '$' + Number(s.latest_price).toFixed(2)
       : (s.latest_error ? '<span class="error" title="' + escapeHtml(s.latest_error) + '">error</span>' : '—');
+    // Cost price + in-stock (016_price_tracking_bigcommerce.sql) are only
+    // ever non-null for a BowlerDepot/'api'-fetch_method row -- every
+    // scrape-sourced source simply has nothing in this cell, same as
+    // "never checked" already reads for latest_price.
+    const costStockParts = [];
+    if (s.latest_cost_price !== null && s.latest_cost_price !== undefined) {
+      costStockParts.push('cost $' + Number(s.latest_cost_price).toFixed(2));
+    }
+    if (s.latest_in_stock !== null && s.latest_in_stock !== undefined) {
+      costStockParts.push(s.latest_in_stock ? '<span class="badge ok">in stock</span>' : '<span class="badge muted">out of stock</span>');
+    }
+    const costStockCell = costStockParts.length ? '<div class="muted small">' + costStockParts.join(' &middot; ') + '</div>' : '';
     const sourceText = s.source === 'manual' ? 'manually added' : ('auto-matched, ' + (s.match_confidence || '—') + ' confidence');
     return '<tr>' +
       '<td>' + escapeHtml(s.site_name) + '<div class="muted small">' + escapeHtml(sourceText) + '</div></td>' +
       '<td><a href="' + escapeHtml(s.product_url) + '" target="_blank" rel="noopener" class="mono small">' + escapeHtml(s.product_url) + '</a></td>' +
-      '<td>' + latest + '<div class="muted small">' + (s.latest_checked_at ? fmtDate(s.latest_checked_at) : 'never checked') + '</div></td>' +
+      '<td>' + latest + costStockCell + '<div class="muted small">' + (s.latest_checked_at ? fmtDate(s.latest_checked_at) : 'never checked') + '</div></td>' +
       '<td class="actions">' + statusCell +
       '<button class="btn small ghost danger" onclick="deletePriceSourceForProduct(\'' + id + '\', \'' + s.id + '\')">Delete</button></td>' +
       '</tr>';
@@ -1852,7 +1876,7 @@ function buildPriceTrackingSection(id, priceSources, priceHistoryData, priceSite
     ' <button class="btn small ghost" onclick="checkPriceForProduct(\'' + id + '\')">Check price now</button></p>' +
     '<p id="discover-price-result-' + id + '" class="muted small"></p>' +
     (rows
-      ? '<table class="mini"><thead><tr><th>Site</th><th>URL</th><th>Latest price</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>'
+      ? '<table class="mini"><thead><tr><th>Site</th><th>URL</th><th>Latest price (+ cost/stock, BowlerDepot only)</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>'
       : '<p class="muted">no price sources yet -- click "Find price sources" to search the configured Price Sites</p>') +
     buildPriceChartSvg(priceHistoryData) +
     '<div class="filters" style="margin-top:6px;">' +
@@ -2496,6 +2520,12 @@ async function loadPriceSites() {
   }
 }
 
+function togglePriceSiteFetchMethodFields() {
+  const isApi = document.getElementById('pricesite-new-fetch-method').value === 'api';
+  document.getElementById('pricesite-new-scrape-fields').classList.toggle('hidden', isApi);
+  document.getElementById('pricesite-new-api-fields').classList.toggle('hidden', !isApi);
+}
+
 function renderPriceSites(items) {
   const listEl = document.getElementById('pricesite-list');
   if (!items.length) {
@@ -2503,64 +2533,100 @@ function renderPriceSites(items) {
     return;
   }
   const rows = items.map(function (s) {
+    // 'api' sites have null search_url_template/result_link_selector/
+    // default_css_selector (016_price_tracking_bigcommerce.sql made
+    // those nullable specifically for this case) -- show api_provider/
+    // base_url in that column instead of three blank cells.
+    const isApi = s.fetch_method === 'api';
+    const configCell = isApi
+      ? '<span class="badge">api: ' + escapeHtml(s.api_provider || '?') + '</span>' +
+        (s.base_url ? '<div class="mono small">' + escapeHtml(s.base_url) + '</div>' : '')
+      : '<div class="mono small">' + escapeHtml(s.search_url_template) + '</div>' +
+        '<div class="mono small">' + escapeHtml(s.result_link_selector) + '</div>' +
+        '<div class="mono small">' + escapeHtml(s.default_css_selector) + '</div>';
     return '<tr' + (s.is_active ? '' : ' class="image-hidden"') + '>' +
       '<td>' + escapeHtml(s.name) + (s.is_active ? '' : ' <span class="badge muted">inactive</span>') +
       (s.notes ? '<div class="muted small">' + escapeHtml(s.notes) + '</div>' : '') + '</td>' +
-      '<td class="mono small">' + escapeHtml(s.search_url_template) + '</td>' +
-      '<td class="mono small">' + escapeHtml(s.result_link_selector) + '</td>' +
-      '<td class="mono small">' + escapeHtml(s.default_css_selector) + '</td>' +
+      '<td>' + configCell + '</td>' +
       '<td class="actions">' +
-      '<button class="btn small ghost" onclick="editPriceSite(\'' + s.id + '\')">Edit</button>' +
+      '<button class="btn small ghost" onclick="editPriceSite(\'' + s.id + '\', \'' + s.fetch_method + '\')">Edit</button>' +
       '<button class="btn small ghost" onclick="togglePriceSiteActive(\'' + s.id + '\', ' + s.is_active + ')">' + (s.is_active ? 'Deactivate' : 'Reactivate') + '</button>' +
       '<button class="btn small ghost danger" onclick="deletePriceSite(\'' + s.id + '\')">Delete</button>' +
       '</td></tr>';
   }).join('');
-  listEl.innerHTML = '<table><thead><tr><th>Name</th><th>Search URL template</th><th>Result link selector</th><th>Default price selector</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  listEl.innerHTML = '<table><thead><tr><th>Name</th><th>Config (search/selectors, or API provider/base URL)</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
 }
 
 async function createPriceSite() {
   const name = document.getElementById('pricesite-new-name').value.trim();
+  const fetchMethod = document.getElementById('pricesite-new-fetch-method').value;
   const searchUrlTemplate = document.getElementById('pricesite-new-search-url').value.trim();
   const resultLinkSelector = document.getElementById('pricesite-new-result-selector').value.trim();
   const defaultCssSelector = document.getElementById('pricesite-new-price-selector').value.trim();
+  const apiProvider = document.getElementById('pricesite-new-api-provider').value.trim();
+  const baseUrl = document.getElementById('pricesite-new-base-url').value.trim();
   const notes = document.getElementById('pricesite-new-notes').value.trim() || undefined;
-  if (!name || !searchUrlTemplate || !resultLinkSelector || !defaultCssSelector) {
-    toast('Name, search URL template, result link selector, and default price selector are all required.', true);
+  if (!name) {
+    toast('Name is required.', true);
     return;
   }
-  if (searchUrlTemplate.indexOf('{query}') === -1) {
-    toast('Search URL template needs a {query} placeholder.', true);
+  if (fetchMethod === 'scrape') {
+    if (!searchUrlTemplate || !resultLinkSelector || !defaultCssSelector) {
+      toast('Search URL template, result link selector, and default price selector are all required for a scrape site.', true);
+      return;
+    }
+    if (searchUrlTemplate.indexOf('{query}') === -1) {
+      toast('Search URL template needs a {query} placeholder.', true);
+      return;
+    }
+  } else if (!apiProvider) {
+    toast('API provider is required for an API site (e.g. "bigcommerce").', true);
     return;
   }
   try {
     await api('POST', '/price-sites', { body: {
-      name: name, search_url_template: searchUrlTemplate, result_link_selector: resultLinkSelector,
-      default_css_selector: defaultCssSelector, notes: notes,
+      name: name, fetch_method: fetchMethod,
+      search_url_template: fetchMethod === 'scrape' ? searchUrlTemplate : undefined,
+      result_link_selector: fetchMethod === 'scrape' ? resultLinkSelector : undefined,
+      default_css_selector: fetchMethod === 'scrape' ? defaultCssSelector : undefined,
+      api_provider: fetchMethod === 'api' ? apiProvider : undefined,
+      base_url: fetchMethod === 'api' ? (baseUrl || undefined) : undefined,
+      notes: notes,
     }});
     toast('Added ' + name);
     document.getElementById('pricesite-new-name').value = '';
     document.getElementById('pricesite-new-search-url').value = '';
     document.getElementById('pricesite-new-result-selector').value = '';
     document.getElementById('pricesite-new-price-selector').value = '';
+    document.getElementById('pricesite-new-api-provider').value = '';
+    document.getElementById('pricesite-new-base-url').value = '';
     document.getElementById('pricesite-new-notes').value = '';
     loadPriceSites();
     priceSitesCache = null;  // stale -- product detail's manual-add dropdown refetches next time it's opened
   } catch (e) { toast(e.message, true); }
 }
 
-async function editPriceSite(id) {
+async function editPriceSite(id, fetchMethod) {
   // One prompt() per field, skipped (left unchanged) if the admin
   // cancels or leaves it blank -- same "quick edit, not a full form"
-  // posture as reassignVideo's single prompt() above, just three of them
-  // since there are three independently-editable text fields worth
-  // correcting after a site's markup changes.
-  const searchUrlTemplate = prompt('New search URL template (must contain {query}), or leave blank to keep as-is:');
-  const resultLinkSelector = prompt('New result link selector, or leave blank to keep as-is:');
-  const defaultCssSelector = prompt('New default price selector, or leave blank to keep as-is:');
+  // posture as reassignVideo's single prompt() above. Which prompts show
+  // depends on this site's own fetch_method (016_price_tracking_
+  // bigcommerce.sql) -- no point prompting for a search URL template on
+  // an 'api' site that doesn't have one, or vice versa.
   const body = {};
-  if (searchUrlTemplate) body.search_url_template = searchUrlTemplate;
-  if (resultLinkSelector) body.result_link_selector = resultLinkSelector;
-  if (defaultCssSelector) body.default_css_selector = defaultCssSelector;
+  if (fetchMethod === 'api') {
+    const apiProvider = prompt('New API provider, or leave blank to keep as-is:');
+    const baseUrl = prompt('New storefront base URL, or leave blank to keep as-is:');
+    if (apiProvider) body.api_provider = apiProvider;
+    if (baseUrl) body.base_url = baseUrl;
+  } else {
+    const searchUrlTemplate = prompt('New search URL template (must contain {query}), or leave blank to keep as-is:');
+    const resultLinkSelector = prompt('New result link selector, or leave blank to keep as-is:');
+    const defaultCssSelector = prompt('New default price selector, or leave blank to keep as-is:');
+    if (searchUrlTemplate) body.search_url_template = searchUrlTemplate;
+    if (resultLinkSelector) body.result_link_selector = resultLinkSelector;
+    if (defaultCssSelector) body.default_css_selector = defaultCssSelector;
+  }
   if (!Object.keys(body).length) return;
   try {
     await api('PATCH', '/price-sites/' + id, { body: body });

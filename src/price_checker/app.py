@@ -101,6 +101,20 @@ DEFAULT_FETCH_TIMEOUT_SECONDS = 20
 DEFAULT_MAX_PRODUCTS_PER_DISCOVERY_INVOCATION = 100
 DEFAULT_MAX_RESULTS_PER_SITE_SEARCH = 5
 
+# BowlerDepot/BigCommerce API-fetch_method sites (016_price_tracking_
+# bigcommerce.sql). Same API_BASE/PAGE_LIMIT contract as
+# bowlerdepot_reconciliation, duplicated rather than imported -- see this
+# module's own "each Lambda is its own deploy package" comment above
+# _STOPWORDS. MAX_BIGCOMMERCE_IDS_PER_CALL is new here (bowlerdepot_
+# reconciliation fetches the WHOLE catalog with no id filter at all, since
+# it needs every product for fuzzy-matching; price_checker only ever needs
+# a known, already-matched handful per invocation -- see
+# fetch_bigcommerce_products_by_ids) -- kept comfortably under a URL-length-
+# safe id:in filter list.
+BIGCOMMERCE_API_BASE = "https://api.bigcommerce.com"
+BIGCOMMERCE_PAGE_LIMIT = 250
+MAX_BIGCOMMERCE_IDS_PER_CALL = 50
+
 RETRY_TOTAL = 3
 RETRY_BACKOFF_FACTOR = 1
 RETRY_STATUS_FORCELIST = (429, 500, 502, 503, 504)
@@ -288,12 +302,20 @@ def list_price_sources_due(conn, limit: int) -> list:
     row is never summarized. Ordered by last_checked_at asc nulls first --
     see module docstring's ROTATION section. css_selector is the
     effective one: the source's own override if set, else the site's
-    default_css_selector."""
+    default_css_selector.
+
+    fetch_method/external_product_id (016_price_tracking_bigcommerce.sql)
+    are joined in so check_sources can dispatch each row to the right
+    check path without a second query -- an 'api' row's css_selector is
+    simply unused (still selected for shape-consistency with the 'scrape'
+    rows, harmless since it's null on an api-fetch_method price_sites
+    row's default_css_selector)."""
     with conn.cursor() as cur:
         cur.execute(
             """
             select pps.id, pps.product_id, pps.product_url,
-                   coalesce(pps.css_selector, ps.default_css_selector) as css_selector
+                   coalesce(pps.css_selector, ps.default_css_selector) as css_selector,
+                   ps.fetch_method, pps.external_product_id
             from product_price_sources pps
             join price_sites ps on ps.id = pps.price_site_id
             where pps.status = 'approved' and pps.is_active = true and ps.is_active = true
@@ -304,7 +326,10 @@ def list_price_sources_due(conn, limit: int) -> list:
         )
         rows = cur.fetchall()
     return [
-        {"id": r[0], "product_id": r[1], "product_url": r[2], "css_selector": r[3]}
+        {
+            "id": r[0], "product_id": r[1], "product_url": r[2], "css_selector": r[3],
+            "fetch_method": r[4], "external_product_id": r[5],
+        }
         for r in rows
     ]
 
@@ -314,14 +339,17 @@ def list_price_sources_for_products(conn, product_ids: list) -> list:
     instead of "most overdue" -- the admin-site per-product "check price
     now" button's target. No limit/rotation here: if a product has 5
     approved sites, all 5 get checked, since the caller explicitly asked
-    for this product."""
+    for this product. fetch_method/external_product_id joined in for the
+    same reason as list_price_sources_due -- see that function's own
+    docstring."""
     if not product_ids:
         return []
     with conn.cursor() as cur:
         cur.execute(
             """
             select pps.id, pps.product_id, pps.product_url,
-                   coalesce(pps.css_selector, ps.default_css_selector) as css_selector
+                   coalesce(pps.css_selector, ps.default_css_selector) as css_selector,
+                   ps.fetch_method, pps.external_product_id
             from product_price_sources pps
             join price_sites ps on ps.id = pps.price_site_id
             where pps.status = 'approved' and pps.is_active = true and ps.is_active = true
@@ -332,7 +360,10 @@ def list_price_sources_for_products(conn, product_ids: list) -> list:
         )
         rows = cur.fetchall()
     return [
-        {"id": r[0], "product_id": r[1], "product_url": r[2], "css_selector": r[3]}
+        {
+            "id": r[0], "product_id": r[1], "product_url": r[2], "css_selector": r[3],
+            "fetch_method": r[4], "external_product_id": r[5],
+        }
         for r in rows
     ]
 
@@ -345,14 +376,23 @@ def record_price_check(conn, source_id: str, result: dict) -> None:
     Deliberately two statements, not one CTE -- keeps this readable and
     matches every other "write history + touch a last-* pointer" write
     in this project (e.g. mark_product_searched is its own call, not
-    folded into insert_candidates)."""
+    folded into insert_candidates).
+
+    cost_price/in_stock (016_price_tracking_bigcommerce.sql) are read via
+    result.get(...) so this stays a no-op for a scrape-sourced result dict
+    (check_price_source/extract_price never set either key, so both land
+    as None/null, same as before this columns existed)."""
     with conn.cursor() as cur:
         cur.execute(
             """
-            insert into product_price_history (price_source_id, price, raw_price_text, error)
-            values (%s, %s, %s, %s)
+            insert into product_price_history
+                (price_source_id, price, raw_price_text, error, cost_price, in_stock)
+            values (%s, %s, %s, %s, %s, %s)
             """,
-            (source_id, result.get("price"), result.get("raw_price_text"), result.get("error")),
+            (
+                source_id, result.get("price"), result.get("raw_price_text"), result.get("error"),
+                result.get("cost_price"), result.get("in_stock"),
+            ),
         )
         cur.execute(
             "update product_price_sources set last_checked_at = now() where id = %s",
@@ -362,13 +402,28 @@ def record_price_check(conn, source_id: str, result: dict) -> None:
 
 
 def check_sources(conn, sources: list, session=None) -> dict:
-    """Runs check_price_source + record_price_check for every source,
-    tolerating individual failures (already baked into check_price_source
-    never raising) and returning a summary dict for handler's log line."""
+    """Runs check_price_source + record_price_check for every 'scrape'
+    source (unchanged), and check_bigcommerce_sources + record_price_check
+    for every 'api' source as ONE batched call (016_price_tracking_
+    bigcommerce.sql / discover_bigcommerce_candidates' sibling on the
+    checking side) rather than one BigCommerce API request per source --
+    see check_bigcommerce_sources' own docstring for why batching matters
+    here specifically. fetch_method defaults to 'scrape' via .get() so a
+    source dict from before this column existed (or a test fixture that
+    hasn't been updated) still routes correctly.
+
+    Tolerates individual failures on both paths (already baked into
+    check_price_source never raising, and check_bigcommerce_sources always
+    returning a result -- possibly an error one -- for every source it was
+    given) and returns one combined summary dict for handler's log line."""
+    scrape_sources = [s for s in sources if s.get("fetch_method", "scrape") == "scrape"]
+    api_sources = [s for s in sources if s.get("fetch_method") == "api"]
+
     checked = 0
     succeeded = 0
     failed = 0
-    for source in sources:
+
+    for source in scrape_sources:
         result = check_price_source(source, session=session)
         record_price_check(conn, source["id"], result)
         checked += 1
@@ -376,7 +431,214 @@ def check_sources(conn, sources: list, session=None) -> dict:
             failed += 1
         else:
             succeeded += 1
+
+    if api_sources:
+        results_by_source_id = check_bigcommerce_sources(api_sources, session=session)
+        for source in api_sources:
+            result = results_by_source_id.get(
+                source["id"], {"price": None, "raw_price_text": None, "error": "no result returned for this source"}
+            )
+            record_price_check(conn, source["id"], result)
+            checked += 1
+            if result.get("error"):
+                failed += 1
+            else:
+                succeeded += 1
+
     return {"sources_checked": checked, "succeeded": succeeded, "failed": failed}
+
+
+def get_bigcommerce_credentials():
+    """Identical to bowlerdepot_reconciliation.get_bigcommerce_credentials
+    -- duplicated, not imported/shared, same "each Lambda is its own
+    deploy package" reasoning as significant_tokens/score_match above."""
+    import boto3
+
+    secret_arn = os.environ["BIGCOMMERCE_SECRET_ARN"]
+    client = boto3.client("secretsmanager")
+    secret = json.loads(client.get_secret_value(SecretId=secret_arn)["SecretString"])
+    return secret["store_hash"], secret["auth_token"]
+
+
+def build_bigcommerce_products_by_id_url(store_hash: str, ids: list, page: int = 1,
+                                          limit: int = BIGCOMMERCE_PAGE_LIMIT) -> str:
+    """Same v3 Catalog Products endpoint bowlerdepot_reconciliation.
+    build_products_url uses, but scoped to specific product ids via
+    BigCommerce's documented id:in filter -- price_checker already knows
+    exactly which BigCommerce products it needs (from bowlerdepot_products,
+    see list_bowlerdepot_matches) and, unlike the reconciliation job, has
+    no reason to page through the entire catalog on every daily run."""
+    ids_param = ",".join(str(i) for i in ids)
+    return (
+        f"{BIGCOMMERCE_API_BASE}/stores/{store_hash}/v3/catalog/products"
+        f"?id:in={ids_param}&page={page}&limit={limit}&include=custom_fields"
+    )
+
+
+def fetch_bigcommerce_products_by_ids(store_hash: str, auth_token: str, ids: list, session=None) -> dict:
+    """Batches `ids` into groups of MAX_BIGCOMMERCE_IDS_PER_CALL (keeps
+    each request's id:in query string comfortably bounded) and paginates
+    each batch via meta.pagination.total_pages, same idiom as
+    bowlerdepot_reconciliation.fetch_all_products. Returns
+    {str(product_id): product_dict} rather than a list -- every caller
+    here (discover_bigcommerce_candidates, check_bigcommerce_sources) just
+    needs a by-id lookup, not document order. A product id BigCommerce no
+    longer has (deleted/unpublished since bowlerdepot_products was last
+    synced) simply isn't a key in the result -- callers treat a missing id
+    as an error for that one source/candidate, not a reason to fail the
+    whole batch."""
+    import requests
+
+    sess = session or requests
+    products_by_id = {}
+
+    for batch_start in range(0, len(ids), MAX_BIGCOMMERCE_IDS_PER_CALL):
+        batch = ids[batch_start:batch_start + MAX_BIGCOMMERCE_IDS_PER_CALL]
+        page = 1
+        while True:
+            resp = sess.get(
+                build_bigcommerce_products_by_id_url(store_hash, batch, page=page),
+                headers={"Accept": "application/json", "X-Auth-Token": auth_token},
+                timeout=DEFAULT_FETCH_TIMEOUT_SECONDS,
+            )
+            resp.raise_for_status()
+            body = resp.json()
+            for product in body.get("data", []):
+                products_by_id[str(product["id"])] = product
+            total_pages = body.get("meta", {}).get("pagination", {}).get("total_pages", page)
+            if page >= total_pages:
+                break
+            page += 1
+
+    return products_by_id
+
+
+def determine_in_stock(product: dict):
+    """Derives in-stock from BigCommerce's inventory fields. inventory_
+    tracking='none' means BigCommerce isn't tracking a count at all for
+    this product, so the only signal is the availability field
+    ('available' vs 'disabled'/'preorder'); 'product' or 'variant' tracking
+    means inventory_level is meaningful, so a positive count means in
+    stock. Returns None (not a guess) when the fields needed for the
+    product's own tracking mode aren't present, rather than defaulting to
+    either True or False.
+
+    KNOWN CAVEAT (can't be resolved without a real store account, same
+    posture as this module's other BigCommerce-shape assumptions): for
+    inventory_tracking='variant' -- plausible here, since weight is
+    modeled as a variant (see bowlerdepot_reconciliation's own docstring)
+    -- the PRODUCT-level inventory_level BigCommerce returns is a rollup
+    across all weight variants, not the specific weight this project
+    actually stocks/sells as one SKU. This is documented rather than
+    silently assumed correct; see 016_price_tracking_bigcommerce.sql's
+    comment on product_price_history.in_stock for the same caveat
+    surfaced to the admin side."""
+    tracking = product.get("inventory_tracking")
+    if tracking == "none":
+        availability = product.get("availability")
+        if availability is None:
+            return None
+        return availability == "available"
+    if tracking in ("product", "variant"):
+        level = product.get("inventory_level")
+        if level is None:
+            return None
+        return level > 0
+    return None
+
+
+def extract_bigcommerce_price_fields(product: dict, base_url: str = None) -> dict:
+    """Pulls price/cost_price/in_stock/product_url out of one BigCommerce
+    product dict -- the API-fetch_method sibling of extract_price (scrape
+    path). raw_price_text is always None here (there's no raw matched-
+    text to preserve; the API returns a real numeric field, not scraped
+    text to parse), kept as a key anyway so the returned dict has the same
+    shape record_price_check/check_price_source's result dicts do.
+
+    product_url resolves product['custom_url']['url'] (BigCommerce's
+    documented relative storefront path) against base_url via urljoin
+    (already imported for parse_search_results); when base_url isn't
+    configured on the price_sites row, or custom_url is missing, falls
+    back to the raw relative path rather than raising -- still usable as
+    an admin-UI link target, just not resolved to an absolute URL."""
+    price = product.get("price")
+    cost_price = product.get("cost_price")
+    custom_url = (product.get("custom_url") or {}).get("url")
+    if custom_url and base_url:
+        product_url = urljoin(base_url, custom_url)
+    else:
+        product_url = custom_url
+
+    return {
+        "price": float(price) if price is not None else None,
+        "cost_price": float(cost_price) if cost_price is not None else None,
+        "in_stock": determine_in_stock(product),
+        "product_url": product_url,
+        "raw_price_text": None,
+        "error": None,
+    }
+
+
+def check_bigcommerce_sources(sources: list, session=None) -> dict:
+    """The 'api' fetch_method sibling of check_price_source, batched over
+    the WHOLE list of sources at once (one get_bigcommerce_credentials()
+    call + one fetch_bigcommerce_products_by_ids() call covering every
+    source's external_product_id) rather than per-source -- unlike a
+    scrape site's product_url (an arbitrary third-party page, no reason
+    two sources would ever share a request), BigCommerce's own API
+    supports fetching many product ids in one call, and every 'api' source
+    in this project is the same BowlerDepot store, so there's no reason to
+    pay for N separate round-trips.
+
+    NEVER raises, same "one bad row can't stop the batch" convention as
+    check_price_source: if credentials are missing/invalid or the
+    BigCommerce request itself fails, every source in this batch gets the
+    same {"error": "..."} result rather than a partial/silent failure.
+    Returns {source_id: result_dict} so check_sources can look up each
+    source's own outcome after the fact."""
+    try:
+        store_hash, auth_token = get_bigcommerce_credentials()
+    except Exception as exc:
+        error = f"BigCommerce credentials unavailable: {exc}"
+        return {source["id"]: {"price": None, "raw_price_text": None, "error": error} for source in sources}
+
+    ids = [source["external_product_id"] for source in sources if source.get("external_product_id")]
+    try:
+        products_by_id = fetch_bigcommerce_products_by_ids(store_hash, auth_token, ids, session=session)
+    except Exception as exc:
+        error = f"BigCommerce fetch failed: {exc}"
+        return {source["id"]: {"price": None, "raw_price_text": None, "error": error} for source in sources}
+
+    results = {}
+    for source in sources:
+        external_id = source.get("external_product_id")
+        if not external_id:
+            results[source["id"]] = {"price": None, "raw_price_text": None, "error": "no external_product_id set"}
+            continue
+        product = products_by_id.get(str(external_id))
+        if product is None:
+            results[source["id"]] = {
+                "price": None, "raw_price_text": None,
+                "error": f"BigCommerce no longer has product id {external_id}",
+            }
+            continue
+        # base_url isn't part of the source row itself (it's a price_sites-
+        # level setting) -- callers that care about a resolved product_url
+        # (discover_bigcommerce_candidates) call extract_bigcommerce_
+        # price_fields directly with the site's base_url; here on the
+        # checking path product_url is already fixed (product_price_
+        # sources.product_url, set once at discovery time), so it's simply
+        # not overwritten with a re-resolved value.
+        fields = extract_bigcommerce_price_fields(product)
+        results[source["id"]] = {
+            "price": fields["price"],
+            "raw_price_text": fields["raw_price_text"],
+            "error": fields["error"],
+            "cost_price": fields["cost_price"],
+            "in_stock": fields["in_stock"],
+        }
+
+    return results
 
 
 # ---------------------------------------------------------------------
@@ -393,11 +655,16 @@ def list_active_price_sites(conn) -> list:
     table is expected to stay small (a handful of named retailers an
     admin configures, not a large catalog), same assumption video_
     discovery makes about there being few enough YouTube-adjacent config
-    rows to not need one either."""
+    rows to not need one either.
+
+    fetch_method/api_provider/base_url (016_price_tracking_bigcommerce.sql)
+    are selected so discover_price_sources can partition scrape vs api
+    sites without a second query -- see that function's own docstring."""
     with conn.cursor() as cur:
         cur.execute(
             """
-            select id, name, search_url_template, result_link_selector, default_css_selector
+            select id, name, search_url_template, result_link_selector, default_css_selector,
+                   fetch_method, api_provider, base_url
             from price_sites
             where is_active = true
             order by name asc
@@ -405,7 +672,10 @@ def list_active_price_sites(conn) -> list:
         )
         rows = cur.fetchall()
     return [
-        {"id": r[0], "name": r[1], "search_url_template": r[2], "result_link_selector": r[3], "default_css_selector": r[4]}
+        {
+            "id": r[0], "name": r[1], "search_url_template": r[2], "result_link_selector": r[3],
+            "default_css_selector": r[4], "fetch_method": r[5], "api_provider": r[6], "base_url": r[7],
+        }
         for r in rows
     ]
 
@@ -513,15 +783,24 @@ def mark_product_price_discovery_searched(conn, product_id: str) -> None:
     conn.commit()
 
 
-def insert_price_source_candidates(conn, product_id: str, price_site_id: str, query: str, candidates: list) -> int:
+def insert_price_source_candidates(conn, product_id: str, price_site_id: str, query: str, candidates: list,
+                                    source: str = "site_search") -> int:
     """Inserts one product_price_sources row per candidate, tagged
-    'pending' with source='site_search' -- mirrors video_discovery.
-    insert_candidates. ON CONFLICT DO NOTHING makes this idempotent
-    against re-running discovery for the same product+site (unique
-    (product_id, price_site_id, product_url) from 014_price_tracking.sql)
-    -- a candidate URL already stored (in any status) is left untouched
-    rather than reset back to pending, same as an already-resolved
-    product_videos row is never silently reopened by a re-search."""
+    'pending' with the given source (default 'site_search', preserving
+    every existing scrape-path caller's behavior unchanged) -- mirrors
+    video_discovery.insert_candidates. ON CONFLICT DO NOTHING makes this
+    idempotent against re-running discovery for the same product+site
+    (unique (product_id, price_site_id, product_url) from 014_price_
+    tracking.sql) -- a candidate URL already stored (in any status) is
+    left untouched rather than reset back to pending, same as an already-
+    resolved product_videos row is never silently reopened by a
+    re-search.
+
+    external_product_id (016_price_tracking_bigcommerce.sql, via
+    candidate.get(...) so a plain scrape-search result dict without that
+    key still inserts fine as null) is the one other field an 'api'-source
+    candidate carries that a 'site_search' one never does -- see
+    discover_bigcommerce_candidates, source='bigcommerce_api'."""
     inserted = 0
     with conn.cursor() as cur:
         for candidate in candidates:
@@ -529,13 +808,13 @@ def insert_price_source_candidates(conn, product_id: str, price_site_id: str, qu
                 """
                 insert into product_price_sources
                     (product_id, price_site_id, product_url, match_query,
-                     match_confidence, status, source)
-                values (%s, %s, %s, %s, %s, 'pending', 'site_search')
+                     match_confidence, external_product_id, status, source)
+                values (%s, %s, %s, %s, %s, %s, 'pending', %s)
                 on conflict (product_id, price_site_id, product_url) do nothing
                 """,
                 (
                     product_id, price_site_id, candidate["product_url"], query,
-                    candidate["match_confidence"],
+                    candidate["match_confidence"], candidate.get("external_product_id"), source,
                 ),
             )
             inserted += cur.rowcount
@@ -543,15 +822,114 @@ def insert_price_source_candidates(conn, product_id: str, price_site_id: str, qu
     return inserted
 
 
+def list_bowlerdepot_matches(conn) -> list:
+    """Reads bowlerdepot_reconciliation's already-maintained product_id <->
+    BigCommerce-product-id mapping (001_init_schema.sql's bowlerdepot_
+    products table, kept fresh by that Lambda's own daily schedule) --
+    see 016_price_tracking_bigcommerce.sql's header comment for the full
+    "why reuse this instead of re-deriving fuzzy matching" rationale.
+    match_status in ('matched', 'ambiguous') excludes the schema-default
+    'unmatched' rows (a real match attempt that didn't clear
+    fuzzy_match_product's threshold -- not something to track a price
+    for), and product_id is not null excludes the 'not yet listed' case
+    (that's a name-only row with nothing to match a price source to)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select product_id, bigcommerce_product_id, match_status
+            from bowlerdepot_products
+            where product_id is not null and match_status in ('matched', 'ambiguous')
+            """
+        )
+        rows = cur.fetchall()
+    return [
+        {"product_id": r[0], "external_product_id": r[1], "match_status": r[2]}
+        for r in rows
+    ]
+
+
+def discover_bigcommerce_candidates(conn, site: dict, product_ids_in_scope: set, session=None) -> dict:
+    """The 'api' fetch_method sibling of the per-product/per-site scrape
+    search loop in discover_price_sources -- but shaped completely
+    differently, since an API-backed site has no search page to crawl at
+    all (016_price_tracking_bigcommerce.sql). Instead of one request per
+    product, this does ONE get_bigcommerce_credentials() call + ONE
+    batched fetch_bigcommerce_products_by_ids() call covering every
+    already-matched product in scope (via list_bowlerdepot_matches,
+    filtered down to product_ids_in_scope), then inserts one candidate per
+    match. match_confidence is derived straight from bowlerdepot_products.
+    match_status -- 'matched' (an exact normalized-name match, see
+    bowlerdepot_reconciliation.fuzzy_match_product) becomes 'high',
+    'ambiguous' (a fuzzy-but-not-exact match) becomes 'low' -- same two-
+    tier idea score_match uses for scrape candidates, just sourced from an
+    existing match decision instead of a fresh title heuristic.
+
+    A match with no corresponding BigCommerce product in the fetched batch
+    (deleted/unpublished since bowlerdepot_products was last synced) or no
+    resolvable product_url is skipped and counted as an error, never
+    raised -- same "one bad row can't stop the batch" convention as the
+    scrape-side loop this sits alongside."""
+    matches = [m for m in list_bowlerdepot_matches(conn) if m["product_id"] in product_ids_in_scope]
+    if not matches:
+        return {"inserted": 0, "errors": 0}
+
+    try:
+        store_hash, auth_token = get_bigcommerce_credentials()
+    except Exception:
+        logger.exception("BigCommerce credentials unavailable for price-source discovery on site=%r", site["name"])
+        return {"inserted": 0, "errors": len(matches)}
+
+    ids = [m["external_product_id"] for m in matches]
+    try:
+        products_by_id = fetch_bigcommerce_products_by_ids(store_hash, auth_token, ids, session=session)
+    except Exception:
+        logger.exception("BigCommerce fetch failed for price-source discovery on site=%r", site["name"])
+        return {"inserted": 0, "errors": len(matches)}
+
+    inserted = 0
+    errors = 0
+    for match in matches:
+        product = products_by_id.get(str(match["external_product_id"]))
+        if product is None:
+            errors += 1
+            continue
+
+        fields = extract_bigcommerce_price_fields(product, base_url=site.get("base_url"))
+        if not fields["product_url"]:
+            errors += 1
+            continue
+
+        candidate = {
+            "product_url": fields["product_url"],
+            "match_confidence": "high" if match["match_status"] == "matched" else "low",
+            "external_product_id": match["external_product_id"],
+        }
+        inserted += insert_price_source_candidates(
+            conn, match["product_id"], site["id"], "bowlerdepot_products match", [candidate],
+            source="bigcommerce_api",
+        )
+
+    return {"inserted": inserted, "errors": errors}
+
+
 def discover_price_sources(conn, job: dict, session=None) -> dict:
     """{"discover": true, ...} job entry point (see handler and this
     module's own docstring's DISCOVERY section). For every product in
-    scope, searches every active price_sites row and stores each result
-    as a 'pending' product_price_sources candidate, scored via
+    scope, searches every active 'scrape' price_sites row and stores each
+    result as a 'pending' product_price_sources candidate, scored via
     score_match. A search failure against one site for one product is
     logged and counted, never raised -- same "one bad row can't stop the
     batch" convention check_sources already uses on the checking side,
-    now applied to the search side too."""
+    now applied to the search side too.
+
+    'api' price_sites rows (016_price_tracking_bigcommerce.sql) are
+    handled separately via discover_bigcommerce_candidates, BEFORE the
+    per-product scrape loop -- one batched pass per api site covering
+    every product in scope at once, rather than one iteration per product
+    per site the way the generic scrape search has to work. A failure
+    there is logged and counted into the same search_errors total, never
+    raised, so a BigCommerce outage can't block scrape-site discovery for
+    the same invocation."""
     max_products = int(os.environ.get(
         "MAX_PRODUCTS_PER_DISCOVERY_INVOCATION", DEFAULT_MAX_PRODUCTS_PER_DISCOVERY_INVOCATION
     ))
@@ -561,14 +939,32 @@ def discover_price_sources(conn, job: dict, session=None) -> dict:
 
     products = fetch_products_to_discover(conn, job, max_products)
     sites = list_active_price_sites(conn)
+    scrape_sites = [s for s in sites if s.get("fetch_method", "scrape") == "scrape"]
+    api_sites = [s for s in sites if s.get("fetch_method") == "api"]
     logger.info("Discovering price sources for %d product(s) across %d site(s)", len(products), len(sites))
 
     total_candidates = 0
     search_errors = 0
 
+    if api_sites:
+        product_ids_in_scope = {p["id"] for p in products}
+        for site in api_sites:
+            try:
+                result = discover_bigcommerce_candidates(conn, site, product_ids_in_scope, session=session)
+            except Exception:
+                logger.exception("BigCommerce price-source discovery failed for site=%r", site["name"])
+                search_errors += len(product_ids_in_scope)
+                continue
+            total_candidates += result["inserted"]
+            search_errors += result["errors"]
+            logger.info(
+                "site=%r (api) -> %d new candidates, %d errors",
+                site["name"], result["inserted"], result["errors"],
+            )
+
     for product in products:
         query = build_search_query(product["brand_name"], product["name"])
-        for site in sites:
+        for site in scrape_sites:
             try:
                 results = search_site_for_product(site, query, session=session, max_results=max_results)
             except Exception:

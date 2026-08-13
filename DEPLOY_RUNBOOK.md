@@ -33,7 +33,7 @@ Any Postgres 13+ instance works (RDS is the obvious choice, but this
 repo doesn't assume it). Note the connection details -- you'll need them
 for step 3's `DbSecretArn` secret and to run migrations directly.
 
-## 2. Run the fifteen migrations, in order
+## 2. Run the sixteen migrations, in order
 
 ```bash
 psql "$DATABASE_URL" -f db/migrations/001_init_schema.sql
@@ -51,6 +51,7 @@ psql "$DATABASE_URL" -f db/migrations/012_products_oil_motion_source.sql
 psql "$DATABASE_URL" -f db/migrations/013_product_videos_stats.sql
 psql "$DATABASE_URL" -f db/migrations/014_price_tracking.sql
 psql "$DATABASE_URL" -f db/migrations/015_products_last_price_discovery_at.sql
+psql "$DATABASE_URL" -f db/migrations/016_price_tracking_bigcommerce.sql
 ```
 
 (If you already ran an earlier subset in a prior deploy, just run whatever
@@ -4094,6 +4095,89 @@ tracking + review comes first) and a scheduled discovery cadence
 invoke only" convention `video_discovery`'s own search flow uses -- an
 admin decides when to widen price-source coverage, it doesn't run on its
 own daily schedule the way checking already-approved sources does).
+
+### 6o.5. BowlerDepot price/cost/stock tracking via the BigCommerce API (migration 016)
+
+Extends 6o with a second source *type*, Al: "this... is a project for
+the same company that owns bowlerdepot.com which is why we have the API
+access for that. Going with the API for that one would be great and
+there are some additional data points that would be nice to pull in for
+the admin side. In stock over time and cost price over time so once per
+day for those too." Plugs into the exact same `product_price_sources`/
+`product_price_history` tables and review workflow as 6o, as a new
+`fetch_method='api'` `price_sites` row, rather than a separate pipeline
+-- see `db/migrations/016_price_tracking_bigcommerce.sql`'s header
+comment for the full design writeup, including the key decision to reuse
+`bowlerdepot_products` (already maintained daily by
+`BowlerDepotReconciliationFunction`, see 6h) instead of re-deriving fuzzy
+product matching a second time.
+
+**Scoped to BowlerDepot only.** In-stock and cost-price tracking are
+BigCommerce-specific fields this project only has real API access to for
+its own store -- not extended to the scraped retailer sites from 6o.
+
+Requires migration 016 (see step 2 above) and the same
+`BigCommerceSecretArn` secret 6h's BowlerDepot reconciliation already
+uses (see step 3's "BigCommerce credentials" section) -- `template.yaml`
+wires `BIGCOMMERCE_SECRET_ARN` into `PriceCheckerFunction` the same
+conditional way it's wired into `BowlerDepotReconciliationFunction`
+(`HasBigCommerceSecret`), so nothing new to provision beyond what 6h
+already needs. **No real store_hash/API token exists in this project as
+of this writing** (same honesty note as 6h) -- `PriceCheckerFunction`'s
+existing scrape-only daily schedule is unaffected by that (it simply has
+no `'api'`-`fetch_method` `price_sites` row to act on yet), so this
+section can be smoke-tested the moment real credentials land without
+needing any other redeploy.
+
+1. **Add BowlerDepot as an API-fetch-method Price Site.** Open the admin
+   site's Price Sites tab, set "Fetch method" to API, and fill in:
+   - Name: `BowlerDepot`
+   - API provider: `bigcommerce` (the only value this project supports)
+   - Storefront base URL: `https://www.bowlerdepot.com` (resolves
+     BigCommerce's relative `custom_url.url` into a clickable admin-UI
+     link)
+
+   No search URL template/selectors needed for an API site -- discovery
+   reads `bowlerdepot_products` directly instead of crawling a search
+   page (see `price_checker.discover_bigcommerce_candidates`).
+
+2. **Trigger discovery.** Same "Find price sources" button as 6o, on any
+   product that already has a `matched`/`ambiguous` row in
+   `bowlerdepot_products` (i.e. `BowlerDepotReconciliationFunction` has
+   already run at least once, see 6h). One batched BigCommerce API call
+   covers every in-scope product against this one site, rather than one
+   request per product the way a scrape site's search works. Candidates
+   land as `pending`, confidence `high` for an exact
+   (`bowlerdepot_products.match_status = 'matched'`) match or `low` for a
+   fuzzy (`'ambiguous'`) one -- same two-tier idea as `score_match`, just
+   sourced from the reconciliation job's own match decision instead of a
+   fresh title heuristic.
+
+3. **Review, approve, and check** exactly as steps 3-4 in 6o above --
+   this is the same `product_price_sources` review queue and the same
+   "Check prices now" button/daily schedule, just routed to
+   `check_bigcommerce_sources` instead of the generic scraper for this
+   one site's rows.
+
+4. **Confirm cost price + in-stock show up.** After a successful check,
+   the product's Price Tracking section shows `cost $X.XX` and an
+   in-stock/out-of-stock badge next to BowlerDepot's price -- both are
+   `null`/absent for every other (scrape-sourced) site's rows, by design
+   (see migration 016's header comment). In-stock is derived from
+   BigCommerce's `inventory_tracking`/`inventory_level`/`availability`
+   fields (see `price_checker.determine_in_stock`'s own docstring for its
+   one known caveat: variant-level inventory tracking's product-level
+   `inventory_level` may be a rollup across weight variants, not the
+   specific weight this project stocks as one SKU -- unverifiable without
+   a real store account).
+
+5. **Let it run daily.** Cost/stock history only becomes useful the
+   longer it accumulates (Al: "obviously the over time will gain value as
+   we get more days in the past but starting now will start building that
+   value... we can use them for forcasting and other things in the
+   future") -- once a BowlerDepot source is approved, `PriceCheckerFunction`'s
+   existing `DailyPriceCheck` schedule picks it up automatically, no
+   separate schedule needed for this source type.
 
 ## 7. Ongoing operations
 

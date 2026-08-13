@@ -129,16 +129,20 @@ class _FakeCursor:
     test_admin_api_service.py's FakeCursor already uses elsewhere in this
     project for overlapping query prefixes."""
 
-    def __init__(self, sources=None, sites=None, products=None, known_candidate_keys=None):
-        self.sources = sources or []  # list of dicts: id, product_id, product_url, css_selector, is_active, is_site_active, last_checked_at
-        self.sites = sites or []  # list of dicts: id, name, search_url_template, result_link_selector, default_css_selector
+    def __init__(self, sources=None, sites=None, products=None, known_candidate_keys=None, bowlerdepot_matches=None):
+        self.sources = sources or []  # list of dicts: id, product_id, product_url, css_selector, is_active, is_site_active, last_checked_at, fetch_method, external_product_id
+        self.sites = sites or []  # list of dicts: id, name, search_url_template, result_link_selector, default_css_selector, fetch_method, api_provider, base_url
         self.products = products or []  # list of dicts: id, name, brand_name
         self.known_candidate_keys = known_candidate_keys or set()  # set of (product_id, price_site_id, product_url)
+        # list of dicts: product_id, external_product_id, match_status --
+        # bowlerdepot_products rows list_bowlerdepot_matches reads
+        # (016_price_tracking_bigcommerce.sql).
+        self.bowlerdepot_matches = bowlerdepot_matches or []
         self.executed = []
         self.description = None
         self.rowcount = 0
         self._rows = []
-        self.history_inserts = []  # list of (price_source_id, price, raw_price_text, error)
+        self.history_inserts = []  # list of (price_source_id, price, raw_price_text, error, cost_price, in_stock)
         self.last_checked_at_updates = []  # list of price_source_id
         self.last_discovery_marked = []  # list of product_id
 
@@ -153,12 +157,23 @@ class _FakeCursor:
                 (product_ids,) = params
                 matched = [s for s in active if s["product_id"] in product_ids]
                 matched.sort(key=lambda s: (s["product_id"], s["id"]))
-                self._rows = [(s["id"], s["product_id"], s["product_url"], s["css_selector"]) for s in matched]
+                self._rows = [
+                    (s["id"], s["product_id"], s["product_url"], s["css_selector"],
+                     s.get("fetch_method", "scrape"), s.get("external_product_id"))
+                    for s in matched
+                ]
             else:
                 (limit,) = params
                 ordered = sorted(active, key=lambda s: (s.get("last_checked_at") is not None, s.get("last_checked_at"), s["id"]))
-                self._rows = [(s["id"], s["product_id"], s["product_url"], s["css_selector"]) for s in ordered[:limit]]
-            self.description = [("id",), ("product_id",), ("product_url",), ("css_selector",)]
+                self._rows = [
+                    (s["id"], s["product_id"], s["product_url"], s["css_selector"],
+                     s.get("fetch_method", "scrape"), s.get("external_product_id"))
+                    for s in ordered[:limit]
+                ]
+            self.description = [
+                ("id",), ("product_id",), ("product_url",), ("css_selector",),
+                ("fetch_method",), ("external_product_id",),
+            ]
 
         elif q.startswith("insert into product_price_history"):
             self.history_inserts.append(tuple(params))
@@ -167,13 +182,20 @@ class _FakeCursor:
             (price_source_id,) = params
             self.last_checked_at_updates.append(price_source_id)
 
-        elif q.startswith("select id, name, search_url_template, result_link_selector, default_css_selector from price_sites"):
+        elif q.startswith("select id, name, search_url_template, result_link_selector, default_css_selector,"):
             ordered = sorted(self.sites, key=lambda s: s["name"])
             self._rows = [
-                (s["id"], s["name"], s["search_url_template"], s["result_link_selector"], s["default_css_selector"])
+                (
+                    s["id"], s["name"], s.get("search_url_template"), s.get("result_link_selector"),
+                    s.get("default_css_selector"), s.get("fetch_method", "scrape"), s.get("api_provider"),
+                    s.get("base_url"),
+                )
                 for s in ordered
             ]
-            self.description = [("id",), ("name",), ("search_url_template",), ("result_link_selector",), ("default_css_selector",)]
+            self.description = [
+                ("id",), ("name",), ("search_url_template",), ("result_link_selector",), ("default_css_selector",),
+                ("fetch_method",), ("api_provider",), ("base_url",),
+            ]
 
         elif q.startswith("select p.id, p.name, b.name as brand_name"):
             self.description = [("id",), ("name",), ("brand_name",)]
@@ -192,6 +214,10 @@ class _FakeCursor:
                 self.known_candidate_keys.add(key)
                 self.rowcount = 1
 
+        elif q.startswith("select product_id, bigcommerce_product_id, match_status from bowlerdepot_products"):
+            self.description = [("product_id",), ("external_product_id",), ("match_status",)]
+            self._rows = [(m["product_id"], m["external_product_id"], m["match_status"]) for m in self.bowlerdepot_matches]
+
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
 
@@ -206,8 +232,8 @@ class _FakeCursor:
 
 
 class _FakeConn:
-    def __init__(self, sources=None, sites=None, products=None, known_candidate_keys=None):
-        self._cursor = _FakeCursor(sources, sites, products, known_candidate_keys)
+    def __init__(self, sources=None, sites=None, products=None, known_candidate_keys=None, bowlerdepot_matches=None):
+        self._cursor = _FakeCursor(sources, sites, products, known_candidate_keys, bowlerdepot_matches)
         self.committed = False
         self.closed = False
 
@@ -274,7 +300,7 @@ def test_record_price_check_writes_history_and_bumps_last_checked_at():
     conn = _FakeConn()
     app.record_price_check(conn, "src-1", {"price": 99.99, "raw_price_text": "$99.99", "error": None})
 
-    assert conn._cursor.history_inserts == [("src-1", 99.99, "$99.99", None)]
+    assert conn._cursor.history_inserts == [("src-1", 99.99, "$99.99", None, None, None)]
     assert conn._cursor.last_checked_at_updates == ["src-1"]
     assert conn.committed is True
 
@@ -286,8 +312,21 @@ def test_record_price_check_writes_history_row_even_on_failure():
     conn = _FakeConn()
     app.record_price_check(conn, "src-1", {"price": None, "raw_price_text": None, "error": "fetch failed: timeout"})
 
-    assert conn._cursor.history_inserts == [("src-1", None, None, "fetch failed: timeout")]
+    assert conn._cursor.history_inserts == [("src-1", None, None, "fetch failed: timeout", None, None)]
     assert conn._cursor.last_checked_at_updates == ["src-1"]
+
+
+def test_record_price_check_writes_cost_price_and_in_stock_when_present():
+    # 016_price_tracking_bigcommerce.sql -- a BigCommerce/'api' check
+    # result carries cost_price/in_stock alongside price; a scrape-path
+    # result dict never has these keys at all, so result.get(...) must
+    # default to None for the two tests above to keep passing unchanged.
+    conn = _FakeConn()
+    app.record_price_check(conn, "src-1", {
+        "price": 149.99, "raw_price_text": None, "error": None, "cost_price": 80.0, "in_stock": True,
+    })
+
+    assert conn._cursor.history_inserts == [("src-1", 149.99, None, None, 80.0, True)]
 
 
 def test_check_sources_tolerates_per_source_failure_and_counts_correctly(monkeypatch):
@@ -548,8 +587,39 @@ def test_insert_price_source_candidates_idempotent_against_known_url():
 
     query, params = conn.cursor().executed[0]
     assert "status" in query and "'pending'" in query
-    assert "source" in query and "'site_search'" in query
-    assert params == ("prod-1", "site-1", "https://a.example/p1", "Storm Absolute", "high")
+    # source defaults to 'site_search' as a bound param now (016_price_
+    # tracking_bigcommerce.sql added a source= parameter so bigcommerce_api
+    # candidates can share this same insert), not a hardcoded SQL literal.
+    assert params == ("prod-1", "site-1", "https://a.example/p1", "Storm Absolute", "high", None, "site_search")
+
+
+def test_insert_price_source_candidates_default_source_is_site_search():
+    conn = _FakeConn()
+    candidates = [{"product_url": "https://a.example/p1", "match_confidence": "high"}]
+    app.insert_price_source_candidates(conn, "prod-1", "site-1", "Storm Absolute", candidates)
+    _, params = conn.cursor().executed[0]
+    assert params[-1] == "site_search"
+
+
+def test_insert_price_source_candidates_accepts_bigcommerce_api_source_and_external_id():
+    # discover_bigcommerce_candidates' own call shape (016_price_tracking_
+    # bigcommerce.sql) -- source='bigcommerce_api' and a real
+    # external_product_id, not the site_search defaults.
+    conn = _FakeConn()
+    candidates = [{
+        "product_url": "https://www.bowlerdepot.com/storm-alpha-crux/",
+        "match_confidence": "high",
+        "external_product_id": "100",
+    }]
+    inserted = app.insert_price_source_candidates(
+        conn, "prod-1", "site-bd", "bowlerdepot_products match", candidates, source="bigcommerce_api",
+    )
+    assert inserted == 1
+    _, params = conn.cursor().executed[0]
+    assert params == (
+        "prod-1", "site-bd", "https://www.bowlerdepot.com/storm-alpha-crux/",
+        "bowlerdepot_products match", "high", "100", "bigcommerce_api",
+    )
 
 
 # --- discover_price_sources: orchestration, tolerates per-site failures ---
@@ -635,6 +705,397 @@ def test_handler_discover_shape_calls_discover_price_sources(monkeypatch):
 
     assert calls["job"] == {"discover": True, "product_ids": ["prod-1"]}
     assert body["new_candidates"] == 3
+
+
+# --- BowlerDepot/BigCommerce API source type (016_price_tracking_
+# bigcommerce.sql) -- Al: "this... is a project for the same company that
+# owns bowlerdepot.com... Going with the API for that one would be great
+# and there are some additional data points... In stock over time and
+# cost price over time." Honesty note: no real BowlerDepot store_hash/API
+# token exists in this project yet (see get_bigcommerce_credentials'
+# BIGCOMMERCE_SECRET_ARN and bowlerdepot_reconciliation's own module
+# docstring) -- every test below either monkeypatches
+# get_bigcommerce_credentials directly (orchestration-level tests, same
+# level search_site_for_product's own tests monkeypatch fetch_page at)
+# or feeds a small fake requests-shaped session object with hand-written
+# BigCommerce-v3-shaped JSON (confirmed response contract, see
+# bowlerdepot_reconciliation/app.py's own module docstring), not a real
+# API response capture. ---
+
+class _FakeBigCommerceResponse:
+    def __init__(self, body):
+        self._body = body
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return self._body
+
+
+class _FakeBigCommerceSession:
+    """Single-page-per-call fake -- good enough for these tests since none
+    of them exercise pagination (total_pages > 1); pagination itself is
+    exactly the same "walk total_pages, extend" loop
+    bowlerdepot_reconciliation.fetch_all_products already has its own
+    tests for, not re-tested here."""
+
+    def __init__(self, products):
+        self.products = products
+        self.urls = []
+
+    def get(self, url, headers=None, timeout=None):
+        self.urls.append(url)
+        return _FakeBigCommerceResponse({
+            "data": self.products,
+            "meta": {"pagination": {"total_pages": 1}},
+        })
+
+
+def test_determine_in_stock_none_tracking_uses_availability():
+    assert app.determine_in_stock({"inventory_tracking": "none", "availability": "available"}) is True
+    assert app.determine_in_stock({"inventory_tracking": "none", "availability": "disabled"}) is False
+
+
+def test_determine_in_stock_none_tracking_missing_availability_is_none():
+    assert app.determine_in_stock({"inventory_tracking": "none"}) is None
+
+
+def test_determine_in_stock_product_or_variant_tracking_uses_inventory_level():
+    assert app.determine_in_stock({"inventory_tracking": "product", "inventory_level": 5}) is True
+    assert app.determine_in_stock({"inventory_tracking": "product", "inventory_level": 0}) is False
+    assert app.determine_in_stock({"inventory_tracking": "variant", "inventory_level": 1}) is True
+
+
+def test_determine_in_stock_unknown_or_missing_tracking_is_none():
+    assert app.determine_in_stock({}) is None
+    assert app.determine_in_stock({"inventory_tracking": "something_new"}) is None
+
+
+def test_build_bigcommerce_products_by_id_url_uses_id_in_filter():
+    url = app.build_bigcommerce_products_by_id_url("store123", [1, 2, 3])
+    assert url == (
+        "https://api.bigcommerce.com/stores/store123/v3/catalog/products"
+        "?id:in=1,2,3&page=1&limit=250&include=custom_fields"
+    )
+
+
+def test_fetch_bigcommerce_products_by_ids_returns_by_id_lookup():
+    session = _FakeBigCommerceSession([
+        {"id": 100, "price": 149.99},
+        {"id": 300, "price": 199.99},
+    ])
+    result = app.fetch_bigcommerce_products_by_ids("store123", "tok", [100, 300], session=session)
+    assert set(result.keys()) == {"100", "300"}
+    assert result["100"]["price"] == 149.99
+
+
+def test_fetch_bigcommerce_products_by_ids_batches_large_id_lists():
+    # MAX_BIGCOMMERCE_IDS_PER_CALL=50 -- 120 ids should mean 3 separate
+    # calls, not one giant id:in= list.
+    ids = list(range(120))
+    session = _FakeBigCommerceSession([])
+    app.fetch_bigcommerce_products_by_ids("store123", "tok", ids, session=session)
+    assert len(session.urls) == 3
+
+
+def test_extract_bigcommerce_price_fields_resolves_relative_url_against_base():
+    product = {
+        "price": 149.99, "cost_price": 80.0,
+        "inventory_tracking": "none", "availability": "available",
+        "custom_url": {"url": "/storm-alpha-crux/"},
+    }
+    fields = app.extract_bigcommerce_price_fields(product, base_url="https://www.bowlerdepot.com")
+    assert fields == {
+        "price": 149.99, "cost_price": 80.0, "in_stock": True,
+        "product_url": "https://www.bowlerdepot.com/storm-alpha-crux/",
+        "raw_price_text": None, "error": None,
+    }
+
+
+def test_extract_bigcommerce_price_fields_no_base_url_falls_back_to_relative_path():
+    product = {"price": 10.0, "custom_url": {"url": "/p/"}}
+    fields = app.extract_bigcommerce_price_fields(product, base_url=None)
+    assert fields["product_url"] == "/p/"
+
+
+def test_extract_bigcommerce_price_fields_missing_custom_url_is_none():
+    fields = app.extract_bigcommerce_price_fields({"price": 10.0}, base_url="https://example.com")
+    assert fields["product_url"] is None
+
+
+def test_list_bowlerdepot_matches_shape():
+    conn = _FakeConn(bowlerdepot_matches=[
+        {"product_id": "p1", "external_product_id": "100", "match_status": "matched"},
+        {"product_id": "p2", "external_product_id": "200", "match_status": "ambiguous"},
+    ])
+    result = app.list_bowlerdepot_matches(conn)
+    assert result == [
+        {"product_id": "p1", "external_product_id": "100", "match_status": "matched"},
+        {"product_id": "p2", "external_product_id": "200", "match_status": "ambiguous"},
+    ]
+
+
+def test_check_bigcommerce_sources_returns_price_cost_stock_per_source(monkeypatch):
+    monkeypatch.setattr(app, "get_bigcommerce_credentials", lambda: ("store123", "tok"))
+    session = _FakeBigCommerceSession([
+        {"id": 100, "price": 149.99, "cost_price": 80.0, "inventory_tracking": "none", "availability": "available"},
+    ])
+    sources = [{"id": "src-1", "external_product_id": "100"}]
+    results = app.check_bigcommerce_sources(sources, session=session)
+    assert results["src-1"]["price"] == 149.99
+    assert results["src-1"]["cost_price"] == 80.0
+    assert results["src-1"]["in_stock"] is True
+    assert results["src-1"]["error"] is None
+
+
+def test_check_bigcommerce_sources_missing_external_id_is_an_error_not_a_crash(monkeypatch):
+    monkeypatch.setattr(app, "get_bigcommerce_credentials", lambda: ("store123", "tok"))
+    session = _FakeBigCommerceSession([])
+    sources = [{"id": "src-1", "external_product_id": None}]
+    results = app.check_bigcommerce_sources(sources, session=session)
+    assert results["src-1"]["error"] == "no external_product_id set"
+
+
+def test_check_bigcommerce_sources_product_no_longer_in_bigcommerce_is_an_error(monkeypatch):
+    monkeypatch.setattr(app, "get_bigcommerce_credentials", lambda: ("store123", "tok"))
+    session = _FakeBigCommerceSession([])  # empty -- id 100 was deleted/unpublished
+    sources = [{"id": "src-1", "external_product_id": "100"}]
+    results = app.check_bigcommerce_sources(sources, session=session)
+    assert "no longer has product id 100" in results["src-1"]["error"]
+
+
+def test_check_bigcommerce_sources_credentials_failure_errors_every_source_never_raises(monkeypatch):
+    def _boom():
+        raise RuntimeError("no secret configured")
+
+    monkeypatch.setattr(app, "get_bigcommerce_credentials", _boom)
+    sources = [{"id": "src-1", "external_product_id": "100"}, {"id": "src-2", "external_product_id": "200"}]
+    results = app.check_bigcommerce_sources(sources, session=None)
+    assert "BigCommerce credentials unavailable" in results["src-1"]["error"]
+    assert "BigCommerce credentials unavailable" in results["src-2"]["error"]
+
+
+def test_check_bigcommerce_sources_fetch_failure_errors_every_source_never_raises(monkeypatch):
+    monkeypatch.setattr(app, "get_bigcommerce_credentials", lambda: ("store123", "tok"))
+
+    def _boom(store_hash, auth_token, ids, session=None):
+        raise ConnectionError("timed out")
+
+    monkeypatch.setattr(app, "fetch_bigcommerce_products_by_ids", _boom)
+    sources = [{"id": "src-1", "external_product_id": "100"}]
+    results = app.check_bigcommerce_sources(sources, session=None)
+    assert "BigCommerce fetch failed" in results["src-1"]["error"]
+
+
+# --- check_sources: partitions scrape vs api sources (016_price_tracking_
+# bigcommerce.sql) ---
+
+def test_check_sources_routes_scrape_and_api_sources_separately(monkeypatch):
+    monkeypatch.setattr(app, "check_price_source", lambda source, session=None: {
+        "price": 1.0, "raw_price_text": "$1.00", "error": None,
+    })
+    monkeypatch.setattr(app, "check_bigcommerce_sources", lambda sources, session=None: {
+        s["id"]: {"price": 2.0, "raw_price_text": None, "error": None, "cost_price": 1.5, "in_stock": True}
+        for s in sources
+    })
+    conn = _FakeConn()
+    sources = [
+        {"id": "sc-1", "fetch_method": "scrape", "product_url": "https://a.example", "css_selector": ".p"},
+        {"id": "ap-1", "fetch_method": "api", "external_product_id": "100"},
+    ]
+    result = app.check_sources(conn, sources)
+    assert result == {"sources_checked": 2, "succeeded": 2, "failed": 0}
+    assert conn.cursor().history_inserts == [
+        ("sc-1", 1.0, "$1.00", None, None, None),
+        ("ap-1", 2.0, None, None, 1.5, True),
+    ]
+
+
+def test_check_sources_missing_fetch_method_defaults_to_scrape(monkeypatch):
+    # A source dict without a fetch_method key at all (e.g. an older
+    # in-memory fixture, or list_price_sources_due's own row shape before
+    # this migration) must still route through the scrape path, not
+    # silently vanish from either bucket.
+    conn = _FakeConn()
+    calls = []
+
+    def _fake_check(source, session=None):
+        calls.append(source["id"])
+        return {"price": 1.0, "raw_price_text": "$1.00", "error": None}
+
+    monkeypatch.setattr(app, "check_price_source", _fake_check)
+    result = app.check_sources(conn, [{"id": "src-1", "product_url": "u", "css_selector": ".p"}])
+    assert calls == ["src-1"]
+    assert result["sources_checked"] == 1
+
+
+def test_check_sources_no_api_sources_never_calls_check_bigcommerce_sources(monkeypatch):
+    monkeypatch.setattr(app, "check_price_source", lambda source, session=None: {
+        "price": 1.0, "raw_price_text": "$1.00", "error": None,
+    })
+    monkeypatch.setattr(app, "check_bigcommerce_sources",
+                         lambda sources, session=None: (_ for _ in ()).throw(AssertionError("must not be called")))
+    conn = _FakeConn()
+    result = app.check_sources(conn, [{"id": "sc-1", "fetch_method": "scrape", "product_url": "u", "css_selector": ".p"}])
+    assert result["sources_checked"] == 1
+
+
+# --- discover_bigcommerce_candidates / discover_price_sources with an
+# 'api' price_sites row (016_price_tracking_bigcommerce.sql) ---
+
+def test_discover_bigcommerce_candidates_inserts_high_and_low_confidence(monkeypatch):
+    monkeypatch.setattr(app, "get_bigcommerce_credentials", lambda: ("store123", "tok"))
+    conn = _FakeConn(bowlerdepot_matches=[
+        {"product_id": "p1", "external_product_id": "100", "match_status": "matched"},
+        {"product_id": "p2", "external_product_id": "200", "match_status": "ambiguous"},
+    ])
+    session = _FakeBigCommerceSession([
+        {"id": 100, "custom_url": {"url": "/ball-a/"}},
+        {"id": 200, "custom_url": {"url": "/ball-b/"}},
+    ])
+    site = {"id": "site-bd", "name": "BowlerDepot", "base_url": "https://www.bowlerdepot.com"}
+    result = app.discover_bigcommerce_candidates(conn, site, {"p1", "p2"}, session=session)
+    assert result == {"inserted": 2, "errors": 0}
+
+    inserts = [e for e in conn.cursor().executed if e[0].startswith("insert into product_price_sources")]
+    assert len(inserts) == 2
+    confidences = sorted(params[4] for _, params in inserts)
+    assert confidences == ["high", "low"]
+
+
+def test_discover_bigcommerce_candidates_scopes_to_products_in_scope(monkeypatch):
+    monkeypatch.setattr(app, "get_bigcommerce_credentials", lambda: ("store123", "tok"))
+    captured = {}
+
+    def _fake_fetch(store_hash, auth_token, ids, session=None):
+        captured["ids"] = ids
+        return {"100": {"id": 100, "custom_url": {"url": "/ball-a/"}}}
+
+    monkeypatch.setattr(app, "fetch_bigcommerce_products_by_ids", _fake_fetch)
+    conn = _FakeConn(bowlerdepot_matches=[
+        {"product_id": "p1", "external_product_id": "100", "match_status": "matched"},
+        {"product_id": "p-out-of-scope", "external_product_id": "999", "match_status": "matched"},
+    ])
+    site = {"id": "site-bd", "name": "BowlerDepot", "base_url": "https://www.bowlerdepot.com"}
+    # Only p1 in scope -- p-out-of-scope's match must never even be sent
+    # to fetch_bigcommerce_products_by_ids.
+    result = app.discover_bigcommerce_candidates(conn, site, {"p1"}, session=None)
+    assert captured["ids"] == ["100"]
+    assert result == {"inserted": 1, "errors": 0}
+
+
+def test_discover_bigcommerce_candidates_missing_bigcommerce_product_is_an_error(monkeypatch):
+    monkeypatch.setattr(app, "get_bigcommerce_credentials", lambda: ("store123", "tok"))
+    conn = _FakeConn(bowlerdepot_matches=[
+        {"product_id": "p1", "external_product_id": "100", "match_status": "matched"},
+    ])
+    session = _FakeBigCommerceSession([])  # BigCommerce no longer has id 100
+    site = {"id": "site-bd", "name": "BowlerDepot", "base_url": "https://www.bowlerdepot.com"}
+    result = app.discover_bigcommerce_candidates(conn, site, {"p1"}, session=session)
+    assert result == {"inserted": 0, "errors": 1}
+
+
+def test_discover_bigcommerce_candidates_no_matches_in_scope_short_circuits():
+    conn = _FakeConn(bowlerdepot_matches=[])
+    site = {"id": "site-bd", "name": "BowlerDepot"}
+    result = app.discover_bigcommerce_candidates(conn, site, {"p1"}, session=None)
+    assert result == {"inserted": 0, "errors": 0}
+    # No BigCommerce credentials/fetch call and no insert -- just the one
+    # read of bowlerdepot_products, then an early return once it's clear
+    # there's nothing in scope to look up.
+    assert len(conn.cursor().executed) == 1
+    assert conn.cursor().executed[0][0].startswith("select product_id, bigcommerce_product_id, match_status")
+
+
+def test_discover_price_sources_handles_mixed_scrape_and_api_sites(monkeypatch):
+    conn = _FakeConn(
+        products=[{"id": "p1", "name": "Absolute", "brand_name": "Storm"}],
+        sites=[
+            {"id": "site-1", "name": "Bowling.com", "search_url_template": "https://bowling.com/search?q={query}",
+             "result_link_selector": ".product-link", "default_css_selector": ".price", "fetch_method": "scrape"},
+            {"id": "site-bd", "name": "BowlerDepot", "fetch_method": "api", "api_provider": "bigcommerce",
+             "base_url": "https://www.bowlerdepot.com"},
+        ],
+        bowlerdepot_matches=[{"product_id": "p1", "external_product_id": "100", "match_status": "matched"}],
+    )
+
+    def _fake_search(site, query, session=None, max_results=app.DEFAULT_MAX_RESULTS_PER_SITE_SEARCH):
+        return [{"product_url": "https://bowling.com/p1", "title": "Storm Absolute"}]
+
+    monkeypatch.setattr(app, "search_site_for_product", _fake_search)
+    monkeypatch.setattr(app, "get_bigcommerce_credentials", lambda: ("store123", "tok"))
+    monkeypatch.setattr(app, "fetch_bigcommerce_products_by_ids", lambda store_hash, auth_token, ids, session=None: {
+        "100": {"id": 100, "custom_url": {"url": "/storm-absolute/"}},
+    })
+
+    result = app.discover_price_sources(conn, {}, session=None)
+
+    assert result["new_candidates"] == 2  # 1 scrape candidate + 1 bigcommerce candidate
+    assert result["search_errors"] == 0
+    assert result["sites_searched"] == 2
+
+
+def test_discover_price_sources_bigcommerce_failure_does_not_block_scrape_sites(monkeypatch):
+    conn = _FakeConn(
+        products=[{"id": "p1", "name": "Absolute", "brand_name": "Storm"}],
+        sites=[
+            {"id": "site-1", "name": "Bowling.com", "search_url_template": "https://bowling.com/search?q={query}",
+             "result_link_selector": ".product-link", "default_css_selector": ".price", "fetch_method": "scrape"},
+            {"id": "site-bd", "name": "BowlerDepot", "fetch_method": "api", "api_provider": "bigcommerce"},
+        ],
+        bowlerdepot_matches=[{"product_id": "p1", "external_product_id": "100", "match_status": "matched"}],
+    )
+
+    def _fake_search(site, query, session=None, max_results=app.DEFAULT_MAX_RESULTS_PER_SITE_SEARCH):
+        return [{"product_url": "https://bowling.com/p1", "title": "Storm Absolute"}]
+
+    def _boom():
+        raise RuntimeError("no secret configured")
+
+    monkeypatch.setattr(app, "search_site_for_product", _fake_search)
+    monkeypatch.setattr(app, "get_bigcommerce_credentials", _boom)
+
+    result = app.discover_price_sources(conn, {}, session=None)
+
+    assert result["new_candidates"] == 1  # the scrape candidate still landed
+    assert result["search_errors"] == 1  # the 1 in-scope bigcommerce match counted as an error
+    assert conn.cursor().last_discovery_marked == ["p1"]  # scrape loop still ran to completion
+
+
+# --- list_active_price_sites / list_price_sources_due /
+# list_price_sources_for_products expose fetch_method (016_price_
+# tracking_bigcommerce.sql) ---
+
+def test_list_active_price_sites_includes_fetch_method_api_provider_base_url():
+    conn = _FakeConn(sites=[
+        {"id": "site-bd", "name": "BowlerDepot", "search_url_template": None, "result_link_selector": None,
+         "default_css_selector": None, "fetch_method": "api", "api_provider": "bigcommerce",
+         "base_url": "https://www.bowlerdepot.com"},
+    ])
+    result = app.list_active_price_sites(conn)
+    assert result[0]["fetch_method"] == "api"
+    assert result[0]["api_provider"] == "bigcommerce"
+    assert result[0]["base_url"] == "https://www.bowlerdepot.com"
+
+
+def test_list_active_price_sites_defaults_fetch_method_for_older_fixture_rows():
+    conn = _FakeConn(sites=_sample_sites())  # no fetch_method key at all
+    result = app.list_active_price_sites(conn)
+    assert all(s["fetch_method"] == "scrape" for s in result)
+
+
+def test_list_price_sources_due_includes_fetch_method_and_external_product_id():
+    sources = _sample_sources()
+    sources[0]["fetch_method"] = "api"  # src-1
+    sources[0]["external_product_id"] = "100"
+    conn = _FakeConn(sources)
+    result = app.list_price_sources_due(conn, limit=10)
+    by_id = {r["id"]: r for r in result}
+    assert by_id["src-1"]["fetch_method"] == "api"
+    assert by_id["src-1"]["external_product_id"] == "100"
+    assert by_id["src-2"]["fetch_method"] == "scrape"  # no fetch_method key -- defaults
+    assert by_id["src-2"]["external_product_id"] is None
 
 
 if __name__ == "__main__":

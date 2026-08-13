@@ -445,7 +445,13 @@ class FakeCursor:
         # tests already use) -- not modeled here.
 
         elif q.startswith("insert into price_sites"):
-            name, search_url_template, result_link_selector, default_css_selector, notes = params
+            # 016_price_tracking_bigcommerce.sql added fetch_method/
+            # api_provider/base_url to this INSERT's column list --
+            # params always has all 8 now (create_price_site's own
+            # fetch_method default is "scrape", not None, so this never
+            # needs an older/shorter-params fallback).
+            (name, search_url_template, result_link_selector, default_css_selector, notes,
+             fetch_method, api_provider, base_url) = params
             self.db.setdefault("_price_site_id_seq", 0)
             self.db["_price_site_id_seq"] += 1
             new_id = f"site-new-{self.db['_price_site_id_seq']}"
@@ -453,6 +459,7 @@ class FakeCursor:
                 "id": new_id, "name": name, "search_url_template": search_url_template,
                 "result_link_selector": result_link_selector, "default_css_selector": default_css_selector,
                 "notes": notes, "is_active": True,
+                "fetch_method": fetch_method, "api_provider": api_provider, "base_url": base_url,
             }
             self._last_result = (new_id,)
             self.description = [("id",)]
@@ -488,7 +495,9 @@ class FakeCursor:
             # distinct branch from discovery's own insert (which price_
             # checker, not admin_api, ever calls -- see that module's own
             # tests) since the column list/status/source differ.
-            product_id, price_site_id, product_url, css_selector, resolved_by = params
+            # external_product_id (016_price_tracking_bigcommerce.sql) is
+            # the 5th column now, before resolved_by.
+            product_id, price_site_id, product_url, css_selector, external_product_id, resolved_by = params
             self.db.setdefault("_price_source_id_seq", 0)
             self.db["_price_source_id_seq"] += 1
             new_id = f"src-new-{self.db['_price_source_id_seq']}"
@@ -497,6 +506,7 @@ class FakeCursor:
                 "product_url": product_url, "css_selector": css_selector, "is_active": True,
                 "last_checked_at": None, "status": "approved", "source": "manual",
                 "match_query": None, "match_confidence": None, "resolved_by": resolved_by,
+                "external_product_id": external_product_id,
             }
             self._last_result = (new_id,)
             self.description = [("id",)]
@@ -2739,6 +2749,19 @@ def test_list_product_price_sources_status_filter_when_given():
     assert "pps.status = %s" in query
 
 
+def test_list_product_price_sources_includes_fetch_method_and_cost_stock():
+    # 016_price_tracking_bigcommerce.sql -- ps.fetch_method plus two more
+    # correlated subqueries (latest_cost_price/latest_in_stock), same
+    # pattern as the existing latest_price/latest_checked_at/latest_error
+    # subqueries this function already had.
+    conn = _QueryCapturingConnection()
+    service.list_product_price_sources(conn, "prod-1")
+    query = conn.cursor().queries[0]
+    assert "ps.fetch_method" in query
+    assert "h.cost_price" in query
+    assert "h.in_stock" in query
+
+
 def test_list_price_sources_defaults_to_pending_and_orders_by_confidence():
     conn = _QueryCapturingConnection()
     service.list_price_sources(conn)
@@ -2766,6 +2789,17 @@ def test_get_price_history_scopes_by_product_id_and_days_window():
     assert "where pps.product_id = %s and pps.status = 'approved'" in queries[0]
     assert "where pps.product_id = %s" in queries[1]
     assert "h.checked_at >= now() - (%s || ' days')::interval" in queries[1]
+
+
+def test_get_price_history_selects_cost_price_and_in_stock():
+    # 016_price_tracking_bigcommerce.sql -- both ride along in the same
+    # history query, null for a scrape-sourced row, real values for a
+    # BowlerDepot/'api' one.
+    conn = _QueryCapturingConnection()
+    service.get_price_history(conn, "prod-1", days=30)
+    history_query = conn.cursor().queries[1]
+    assert "h.cost_price" in history_query
+    assert "h.in_stock" in history_query
 
 
 def _fake_db_with_price_site():
@@ -2826,6 +2860,55 @@ def test_update_price_site_can_deactivate():
     service.update_price_site(conn, "site-1", is_active=False)
 
     assert db["price_sites"]["site-1"]["is_active"] is False
+
+
+# --- 016_price_tracking_bigcommerce.sql: fetch_method/api_provider/
+# base_url on price_sites, for the BowlerDepot/BigCommerce 'api' source
+# type alongside the original 'scrape' design.
+
+def test_create_price_site_defaults_fetch_method_to_scrape():
+    db = {"price_sites": {}}
+    conn = FakeConnection(db)
+
+    result = service.create_price_site(
+        conn, "BowlingBall.com", "https://bowlingball.com/search?q={query}", ".product-link", ".price",
+    )
+
+    assert result["fetch_method"] == "scrape"
+    new_id = result["id"]
+    assert db["price_sites"][new_id]["fetch_method"] == "scrape"
+    assert db["price_sites"][new_id]["api_provider"] is None
+
+
+def test_create_price_site_api_fetch_method_with_no_scrape_fields():
+    db = {"price_sites": {}}
+    conn = FakeConnection(db)
+
+    result = service.create_price_site(
+        conn, "BowlerDepot", fetch_method="api", api_provider="bigcommerce",
+        base_url="https://www.bowlerdepot.com",
+    )
+
+    assert result["fetch_method"] == "api"
+    assert result["api_provider"] == "bigcommerce"
+    assert result["search_url_template"] is None
+    new_id = result["id"]
+    assert db["price_sites"][new_id]["api_provider"] == "bigcommerce"
+    assert db["price_sites"][new_id]["base_url"] == "https://www.bowlerdepot.com"
+
+
+def test_update_price_site_can_set_fetch_method_and_api_fields():
+    db = _fake_db_with_price_site()
+    conn = FakeConnection(db)
+
+    service.update_price_site(conn, "site-1", fetch_method="api", api_provider="bigcommerce",
+                               base_url="https://www.bowlerdepot.com")
+
+    assert db["price_sites"]["site-1"]["fetch_method"] == "api"
+    assert db["price_sites"]["site-1"]["api_provider"] == "bigcommerce"
+    assert db["price_sites"]["site-1"]["base_url"] == "https://www.bowlerdepot.com"
+    # Untouched -- not part of this partial update.
+    assert db["price_sites"]["site-1"]["name"] == "BowlerDepot"
 
 
 def test_update_price_site_missing_raises():
@@ -2903,6 +2986,34 @@ def test_create_product_price_source_records_resolved_by():
 
     new_id = result["id"]
     assert db["product_price_sources"][new_id]["resolved_by"] == "al@bringyourbest.co"
+
+
+def test_create_product_price_source_records_external_product_id():
+    # 016_price_tracking_bigcommerce.sql -- a manual override against an
+    # 'api'-fetch_method site (e.g. attaching a BowlerDepot product id
+    # discovery missed) can carry the platform's own native id.
+    db = _fake_db_with_price_source()
+    conn = FakeConnection(db)
+
+    result = service.create_product_price_source(
+        conn, "prod-1", "site-1", "https://www.bowlerdepot.com/storm-alpha-crux/",
+        external_product_id="100",
+    )
+
+    new_id = result["id"]
+    assert db["product_price_sources"][new_id]["external_product_id"] == "100"
+    assert result["external_product_id"] == "100"
+
+
+def test_create_product_price_source_external_product_id_defaults_to_none():
+    db = _fake_db_with_price_source()
+    conn = FakeConnection(db)
+
+    result = service.create_product_price_source(conn, "prod-1", "site-1", "https://bowlerdepot.com/p/fury2")
+
+    new_id = result["id"]
+    assert db["product_price_sources"][new_id]["external_product_id"] is None
+    assert result["external_product_id"] is None
 
 
 def test_create_product_price_source_missing_product_raises():

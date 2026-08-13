@@ -2068,12 +2068,40 @@ Resources:
       # bowlingball.com, bowlersmart.com, ...) this feature launches
       # with, but worth revisiting if that list grows a lot.
       Timeout: 280
+      # BIGCOMMERCE_SECRET_ARN (016_price_tracking_bigcommerce.sql /
+      # get_bigcommerce_credentials) -- same secret BowlerDepotReconciliation-
+      # Function already reads, reused here rather than duplicated, since
+      # both functions are hitting the same BowlerDepot BigCommerce store.
+      # Still unset (BigCommerceSecretArn defaults to "") until a real
+      # store account/API token is wired up -- see that parameter's own
+      # description and BowlerDepotReconciliationFunction's Enabled: true-
+      # but-guaranteed-to-error-without-it comment above. Unlike that
+      # function, this one's daily schedule doesn't hard-fail without real
+      # credentials: check_bigcommerce_sources/discover_bigcommerce_
+      # candidates only ever run against 'api'-fetch_method price_sites
+      # rows, and none exist yet (an admin has to create one first, same
+      # as any other price_sites row) -- so PriceCheckerFunction's own
+      # schedule stays safely Enabled: true today, scrape-only, and simply
+      # starts covering BowlerDepot too the moment both a real secret AND
+      # an 'api' price_sites row exist.
+      Environment:
+        Variables:
+          BIGCOMMERCE_SECRET_ARN: !Ref BigCommerceSecretArn
       Policies:
         - Statement:
             - Effect: Allow
               Action:
                 - secretsmanager:GetSecretValue
-              Resource: !Ref DbSecretArn
+              # Same HasBigCommerceSecret conditional as
+              # BowlerDepotReconciliationFunction's own grant above -- an
+              # empty-string BigCommerceSecretArn isn't a valid IAM
+              # Resource value, so it's only included once a real ARN is
+              # supplied.
+              Resource: !If
+                - HasBigCommerceSecret
+                - - !Ref DbSecretArn
+                  - !Ref BigCommerceSecretArn
+                - - !Ref DbSecretArn
       # Daily, per Al's own "likely daily?" -- checks up to price_checker.
       # DEFAULT_PRICE_CHECK_LIMIT (200) of the most-overdue APPROVED+
       # active price sources (see list_price_sources_due's ROTATION

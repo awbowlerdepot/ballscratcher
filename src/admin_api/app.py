@@ -81,12 +81,21 @@ class PriceSiteCreateRequest(BaseModel):
     # find candidate product URLs on this site (see
     # service.create_price_site's docstring). {query} in
     # search_url_template gets url-encoded and substituted by
-    # price_checker.search_site_for_product.
-    search_url_template: str
-    result_link_selector: str
+    # price_checker.search_site_for_product. Optional now (016_price_
+    # tracking_bigcommerce.sql) -- REQUIRED for fetch_method='scrape'
+    # (the default) but not for 'api', enforced by the DB's own
+    # price_sites_fetch_method_fields_check, not re-validated here.
+    search_url_template: Optional[str] = None
+    result_link_selector: Optional[str] = None
     # Price-PAGE config -- what checking uses once a candidate is approved.
-    default_css_selector: str
+    default_css_selector: Optional[str] = None
     notes: Optional[str] = None
+    # 'scrape' (the original generic search+selector design) or 'api'
+    # (currently only 'bigcommerce', BowlerDepot) -- see
+    # service.create_price_site's docstring.
+    fetch_method: str = "scrape"
+    api_provider: Optional[str] = None
+    base_url: Optional[str] = None
 
 
 class PriceSiteUpdateRequest(BaseModel):
@@ -99,6 +108,9 @@ class PriceSiteUpdateRequest(BaseModel):
     default_css_selector: Optional[str] = None
     notes: Optional[str] = None
     is_active: Optional[bool] = None
+    fetch_method: Optional[str] = None
+    api_provider: Optional[str] = None
+    base_url: Optional[str] = None
 
 
 class ProductPriceSourceCreateRequest(BaseModel):
@@ -113,6 +125,10 @@ class ProductPriceSourceCreateRequest(BaseModel):
     # when this one product's page needs a different selector.
     css_selector: Optional[str] = None
     resolved_by: Optional[str] = None
+    # Only meaningful for a manual override against an 'api'-fetch_method
+    # site (016_price_tracking_bigcommerce.sql) -- e.g. an admin manually
+    # attaching a BowlerDepot product id discovery missed.
+    external_product_id: Optional[str] = None
 
 
 class ProductPriceSourceUpdateRequest(BaseModel):
@@ -662,6 +678,7 @@ def create_price_site(body: PriceSiteCreateRequest):
         return service.create_price_site(
             conn, body.name, body.search_url_template, body.result_link_selector,
             body.default_css_selector, body.notes,
+            fetch_method=body.fetch_method, api_provider=body.api_provider, base_url=body.base_url,
         )
     finally:
         conn.close()
@@ -675,6 +692,7 @@ def update_price_site(site_id: str, body: PriceSiteUpdateRequest):
             conn, site_id, name=body.name, search_url_template=body.search_url_template,
             result_link_selector=body.result_link_selector, default_css_selector=body.default_css_selector,
             notes=body.notes, is_active=body.is_active,
+            fetch_method=body.fetch_method, api_provider=body.api_provider, base_url=body.base_url,
         )
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -783,6 +801,7 @@ def create_product_price_source(product_id: str, body: ProductPriceSourceCreateR
     try:
         return service.create_product_price_source(
             conn, product_id, body.price_site_id, body.product_url, body.css_selector, body.resolved_by,
+            external_product_id=body.external_product_id,
         )
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
