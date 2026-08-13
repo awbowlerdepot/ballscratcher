@@ -153,7 +153,7 @@ class _FakeCursor:
 
         if q.startswith("select pps.id, pps.product_id, pps.product_url"):
             active = [s for s in self.sources if s.get("is_active", True) and s.get("is_site_active", True)]
-            if "pps.product_id = any(%s)" in q:
+            if "pps.product_id = any(%s::uuid[])" in q:
                 (product_ids,) = params
                 matched = [s for s in active if s["product_id"] in product_ids]
                 matched.sort(key=lambda s: (s["product_id"], s["id"]))
@@ -287,6 +287,21 @@ def test_list_price_sources_for_products_scopes_by_product_id():
     result = app.list_price_sources_for_products(conn, ["prod-1"])
     ids = sorted(r["id"] for r in result)
     assert ids == ["src-1", "src-2"]
+
+
+def test_list_price_sources_for_products_casts_ids_to_uuid_array():
+    # REAL INCIDENT: `any(%s)` without an explicit ::uuid[] cast fails
+    # against a real Postgres instance -- "operator does not exist: uuid
+    # = text" -- since psycopg2 sends a plain Python list of strings as
+    # an untyped/text array, and product_id is a uuid column. A fake
+    # cursor never caught this because it doesn't type-check SQL, only a
+    # real {"product_ids": [...]} Lambda invoke against a real database
+    # did. Asserting the query text directly here, not just the fake
+    # dispatch's own behavior, so this can't regress silently again.
+    conn = _FakeConn(_sample_sources())
+    app.list_price_sources_for_products(conn, ["prod-1"])
+    query, _ = conn.cursor().executed[0]
+    assert "pps.product_id = any(%s::uuid[])" in query
 
 
 def test_list_price_sources_for_products_empty_list_returns_empty_without_query():

@@ -341,7 +341,19 @@ def list_price_sources_for_products(conn, product_ids: list) -> list:
     approved sites, all 5 get checked, since the caller explicitly asked
     for this product. fetch_method/external_product_id joined in for the
     same reason as list_price_sources_due -- see that function's own
-    docstring."""
+    docstring.
+
+    REAL INCIDENT: product_ids = any(%s) without an explicit ::uuid[]
+    cast fails against a real Postgres instance -- "operator does not
+    exist: uuid = text" -- since psycopg2 sends a plain Python list of
+    strings as an untyped/text array parameter, and product_id is a uuid
+    column. Found via a real {"product_ids": [...]} Lambda invoke against
+    a real database (this function's own docstring and every test against
+    it were written and passed against a fake cursor that never caught
+    this, since a fake cursor doesn't type-check SQL). Same fix
+    fetch_products_to_discover's own `p.id = any(%s::uuid[])` already
+    uses -- that one was written with the cast from the start; this one,
+    written earlier in the same feature, was missed."""
     if not product_ids:
         return []
     with conn.cursor() as cur:
@@ -353,7 +365,7 @@ def list_price_sources_for_products(conn, product_ids: list) -> list:
             from product_price_sources pps
             join price_sites ps on ps.id = pps.price_site_id
             where pps.status = 'approved' and pps.is_active = true and ps.is_active = true
-              and pps.product_id = any(%s)
+              and pps.product_id = any(%s::uuid[])
             order by pps.product_id asc, pps.id asc
             """,
             (product_ids,),
