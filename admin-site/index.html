@@ -1402,13 +1402,31 @@ async function loadProductDetailInto(id, cell) {
     // Row shape/actions mirror the Video Candidates tab's renderVideoCandidates,
     // just scoped to this one product and refreshing this panel afterward
     // (via the ProductVideo* handlers below) instead of that tab's list.
+    //
+    // Bulk select/approve/reject -- Al: "can we add that same checkbox
+    // bulk logic to the product page video candidates list". Only pending
+    // rows get a checkbox (same reasoning as the tab: approved/rejected
+    // rows have nothing left to bulk-apply, and this list already mixes
+    // all three statuses together per the status:'all' fetch above, so
+    // there isn't a single showBulk-for-the-whole-view toggle like the
+    // tab has -- it's per-row instead). Selection lives in
+    // productVideoSelected[id] (a Set, module-level map keyed by product
+    // id since more than one product's detail row can be expanded at
+    // once) and is reset every time this panel reloads, same reasoning as
+    // videoState.selected/reviewState.selected.
+    productVideoSelected[id] = new Set();
+    const anyPendingVideo = videos.some(function (v) { return v.status === 'pending'; });
     const videoRows = videos.map(function (v) {
+      const checkboxCell = v.status === 'pending'
+        ? '<td><input type="checkbox" class="product-video-select" data-product-id="' + id + '" data-id="' + v.id + '" onchange="toggleProductVideoSelect(\'' + id + '\', \'' + v.id + '\', this.checked)"></td>'
+        : '<td></td>';
       const statusCell = v.status === 'pending'
         ? '<button class="btn small" onclick="approveVideoForProduct(\'' + id + '\', \'' + v.id + '\')">Approve</button>' +
           '<button class="btn small danger" onclick="rejectVideoForProduct(\'' + id + '\', \'' + v.id + '\')">Reject</button>'
         : '<span class="badge ' + escapeHtml(v.status) + '">' + escapeHtml(v.status) + '</span>';
       const durationText = v.duration_seconds !== null && v.duration_seconds !== undefined ? ' &middot; ' + fmtDuration(v.duration_seconds) : '';
       return '<tr>' +
+        checkboxCell +
         '<td><a href="https://www.youtube.com/watch?v=' + encodeURIComponent(v.youtube_video_id) + '" target="_blank" rel="noopener">' + escapeHtml(v.title) + '</a>' +
         '<div class="muted small">' + escapeHtml(v.channel_title || '') + durationText + '</div></td>' +
         '<td>' + fmtCount(v.view_count) + '</td>' +
@@ -1419,6 +1437,14 @@ async function loadProductDetailInto(id, cell) {
         '<button class="btn small ghost danger" onclick="deleteVideoForProduct(\'' + id + '\', \'' + v.id + '\')">Delete</button></td>' +
         '</tr>';
     }).join('');
+    const videoBulkToolbar = anyPendingVideo
+      ? '<div id="video-bulk-toolbar-' + id + '" class="filters" style="margin:6px 0;">' +
+        '<label class="checkbox"><input id="video-select-all-' + id + '" type="checkbox" onchange="toggleSelectAllProductVideos(\'' + id + '\', this.checked)"> Select all pending</label>' +
+        '<span id="video-selected-count-' + id + '" class="badge muted">0 selected</span>' +
+        '<button id="video-approve-selected-' + id + '" type="button" class="btn small ok" onclick="bulkApproveProductVideos(\'' + id + '\')" disabled>Approve selected</button>' +
+        '<button id="video-reject-selected-' + id + '" type="button" class="btn small danger" onclick="bulkRejectProductVideos(\'' + id + '\')" disabled>Reject selected</button>' +
+        '</div>'
+      : '';
     cell.innerHTML =
       '<div class="detail-panel">' +
       '<p><strong>Images</strong> (' + (p.images || []).length + '):</p>' +
@@ -1431,8 +1457,9 @@ async function loadProductDetailInto(id, cell) {
       '<p style="margin-top:14px;"><strong>Video candidates</strong> (' + videos.length + '):' +
         ' <button class="btn small ghost" onclick="discoverVideosForProduct(\'' + id + '\')">Search for videos again</button></p>' +
       '<p id="discover-videos-result-' + id + '" class="muted small"></p>' +
+      videoBulkToolbar +
       (videoRows
-        ? '<table class="mini"><thead><tr><th>Video</th><th>Views</th><th>Match</th><th>Summarized</th><th>Actions</th></tr></thead><tbody>' + videoRows + '</tbody></table>'
+        ? '<table class="mini"><thead><tr><th></th><th>Video</th><th>Views</th><th>Match</th><th>Summarized</th><th>Actions</th></tr></thead><tbody>' + videoRows + '</tbody></table>'
         : '<p class="muted">no candidates found yet</p>') +
       '<p><strong>Video review rollup</strong> (' + videoCount + ' video' + (videoCount === 1 ? '' : 's') + ', generated ' + (fmtDate(p.video_reviews_summary_generated_at) || 'never') + '):</p>' +
       '<pre class="scrollbox">' + escapeHtml(p.video_reviews_summary || '(none yet)') + '</pre>' +
@@ -1442,6 +1469,7 @@ async function loadProductDetailInto(id, cell) {
       (skuRows || '<tr><td colspan="6" class="muted">none</td></tr>') + '</tbody></table>' +
       renderProductRawFields(p) +
       '</div>';
+    updateProductVideoBulkToolbar(id);
   } catch (e) {
     cell.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
   }
@@ -1499,6 +1527,101 @@ async function toggleProductImageVisibility(productId, imageId, currentlyVisible
 // product's detail panel afterward instead of that tab's list -- kept as
 // separate functions rather than reusing those directly since the two
 // call sites need different post-mutation refresh targets.
+
+// Module-level map (productId -> Set of selected video_candidate ids),
+// not a single shared Set -- see loadProductDetailInto's videoBulkToolbar
+// comment for why: more than one product's detail row can be expanded on
+// screen at once, and each needs its own independent selection.
+const productVideoSelected = {};
+
+function toggleSelectAllProductVideos(productId, checked) {
+  const set = productVideoSelected[productId] || (productVideoSelected[productId] = new Set());
+  document.querySelectorAll('.product-video-select[data-product-id="' + productId + '"]').forEach(function (cb) {
+    cb.checked = checked;
+    if (checked) set.add(cb.dataset.id);
+    else set.delete(cb.dataset.id);
+  });
+  updateProductVideoBulkToolbar(productId);
+}
+
+function toggleProductVideoSelect(productId, id, checked) {
+  const set = productVideoSelected[productId] || (productVideoSelected[productId] = new Set());
+  if (checked) set.add(id);
+  else set.delete(id);
+  updateProductVideoBulkToolbar(productId);
+}
+
+function updateProductVideoBulkToolbar(productId) {
+  const set = productVideoSelected[productId] || new Set();
+  const n = set.size;
+  const countEl = document.getElementById('video-selected-count-' + productId);
+  if (countEl) countEl.textContent = n + ' selected';
+  const approveBtn = document.getElementById('video-approve-selected-' + productId);
+  const rejectBtn = document.getElementById('video-reject-selected-' + productId);
+  if (approveBtn) approveBtn.disabled = n === 0;
+  if (rejectBtn) rejectBtn.disabled = n === 0;
+  const selectAllBox = document.getElementById('video-select-all-' + productId);
+  if (selectAllBox) {
+    const boxes = document.querySelectorAll('.product-video-select[data-product-id="' + productId + '"]');
+    selectAllBox.checked = boxes.length > 0 && n === boxes.length;
+  }
+}
+
+async function bulkApproveProductVideos(productId) {
+  const by = getSettings().resolvedBy;
+  if (!by) { toast('Set "Your name" in Settings first.', true); return; }
+  const ids = Array.from(productVideoSelected[productId] || []);
+  if (!ids.length) return;
+  if (!confirm('Approve ' + ids.length + ' selected video' + (ids.length === 1 ? '' : 's') + '? This queues ' + (ids.length === 1 ? 'it' : 'them') + ' for transcript+summary.')) return;
+  await runProductVideoBulkAction(productId, ids, 'approve', by);
+}
+
+async function bulkRejectProductVideos(productId) {
+  const by = getSettings().resolvedBy;
+  if (!by) { toast('Set "Your name" in Settings first.', true); return; }
+  const ids = Array.from(productVideoSelected[productId] || []);
+  if (!ids.length) return;
+  // One reason prompt applied to every selected row, same as the Video
+  // Candidates tab's bulk reject.
+  const reason = prompt('Reason for rejecting all ' + ids.length + ' selected video(s) (optional, applied to all):');
+  if (reason === null) return;
+  await runProductVideoBulkAction(productId, ids, 'reject', by, reason || undefined);
+}
+
+// Sequential, deliberately not Promise.all -- same anti-throttling
+// posture as runReviewBulkAction/runVideoBulkAction (see their own
+// comments above).
+async function runProductVideoBulkAction(productId, ids, action, resolvedBy, reason) {
+  const approveBtn = document.getElementById('video-approve-selected-' + productId);
+  const rejectBtn = document.getElementById('video-reject-selected-' + productId);
+  if (approveBtn) approveBtn.disabled = true;
+  if (rejectBtn) rejectBtn.disabled = true;
+
+  let ok = 0, failed = 0;
+  try {
+    for (const id of ids) {
+      try {
+        if (action === 'approve') {
+          await api('POST', '/video-candidates/' + id + '/approve', { body: { resolved_by: resolvedBy } });
+        } else {
+          await api('POST', '/video-candidates/' + id + '/reject', { body: { resolved_by: resolvedBy, reason: reason } });
+        }
+        ok++;
+      } catch (e) {
+        failed++;
+      }
+      toast((action === 'approve' ? 'Approving' : 'Rejecting') + ' ' + (ok + failed) + '/' + ids.length + '…');
+      await new Promise(function (r) { setTimeout(r, 300); });
+    }
+  } finally {
+    // Reloads this product's whole detail panel -- clears+re-renders
+    // selection and re-enables the buttons via updateProductVideoBulkToolbar,
+    // same as loadVideoCandidates does for the tab.
+    const row = document.getElementById('product-detail-' + productId);
+    if (row) await loadProductDetailInto(productId, row.querySelector('td'));
+  }
+  toast(ok + ' ' + (action === 'approve' ? 'approved' : 'rejected') + (failed ? ', ' + failed + ' failed (still pending -- retry them)' : ''), failed > 0);
+}
 
 async function approveVideoForProduct(productId, videoId) {
   const by = getSettings().resolvedBy;

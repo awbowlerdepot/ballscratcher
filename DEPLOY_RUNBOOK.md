@@ -2721,6 +2721,40 @@ No deploy step beyond the usual static-file swap for `admin-site/
 index.html` (it's not part of any SAM stack -- see 6i's own admin-site
 section for how it's served).
 
+**Follow-up, real incident: same bulk logic on the product detail page's
+Video candidates list.** Al: "can we add that same checkbox bulk logic
+to the product page video candidates list" -- referring to the per-
+product Videos section inside `loadProductDetailInto` (see this
+section's own earlier writeup), not the standalone Video Candidates tab
+this whole addendum started with. Same pattern again, with one
+structural difference: that list fetches `status: 'all'` (pending,
+approved, and rejected mixed together in one table -- see
+`loadProductDetailInto`'s opening comment for why), so there's no single
+page-level "showBulk" toggle the way the tab or Review Queue has one.
+Instead each row decides for itself: only `status === 'pending'` rows
+get a checkbox cell (approved/rejected rows already only got a status
+badge, never Approve/Reject buttons, for the same reason), and the whole
+toolbar only renders at all when at least one candidate on the product
+is pending.
+
+Selection lives in `productVideoSelected` -- a **module-level map**
+keyed by `product_id`, not a single shared `Set` like `videoState.
+selected`/`reviewState.selected` -- because more than one product's
+detail row can be expanded on the Products tab at once, and each needs
+its own independent selection. `bulkApproveProductVideos`/
+`bulkRejectProductVideos`/`runProductVideoBulkAction` are otherwise the
+same shape as the tab's `bulkApproveVideos`/`bulkRejectVideos`/
+`runVideoBulkAction`: sequential per-id calls to the existing `POST
+/video-candidates/{id}/approve`/`/reject` endpoints, one reject-reason
+prompt applied to the whole batch, and a `finally` that reloads --
+here, that means re-running `loadProductDetailInto` for just this one
+product's detail panel (not the tab's full list), which both clears the
+selection and shows the now-updated statuses.
+
+No backend/template.yaml/migration change, no new tests (admin-site JS/
+HTML only, same `node -c` syntax verification as the tab version), no
+deploy step beyond the same static-file swap.
+
 ### 6j. Home transcript fetcher (residential caption fetching) -- optional, run outside AWS entirely
 
 Real, live-tested finding this session (see
