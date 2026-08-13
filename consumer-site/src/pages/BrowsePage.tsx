@@ -9,6 +9,22 @@ const PAGE_SIZE = 24;
 type ViewMode = "grid" | "list";
 const VIEW_STORAGE_KEY = "bbd_browse_view";
 
+// Common-sense sort options (Al's ask: "lets add some common sense sort
+// options for both the admin and consumer UIs") -- mirrors public_api/
+// service.py's _SORT_ORDER_BY exactly, values and all, so an unrecognized
+// value never reaches the backend from this page. "Featured" (the
+// default, value="") keeps the existing updated_at-desc order -- labeled
+// differently here than the admin-site's "recently updated" since that
+// phrase describes scrape timing, not something a visitor cares about.
+const SORT_OPTIONS: { value: string; label: string }[] = [
+  { value: "", label: "Featured" },
+  { value: "popularity", label: "Most Popular" },
+  { value: "newest", label: "Newest" },
+  { value: "oldest", label: "Oldest" },
+  { value: "name_asc", label: "Name (A–Z)" },
+  { value: "name_desc", label: "Name (Z–A)" },
+];
+
 // A layout preference, not filter data -- unlike status/brand_id/q
 // this has no business in the shareable URL (a link to "Brunswick
 // balls, current" should look the same whether the person who opens
@@ -34,6 +50,7 @@ export default function BrowsePage() {
   const status = (searchParams.get("status") as ProductStatus) || "current";
   const brandId = searchParams.get("brand_id") || "";
   const search = searchParams.get("q") || "";
+  const sort = searchParams.get("sort") || "";
 
   const [searchInput, setSearchInput] = useState(search);
   const [brands, setBrands] = useState<Brand[]>([]);
@@ -57,21 +74,28 @@ export default function BrowsePage() {
     getBrands().then(setBrands).catch(() => setBrands([]));
   }, []);
 
-  // Re-fetch from scratch whenever a filter changes.
+  // Re-fetch from scratch whenever a filter (or sort) changes.
   useEffect(() => {
     setOffset(0);
     setProducts([]);
     setHasMore(true);
     setError(null);
     setLoading(true);
-    listProducts({ status, brand_id: brandId || undefined, search: search || undefined, limit: PAGE_SIZE, offset: 0 })
+    listProducts({
+      status,
+      brand_id: brandId || undefined,
+      search: search || undefined,
+      sort: sort || undefined,
+      limit: PAGE_SIZE,
+      offset: 0,
+    })
       .then((items) => {
         setProducts(items);
         setHasMore(items.length === PAGE_SIZE);
       })
       .catch(() => setError("Couldn't load balls right now -- try again in a moment."))
       .finally(() => setLoading(false));
-  }, [status, brandId, search]);
+  }, [status, brandId, search, sort]);
 
   function loadMore() {
     const nextOffset = offset + PAGE_SIZE;
@@ -80,6 +104,7 @@ export default function BrowsePage() {
       status,
       brand_id: brandId || undefined,
       search: search || undefined,
+      sort: sort || undefined,
       limit: PAGE_SIZE,
       offset: nextOffset,
     })
@@ -129,6 +154,18 @@ export default function BrowsePage() {
           {brands.map((b) => (
             <option key={b.id} value={b.id}>
               {b.name}
+            </option>
+          ))}
+        </select>
+
+        <select
+          value={sort}
+          onChange={(e) => updateParam("sort", e.target.value)}
+          aria-label="Sort"
+        >
+          {SORT_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
             </option>
           ))}
         </select>

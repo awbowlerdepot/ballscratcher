@@ -2987,13 +2987,68 @@ sam deploy
 (No admin-site redeploy step, same as every other admin-site-only
 change -- static file, not a Lambda-fronted deployable.)
 
-**Still to do, not yet built**: an actual "Popular" sort control on the
-consumer site's Browse page (React) -- this section only wires up the
-API-level `?sort=popularity` support and the admin-site visibility Al
-asked for as a sanity-check surface. Also worth revisiting once there's
-real traffic: whether 180 days is still the right half-life, and whether
-`popularity_score` should eventually be exposed on the product detail
-page too, not just Browse cards.
+**Follow-up: common-sense sort options, both UIs.** Al's ask: "lets add
+some common sense sort options for both the admin and consumer UIs."
+Both `public_api/service.py` and `admin_api/service.py`'s `list_products`
+had their single `if sort == "popularity": ... else: ...` branch
+refactored into a shared `_SORT_ORDER_BY` dict (`{sort_value: "<order by
+clause>"}`) plus a `_DEFAULT_ORDER_BY` fallback, looked up via
+`_SORT_ORDER_BY.get(sort, _DEFAULT_ORDER_BY)` -- same behavior as before
+for `'popularity'`/`None`/unrecognized values, just easier to extend.
+Four new values, each keeping the same `, p.id asc` pagination
+tiebreaker every other sort branch already needed:
+- `'newest'` / `'oldest'`: `p.release_date desc/asc nulls last`. Sorts by
+  `release_date`, deliberately not `created_at`/`updated_at` -- a shopper
+  cares when a ball actually came out, not when this project happened to
+  scrape it. Explicit `nulls last` in BOTH directions -- `release_date`
+  is nullable (not every scrape captures it), and Postgres's own default
+  for a plain `desc` sort is `nulls first`, which would otherwise push
+  every ball with an unknown release date to the very top of "Newest".
+- `'name_asc'` / `'name_desc'`: plain `p.name asc/desc`.
+
+No new column, no migration -- every field here (`release_date`, `name`)
+was already selected.
+
+`admin-site/index.html`'s `#product-sort` dropdown gained the four new
+`<option>`s (`newest release`/`oldest release`/`name (A-Z)`/`name
+(Z-A)`) -- no JS changes needed, the existing `productState.sort`/
+`loadProducts` wiring already reads the select's value generically.
+
+**The consumer site's Browse page also got its first-ever sort
+control** (previously only status/brand/search filters existed, no
+sort at all): a new `<select>` next to the brand filter, backed by a
+`SORT_OPTIONS` array in `BrowsePage.tsx` with the SAME five values as
+`_SORT_ORDER_BY` (plus `''` for the default) so nothing but a
+recognized value ever reaches the backend from this page. Labels differ
+deliberately from the admin site's -- `''` is "Featured" here, not
+"recently updated" (that phrase describes scrape timing, meaningless to
+a visitor); `'popularity'` is "Most Popular". `?sort=` is a real,
+shareable URL param (`useSearchParams`), same pattern as
+`status`/`brand_id`/`q` already used. `ListProductsParams`/
+`listProducts()` in `api/client.ts` gained a `sort?: string` passthrough.
+
+Tests: `test_public_api_service.py` 51/51 passing (5 new: newest/oldest/
+name_asc/name_desc SQL-shape checks, plus a loop over every
+`_SORT_ORDER_BY` key confirming the `p.id asc` tiebreaker survives).
+`test_admin_api_service.py` 124/124 passing (same 5, mirrored). No
+regressions from the `_SORT_ORDER_BY`-dict refactor -- every pre-existing
+sort/default test still passes unchanged.
+
+Consumer-site verification: `npx tsc -b` passes clean (exit 0) --
+confirms the new `sort`/`SORT_OPTIONS` TypeScript is type-correct. The
+full `npm run build` (which also runs `vite build`) currently fails in
+THIS sandbox with `Cannot find module @rollup/rollup-linux-arm64-gnu`, a
+pre-existing/known `npm` optional-dependency bug
+(https://github.com/npm/cli/issues/4828) tied to this specific sandbox's
+`node_modules`, not this change -- the real GitHub Actions CI (see 6n's
+own CI section) builds on a different platform and isn't expected to hit
+this. Worth a real `npm run build` locally or via CI before trusting
+this deploys clean, since `vite build` itself was never actually
+exercised this session.
+
+No `template.yaml` change, no new redeploy step beyond the two functions
+6l.5's original writeup already covers (`PublicApiFunction`/
+`AdminApiFunction`) -- this is a query-shape and frontend change only.
 
 ### 6m. Ball motion plotter (consumer site, standalone page)
 

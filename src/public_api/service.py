@@ -144,6 +144,30 @@ _POPULARITY_SCORE_SQL = f"""coalesce((
                    where pv.product_id = p.id and pv.status = 'approved' and pv.view_count is not null
                ), 0)"""
 
+# Common-sense sort options for the Browse page's "Sort" control -- Al's
+# ask: "lets add some common sense sort options for both the admin and
+# consumer UIs". Keyed by the exact ?sort= value; every branch keeps the
+# same `p.id asc` tiebreaker the pre-existing default/popularity branches
+# already used (see list_products' own tiebreaker comment) -- pagination
+# has to stay stable no matter which column is doing the primary
+# ordering. 'newest'/'oldest' sort by `release_date`, not `created_at`/
+# `updated_at` -- a shopper cares when a ball actually came out, not when
+# this project happened to scrape it. `release_date` is nullable (not
+# every scrape captures it), so both directions say `nulls last`
+# explicitly -- Postgres's own default for a plain `desc` sort is `nulls
+# first`, which would otherwise push every ball with an unknown release
+# date to the very top of "Newest". Kept in sync by hand with admin_api/
+# service.py's identical copy, same no-shared-module reasoning as
+# POPULARITY_HALF_LIFE_DAYS above.
+_SORT_ORDER_BY = {
+    "popularity": "popularity_score desc, p.id asc",
+    "newest": "p.release_date desc nulls last, p.id asc",
+    "oldest": "p.release_date asc nulls last, p.id asc",
+    "name_asc": "p.name asc, p.id asc",
+    "name_desc": "p.name desc, p.id asc",
+}
+_DEFAULT_ORDER_BY = "p.updated_at desc, p.id asc"
+
 
 def list_products(conn, status: str = "current", brand_id: str = None, core_id: str = None,
                    coverstock_id: str = None, search: str = None, sort: str = None,
@@ -191,10 +215,11 @@ def list_products(conn, status: str = "current", brand_id: str = None, core_id: 
 
     sort: None (default) keeps the existing 'updated_at desc' order --
     most-recently-touched-by-a-scraper first, which is really "recently
-    changed", not "popular". sort='popularity' orders by the computed
-    score instead (Al's ask -- see _POPULARITY_SCORE_SQL's docstring),
-    for a "Popular" sort option on the Browse page. Any other value is
-    silently ignored and falls back to the default order, same
+    changed", not "popular". Accepted values (see _SORT_ORDER_BY above):
+    'popularity' (the view-count-decay ranking -- Al's ask, see
+    _POPULARITY_SCORE_SQL's docstring), 'newest'/'oldest' (release_date),
+    'name_asc'/'name_desc' (alphabetical). Any other value (including
+    None) is silently ignored and falls back to the default order, same
     unrecognized-value-is-harmless convention every other filter on this
     endpoint already follows."""
     query = f"""
@@ -238,10 +263,7 @@ def list_products(conn, status: str = "current", brand_id: str = None, core_id: 
     # value -- e.g. two products both with zero approved-video views) make
     # plain OFFSET/LIMIT pagination unstable once there's a real paginated
     # consumer (the Browse page) rather than a one-shot admin listing.
-    if sort == "popularity":
-        query += " order by popularity_score desc, p.id asc limit %s offset %s"
-    else:
-        query += " order by p.updated_at desc, p.id asc limit %s offset %s"
+    query += " order by " + _SORT_ORDER_BY.get(sort, _DEFAULT_ORDER_BY) + " limit %s offset %s"
     params += [limit, offset]
 
     with conn.cursor() as cur:

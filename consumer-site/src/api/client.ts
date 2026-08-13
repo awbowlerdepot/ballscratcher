@@ -72,6 +72,12 @@ export interface ListProductsParams {
   status?: ProductStatus;
   brand_id?: string;
   search?: string;
+  // 'popularity' | 'newest' | 'oldest' | 'name_asc' | 'name_desc' -- see
+  // public_api/service.py's list_products'/_SORT_ORDER_BY's docstring in
+  // the main repo. Left as a plain string (not a union) here since an
+  // unrecognized value is harmless server-side (falls back to the
+  // default order), same convention as every other filter param.
+  sort?: string;
   limit?: number;
   offset?: number;
 }
@@ -81,6 +87,7 @@ export function listProducts(params: ListProductsParams = {}): Promise<ProductCa
     status: params.status ?? "current",
     brand_id: params.brand_id,
     search: params.search,
+    sort: params.sort,
     limit: params.limit,
     offset: params.offset,
   }).then((r) => r.items);

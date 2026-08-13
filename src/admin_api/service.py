@@ -268,6 +268,22 @@ _POPULARITY_SCORE_SQL = f"""coalesce((
                    where pv.product_id = p.id and pv.status = 'approved' and pv.view_count is not null
                ), 0)"""
 
+# Common-sense sort options for the Products tab's "Sort" control -- Al's
+# ask: "lets add some common sense sort options for both the admin and
+# consumer UIs". Identical to public_api/service.py's copy (kept in sync
+# by hand, same no-shared-module reasoning as POPULARITY_HALF_LIFE_DAYS
+# above) -- see that copy's comment for why 'newest'/'oldest' use
+# release_date (not created_at/updated_at) with an explicit `nulls last`
+# in both directions.
+_SORT_ORDER_BY = {
+    "popularity": "popularity_score desc, p.id asc",
+    "newest": "p.release_date desc nulls last, p.id asc",
+    "oldest": "p.release_date asc nulls last, p.id asc",
+    "name_asc": "p.name asc, p.id asc",
+    "name_desc": "p.name desc, p.id asc",
+}
+_DEFAULT_ORDER_BY = "p.updated_at desc, p.id asc"
+
 
 def list_products(conn, published: bool = None, brand_id: str = None, search: str = None,
                    needs_video_summary_refresh: bool = None, has_approved_video_summaries: bool = None,
@@ -368,10 +384,12 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     computed and returned, same as public_api's copy of this query --
     cheap enough at this catalog's size to include unconditionally, so
     the Products tab can show the column without a separate round-trip
-    even when not sorting by it. sort='popularity' orders by it (desc);
-    anything else (including the default None) keeps the existing
-    updated_at-desc order, same unrecognized-value-is-harmless
-    convention as every other filter/sort value on this endpoint."""
+    even when not sorting by it. Accepted sort values (see
+    _SORT_ORDER_BY above): 'popularity' (desc), 'newest'/'oldest'
+    (release_date), 'name_asc'/'name_desc' (alphabetical). Anything else
+    (including the default None) keeps the existing updated_at-desc
+    order, same unrecognized-value-is-harmless convention as every other
+    filter/sort value on this endpoint."""
     # p alias + left join cores: needed once c.name entered the picture --
     # products and cores both have a plain "name" column, so every
     # previously-bare column reference below (name, published, brand_id,
@@ -440,10 +458,7 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     # plain OFFSET/LIMIT pagination unstable, and this endpoint is now
     # paginated by a real consumer (the backfill script) as of this
     # filter's addition.
-    if sort == "popularity":
-        query += " order by popularity_score desc, p.id asc limit %s offset %s"
-    else:
-        query += " order by p.updated_at desc, p.id asc limit %s offset %s"
+    query += " order by " + _SORT_ORDER_BY.get(sort, _DEFAULT_ORDER_BY) + " limit %s offset %s"
     params += [limit, offset]
 
     with conn.cursor() as cur:

@@ -202,6 +202,54 @@ def test_list_products_unrecognized_sort_value_falls_back_to_default_order():
     assert "order by p.updated_at desc, p.id asc limit %s offset %s" in query
 
 
+# --- common-sense sort options (Al's ask: "lets add some common sense
+# sort options for both the admin and consumer UIs") -- newest/oldest by
+# release_date, alphabetical by name. See service.py's _SORT_ORDER_BY.
+
+def test_list_products_sort_newest_orders_by_release_date_desc_nulls_last():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, sort="newest")
+
+    query = conn.cursor().queries[0]
+    assert "order by p.release_date desc nulls last, p.id asc limit %s offset %s" in query
+
+
+def test_list_products_sort_oldest_orders_by_release_date_asc_nulls_last():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, sort="oldest")
+
+    query = conn.cursor().queries[0]
+    assert "order by p.release_date asc nulls last, p.id asc limit %s offset %s" in query
+
+
+def test_list_products_sort_name_asc_orders_alphabetically():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, sort="name_asc")
+
+    query = conn.cursor().queries[0]
+    assert "order by p.name asc, p.id asc limit %s offset %s" in query
+
+
+def test_list_products_sort_name_desc_orders_reverse_alphabetically():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, sort="name_desc")
+
+    query = conn.cursor().queries[0]
+    assert "order by p.name desc, p.id asc limit %s offset %s" in query
+
+
+def test_list_products_every_sort_option_keeps_id_tiebreaker():
+    """Pagination has to stay stable no matter which column is doing the
+    primary ordering -- every branch in _SORT_ORDER_BY must end in the
+    same `, p.id asc` tiebreaker."""
+    conn = _QueryCapturingConnection()
+    for sort_value in service._SORT_ORDER_BY:
+        conn.cursor().queries.clear()
+        service.list_products(conn, sort=sort_value)
+        query = conn.cursor().queries[0]
+        assert ", p.id asc limit %s offset %s" in query, f"sort={sort_value!r} missing id tiebreaker"
+
+
 def test_list_brands_only_brands_with_published_products():
     conn = _QueryCapturingConnection()
     service.list_brands(conn)

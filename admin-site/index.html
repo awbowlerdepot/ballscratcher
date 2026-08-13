@@ -328,9 +328,13 @@
       </div>
       <div class="field">
         <label>Sort</label>
-        <select id="product-sort" title="Popularity = sum of each approved video's view_count, decayed by video age (180-day half-life) -- see service.list_products' docstring. A live-computed 'current popularity' ranking, not raw lifetime views.">
+        <select id="product-sort" title="Popularity = sum of each approved video's view_count, decayed by video age (180-day half-life) -- see service.list_products' docstring. A live-computed 'current popularity' ranking, not raw lifetime views. Newest/Oldest sort by release_date (not scrape time).">
           <option value="">recently updated</option>
           <option value="popularity">popularity</option>
+          <option value="newest">newest release</option>
+          <option value="oldest">oldest release</option>
+          <option value="name_asc">name (A&ndash;Z)</option>
+          <option value="name_desc">name (Z&ndash;A)</option>
         </select>
       </div>
       <label class="checkbox"><input id="product-needs-refresh" type="checkbox"> stale rollup</label>
