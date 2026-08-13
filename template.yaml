@@ -2017,16 +2017,19 @@ Resources:
             Name: bowling-scraper-bowlerdepot-reconciliation-daily
             Description: Coverage + accuracy check against BowlerDepot's BigCommerce catalog for every published current product.
             Enabled: true
-      # Enabled: false on purpose, unlike BowwwlCrossCheckFunction's
-      # schedule -- that one no-ops harmlessly with just DbSecretArn (no
-      # matching products = an empty result, not an error), but this
-      # function's very first line calls get_bigcommerce_credentials(),
-      # which will hard-fail every single day against
-      # BigCommerceSecretArn's default blank value. Flip this to true once
-      # a real BowlerDepot store account/API token is wired up (see the
-      # BigCommerceSecretArn parameter description) -- until then, a
-      # disabled-but-defined schedule is more honest than one that's
-      # "on" but guaranteed to error on every invocation.
+      # Enabled: true assumes a real BigCommerceSecretArn is supplied at
+      # deploy time (see that parameter's description) -- unlike
+      # BowwwlCrossCheckFunction's schedule, which no-ops harmlessly with
+      # just DbSecretArn (no matching products = an empty result, not an
+      # error), this function's very first line calls
+      # get_bigcommerce_credentials(), which will hard-fail every single
+      # day if BigCommerceSecretArn is left at its default blank value
+      # (the IAM grant above is conditional on HasBigCommerceSecret too,
+      # so a blank ARN means the Lambda can't even read the secret it's
+      # trying to fetch). A real store_hash/auth_token secret + ARN now
+      # exist for this deployment (see DEPLOY_RUNBOOK.md step 3) -- if
+      # you're deploying without one, flip this back to false rather than
+      # leave a schedule that's guaranteed to error on every invocation.
 
   # --- Price tracking (migration 014/015) ---
   #
@@ -2072,18 +2075,18 @@ Resources:
       # get_bigcommerce_credentials) -- same secret BowlerDepotReconciliation-
       # Function already reads, reused here rather than duplicated, since
       # both functions are hitting the same BowlerDepot BigCommerce store.
-      # Still unset (BigCommerceSecretArn defaults to "") until a real
-      # store account/API token is wired up -- see that parameter's own
-      # description and BowlerDepotReconciliationFunction's Enabled: true-
-      # but-guaranteed-to-error-without-it comment above. Unlike that
-      # function, this one's daily schedule doesn't hard-fail without real
-      # credentials: check_bigcommerce_sources/discover_bigcommerce_
-      # candidates only ever run against 'api'-fetch_method price_sites
-      # rows, and none exist yet (an admin has to create one first, same
-      # as any other price_sites row) -- so PriceCheckerFunction's own
-      # schedule stays safely Enabled: true today, scrape-only, and simply
-      # starts covering BowlerDepot too the moment both a real secret AND
-      # an 'api' price_sites row exist.
+      # A real store_hash/auth_token secret + ARN now exist for this
+      # deployment (see DEPLOY_RUNBOOK.md step 3) -- see that parameter's
+      # own description if deploying somewhere that doesn't have one yet.
+      # Unlike BowlerDepotReconciliationFunction, this function's daily
+      # schedule doesn't hard-fail without real credentials even when
+      # BigCommerceSecretArn IS left blank: check_bigcommerce_sources/
+      # discover_bigcommerce_candidates only ever run against
+      # 'api'-fetch_method price_sites rows, and none exist until an
+      # admin creates one (same as any other price_sites row) -- so
+      # PriceCheckerFunction's own schedule stays safely Enabled: true
+      # either way, scrape-only until both a real secret AND an 'api'
+      # price_sites row exist.
       Environment:
         Variables:
           BIGCOMMERCE_SECRET_ARN: !Ref BigCommerceSecretArn

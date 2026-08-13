@@ -96,10 +96,9 @@ Note the returned ARN -- this is `AdminApiTokenSecretArn`. Save `$TOKEN`
 itself too (not just the ARN) -- you'll need it in step 6's smoke tests
 and for any real client calling the admin API later.
 
-**BigCommerce credentials (optional, only for BowlerDepot reconciliation
--- skip this until you actually have a BowlerDepot store API token; the
-function that needs it ships with its schedule disabled by default for
-exactly this reason):**
+**BigCommerce credentials (required for both BowlerDepot reconciliation,
+6h, and the price tracker's BowlerDepot price/cost/stock source, 6o.5 --
+skip this if you don't want either of those two features running):**
 
 ```bash
 aws secretsmanager create-secret \
@@ -107,9 +106,18 @@ aws secretsmanager create-secret \
   --secret-string '{"store_hash":"<store-hash>","auth_token":"<api-token>"}'
 ```
 
-Note the returned ARN -- this is `BigCommerceSecretArn`, only needed once
-you're ready to flip `BowlerDepotReconciliationFunction`'s schedule on
-(step 7).
+Note the returned ARN -- this is `BigCommerceSecretArn`, shared by both
+`BowlerDepotReconciliationFunction` and `PriceCheckerFunction`.
+
+**A real secret + ARN already exist for this deployment**:
+`arn:aws:secretsmanager:us-west-1:563981859606:secret:bowling-scraper-bigcommerce-caCBX7`
+-- Al confirmed this in chat. Pass it as `BigCommerceSecretArn` at deploy
+time (step 5) rather than creating a new secret. This hasn't been
+independently verified against a real BigCommerce API call from this
+environment (no AWS CLI access in this sandbox) -- confirm the secret's
+actual `{store_hash, auth_token}` contents are correct before trusting
+either feature's output, same "verify before trusting" posture 6h's own
+step 3 already calls out for `CUSTOM_FIELD_NAME_CANDIDATES`.
 
 **YouTube Data API v3 key (optional, only for the video-enrichment feature
 -- skip until you're ready to try it):**
@@ -329,7 +337,7 @@ Here's what to give it:
 | `TrackBrandId` | Only if enabling Track | Track's id from step 4, else leave blank |
 | `EboniteStoreDomain` / `EboniteCollectionHandles` | No | Default to Ebonite's real domain/collection handles (confirmed live this session -- differs from both Hammer and Track, has a pro-performance tier but no upper-mid-performance) |
 | `EboniteBrandId` | Only if enabling Ebonite | Ebonite's id from step 4, else leave blank |
-| `BigCommerceSecretArn` | No | Leave blank until step 7's BowlerDepot rollout |
+| `BigCommerceSecretArn` | No, but recommended | `arn:aws:secretsmanager:us-west-1:563981859606:secret:bowling-scraper-bigcommerce-caCBX7` (see step 3) -- unlocks both 6h's BowlerDepot reconciliation and 6o.5's BowlerDepot price/cost/stock tracking; leave blank to skip both |
 
 Accept the SAM CLI's other prompts (stack name, region, confirm changes,
 allow IAM role creation) as appropriate for your environment. Once it
@@ -1690,16 +1698,19 @@ it's scheduled weekly specifically to keep load modest.
 
 ### 6h. BowlerDepot reconciliation -- only after step 3's BigCommerce secret exists
 
-Ships with its daily schedule `Enabled: false` on purpose. Once you have
-real BowlerDepot API credentials in Secrets Manager:
+Ships with its daily schedule `Enabled: true`, on the assumption a real
+`BigCommerceSecretArn` is supplied at deploy time (see that parameter's
+description in `template.yaml`) -- **a real secret + ARN already exist
+for this deployment**, see step 3. If you're deploying somewhere without
+real BowlerDepot API credentials yet, flip `Enabled: true` to `Enabled:
+false` on `BowlerDepotReconciliationFunction`'s `DailySchedule` event in
+`template.yaml` first -- otherwise it hard-fails daily calling
+`get_bigcommerce_credentials()` against a missing secret.
 
-1. Update the stack parameter: `sam deploy --guided` again (or
+1. Set the stack parameter: `sam deploy --guided` (or
    `--parameter-overrides BigCommerceSecretArn=<arn>` non-interactively),
    keeping every other parameter the same.
-2. Flip `Enabled: false` to `Enabled: true` on
-   `BowlerDepotReconciliationFunction`'s `DailySchedule` event in
-   `template.yaml`, then `sam build && sam deploy` again.
-3. Before trusting its accuracy-check output, verify
+2. Before trusting its accuracy-check output, verify
    `CUSTOM_FIELD_NAME_CANDIDATES` in
    `src/bowlerdepot_reconciliation/app.py` actually matches your real
    store's `custom_fields` names (pull one real product via the
@@ -4122,12 +4133,13 @@ uses (see step 3's "BigCommerce credentials" section) -- `template.yaml`
 wires `BIGCOMMERCE_SECRET_ARN` into `PriceCheckerFunction` the same
 conditional way it's wired into `BowlerDepotReconciliationFunction`
 (`HasBigCommerceSecret`), so nothing new to provision beyond what 6h
-already needs. **No real store_hash/API token exists in this project as
-of this writing** (same honesty note as 6h) -- `PriceCheckerFunction`'s
-existing scrape-only daily schedule is unaffected by that (it simply has
-no `'api'`-`fetch_method` `price_sites` row to act on yet), so this
-section can be smoke-tested the moment real credentials land without
-needing any other redeploy.
+already needs. **A real secret + ARN now exist for this deployment**
+(see step 3) -- this section is ready to smoke-test once
+`BigCommerceSecretArn` is passed at deploy time. If you're deploying
+somewhere without real BowlerDepot API credentials, `PriceCheckerFunction`'s
+existing scrape-only daily schedule is unaffected either way (it simply
+has no `'api'`-`fetch_method` `price_sites` row to act on until step 1
+below is done).
 
 1. **Add BowlerDepot as an API-fetch-method Price Site.** Open the admin
    site's Price Sites tab, set "Fetch method" to API, and fill in:
