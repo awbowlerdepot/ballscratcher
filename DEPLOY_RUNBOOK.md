@@ -2668,6 +2668,59 @@ sam build VideoDiscoveryFunction
 sam deploy
 ```
 
+**Follow-up, real incident: admin-site batch size + bulk actions.** Al:
+"can we have the refresh stats button do more videos at a time, also the
+same check boxes and bulk actions on the video candidates page as we
+added to the review queue." Two independent, front-end-only asks against
+`admin-site/index.html` -- no `template.yaml`, migration, or backend
+change for either, since the admin API already supported everything the
+UI needed to start using.
+
+*Refresh stats batch size.* The button's `refreshVideoStats()` was
+calling `POST /admin/refresh-video-stats` with no params at all, so it
+fell through `service.queue_video_stats_refresh(limit=None)` to
+`video_discovery`'s own `DEFAULT_REFRESH_STATS_LIMIT = 200` every click --
+the same 200-row cap that was part of the original "video stats coming
+in slow" diagnosis above. `admin_api/app.py`'s route already accepted
+`limit: Optional[int] = Query(None, gt=0)`, so this needed no backend
+change: added a `#video-refresh-limit` number input next to the button
+(defaults to **1000**, matching the DailyStatsRefresh schedule's own
+limit so one manual click and one scheduled run move roughly the same
+amount of backlog) and `refreshVideoStats()` now reads it and passes
+`{ limit }` as a query param. `videos.list` isn't the quota-scarce
+resource (`search.list` is, see the original diagnosis above), so a
+larger default is safe.
+
+*Bulk select/approve/reject on Video Candidates.* Mirrors the Review
+Queue's bulk toolbar (see 6i's own Review Queue writeup / the
+`#review-bulk-toolbar` HTML comment) exactly, same pattern, same
+constraints: a `#video-bulk-toolbar` bar (select-all checkbox, selected-
+count badge, Approve selected/Reject selected buttons) that only shows
+when `videoState.status === 'pending'` and the current page has rows --
+approved/rejected candidates have nothing left to bulk-apply. Selection
+lives in `videoState.selected` (a `Set` of `product_videos` ids) and is
+reset on every `renderVideoCandidates` call, same reasoning as Review
+Queue's `reviewState.selected`: a filter/page change or a post-bulk-
+action reload all swap out which rows exist, so a stale selected-id set
+would either silently no-op or point at a since-resolved row.
+`bulkApproveVideos`/`bulkRejectVideos`/`runVideoBulkAction` loop over the
+existing per-id `POST /video-candidates/{id}/approve` and `/reject`
+endpoints **sequentially, not via `Promise.all`** -- identical posture to
+`runReviewBulkAction`, for the same reason (this project has already hit
+real API Gateway/Lambda throttling under bursts of concurrent admin_api
+calls). One reject-reason prompt is asked once and applied to every
+selected row, not once per row, same as Review Queue's bulk reject.
+
+No new tests: nothing in `src/` changed, this is admin-site JS/HTML
+only. Verified by extracting the page's `<script>` block and running
+`node -c` against it (syntax-only check, same trick used throughout this
+project's admin-site work) -- no functional JS test harness exists for
+admin-site.
+
+No deploy step beyond the usual static-file swap for `admin-site/
+index.html` (it's not part of any SAM stack -- see 6i's own admin-site
+section for how it's served).
+
 ### 6j. Home transcript fetcher (residential caption fetching) -- optional, run outside AWS entirely
 
 Real, live-tested finding this session (see

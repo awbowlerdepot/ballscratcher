@@ -289,8 +289,23 @@
       </div>
       <button class="btn" type="submit">Filter</button>
       <span id="video-pending-badge" class="badge pending"></span>
+      <input id="video-refresh-limit" type="number" min="1" step="1" value="1000" style="width:80px;" title="Max candidates to refresh per click (defaults to 1000, same batch size as the daily scheduled refresh)">
       <button class="btn small ghost" type="button" onclick="refreshVideoStats()" title="Re-pull current view/like/comment counts for existing candidates (runs in the background -- check CloudWatch for results)">Refresh stats</button>
     </form>
+    <!-- Bulk approve/reject -- Al: "the same check boxes and bulk actions
+         on the video candidates page as we added to the review queue".
+         Mirrors #review-bulk-toolbar exactly: only meaningful against
+         status=pending (approved/rejected rows have nothing left to do),
+         hidden by renderVideoCandidates for any other status filter.
+         Selection lives in videoState.selected (a Set of video_candidate
+         ids) and is reset on every reload for the same reason
+         reviewState.selected is -- see renderVideoCandidates. -->
+    <div id="video-bulk-toolbar" class="filters" style="display:none; margin-bottom:10px;">
+      <label class="checkbox"><input id="video-select-all" type="checkbox" onchange="toggleSelectAllVideos(this.checked)"> Select all shown</label>
+      <span id="video-selected-count" class="badge muted">0 selected</span>
+      <button id="video-approve-selected" type="button" class="btn small ok" onclick="bulkApproveVideos()" disabled>Approve selected</button>
+      <button id="video-reject-selected" type="button" class="btn small danger" onclick="bulkRejectVideos()" disabled>Reject selected</button>
+    </div>
     <div id="video-list"><p class="muted">Set your API URL and token above, then this loads automatically.</p></div>
     <div class="pager">
       <button id="video-prev" onclick="videoPage(-1)" disabled>&larr; Prev</button>
@@ -885,7 +900,7 @@ async function rejectReview(id) {
 // --------------------------------------------------------------------
 // Video Candidates tab
 // --------------------------------------------------------------------
-const videoState = { status: 'pending', productId: '', offset: 0, limit: 50, lastCount: 0 };
+const videoState = { status: 'pending', productId: '', offset: 0, limit: 50, lastCount: 0, selected: new Set() };
 
 function applyVideoFilters() {
   videoState.status = document.getElementById('video-status').value;
@@ -914,14 +929,30 @@ async function loadVideoCandidates() {
 
 function renderVideoCandidates(items, pendingCount) {
   videoState.lastCount = items.length;
+  // Reset selection on every reload -- same reasoning as
+  // renderReviewQueue's reviewState.selected reset: a filter change, page
+  // change, or post-bulk-action refresh all swap out which rows exist.
+  videoState.selected = new Set();
+
   const badge = document.getElementById('video-pending-badge');
   badge.textContent = pendingCount !== undefined && pendingCount !== null ? pendingCount + ' pending' : '';
+
+  // Bulk toolbar only makes sense against the pending view, same as
+  // Review Queue's.
+  const showBulk = videoState.status === 'pending' && items.length > 0;
+  document.getElementById('video-bulk-toolbar').style.display = showBulk ? 'flex' : 'none';
+  const selectAllBox = document.getElementById('video-select-all');
+  if (selectAllBox) selectAllBox.checked = false;
 
   const listEl = document.getElementById('video-list');
   if (!items.length) {
     listEl.innerHTML = '<p class="muted">No items.</p>';
   } else {
+    const checkboxHeader = showBulk ? '<th style="width:26px;"></th>' : '';
     const rows = items.map(function (v) {
+      const checkboxCell = showBulk
+        ? '<td><input type="checkbox" class="video-select" data-id="' + v.id + '" onchange="toggleVideoSelect(\'' + v.id + '\', this.checked)"></td>'
+        : '';
       const statusCell = v.status === 'pending'
         ? '<button class="btn small" onclick="approveVideo(\'' + v.id + '\')">Approve</button>' +
           '<button class="btn small danger" onclick="rejectVideo(\'' + v.id + '\')">Reject</button>'
@@ -937,6 +968,7 @@ function renderVideoCandidates(items, pendingCount) {
       const publishedText = v.published_at ? ' &middot; published ' + fmtDate(v.published_at) : '';
       const statsTooltip = v.stats_fetched_at ? 'Stats as of ' + fmtDate(v.stats_fetched_at) : 'View count never fetched';
       return '<tr>' +
+        checkboxCell +
         '<td><a href="https://www.youtube.com/watch?v=' + encodeURIComponent(v.youtube_video_id) + '" target="_blank" rel="noopener">' + escapeHtml(v.title) + '</a>' +
         '<div class="muted small">' + escapeHtml(v.channel_title || '') + durationText + publishedText + '</div></td>' +
         '<td>' + escapeHtml(v.product_name) + '<div class="muted small">' + escapeHtml(v.brand_name || '') + '</div></td>' +
@@ -950,13 +982,102 @@ function renderVideoCandidates(items, pendingCount) {
         '<button class="btn small ghost danger" onclick="deleteVideo(\'' + v.id + '\')">Delete</button>' +
         '<button class="btn small ghost" onclick="toggleVideoDetail(\'' + v.id + '\')">Detail</button></td>' +
         '</tr>' +
-        '<tr id="video-detail-' + v.id + '" class="detail-row hidden"><td colspan="7"></td></tr>';
+        '<tr id="video-detail-' + v.id + '" class="detail-row hidden"><td colspan="' + (showBulk ? 8 : 7) + '"></td></tr>';
     }).join('');
-    listEl.innerHTML = '<table><thead><tr><th>Video</th><th>Product</th><th>Views</th><th>Match</th><th>Summarized</th><th>Created</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    listEl.innerHTML = '<table><thead><tr>' + checkboxHeader + '<th>Video</th><th>Product</th><th>Views</th><th>Match</th><th>Summarized</th><th>Created</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
   document.getElementById('video-prev').disabled = videoState.offset === 0;
   document.getElementById('video-next').disabled = videoState.lastCount < videoState.limit;
   document.getElementById('video-page-label').textContent = items.length ? ('showing ' + (videoState.offset + 1) + '–' + (videoState.offset + items.length)) : '';
+  updateVideoBulkToolbar();
+}
+
+// --- Bulk select/approve/reject -- mirrors the Review Queue bulk toolbar
+// above (see #video-bulk-toolbar's own comment in the HTML for the
+// request this answers: "the same check boxes and bulk actions on the
+// video candidates page as we added to the review queue").
+
+function toggleSelectAllVideos(checked) {
+  document.querySelectorAll('.video-select').forEach(function (cb) {
+    cb.checked = checked;
+    if (checked) videoState.selected.add(cb.dataset.id);
+    else videoState.selected.delete(cb.dataset.id);
+  });
+  updateVideoBulkToolbar();
+}
+
+function toggleVideoSelect(id, checked) {
+  if (checked) videoState.selected.add(id);
+  else videoState.selected.delete(id);
+  updateVideoBulkToolbar();
+}
+
+function updateVideoBulkToolbar() {
+  const n = videoState.selected.size;
+  const countEl = document.getElementById('video-selected-count');
+  if (countEl) countEl.textContent = n + ' selected';
+  const approveBtn = document.getElementById('video-approve-selected');
+  const rejectBtn = document.getElementById('video-reject-selected');
+  if (approveBtn) approveBtn.disabled = n === 0;
+  if (rejectBtn) rejectBtn.disabled = n === 0;
+  const selectAllBox = document.getElementById('video-select-all');
+  if (selectAllBox) {
+    const boxes = document.querySelectorAll('.video-select');
+    selectAllBox.checked = boxes.length > 0 && n === boxes.length;
+  }
+}
+
+async function bulkApproveVideos() {
+  const by = getSettings().resolvedBy;
+  if (!by) { toast('Set "Your name" in Settings first.', true); return; }
+  const ids = Array.from(videoState.selected);
+  if (!ids.length) return;
+  if (!confirm('Approve ' + ids.length + ' selected video' + (ids.length === 1 ? '' : 's') + '? This queues ' + (ids.length === 1 ? 'it' : 'them') + ' for transcript+summary.')) return;
+  await runVideoBulkAction(ids, 'approve', by);
+}
+
+async function bulkRejectVideos() {
+  const by = getSettings().resolvedBy;
+  if (!by) { toast('Set "Your name" in Settings first.', true); return; }
+  const ids = Array.from(videoState.selected);
+  if (!ids.length) return;
+  // One reason prompt applied to every selected row, same as Review
+  // Queue's bulk reject -- asking per-item would defeat the point.
+  const reason = prompt('Reason for rejecting all ' + ids.length + ' selected video(s) (optional, applied to all):');
+  if (reason === null) return;
+  await runVideoBulkAction(ids, 'reject', by, reason || undefined);
+}
+
+// Sequential, deliberately not Promise.all -- same posture as
+// runReviewBulkAction (see its own comment above) to avoid the
+// API Gateway/Lambda throttling this project has already hit under
+// bursts of concurrent admin_api calls.
+async function runVideoBulkAction(ids, action, resolvedBy, reason) {
+  const approveBtn = document.getElementById('video-approve-selected');
+  const rejectBtn = document.getElementById('video-reject-selected');
+  if (approveBtn) approveBtn.disabled = true;
+  if (rejectBtn) rejectBtn.disabled = true;
+
+  let ok = 0, failed = 0;
+  try {
+    for (const id of ids) {
+      try {
+        if (action === 'approve') {
+          await api('POST', '/video-candidates/' + id + '/approve', { body: { resolved_by: resolvedBy } });
+        } else {
+          await api('POST', '/video-candidates/' + id + '/reject', { body: { resolved_by: resolvedBy, reason: reason } });
+        }
+        ok++;
+      } catch (e) {
+        failed++;
+      }
+      toast((action === 'approve' ? 'Approving' : 'Rejecting') + ' ' + (ok + failed) + '/' + ids.length + '…');
+      await new Promise(function (r) { setTimeout(r, 300); });
+    }
+  } finally {
+    await loadVideoCandidates();  // clears+re-renders selection and re-enables the buttons via updateVideoBulkToolbar
+  }
+  toast(ok + ' ' + (action === 'approve' ? 'approved' : 'rejected') + (failed ? ', ' + failed + ' failed (still pending -- retry them)' : ''), failed > 0);
 }
 
 async function toggleVideoDetail(id) {
@@ -1010,8 +1131,24 @@ async function refreshVideoStats() {
   // list right away won't show them yet, hence the toast saying so
   // rather than an auto-refresh that would look like it silently did
   // nothing.
+  //
+  // Al: "can we have the refresh stats button do more videos at a time".
+  // Previously this called the endpoint with no limit param at all, which
+  // falls through to admin_api's queue_video_stats_refresh(limit=None) ->
+  // video_discovery's own DEFAULT_REFRESH_STATS_LIMIT=200. The
+  // #video-refresh-limit input next to the button lets Al raise that per
+  // click instead of only getting 200 back-of-the-queue rows every time --
+  // defaults to 1000 to match the DailyStatsRefresh schedule's own limit
+  // (see template.yaml) so "one manual click" and "one scheduled run" move
+  // roughly the same amount of backlog. videos.list isn't the
+  // quota-scarce resource here (search.list is), so a larger limit is
+  // safe -- see this session's earlier "video stats coming in slow"
+  // diagnosis in DEPLOY_RUNBOOK.md.
+  const limitInput = document.getElementById('video-refresh-limit');
+  const limitValue = limitInput ? parseInt(limitInput.value, 10) : NaN;
+  const params = Number.isFinite(limitValue) && limitValue > 0 ? { limit: limitValue } : undefined;
   try {
-    const result = await api('POST', '/admin/refresh-video-stats');
+    const result = await api('POST', '/admin/refresh-video-stats', params ? { params: params } : undefined);
     if (result.queued) {
       toast('Refreshing stats in the background -- reload this tab in a bit to see updated counts.');
     } else {
