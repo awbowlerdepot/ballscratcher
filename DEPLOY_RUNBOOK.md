@@ -3172,6 +3172,51 @@ step itself can't be exercised in this sandbox (unrelated rollup native-
 binary issue, not a code problem). Run `npm run build` yourself before
 redeploying the consumer site.
 
+**Plotter hover-to-front + explode overlapping points (2026-08-12).** Al:
+"can you give me a feather to change the z index of the hovered ball on
+the plotter to be on top and also explode out the balls that are on top
+of each other if there are multiple with the same values in the
+plotter." Both purely `PlotterPage.tsx` rendering changes -- no backend
+or type changes needed, `p.oil`/`p.motion` themselves are never touched.
+
+- **Hover-to-front.** SVG has no independent `z-index` the way CSS box
+  layout does -- paint order is purely document order, so "on top" means
+  "drawn last". A new `renderOrder` (`useMemo`, depends on `visible` and
+  `hovered`) moves the hovered point to the end of the array the ball
+  markers map over, so it paints over every sibling regardless of the
+  underlying data order. Never changes which balls are plotted or where,
+  only which `<g>` element comes last in the DOM.
+- **Explode overlapping points.** Multiple balls landing on the exact
+  same `(oil, motion)` pair is common, not an edge case -- round-number
+  algorithmic estimates collide constantly (`estimate_oil_motion`
+  clamps/rounds to a plain integer scale, see `public_api/service.py`'s
+  own module comment), and chart/manual values aren't guaranteed unique
+  either. Stacked exactly on top of each other, only the last-painted one
+  was ever visible or clickable. A new `positions` map (`useMemo`,
+  depends on `visible` and `size`) groups points by their literal
+  `${oil}:${motion}` key; a group of one sits exactly on the true grid
+  position as before, a group of N>1 fans out evenly around it on a
+  ring. Ring radius is `(markerRadius / sin(pi/N)) * 1.15` -- the exact
+  radius at which N evenly-spaced points' circles are tangent (their
+  centers a full diameter apart), times a small buffer factor so they
+  end up with a visible gap rather than just touching edge-to-edge.
+  Verified numerically (not just by inspection) for group sizes 2/3/4/6/
+  10 at both the default and max size-slider settings -- every case
+  keeps adjacent markers at least one full diameter apart. Points within
+  a group are angle-assigned in a stable order (sorted by `id`) so a
+  re-render never reshuffles who's at which position in the ring.
+  Depends on `size`, not `hovered` -- hovering only changes which ball
+  paints last and its own `+5` radius bump (existing behavior,
+  untouched), it never reflows anyone's position.
+- Known, accepted gap (documented inline in `MARGIN`'s own comment): a
+  large exploded cluster sitting right in a plot corner can, in theory,
+  still push a member or two past the `<svg>` viewBox's padding and get
+  clipped. Needs both a same-position pile-up AND a corner grid position
+  at once -- rare enough, and clamping ring positions back into bounds
+  adds real complexity for a case that hasn't actually been observed.
+
+`npx tsc -b` typechecks clean.
+
 **Custom domain (`data.bowleriq.com`) on CloudFront:**
 
 CloudFront needs an ACM certificate that covers the domain, and that

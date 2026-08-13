@@ -32,7 +32,11 @@ const HEIGHT = 640;
 // clearance or it gets clipped by the <svg> root's own viewBox bounds
 // (SVG's default overflow: hidden crops anything drawn above y=0 or
 // below y=HEIGHT). 48/72 comfortably fit a hovered max-size ball at
-// either edge with room to spare.
+// either edge with room to spare. Known, accepted gap: a large exploded
+// cluster (see `positions` below) sitting right in a corner can still
+// push a member or two past this margin -- rare in practice (needs both
+// a same-position pile-up AND a corner grid position) and not worth the
+// extra complexity of clamping ring positions back into bounds for.
 const MARGIN = { top: 48, right: 24, bottom: 72, left: 56 };
 const OIL_MIN = 1;
 const OIL_MAX = 16;
@@ -110,6 +114,70 @@ export default function PlotterPage() {
     () => points.filter((p) => enabledBrands.has(p.brand_name)),
     [points, enabledBrands],
   );
+
+  // Multiple balls can land on the exact same (oil, motion) position --
+  // round-number estimates collide constantly, and chart/manual values
+  // aren't guaranteed unique either. Stacked exactly on top of each
+  // other, only the last-drawn one would ever be visible or clickable.
+  // Al: "explode out the balls that are on top of each other if there
+  // are multiple with the same values." Groups by the literal oil/motion
+  // pair and, for any group bigger than one, fans its members out evenly
+  // around the true grid position on a small ring. Depends on `size`
+  // (not `hovered`) -- the ring has to grow with the marker diameter the
+  // slider controls, but a hover shouldn't reflow anyone's position, only
+  // which one paints on top (see renderOrder below) and its own radius.
+  // p.oil/p.motion themselves (used everywhere else: tooltip, title,
+  // click-through) are never touched -- this is purely a render position.
+  const positions = useMemo(() => {
+    const groups = new Map<string, PlotterPoint[]>();
+    for (const p of visible) {
+      const key = `${p.oil}:${p.motion}`;
+      const group = groups.get(key);
+      if (group) group.push(p);
+      else groups.set(key, [p]);
+    }
+
+    const radius = size / 2;
+    const result = new Map<string, { cx: number; cy: number }>();
+    for (const group of groups.values()) {
+      const baseCx = xFor(group[0].oil);
+      const baseCy = yFor(group[0].motion);
+      if (group.length === 1) {
+        result.set(group[0].id, { cx: baseCx, cy: baseCy });
+        continue;
+      }
+      // Stable order (by id) so a re-render never reshuffles which ball
+      // lands at which angle in the ring.
+      const ordered = [...group].sort((a, b) => a.id.localeCompare(b.id));
+      const n = ordered.length;
+      // radius / sin(pi/n) is the ring size at which adjacent markers'
+      // circles are exactly tangent (their centers end up a full
+      // diameter apart) -- the 1.15 factor adds a small visible gap
+      // instead of leaving them just touching edge-to-edge.
+      const explodeRadius = (radius / Math.sin(Math.PI / n)) * 1.15;
+      ordered.forEach((p, i) => {
+        const angle = (2 * Math.PI * i) / n - Math.PI / 2; // start straight up, then clockwise
+        result.set(p.id, {
+          cx: baseCx + explodeRadius * Math.cos(angle),
+          cy: baseCy + explodeRadius * Math.sin(angle),
+        });
+      });
+    }
+    return result;
+  }, [visible, size]);
+
+  // Bring the hovered ball to front -- SVG paint order is purely
+  // document order (no independent z-index the way CSS box layout has),
+  // so "on top" means "rendered last". Al: "change the z index of the
+  // hovered ball on the plotter to be on top." Only reorders the array
+  // that gets mapped over below; never changes what's plotted or its
+  // computed position.
+  const renderOrder = useMemo(() => {
+    if (!hovered) return visible;
+    const rest = visible.filter((p) => p.id !== hovered.id);
+    const found = visible.find((p) => p.id === hovered.id);
+    return found ? [...rest, found] : visible;
+  }, [visible, hovered]);
 
   function toggleBrand(name: string) {
     setEnabledBrands((prev) => {
@@ -254,10 +322,17 @@ export default function PlotterPage() {
                 a circle, standing in for the original's rounded <img>
                 markers. A plain filled circle is the fallback for a
                 product with no image yet (see BrowsePage's identical
-                placeholder reasoning). */}
-            {visible.map((p) => {
-              const cx = xFor(p.oil);
-              const cy = yFor(p.motion);
+                placeholder reasoning). Mapped over renderOrder (not
+                visible directly) so the hovered ball paints last/on top
+                -- see renderOrder's own comment. Position comes from the
+                precomputed `positions` map (see its own comment) rather
+                than xFor/yFor directly, so balls sharing an exact oil/
+                motion value fan out instead of stacking exactly on top
+                of each other. */}
+            {renderOrder.map((p) => {
+              const pos = positions.get(p.id)!;
+              const cx = pos.cx;
+              const cy = pos.cy;
               const radius = size / 2;
               const r = hovered?.id === p.id ? radius + 5 : radius;
               const clipId = `plotter-clip-${p.id}`;
