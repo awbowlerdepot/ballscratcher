@@ -3117,6 +3117,50 @@ credentials" step in `.github/workflows/deploy-consumer-site.yml`,
 rather than widening the trust policy (and needing another `sam
 deploy`) for a capability nothing here needs.
 
+**Real incident, second round of the exact same error message.** Same
+`Not authorized to perform sts:AssumeRoleWithWebIdentity`, confirmed via
+the debug log that session tagging really was off this time
+(`Role session tagging has been skipped.`) -- so this was a second,
+unrelated cause hiding behind an identical error. Rather than keep
+guessing from AWS-side config (already verified correct twice), added a
+temporary step to the workflow that requests the same OIDC token the
+credentials step requests and decodes+prints its payload (`core.
+getIDToken('sts.amazonaws.com')`, then `JSON.parse(Buffer.from(token.
+split('.')[1], 'base64').toString())` -- only the payload gets logged,
+the signature never does). That showed the actual `sub` claim GitHub was
+sending: `repo:awbowlerdepot@68925487/ballscratcher@1316941668:ref:refs/
+heads/main`, not the plain `repo:awbowlerdepot/ballscratcher:ref:refs/
+heads/main` the trust policy's exact `StringLike` match assumed.
+
+GitHub now appends each owner's and repo's numeric "immutable ID" to
+their names in the sub claim -- a security hardening on GitHub's side so
+a trust policy written against an old owner/repo name can't get
+inherited by a renamed, transferred, or deleted-and-recreated repo that
+reused the name. `ConsumerSiteDeployRole`'s `StringLike` condition in
+`template.yaml` now wildcards right after the owner and repo name
+specifically (not the whole `owner/repo` value -- the `@id` lands
+*inside* it, before the `/`), built via `!Split`/`!Select` on
+`GitHubRepo` rather than hardcoding this repo's specific numeric IDs:
+
+```yaml
+StringLike:
+  token.actions.githubusercontent.com:sub:
+    !Sub
+    - "repo:${Owner}*/${Repo}*:ref:refs/heads/main"
+    - Owner: !Select [0, !Split ["/", !Ref GitHubRepo]]
+      Repo: !Select [1, !Split ["/", !Ref GitHubRepo]]
+```
+
+This matches the sub claim whether or not GitHub includes the `@id`
+suffix, so it keeps working if GitHub ever changes the default back.
+**Unlike the session-tagging fix, this one is an IAM resource change --
+it needs a real `sam deploy` to take effect, not just a push.** The
+temporary debug step has been removed from the workflow now that the
+mismatch is found; the CFN-tolerant YAML loader confirms `template.yaml`
+still parses (53 resources, 38 outputs) with the new condition resolving
+to the expected nested `Fn::Sub`/`Fn::Select`/`Fn::Split`/`Fn::Ref`
+structure.
+
 **Hosting infra** (`template.yaml`): private `ConsumerSiteBucket` (S3,
 all public access blocked) behind `ConsumerSiteDistribution`
 (CloudFront) via Origin Access Control -- not the older OAI, and not

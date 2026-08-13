@@ -2148,8 +2148,28 @@ Resources:
               # security boundary here, not an accident of the claim
               # format. workflow_dispatch (manual trigger) on main also
               # satisfies this same sub claim, so that stays usable too.
+              #
+              # Real incident: an exact repo:OWNER/REPO:ref:refs/heads/main
+              # match rejected every run with "Not authorized to perform
+              # sts:AssumeRoleWithWebIdentity", confirmed (via a debug step
+              # decoding the actual token) to be because GitHub now appends
+              # each owner/repo's numeric "immutable ID" to its name in the
+              # sub claim -- e.g. awbowlerdepot@68925487/ballscratcher@
+              # 1316941668, not just awbowlerdepot/ballscratcher (a GitHub
+              # security hardening: prevents a renamed/transferred/deleted-
+              # and-recreated repo from inheriting a stale trust policy
+              # written against the old name). Wildcarding right after the
+              # owner and repo names -- not the whole GitHubRepo value, the
+              # "@id" lands *inside* it, before the "/" -- matches whether
+              # or not that suffix is present, so this keeps working if
+              # GitHub ever changes the default back, and doesn't hardcode
+              # this repo's specific numeric IDs.
               StringLike:
-                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubRepo}:ref:refs/heads/main
+                token.actions.githubusercontent.com:sub:
+                  !Sub
+                  - "repo:${Owner}*/${Repo}*:ref:refs/heads/main"
+                  - Owner: !Select [0, !Split ["/", !Ref GitHubRepo]]
+                    Repo: !Select [1, !Split ["/", !Ref GitHubRepo]]
       # Least-privilege, scoped to exactly what deploy-consumer-site.yml's
       # two real steps need -- nothing broader like sam deploy/
       # cloudformation:* here on purpose. A separate, human-run deploy
