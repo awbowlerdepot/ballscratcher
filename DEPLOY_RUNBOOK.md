@@ -2153,6 +2153,44 @@ whenever it next runs.
     list until a real source turns up (see 003's own comment on that
     reserved column).
 
+**Bulk approve/reject in the Review Queue tab (2026-08-12).** Al: "can we
+add a bulk way to approve or reject items in the review queue, maybe a
+checkbox that then allows for a reject all or approve all." Frontend-only
+change, no new `admin_api` endpoint -- `service.approve_review_item`/
+`reject_review_item` already operate one row at a time, so this is a
+client-side loop over the existing `POST /review-queue/{id}/approve` and
+`.../reject` calls, not a new bulk backend route.
+
+- The Review Queue tab (`status=pending` only -- see below) now shows a
+  checkbox column, a header "Select all shown" checkbox, a live "N
+  selected" count, and "Approve selected" / "Reject selected" buttons in
+  a toolbar row above the table (`#review-bulk-toolbar`). Selection lives
+  in `reviewState.selected` (a `Set` of `review_queue` row ids) and is
+  reset on every reload -- filtering, paging, or a bulk action finishing
+  all swap out which rows are on screen, so a stale selection would
+  either silently no-op or point at an already-resolved row.
+- The toolbar and checkbox column only render when `reviewState.status
+  === 'pending'` -- approved/rejected rows have no action left to
+  bulk-apply, so there's nothing to select there.
+- "Reject selected" prompts once for a reason applied to every selected
+  row (not once per row -- a per-item prompt would defeat the point of a
+  bulk action). "Approve selected" confirms the count before applying.
+- **Sequential, not `Promise.all`** -- deliberately mirrors every
+  `scripts/backfill_*.py` script in this project, all of which retry-
+  with-backoff for the same reason: a burst of concurrent `admin_api`
+  calls has already been observed (this session, unrelated feature) to
+  silently corrupt some responses under API Gateway/Lambda throttling.
+  `runReviewBulkAction` in `admin-site/index.html` fires one approve/
+  reject call at a time with a 300ms pause between, tracks
+  ok/failed counts, and reports a single toast summary at the end (e.g.
+  "12 approved, 1 failed (still pending -- retry them)") rather than
+  either blocking with no feedback or firing everything at once. A
+  per-item failure doesn't stop the rest of the batch -- same "tolerate
+  and keep going" posture as the batch scripts' own `run()` functions.
+- No `template.yaml` or `service.py`/`app.py` change -- this only touches
+  `admin-site/index.html`, which has no redeploy step (static file, open
+  directly or serve locally per this section's own CORS notes above).
+
 **Video candidates + rescan in the product detail view.** Al: "can we
 add the video candidates for products into the product details view. i
 think having them there is a good idea. also if we could add a button

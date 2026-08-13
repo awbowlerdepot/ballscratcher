@@ -249,6 +249,21 @@
       <button class="btn" type="submit">Filter</button>
       <span id="review-pending-badge" class="badge pending"></span>
     </form>
+    <!-- Bulk approve/reject -- Al: "can we add a bulk way to approve or
+         reject items in the review queue, maybe a checkbox that then
+         allows for a reject all or approve all". Only meaningful when
+         viewing status=pending (approved/rejected rows have nothing left
+         to do), so this whole bar is hidden by renderReviewQueue for any
+         other status filter. Selection lives in reviewState.selected (a
+         Set of review_queue ids) and is intentionally reset on every
+         reload -- see renderReviewQueue -- since a page/filter change
+         swaps out which rows exist entirely. -->
+    <div id="review-bulk-toolbar" class="filters" style="display:none; margin-bottom:10px;">
+      <label class="checkbox"><input id="review-select-all" type="checkbox" onchange="toggleSelectAllReviews(this.checked)"> Select all shown</label>
+      <span id="review-selected-count" class="badge muted">0 selected</span>
+      <button id="review-approve-selected" type="button" class="btn small ok" onclick="bulkApproveReviews()" disabled>Approve selected</button>
+      <button id="review-reject-selected" type="button" class="btn small danger" onclick="bulkRejectReviews()" disabled>Reject selected</button>
+    </div>
     <div id="review-list"><p class="muted">Set your API URL and token above, then this loads automatically.</p></div>
     <div class="pager">
       <button id="review-prev" onclick="reviewPage(-1)" disabled>&larr; Prev</button>
@@ -642,7 +657,7 @@ function loadActiveTab() {
 // --------------------------------------------------------------------
 // Review Queue tab
 // --------------------------------------------------------------------
-const reviewState = { status: 'pending', productId: '', offset: 0, limit: 50, lastCount: 0 };
+const reviewState = { status: 'pending', productId: '', offset: 0, limit: 50, lastCount: 0, selected: new Set() };
 
 function applyReviewFilters() {
   reviewState.status = document.getElementById('review-status').value;
@@ -671,19 +686,37 @@ async function loadReviewQueue() {
 
 function renderReviewQueue(items, pendingCount) {
   reviewState.lastCount = items.length;
+  // Reset selection on every reload -- a filter change, page change, or
+  // post-bulk-action refresh all swap out which rows exist, so a stale
+  // selected id set would either silently no-op or (worse) point at a
+  // since-resolved row. See toggleSelectAllReviews/toggleReviewSelect.
+  reviewState.selected = new Set();
+
   const badge = document.getElementById('review-pending-badge');
   badge.textContent = pendingCount !== undefined && pendingCount !== null ? pendingCount + ' pending' : '';
+
+  // Bulk toolbar only makes sense against the pending view -- approved/
+  // rejected rows have no action left to bulk-apply.
+  const showBulk = reviewState.status === 'pending' && items.length > 0;
+  document.getElementById('review-bulk-toolbar').style.display = showBulk ? 'flex' : 'none';
+  const selectAllBox = document.getElementById('review-select-all');
+  if (selectAllBox) selectAllBox.checked = false;
 
   const listEl = document.getElementById('review-list');
   if (!items.length) {
     listEl.innerHTML = '<p class="muted">No items.</p>';
   } else {
+    const checkboxHeader = showBulk ? '<th style="width:26px;"></th>' : '';
     const rows = items.map(function (item) {
+      const checkboxCell = showBulk
+        ? '<td><input type="checkbox" class="review-select" data-id="' + item.id + '" onchange="toggleReviewSelect(\'' + item.id + '\', this.checked)"></td>'
+        : '';
       const actions = item.status === 'pending'
         ? '<button class="btn small" onclick="approveReview(\'' + item.id + '\')">Approve</button>' +
           '<button class="btn small danger" onclick="rejectReview(\'' + item.id + '\')">Reject</button>'
         : '<span class="badge ' + escapeHtml(item.status) + '">' + escapeHtml(item.status) + '</span>';
       return '<tr>' +
+        checkboxCell +
         '<td><a href="' + escapeHtml(item.product_url || '#') + '" target="_blank" rel="noopener">' + escapeHtml(item.product_name) + '</a></td>' +
         '<td class="mono">' + escapeHtml(item.field_name) + '</td>' +
         '<td class="mono">' + escapeHtml(item.current_value === null ? '—' : item.current_value) + '</td>' +
@@ -694,11 +727,101 @@ function renderReviewQueue(items, pendingCount) {
         '<td class="actions">' + actions + '</td>' +
         '</tr>';
     }).join('');
-    listEl.innerHTML = '<table><thead><tr><th>Product</th><th>Field</th><th>Current</th><th>Proposed</th><th>Source</th><th>Reason</th><th>Created</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    listEl.innerHTML = '<table><thead><tr>' + checkboxHeader + '<th>Product</th><th>Field</th><th>Current</th><th>Proposed</th><th>Source</th><th>Reason</th><th>Created</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
   document.getElementById('review-prev').disabled = reviewState.offset === 0;
   document.getElementById('review-next').disabled = reviewState.lastCount < reviewState.limit;
   document.getElementById('review-page-label').textContent = items.length ? ('showing ' + (reviewState.offset + 1) + '–' + (reviewState.offset + items.length)) : '';
+  updateReviewBulkToolbar();
+}
+
+// --- Bulk select/approve/reject -- see review-bulk-toolbar's own comment
+// in the HTML above for the request this answers.
+
+function toggleSelectAllReviews(checked) {
+  document.querySelectorAll('.review-select').forEach(function (cb) {
+    cb.checked = checked;
+    if (checked) reviewState.selected.add(cb.dataset.id);
+    else reviewState.selected.delete(cb.dataset.id);
+  });
+  updateReviewBulkToolbar();
+}
+
+function toggleReviewSelect(id, checked) {
+  if (checked) reviewState.selected.add(id);
+  else reviewState.selected.delete(id);
+  updateReviewBulkToolbar();
+}
+
+function updateReviewBulkToolbar() {
+  const n = reviewState.selected.size;
+  const countEl = document.getElementById('review-selected-count');
+  if (countEl) countEl.textContent = n + ' selected';
+  const approveBtn = document.getElementById('review-approve-selected');
+  const rejectBtn = document.getElementById('review-reject-selected');
+  if (approveBtn) approveBtn.disabled = n === 0;
+  if (rejectBtn) rejectBtn.disabled = n === 0;
+  const selectAllBox = document.getElementById('review-select-all');
+  if (selectAllBox) {
+    const boxes = document.querySelectorAll('.review-select');
+    selectAllBox.checked = boxes.length > 0 && n === boxes.length;
+  }
+}
+
+async function bulkApproveReviews() {
+  const by = getSettings().resolvedBy;
+  if (!by) { toast('Set "Your name" in Settings first.', true); return; }
+  const ids = Array.from(reviewState.selected);
+  if (!ids.length) return;
+  if (!confirm('Approve ' + ids.length + ' selected change' + (ids.length === 1 ? '' : 's') + ' and apply them to their products?')) return;
+  await runReviewBulkAction(ids, 'approve', by);
+}
+
+async function bulkRejectReviews() {
+  const by = getSettings().resolvedBy;
+  if (!by) { toast('Set "Your name" in Settings first.', true); return; }
+  const ids = Array.from(reviewState.selected);
+  if (!ids.length) return;
+  // One reason prompt applied to every selected row, not one per row --
+  // asking per-item would defeat the point of a bulk action.
+  const reason = prompt('Reason for rejecting all ' + ids.length + ' selected item(s) (optional, applied to all):');
+  if (reason === null) return;
+  await runReviewBulkAction(ids, 'reject', by, reason || undefined);
+}
+
+// Sequential, deliberately not Promise.all -- this project has already hit
+// real API Gateway/Lambda throttling that silently corrupted responses
+// under a burst of concurrent admin_api calls (see this file's sibling
+// scripts/*.py backfill tools, all of which retry-with-backoff for the
+// same reason). A bulk approve/reject of, say, 30 rows fires them one at
+// a time with a short pause between, same posture as those scripts, not
+// 30 at once.
+async function runReviewBulkAction(ids, action, resolvedBy, reason) {
+  const approveBtn = document.getElementById('review-approve-selected');
+  const rejectBtn = document.getElementById('review-reject-selected');
+  if (approveBtn) approveBtn.disabled = true;
+  if (rejectBtn) rejectBtn.disabled = true;
+
+  let ok = 0, failed = 0;
+  try {
+    for (const id of ids) {
+      try {
+        if (action === 'approve') {
+          await api('POST', '/review-queue/' + id + '/approve', { body: { resolved_by: resolvedBy } });
+        } else {
+          await api('POST', '/review-queue/' + id + '/reject', { body: { resolved_by: resolvedBy, reason: reason } });
+        }
+        ok++;
+      } catch (e) {
+        failed++;
+      }
+      toast((action === 'approve' ? 'Approving' : 'Rejecting') + ' ' + (ok + failed) + '/' + ids.length + '…');
+      await new Promise(function (r) { setTimeout(r, 300); });
+    }
+  } finally {
+    await loadReviewQueue();  // clears+re-renders selection and re-enables the buttons via updateReviewBulkToolbar
+  }
+  toast(ok + ' ' + (action === 'approve' ? 'approved' : 'rejected') + (failed ? ', ' + failed + ' failed (still pending -- retry them)' : ''), failed > 0);
 }
 
 async function approveReview(id) {
