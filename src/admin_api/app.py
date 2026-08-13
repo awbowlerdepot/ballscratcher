@@ -246,6 +246,21 @@ def discover_videos(product_id: str):
         conn.close()
 
 
+@app.post("/admin/refresh-video-stats")
+def refresh_video_stats(limit: Optional[int] = Query(None, gt=0)):
+    # On-demand equivalent of a direct `aws lambda invoke
+    # bowling-scraper-video-discovery --payload '{"refresh_stats": true}'`
+    # -- see service.queue_video_stats_refresh's docstring. Catalog-wide
+    # by design (no path param): unlike discover-videos above, there's no
+    # single product this scopes to -- VideoDiscoveryFunction itself picks
+    # which product_videos rows are most overdue for a refresh. Optional
+    # ?limit= caps how many rows get re-pulled in this one invocation;
+    # omitted, VideoDiscoveryFunction falls back to its own
+    # DEFAULT_REFRESH_STATS_LIMIT. No conn/LookupError handling needed --
+    # unlike discover-videos, there's no product_id to validate.
+    return service.queue_video_stats_refresh(limit)
+
+
 @app.patch("/products/{product_id}/images/{image_id}")
 def update_product_image(product_id: str, image_id: str, body: ImageUpdateRequest):
     # Per-image visibility/thumbnail toggles (migration 010) -- see

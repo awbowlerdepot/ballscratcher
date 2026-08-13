@@ -289,6 +289,7 @@
       </div>
       <button class="btn" type="submit">Filter</button>
       <span id="video-pending-badge" class="badge pending"></span>
+      <button class="btn small ghost" type="button" onclick="refreshVideoStats()" title="Re-pull current view/like/comment counts for existing candidates (runs in the background -- check CloudWatch for results)">Refresh stats</button>
     </form>
     <div id="video-list"><p class="muted">Set your API URL and token above, then this loads automatically.</p></div>
     <div class="pager">
@@ -592,6 +593,29 @@ function fmtDateOnly(s) {
   return (MONTH_ABBR[mi] || m) + ' ' + parseInt(d, 10) + ', ' + y;
 }
 
+// view_count/like_count/comment_count (migration 013) -- plain toLocaleString
+// grouping (e.g. "12,345") rather than a "12.3K" abbreviation, matching this
+// admin UI's existing preference elsewhere for exact numbers over
+// summarized ones. null/undefined means "never fetched, or YouTube didn't
+// disclose this count" (see video_discovery.parse_video_details_response's
+// own comment on why that's a real, distinct case from zero) -- rendered
+// as an em dash, same convention match_confidence already uses below for
+// its own null case.
+function fmtCount(n) {
+  return n === null || n === undefined ? '—' : Number(n).toLocaleString();
+}
+// duration_seconds (migration 013) -- YouTube's own mm:ss/h:mm:ss display
+// convention, not a raw seconds count.
+function fmtDuration(totalSeconds) {
+  if (totalSeconds === null || totalSeconds === undefined) return '—';
+  const h = Math.floor(totalSeconds / 3600);
+  const m = Math.floor((totalSeconds % 3600) / 60);
+  const s = Math.floor(totalSeconds % 60);
+  const mm = h > 0 ? String(m).padStart(2, '0') : String(m);
+  const ss = String(s).padStart(2, '0');
+  return h > 0 ? (h + ':' + mm + ':' + ss) : (mm + ':' + ss);
+}
+
 // Real ask from Al: he's seeing data issues in the admin UI he suspects
 // trace back to the scrapers, and wants every DB column visible, not just
 // whatever each hand-curated view happened to render, so gaps are visible
@@ -891,10 +915,22 @@ function renderVideoCandidates(items, pendingCount) {
         ? '<button class="btn small" onclick="approveVideo(\'' + v.id + '\')">Approve</button>' +
           '<button class="btn small danger" onclick="rejectVideo(\'' + v.id + '\')">Reject</button>'
         : '<span class="badge ' + escapeHtml(v.status) + '">' + escapeHtml(v.status) + '</span>';
+      // Published date + duration folded into the same muted subtext
+      // line as channel_title rather than their own columns -- keeps the
+      // table from getting too wide; views gets its own column since
+      // it's the number an admin is actually scanning for (Al: "current
+      // view counts"). stats_fetched_at shown as a title= tooltip on the
+      // views figure so "how current is this" is one hover away without
+      // taking more table width.
+      const durationText = v.duration_seconds !== null && v.duration_seconds !== undefined ? ' &middot; ' + fmtDuration(v.duration_seconds) : '';
+      const publishedText = v.published_at ? ' &middot; published ' + fmtDate(v.published_at) : '';
+      const statsTooltip = v.stats_fetched_at ? 'Stats as of ' + fmtDate(v.stats_fetched_at) : 'View count never fetched';
       return '<tr>' +
         '<td><a href="https://www.youtube.com/watch?v=' + encodeURIComponent(v.youtube_video_id) + '" target="_blank" rel="noopener">' + escapeHtml(v.title) + '</a>' +
-        '<div class="muted small">' + escapeHtml(v.channel_title || '') + '</div></td>' +
+        '<div class="muted small">' + escapeHtml(v.channel_title || '') + durationText + publishedText + '</div></td>' +
         '<td>' + escapeHtml(v.product_name) + '<div class="muted small">' + escapeHtml(v.brand_name || '') + '</div></td>' +
+        '<td title="' + escapeHtml(statsTooltip) + '">' + fmtCount(v.view_count) +
+        '<div class="muted small">' + fmtCount(v.like_count) + ' likes &middot; ' + fmtCount(v.comment_count) + ' comments</div></td>' +
         '<td>' + (v.match_confidence !== null && v.match_confidence !== undefined ? Number(v.match_confidence).toFixed(2) : '—') + '</td>' +
         '<td>' + (v.has_summary ? '<span class="badge ok">yes</span>' : '<span class="badge muted">no</span>') + '</td>' +
         '<td>' + fmtDate(v.created_at) + '</td>' +
@@ -903,9 +939,9 @@ function renderVideoCandidates(items, pendingCount) {
         '<button class="btn small ghost danger" onclick="deleteVideo(\'' + v.id + '\')">Delete</button>' +
         '<button class="btn small ghost" onclick="toggleVideoDetail(\'' + v.id + '\')">Detail</button></td>' +
         '</tr>' +
-        '<tr id="video-detail-' + v.id + '" class="detail-row hidden"><td colspan="6"></td></tr>';
+        '<tr id="video-detail-' + v.id + '" class="detail-row hidden"><td colspan="7"></td></tr>';
     }).join('');
-    listEl.innerHTML = '<table><thead><tr><th>Video</th><th>Product</th><th>Match</th><th>Summarized</th><th>Created</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    listEl.innerHTML = '<table><thead><tr><th>Video</th><th>Product</th><th>Views</th><th>Match</th><th>Summarized</th><th>Created</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
   document.getElementById('video-prev').disabled = videoState.offset === 0;
   document.getElementById('video-next').disabled = videoState.lastCount < videoState.limit;
@@ -927,6 +963,10 @@ async function loadVideoDetailInto(id, cell) {
     const v = await api('GET', '/video-candidates/' + id);
     cell.innerHTML =
       '<div class="detail-panel">' +
+      '<p><strong>Views:</strong> ' + fmtCount(v.view_count) + ' &middot; <strong>Likes:</strong> ' + fmtCount(v.like_count) +
+      ' &middot; <strong>Comments:</strong> ' + fmtCount(v.comment_count) + ' &middot; <strong>Duration:</strong> ' + fmtDuration(v.duration_seconds) +
+      '<div class="muted small">Published ' + (fmtDate(v.published_at) || '—') + ' &middot; stats as of ' + (fmtDate(v.stats_fetched_at) || 'never fetched') + '</div></p>' +
+      '<p><strong>Description:</strong></p><pre class="scrollbox">' + escapeHtml(v.description || '(none)') + '</pre>' +
       '<p><strong>Transcript note:</strong> ' + escapeHtml(v.transcript_note || '—') + '</p>' +
       '<p><strong>Summary:</strong></p><pre class="scrollbox">' + escapeHtml(v.summary || '(none yet)') + '</pre>' +
       '<p><strong>Transcript:</strong></p><pre class="scrollbox">' + escapeHtml(v.transcript || '(none yet)') + '</pre>' +
@@ -947,6 +987,25 @@ async function submitTranscript(id) {
   try {
     await api('POST', '/video-candidates/' + id + '/transcript', { body: { transcript: transcript, transcript_note: note } });
     toast('Transcript submitted, queued for summary');
+  } catch (e) { toast(e.message, true); }
+}
+
+async function refreshVideoStats() {
+  // Fire-and-forget trigger for POST /admin/refresh-video-stats (see
+  // service.queue_video_stats_refresh's docstring) -- invokes
+  // VideoDiscoveryFunction asynchronously, so this returns immediately
+  // with {"queued": true, ...} rather than a result summary. The actual
+  // view/like/comment counts land in the DB moments later; reloading the
+  // list right away won't show them yet, hence the toast saying so
+  // rather than an auto-refresh that would look like it silently did
+  // nothing.
+  try {
+    const result = await api('POST', '/admin/refresh-video-stats');
+    if (result.queued) {
+      toast('Refreshing stats in the background -- reload this tab in a bit to see updated counts.');
+    } else {
+      toast(result.reason || 'Not queued', true);
+    }
   } catch (e) { toast(e.message, true); }
 }
 
@@ -1191,9 +1250,11 @@ async function loadProductDetailInto(id, cell) {
         ? '<button class="btn small" onclick="approveVideoForProduct(\'' + id + '\', \'' + v.id + '\')">Approve</button>' +
           '<button class="btn small danger" onclick="rejectVideoForProduct(\'' + id + '\', \'' + v.id + '\')">Reject</button>'
         : '<span class="badge ' + escapeHtml(v.status) + '">' + escapeHtml(v.status) + '</span>';
+      const durationText = v.duration_seconds !== null && v.duration_seconds !== undefined ? ' &middot; ' + fmtDuration(v.duration_seconds) : '';
       return '<tr>' +
         '<td><a href="https://www.youtube.com/watch?v=' + encodeURIComponent(v.youtube_video_id) + '" target="_blank" rel="noopener">' + escapeHtml(v.title) + '</a>' +
-        '<div class="muted small">' + escapeHtml(v.channel_title || '') + '</div></td>' +
+        '<div class="muted small">' + escapeHtml(v.channel_title || '') + durationText + '</div></td>' +
+        '<td>' + fmtCount(v.view_count) + '</td>' +
         '<td>' + (v.match_confidence !== null && v.match_confidence !== undefined ? Number(v.match_confidence).toFixed(2) : '—') + '</td>' +
         '<td>' + (v.has_summary ? '<span class="badge ok">yes</span>' : '<span class="badge muted">no</span>') + '</td>' +
         '<td class="actions">' + statusCell +
@@ -1214,7 +1275,7 @@ async function loadProductDetailInto(id, cell) {
         ' <button class="btn small ghost" onclick="discoverVideosForProduct(\'' + id + '\')">Search for videos again</button></p>' +
       '<p id="discover-videos-result-' + id + '" class="muted small"></p>' +
       (videoRows
-        ? '<table class="mini"><thead><tr><th>Video</th><th>Match</th><th>Summarized</th><th>Actions</th></tr></thead><tbody>' + videoRows + '</tbody></table>'
+        ? '<table class="mini"><thead><tr><th>Video</th><th>Views</th><th>Match</th><th>Summarized</th><th>Actions</th></tr></thead><tbody>' + videoRows + '</tbody></table>'
         : '<p class="muted">no candidates found yet</p>') +
       '<p><strong>Video review rollup</strong> (' + videoCount + ' video' + (videoCount === 1 ? '' : 's') + ', generated ' + (fmtDate(p.video_reviews_summary_generated_at) || 'never') + '):</p>' +
       '<pre class="scrollbox">' + escapeHtml(p.video_reviews_summary || '(none yet)') + '</pre>' +

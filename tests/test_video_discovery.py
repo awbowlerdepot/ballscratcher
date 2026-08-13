@@ -144,11 +144,22 @@ class _FakeResponse:
 
 class _FakeSession:
     def __init__(self, response):
-        self._response = response
+        # response: either one response object (reused every call) or a
+        # list of responses (consumed in order -- used by fetch_video_
+        # statistics' batching tests, where MAX_VIDEO_IDS_PER_CALL forces
+        # more than one videos.list call for a single invocation).
+        if isinstance(response, list):
+            self._responses = list(response)
+            self._response = None
+        else:
+            self._responses = None
+            self._response = response
         self.get_calls = []
 
     def get(self, url, params=None, timeout=None):
         self.get_calls.append({"url": url, "params": params})
+        if self._responses is not None:
+            return self._responses.pop(0)
         return self._response
 
 
@@ -201,22 +212,134 @@ def test_get_youtube_requests_session_returns_a_fresh_session_each_call():
     assert app.get_youtube_requests_session() is not app.get_youtube_requests_session()
 
 
+# --- parse_iso8601_duration: contentDetails.duration -> whole seconds ---
+
+def test_parse_iso8601_duration_minutes_and_seconds():
+    assert app.parse_iso8601_duration("PT4M13S") == 4 * 60 + 13
+
+
+def test_parse_iso8601_duration_hours_minutes_seconds():
+    assert app.parse_iso8601_duration("PT1H2M3S") == 3600 + 2 * 60 + 3
+
+
+def test_parse_iso8601_duration_seconds_only():
+    assert app.parse_iso8601_duration("PT45S") == 45
+
+
+def test_parse_iso8601_duration_hours_only():
+    assert app.parse_iso8601_duration("PT1H") == 3600
+
+
+def test_parse_iso8601_duration_blank_or_unparseable_returns_none():
+    assert app.parse_iso8601_duration(None) is None
+    assert app.parse_iso8601_duration("") is None
+    assert app.parse_iso8601_duration("not a duration") is None
+
+
+# --- parse_video_details_response / fetch_video_statistics: videos.list,
+# the only call that ever returns view/like/comment counts (search.list's
+# snippet part never does -- see module docstring's VIDEO STATS section).
+
+SAMPLE_VIDEOS_LIST_RESPONSE = {
+    "items": [
+        {
+            "id": "abc123XYZ",
+            "snippet": {"description": "Full review of the Storm Absolute."},
+            "statistics": {"viewCount": "12345", "likeCount": "678", "commentCount": "9"},
+            "contentDetails": {"duration": "PT4M13S"},
+        },
+        {
+            # likeCount/commentCount omitted -- real YouTube behavior when a
+            # channel owner hides those counts (NOT the same as zero, see
+            # parse_video_details_response's own comment).
+            "id": "hiddenCounts1",
+            "snippet": {"description": "A video with hidden engagement counts."},
+            "statistics": {"viewCount": "500"},
+            "contentDetails": {"duration": "PT2M"},
+        },
+    ],
+}
+
+
+def test_parse_video_details_response_extracts_stats_and_duration():
+    results = app.parse_video_details_response(SAMPLE_VIDEOS_LIST_RESPONSE)
+    assert results["abc123XYZ"] == {
+        "view_count": 12345, "like_count": 678, "comment_count": 9,
+        "duration_seconds": 253, "description": "Full review of the Storm Absolute.",
+    }
+
+
+def test_parse_video_details_response_hidden_counts_are_none_not_zero():
+    results = app.parse_video_details_response(SAMPLE_VIDEOS_LIST_RESPONSE)
+    hidden = results["hiddenCounts1"]
+    assert hidden["view_count"] == 500
+    assert hidden["like_count"] is None
+    assert hidden["comment_count"] is None
+
+
+def test_parse_video_details_response_empty_items():
+    assert app.parse_video_details_response({"items": []}) == {}
+    assert app.parse_video_details_response({}) == {}
+
+
+def test_fetch_video_statistics_single_batch():
+    fake = _FakeSession(_FakeResponse(200, json.dumps(SAMPLE_VIDEOS_LIST_RESPONSE), ok=True))
+    results = app.fetch_video_statistics("fake-key", ["abc123XYZ", "hiddenCounts1"], session=fake)
+
+    assert len(fake.get_calls) == 1
+    assert fake.get_calls[0]["url"] == app.YOUTUBE_VIDEOS_URL
+    assert fake.get_calls[0]["params"]["id"] == "abc123XYZ,hiddenCounts1"
+    assert results["abc123XYZ"]["view_count"] == 12345
+
+
+def test_fetch_video_statistics_batches_over_max_ids_per_call():
+    """MAX_VIDEO_IDS_PER_CALL (50) is YouTube's own hard limit on ids per
+    videos.list call, not a self-imposed one -- more than 50 ids must
+    become more than one HTTP call."""
+    video_ids = [f"v{i}" for i in range(75)]  # 75 -> 2 batches (50 + 25)
+    responses = [
+        _FakeResponse(200, json.dumps({"items": [{"id": "v0", "statistics": {}, "contentDetails": {}, "snippet": {}}]}), ok=True),
+        _FakeResponse(200, json.dumps({"items": [{"id": "v50", "statistics": {}, "contentDetails": {}, "snippet": {}}]}), ok=True),
+    ]
+    fake = _FakeSession(responses)
+    results = app.fetch_video_statistics("fake-key", video_ids, session=fake)
+
+    assert len(fake.get_calls) == 2
+    assert fake.get_calls[0]["params"]["id"] == ",".join(video_ids[:50])
+    assert fake.get_calls[1]["params"]["id"] == ",".join(video_ids[50:])
+    assert "v0" in results and "v50" in results
+
+
+def test_fetch_video_statistics_raises_with_response_body_on_error():
+    fake = _FakeSession(_FakeResponse(403, '{"error": {"errors": [{"reason": "accessNotConfigured"}]}}', ok=False))
+    try:
+        app.fetch_video_statistics("fake-key", ["abc"], session=fake)
+        assert False, "expected HTTPError"
+    except requests.exceptions.HTTPError as e:
+        assert "403" in str(e)
+        assert "accessNotConfigured" in str(e)
+
+
 # --- Fake DB layer: fetch_products_to_search / insert_candidates ---
 
 class _FakeCursor:
-    """Mimics enough of psycopg2's cursor to exercise the two DB-facing
+    """Mimics enough of psycopg2's cursor to exercise the DB-facing
     functions below: fetchall()+description for fetch_products_to_search's
-    select, and a rowcount-based on-conflict-do-nothing simulation for
-    insert_candidates."""
+    select and select_video_ids_needing_stats_refresh's select, a
+    rowcount-based on-conflict-do-nothing simulation for insert_candidates,
+    and recorded UPDATE params for mark_product_searched/apply_video_stats."""
 
-    def __init__(self, products=None, known_pairs=None):
+    def __init__(self, products=None, known_pairs=None, refresh_rows=None):
         self.products = products or []
         self.known_pairs = known_pairs or set()
+        self.refresh_rows = refresh_rows or []
         self.executed = []
         self.description = None
         self.rowcount = 0
         self._rows = []
         self.last_marked_searched = None
+        self.stats_updates = []  # list of (video_pk, params) for the full-stats UPDATE branch
+        self.stats_fetched_at_only_updates = []  # list of video_pk for the no-stats UPDATE branch
 
     def execute(self, query, params=None):
         params = params or []
@@ -226,6 +349,9 @@ class _FakeCursor:
         if q.startswith("select p.id, p.name, b.name as brand_name"):
             self.description = [("id",), ("name",), ("brand_name",)]
             self._rows = [(p["id"], p["name"], p["brand_name"]) for p in self.products]
+        elif q.startswith("select id, youtube_video_id from product_videos"):
+            self.description = [("id",), ("youtube_video_id",)]
+            self._rows = [(r["id"], r["youtube_video_id"]) for r in self.refresh_rows]
         elif q.startswith("insert into product_videos"):
             product_id, youtube_video_id = params[0], params[1]
             key = (product_id, youtube_video_id)
@@ -237,6 +363,10 @@ class _FakeCursor:
         elif q.startswith("update products set last_video_discovery_at"):
             self.last_marked_searched = params[0]
             self._last_result = None
+        elif q.startswith("update product_videos set view_count"):
+            self.stats_updates.append(params)
+        elif q.startswith("update product_videos set stats_fetched_at"):
+            self.stats_fetched_at_only_updates.append(params[-1])
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
 
@@ -251,8 +381,8 @@ class _FakeCursor:
 
 
 class _FakeConn:
-    def __init__(self, products=None, known_pairs=None):
-        self._cursor = _FakeCursor(products, known_pairs)
+    def __init__(self, products=None, known_pairs=None, refresh_rows=None):
+        self._cursor = _FakeCursor(products, known_pairs, refresh_rows)
         self.committed = False
         self.closed = False
 
@@ -380,6 +510,39 @@ def test_insert_candidates_is_idempotent_against_already_known_video():
     assert inserted == 0  # already known -- ON CONFLICT DO NOTHING
 
 
+def test_insert_candidates_writes_stats_fields_when_present():
+    """Migration 013 columns -- handler() populates these via fetch_video_
+    statistics before calling insert_candidates (see its own comment)."""
+    conn = _FakeConn()
+    fetched_at = "2026-08-13T00:00:00+00:00"
+    videos = [
+        {"youtube_video_id": "v1", "title": "t1", "channel_title": "c1",
+         "published_at": None, "thumbnail_url": None, "match_confidence": "high",
+         "view_count": 12345, "like_count": 678, "comment_count": 9,
+         "duration_seconds": 253, "description": "Full review.", "stats_fetched_at": fetched_at},
+    ]
+    app.insert_candidates(conn, "prod-1", "some query", videos)
+
+    query, params = conn.cursor().executed[0]
+    assert "view_count" in query and "stats_fetched_at" in query
+    assert params[8:] == (12345, 678, 9, 253, "Full review.", fetched_at)
+
+
+def test_insert_candidates_defaults_stats_fields_to_none_when_absent():
+    """Backward compat: a caller (older tests included) that passes a bare
+    video dict without stats keys must not KeyError -- see insert_
+    candidates' own docstring on why these are read via .get()."""
+    conn = _FakeConn()
+    videos = [
+        {"youtube_video_id": "v1", "title": "t1", "channel_title": "c1",
+         "published_at": None, "thumbnail_url": None, "match_confidence": "high"},
+    ]
+    app.insert_candidates(conn, "prod-1", "some query", videos)
+
+    _, params = conn.cursor().executed[0]
+    assert params[8:] == (None, None, None, None, None, None)
+
+
 # --- mark_product_searched: what actually drives the rotation fix ---
 
 def test_mark_product_searched_writes_and_commits():
@@ -388,6 +551,76 @@ def test_mark_product_searched_writes_and_commits():
 
     assert conn.cursor().last_marked_searched == "prod-1"
     assert conn.committed is True
+
+
+# --- select_video_ids_needing_stats_refresh / apply_video_stats /
+# refresh_video_stats: the {"refresh_stats": true} job shape, for
+# re-pulling view counts on EXISTING candidates, not just new ones. ---
+
+def test_select_video_ids_needing_stats_refresh_orders_stale_first():
+    conn = _FakeConn(refresh_rows=[{"id": "pv1", "youtube_video_id": "v1"}])
+    rows = app.select_video_ids_needing_stats_refresh(conn, limit=200)
+
+    assert rows == [{"id": "pv1", "youtube_video_id": "v1"}]
+    query, params = conn.cursor().executed[0]
+    assert "order by stats_fetched_at asc nulls first, id asc limit %s" in query
+    assert params == (200,)
+
+
+def test_apply_video_stats_with_stats_updates_all_fields():
+    conn = _FakeConn()
+    stats = {"view_count": 100, "like_count": 10, "comment_count": 2,
+              "duration_seconds": 60, "description": "d"}
+    app.apply_video_stats(conn, "pv1", stats, "2026-08-13T00:00:00+00:00")
+
+    assert conn.cursor().stats_updates == [
+        (100, 10, 2, 60, "d", "2026-08-13T00:00:00+00:00", "pv1"),
+    ]
+    assert conn.committed is True
+
+
+def test_apply_video_stats_empty_stats_only_touches_fetched_at():
+    """stats={} (YouTube returned nothing -- deleted/private video) still
+    records that a check happened, but must NOT null out any previously-
+    known view/like/comment/duration/description values -- see apply_
+    video_stats' own docstring."""
+    conn = _FakeConn()
+    app.apply_video_stats(conn, "pv1", {}, "2026-08-13T00:00:00+00:00")
+
+    assert conn.cursor().stats_updates == []  # the full-field UPDATE never ran
+    assert conn.cursor().stats_fetched_at_only_updates == ["pv1"]
+    assert conn.committed is True
+
+
+def test_refresh_video_stats_updates_found_rows_and_marks_missing_ones_checked():
+    conn = _FakeConn(refresh_rows=[
+        {"id": "pv1", "youtube_video_id": "v1"},
+        {"id": "pv2", "youtube_video_id": "v2-deleted"},
+    ])
+    videos_list_response = {
+        "items": [
+            {"id": "v1", "statistics": {"viewCount": "100"}, "contentDetails": {"duration": "PT1M"}, "snippet": {}},
+            # v2-deleted absent -- simulates a deleted/private video
+        ],
+    }
+    fake = _FakeSession(_FakeResponse(200, json.dumps(videos_list_response), ok=True))
+
+    result = app.refresh_video_stats(conn, "fake-key", limit=200, session=fake)
+
+    assert result == {"candidates_checked": 2, "candidates_updated": 1}
+    assert conn.cursor().stats_updates == [(100, None, None, 60, None, conn.cursor().stats_updates[0][5], "pv1")]
+    assert conn.cursor().stats_fetched_at_only_updates == ["pv2"]
+
+
+def test_refresh_video_stats_no_rows_skips_the_api_call_entirely():
+    conn = _FakeConn(refresh_rows=[])
+
+    class _ExplodingSession:
+        def get(self, *a, **kw):
+            raise AssertionError("should never be called -- nothing to refresh")
+
+    result = app.refresh_video_stats(conn, "fake-key", limit=200, session=_ExplodingSession())
+    assert result == {"candidates_checked": 0, "candidates_updated": 0}
 
 
 # --- handler: search errors must NOT mark a product searched, success
@@ -432,6 +665,140 @@ def test_handler_marks_only_successfully_searched_products(monkeypatch):
         "products_searched": 2, "new_candidates": 1, "search_errors": 1,
         "circuit_breaker_tripped": False, "products_skipped": 0,
     }
+
+
+# --- handler's stats enrichment: new candidates get view/like/comment/
+# duration/description merged in via fetch_video_statistics right after
+# search_youtube, wrapped in its own try/except so a failure there can't
+# block the candidate from being saved (see handler's own comment). ---
+
+def test_handler_enriches_new_candidates_with_video_stats(monkeypatch):
+    captured_videos = []
+
+    monkeypatch.setattr(app, "get_youtube_api_key", lambda: "fake-key")
+    monkeypatch.setattr(app, "get_db_connection", lambda: _FakeConn())
+    monkeypatch.setattr(app, "get_youtube_requests_session", lambda: object())
+    monkeypatch.setattr(
+        app, "fetch_products_to_search",
+        lambda conn, job, max_products: [{"id": "prod-good", "name": "Absolute", "brand_name": "Storm"}],
+    )
+    monkeypatch.setattr(
+        app, "search_youtube",
+        lambda api_key, query, max_results, session=None: [
+            {"youtube_video_id": "v1", "title": "Storm Absolute Review",
+             "channel_title": "c1", "published_at": None, "thumbnail_url": None},
+        ],
+    )
+    monkeypatch.setattr(
+        app, "fetch_video_statistics",
+        lambda api_key, video_ids, session=None: {"v1": {"view_count": 999, "like_count": 50,
+                                                            "comment_count": 3, "duration_seconds": 120,
+                                                            "description": "d"}},
+    )
+
+    def fake_insert(conn, pid, q, videos):
+        captured_videos.extend(videos)
+        return len(videos)
+
+    monkeypatch.setattr(app, "insert_candidates", fake_insert)
+    monkeypatch.setattr(app, "mark_product_searched", lambda conn, pid: None)
+
+    app.handler({}, None)
+
+    assert len(captured_videos) == 1
+    assert captured_videos[0]["view_count"] == 999
+    assert captured_videos[0]["like_count"] == 50
+    assert captured_videos[0]["stats_fetched_at"] is not None
+
+
+def test_handler_stats_enrichment_failure_does_not_block_candidate_insertion(monkeypatch):
+    """Al asked for more data points, not for a video's absence of stats
+    to become a reason it never gets saved -- same 'secondary data must
+    not block the primary write' stance transcript_note already takes."""
+    captured_videos = []
+
+    monkeypatch.setattr(app, "get_youtube_api_key", lambda: "fake-key")
+    monkeypatch.setattr(app, "get_db_connection", lambda: _FakeConn())
+    monkeypatch.setattr(app, "get_youtube_requests_session", lambda: object())
+    monkeypatch.setattr(
+        app, "fetch_products_to_search",
+        lambda conn, job, max_products: [{"id": "prod-good", "name": "Absolute", "brand_name": "Storm"}],
+    )
+    monkeypatch.setattr(
+        app, "search_youtube",
+        lambda api_key, query, max_results, session=None: [
+            {"youtube_video_id": "v1", "title": "Storm Absolute Review",
+             "channel_title": "c1", "published_at": None, "thumbnail_url": None},
+        ],
+    )
+
+    def raising_fetch_video_statistics(api_key, video_ids, session=None):
+        raise RuntimeError("simulated network failure")
+
+    monkeypatch.setattr(app, "fetch_video_statistics", raising_fetch_video_statistics)
+
+    def fake_insert(conn, pid, q, videos):
+        captured_videos.extend(videos)
+        return len(videos)
+
+    monkeypatch.setattr(app, "insert_candidates", fake_insert)
+    marked = []
+    monkeypatch.setattr(app, "mark_product_searched", lambda conn, pid: marked.append(pid))
+
+    result = app.handler({}, None)
+    body = json.loads(result["body"])
+
+    assert marked == ["prod-good"]  # still marked searched
+    assert len(captured_videos) == 1  # still saved, just without stats
+    assert captured_videos[0].get("view_count") is None
+    assert body["new_candidates"] == 1
+
+
+# --- handler's {"refresh_stats": true} job shape: a completely different
+# code path from the search flow above -- no products, no circuit
+# breaker, just delegates straight to refresh_video_stats. ---
+
+def test_handler_refresh_stats_job_delegates_and_skips_search_flow(monkeypatch):
+    monkeypatch.setattr(app, "get_youtube_api_key", lambda: "fake-key")
+    monkeypatch.setattr(app, "get_db_connection", lambda: _FakeConn())
+    monkeypatch.setattr(app, "get_youtube_requests_session", lambda: object())
+
+    def exploding_fetch_products(conn, job, max_products):
+        raise AssertionError("fetch_products_to_search must not run for a refresh_stats job")
+
+    monkeypatch.setattr(app, "fetch_products_to_search", exploding_fetch_products)
+
+    captured = {}
+
+    def fake_refresh(conn, api_key, limit=app.DEFAULT_REFRESH_STATS_LIMIT, session=None):
+        captured["limit"] = limit
+        return {"candidates_checked": 5, "candidates_updated": 3}
+
+    monkeypatch.setattr(app, "refresh_video_stats", fake_refresh)
+
+    result = app.handler({"refresh_stats": True, "limit": 50}, None)
+    body = json.loads(result["body"])
+
+    assert body == {"candidates_checked": 5, "candidates_updated": 3}
+    assert captured["limit"] == 50
+
+
+def test_handler_refresh_stats_job_falls_back_to_default_limit(monkeypatch):
+    monkeypatch.setattr(app, "get_youtube_api_key", lambda: "fake-key")
+    monkeypatch.setattr(app, "get_db_connection", lambda: _FakeConn())
+    monkeypatch.setattr(app, "get_youtube_requests_session", lambda: object())
+
+    captured = {}
+
+    def fake_refresh(conn, api_key, limit=None, session=None):
+        captured["limit"] = limit
+        return {"candidates_checked": 0, "candidates_updated": 0}
+
+    monkeypatch.setattr(app, "refresh_video_stats", fake_refresh)
+
+    app.handler({"refresh_stats": True}, None)
+
+    assert captured["limit"] == app.DEFAULT_REFRESH_STATS_LIMIT
 
 
 # --- Circuit breaker: real incident #2 (see module docstring) -- a

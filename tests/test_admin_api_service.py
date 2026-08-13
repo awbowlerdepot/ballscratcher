@@ -573,6 +573,23 @@ def test_list_video_candidates_orders_by_id_as_tiebreaker():
     assert "order by pv.match_confidence asc, pv.created_at asc, pv.id asc" in query
 
 
+def test_list_video_candidates_selects_stats_columns():
+    """Migration 013 -- Al: 'for the videos can we get pull down more data
+    points from the videos, date it was added current view counts and any
+    other data that make sense.' description is deliberately NOT selected
+    here (kept out of the list view the same way transcript/summary
+    already are -- see get_video_candidate for the full-row detail
+    view)."""
+    conn = _QueryCapturingConnection()
+    service.list_video_candidates(conn, status="pending", limit=200, offset=0)
+
+    query = conn.cursor().queries[0]
+    for col in ("pv.view_count", "pv.like_count", "pv.comment_count",
+                "pv.duration_seconds", "pv.stats_fetched_at"):
+        assert col in query
+    assert "pv.description" not in query
+
+
 # --- list_video_candidates status=None (status="all" at the app.py layer)
 # -- added for the product detail view's Videos section, Al: "can we add
 # the video candidates for products into the product details view."
@@ -1586,6 +1603,84 @@ def test_queue_video_discovery_missing_function_name_returns_not_queued():
     sys.modules["boto3"] = _ExplodingBoto3()
     try:
         result = service.queue_video_discovery(conn, "prod-1")
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+
+    assert result == {"queued": False, "reason": "VIDEO_DISCOVERY_FUNCTION_NAME is not configured on this deployment"}
+
+
+# --- queue_video_stats_refresh: catalog-wide "re-pull view counts"
+# trigger (POST /admin/refresh-video-stats) -- same invoke-VideoDiscovery
+# Function-directly shape as queue_video_discovery above, but with no
+# product_id to validate (see its own docstring for why).
+
+def test_queue_video_stats_refresh_invokes_function_with_limit():
+    fake_lambda = _FakeLambdaClient()
+
+    class _FakeBoto3:
+        def client(self, name):
+            assert name == "lambda"
+            return fake_lambda
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    os.environ["VIDEO_DISCOVERY_FUNCTION_NAME"] = "bowling-scraper-video-discovery"
+    try:
+        result = service.queue_video_stats_refresh(limit=50)
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+        del os.environ["VIDEO_DISCOVERY_FUNCTION_NAME"]
+
+    assert result == {"queued": True, "limit": 50}
+    assert len(fake_lambda.invocations) == 1
+    call = fake_lambda.invocations[0]
+    assert call["FunctionName"] == "bowling-scraper-video-discovery"
+    assert call["InvocationType"] == "Event"
+    assert json.loads(call["Payload"]) == {"refresh_stats": True, "limit": 50}
+
+
+def test_queue_video_stats_refresh_omits_limit_key_when_not_given():
+    """limit=None lets VideoDiscoveryFunction fall back to its own
+    DEFAULT_REFRESH_STATS_LIMIT rather than this layer needing to know
+    that number too -- see the docstring."""
+    fake_lambda = _FakeLambdaClient()
+
+    class _FakeBoto3:
+        def client(self, name):
+            return fake_lambda
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    os.environ["VIDEO_DISCOVERY_FUNCTION_NAME"] = "bowling-scraper-video-discovery"
+    try:
+        service.queue_video_stats_refresh()
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+        del os.environ["VIDEO_DISCOVERY_FUNCTION_NAME"]
+
+    assert json.loads(fake_lambda.invocations[0]["Payload"]) == {"refresh_stats": True}
+
+
+def test_queue_video_stats_refresh_missing_function_name_returns_not_queued():
+    os.environ.pop("VIDEO_DISCOVERY_FUNCTION_NAME", None)
+
+    class _ExplodingBoto3:
+        def client(self, name):
+            raise AssertionError("should never be called when the function name isn't configured")
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _ExplodingBoto3()
+    try:
+        result = service.queue_video_stats_refresh(limit=50)
     finally:
         if real_boto3 is not None:
             sys.modules["boto3"] = real_boto3

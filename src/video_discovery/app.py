@@ -13,11 +13,31 @@ decides scope:
     {"product_ids": ["<uuid>", ...]}   -- specific products, any status/published value
     {"brand_id": "<uuid>"}             -- all 'current' (non-retired) products for one brand
     {}                                  -- all 'current' (non-retired) products (capped, see below)
+    {"refresh_stats": true, "limit": N} -- re-pull view/like/comment counts (etc.) for up to N
+                                            EXISTING product_videos rows instead of searching for
+                                            new ones (see refresh_video_stats)
 This is deliberately NOT "the whole catalog, always" -- the user explicitly
 chose a subset-first approach over an immediate full-catalog job, and a
 per-invocation scope argument is how every other discovery function in this
 project already supports "just run it on what I tell you to" (e.g.
 netsuite_url_discovery's BRAND_ID env var, commercebuild's per-brand loop).
+
+VIDEO STATS (view/like/comment counts, duration, description): search.list's
+snippet part -- everything search_youtube ever returns -- has no engagement
+data at all. Al: "for the videos can we get pull down more data points from
+the videos, date it was added current view counts and any other data that
+make sense." A separate videos.list call (fetch_video_statistics) is what
+actually has view/like/comment counts plus contentDetails.duration and the
+full description; the search flow now calls it right after every
+search.list call to enrich brand-new candidates at discovery time, and the
+{"refresh_stats": true} job shape re-pulls it for candidates that already
+exist (view counts are a snapshot, not a fixed fact -- they go stale the
+moment they're written, unlike title/channel/published_at). videos.list is
+NOT the constrained resource search.list is (see HARD QUOTA CONSTRAINT
+below) -- it costs a small, flat number of quota units per call regardless
+of how many of the up to 50 ids are packed into it, nowhere near
+search.list's 100 units/call -- so neither of these needed their own
+circuit breaker or the same conservative per-invocation cap.
 
 The default/brand_id scopes deliberately do NOT require `published = true`
 (they only used to, until a real catalog check found why that mattered:
@@ -148,6 +168,7 @@ import json
 import logging
 import os
 import re
+from datetime import datetime, timezone
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -160,6 +181,18 @@ DEFAULT_MAX_RESULTS_PER_PRODUCT = 5
 # tripped runs once the daily quota was already spent.
 DEFAULT_MAX_SEARCHES_PER_INVOCATION = 70
 YOUTUBE_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
+YOUTUBE_VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
+# YouTube's own hard cap on how many comma-separated ids one videos.list
+# call can request -- not a self-imposed one, unlike MAX_SEARCHES_PER_
+# INVOCATION above.
+MAX_VIDEO_IDS_PER_CALL = 50
+# Manual-invoke default for the {"refresh_stats": true} job shape (see
+# refresh_video_stats/handler). Sized for "a reasonable chunk of the
+# table per run", not a quota-survival number the way MAX_SEARCHES_PER_
+# INVOCATION is -- videos.list costs a small, flat number of units per
+# call regardless of batch size, nowhere near search.list's 100 units/
+# call (see module docstring's VIDEO STATS section).
+DEFAULT_REFRESH_STATS_LIMIT = 200
 
 # Retried status codes: 429 is the real, confirmed cause here (YouTube's
 # per-minute search.list rate limit -- see module docstring's incident
@@ -319,6 +352,99 @@ def parse_search_response(data: dict) -> list:
     return videos
 
 
+_DURATION_RE = re.compile(r"^PT(?:(?P<hours>\d+)H)?(?:(?P<minutes>\d+)M)?(?:(?P<seconds>\d+)S)?$")
+
+
+def parse_iso8601_duration(duration) -> int:
+    """Parses contentDetails.duration (e.g. "PT4M13S", "PT1H2M3S", "PT45S")
+    into whole seconds. Returns None for anything that isn't a match
+    rather than raising -- duration is enrichment, the same "secondary
+    data must not break the primary write" stance transcript_note already
+    takes elsewhere in this pipeline (see module docstring's VIDEO STATS
+    section)."""
+    if not duration:
+        return None
+    match = _DURATION_RE.match(duration)
+    if not match:
+        return None
+    hours = int(match.group("hours") or 0)
+    minutes = int(match.group("minutes") or 0)
+    seconds = int(match.group("seconds") or 0)
+    return hours * 3600 + minutes * 60 + seconds
+
+
+def parse_video_details_response(data: dict) -> dict:
+    """Returns {youtube_video_id: {view_count, like_count, comment_count,
+    duration_seconds, description}}. An id YouTube doesn't return an item
+    for (deleted/private video) is simply absent from the result rather
+    than erroring -- see fetch_video_statistics's own docstring.
+    statistics.likeCount/commentCount can be legitimately ABSENT (not
+    zero) when a channel owner has hidden that count, which is why every
+    numeric field here can end up None rather than 0 -- 0 would falsely
+    claim "confirmed zero" for a number YouTube never actually
+    disclosed."""
+    def _to_int(value):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    results = {}
+    for item in data.get("items", []):
+        video_id = item.get("id")
+        if not video_id:
+            continue
+        stats = item.get("statistics", {})
+        content_details = item.get("contentDetails", {})
+        snippet = item.get("snippet", {})
+        results[video_id] = {
+            "view_count": _to_int(stats.get("viewCount")),
+            "like_count": _to_int(stats.get("likeCount")),
+            "comment_count": _to_int(stats.get("commentCount")),
+            "duration_seconds": parse_iso8601_duration(content_details.get("duration")),
+            "description": snippet.get("description"),
+        }
+    return results
+
+
+def fetch_video_statistics(api_key, video_ids: list, session=None) -> dict:
+    """One or more videos.list calls (part=snippet,statistics,
+    contentDetails, up to MAX_VIDEO_IDS_PER_CALL ids per call -- YouTube's
+    own limit, not a self-imposed one) enriching search.list's bare title/
+    channel/published/thumbnail with view/like/comment counts, duration,
+    and the full description (see module docstring's VIDEO STATS
+    section). Deliberately routed through the same retry-enabled session
+    as search_youtube (see get_youtube_requests_session) -- not confirmed
+    to share search.list's per-minute rate limit (see module docstring's
+    incident writeup), but there's no reason to assume it's exempt
+    either, and reusing the session costs nothing. Returns parse_video_
+    details_response's shape merged across every batch; a video_id with
+    nothing in the result just means YouTube didn't return an item for it
+    (deleted/private), not that this call itself failed."""
+    import requests
+
+    session = session if session is not None else get_youtube_requests_session()
+    results = {}
+    for i in range(0, len(video_ids), MAX_VIDEO_IDS_PER_CALL):
+        batch = video_ids[i:i + MAX_VIDEO_IDS_PER_CALL]
+        resp = session.get(
+            YOUTUBE_VIDEOS_URL,
+            params={
+                "part": "snippet,statistics,contentDetails",
+                "id": ",".join(batch),
+                "key": api_key,
+            },
+            timeout=30,
+        )
+        if not resp.ok:
+            raise requests.exceptions.HTTPError(
+                f"{resp.status_code} error from YouTube videos.list: {resp.text[:500]}",
+                response=resp,
+            )
+        results.update(parse_video_details_response(resp.json()))
+    return results
+
+
 def fetch_products_to_search(conn, job: dict, max_products: int) -> list:
     """Resolves the job's scope (see module docstring) into a list of
     {id, name, brand_name} dicts, capped at max_products. 'current' (non-
@@ -401,7 +527,16 @@ def insert_candidates(conn, product_id: str, query: str, videos: list) -> int:
     ON CONFLICT DO NOTHING makes this idempotent against re-running the same
     product (unique(product_id, youtube_video_id) from 004_product_videos.sql)
     -- a video already stored (in any status) is left untouched rather than
-    reset back to pending."""
+    reset back to pending.
+
+    view_count/like_count/comment_count/duration_seconds/description/
+    stats_fetched_at (migration 013) are all read via .get(), not direct
+    indexing -- handler() populates them from fetch_video_statistics before
+    calling this, but that enrichment call is wrapped in its own try/except
+    (see handler's comment) specifically so a candidate still gets saved
+    even when it fails, just without stats. Any caller (tests included)
+    that passes a bare video dict without these keys still works, storing
+    NULLs for all of them."""
     inserted = 0
     with conn.cursor() as cur:
         for video in videos:
@@ -410,19 +545,114 @@ def insert_candidates(conn, product_id: str, query: str, videos: list) -> int:
                 """
                 insert into product_videos
                     (product_id, youtube_video_id, title, channel_title,
-                     published_at, thumbnail_url, match_query, match_confidence)
-                values (%s, %s, %s, %s, %s, %s, %s, %s)
+                     published_at, thumbnail_url, match_query, match_confidence,
+                     view_count, like_count, comment_count, duration_seconds,
+                     description, stats_fetched_at)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 on conflict (product_id, youtube_video_id) do nothing
                 """,
                 (
                     product_id, video["youtube_video_id"], video["title"],
                     video["channel_title"], video["published_at"],
                     video["thumbnail_url"], query, confidence,
+                    video.get("view_count"), video.get("like_count"),
+                    video.get("comment_count"), video.get("duration_seconds"),
+                    video.get("description"), video.get("stats_fetched_at"),
                 ),
             )
             inserted += cur.rowcount
     conn.commit()
     return inserted
+
+
+def select_video_ids_needing_stats_refresh(conn, limit: int) -> list:
+    """Rows ordered stats_fetched_at asc nulls first, pv.id asc as a final
+    tiebreaker (same determinism reasoning as admin_api/service.py's
+    list_video_candidates' own id tiebreaker) -- never-refreshed candidates
+    sort first, then the longest-stale ones, so repeated {"refresh_stats":
+    true} invocations naturally cycle through the whole table the same way
+    fetch_products_to_search's last_video_discovery_at ordering cycles
+    through products."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select id, youtube_video_id
+            from product_videos
+            order by stats_fetched_at asc nulls first, id asc
+            limit %s
+            """,
+            (limit,),
+        )
+        return [{"id": row[0], "youtube_video_id": row[1]} for row in cur.fetchall()]
+
+
+def apply_video_stats(conn, video_pk: str, stats: dict, fetched_at) -> None:
+    """Updates one product_videos row by its own primary key, not
+    youtube_video_id -- the same YouTube video can legitimately appear
+    under more than one product_videos row (e.g. after reassign_video_
+    candidate's copy-not-move behavior in admin_api/service.py), and each
+    row's stats should refresh independently.
+
+    stats={} (YouTube returned nothing for this id -- deleted/private
+    video) still updates stats_fetched_at, so this row stops sorting
+    first in select_video_ids_needing_stats_refresh's ordering forever,
+    but deliberately leaves any previously-known view/like/comment/
+    duration/description values untouched rather than nulling them out --
+    a video that existed once and got taken down shouldn't lose its
+    last-known numbers."""
+    with conn.cursor() as cur:
+        if stats:
+            cur.execute(
+                """
+                update product_videos
+                set view_count = %s, like_count = %s, comment_count = %s,
+                    duration_seconds = %s, description = %s, stats_fetched_at = %s
+                where id = %s
+                """,
+                (
+                    stats.get("view_count"), stats.get("like_count"),
+                    stats.get("comment_count"), stats.get("duration_seconds"),
+                    stats.get("description"), fetched_at, video_pk,
+                ),
+            )
+        else:
+            cur.execute(
+                "update product_videos set stats_fetched_at = %s where id = %s",
+                (fetched_at, video_pk),
+            )
+    conn.commit()
+
+
+def refresh_video_stats(conn, api_key, limit: int = DEFAULT_REFRESH_STATS_LIMIT, session=None) -> dict:
+    """{"refresh_stats": true} job entry point (see handler) -- re-pulls
+    current view/like/comment counts (and duration/description, which
+    don't change but cost nothing extra to re-fetch in the same call) for
+    up to `limit` existing product_videos rows, prioritizing rows that
+    have never been fetched at all, then the longest-stale ones (see
+    select_video_ids_needing_stats_refresh). Unlike the search flow, this
+    has no per-request circuit breaker -- videos.list isn't confirmed to
+    share search.list's per-minute rate limit (see fetch_video_
+    statistics's docstring), and a single call already covers up to 50
+    rows, so a `limit` of a few hundred is only a handful of HTTP calls
+    total, not hundreds like the search flow's one-call-per-product
+    shape."""
+    session = session if session is not None else get_youtube_requests_session()
+    rows = select_video_ids_needing_stats_refresh(conn, limit)
+    if not rows:
+        return {"candidates_checked": 0, "candidates_updated": 0}
+
+    video_ids = [row["youtube_video_id"] for row in rows]
+    stats_by_id = fetch_video_statistics(api_key, video_ids, session=session)
+    fetched_at = datetime.now(timezone.utc)
+
+    updated = 0
+    for row in rows:
+        stats = stats_by_id.get(row["youtube_video_id"], {})
+        apply_video_stats(conn, row["id"], stats, fetched_at)
+        if stats:
+            updated += 1
+
+    return {"candidates_checked": len(rows), "candidates_updated": updated}
 
 
 def get_db_connection():
@@ -477,12 +707,10 @@ def _is_rate_limit_error(exc: Exception) -> bool:
 
 
 def handler(event, context):
-    max_products = int(os.environ.get("MAX_SEARCHES_PER_INVOCATION", DEFAULT_MAX_SEARCHES_PER_INVOCATION))
-    max_results = int(os.environ.get("MAX_RESULTS_PER_PRODUCT", DEFAULT_MAX_RESULTS_PER_PRODUCT))
-    circuit_breaker_threshold = int(os.environ.get("CIRCUIT_BREAKER_THRESHOLD", DEFAULT_CIRCUIT_BREAKER_THRESHOLD))
+    job = event or {}
 
     api_key = get_youtube_api_key()
-    # One session, reused across every product this invocation -- see
+    # One session, reused across every product/call this invocation -- see
     # get_youtube_requests_session's docstring (connection pooling) and
     # the module docstring's incident writeup (this is also where the
     # actual retry-with-backoff protection against YouTube's per-minute
@@ -492,7 +720,23 @@ def handler(event, context):
 
     conn = get_db_connection()
     try:
-        products = fetch_products_to_search(conn, event or {}, max_products)
+        # {"refresh_stats": true} is a completely different job shape from
+        # the search flow below -- no products to pick, no search.list
+        # calls, no circuit breaker (see refresh_video_stats' own
+        # docstring for why it doesn't need one) -- so it's handled as an
+        # early return rather than threading a branch through the whole
+        # search loop.
+        if job.get("refresh_stats"):
+            limit = int(job.get("limit") or DEFAULT_REFRESH_STATS_LIMIT)
+            result = refresh_video_stats(conn, api_key, limit=limit, session=session)
+            logger.info("Refreshed video stats: %s", result)
+            return {"statusCode": 200, "body": json.dumps(result)}
+
+        max_products = int(os.environ.get("MAX_SEARCHES_PER_INVOCATION", DEFAULT_MAX_SEARCHES_PER_INVOCATION))
+        max_results = int(os.environ.get("MAX_RESULTS_PER_PRODUCT", DEFAULT_MAX_RESULTS_PER_PRODUCT))
+        circuit_breaker_threshold = int(os.environ.get("CIRCUIT_BREAKER_THRESHOLD", DEFAULT_CIRCUIT_BREAKER_THRESHOLD))
+
+        products = fetch_products_to_search(conn, job, max_products)
         logger.info("Searching YouTube for %d product(s) (cap=%d)", len(products), max_products)
 
         total_candidates = 0
@@ -534,6 +778,32 @@ def handler(event, context):
             consecutive_rate_limit_failures = 0
             for video in videos:
                 video["match_confidence"] = score_match(video["title"], product["brand_name"], product["name"])
+
+            # Enrich with view/like/comment counts, duration, and
+            # description -- search.list's snippet part never includes
+            # these (see module docstring's VIDEO STATS section), a
+            # separate videos.list call is the only way to get them.
+            # Wrapped in its own try/except: a candidate is still worth
+            # saving even if this enrichment call fails (rate limit,
+            # transient network), same "secondary data must not block the
+            # primary write" stance transcript_note already takes
+            # elsewhere in this pipeline. Al: "pull down more data points
+            # from the videos, date it was added current view counts and
+            # any other data that make sense."
+            video_ids = [v["youtube_video_id"] for v in videos]
+            if video_ids:
+                try:
+                    stats_by_id = fetch_video_statistics(api_key, video_ids, session=session)
+                    fetched_at = datetime.now(timezone.utc)
+                    for video in videos:
+                        video.update(stats_by_id.get(video["youtube_video_id"], {}))
+                        video["stats_fetched_at"] = fetched_at
+                except Exception:
+                    logger.exception(
+                        "Failed to fetch video statistics for product_id=%s (candidates will "
+                        "still be saved without view/like/comment/duration data)",
+                        product["id"],
+                    )
 
             inserted = insert_candidates(conn, product["id"], query, videos)
             mark_product_searched(conn, product["id"])

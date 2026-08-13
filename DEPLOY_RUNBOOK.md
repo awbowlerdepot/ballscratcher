@@ -33,7 +33,7 @@ Any Postgres 13+ instance works (RDS is the obvious choice, but this
 repo doesn't assume it). Note the connection details -- you'll need them
 for step 3's `DbSecretArn` secret and to run migrations directly.
 
-## 2. Run the twelve migrations, in order
+## 2. Run the thirteen migrations, in order
 
 ```bash
 psql "$DATABASE_URL" -f db/migrations/001_init_schema.sql
@@ -48,6 +48,7 @@ psql "$DATABASE_URL" -f db/migrations/009_normalize_coverstock_names.sql
 psql "$DATABASE_URL" -f db/migrations/010_product_images_ordering_thumbnail_visibility.sql
 psql "$DATABASE_URL" -f db/migrations/011_products_plotter_chart_position.sql
 psql "$DATABASE_URL" -f db/migrations/012_products_oil_motion_source.sql
+psql "$DATABASE_URL" -f db/migrations/013_product_videos_stats.sql
 ```
 
 (If you already ran an earlier subset in a prior deploy, just run whatever
@@ -2441,6 +2442,113 @@ sam deploy
 ```
 (No admin-site redeploy step exists in this project -- it's a static
 file Al opens directly/hosts himself, not a Lambda-fronted deployable.)
+
+### 6i.6. Video engagement stats (views/likes/comments/duration/description)
+
+Al's direct ask: "for the videos can we get pull down more data points
+from the videos, date it was added current view counts and any other
+data that make sense." `search.list`'s snippet part (everything
+`search_youtube` ever pulled) has no engagement data at all -- title,
+channel, `published_at`, and a thumbnail is it. A separate
+`videos.list` call is the only way to get view/like/comment counts plus
+duration and the full description, and unlike `search.list` (the
+confirmed 100-units/call, 100-calls/day-constrained resource -- see the
+HARD QUOTA CONSTRAINT section referenced elsewhere in this doc),
+`videos.list` is cheap and flat-cost regardless of how many of the up
+to 50 ids are packed into one call, so it needed neither a circuit
+breaker nor a conservative per-invocation cap.
+
+Migration 013 (`db/migrations/013_product_videos_stats.sql`) adds six
+columns to `product_videos`: `view_count bigint`, `like_count bigint`,
+`comment_count bigint`, `duration_seconds integer`, `description text`,
+`stats_fetched_at timestamptz`. `like_count`/`comment_count` are left
+`NULL` rather than coerced to `0` when YouTube's response omits them --
+a channel owner can hide those counts, and `NULL` is the honest "never
+disclosed" while `0` would falsely claim "confirmed zero."
+
+Two ways stats get populated, both in `src/video_discovery/app.py`:
+
+- **At discovery time**: `handler`'s existing search loop now calls the
+  new `fetch_video_statistics(api_key, video_ids, session)` right after
+  every `search_youtube` call, merges the result onto each candidate
+  before `insert_candidates`, and stamps `stats_fetched_at`. Wrapped in
+  its own try/except -- a candidate is still saved even if this
+  enrichment call fails (rate limit, transient network), the same
+  "secondary data must not block the primary write" stance
+  `transcript_note` already takes elsewhere in this pipeline.
+- **On demand, for candidates that already exist**: view counts are a
+  snapshot, not a fixed fact like `published_at` -- they go stale the
+  moment they're written. A new `{"refresh_stats": true, "limit": N}`
+  job shape (handled as an early return in `handler`, before any
+  product-search logic runs at all) calls the new
+  `refresh_video_stats(conn, api_key, limit, session)`, which uses
+  `select_video_ids_needing_stats_refresh` (ordered
+  `stats_fetched_at asc nulls first, id asc` -- never-refreshed rows
+  first, then longest-stale, same rotation shape
+  `fetch_products_to_search`'s `last_video_discovery_at` ordering
+  already uses) and `apply_video_stats` (updates by `product_videos.id`,
+  not `youtube_video_id`, since the same video can legitimately appear
+  under more than one row after `reassign_video_candidate`'s copy-not-
+  move behavior; a video YouTube no longer returns anything for --
+  deleted/private -- still gets `stats_fetched_at` bumped so it stops
+  sorting first forever, but keeps whatever numbers it last had rather
+  than nulling them out). `DEFAULT_REFRESH_STATS_LIMIT = 200`.
+
+`src/admin_api/service.py` gained `queue_video_stats_refresh(limit=None)`,
+same fire-and-forget `lambda_client.invoke(..., InvocationType="Event")`
+shape as `queue_video_discovery` right above it, same
+`{"queued": False, "reason": "VIDEO_DISCOVERY_FUNCTION_NAME is not
+configured..."}` soft-fail when that env var isn't set. Unlike
+`queue_video_discovery`, this is catalog-wide by design -- no
+`product_id`, no conn, no existence check, since `VideoDiscoveryFunction`
+itself decides which rows are most overdue. `list_video_candidates`'s
+SELECT was extended with the five non-description stat columns
+(`description` deliberately excluded from the list view, same
+convention as the transcript/summary columns right next to it).
+
+`src/admin_api/app.py` gained `POST /admin/refresh-video-stats` (optional
+`?limit=` query param) right after `discover-videos`, routing straight to
+`queue_video_stats_refresh`. No `template.yaml` change needed --
+`AdminApiFunction` already has invoke permission on
+`VideoDiscoveryFunction` for any payload shape, and the route hits the
+existing catch-all proxy.
+
+`scripts/refresh_video_stats.py` is a new one-shot script, same thin-
+HTTP-client-against-admin_api shape as every other script in this
+project (see `backfill_last_video_discovery_at.py`) -- a single POST to
+`/admin/refresh-video-stats`, not a list-then-iterate loop, since the
+actual selecting/fetching/updating all happens inside
+`VideoDiscoveryFunction` itself.
+
+`admin-site/index.html`: the Video Candidates tab's table gained a
+Views column (`fmtCount`/`fmtDuration` helpers, a `stats_fetched_at`
+tooltip, likes/comments as a small muted line under the view count),
+the video detail panel shows views/likes/comments/duration plus
+"stats as of \<date\>" or "never fetched," the product detail page's
+Videos mini-table also gained a Views column, and a "Refresh stats"
+button next to the existing rescan controls calls the new endpoint
+(toast makes clear it's fire-and-forget -- results need a moment plus a
+manual tab reload to show up, same as the existing rescan button).
+
+52/52 in `tests/test_video_discovery.py` (new coverage across
+`parse_iso8601_duration`, `parse_video_details_response`,
+`fetch_video_statistics`, `insert_candidates`'s new columns,
+`select_video_ids_needing_stats_refresh`, `apply_video_stats`,
+`refresh_video_stats`, and `handler`'s two new code paths), 115/115 in
+`tests/test_admin_api_service.py`, 7/7 in the new
+`tests/test_refresh_video_stats.py`. Zero regressions in either
+extended file.
+
+Requires migration 013 (see step 2 above) and redeploying
+`VideoDiscoveryFunction` and `AdminApiFunction`:
+```bash
+psql "$DATABASE_URL" -f db/migrations/013_product_videos_stats.sql
+sam build VideoDiscoveryFunction
+sam build AdminApiFunction
+sam deploy
+```
+(No admin-site redeploy step, same as every other admin-site change --
+it's a static file, not a Lambda-fronted deployable.)
 
 ### 6j. Home transcript fetcher (residential caption fetching) -- optional, run outside AWS entirely
 

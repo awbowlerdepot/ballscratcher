@@ -840,6 +840,48 @@ def queue_video_discovery(conn, product_id: str) -> dict:
     return {"queued": True, "product_id": product_id}
 
 
+def queue_video_stats_refresh(limit: int = None) -> dict:
+    """On-demand "re-pull view/like/comment counts" trigger (POST
+    /admin/refresh-video-stats) -- Al: "for the videos can we get pull
+    down more data points from the videos, date it was added current view
+    counts and any other data that make sense." View counts go stale
+    immediately (unlike title/published_at, which are fixed facts once
+    recorded), so this exists to let existing product_videos rows --
+    not just newly-discovered ones -- get refreshed on demand.
+
+    Same shape as queue_video_discovery immediately above: invokes
+    VideoDiscoveryFunction directly (InvocationType='Event', async/fire-
+    and-forget) rather than publishing to a queue, since there isn't one
+    in front of that function, and the same soft-fail convention
+    ({"queued": False, "reason": ...} instead of a 500) when
+    VIDEO_DISCOVERY_FUNCTION_NAME isn't configured. Unlike queue_video_
+    discovery, this is catalog-wide by design (see video_discovery.
+    refresh_video_stats/select_video_ids_needing_stats_refresh for how it
+    picks which rows) rather than scoped to one product_id, so it takes
+    no conn and does no existence check -- there's no single row whose
+    absence would make this a 404 the way a bad product_id would.
+    limit=None lets VideoDiscoveryFunction fall back to its own
+    DEFAULT_REFRESH_STATS_LIMIT rather than this layer needing to know
+    that number too."""
+    function_name = os.environ.get("VIDEO_DISCOVERY_FUNCTION_NAME")
+    if not function_name:
+        return {"queued": False, "reason": "VIDEO_DISCOVERY_FUNCTION_NAME is not configured on this deployment"}
+
+    import boto3
+
+    payload = {"refresh_stats": True}
+    if limit is not None:
+        payload["limit"] = limit
+
+    lambda_client = boto3.client("lambda")
+    lambda_client.invoke(
+        FunctionName=function_name,
+        InvocationType="Event",
+        Payload=json.dumps(payload),
+    )
+    return {"queued": True, "limit": limit}
+
+
 def set_product_published(conn, product_id: str, published: bool) -> dict:
     with conn.cursor() as cur:
         cur.execute(
@@ -1197,6 +1239,8 @@ def list_video_candidates(conn, status: str = "pending", product_id: str = None,
                pv.thumbnail_url, pv.match_query, pv.match_confidence,
                pv.transcript_note, pv.status, pv.source,
                pv.created_at, pv.resolved_at, pv.resolved_by,
+               pv.view_count, pv.like_count, pv.comment_count,
+               pv.duration_seconds, pv.stats_fetched_at,
                (pv.summary is not null) as has_summary
         from product_videos pv
         join products p on p.id = pv.product_id
