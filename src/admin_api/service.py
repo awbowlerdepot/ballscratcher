@@ -1960,3 +1960,570 @@ def backfill_netsuite_status(conn) -> dict:
         corrected_ids = [row[0] for row in cur.fetchall()]
     conn.commit()
     return {"products_corrected": len(corrected_ids)}
+
+
+# ---------------------------------------------------------------------
+# Price tracking (migration 014/015) -- Al: "id like to start a price
+# tracker. this should be configurable to have site setup so that it
+# will pull the current price from a number of sites on a frequency of
+# likely daily? then store this in a way that would allow for charting
+# that price over time in the admin ui and eventually the consumer UI."
+#
+# DESIGN CORRECTION, mid-build (see 014_price_tracking.sql's header
+# comment for the full writeup): "site setup" means choosing which real
+# retailers to track (bowling.com, bowlingball.com, bowlersmart.com,
+# ...), with each product's URL on each site found AUTOMATICALLY by
+# price_checker's discovery job (mirroring video_discovery's YouTube
+# search), not typed in by an admin. And after weighing auto-track-
+# immediately against a pending-review gate, Al settled on "the
+# reccomended path is best": mirror product_videos' pending/approved/
+# rejected review workflow exactly (see list_price_sources/
+# approve_price_source/reject_price_source/restore_price_source below),
+# including undo/restore, built in from the start here rather than added
+# later the way restore_video_candidate was.
+#
+# This section is the admin-facing half: managing the price_sites
+# registry (including each site's search config), reviewing/resolving
+# discovery candidates, a manual-override path for when a search doesn't
+# find a real match, reading history back out for charting, and
+# triggering price_checker on demand -- price_checker itself (the actual
+# search/fetch/parse/record logic) lives in its own Lambda, same split
+# as VideoDiscoveryFunction/video_discovery vs. this file's
+# queue_video_discovery/queue_video_stats_refresh above.
+# ---------------------------------------------------------------------
+
+def list_price_sites(conn) -> list:
+    """Every configured retailer site, active or not -- the admin UI's
+    Price Sites tab needs to show inactive ones too (so they can be
+    re-activated), unlike most other list_* filters in this file that
+    default to hiding inactive/rejected/retired rows."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select id, name, search_url_template, result_link_selector,
+                   default_css_selector, notes, is_active, created_at
+            from price_sites
+            order by name asc
+            """
+        )
+        rows = cur.fetchall()
+    return [
+        {
+            "id": r[0], "name": r[1], "search_url_template": r[2],
+            "result_link_selector": r[3], "default_css_selector": r[4],
+            "notes": r[5], "is_active": r[6], "created_at": r[7],
+        }
+        for r in rows
+    ]
+
+
+def create_price_site(conn, name: str, search_url_template: str, result_link_selector: str,
+                       default_css_selector: str, notes: str = None) -> dict:
+    """Adding a new retailer site is just this -- one INSERT, no new
+    Lambda/deploy. search_url_template + result_link_selector are the
+    site-SEARCH config discovery uses to find candidate product URLs
+    (see price_checker.search_site_for_product); default_css_selector is
+    the price-page config checking uses once a candidate is approved.
+    name is unique (migration 014's constraint) so a typo'd duplicate add
+    surfaces as a clear IntegrityError rather than two confusingly-
+    similar rows."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into price_sites (name, search_url_template, result_link_selector, default_css_selector, notes)
+            values (%s, %s, %s, %s, %s)
+            returning id
+            """,
+            (name, search_url_template, result_link_selector, default_css_selector, notes),
+        )
+        site_id = cur.fetchone()[0]
+    conn.commit()
+    return {
+        "id": site_id, "name": name, "search_url_template": search_url_template,
+        "result_link_selector": result_link_selector, "default_css_selector": default_css_selector,
+        "notes": notes,
+    }
+
+
+def update_price_site(conn, site_id: str, name: str = None, search_url_template: str = None,
+                       result_link_selector: str = None, default_css_selector: str = None,
+                       notes: str = None, is_active: bool = None) -> dict:
+    """Partial update, same not-None-means-set convention as
+    update_product_image above. is_active=False is how a site gets
+    retired without deleting it (and the product_price_sources/history
+    rows that reference it) -- see delete_price_site for the actually-
+    destructive option; it also stops the site from being searched on
+    the next discovery pass (see price_checker.list_active_price_sites)."""
+    with conn.cursor() as cur:
+        set_clauses = []
+        params = []
+        if name is not None:
+            set_clauses.append("name = %s")
+            params.append(name)
+        if search_url_template is not None:
+            set_clauses.append("search_url_template = %s")
+            params.append(search_url_template)
+        if result_link_selector is not None:
+            set_clauses.append("result_link_selector = %s")
+            params.append(result_link_selector)
+        if default_css_selector is not None:
+            set_clauses.append("default_css_selector = %s")
+            params.append(default_css_selector)
+        if notes is not None:
+            set_clauses.append("notes = %s")
+            params.append(notes)
+        if is_active is not None:
+            set_clauses.append("is_active = %s")
+            params.append(is_active)
+
+        if not set_clauses:
+            cur.execute("select id from price_sites where id = %s", (site_id,))
+            if cur.fetchone() is None:
+                raise LookupError(f"No price_sites row with id {site_id}")
+            conn.commit()
+            return {"id": site_id}
+
+        params.append(site_id)
+        cur.execute(
+            f"update price_sites set {', '.join(set_clauses)} where id = %s returning id",
+            params,
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError(f"No price_sites row with id {site_id}")
+    conn.commit()
+    return {"id": site_id}
+
+
+def delete_price_site(conn, site_id: str) -> dict:
+    """Hard delete -- cascades to every product_price_sources row (and
+    THEIR product_price_history rows) pointed at this site, per migration
+    014's `on delete cascade`. Real, deliberate difference from
+    delete_video_candidate's docstring reasoning (which warns hard delete
+    can let a row silently resurface elsewhere): there's no discovery
+    process that could re-create a price_sites row on its own, so no
+    tombstone/re-creation risk here -- unlike a video candidate, nothing
+    will ever re-insert a deleted site behind an admin's back."""
+    with conn.cursor() as cur:
+        cur.execute("delete from price_sites where id = %s returning id", (site_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError(f"No price_sites row with id {site_id}")
+    conn.commit()
+    return {"deleted": True, "id": site_id}
+
+
+def list_product_price_sources(conn, product_id: str, status: str = None) -> list:
+    """This product's "site setup" -- price_sites rows discovery has
+    matched (or an admin has manually attached) to it, plus the SITE's
+    name (for display) and its latest history row (price/checked_at/
+    error) as a convenience, via a correlated subquery -- same live-
+    computed-not-stored pattern public_api/admin_api's popularity_score
+    subquery already uses (see that section's own comment in
+    list_products), picked here for the same reason: "latest price" is
+    inherently derived from product_price_history, not a fact worth
+    duplicating onto product_price_sources itself.
+
+    status=None (the product-detail view's default, mirroring
+    list_video_candidates' own status=None case) returns every status --
+    pending/approved/rejected together -- so an admin reviewing one
+    product's price tracking can see a rejected mismatch sitting next to
+    the approved source that replaced it, not just whichever one
+    happens to be active right now."""
+    query = """
+        select
+            pps.id, pps.price_site_id, ps.name as site_name, pps.product_url,
+            coalesce(pps.css_selector, ps.default_css_selector) as css_selector,
+            pps.match_query, pps.match_confidence, pps.status, pps.source,
+            pps.is_active, pps.last_checked_at, pps.created_at, pps.resolved_at, pps.resolved_by,
+            (select h.price from product_price_history h
+             where h.price_source_id = pps.id order by h.checked_at desc limit 1) as latest_price,
+            (select h.checked_at from product_price_history h
+             where h.price_source_id = pps.id order by h.checked_at desc limit 1) as latest_checked_at,
+            (select h.error from product_price_history h
+             where h.price_source_id = pps.id order by h.checked_at desc limit 1) as latest_error
+        from product_price_sources pps
+        join price_sites ps on ps.id = pps.price_site_id
+        where pps.product_id = %s
+    """
+    params = [product_id]
+    if status is not None:
+        query += " and pps.status = %s"
+        params.append(status)
+    query += " order by ps.name asc, pps.created_at asc, pps.id asc"
+
+    with conn.cursor() as cur:
+        cur.execute(query, params)
+        rows = cur.fetchall()
+    return [
+        {
+            "id": r[0], "price_site_id": r[1], "site_name": r[2], "product_url": r[3],
+            "css_selector": r[4], "match_query": r[5], "match_confidence": r[6],
+            "status": r[7], "source": r[8], "is_active": r[9], "last_checked_at": r[10],
+            "created_at": r[11], "resolved_at": r[12], "resolved_by": r[13],
+            "latest_price": r[14], "latest_checked_at": r[15], "latest_error": r[16],
+        }
+        for r in rows
+    ]
+
+
+def get_pending_price_source_count(conn) -> int:
+    """Same shape as get_pending_video_count -- feeds an admin-site badge
+    count for the Price Sources review queue."""
+    with conn.cursor() as cur:
+        cur.execute("select count(*) from product_price_sources where status = 'pending'")
+        return cur.fetchone()[0]
+
+
+def list_price_sources(conn, status: str = "pending", product_id: str = None, limit: int = 50, offset: int = 0) -> list:
+    """Catalog-wide review queue -- mirrors list_video_candidates almost
+    exactly (same status/product_id/limit/offset shape, same pv.id-style
+    id tiebreaker for stable pagination -- see that function's own
+    docstring for the real production bug that tiebreaker fixes, which
+    applies here just as much: a single discovery invocation can insert
+    many product_price_sources rows with near-identical created_at
+    timestamps)."""
+    query = """
+        select pps.id, pps.product_id, p.name as product_name, b.name as brand_name,
+               pps.price_site_id, ps.name as site_name, pps.product_url,
+               coalesce(pps.css_selector, ps.default_css_selector) as css_selector,
+               pps.match_query, pps.match_confidence, pps.status, pps.source,
+               pps.is_active, pps.last_checked_at,
+               pps.created_at, pps.resolved_at, pps.resolved_by
+        from product_price_sources pps
+        join products p on p.id = pps.product_id
+        join brands b on b.id = p.brand_id
+        join price_sites ps on ps.id = pps.price_site_id
+    """
+    params = []
+    conditions = []
+    if status is not None:
+        conditions.append("pps.status = %s")
+        params.append(status)
+    if product_id:
+        conditions.append("pps.product_id = %s")
+        params.append(product_id)
+    if conditions:
+        query += " where " + " and ".join(conditions)
+    query += " order by pps.match_confidence asc, pps.created_at asc, pps.id asc limit %s offset %s"
+    params += [limit, offset]
+
+    with conn.cursor() as cur:
+        cur.execute(query, params)
+        columns = [desc[0] for desc in cur.description]
+        return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
+def approve_price_source(conn, source_id: str, resolved_by: str) -> dict:
+    """Marks the candidate approved -- from this point on, price_checker's
+    checking job shape actually includes it (see list_price_sources_due/
+    list_price_sources_for_products, both scoped to status='approved').
+    Same one-way pending -> approved guard as approve_video_candidate,
+    for the same reason: a bulk action or a stale UI double-click
+    shouldn't silently re-apply a decision. See restore_price_source for
+    the way back out."""
+    with conn.cursor() as cur:
+        cur.execute("select status from product_price_sources where id = %s", (source_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError(f"No product_price_sources row with id {source_id}")
+        if row[0] != "pending":
+            raise ValueError(f"product_price_sources row {source_id} is already {row[0]}, not pending")
+
+        cur.execute(
+            "update product_price_sources set status = 'approved', resolved_at = now(), resolved_by = %s where id = %s",
+            (resolved_by, source_id),
+        )
+    conn.commit()
+    return {"source_id": source_id, "status": "approved"}
+
+
+def reject_price_source(conn, source_id: str, resolved_by: str, reason: str = None) -> dict:
+    """Same shape/guard as reject_video_candidate. reason isn't persisted
+    anywhere yet (product_price_sources has no reason column, mirroring
+    product_videos' own lack of one) -- accepted here purely for call-
+    site symmetry with reject_video_candidate/the admin-site's shared
+    reject-with-reason UI, same as that function's own parameter."""
+    with conn.cursor() as cur:
+        cur.execute("select status from product_price_sources where id = %s", (source_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError(f"No product_price_sources row with id {source_id}")
+        if row[0] != "pending":
+            raise ValueError(f"product_price_sources row {source_id} is already {row[0]}, not pending")
+
+        cur.execute(
+            "update product_price_sources set status = 'rejected', resolved_at = now(), resolved_by = %s where id = %s",
+            (resolved_by, source_id),
+        )
+    conn.commit()
+    return {"source_id": source_id, "status": "rejected"}
+
+
+def restore_price_source(conn, source_id: str) -> dict:
+    """Undoes a mistaken approve/reject -- built in from the start here,
+    unlike product_videos (where this only got added after Al hit the
+    gap live: "it appears if i accidentally reject a video i can not
+    undo that action"). Same behavior as restore_video_candidate: moves
+    an already-resolved row (status IN ('approved', 'rejected')) back to
+    'pending' and clears resolved_at/resolved_by. No resolved_by
+    parameter, same reasoning as restore_video_candidate -- there's no
+    decision to attribute when undoing one. Restoring an already-pending
+    row is a hard error, not a silent no-op, same "stale UI state is
+    worth surfacing" stance."""
+    with conn.cursor() as cur:
+        cur.execute("select status from product_price_sources where id = %s", (source_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError(f"No product_price_sources row with id {source_id}")
+        if row[0] not in ("approved", "rejected"):
+            raise ValueError(f"product_price_sources row {source_id} is {row[0]}, not approved or rejected -- nothing to restore")
+
+        cur.execute(
+            "update product_price_sources set status = 'pending', resolved_at = null, resolved_by = null where id = %s",
+            (source_id,),
+        )
+    conn.commit()
+    return {"source_id": source_id, "status": "pending"}
+
+
+def create_product_price_source(conn, product_id: str, price_site_id: str, product_url: str,
+                                 css_selector: str = None, resolved_by: str = None) -> dict:
+    """The manual-override path -- Al: "admin can fix mismatches manually
+    after the fact if a match is wrong." Not the primary way sources get
+    created (that's price_checker's discovery job, see this section's own
+    header comment) -- this is for when discovery didn't find a real
+    match at all, or found the wrong one and an admin wants to attach the
+    correct URL directly. Immediately status='approved', source='manual'
+    -- there's no candidate to review here, an admin just told this
+    system the exact URL directly, same trust level as approving a
+    candidate by hand. Existence-checks both foreign keys up front (same
+    reasoning as reassign_video_candidate's target-product check) so a
+    bad id surfaces as a clear 404-shaped LookupError instead of an
+    opaque IntegrityError from the FK constraint. css_selector is
+    optional -- null means "use this site's default_css_selector" (see
+    price_checker.list_price_sources_due's coalesce)."""
+    with conn.cursor() as cur:
+        cur.execute("select id from products where id = %s", (product_id,))
+        if cur.fetchone() is None:
+            raise LookupError(f"No product with id {product_id}")
+        cur.execute("select id from price_sites where id = %s", (price_site_id,))
+        if cur.fetchone() is None:
+            raise LookupError(f"No price_sites row with id {price_site_id}")
+
+        cur.execute(
+            """
+            insert into product_price_sources
+                (product_id, price_site_id, product_url, css_selector, status, source, resolved_at, resolved_by)
+            values (%s, %s, %s, %s, 'approved', 'manual', now(), %s)
+            returning id
+            """,
+            (product_id, price_site_id, product_url, css_selector, resolved_by),
+        )
+        source_id = cur.fetchone()[0]
+    conn.commit()
+    return {"id": source_id, "product_id": product_id, "price_site_id": price_site_id,
+            "product_url": product_url, "status": "approved", "source": "manual"}
+
+
+def update_product_price_source(conn, source_id: str, product_url: str = None,
+                                 css_selector: str = None, is_active: bool = None) -> dict:
+    """Partial update, same convention as update_price_site. is_active is
+    how an admin pauses checking a source (e.g. a retailer stopped
+    carrying this ball) without losing its price_price_history."""
+    with conn.cursor() as cur:
+        set_clauses = []
+        params = []
+        if product_url is not None:
+            set_clauses.append("product_url = %s")
+            params.append(product_url)
+        if css_selector is not None:
+            set_clauses.append("css_selector = %s")
+            params.append(css_selector)
+        if is_active is not None:
+            set_clauses.append("is_active = %s")
+            params.append(is_active)
+
+        if not set_clauses:
+            cur.execute("select id from product_price_sources where id = %s", (source_id,))
+            if cur.fetchone() is None:
+                raise LookupError(f"No product_price_sources row with id {source_id}")
+            conn.commit()
+            return {"id": source_id}
+
+        params.append(source_id)
+        cur.execute(
+            f"update product_price_sources set {', '.join(set_clauses)} where id = %s returning id",
+            params,
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError(f"No product_price_sources row with id {source_id}")
+    conn.commit()
+    return {"id": source_id}
+
+
+def delete_product_price_source(conn, source_id: str) -> dict:
+    """Hard delete -- cascades to this source's product_price_history
+    rows too (migration 014's `on delete cascade`), same as
+    delete_price_site. There's no video-candidate-style "could resurface
+    on the next rescan" concern here either: price_checker never creates
+    a product_price_sources row on its own, only admins do via
+    create_product_price_source, so deleting one is final in the same
+    uncomplicated way delete_price_site is."""
+    with conn.cursor() as cur:
+        cur.execute("delete from product_price_sources where id = %s returning id", (source_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError(f"No product_price_sources row with id {source_id}")
+    conn.commit()
+    return {"deleted": True, "id": source_id}
+
+
+def get_price_history(conn, product_id: str, days: int = 90) -> dict:
+    """Read side for the actual "chart price over time" ask -- returns
+    both this product's configured sources (for a legend/label lookup)
+    and the raw history rows within the trailing `days` window, across
+    ALL of this product's sources at once so the admin UI can draw one
+    line per source on a single chart without N separate calls. Rows
+    with error IS NOT NULL are still included (not filtered out) --
+    same "a failed check is still visible" stance product_price_history
+    itself takes (see migration 014's header comment); it's the chart-
+    rendering layer's job to decide how to draw a gap or a marker for
+    those, not this query's job to hide them."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select pps.id, ps.name as site_name
+            from product_price_sources pps
+            join price_sites ps on ps.id = pps.price_site_id
+            where pps.product_id = %s and pps.status = 'approved'
+            order by ps.name asc
+            """,
+            (product_id,),
+        )
+        sources = [{"id": r[0], "site_name": r[1]} for r in cur.fetchall()]
+
+        cur.execute(
+            """
+            select h.price_source_id, h.price, h.error, h.checked_at
+            from product_price_history h
+            join product_price_sources pps on pps.id = h.price_source_id
+            where pps.product_id = %s
+              and h.checked_at >= now() - (%s || ' days')::interval
+            order by h.checked_at asc
+            """,
+            (product_id, days),
+        )
+        history = [
+            {"price_source_id": r[0], "price": r[1], "error": r[2], "checked_at": r[3]}
+            for r in cur.fetchall()
+        ]
+
+    return {"sources": sources, "history": history}
+
+
+def queue_price_check(conn, product_id: str) -> dict:
+    """On-demand "check price now" trigger for one product's configured
+    sources -- same shape as queue_video_discovery immediately above
+    (direct lambda:InvokeFunction, async/fire-and-forget, same
+    {"queued": False, "reason": ...} soft-fail convention when
+    PRICE_CHECKER_FUNCTION_NAME isn't configured on this deployment).
+    price_checker's own {"product_ids": [...]} job shape (see its module
+    docstring) is what actually scopes the check to just this product's
+    active sources."""
+    with conn.cursor() as cur:
+        cur.execute("select id from products where id = %s", (product_id,))
+        if cur.fetchone() is None:
+            raise LookupError(f"No product with id {product_id}")
+
+    function_name = os.environ.get("PRICE_CHECKER_FUNCTION_NAME")
+    if not function_name:
+        return {"queued": False, "reason": "PRICE_CHECKER_FUNCTION_NAME is not configured on this deployment"}
+
+    import boto3
+
+    lambda_client = boto3.client("lambda")
+    lambda_client.invoke(
+        FunctionName=function_name,
+        InvocationType="Event",
+        Payload=json.dumps({"product_ids": [product_id]}),
+    )
+    return {"queued": True, "product_id": product_id}
+
+
+def queue_price_check_batch(limit: int = None) -> dict:
+    """Catalog-wide "check prices now" trigger -- same shape as
+    queue_video_stats_refresh immediately above (no conn/existence check,
+    since there's no single row whose absence would 404; limit=None lets
+    price_checker fall back to its own DEFAULT_PRICE_CHECK_LIMIT rather
+    than this layer needing to know that number too)."""
+    function_name = os.environ.get("PRICE_CHECKER_FUNCTION_NAME")
+    if not function_name:
+        return {"queued": False, "reason": "PRICE_CHECKER_FUNCTION_NAME is not configured on this deployment"}
+
+    import boto3
+
+    payload = {}
+    if limit is not None:
+        payload["limit"] = limit
+
+    lambda_client = boto3.client("lambda")
+    lambda_client.invoke(
+        FunctionName=function_name,
+        InvocationType="Event",
+        Payload=json.dumps(payload),
+    )
+    return {"queued": True, "limit": limit}
+
+
+def queue_price_discovery(conn, product_id: str) -> dict:
+    """On-demand "search for price sources" trigger for one product --
+    same shape as queue_video_discovery, just invoking PriceCheckerFunction
+    with a {"discover": true, "product_ids": [...]} job instead of
+    VideoDiscoveryFunction's own scope shape (see price_checker.app's
+    module docstring for the discovery job's own shapes). This is the
+    thing a product-detail "find price sources" button (mirroring the
+    existing Videos section's rescan button) calls."""
+    with conn.cursor() as cur:
+        cur.execute("select id from products where id = %s", (product_id,))
+        if cur.fetchone() is None:
+            raise LookupError(f"No product with id {product_id}")
+
+    function_name = os.environ.get("PRICE_CHECKER_FUNCTION_NAME")
+    if not function_name:
+        return {"queued": False, "reason": "PRICE_CHECKER_FUNCTION_NAME is not configured on this deployment"}
+
+    import boto3
+
+    lambda_client = boto3.client("lambda")
+    lambda_client.invoke(
+        FunctionName=function_name,
+        InvocationType="Event",
+        Payload=json.dumps({"discover": True, "product_ids": [product_id]}),
+    )
+    return {"queued": True, "product_id": product_id}
+
+
+def queue_price_discovery_batch(limit: int = None) -> dict:
+    """Catalog-wide "search for price sources" trigger -- same shape as
+    queue_video_stats_refresh/queue_price_check_batch (no conn/existence
+    check; limit=None lets price_checker fall back to its own
+    DEFAULT_MAX_PRODUCTS_PER_DISCOVERY_INVOCATION)."""
+    function_name = os.environ.get("PRICE_CHECKER_FUNCTION_NAME")
+    if not function_name:
+        return {"queued": False, "reason": "PRICE_CHECKER_FUNCTION_NAME is not configured on this deployment"}
+
+    import boto3
+
+    payload = {"discover": True}
+    if limit is not None:
+        payload["limit"] = limit
+
+    lambda_client = boto3.client("lambda")
+    lambda_client.invoke(
+        FunctionName=function_name,
+        InvocationType="Event",
+        Payload=json.dumps(payload),
+    )
+    return {"queued": True, "limit": limit}

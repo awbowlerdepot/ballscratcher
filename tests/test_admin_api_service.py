@@ -433,6 +433,135 @@ class FakeCursor:
             self._rows = [(pid,) for pid in corrected_ids]
             self.description = [("id",)]
 
+        # --- price tracking (migration 014/015): create_price_site/
+        # update_price_site/delete_price_site, create_product_price_source/
+        # update_product_price_source/delete_product_price_source, and
+        # approve_price_source/reject_price_source/restore_price_source
+        # (same status-transition shape as the product_videos branches
+        # above). The read-only list_price_sites/list_product_price_
+        # sources/list_price_sources/get_price_history queries are
+        # exercised via _QueryCapturingConnection instead (SQL-shape
+        # assertions only, same convention list_cores/list_coverstocks
+        # tests already use) -- not modeled here.
+
+        elif q.startswith("insert into price_sites"):
+            name, search_url_template, result_link_selector, default_css_selector, notes = params
+            self.db.setdefault("_price_site_id_seq", 0)
+            self.db["_price_site_id_seq"] += 1
+            new_id = f"site-new-{self.db['_price_site_id_seq']}"
+            self.db.setdefault("price_sites", {})[new_id] = {
+                "id": new_id, "name": name, "search_url_template": search_url_template,
+                "result_link_selector": result_link_selector, "default_css_selector": default_css_selector,
+                "notes": notes, "is_active": True,
+            }
+            self._last_result = (new_id,)
+            self.description = [("id",)]
+
+        elif q.startswith("select id from price_sites where id = %s"):
+            (site_id,) = params
+            row = self.db.get("price_sites", {}).get(site_id)
+            self._last_result = (row["id"],) if row else None
+            self.description = [("id",)]
+
+        elif q.startswith("update price_sites set") and "returning id" in q:
+            site_id = params[-1]
+            set_clause_text = q.split("set ", 1)[1].split(" where", 1)[0]
+            columns = [c.split(" =", 1)[0].strip() for c in set_clause_text.split(",")]
+            row = self.db.get("price_sites", {}).get(site_id)
+            if row is not None:
+                for column, value in zip(columns, params[:-1]):
+                    row[column] = value
+                self._last_result = (site_id,)
+            else:
+                self._last_result = None
+            self.description = [("id",)]
+
+        elif q.startswith("delete from price_sites where id = %s"):
+            (site_id,) = params
+            existed = site_id in self.db.get("price_sites", {})
+            self.db.get("price_sites", {}).pop(site_id, None)
+            self._last_result = (site_id,) if existed else None
+            self.description = [("id",)]
+
+        elif q.startswith("insert into product_price_sources") and "'approved', 'manual'" in q:
+            # create_product_price_source's manual-override path --
+            # distinct branch from discovery's own insert (which price_
+            # checker, not admin_api, ever calls -- see that module's own
+            # tests) since the column list/status/source differ.
+            product_id, price_site_id, product_url, css_selector, resolved_by = params
+            self.db.setdefault("_price_source_id_seq", 0)
+            self.db["_price_source_id_seq"] += 1
+            new_id = f"src-new-{self.db['_price_source_id_seq']}"
+            self.db.setdefault("product_price_sources", {})[new_id] = {
+                "id": new_id, "product_id": product_id, "price_site_id": price_site_id,
+                "product_url": product_url, "css_selector": css_selector, "is_active": True,
+                "last_checked_at": None, "status": "approved", "source": "manual",
+                "match_query": None, "match_confidence": None, "resolved_by": resolved_by,
+            }
+            self._last_result = (new_id,)
+            self.description = [("id",)]
+
+        elif q.startswith("select id from product_price_sources where id = %s"):
+            (source_id,) = params
+            row = self.db.get("product_price_sources", {}).get(source_id)
+            self._last_result = (row["id"],) if row else None
+            self.description = [("id",)]
+
+        elif q.startswith("select status from product_price_sources where id = %s"):
+            (source_id,) = params
+            row = self.db.get("product_price_sources", {}).get(source_id)
+            self._last_result = (row["status"],) if row else None
+            self.description = [("status",)]
+
+        elif q.startswith("update product_price_sources set status = 'approved'"):
+            resolved_by, source_id = params
+            row = self.db["product_price_sources"][source_id]
+            row["status"] = "approved"
+            row["resolved_by"] = resolved_by
+            self._last_result = None
+
+        elif q.startswith("update product_price_sources set status = 'rejected'"):
+            resolved_by, source_id = params
+            row = self.db["product_price_sources"][source_id]
+            row["status"] = "rejected"
+            row["resolved_by"] = resolved_by
+            self._last_result = None
+
+        elif q.startswith("update product_price_sources set status = 'pending'"):
+            # restore_price_source's undo -- clears resolved_at/resolved_by
+            # too, same as restore_video_candidate's FakeCursor branch.
+            (source_id,) = params
+            row = self.db["product_price_sources"][source_id]
+            row["status"] = "pending"
+            row["resolved_by"] = None
+            row["resolved_at"] = None
+            self._last_result = None
+
+        elif q.startswith("update product_price_sources set") and "returning id" in q:
+            source_id = params[-1]
+            set_clause_text = q.split("set ", 1)[1].split(" where", 1)[0]
+            columns = [c.split(" =", 1)[0].strip() for c in set_clause_text.split(",")]
+            row = self.db.get("product_price_sources", {}).get(source_id)
+            if row is not None:
+                for column, value in zip(columns, params[:-1]):
+                    row[column] = value
+                self._last_result = (source_id,)
+            else:
+                self._last_result = None
+            self.description = [("id",)]
+
+        elif q.startswith("delete from product_price_sources where id = %s"):
+            (source_id,) = params
+            existed = source_id in self.db.get("product_price_sources", {})
+            self.db.get("product_price_sources", {}).pop(source_id, None)
+            self._last_result = (source_id,) if existed else None
+            self.description = [("id",)]
+
+        elif q.startswith("select count(*) from product_price_sources where status = 'pending'"):
+            count = sum(1 for r in self.db.get("product_price_sources", {}).values() if r.get("status") == "pending")
+            self._last_result = (count,)
+            self.description = [("count",)]
+
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
 
@@ -2547,6 +2676,631 @@ def test_backfill_estimated_plotter_positions_no_op_when_nothing_missing():
     result = service.backfill_estimated_plotter_positions(conn)
 
     assert result == {"products_missing_position": 0, "products_updated": 0}
+
+
+# ---------------------------------------------------------------------
+# Price tracking (migration 014/015) -- Al: "id like to start a price
+# tracker... configurable to have site setup so that it will pull the
+# current price from a number of sites... store this in a way that
+# would allow for charting that price over time."
+#
+# DESIGN CORRECTION mid-build: "site setup" means choosing which real
+# retailers to track, with each product's URL found AUTOMATICALLY by
+# price_checker's discovery job (mirroring video_discovery's YouTube
+# search) -- and after weighing auto-track-immediately against a
+# pending-review gate, Al settled on "the reccomended path is best":
+# mirror product_videos' pending/approved/rejected review workflow
+# exactly, including undo/restore. See service.py's own "Price tracking"
+# section header comment for the full design summary.
+#
+# list_price_sites/list_product_price_sources/list_price_sources/
+# get_price_history are read-only joins with no branching logic to speak
+# of -- exercised via _QueryCapturingConnection (SQL-shape assertions),
+# same convention list_cores/list_coverstocks already use, rather than
+# fully modeled in FakeCursor. approve_price_source/reject_price_source/
+# restore_price_source are exercised the same way approve/reject/
+# restore_video_candidate are above (status-transition assertions
+# against FakeCursor/FakeConnection). Everything else that mutates
+# (create/update/delete, the four queue_price_*/queue_price_discovery*
+# Lambda triggers) is exercised against FakeCursor/FakeConnection or
+# _FakeLambdaClient like the rest of this file.
+# ---------------------------------------------------------------------
+
+def test_list_price_sites_orders_by_name():
+    conn = _QueryCapturingConnection()
+    service.list_price_sites(conn)
+    query = conn.cursor().queries[0]
+    assert "from price_sites" in query
+    assert "order by name asc" in query
+
+
+def test_list_product_price_sources_joins_price_sites_and_computes_latest_price():
+    conn = _QueryCapturingConnection()
+    service.list_product_price_sources(conn, "prod-1")
+    query = conn.cursor().queries[0]
+    assert "from product_price_sources pps" in query
+    assert "join price_sites ps on ps.id = pps.price_site_id" in query
+    assert "where pps.product_id = %s" in query
+    # status=None (the default, unlike GET /price-sources' catalog-wide
+    # default of "pending") returns every status -- see this function's
+    # own docstring, mirroring list_video_candidates' status=None case.
+    assert "pps.status = %s" not in query
+    # The "latest price" convenience fields (see service.
+    # list_product_price_sources' docstring) are live-computed via a
+    # correlated subquery, not a stored column.
+    assert "from product_price_history h" in query
+    assert "order by h.checked_at desc limit 1" in query
+
+
+def test_list_product_price_sources_status_filter_when_given():
+    conn = _QueryCapturingConnection()
+    service.list_product_price_sources(conn, "prod-1", status="pending")
+    query = conn.cursor().queries[0]
+    assert "pps.status = %s" in query
+
+
+def test_list_price_sources_defaults_to_pending_and_orders_by_confidence():
+    conn = _QueryCapturingConnection()
+    service.list_price_sources(conn)
+    query = conn.cursor().queries[0]
+    assert "from product_price_sources pps" in query
+    assert "join products p on p.id = pps.product_id" in query
+    assert "join brands b on b.id = p.brand_id" in query
+    assert "join price_sites ps on ps.id = pps.price_site_id" in query
+    assert "pps.status = %s" in query
+    assert "order by pps.match_confidence asc, pps.created_at asc, pps.id asc limit %s offset %s" in query
+
+
+def test_list_price_sources_status_all_omits_filter():
+    conn = _QueryCapturingConnection()
+    service.list_price_sources(conn, status=None)
+    query = conn.cursor().queries[0]
+    assert "pps.status = %s" not in query
+
+
+def test_get_price_history_scopes_by_product_id_and_days_window():
+    conn = _QueryCapturingConnection()
+    service.get_price_history(conn, "prod-1", days=30)
+    queries = conn.cursor().queries
+    assert len(queries) == 2  # sources query, then history query
+    assert "where pps.product_id = %s and pps.status = 'approved'" in queries[0]
+    assert "where pps.product_id = %s" in queries[1]
+    assert "h.checked_at >= now() - (%s || ' days')::interval" in queries[1]
+
+
+def _fake_db_with_price_site():
+    return {
+        "price_sites": {
+            "site-1": {
+                "id": "site-1", "name": "BowlerDepot",
+                "search_url_template": "https://bowlerdepot.com/search?q={query}",
+                "result_link_selector": ".product-link",
+                "default_css_selector": ".price", "notes": None, "is_active": True,
+            },
+        },
+    }
+
+
+def test_create_price_site_inserts_row():
+    db = {"price_sites": {}}
+    conn = FakeConnection(db)
+
+    result = service.create_price_site(
+        conn, "BowlerDepot", "https://bowlerdepot.com/search?q={query}", ".product-link",
+        ".price-item--sale", notes="BigCommerce store",
+    )
+
+    assert result["name"] == "BowlerDepot"
+    new_id = result["id"]
+    assert db["price_sites"][new_id]["search_url_template"] == "https://bowlerdepot.com/search?q={query}"
+    assert db["price_sites"][new_id]["result_link_selector"] == ".product-link"
+    assert db["price_sites"][new_id]["default_css_selector"] == ".price-item--sale"
+    assert db["price_sites"][new_id]["notes"] == "BigCommerce store"
+    assert conn.committed is True
+
+
+def test_update_price_site_partial_update_only_touches_given_fields():
+    db = _fake_db_with_price_site()
+    conn = FakeConnection(db)
+
+    service.update_price_site(conn, "site-1", default_css_selector=".new-price")
+
+    assert db["price_sites"]["site-1"]["default_css_selector"] == ".new-price"
+    assert db["price_sites"]["site-1"]["name"] == "BowlerDepot"  # untouched
+
+
+def test_update_price_site_can_update_search_config():
+    db = _fake_db_with_price_site()
+    conn = FakeConnection(db)
+
+    service.update_price_site(conn, "site-1", result_link_selector=".item-link")
+
+    assert db["price_sites"]["site-1"]["result_link_selector"] == ".item-link"
+    assert db["price_sites"]["site-1"]["search_url_template"] == "https://bowlerdepot.com/search?q={query}"  # untouched
+
+
+def test_update_price_site_can_deactivate():
+    db = _fake_db_with_price_site()
+    conn = FakeConnection(db)
+
+    service.update_price_site(conn, "site-1", is_active=False)
+
+    assert db["price_sites"]["site-1"]["is_active"] is False
+
+
+def test_update_price_site_missing_raises():
+    db = {"price_sites": {}}
+    conn = FakeConnection(db)
+    try:
+        service.update_price_site(conn, "no-such-site", name="X")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def test_delete_price_site_removes_row():
+    db = _fake_db_with_price_site()
+    conn = FakeConnection(db)
+
+    result = service.delete_price_site(conn, "site-1")
+
+    assert result == {"deleted": True, "id": "site-1"}
+    assert "site-1" not in db["price_sites"]
+
+
+def test_delete_price_site_missing_raises():
+    db = {"price_sites": {}}
+    conn = FakeConnection(db)
+    try:
+        service.delete_price_site(conn, "no-such-site")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def _fake_db_with_price_source():
+    db = _fake_db_with_price_site()
+    db["products"] = {"prod-1": {"id": "prod-1"}}
+    db["product_price_sources"] = {
+        "src-1": {
+            "id": "src-1", "product_id": "prod-1", "price_site_id": "site-1",
+            "product_url": "https://bowlerdepot.com/p/fury", "css_selector": None, "is_active": True,
+            "status": "pending", "source": "site_search", "match_query": "Brunswick Fury",
+            "match_confidence": "high", "resolved_by": None,
+        },
+    }
+    return db
+
+
+# --- create_product_price_source: manual-override path only -- Al:
+# "admin can fix mismatches manually after the fact if a match is
+# wrong." Always lands as status='approved', source='manual' -- there's
+# no candidate to review here, an admin supplied the exact URL directly.
+
+def test_create_product_price_source_inserts_approved_manual_row():
+    db = _fake_db_with_price_source()
+    conn = FakeConnection(db)
+
+    result = service.create_product_price_source(conn, "prod-1", "site-1", "https://bowlerdepot.com/p/fury2")
+
+    new_id = result["id"]
+    assert db["product_price_sources"][new_id]["product_id"] == "prod-1"
+    assert db["product_price_sources"][new_id]["price_site_id"] == "site-1"
+    assert db["product_price_sources"][new_id]["product_url"] == "https://bowlerdepot.com/p/fury2"
+    assert db["product_price_sources"][new_id]["status"] == "approved"
+    assert db["product_price_sources"][new_id]["source"] == "manual"
+    assert result["status"] == "approved"
+    assert result["source"] == "manual"
+
+
+def test_create_product_price_source_records_resolved_by():
+    db = _fake_db_with_price_source()
+    conn = FakeConnection(db)
+
+    result = service.create_product_price_source(
+        conn, "prod-1", "site-1", "https://bowlerdepot.com/p/fury2", resolved_by="al@bringyourbest.co",
+    )
+
+    new_id = result["id"]
+    assert db["product_price_sources"][new_id]["resolved_by"] == "al@bringyourbest.co"
+
+
+def test_create_product_price_source_missing_product_raises():
+    db = _fake_db_with_price_source()
+    conn = FakeConnection(db)
+    try:
+        service.create_product_price_source(conn, "no-such-product", "site-1", "https://example.com/p")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def test_create_product_price_source_missing_site_raises():
+    db = _fake_db_with_price_source()
+    conn = FakeConnection(db)
+    try:
+        service.create_product_price_source(conn, "prod-1", "no-such-site", "https://example.com/p")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def test_update_product_price_source_partial_update():
+    db = _fake_db_with_price_source()
+    conn = FakeConnection(db)
+
+    service.update_product_price_source(conn, "src-1", css_selector=".override")
+
+    assert db["product_price_sources"]["src-1"]["css_selector"] == ".override"
+    assert db["product_price_sources"]["src-1"]["product_url"] == "https://bowlerdepot.com/p/fury"  # untouched
+
+
+def test_update_product_price_source_can_deactivate():
+    db = _fake_db_with_price_source()
+    conn = FakeConnection(db)
+
+    service.update_product_price_source(conn, "src-1", is_active=False)
+
+    assert db["product_price_sources"]["src-1"]["is_active"] is False
+
+
+def test_update_product_price_source_missing_raises():
+    db = _fake_db_with_price_source()
+    conn = FakeConnection(db)
+    try:
+        service.update_product_price_source(conn, "no-such-source", product_url="https://x.example")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def test_delete_product_price_source_removes_row():
+    db = _fake_db_with_price_source()
+    conn = FakeConnection(db)
+
+    result = service.delete_product_price_source(conn, "src-1")
+
+    assert result == {"deleted": True, "id": "src-1"}
+    assert "src-1" not in db["product_price_sources"]
+
+
+def test_delete_product_price_source_missing_raises():
+    db = _fake_db_with_price_source()
+    conn = FakeConnection(db)
+    try:
+        service.delete_product_price_source(conn, "no-such-source")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+# --- approve_price_source / reject_price_source / restore_price_source:
+# the actual review workflow Al's "the reccomended path is best" locked
+# in -- same one-way pending->approved/rejected guard, and the same
+# undo-back-to-pending escape hatch, as approve/reject/restore_video_
+# candidate, but built in from the start here (see this section's own
+# header comment for why that matters).
+
+def test_approve_price_source_marks_approved():
+    db = _fake_db_with_price_source()
+    conn = FakeConnection(db)
+
+    result = service.approve_price_source(conn, "src-1", resolved_by="al@bringyourbest.co")
+
+    assert result == {"source_id": "src-1", "status": "approved"}
+    assert db["product_price_sources"]["src-1"]["status"] == "approved"
+    assert db["product_price_sources"]["src-1"]["resolved_by"] == "al@bringyourbest.co"
+    assert conn.committed is True
+
+
+def test_approve_price_source_already_resolved_raises():
+    db = _fake_db_with_price_source()
+    db["product_price_sources"]["src-1"]["status"] = "approved"
+    conn = FakeConnection(db)
+    try:
+        service.approve_price_source(conn, "src-1", resolved_by="al@bringyourbest.co")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_approve_price_source_missing_raises():
+    db = _fake_db_with_price_source()
+    conn = FakeConnection(db)
+    try:
+        service.approve_price_source(conn, "does-not-exist", resolved_by="al@bringyourbest.co")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def test_reject_price_source_marks_rejected():
+    db = _fake_db_with_price_source()
+    conn = FakeConnection(db)
+
+    result = service.reject_price_source(conn, "src-1", resolved_by="al@bringyourbest.co")
+
+    assert result == {"source_id": "src-1", "status": "rejected"}
+    assert db["product_price_sources"]["src-1"]["status"] == "rejected"
+
+
+def test_reject_price_source_already_resolved_raises():
+    db = _fake_db_with_price_source()
+    db["product_price_sources"]["src-1"]["status"] = "rejected"
+    conn = FakeConnection(db)
+    try:
+        service.reject_price_source(conn, "src-1", resolved_by="al@bringyourbest.co")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_restore_price_source_from_rejected_marks_pending_and_clears_resolution():
+    db = _fake_db_with_price_source()
+    db["product_price_sources"]["src-1"]["status"] = "rejected"
+    db["product_price_sources"]["src-1"]["resolved_by"] = "al@bringyourbest.co"
+    db["product_price_sources"]["src-1"]["resolved_at"] = "2026-08-01T00:00:00Z"
+    conn = FakeConnection(db)
+
+    result = service.restore_price_source(conn, "src-1")
+
+    assert result == {"source_id": "src-1", "status": "pending"}
+    row = db["product_price_sources"]["src-1"]
+    assert row["status"] == "pending"
+    assert row["resolved_by"] is None
+    assert row["resolved_at"] is None
+
+
+def test_restore_price_source_from_approved_marks_pending():
+    db = _fake_db_with_price_source()
+    db["product_price_sources"]["src-1"]["status"] = "approved"
+    conn = FakeConnection(db)
+
+    result = service.restore_price_source(conn, "src-1")
+
+    assert result["status"] == "pending"
+    assert db["product_price_sources"]["src-1"]["status"] == "pending"
+
+
+def test_restore_price_source_from_pending_raises():
+    # Not a silent no-op -- usually means stale UI state, worth
+    # surfacing, same as restore_video_candidate.
+    db = _fake_db_with_price_source()  # status defaults to 'pending'
+    conn = FakeConnection(db)
+    try:
+        service.restore_price_source(conn, "src-1")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_restore_price_source_missing_raises():
+    db = _fake_db_with_price_source()
+    conn = FakeConnection(db)
+    try:
+        service.restore_price_source(conn, "does-not-exist")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def test_get_pending_price_source_count_counts_only_pending():
+    db = _fake_db_with_price_source()
+    db["product_price_sources"]["src-2"] = dict(db["product_price_sources"]["src-1"])
+    db["product_price_sources"]["src-2"]["id"] = "src-2"
+    db["product_price_sources"]["src-2"]["status"] = "approved"
+    conn = FakeConnection(db)
+
+    assert service.get_pending_price_source_count(conn) == 1
+
+
+# --- queue_price_check / queue_price_check_batch: same invoke-Lambda-
+# directly, fire-and-forget shape as queue_video_discovery/queue_video_
+# stats_refresh above (see those tests for the pattern this mirrors).
+
+def test_queue_price_check_invokes_function_with_product_ids_scope():
+    db = _fake_db_with_product()
+    conn = FakeConnection(db)
+    fake_lambda = _FakeLambdaClient()
+
+    class _FakeBoto3:
+        def client(self, name):
+            assert name == "lambda"
+            return fake_lambda
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    os.environ["PRICE_CHECKER_FUNCTION_NAME"] = "bowling-scraper-price-checker"
+    try:
+        result = service.queue_price_check(conn, "prod-1")
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+        del os.environ["PRICE_CHECKER_FUNCTION_NAME"]
+
+    assert result == {"queued": True, "product_id": "prod-1"}
+    assert len(fake_lambda.invocations) == 1
+    call = fake_lambda.invocations[0]
+    assert call["FunctionName"] == "bowling-scraper-price-checker"
+    assert call["InvocationType"] == "Event"
+    assert json.loads(call["Payload"]) == {"product_ids": ["prod-1"]}
+
+
+def test_queue_price_check_missing_product_raises():
+    db = _fake_db_with_product()
+    conn = FakeConnection(db)
+    try:
+        service.queue_price_check(conn, "does-not-exist")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def test_queue_price_check_missing_function_name_returns_not_queued():
+    db = _fake_db_with_product()
+    conn = FakeConnection(db)
+    os.environ.pop("PRICE_CHECKER_FUNCTION_NAME", None)
+
+    class _ExplodingBoto3:
+        def client(self, name):
+            raise AssertionError("should never be called when the function name isn't configured")
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _ExplodingBoto3()
+    try:
+        result = service.queue_price_check(conn, "prod-1")
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+
+    assert result == {"queued": False, "reason": "PRICE_CHECKER_FUNCTION_NAME is not configured on this deployment"}
+
+
+def test_queue_price_check_batch_invokes_function_with_limit():
+    fake_lambda = _FakeLambdaClient()
+
+    class _FakeBoto3:
+        def client(self, name):
+            assert name == "lambda"
+            return fake_lambda
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    os.environ["PRICE_CHECKER_FUNCTION_NAME"] = "bowling-scraper-price-checker"
+    try:
+        result = service.queue_price_check_batch(limit=50)
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+        del os.environ["PRICE_CHECKER_FUNCTION_NAME"]
+
+    assert result == {"queued": True, "limit": 50}
+    assert len(fake_lambda.invocations) == 1
+    call = fake_lambda.invocations[0]
+    assert call["InvocationType"] == "Event"
+    assert json.loads(call["Payload"]) == {"limit": 50}
+
+
+# --- queue_price_discovery / queue_price_discovery_batch: same invoke-
+# Lambda-directly, fire-and-forget shape as queue_price_check/queue_price_
+# check_batch immediately above, just with a {"discover": true, ...}
+# payload instead -- see service.queue_price_discovery's docstring.
+
+def test_queue_price_discovery_invokes_function_with_discover_and_product_ids():
+    db = _fake_db_with_product()
+    conn = FakeConnection(db)
+    fake_lambda = _FakeLambdaClient()
+
+    class _FakeBoto3:
+        def client(self, name):
+            assert name == "lambda"
+            return fake_lambda
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    os.environ["PRICE_CHECKER_FUNCTION_NAME"] = "bowling-scraper-price-checker"
+    try:
+        result = service.queue_price_discovery(conn, "prod-1")
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+        del os.environ["PRICE_CHECKER_FUNCTION_NAME"]
+
+    assert result == {"queued": True, "product_id": "prod-1"}
+    call = fake_lambda.invocations[0]
+    assert call["FunctionName"] == "bowling-scraper-price-checker"
+    assert call["InvocationType"] == "Event"
+    assert json.loads(call["Payload"]) == {"discover": True, "product_ids": ["prod-1"]}
+
+
+def test_queue_price_discovery_missing_product_raises():
+    db = _fake_db_with_product()
+    conn = FakeConnection(db)
+    try:
+        service.queue_price_discovery(conn, "does-not-exist")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def test_queue_price_discovery_missing_function_name_returns_not_queued():
+    db = _fake_db_with_product()
+    conn = FakeConnection(db)
+    os.environ.pop("PRICE_CHECKER_FUNCTION_NAME", None)
+
+    class _ExplodingBoto3:
+        def client(self, name):
+            raise AssertionError("should never be called when the function name isn't configured")
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _ExplodingBoto3()
+    try:
+        result = service.queue_price_discovery(conn, "prod-1")
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+
+    assert result == {"queued": False, "reason": "PRICE_CHECKER_FUNCTION_NAME is not configured on this deployment"}
+
+
+def test_queue_price_discovery_batch_invokes_function_with_discover_and_limit():
+    fake_lambda = _FakeLambdaClient()
+
+    class _FakeBoto3:
+        def client(self, name):
+            assert name == "lambda"
+            return fake_lambda
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    os.environ["PRICE_CHECKER_FUNCTION_NAME"] = "bowling-scraper-price-checker"
+    try:
+        result = service.queue_price_discovery_batch(limit=25)
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+        del os.environ["PRICE_CHECKER_FUNCTION_NAME"]
+
+    assert result == {"queued": True, "limit": 25}
+    call = fake_lambda.invocations[0]
+    assert call["InvocationType"] == "Event"
+    assert json.loads(call["Payload"]) == {"discover": True, "limit": 25}
+
+
+def test_queue_price_discovery_batch_no_limit_omits_it_from_payload():
+    fake_lambda = _FakeLambdaClient()
+
+    class _FakeBoto3:
+        def client(self, name):
+            assert name == "lambda"
+            return fake_lambda
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    os.environ["PRICE_CHECKER_FUNCTION_NAME"] = "bowling-scraper-price-checker"
+    try:
+        service.queue_price_discovery_batch()
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+        del os.environ["PRICE_CHECKER_FUNCTION_NAME"]
+
+    call = fake_lambda.invocations[0]
+    assert json.loads(call["Payload"]) == {"discover": True}
 
 
 if __name__ == "__main__":

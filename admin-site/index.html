@@ -121,10 +121,19 @@
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
   th { background: #fafafb; font-size: 11px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); font-weight: 600; }
   tr:last-child td { border-bottom: none; }
-  td.mono, span.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  td.mono, span.mono, a.mono, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
   td.small, .small { font-size: 11px; }
   .muted { color: var(--muted); }
   .actions { white-space: nowrap; }
+
+  /* Price tracking (migration 014/015) -- plain-SVG price-over-time
+     chart + its legend (see buildPriceChartSvg). No charting library, no
+     new CDN dependency -- consistent with this file's own "no build
+     step, no framework" design. */
+  .price-chart { width: 100%; max-width: 620px; height: 170px; }
+  .chart-legend { display: flex; flex-wrap: wrap; gap: 12px; margin: 4px 0 10px; font-size: 12px; color: var(--muted); }
+  .chart-legend-item { display: inline-flex; align-items: center; gap: 5px; }
+  .chart-legend-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 
   .btn {
     padding: 5px 11px;
@@ -223,9 +232,11 @@
 <nav id="tabs">
   <button data-tab="review" class="active" onclick="showTab('review')">Review Queue</button>
   <button data-tab="videos" onclick="showTab('videos')">Video Candidates</button>
+  <button data-tab="pricesources" onclick="showTab('pricesources')">Price Sources</button>
   <button data-tab="products" onclick="showTab('products')">Products</button>
   <button data-tab="cores" onclick="showTab('cores')">Cores</button>
   <button data-tab="coverstocks" onclick="showTab('coverstocks')">Coverstocks</button>
+  <button data-tab="pricesites" onclick="showTab('pricesites')">Price Sites</button>
   <button data-tab="batch" onclick="showTab('batch')">Batch Jobs</button>
 </nav>
 
@@ -311,6 +322,50 @@
       <button id="video-prev" onclick="videoPage(-1)" disabled>&larr; Prev</button>
       <span id="video-page-label"></span>
       <button id="video-next" onclick="videoPage(1)" disabled>Next &rarr;</button>
+    </div>
+  </section>
+
+  <!-- ============ Price Sources tab ============ -->
+  <!-- Auto-discovered per-product-per-site price tracking candidates --
+       Al: "id like to start a price tracker... configurable to have site
+       setup so that it will pull the current price from a number of
+       sites." Mirrors the Video Candidates tab above almost exactly (Al,
+       when asked pending-review-vs-auto-track: "the reccomended path is
+       best" -- i.e. mirror product_videos' review workflow, not auto-
+       track immediately) -- price_checker's discovery job searches each
+       configured Price Site for a product and stores what it finds here
+       as 'pending' for an admin to approve/reject, same as a YouTube
+       video candidate. -->
+  <section id="tab-pricesources" class="tab hidden">
+    <form class="filters" onsubmit="applyPriceSourceFilters(); return false;">
+      <div class="field">
+        <label>Status</label>
+        <select id="pricesource-status" onchange="applyPriceSourceFilters()">
+          <option value="pending" selected>pending</option>
+          <option value="approved">approved</option>
+          <option value="rejected">rejected</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Product ID (exact)</label>
+        <input id="pricesource-product-id" type="text" placeholder="optional uuid">
+      </div>
+      <button class="btn" type="submit">Filter</button>
+      <span id="pricesource-pending-badge" class="badge pending"></span>
+    </form>
+    <!-- Bulk approve/reject -- same shape/reasoning as Review Queue's and
+         Video Candidates' own bulk toolbars above. -->
+    <div id="pricesource-bulk-toolbar" class="filters" style="display:none; margin-bottom:10px;">
+      <label class="checkbox"><input id="pricesource-select-all" type="checkbox" onchange="toggleSelectAllPriceSources(this.checked)"> Select all shown</label>
+      <span id="pricesource-selected-count" class="badge muted">0 selected</span>
+      <button id="pricesource-approve-selected" type="button" class="btn small ok" onclick="bulkApprovePriceSources()" disabled>Approve selected</button>
+      <button id="pricesource-reject-selected" type="button" class="btn small danger" onclick="bulkRejectPriceSources()" disabled>Reject selected</button>
+    </div>
+    <div id="pricesource-list"><p class="muted">Set your API URL and token above, then this loads automatically.</p></div>
+    <div class="pager">
+      <button id="pricesource-prev" onclick="priceSourcePage(-1)" disabled>&larr; Prev</button>
+      <span id="pricesource-page-label"></span>
+      <button id="pricesource-next" onclick="priceSourcePage(1)" disabled>Next &rarr;</button>
     </div>
   </section>
 
@@ -420,6 +475,29 @@
       <span id="coverstock-page-label"></span>
       <button id="coverstock-next" onclick="coverstockPage(1)" disabled>Next &rarr;</button>
     </div>
+  </section>
+
+  <!-- ============ Price Sites tab ============ -->
+  <!-- The registry of retailers price_checker's discovery job searches --
+       Al: "when i said site config i meant that we would configure which
+       sites to pull prices from. bowling.com, bowlingball.com,
+       bowlersmart.com, etc." Adding a site here is what makes it eligible
+       for the next "Find price sources" pass on any product -- no new
+       Lambda/deploy needed (see price_checker/app.py's module docstring). -->
+  <section id="tab-pricesites" class="tab hidden">
+    <div class="panel">
+      <h3>Add a price site</h3>
+      <p class="muted small">search_url_template needs a <code>{query}</code> placeholder (e.g. <code>https://example.com/search?q={query}</code>) -- price_checker substitutes the product's brand+name there. result_link_selector matches the &lt;a&gt; tags on that search-results page whose href is a candidate product URL. default_css_selector is where the price text sits on this site's own product pages.</p>
+      <div class="filters">
+        <div class="field"><label>Name</label><input id="pricesite-new-name" type="text" placeholder="e.g. BowlingBall.com"></div>
+        <div class="field"><label>Search URL template</label><input id="pricesite-new-search-url" type="text" placeholder="https://example.com/search?q={query}" style="min-width:260px;"></div>
+        <div class="field"><label>Result link selector</label><input id="pricesite-new-result-selector" type="text" placeholder=".product-item-link"></div>
+        <div class="field"><label>Default price selector</label><input id="pricesite-new-price-selector" type="text" placeholder="[itemprop=price]"></div>
+        <div class="field"><label>Notes (optional)</label><input id="pricesite-new-notes" type="text"></div>
+        <button class="btn" type="button" onclick="createPriceSite()">Add site</button>
+      </div>
+    </div>
+    <div id="pricesite-list"><p class="muted">Set your API URL and token above, then this loads automatically.</p></div>
   </section>
 
   <!-- ============ Batch Jobs tab ============ -->
@@ -688,8 +766,25 @@ function renderRawTableList(items, emptyLabel) {
 // --------------------------------------------------------------------
 // Tabs
 // --------------------------------------------------------------------
-const TAB_LOADERS = { review: loadReviewQueue, videos: loadVideoCandidates, products: loadProducts, cores: loadCores, coverstocks: loadCoverstocks, batch: null };
+const TAB_LOADERS = { review: loadReviewQueue, videos: loadVideoCandidates, pricesources: loadPriceSources, products: loadProducts, cores: loadCores, coverstocks: loadCoverstocks, pricesites: loadPriceSites, batch: null };
 let activeTab = 'review';
+
+// Cached GET /price-sites result -- shared between the Price Sites tab
+// and the product detail Price Tracking section's manual-add dropdown
+// (see loadProductDetailInto). Invalidated (set back to null) by every
+// mutation on the Price Sites tab so the dropdown never offers a
+// deleted/stale site; a plain module-level variable rather than
+// localStorage, same "in-memory only" posture the rest of this page's
+// state uses.
+let priceSitesCache = null;
+
+async function ensurePriceSitesLoaded() {
+  if (priceSitesCache === null) {
+    const data = await api('GET', '/price-sites');
+    priceSitesCache = data.items || [];
+  }
+  return priceSitesCache;
+}
 
 function showTab(name) {
   document.querySelectorAll('.tab').forEach(function (t) { t.classList.add('hidden'); });
@@ -1226,6 +1321,202 @@ async function deleteVideo(id) {
 }
 
 // --------------------------------------------------------------------
+// Price Sources tab -- mirrors the Video Candidates tab immediately
+// above almost exactly (see this file's tab-pricesources HTML comment
+// and service.py's "Price tracking" section header comment for the full
+// design: price_checker's discovery job searches each configured Price
+// Site for a product and stores what it finds here as 'pending', an
+// admin approves/rejects/restores like any other candidate).
+// --------------------------------------------------------------------
+const priceSourceState = { status: 'pending', productId: '', offset: 0, limit: 50, lastCount: 0, selected: new Set() };
+
+function applyPriceSourceFilters() {
+  priceSourceState.status = document.getElementById('pricesource-status').value;
+  priceSourceState.productId = document.getElementById('pricesource-product-id').value.trim();
+  priceSourceState.offset = 0;
+  loadPriceSources();
+}
+
+function priceSourcePage(delta) {
+  priceSourceState.offset = Math.max(0, priceSourceState.offset + delta * priceSourceState.limit);
+  loadPriceSources();
+}
+
+async function loadPriceSources() {
+  const listEl = document.getElementById('pricesource-list');
+  listEl.innerHTML = '<p class="muted">Loading&hellip;</p>';
+  try {
+    const data = await api('GET', '/price-sources', { params: {
+      status: priceSourceState.status, product_id: priceSourceState.productId, limit: priceSourceState.limit, offset: priceSourceState.offset,
+    }});
+    renderPriceSources(data.items || [], data.pending_count);
+  } catch (e) {
+    listEl.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
+  }
+}
+
+function renderPriceSources(items, pendingCount) {
+  priceSourceState.lastCount = items.length;
+  priceSourceState.selected = new Set();
+
+  const badge = document.getElementById('pricesource-pending-badge');
+  badge.textContent = pendingCount !== undefined && pendingCount !== null ? pendingCount + ' pending' : '';
+
+  const showBulk = priceSourceState.status === 'pending' && items.length > 0;
+  document.getElementById('pricesource-bulk-toolbar').style.display = showBulk ? 'flex' : 'none';
+  const selectAllBox = document.getElementById('pricesource-select-all');
+  if (selectAllBox) selectAllBox.checked = false;
+
+  const listEl = document.getElementById('pricesource-list');
+  if (!items.length) {
+    listEl.innerHTML = '<p class="muted">No items.</p>';
+  } else {
+    const checkboxHeader = showBulk ? '<th style="width:26px;"></th>' : '';
+    const rows = items.map(function (s) {
+      const checkboxCell = showBulk
+        ? '<td><input type="checkbox" class="pricesource-select" data-id="' + s.id + '" onchange="togglePriceSourceSelect(\'' + s.id + '\', this.checked)"></td>'
+        : '';
+      // Undo next to the status badge, same treatment as Video
+      // Candidates' restoreVideo -- built in from the start for this
+      // feature rather than added after the fact.
+      const statusCell = s.status === 'pending'
+        ? '<button class="btn small" onclick="approvePriceSource(\'' + s.id + '\')">Approve</button>' +
+          '<button class="btn small danger" onclick="rejectPriceSource(\'' + s.id + '\')">Reject</button>'
+        : '<span class="badge ' + escapeHtml(s.status) + '">' + escapeHtml(s.status) + '</span>' +
+          '<button class="btn small ghost" onclick="restorePriceSource(\'' + s.id + '\')">Undo</button>';
+      const sourceText = s.source === 'manual' ? 'manually added' : ('auto-matched, ' + (s.match_confidence || '—') + ' confidence');
+      return '<tr>' +
+        checkboxCell +
+        '<td><a href="' + escapeHtml(s.product_url) + '" target="_blank" rel="noopener">' + escapeHtml(s.site_name) + '</a>' +
+        '<div class="muted small">' + escapeHtml(sourceText) + '</div></td>' +
+        '<td>' + escapeHtml(s.product_name) + '<div class="muted small">' + escapeHtml(s.brand_name || '') + '</div></td>' +
+        '<td>' + fmtDate(s.created_at) + '</td>' +
+        '<td class="actions">' + statusCell + '</td>' +
+        '</tr>';
+    }).join('');
+    listEl.innerHTML = '<table><thead><tr>' + checkboxHeader + '<th>Site / URL</th><th>Product</th><th>Found</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+  document.getElementById('pricesource-prev').disabled = priceSourceState.offset === 0;
+  document.getElementById('pricesource-next').disabled = priceSourceState.lastCount < priceSourceState.limit;
+  document.getElementById('pricesource-page-label').textContent = items.length ? ('showing ' + (priceSourceState.offset + 1) + '–' + (priceSourceState.offset + items.length)) : '';
+  updatePriceSourceBulkToolbar();
+}
+
+function toggleSelectAllPriceSources(checked) {
+  document.querySelectorAll('.pricesource-select').forEach(function (cb) {
+    cb.checked = checked;
+    if (checked) priceSourceState.selected.add(cb.dataset.id);
+    else priceSourceState.selected.delete(cb.dataset.id);
+  });
+  updatePriceSourceBulkToolbar();
+}
+
+function togglePriceSourceSelect(id, checked) {
+  if (checked) priceSourceState.selected.add(id);
+  else priceSourceState.selected.delete(id);
+  updatePriceSourceBulkToolbar();
+}
+
+function updatePriceSourceBulkToolbar() {
+  const n = priceSourceState.selected.size;
+  const countEl = document.getElementById('pricesource-selected-count');
+  if (countEl) countEl.textContent = n + ' selected';
+  const approveBtn = document.getElementById('pricesource-approve-selected');
+  const rejectBtn = document.getElementById('pricesource-reject-selected');
+  if (approveBtn) approveBtn.disabled = n === 0;
+  if (rejectBtn) rejectBtn.disabled = n === 0;
+  const selectAllBox = document.getElementById('pricesource-select-all');
+  if (selectAllBox) {
+    const boxes = document.querySelectorAll('.pricesource-select');
+    selectAllBox.checked = boxes.length > 0 && n === boxes.length;
+  }
+}
+
+async function bulkApprovePriceSources() {
+  const by = getSettings().resolvedBy;
+  if (!by) { toast('Set "Your name" in Settings first.', true); return; }
+  const ids = Array.from(priceSourceState.selected);
+  if (!ids.length) return;
+  if (!confirm('Approve ' + ids.length + ' selected price source' + (ids.length === 1 ? '' : 's') + '? This starts daily price checking for ' + (ids.length === 1 ? 'it' : 'them') + '.')) return;
+  await runPriceSourceBulkAction(ids, 'approve', by);
+}
+
+async function bulkRejectPriceSources() {
+  const by = getSettings().resolvedBy;
+  if (!by) { toast('Set "Your name" in Settings first.', true); return; }
+  const ids = Array.from(priceSourceState.selected);
+  if (!ids.length) return;
+  const reason = prompt('Reason for rejecting all ' + ids.length + ' selected item(s) (optional, applied to all):');
+  if (reason === null) return;
+  await runPriceSourceBulkAction(ids, 'reject', by, reason || undefined);
+}
+
+// Sequential, deliberately not Promise.all -- same posture as
+// runReviewBulkAction/runVideoBulkAction above.
+async function runPriceSourceBulkAction(ids, action, resolvedBy, reason) {
+  const approveBtn = document.getElementById('pricesource-approve-selected');
+  const rejectBtn = document.getElementById('pricesource-reject-selected');
+  if (approveBtn) approveBtn.disabled = true;
+  if (rejectBtn) rejectBtn.disabled = true;
+
+  let ok = 0, failed = 0;
+  try {
+    for (const id of ids) {
+      try {
+        if (action === 'approve') {
+          await api('POST', '/price-sources/' + id + '/approve', { body: { resolved_by: resolvedBy } });
+        } else {
+          await api('POST', '/price-sources/' + id + '/reject', { body: { resolved_by: resolvedBy, reason: reason } });
+        }
+        ok++;
+      } catch (e) {
+        failed++;
+      }
+      toast((action === 'approve' ? 'Approving' : 'Rejecting') + ' ' + (ok + failed) + '/' + ids.length + '…');
+      await new Promise(function (r) { setTimeout(r, 300); });
+    }
+  } finally {
+    await loadPriceSources();
+  }
+  toast(ok + ' ' + (action === 'approve' ? 'approved' : 'rejected') + (failed ? ', ' + failed + ' failed (still pending -- retry them)' : ''), failed > 0);
+}
+
+async function approvePriceSource(id) {
+  const by = getSettings().resolvedBy;
+  if (!by) { toast('Set "Your name" in Settings first.', true); return; }
+  if (!confirm('Approve this price source? This starts daily price checking for it.')) return;
+  try {
+    await api('POST', '/price-sources/' + id + '/approve', { body: { resolved_by: by } });
+    toast('Approved');
+    loadPriceSources();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function rejectPriceSource(id) {
+  const by = getSettings().resolvedBy;
+  if (!by) { toast('Set "Your name" in Settings first.', true); return; }
+  const reason = prompt('Reason for rejecting (optional):');
+  if (reason === null) return;
+  try {
+    await api('POST', '/price-sources/' + id + '/reject', { body: { resolved_by: by, reason: reason || undefined } });
+    toast('Rejected');
+    loadPriceSources();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function restorePriceSource(id) {
+  // Undo for a mistaken approve/reject, built in from the start for this
+  // feature (unlike product_videos, where it only got added after Al hit
+  // the gap live) -- no resolved_by needed, no confirm() prompt, same
+  // reasoning as restoreVideo above.
+  try {
+    await api('POST', '/price-sources/' + id + '/restore');
+    toast('Restored to pending');
+    loadPriceSources();
+  } catch (e) { toast(e.message, true); }
+}
+
+// --------------------------------------------------------------------
 // Products tab
 // --------------------------------------------------------------------
 const productState = { search: '', brandId: '', published: '', status: '', sort: '', needsRefresh: false, hasApproved: false, missingCore: false, missingCoverstock: false, offset: 0, limit: 50, lastCount: 0 };
@@ -1362,11 +1653,25 @@ async function loadProductDetailInto(id, cell) {
     // (score_match's documented any-one-token false-positive shape, see
     // reassign_video_candidate's docstring), and wouldn't have been
     // visible from a pending-only view once already approved.
-    const [p, videoData] = await Promise.all([
+    const [p, videoData, priceSourcesData, priceHistoryData, priceSites] = await Promise.all([
       api('GET', '/products/' + id),
       api('GET', '/video-candidates', { params: { product_id: id, status: 'all', limit: 200 } }),
+      // Price tracking (migration 014/015) -- Al: "id like to start a
+      // price tracker... store this in a way that would allow for
+      // charting that price over time in the admin ui". Fetched
+      // alongside everything else, same reasoning as the video
+      // candidates fetch just above: this product's discovered/manual
+      // "site setup" (across every status, same status:'all' reasoning
+      // as the video-candidates fetch -- see service.
+      // list_product_price_sources' docstring), its history, and the
+      // site registry (for the manual-add dropdown) are all needed to
+      // render the section below in one pass.
+      api('GET', '/products/' + id + '/price-sources'),
+      api('GET', '/products/' + id + '/price-history', { params: { days: 90 } }),
+      ensurePriceSitesLoaded(),
     ]);
     const videos = videoData.items || [];
+    const priceSources = priceSourcesData.items || [];
     const skuRows = (p.skus || []).map(function (s) {
       return '<tr><td>' + s.weight_lbs + 'lb</td><td>' + (s.rg === null || s.rg === undefined ? '—' : s.rg) +
         '</td><td>' + (s.differential === null || s.differential === undefined ? '—' : s.differential) +
@@ -1471,6 +1776,7 @@ async function loadProductDetailInto(id, cell) {
         '<button id="video-reject-selected-' + id + '" type="button" class="btn small danger" onclick="bulkRejectProductVideos(\'' + id + '\')" disabled>Reject selected</button>' +
         '</div>'
       : '';
+    const priceTrackingHtml = buildPriceTrackingSection(id, priceSources, priceHistoryData, priceSites);
     cell.innerHTML =
       '<div class="detail-panel">' +
       '<p><strong>Images</strong> (' + (p.images || []).length + '):</p>' +
@@ -1490,6 +1796,7 @@ async function loadProductDetailInto(id, cell) {
       '<p><strong>Video review rollup</strong> (' + videoCount + ' video' + (videoCount === 1 ? '' : 's') + ', generated ' + (fmtDate(p.video_reviews_summary_generated_at) || 'never') + '):</p>' +
       '<pre class="scrollbox">' + escapeHtml(p.video_reviews_summary || '(none yet)') + '</pre>' +
       '<button class="btn small" onclick="refreshRollup(\'' + id + '\')">Refresh rollup now</button>' +
+      priceTrackingHtml +
       '<p style="margin-top:14px;"><strong>SKUs:</strong></p>' +
       '<table class="mini"><thead><tr><th>Weight</th><th>RG</th><th>Diff</th><th>Mass Bias</th><th>Source</th><th></th></tr></thead><tbody>' +
       (skuRows || '<tr><td colspan="6" class="muted">none</td></tr>') + '</tbody></table>' +
@@ -1499,6 +1806,207 @@ async function loadProductDetailInto(id, cell) {
   } catch (e) {
     cell.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
   }
+}
+
+// --------------------------------------------------------------------
+// Product detail Price Tracking section -- Al: "id like to start a price
+// tracker... configurable to have site setup so that it will pull the
+// current price from a number of sites... store this in a way that
+// would allow for charting that price over time in the admin ui."
+// Renders: a "Find price sources" button (queue_price_discovery, the
+// automated search half) + "Check prices now" (queue_price_check), a
+// table of every discovered/manual source across all statuses with
+// approve/reject/restore actions (same review workflow as the Price
+// Sources tab, just scoped to this product and refreshing this panel
+// afterward instead of that tab's list), a manual-override add form for
+// when a search misses or finds the wrong URL, and a plain-SVG price-
+// over-time chart -- no charting library pulled in, consistent with
+// this file's own "no build step, no framework" design (see the file's
+// opening comment).
+// --------------------------------------------------------------------
+
+function buildPriceTrackingSection(id, priceSources, priceHistoryData, priceSites) {
+  const rows = priceSources.map(function (s) {
+    const statusCell = s.status === 'pending'
+      ? '<button class="btn small" onclick="approvePriceSourceForProduct(\'' + id + '\', \'' + s.id + '\')">Approve</button>' +
+        '<button class="btn small danger" onclick="rejectPriceSourceForProduct(\'' + id + '\', \'' + s.id + '\')">Reject</button>'
+      : '<span class="badge ' + escapeHtml(s.status) + '">' + escapeHtml(s.status) + '</span>' +
+        '<button class="btn small ghost" onclick="restorePriceSourceForProduct(\'' + id + '\', \'' + s.id + '\')">Undo</button>';
+    const latest = s.latest_price !== null && s.latest_price !== undefined
+      ? '$' + Number(s.latest_price).toFixed(2)
+      : (s.latest_error ? '<span class="error" title="' + escapeHtml(s.latest_error) + '">error</span>' : '—');
+    const sourceText = s.source === 'manual' ? 'manually added' : ('auto-matched, ' + (s.match_confidence || '—') + ' confidence');
+    return '<tr>' +
+      '<td>' + escapeHtml(s.site_name) + '<div class="muted small">' + escapeHtml(sourceText) + '</div></td>' +
+      '<td><a href="' + escapeHtml(s.product_url) + '" target="_blank" rel="noopener" class="mono small">' + escapeHtml(s.product_url) + '</a></td>' +
+      '<td>' + latest + '<div class="muted small">' + (s.latest_checked_at ? fmtDate(s.latest_checked_at) : 'never checked') + '</div></td>' +
+      '<td class="actions">' + statusCell +
+      '<button class="btn small ghost danger" onclick="deletePriceSourceForProduct(\'' + id + '\', \'' + s.id + '\')">Delete</button></td>' +
+      '</tr>';
+  }).join('');
+  const siteOptions = (priceSites || []).filter(function (s) { return s.is_active; }).map(function (s) {
+    return '<option value="' + s.id + '">' + escapeHtml(s.name) + '</option>';
+  }).join('');
+  return '<p style="margin-top:14px;"><strong>Price tracking</strong> (' + priceSources.length + ' source' + (priceSources.length === 1 ? '' : 's') + '):' +
+    ' <button class="btn small ghost" onclick="discoverPriceSourcesForProduct(\'' + id + '\')">Find price sources</button>' +
+    ' <button class="btn small ghost" onclick="checkPriceForProduct(\'' + id + '\')">Check price now</button></p>' +
+    '<p id="discover-price-result-' + id + '" class="muted small"></p>' +
+    (rows
+      ? '<table class="mini"><thead><tr><th>Site</th><th>URL</th><th>Latest price</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>'
+      : '<p class="muted">no price sources yet -- click "Find price sources" to search the configured Price Sites</p>') +
+    buildPriceChartSvg(priceHistoryData) +
+    '<div class="filters" style="margin-top:6px;">' +
+    '<div class="field"><label>Add manually</label><select id="price-site-select-' + id + '">' +
+    '<option value="">choose a site&hellip;</option>' + siteOptions + '</select></div>' +
+    '<div class="field"><label>&nbsp;</label><input id="price-manual-url-' + id + '" type="text" placeholder="Product URL on that site" style="min-width:260px;"></div>' +
+    '<div class="field"><label>&nbsp;</label><input id="price-manual-selector-' + id + '" type="text" placeholder="CSS selector override (optional)"></div>' +
+    '<button class="btn small" type="button" onclick="addManualPriceSource(\'' + id + '\')">Add</button>' +
+    '</div>';
+}
+
+// Plain SVG, no charting library -- one polyline per source, normalized
+// against the combined min/max price and min/max checked_at across every
+// source so they share one set of axes. Sources with no successful
+// (price != null) checks yet in the window are simply skipped -- a
+// still-pending or just-approved-but-not-yet-checked source has nothing
+// to plot, which is expected, not an error.
+function buildPriceChartSvg(historyData) {
+  const sources = (historyData && historyData.sources) || [];
+  const history = ((historyData && historyData.history) || []).filter(function (h) { return h.price !== null && h.price !== undefined; });
+  if (!sources.length || !history.length) {
+    return '<p class="muted">No successful price checks yet -- once an approved source is checked, its price history charts here.</p>';
+  }
+  const prices = history.map(function (h) { return h.price; });
+  const times = history.map(function (h) { return new Date(h.checked_at).getTime(); });
+  const priceMin = Math.min.apply(null, prices), priceMax = Math.max.apply(null, prices);
+  const pad = (priceMax - priceMin) * 0.1 || Math.max(priceMax * 0.1, 1);
+  const yMin = priceMin - pad, yMax = priceMax + pad;
+  const tMin = Math.min.apply(null, times), tMax = Math.max.apply(null, times);
+  const tSpan = (tMax - tMin) || 1;
+
+  const w = 600, h = 170, left = 46, right = 12, top = 10, bottom = 10;
+  const plotW = w - left - right, plotH = h - top - bottom;
+  const colors = ['#2563eb', '#16a34a', '#dc2626', '#a855f7', '#f59e0b', '#0891b2'];
+
+  let paths = '';
+  let legend = '';
+  sources.forEach(function (s, i) {
+    const rows = history
+      .filter(function (r) { return r.price_source_id === s.id; })
+      .slice()
+      .sort(function (a, b) { return new Date(a.checked_at) - new Date(b.checked_at); });
+    if (!rows.length) return;
+    const color = colors[i % colors.length];
+    const points = rows.map(function (r) {
+      const x = left + ((new Date(r.checked_at).getTime() - tMin) / tSpan) * plotW;
+      const y = top + plotH - ((r.price - yMin) / (yMax - yMin)) * plotH;
+      return x.toFixed(1) + ',' + y.toFixed(1);
+    }).join(' ');
+    paths += '<polyline points="' + points + '" fill="none" stroke="' + color + '" stroke-width="2"></polyline>';
+    legend += '<span class="chart-legend-item"><span class="chart-legend-dot" style="background:' + color + ';"></span>' + escapeHtml(s.site_name) + '</span>';
+  });
+  if (!paths) {
+    return '<p class="muted">No successful price checks yet -- once an approved source is checked, its price history charts here.</p>';
+  }
+
+  return '<svg viewBox="0 0 ' + w + ' ' + h + '" class="price-chart">' +
+    '<line x1="' + left + '" y1="' + top + '" x2="' + left + '" y2="' + (top + plotH) + '" stroke="#e0e2e7"></line>' +
+    '<line x1="' + left + '" y1="' + (top + plotH) + '" x2="' + (left + plotW) + '" y2="' + (top + plotH) + '" stroke="#e0e2e7"></line>' +
+    '<text x="2" y="' + (top + 8) + '" font-size="10" fill="#6b7280">$' + yMax.toFixed(2) + '</text>' +
+    '<text x="2" y="' + (top + plotH) + '" font-size="10" fill="#6b7280">$' + yMin.toFixed(2) + '</text>' +
+    paths + '</svg>' +
+    '<div class="chart-legend">' + legend + '</div>';
+}
+
+async function discoverPriceSourcesForProduct(id) {
+  const out = document.getElementById('discover-price-result-' + id);
+  if (out) out.textContent = 'Searching&hellip;';
+  try {
+    const result = await api('POST', '/products/' + id + '/discover-price-sources');
+    if (out) {
+      out.textContent = result.queued
+        ? 'Searching configured Price Sites in the background -- reload this panel in a bit to see new candidates.'
+        : (result.reason || 'Not queued');
+    }
+  } catch (e) { toast(e.message, true); }
+}
+
+async function checkPriceForProduct(id) {
+  const out = document.getElementById('discover-price-result-' + id);
+  if (out) out.textContent = 'Checking&hellip;';
+  try {
+    const result = await api('POST', '/products/' + id + '/check-price');
+    if (out) {
+      out.textContent = result.queued
+        ? 'Checking approved sources in the background -- reload this panel in a bit to see updated prices.'
+        : (result.reason || 'Not queued');
+    }
+  } catch (e) { toast(e.message, true); }
+}
+
+async function approvePriceSourceForProduct(productId, sourceId) {
+  const by = getSettings().resolvedBy;
+  if (!by) { toast('Set "Your name" in Settings first.', true); return; }
+  const row = document.getElementById('product-detail-' + productId);
+  const cell = row ? row.querySelector('td') : null;
+  try {
+    await api('POST', '/price-sources/' + sourceId + '/approve', { body: { resolved_by: by } });
+    if (cell) await loadProductDetailInto(productId, cell);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function rejectPriceSourceForProduct(productId, sourceId) {
+  const by = getSettings().resolvedBy;
+  if (!by) { toast('Set "Your name" in Settings first.', true); return; }
+  const reason = prompt('Reason for rejecting (optional):');
+  if (reason === null) return;
+  const row = document.getElementById('product-detail-' + productId);
+  const cell = row ? row.querySelector('td') : null;
+  try {
+    await api('POST', '/price-sources/' + sourceId + '/reject', { body: { resolved_by: by, reason: reason || undefined } });
+    if (cell) await loadProductDetailInto(productId, cell);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function restorePriceSourceForProduct(productId, sourceId) {
+  const row = document.getElementById('product-detail-' + productId);
+  const cell = row ? row.querySelector('td') : null;
+  try {
+    await api('POST', '/price-sources/' + sourceId + '/restore');
+    if (cell) await loadProductDetailInto(productId, cell);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function deletePriceSourceForProduct(productId, sourceId) {
+  if (!confirm('Permanently delete this price source? This also deletes its price history. This cannot be undone.')) return;
+  const row = document.getElementById('product-detail-' + productId);
+  const cell = row ? row.querySelector('td') : null;
+  try {
+    await api('DELETE', '/price-sources/' + sourceId);
+    if (cell) await loadProductDetailInto(productId, cell);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function addManualPriceSource(productId) {
+  // The manual-override path -- Al: "admin can fix mismatches manually
+  // after the fact if a match is wrong." Lands immediately as
+  // status='approved', source='manual' (see service.
+  // create_product_price_source's docstring) -- there's no candidate to
+  // review here, an admin just supplied the exact URL directly.
+  const siteId = document.getElementById('price-site-select-' + productId).value;
+  const url = document.getElementById('price-manual-url-' + productId).value.trim();
+  const selector = document.getElementById('price-manual-selector-' + productId).value.trim() || undefined;
+  if (!siteId || !url) { toast('Pick a site and enter a URL.', true); return; }
+  const by = getSettings().resolvedBy;
+  const row = document.getElementById('product-detail-' + productId);
+  const cell = row ? row.querySelector('td') : null;
+  try {
+    await api('POST', '/products/' + productId + '/price-sources', { body: {
+      price_site_id: siteId, product_url: url, css_selector: selector, resolved_by: by,
+    }});
+    toast('Added');
+    if (cell) await loadProductDetailInto(productId, cell);
+  } catch (e) { toast(e.message, true); }
 }
 
 // Image ordering/thumbnail/visibility controls (migration 010) -- see
@@ -1965,6 +2473,119 @@ async function loadCoverstockDetailInto(id, cell) {
   } catch (e) {
     cell.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
   }
+}
+
+// --------------------------------------------------------------------
+// Price Sites tab -- the retailer registry price_checker's discovery job
+// searches (see this file's tab-pricesites HTML comment). Read-only list
+// plus create; edit/deactivate/delete use prompt()-based quick edits,
+// same convention reassignVideo above uses, rather than a full inline
+// edit form -- this registry is expected to stay small and change
+// rarely (Al's own examples: bowling.com, bowlingball.com,
+// bowlersmart.com), unlike the higher-churn review-queue tabs.
+// --------------------------------------------------------------------
+
+async function loadPriceSites() {
+  const listEl = document.getElementById('pricesite-list');
+  listEl.innerHTML = '<p class="muted">Loading&hellip;</p>';
+  try {
+    const data = await api('GET', '/price-sites');
+    renderPriceSites(data.items || []);
+  } catch (e) {
+    listEl.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
+  }
+}
+
+function renderPriceSites(items) {
+  const listEl = document.getElementById('pricesite-list');
+  if (!items.length) {
+    listEl.innerHTML = '<p class="muted">No price sites configured yet -- add one above.</p>';
+    return;
+  }
+  const rows = items.map(function (s) {
+    return '<tr' + (s.is_active ? '' : ' class="image-hidden"') + '>' +
+      '<td>' + escapeHtml(s.name) + (s.is_active ? '' : ' <span class="badge muted">inactive</span>') +
+      (s.notes ? '<div class="muted small">' + escapeHtml(s.notes) + '</div>' : '') + '</td>' +
+      '<td class="mono small">' + escapeHtml(s.search_url_template) + '</td>' +
+      '<td class="mono small">' + escapeHtml(s.result_link_selector) + '</td>' +
+      '<td class="mono small">' + escapeHtml(s.default_css_selector) + '</td>' +
+      '<td class="actions">' +
+      '<button class="btn small ghost" onclick="editPriceSite(\'' + s.id + '\')">Edit</button>' +
+      '<button class="btn small ghost" onclick="togglePriceSiteActive(\'' + s.id + '\', ' + s.is_active + ')">' + (s.is_active ? 'Deactivate' : 'Reactivate') + '</button>' +
+      '<button class="btn small ghost danger" onclick="deletePriceSite(\'' + s.id + '\')">Delete</button>' +
+      '</td></tr>';
+  }).join('');
+  listEl.innerHTML = '<table><thead><tr><th>Name</th><th>Search URL template</th><th>Result link selector</th><th>Default price selector</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
+}
+
+async function createPriceSite() {
+  const name = document.getElementById('pricesite-new-name').value.trim();
+  const searchUrlTemplate = document.getElementById('pricesite-new-search-url').value.trim();
+  const resultLinkSelector = document.getElementById('pricesite-new-result-selector').value.trim();
+  const defaultCssSelector = document.getElementById('pricesite-new-price-selector').value.trim();
+  const notes = document.getElementById('pricesite-new-notes').value.trim() || undefined;
+  if (!name || !searchUrlTemplate || !resultLinkSelector || !defaultCssSelector) {
+    toast('Name, search URL template, result link selector, and default price selector are all required.', true);
+    return;
+  }
+  if (searchUrlTemplate.indexOf('{query}') === -1) {
+    toast('Search URL template needs a {query} placeholder.', true);
+    return;
+  }
+  try {
+    await api('POST', '/price-sites', { body: {
+      name: name, search_url_template: searchUrlTemplate, result_link_selector: resultLinkSelector,
+      default_css_selector: defaultCssSelector, notes: notes,
+    }});
+    toast('Added ' + name);
+    document.getElementById('pricesite-new-name').value = '';
+    document.getElementById('pricesite-new-search-url').value = '';
+    document.getElementById('pricesite-new-result-selector').value = '';
+    document.getElementById('pricesite-new-price-selector').value = '';
+    document.getElementById('pricesite-new-notes').value = '';
+    loadPriceSites();
+    priceSitesCache = null;  // stale -- product detail's manual-add dropdown refetches next time it's opened
+  } catch (e) { toast(e.message, true); }
+}
+
+async function editPriceSite(id) {
+  // One prompt() per field, skipped (left unchanged) if the admin
+  // cancels or leaves it blank -- same "quick edit, not a full form"
+  // posture as reassignVideo's single prompt() above, just three of them
+  // since there are three independently-editable text fields worth
+  // correcting after a site's markup changes.
+  const searchUrlTemplate = prompt('New search URL template (must contain {query}), or leave blank to keep as-is:');
+  const resultLinkSelector = prompt('New result link selector, or leave blank to keep as-is:');
+  const defaultCssSelector = prompt('New default price selector, or leave blank to keep as-is:');
+  const body = {};
+  if (searchUrlTemplate) body.search_url_template = searchUrlTemplate;
+  if (resultLinkSelector) body.result_link_selector = resultLinkSelector;
+  if (defaultCssSelector) body.default_css_selector = defaultCssSelector;
+  if (!Object.keys(body).length) return;
+  try {
+    await api('PATCH', '/price-sites/' + id, { body: body });
+    toast('Updated');
+    loadPriceSites();
+    priceSitesCache = null;
+  } catch (e) { toast(e.message, true); }
+}
+
+async function togglePriceSiteActive(id, currentlyActive) {
+  try {
+    await api('PATCH', '/price-sites/' + id, { body: { is_active: !currentlyActive } });
+    loadPriceSites();
+    priceSitesCache = null;
+  } catch (e) { toast(e.message, true); }
+}
+
+async function deletePriceSite(id) {
+  if (!confirm('Permanently delete this price site? This also deletes every product\'s price-source rows and history for it. This cannot be undone.')) return;
+  try {
+    await api('DELETE', '/price-sites/' + id);
+    toast('Deleted');
+    loadPriceSites();
+    priceSitesCache = null;
+  } catch (e) { toast(e.message, true); }
 }
 
 // --------------------------------------------------------------------

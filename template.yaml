@@ -1056,6 +1056,12 @@ Resources:
           # docstring), so this is a function NAME for a direct
           # lambda:InvokeFunction call, not a queue URL.
           VIDEO_DISCOVERY_FUNCTION_NAME: !Ref VideoDiscoveryFunction
+          # Read by service.py's queue_price_check/queue_price_check_batch
+          # (POST /products/{id}/check-price, POST /admin/check-all-prices)
+          # -- same "function NAME for a direct lambda:InvokeFunction call,
+          # no queue in front of it" shape as VIDEO_DISCOVERY_FUNCTION_NAME
+          # immediately above.
+          PRICE_CHECKER_FUNCTION_NAME: !Ref PriceCheckerFunction
       Policies:
         - Statement:
             - Effect: Allow
@@ -1115,6 +1121,15 @@ Resources:
               Action:
                 - lambda:InvokeFunction
               Resource: !GetAtt VideoDiscoveryFunction.Arn
+        # For queue_price_check/queue_price_check_batch (POST
+        # /products/{id}/check-price, POST /admin/check-all-prices) --
+        # same "narrowest permission, scoped to exactly this function's
+        # own ARN" convention as the VideoDiscoveryFunction grant above.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource: !GetAtt PriceCheckerFunction.Arn
       # Four explicit per-method routes instead of a single `Method: ANY`
       # -- found via a real live test (curl OPTIONS /health with no
       # Authorization header returned a bare 401 "Unauthorized" from API
@@ -2012,6 +2027,82 @@ Resources:
       # BigCommerceSecretArn parameter description) -- until then, a
       # disabled-but-defined schedule is more honest than one that's
       # "on" but guaranteed to error on every invocation.
+
+  # --- Price tracking (migration 014/015) ---
+  #
+  # New feature, Al: "id like to start a price tracker. this should be
+  # configurable to have site setup so that it will pull the current
+  # price from a number of sites on a frequency of likely daily?"
+  # Corrected mid-build to auto-search/match (mirroring video_discovery's
+  # YouTube search) with a pending-review gate (Al: "the reccomended
+  # path is best") rather than manual URL entry -- see src/price_checker/
+  # app.py's module docstring for the full design. PriceCheckerFunction
+  # itself is still the only new compute resource this feature needs --
+  # unlike the video pipeline (VideoDiscoveryFunction + VideoSummarizer-
+  # Function + VideoTranscriptFetcherFunction, three separate Lambdas),
+  # ONE Lambda handles both the {"discover": true, ...} search job shape
+  # and the checking job shape, dispatched by handler() on the event
+  # payload -- there's still no queue in front of it (same invoke-
+  # directly shape as VideoDiscoveryFunction, see AdminApiFunction's
+  # PRICE_CHECKER_FUNCTION_NAME/lambda:InvokeFunction grant above, which
+  # already covers both job shapes since they're the same function ARN).
+  PriceCheckerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-price-checker
+      CodeUri: src/price_checker/
+      Handler: app.handler
+      # Network-bound against arbitrary, unpredictably slow third-party
+      # sites (not a single well-behaved API the way YouTube's Data API
+      # is) -- 280s matches VideoDiscoveryFunction's own timeout for the
+      # same "real HTTP round trips in a sequential loop" reasoning, even
+      # though this function's own retry tuning is lighter (see app.py's
+      # module docstring: no confirmed rate-limit incident to size
+      # against here, just a bound on one invocation's wall-clock time).
+      # Sized for the checking job shape's own per-invocation loop (one
+      # HTTP fetch per approved source); the discovery job shape's loop
+      # is one HTTP fetch per product PER active site, so a very large
+      # discovery batch could still need more headroom than this if the
+      # configured site count grows well past a handful -- not a
+      # concern yet with the few named retailers (bowling.com,
+      # bowlingball.com, bowlersmart.com, ...) this feature launches
+      # with, but worth revisiting if that list grows a lot.
+      Timeout: 280
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+      # Daily, per Al's own "likely daily?" -- checks up to price_checker.
+      # DEFAULT_PRICE_CHECK_LIMIT (200) of the most-overdue APPROVED+
+      # active price sources (see list_price_sources_due's ROTATION
+      # reasoning), same never-checked-first/least-recently-checked-next
+      # ordering VideoDiscoveryFunction's DailyStatsRefresh already
+      # established for the same "no schedule -> the daily job never
+      # actually progresses" reason. No explicit Input (unlike
+      # DailyStatsRefresh's {"refresh_stats": true, "limit": 1000}) -- an
+      # empty/default event is already handler's own checking-batch job
+      # shape (see app.py's module docstring's CHECKING section), so
+      # there's nothing to pass.
+      #
+      # Deliberately NO schedule here for the {"discover": true, ...} job
+      # shape -- same "manual/direct invoke only" convention video_
+      # discovery's own search flow uses (see that module's own
+      # docstring), triggered via POST /products/{id}/discover-price-
+      # sources or POST /admin/discover-all-price-sources (service.
+      # queue_price_discovery/queue_price_discovery_batch) instead. An
+      # admin decides when to widen the catalog's price-source coverage;
+      # it doesn't need to run on its own daily cadence the way checking
+      # already-approved sources does.
+      Events:
+        DailyPriceCheck:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 day)
+            Name: bowling-scraper-price-checker-daily
+            Description: Checks price for the most-overdue approved+active product_price_sources rows (see list_price_sources_due).
+            Enabled: true
 
   # --- Consumer site static hosting (consumer-site/, the React SPA) ---
   #

@@ -33,7 +33,7 @@ Any Postgres 13+ instance works (RDS is the obvious choice, but this
 repo doesn't assume it). Note the connection details -- you'll need them
 for step 3's `DbSecretArn` secret and to run migrations directly.
 
-## 2. Run the thirteen migrations, in order
+## 2. Run the fifteen migrations, in order
 
 ```bash
 psql "$DATABASE_URL" -f db/migrations/001_init_schema.sql
@@ -49,6 +49,8 @@ psql "$DATABASE_URL" -f db/migrations/010_product_images_ordering_thumbnail_visi
 psql "$DATABASE_URL" -f db/migrations/011_products_plotter_chart_position.sql
 psql "$DATABASE_URL" -f db/migrations/012_products_oil_motion_source.sql
 psql "$DATABASE_URL" -f db/migrations/013_product_videos_stats.sql
+psql "$DATABASE_URL" -f db/migrations/014_price_tracking.sql
+psql "$DATABASE_URL" -f db/migrations/015_products_last_price_discovery_at.sql
 ```
 
 (If you already ran an earlier subset in a prior deploy, just run whatever
@@ -3975,6 +3977,123 @@ Leaving `ConsumerSiteDomainName`/`ConsumerSiteCertificateArn` unset (the
 default) keeps the distribution on its plain `*.cloudfront.net` URL with
 `CloudFrontDefaultCertificate: true` -- no action needed if you don't
 want a custom domain yet.
+
+### 6o. Price tracking (retailer price search + review workflow)
+
+New feature, Al: "id like to start a price tracker... configurable to
+have site setup so that it will pull the current price from a number of
+sites on a frequency of likely daily?... store this in a way that would
+allow for charting that price over time in the admin ui and eventually
+the consumer UI." Went through a design correction mid-build: "site
+setup" means choosing which real retailers to track (bowling.com,
+bowlingball.com, bowlersmart.com, etc.), with each product's URL on each
+site found AUTOMATICALLY by a discovery job (mirroring video_discovery's
+YouTube search), not typed in by an admin -- and after weighing
+auto-track-immediately against a pending-review gate, "the reccomended
+path is best" locked in: mirror product_videos' pending/approved/rejected
+review workflow exactly, including undo/restore built in from the start
+(see `db/migrations/014_price_tracking.sql`'s header comment for the
+full writeup).
+
+Requires migrations 014/015 (see step 2 above) and `PriceCheckerFunction`
+to have deployed (step 5) -- `AdminApiFunction`'s
+`PRICE_CHECKER_FUNCTION_NAME` env var and its `lambda:InvokeFunction`
+grant on `PriceCheckerFunction.Arn` are both wired automatically, no
+separate secret/param needed (this feature has no third-party API key --
+it's generic HTML scraping against whatever retailer sites you configure,
+not a metered API like YouTube's).
+
+1. **Add a Price Site.** Open the admin site's Price Sites tab and add at
+   least one real retailer, e.g.:
+   - Name: `BowlingBall.com`
+   - Search URL template: `https://www.bowlingball.com/catalogsearch/result/?q={query}`
+     (must contain a literal `{query}` placeholder -- price_checker
+     url-encodes the product's brand+name and substitutes it there)
+   - Result link selector: a CSS selector matching `<a>` tags on that
+     site's search-results page whose `href` is a candidate product URL
+     (inspect the site's real markup in a browser devtools panel to find
+     this -- it varies per retailer)
+   - Default price selector: a CSS selector matching where the price text
+     sits on that site's own product pages (also found via devtools)
+
+   Getting the two selectors right the first time is unlikely without
+   inspecting the real site -- expect to revisit a site's config after
+   the first "Find price sources" run below shows 0 or garbage results,
+   and again after the first price check shows a run of `error` rows in
+   a product's Price Tracking section.
+
+2. **Trigger discovery for one product.** Open any product's detail view
+   (Products tab -> click a row) and click "Find price sources" in its
+   new Price Tracking section. This invokes `PriceCheckerFunction`
+   asynchronously with `{"discover": true, "product_ids": ["<id>"]}` --
+   reload the panel a few seconds later to see what it found. Every
+   result search_site_for_product returns lands as a `pending` row
+   (never silently dropped), tagged `high`/`low` match confidence via the
+   same brand+product-token heuristic video_discovery's `score_match`
+   uses (see `src/price_checker/app.py`'s `score_match`).
+
+   Equivalent direct invoke, if you'd rather watch CloudWatch logs
+   directly instead of going through the admin API:
+   ```bash
+   aws lambda invoke --function-name bowling-scraper-price-checker \
+     --payload '{"discover": true, "product_ids": ["<product-id>"]}' \
+     --cli-binary-format raw-in-base64-out /tmp/price-discovery-out.json
+   cat /tmp/price-discovery-out.json
+   ```
+
+3. **Review and approve.** Candidates show up in the Price Sources tab
+   (defaults to `status=pending`) or in the product's own Price Tracking
+   section (which shows every status at once, same reasoning as the
+   Videos section above it). Approve the correct match -- this is what
+   actually makes it eligible for daily checking (see
+   `list_price_sources_due`'s `status = 'approved'` filter). If a search
+   found nothing, or found the wrong product, use the "Add manually" form
+   in the product's Price Tracking section to attach the correct URL by
+   hand -- this lands immediately as `approved`/`source='manual'`, no
+   review step, since an admin just supplied the exact URL directly (Al:
+   "admin can fix mismatches manually after the fact if a match is
+   wrong").
+
+4. **Trigger a price check** for the same product via "Check prices now"
+   in its Price Tracking section (invokes `{"product_ids": [...]}`,
+   checking only its approved+active sources), or wait for the daily
+   `DailyPriceCheck` schedule (`rate(1 day)`, checks the most-overdue
+   approved+active sources catalog-wide, same rotation idiom as
+   `VideoDiscoveryFunction`'s stats-refresh schedule). Reload the
+   product's Price Tracking section afterward -- a successful check shows
+   a `$` price and updates the chart; a failed one (bad selector, site
+   redesign) shows `error` with the failure reason on hover, and still
+   writes a `product_price_history` row (see migration 014's header
+   comment on why a failed check is never silently dropped).
+
+5. **Confirm undo works.** Approve or reject a candidate by mistake, then
+   click "Undo" next to its status badge -- it should move back to
+   `pending` with `resolved_at`/`resolved_by` cleared. Built in from the
+   start for this feature (unlike `product_videos`, where the same
+   capability only got added after Al hit the gap live: "it appears if i
+   accidentally reject a video i can not undo that action").
+
+6. **Confirm the catalog-wide batch triggers work** from the admin site
+   or directly:
+   ```bash
+   aws lambda invoke --function-name bowling-scraper-price-checker \
+     --payload '{"discover": true, "limit": 5}' \
+     --cli-binary-format raw-in-base64-out /tmp/price-discovery-batch-out.json
+   aws lambda invoke --function-name bowling-scraper-price-checker \
+     --payload '{"limit": 5}' \
+     --cli-binary-format raw-in-base64-out /tmp/price-check-batch-out.json
+   ```
+   Both should return `{"statusCode": 200, ...}` with counts in the body
+   (`products_searched`/`new_candidates`/`search_errors` for discovery;
+   `sources_checked`/`succeeded`/`failed` for checking).
+
+Not yet built: consumer-site price display (Al's own "eventually the
+consumer UI" -- deliberately out of scope for this pass, admin-side
+tracking + review comes first) and a scheduled discovery cadence
+(discovery is manual/on-demand only right now, same "manual/direct
+invoke only" convention `video_discovery`'s own search flow uses -- an
+admin decides when to widen price-source coverage, it doesn't run on its
+own daily schedule the way checking already-approved sources does).
 
 ## 7. Ongoing operations
 

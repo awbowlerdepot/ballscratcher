@@ -75,6 +75,52 @@ class ReassignRequest(BaseModel):
     resolved_by: Optional[str] = None
 
 
+class PriceSiteCreateRequest(BaseModel):
+    name: str
+    # Site-SEARCH config -- what price_checker's discovery job uses to
+    # find candidate product URLs on this site (see
+    # service.create_price_site's docstring). {query} in
+    # search_url_template gets url-encoded and substituted by
+    # price_checker.search_site_for_product.
+    search_url_template: str
+    result_link_selector: str
+    # Price-PAGE config -- what checking uses once a candidate is approved.
+    default_css_selector: str
+    notes: Optional[str] = None
+
+
+class PriceSiteUpdateRequest(BaseModel):
+    # All optional/independent, same convention as ImageUpdateRequest --
+    # a caller sets whichever field it's actually changing (see
+    # service.update_price_site's docstring).
+    name: Optional[str] = None
+    search_url_template: Optional[str] = None
+    result_link_selector: Optional[str] = None
+    default_css_selector: Optional[str] = None
+    notes: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class ProductPriceSourceCreateRequest(BaseModel):
+    # Manual-override path only -- see service.create_product_price_source's
+    # docstring. The normal way a product_price_sources row comes into
+    # being is price_checker's discovery job finding it automatically;
+    # this endpoint is for when that search missed or found the wrong URL.
+    price_site_id: str
+    product_url: str
+    # None = use the site's own default_css_selector (see
+    # service.create_product_price_source's docstring) -- only set this
+    # when this one product's page needs a different selector.
+    css_selector: Optional[str] = None
+    resolved_by: Optional[str] = None
+
+
+class ProductPriceSourceUpdateRequest(BaseModel):
+    product_url: Optional[str] = None
+    css_selector: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
 class TranscriptSubmitRequest(BaseModel):
     # transcript defaults to "" (not required) so the same endpoint also
     # accepts an honest "checked, no captions available" result from the
@@ -598,6 +644,232 @@ def submit_video_transcript(video_id: str, body: TranscriptSubmitRequest):
         raise HTTPException(status_code=422, detail=str(e))
     finally:
         conn.close()
+
+
+@app.get("/price-sites")
+def list_price_sites():
+    conn = service.get_db_connection()
+    try:
+        return {"items": service.list_price_sites(conn)}
+    finally:
+        conn.close()
+
+
+@app.post("/price-sites")
+def create_price_site(body: PriceSiteCreateRequest):
+    conn = service.get_db_connection()
+    try:
+        return service.create_price_site(
+            conn, body.name, body.search_url_template, body.result_link_selector,
+            body.default_css_selector, body.notes,
+        )
+    finally:
+        conn.close()
+
+
+@app.patch("/price-sites/{site_id}")
+def update_price_site(site_id: str, body: PriceSiteUpdateRequest):
+    conn = service.get_db_connection()
+    try:
+        return service.update_price_site(
+            conn, site_id, name=body.name, search_url_template=body.search_url_template,
+            result_link_selector=body.result_link_selector, default_css_selector=body.default_css_selector,
+            notes=body.notes, is_active=body.is_active,
+        )
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.delete("/price-sites/{site_id}")
+def delete_price_site(site_id: str):
+    conn = service.get_db_connection()
+    try:
+        return service.delete_price_site(conn, site_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
+# --- Price sources (auto-discovered retailer URLs) ---
+# Same approve/reject/restore shape as /video-candidates above -- see
+# service.py's "Price tracking" section header comment for why: Al's
+# final choice was to mirror that exact review workflow rather than
+# auto-track a discovered match immediately.
+
+@app.get("/price-sources")
+def get_price_sources(
+    status: str = Query("pending"),
+    product_id: Optional[str] = Query(None),
+    limit: int = Query(50, le=200),
+    offset: int = Query(0, ge=0),
+):
+    # status="all" sentinel, same as GET /video-candidates above.
+    query_status = None if status == "all" else status
+    conn = service.get_db_connection()
+    try:
+        items = service.list_price_sources(conn, status=query_status, product_id=product_id, limit=limit, offset=offset)
+        pending_count = service.get_pending_price_source_count(conn) if status == "pending" else None
+        return {"items": items, "pending_count": pending_count}
+    finally:
+        conn.close()
+
+
+@app.post("/price-sources/{source_id}/approve")
+def approve_price_source(source_id: str, body: ApproveRequest):
+    conn = service.get_db_connection()
+    try:
+        return service.approve_price_source(conn, source_id, body.resolved_by)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/price-sources/{source_id}/reject")
+def reject_price_source(source_id: str, body: RejectRequest):
+    conn = service.get_db_connection()
+    try:
+        return service.reject_price_source(conn, source_id, body.resolved_by, body.reason)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/price-sources/{source_id}/restore")
+def restore_price_source(source_id: str):
+    # Undo for a mistaken approve/reject, built in from the start (unlike
+    # product_videos, where this only got added after Al hit the gap
+    # live) -- see service.restore_price_source's docstring.
+    conn = service.get_db_connection()
+    try:
+        return service.restore_price_source(conn, source_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.get("/products/{product_id}/price-sources")
+def list_product_price_sources(product_id: str, status: str = Query("all")):
+    # status="all" (the default here, unlike GET /price-sources above) --
+    # the product detail view wants to see pending/approved/rejected
+    # together by default, same reasoning as GET /video-candidates'
+    # product-scoped case (see service.list_product_price_sources'
+    # docstring).
+    query_status = None if status == "all" else status
+    conn = service.get_db_connection()
+    try:
+        return {"items": service.list_product_price_sources(conn, product_id, status=query_status)}
+    finally:
+        conn.close()
+
+
+@app.post("/products/{product_id}/price-sources")
+def create_product_price_source(product_id: str, body: ProductPriceSourceCreateRequest):
+    # Manual-override path -- see service.create_product_price_source's
+    # docstring. Immediately approved (source='manual'), not a candidate
+    # to review.
+    conn = service.get_db_connection()
+    try:
+        return service.create_product_price_source(
+            conn, product_id, body.price_site_id, body.product_url, body.css_selector, body.resolved_by,
+        )
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.patch("/price-sources/{source_id}")
+def update_product_price_source(source_id: str, body: ProductPriceSourceUpdateRequest):
+    conn = service.get_db_connection()
+    try:
+        return service.update_product_price_source(
+            conn, source_id, product_url=body.product_url, css_selector=body.css_selector,
+            is_active=body.is_active,
+        )
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.delete("/price-sources/{source_id}")
+def delete_product_price_source(source_id: str):
+    conn = service.get_db_connection()
+    try:
+        return service.delete_product_price_source(conn, source_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.get("/products/{product_id}/price-history")
+def get_price_history(product_id: str, days: int = Query(90, gt=0)):
+    # Read side for charting -- see service.get_price_history's docstring.
+    # Returns every APPROVED source (for a legend) plus the raw history
+    # rows, across all of them at once, so the admin UI can draw one line
+    # per source without N separate calls.
+    conn = service.get_db_connection()
+    try:
+        return service.get_price_history(conn, product_id, days=days)
+    finally:
+        conn.close()
+
+
+@app.post("/products/{product_id}/discover-price-sources")
+def discover_price_sources(product_id: str):
+    # On-demand "search for price sources" trigger, mirroring discover-
+    # videos above -- see service.queue_price_discovery's docstring. No
+    # request body: always scopes to exactly this one product_id.
+    conn = service.get_db_connection()
+    try:
+        return service.queue_price_discovery(conn, product_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/admin/discover-all-price-sources")
+def discover_all_price_sources(limit: Optional[int] = Query(None, gt=0)):
+    # Catalog-wide equivalent of discover-price-sources above -- same
+    # shape as /admin/refresh-video-stats. See
+    # service.queue_price_discovery_batch's docstring.
+    return service.queue_price_discovery_batch(limit)
+
+
+@app.post("/products/{product_id}/check-price")
+def check_price(product_id: str):
+    # On-demand trigger for this product's approved price sources -- same
+    # fire-and-forget shape as discover-videos above. See
+    # service.queue_price_check's docstring.
+    conn = service.get_db_connection()
+    try:
+        return service.queue_price_check(conn, product_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/admin/check-all-prices")
+def check_all_prices(limit: Optional[int] = Query(None, gt=0)):
+    # Catalog-wide equivalent of check_price above -- same shape as
+    # /admin/refresh-video-stats. See service.queue_price_check_batch's
+    # docstring.
+    return service.queue_price_check_batch(limit)
 
 
 handler = Mangum(app)
