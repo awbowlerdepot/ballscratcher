@@ -528,6 +528,23 @@ def reject_video_candidate(video_id: str, body: RejectRequest):
         conn.close()
 
 
+@app.post("/video-candidates/{video_id}/restore")
+def restore_video_candidate(video_id: str):
+    # Undo for a mistaken approve/reject -- Al: "it appears if i
+    # accidentally reject a video i can not undo that action". No request
+    # body (same as DELETE below) -- see service.restore_video_candidate's
+    # docstring for why there's no resolved_by to attribute here.
+    conn = service.get_db_connection()
+    try:
+        return service.restore_video_candidate(conn, video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        conn.close()
+
+
 @app.post("/video-candidates/{video_id}/reassign")
 def reassign_video_candidate(video_id: str, body: ReassignRequest):
     # Correction tool for score_match's known false-positive shape (see

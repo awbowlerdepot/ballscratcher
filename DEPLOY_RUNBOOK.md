@@ -2755,6 +2755,67 @@ No backend/template.yaml/migration change, no new tests (admin-site JS/
 HTML only, same `node -c` syntax verification as the tab version), no
 deploy step beyond the same static-file swap.
 
+**Follow-up, real incident: undo for a mistaken approve/reject.** Al:
+"it appears if i accidentally reject a video i can not undo that
+action." Correct, and deliberately so up to this point --
+`approve_video_candidate`/`reject_video_candidate` have always only
+allowed a one-way `pending -> approved` / `pending -> rejected`
+transition (each guards `if row[0] != "pending": raise ValueError(...)`),
+specifically so a bulk action or a stale UI double-click couldn't
+silently re-apply a decision. That guard just never had a way back out.
+
+New `service.restore_video_candidate(conn, video_id)`: moves an already-
+resolved row (`status IN ('approved', 'rejected')`) back to `'pending'`
+and clears `resolved_at`/`resolved_by` -- i.e. restores it to exactly the
+state a freshly-discovered candidate is in, so it shows back up in the
+normal pending Approve/Reject workflow for another look. Restoring an
+already-`'pending'` row is a hard `ValueError`, not a silent no-op --
+that'd usually mean the caller's UI state is stale (e.g. two admins had
+the same row open). No `resolved_by` parameter, unlike approve/reject/
+reassign: there's nothing being resolved, so there's no decision to
+attribute -- same reasoning `delete_video_candidate` uses for not taking
+one either. Wired as `POST /video-candidates/{video_id}/restore` (no
+request body, same as the `DELETE` route) in `admin_api/app.py`; no
+`template.yaml` change (the catch-all proxy route already covers it,
+same as every other `/video-candidates/*` endpoint).
+
+One deliberate interaction worth calling out: a row that was auto-
+rejected by the Shorts filter (see this section's earlier "Shorts
+skewing the pipeline" addendum) can still be restored like any other --
+but if it's genuinely a Short, `apply_video_stats`'s force-reject
+re-checks duration on every stats refresh regardless of current status,
+so it'll simply get auto-rejected again on the next scheduled refresh.
+No special-casing needed to keep a restored Short from resurfacing as
+`'pending'` forever.
+
+Admin-site: an **Undo** button now sits next to the status badge on any
+non-pending row, in both the Video Candidates tab (`renderVideoCandidates`
+-> `restoreVideo(id)`) and the product detail page's Videos section
+(`loadProductDetailInto`'s row rendering -> `restoreVideoForProduct
+(productId, videoId)`), mirroring the same call-the-right-endpoint-then-
+reload-the-right-view split every other action pair in this file already
+uses. Deliberately **no `confirm()` prompt** on Undo, unlike Approve/
+Reject/Delete -- there's no destructive side effect to double-check here
+(it just puts the row back where an unreviewed candidate already sits),
+so a confirm would only add friction to the action that exists specifically
+to fix a misclick.
+
+Tests (`tests/test_admin_api_service.py`, 129/129 passing, 4 new):
+restoring from `'rejected'` clears `resolved_by`/`resolved_at` and sets
+`'pending'`; restoring from `'approved'` does the same; restoring an
+already-`'pending'` row raises `ValueError`; restoring a missing id
+raises `LookupError`. `FakeCursor` gained an `update product_videos set
+status = 'pending'` branch that resets both audit fields, mirroring what
+the real SQL does.
+
+No migration, no `template.yaml` change -- redeploy just
+`AdminApiFunction`:
+```bash
+sam build AdminApiFunction
+sam deploy
+```
+and swap the static `admin-site/index.html` file as usual.
+
 ### 6j. Home transcript fetcher (residential caption fetching) -- optional, run outside AWS entirely
 
 Real, live-tested finding this session (see

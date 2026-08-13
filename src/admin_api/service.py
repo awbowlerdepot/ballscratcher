@@ -1414,6 +1414,53 @@ def reject_video_candidate(conn, video_id: str, resolved_by: str, reason: str = 
     return {"video_id": video_id, "status": "rejected"}
 
 
+def restore_video_candidate(conn, video_id: str) -> dict:
+    """Undoes a mistaken approve/reject. Al: "it appears if i accidentally
+    reject a video i can not undo that action" -- correct, and deliberately
+    so up to this point: approve_video_candidate/reject_video_candidate both
+    only allow a one-way pending -> approved / pending -> rejected
+    transition (see their own guards), specifically so a bulk action or a
+    stale UI double-click couldn't silently re-apply a decision. That same
+    guard just never had a way back out. This is that way back: moves an
+    already-resolved row (status IN ('approved', 'rejected')) back to
+    'pending' and clears resolved_at/resolved_by, i.e. restores it to
+    exactly the state a freshly-discovered candidate is in, so it shows
+    back up in the normal pending approve/reject workflow for another look.
+
+    No resolved_by parameter, unlike approve/reject/reassign -- there's
+    nothing being resolved here (quite the opposite), so there's no
+    decision to attribute; the row goes back to having no resolved_by at
+    all, same as one that was never touched. Same reasoning
+    delete_video_candidate uses for not taking one either.
+
+    Restoring an already-pending row is a hard error, not a silent no-op --
+    that'd usually mean the caller's UI state is stale (e.g. two admins
+    both had the same row open), which is worth surfacing rather than
+    papering over.
+
+    Note for Shorts-filtered rows specifically (see video_discovery.
+    apply_video_stats' force-reject and MIN_VIDEO_DURATION_SECONDS): a
+    restored row that's still genuinely a Short will simply get
+    auto-rejected again on its next scheduled stats refresh -- that logic
+    re-checks duration on every refresh regardless of current status, so
+    there's no special-casing needed here to keep it from silently
+    resurfacing as 'pending' forever."""
+    with conn.cursor() as cur:
+        cur.execute("select status from product_videos where id = %s", (video_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError(f"No product_videos row with id {video_id}")
+        if row[0] not in ("approved", "rejected"):
+            raise ValueError(f"product_videos row {video_id} is {row[0]}, not approved or rejected -- nothing to restore")
+
+        cur.execute(
+            "update product_videos set status = 'pending', resolved_at = null, resolved_by = null where id = %s",
+            (video_id,),
+        )
+    conn.commit()
+    return {"video_id": video_id, "status": "pending"}
+
+
 def reassign_video_candidate(conn, video_id: str, new_product_id: str, resolved_by: str = None) -> dict:
     """Moves a video candidate to a different product. Built for a real,
     known failure mode of video_discovery's score_match heuristic (see its

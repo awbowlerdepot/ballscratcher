@@ -214,6 +214,17 @@ class FakeCursor:
             row["resolved_by"] = resolved_by
             self._last_result = None
 
+        elif q.startswith("update product_videos set status = 'pending'"):
+            # restore_video_candidate's undo -- clears resolved_at/
+            # resolved_by too (see its own docstring for why), so this
+            # fake mirrors that by resetting both, not just status.
+            (video_id,) = params
+            row = self.db["product_videos"][video_id]
+            row["status"] = "pending"
+            row["resolved_by"] = None
+            row["resolved_at"] = None
+            self._last_result = None
+
         elif q.startswith("select status, youtube_video_id from product_videos"):
             (video_id,) = params
             row = self.db["product_videos"].get(video_id)
@@ -703,6 +714,62 @@ def test_reject_video_candidate_marks_rejected():
     assert result["status"] == "rejected"
     assert db["product_videos"]["vid-1"]["status"] == "rejected"
     assert conn.committed is True
+
+
+# --- restore_video_candidate: undo for a mistaken approve/reject. Al: "it
+# appears if i accidentally reject a video i can not undo that action".
+
+def test_restore_video_candidate_from_rejected_marks_pending_and_clears_resolution():
+    db = _fake_db_with_pending_video_candidate()
+    db["product_videos"]["vid-1"]["status"] = "rejected"
+    db["product_videos"]["vid-1"]["resolved_by"] = "al@bringyourbest.co"
+    db["product_videos"]["vid-1"]["resolved_at"] = "2026-08-01T00:00:00Z"
+    conn = FakeConnection(db)
+
+    result = service.restore_video_candidate(conn, "vid-1")
+
+    assert result == {"video_id": "vid-1", "status": "pending"}
+    row = db["product_videos"]["vid-1"]
+    assert row["status"] == "pending"
+    assert row["resolved_by"] is None
+    assert row["resolved_at"] is None
+    assert conn.committed is True
+
+
+def test_restore_video_candidate_from_approved_marks_pending():
+    db = _fake_db_with_pending_video_candidate()
+    db["product_videos"]["vid-1"]["status"] = "approved"
+    db["product_videos"]["vid-1"]["resolved_by"] = "al@bringyourbest.co"
+    conn = FakeConnection(db)
+
+    result = service.restore_video_candidate(conn, "vid-1")
+
+    assert result["status"] == "pending"
+    assert db["product_videos"]["vid-1"]["status"] == "pending"
+    assert db["product_videos"]["vid-1"]["resolved_by"] is None
+
+
+def test_restore_already_pending_video_candidate_raises():
+    # Nothing to undo -- restoring a still-pending row is a hard error, not
+    # a silent no-op (see restore_video_candidate's docstring: usually
+    # means the caller's UI state is stale).
+    db = _fake_db_with_pending_video_candidate()
+    conn = FakeConnection(db)
+    try:
+        service.restore_video_candidate(conn, "vid-1")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_restore_missing_video_candidate_raises():
+    db = _fake_db_with_pending_video_candidate()
+    conn = FakeConnection(db)
+    try:
+        service.restore_video_candidate(conn, "does-not-exist")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
 
 
 # --- reassign_video_candidate / delete_video_candidate: correction tools

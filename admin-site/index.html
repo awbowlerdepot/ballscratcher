@@ -953,10 +953,17 @@ function renderVideoCandidates(items, pendingCount) {
       const checkboxCell = showBulk
         ? '<td><input type="checkbox" class="video-select" data-id="' + v.id + '" onchange="toggleVideoSelect(\'' + v.id + '\', this.checked)"></td>'
         : '';
+      // Al: "it appears if i accidentally reject a video i can not undo
+      // that action" -- Undo next to the status badge on any already-
+      // resolved row calls the new /restore endpoint (service.
+      // restore_video_candidate), putting it back to pending so it shows
+      // back up in the normal Approve/Reject flow. Not shown for pending
+      // rows -- there's nothing to undo yet.
       const statusCell = v.status === 'pending'
         ? '<button class="btn small" onclick="approveVideo(\'' + v.id + '\')">Approve</button>' +
           '<button class="btn small danger" onclick="rejectVideo(\'' + v.id + '\')">Reject</button>'
-        : '<span class="badge ' + escapeHtml(v.status) + '">' + escapeHtml(v.status) + '</span>';
+        : '<span class="badge ' + escapeHtml(v.status) + '">' + escapeHtml(v.status) + '</span>' +
+          '<button class="btn small ghost" onclick="restoreVideo(\'' + v.id + '\')">Undo</button>';
       // Published date + duration folded into the same muted subtext
       // line as channel_title rather than their own columns -- keeps the
       // table from getting too wide; views gets its own column since
@@ -1176,6 +1183,21 @@ async function rejectVideo(id) {
   try {
     await api('POST', '/video-candidates/' + id + '/reject', { body: { resolved_by: by, reason: reason || undefined } });
     toast('Rejected');
+    loadVideoCandidates();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function restoreVideo(id) {
+  // Undo for a mistaken approve/reject -- Al: "it appears if i
+  // accidentally reject a video i can not undo that action". No
+  // resolved_by needed (see service.restore_video_candidate's docstring)
+  // and no confirm() prompt -- unlike approve/reject, this can't have a
+  // side effect worth double-checking (it just puts the row back where
+  // an unreviewed candidate already sits), so a confirm here would just
+  // be friction on the very action meant to fix a misclick.
+  try {
+    await api('POST', '/video-candidates/' + id + '/restore');
+    toast('Restored to pending');
     loadVideoCandidates();
   } catch (e) { toast(e.message, true); }
 }
@@ -1420,10 +1442,14 @@ async function loadProductDetailInto(id, cell) {
       const checkboxCell = v.status === 'pending'
         ? '<td><input type="checkbox" class="product-video-select" data-product-id="' + id + '" data-id="' + v.id + '" onchange="toggleProductVideoSelect(\'' + id + '\', \'' + v.id + '\', this.checked)"></td>'
         : '<td></td>';
+      // Same Undo-next-to-badge treatment as the Video Candidates tab (see
+      // renderVideoCandidates' own comment) -- restoreVideoForProduct
+      // refreshes this product's panel afterward instead of that tab's list.
       const statusCell = v.status === 'pending'
         ? '<button class="btn small" onclick="approveVideoForProduct(\'' + id + '\', \'' + v.id + '\')">Approve</button>' +
           '<button class="btn small danger" onclick="rejectVideoForProduct(\'' + id + '\', \'' + v.id + '\')">Reject</button>'
-        : '<span class="badge ' + escapeHtml(v.status) + '">' + escapeHtml(v.status) + '</span>';
+        : '<span class="badge ' + escapeHtml(v.status) + '">' + escapeHtml(v.status) + '</span>' +
+          '<button class="btn small ghost" onclick="restoreVideoForProduct(\'' + id + '\', \'' + v.id + '\')">Undo</button>';
       const durationText = v.duration_seconds !== null && v.duration_seconds !== undefined ? ' &middot; ' + fmtDuration(v.duration_seconds) : '';
       return '<tr>' +
         checkboxCell +
@@ -1646,6 +1672,19 @@ async function rejectVideoForProduct(productId, videoId) {
   try {
     await api('POST', '/video-candidates/' + videoId + '/reject', { body: { resolved_by: by, reason: reason || undefined } });
     toast('Rejected');
+    if (cell) await loadProductDetailInto(productId, cell);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function restoreVideoForProduct(productId, videoId) {
+  // Same undo as restoreVideo above -- see its own comment -- just
+  // refreshing this product's detail panel afterward instead of the tab's
+  // list.
+  const row = document.getElementById('product-detail-' + productId);
+  const cell = row ? row.querySelector('td') : null;
+  try {
+    await api('POST', '/video-candidates/' + videoId + '/restore');
+    toast('Restored to pending');
     if (cell) await loadProductDetailInto(productId, cell);
   } catch (e) { toast(e.message, true); }
 }
