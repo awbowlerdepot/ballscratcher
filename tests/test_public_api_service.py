@@ -144,6 +144,64 @@ def test_list_products_orders_by_id_as_tiebreaker():
     assert "order by p.updated_at desc, p.id asc limit %s offset %s" in query
 
 
+# --- popularity ranking: Al's ask -- decay view_count by video age so a
+# ball's ranking reflects CURRENT popularity, not lifetime view totals.
+# See service.py's POPULARITY_HALF_LIFE_DAYS/_POPULARITY_SCORE_SQL for the
+# full writeup (180-day half-life, chosen given bowling balls' own 6-12
+# month current-to-retired lifespan -- Al's own follow-up question).
+
+def test_list_products_always_selects_popularity_score():
+    """popularity_score is unconditional, not gated behind sort= -- a
+    Browse card should be able to show a "trending" signal even in the
+    default order."""
+    conn = _QueryCapturingConnection()
+    service.list_products(conn)
+
+    query = conn.cursor().queries[0]
+    assert "as popularity_score" in query
+    assert "pv.status = 'approved'" in query
+    assert "pv.view_count is not null" in query
+
+
+def test_list_products_popularity_score_uses_confirmed_half_life():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn)
+
+    query = conn.cursor().queries[0]
+    assert f"86400.0 * {service.POPULARITY_HALF_LIFE_DAYS}" in query
+    assert service.POPULARITY_HALF_LIFE_DAYS == 180
+
+
+def test_list_products_default_sort_is_unaffected_by_popularity_column():
+    """Adding popularity_score to the SELECT list must not change the
+    default order-by or any existing bind param position (it's
+    interpolated into the SQL text directly, not passed as a param --
+    see _POPULARITY_SCORE_SQL's own comment on why)."""
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, brand_id="brand-1")
+
+    query = conn.cursor().queries[0]
+    params = conn.cursor().params[0]
+    assert "order by p.updated_at desc, p.id asc limit %s offset %s" in query
+    assert params == ["current", "brand-1", 24, 0]
+
+
+def test_list_products_sort_popularity_orders_by_score_desc():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, sort="popularity")
+
+    query = conn.cursor().queries[0]
+    assert "order by popularity_score desc, p.id asc limit %s offset %s" in query
+
+
+def test_list_products_unrecognized_sort_value_falls_back_to_default_order():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, sort="views_all_time")
+
+    query = conn.cursor().queries[0]
+    assert "order by p.updated_at desc, p.id asc limit %s offset %s" in query
+
+
 def test_list_brands_only_brands_with_published_products():
     conn = _QueryCapturingConnection()
     service.list_brands(conn)

@@ -91,8 +91,62 @@ def list_brands(conn) -> list:
 # Browse / list
 # --------------------------------------------------------------------
 
+# Video-popularity ranking: Al's ask -- "can we build in a view_count time
+# decay so that older videos will organically move down a 'popular'
+# ranking when summed up for a ball ... We will not have a way to see what
+# videos do over time so I feel like applying some version of a time decay
+# is the next best thing." There's no point-in-time view-count HISTORY to
+# work with (stats_fetched_at, migration 013, only ever holds the latest
+# fetch) -- no way to measure real view *velocity*. This is a deliberate
+# proxy instead: exponential decay by each video's own age (published_at),
+# same half-life shape as radioactive decay -- a video's view_count counts
+# for half as much once it's POPULARITY_HALF_LIFE_DAYS old, a quarter at
+# 2x that, an eighth at 3x, and so on, asymptotically toward (never
+# reaching) zero.
+#
+# HALF_LIFE_DAYS=180 (6 months), not the more conventional 12-month
+# default for this kind of ranking -- Al's own follow-up question: "bowling
+# balls ... are usually retired in 6-12 months, do you think that has an
+# effect on this recommendation." It does: list_products defaults to
+# status='current', and a current ball's entire video history almost
+# always sits inside that same 6-12 month window. A 12- or 24-month
+# half-life barely decays anything across a window that short -- it would
+# rank current balls almost entirely by raw view count, exactly what this
+# feature exists to avoid. A 6-month half-life gives real separation
+# inside a ball's actual current lifespan: a launch-month video still
+# counts for roughly half by the time that same ball nears retirement,
+# instead of the decay curve being nearly flat the whole time.
+#
+# Interpolated directly into the SQL text below (not passed as a bind
+# param) -- it's a fixed Python constant, not caller input, so there's no
+# injection concern, and keeping it out of params avoids shifting every
+# other bind param's position in this already-parameter-heavy query. Kept
+# in sync by hand with admin_api/service.py's identical copy of this same
+# constant/subquery -- these are two independently-deployed Lambdas with
+# no shared module between them (see this project's other per-Lambda
+# duplicated constants, e.g. MAX_VIDEO_IDS_PER_CALL).
+POPULARITY_HALF_LIFE_DAYS = 180
+
+# NULLs (never-fetched view_count, or a video with no published_at/
+# created_at at all -- shouldn't happen, created_at has a NOT NULL
+# default, but coalesce guards it anyway) are excluded via `pv.view_count
+# is not null` rather than treated as 0 -- a video nobody's pulled stats
+# for yet should be invisible to this ranking, not silently count as "0
+# views" and drag a ball's score down before a stats refresh ever runs.
+# Only status='approved' rows count (Al's confirmed choice) -- an
+# unreviewed 'pending' candidate might not even really be about this
+# product yet (see reassign_video_candidate's whole reason for existing).
+_POPULARITY_SCORE_SQL = f"""coalesce((
+                   select sum(
+                       pv.view_count * power(2, -extract(epoch from (now() - coalesce(pv.published_at, pv.created_at))) / (86400.0 * {POPULARITY_HALF_LIFE_DAYS}))
+                   )
+                   from product_videos pv
+                   where pv.product_id = p.id and pv.status = 'approved' and pv.view_count is not null
+               ), 0)"""
+
+
 def list_products(conn, status: str = "current", brand_id: str = None, core_id: str = None,
-                   coverstock_id: str = None, search: str = None,
+                   coverstock_id: str = None, search: str = None, sort: str = None,
                    limit: int = 24, offset: int = 0) -> list:
     """Card-shaped results for the Browse page -- one row per published
     product, curated to what a browse card actually needs (not admin_
@@ -127,8 +181,23 @@ def list_products(conn, status: str = "current", brand_id: str = None, core_id: 
     product_images rows at all), and video_reviews_summary_video_count
     (so a card can show "based on N video reviews" without a second
     round-trip -- video_reviews_summary's actual TEXT is left for the
-    detail page, a card has no room for it)."""
-    query = """
+    detail page, a card has no room for it).
+
+    popularity_score is always computed and returned (see
+    _POPULARITY_SCORE_SQL/POPULARITY_HALF_LIFE_DAYS above) -- cheap
+    enough at this catalog's size to include on every call, not gated
+    behind sort='popularity', so a card can show a "trending" indicator
+    even when the visitor is browsing in the default order.
+
+    sort: None (default) keeps the existing 'updated_at desc' order --
+    most-recently-touched-by-a-scraper first, which is really "recently
+    changed", not "popular". sort='popularity' orders by the computed
+    score instead (Al's ask -- see _POPULARITY_SCORE_SQL's docstring),
+    for a "Popular" sort option on the Browse page. Any other value is
+    silently ignored and falls back to the default order, same
+    unrecognized-value-is-harmless convention every other filter on this
+    endpoint already follows."""
+    query = f"""
         select p.id, p.name, p.url, p.color, p.status,
                b.name as brand_name,
                c.name as core_name, c.core_type,
@@ -143,7 +212,8 @@ def list_products(conn, status: str = "current", brand_id: str = None, core_id: 
                    ),
                    p.primary_image_url
                ) as primary_image_url,
-               p.video_reviews_summary_video_count
+               p.video_reviews_summary_video_count,
+               {_POPULARITY_SCORE_SQL} as popularity_score
         from products p
         join brands b on b.id = p.brand_id
         left join cores c on c.id = p.core_id
@@ -164,10 +234,14 @@ def list_products(conn, status: str = "current", brand_id: str = None, core_id: 
         params.append(f"%{search}%")
     # id as a tiebreaker -- same reason every other paginated list in this
     # project needs one (see admin_api.list_products' own comment): rows
-    # sharing an updated_at/release_date value make plain OFFSET/LIMIT
-    # pagination unstable once there's a real paginated consumer (the
-    # Browse page) rather than a one-shot admin listing.
-    query += " order by p.updated_at desc, p.id asc limit %s offset %s"
+    # sharing an updated_at/release_date value (or, now, a popularity_score
+    # value -- e.g. two products both with zero approved-video views) make
+    # plain OFFSET/LIMIT pagination unstable once there's a real paginated
+    # consumer (the Browse page) rather than a one-shot admin listing.
+    if sort == "popularity":
+        query += " order by popularity_score desc, p.id asc limit %s offset %s"
+    else:
+        query += " order by p.updated_at desc, p.id asc limit %s offset %s"
     params += [limit, offset]
 
     with conn.cursor() as cur:

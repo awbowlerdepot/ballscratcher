@@ -170,6 +170,7 @@ def get_products(
     missing_coverstock: Optional[bool] = Query(None),
     source_platform: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
+    sort: Optional[str] = Query(None, description="'popularity' for the view-count-decay ranking (see service.list_products' docstring); omitted/anything else keeps the default recently-updated order"),
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
 ):
@@ -180,7 +181,7 @@ def get_products(
             needs_video_summary_refresh=needs_video_summary_refresh,
             has_approved_video_summaries=has_approved_video_summaries,
             missing_core=missing_core, missing_coverstock=missing_coverstock,
-            source_platform=source_platform, status=status,
+            source_platform=source_platform, status=status, sort=sort,
             limit=limit, offset=offset,
         )}
     finally:

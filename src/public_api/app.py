@@ -48,6 +48,7 @@ def get_products(
     core_id: Optional[str] = Query(None),
     coverstock_id: Optional[str] = Query(None),
     search: Optional[str] = Query(None),
+    sort: Optional[str] = Query(None, description="'popularity' for the view-count-decay ranking (see service.list_products' docstring); omitted/anything else keeps the default recently-updated order"),
     limit: int = Query(24, le=100),
     offset: int = Query(0, ge=0),
 ):
@@ -55,7 +56,7 @@ def get_products(
     try:
         return {"items": service.list_products(
             conn, status=status, brand_id=brand_id, core_id=core_id,
-            coverstock_id=coverstock_id, search=search,
+            coverstock_id=coverstock_id, search=search, sort=sort,
             limit=limit, offset=offset,
         )}
     finally:

@@ -1836,6 +1836,49 @@ def test_list_products_omits_status_filter_by_default():
     assert "p.status = %s" not in query
 
 
+# --- list_products: popularity ranking -- Al's ask ("can we build in a
+# view_count time decay so that older videos will organically move down a
+# 'popular' ranking"). Same POPULARITY_HALF_LIFE_DAYS/_POPULARITY_SCORE_SQL
+# as public_api/service.py's identical copy (kept in sync by hand, see
+# that constant's own comment for why there's no shared module). Surfaced
+# here too -- not just the public API -- so Al can see/sort by the actual
+# computed number in the admin Products tab.
+
+def test_list_products_always_selects_popularity_score():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "as popularity_score" in query
+    assert "pv.status = 'approved'" in query
+    assert "pv.view_count is not null" in query
+
+
+def test_list_products_popularity_score_uses_confirmed_half_life():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert f"86400.0 * {service.POPULARITY_HALF_LIFE_DAYS}" in query
+    assert service.POPULARITY_HALF_LIFE_DAYS == 180
+
+
+def test_list_products_sort_popularity_orders_by_score_desc():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, sort="popularity", limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "order by popularity_score desc, p.id asc limit %s offset %s" in query
+
+
+def test_list_products_default_sort_unaffected_by_popularity_column():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "order by p.updated_at desc, p.id asc limit %s offset %s" in query
+
+
 # --- list_products: p.release_date column -- real ask from Al ("can we
 # pull in the available date from the motiv product page as a release
 # date column on products"). Every scraper already parsed and persisted

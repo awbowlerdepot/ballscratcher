@@ -2834,6 +2834,121 @@ Al's existing bowling-ball plotter (blocked on him sharing that other
 project's code), and build the Browse/Detail/Compare pages themselves.
 This section is the foundation those sit on top of.
 
+### 6l.5. Video-popularity ranking (view-count time decay)
+
+Al's ask, right after the video-stats feature (6i.6) landed: "can we
+build in a view_count time decay so that older videos will organically
+move down a 'popular' ranking when summed up for a ball ... We will not
+have a way to see what videos do over time so I feel like applying some
+version of a time decay is the next best thing." A raw sum of view_count
+across a ball's videos would let one old viral video permanently
+outrank a ball that's actually getting attention right now -- there's no
+point-in-time view-count history to measure real velocity against
+(`stats_fetched_at` only ever holds the LATEST fetch, see 6i.6), so
+decaying by each video's own age (`published_at`) is the deliberate proxy
+instead: same shape as radioactive/exponential half-life decay, a
+video's `view_count` counts for half as much once it's
+`POPULARITY_HALF_LIFE_DAYS` old, a quarter at 2x that, and so on,
+asymptotically toward (never reaching) zero.
+
+**Half-life = 180 days (6 months), not the more conventional 12-month
+default for this kind of ranking.** Al asked directly: "bowling balls
+have short life spans and they are usually retired in 6-12 months do you
+think that has an effect on this recommendation" -- it does. The public
+API's Browse page defaults `status='current'`, and a current ball's
+entire video history almost always sits inside that same 6-12 month
+window. A 12- or 24-month half-life barely decays anything across a
+window that short -- it would rank current balls almost entirely by raw
+view count, exactly what this feature exists to avoid. A 6-month
+half-life gives real separation inside a ball's actual current lifespan:
+a launch-month video still counts for roughly half by the time that same
+ball nears retirement, instead of the curve being nearly flat the whole
+time.
+
+**Scope**: only `product_videos` rows with `status = 'approved'` count
+(Al's confirmed choice) -- an unreviewed `'pending'` candidate might not
+even really be about this product yet (see `reassign_video_candidate`'s
+whole reason for existing). Rows with `view_count is null` (never
+fetched, or a channel that hides the count) are excluded entirely, not
+treated as 0 -- a video nobody's pulled stats for yet should be invisible
+to this ranking, not silently drag a ball's score down.
+
+**Computed live in SQL, not stored/precomputed.** Since the decay itself
+changes every day even with zero new data, a stored column would need
+its own daily refresh job to stay honest. Instead, both
+`public_api/service.py` and `admin_api/service.py`'s `list_products`
+carry an identical `POPULARITY_HALF_LIFE_DAYS = 180` constant and
+`_POPULARITY_SCORE_SQL` correlated subquery:
+```sql
+coalesce((
+    select sum(
+        pv.view_count * power(2, -extract(epoch from (now() - coalesce(pv.published_at, pv.created_at))) / (86400.0 * 180))
+    )
+    from product_videos pv
+    where pv.product_id = p.id and pv.status = 'approved' and pv.view_count is not null
+), 0) as popularity_score
+```
+`180` is interpolated directly into the SQL text (not passed as a bind
+param) since it's a fixed Python constant, not caller input -- keeps it
+out of `params` so no other bind param's position shifts. The two
+Lambdas are independently deployed with no shared module between them
+(same per-Lambda-duplicated-constant convention as `MAX_VIDEO_IDS_PER_
+CALL` elsewhere in this project), so the copy has to be kept in sync by
+hand if the half-life is ever tuned.
+
+**No migration needed** -- this reads columns migration 013 already
+added (`view_count`, `published_at`), nothing new to store.
+
+`public_api/service.py`'s `list_products` gained a `sort` param:
+`sort='popularity'` orders by the computed score (desc, `p.id` tiebreak);
+anything else (including the default `None`) keeps the existing
+`updated_at desc` order. `popularity_score` itself is always selected and
+returned regardless of `sort`, cheap enough at this catalog's size to
+include unconditionally -- a Browse card can show a "trending" signal
+without needing the popularity sort active. `public_api/app.py`'s
+`GET /products` gained the matching `?sort=` query param.
+
+`admin_api/service.py`'s `list_products` got the identical treatment
+(same `sort` param, same always-selected `popularity_score` column) so
+the number is visible and sortable in the admin Products tab too, not
+just baked into the public API -- Al's explicit ask, so he can sanity-
+check the ranking before trusting it live. `admin_api/app.py`'s
+`GET /products` gained the matching `?sort=` param.
+
+`admin-site/index.html`'s Products tab gained a "Sort" dropdown (recently
+updated / popularity) next to the existing filters, wired into
+`productState.sort` and `loadProducts`'s params the same way every other
+filter already works, and a new Popularity column in the results table
+(rounded, with a `title=` tooltip spelling out the formula since two
+balls with the same raw view counts can show different numbers here
+depending on video age).
+
+Tests: `test_public_api_service.py` 46/46 passing (5 new:
+`_POPULARITY_SCORE_SQL`'s presence/half-life-value/default-order-
+unaffected/`sort='popularity'`-orders-by-score/unrecognized-sort-value-
+falls-back). `test_admin_api_service.py` 119/119 passing (4 new, same
+shape). No bind-param positions changed in either file's existing tests
+-- confirms the half-life constant really is interpolated into the SQL
+text, not shifted into `params`.
+
+No `template.yaml` change, no redeploy of anything beyond the two
+already-existing functions:
+```bash
+sam build PublicApiFunction
+sam build AdminApiFunction
+sam deploy
+```
+(No admin-site redeploy step, same as every other admin-site-only
+change -- static file, not a Lambda-fronted deployable.)
+
+**Still to do, not yet built**: an actual "Popular" sort control on the
+consumer site's Browse page (React) -- this section only wires up the
+API-level `?sort=popularity` support and the admin-site visibility Al
+asked for as a sanity-check surface. Also worth revisiting once there's
+real traffic: whether 180 days is still the right half-life, and whether
+`popularity_score` should eventually be exposed on the product detail
+page too, not just Browse cards.
+
 ### 6m. Ball motion plotter (consumer site, standalone page)
 
 Al shared an existing interactive plotter he'd built in another Cowork

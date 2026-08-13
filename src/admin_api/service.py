@@ -248,10 +248,31 @@ def list_brands(conn) -> list:
         return [dict(zip(columns, row)) for row in cur.fetchall()]
 
 
+# Video-popularity ranking (Al's ask -- see public_api/service.py's
+# identical POPULARITY_HALF_LIFE_DAYS/_POPULARITY_SCORE_SQL for the full
+# writeup of the decay formula and why 6 months, not the more usual 12,
+# given bowling balls' own 6-12 month current-to-retired lifespan). Kept
+# in sync BY HAND with that copy -- admin_api and public_api are two
+# independently-deployed Lambdas with no shared module between them (same
+# per-Lambda-duplicated-constant convention as MAX_VIDEO_IDS_PER_CALL
+# elsewhere in this project). Surfaced here too, not just on the public
+# API, so Al can see/sort by the actual computed number in the admin
+# Products tab and sanity-check it before trusting it on the live site.
+POPULARITY_HALF_LIFE_DAYS = 180
+
+_POPULARITY_SCORE_SQL = f"""coalesce((
+                   select sum(
+                       pv.view_count * power(2, -extract(epoch from (now() - coalesce(pv.published_at, pv.created_at))) / (86400.0 * {POPULARITY_HALF_LIFE_DAYS}))
+                   )
+                   from product_videos pv
+                   where pv.product_id = p.id and pv.status = 'approved' and pv.view_count is not null
+               ), 0)"""
+
+
 def list_products(conn, published: bool = None, brand_id: str = None, search: str = None,
                    needs_video_summary_refresh: bool = None, has_approved_video_summaries: bool = None,
                    missing_core: bool = None, missing_coverstock: bool = None, source_platform: str = None,
-                   status: str = None,
+                   status: str = None, sort: str = None,
                    limit: int = 50, offset: int = 0) -> list:
     """status: filters to products.status ('current' or 'retired' -- see
     migration 001's product_status enum). Al's direct ask after the
@@ -341,7 +362,16 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     p.coverstock_name are also now selected (the latter already existed
     as a real per-product column, see migration 008's own comment on why
     it wasn't dropped) so the Products tab can show and link into a
-    shared coverstock without a second lookup."""
+    shared coverstock without a second lookup.
+
+    popularity_score (see _POPULARITY_SCORE_SQL above) is always
+    computed and returned, same as public_api's copy of this query --
+    cheap enough at this catalog's size to include unconditionally, so
+    the Products tab can show the column without a separate round-trip
+    even when not sorting by it. sort='popularity' orders by it (desc);
+    anything else (including the default None) keeps the existing
+    updated_at-desc order, same unrecognized-value-is-harmless
+    convention as every other filter/sort value on this endpoint."""
     # p alias + left join cores: needed once c.name entered the picture --
     # products and cores both have a plain "name" column, so every
     # previously-bare column reference below (name, published, brand_id,
@@ -353,9 +383,10 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     # brand filter dropdown (see list_brands below) so filtering by brand
     # and reading which brand a row belongs to both work off a real name,
     # not a UUID you'd have to look up separately.
-    query = """
+    query = f"""
         select p.id, p.brand_id, b.name as brand_name, p.name, p.url, p.status, p.published, p.updated_at,
-               p.core_id, c.name as core_name, p.release_date, p.coverstock_id, p.coverstock_name
+               p.core_id, c.name as core_name, p.release_date, p.coverstock_id, p.coverstock_name,
+               {_POPULARITY_SCORE_SQL} as popularity_score
         from products p
         left join cores c on c.id = p.core_id
         left join brands b on b.id = p.brand_id
@@ -405,10 +436,14 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     # id as a final tiebreaker -- same reason list_video_candidates and
     # fetch_products_to_search needed one (see admin_api/service.py's own
     # earlier fix and video_discovery/app.py's ROTATION section): rows
-    # sharing an updated_at value make plain OFFSET/LIMIT pagination
-    # unstable, and this endpoint is now paginated by a real consumer
-    # (the backfill script) as of this filter's addition.
-    query += " order by p.updated_at desc, p.id asc limit %s offset %s"
+    # sharing an updated_at value (or, now, a popularity_score value) make
+    # plain OFFSET/LIMIT pagination unstable, and this endpoint is now
+    # paginated by a real consumer (the backfill script) as of this
+    # filter's addition.
+    if sort == "popularity":
+        query += " order by popularity_score desc, p.id asc limit %s offset %s"
+    else:
+        query += " order by p.updated_at desc, p.id asc limit %s offset %s"
     params += [limit, offset]
 
     with conn.cursor() as cur:

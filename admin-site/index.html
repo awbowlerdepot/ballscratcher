@@ -326,6 +326,13 @@
           <option value="retired">retired</option>
         </select>
       </div>
+      <div class="field">
+        <label>Sort</label>
+        <select id="product-sort" title="Popularity = sum of each approved video's view_count, decayed by video age (180-day half-life) -- see service.list_products' docstring. A live-computed 'current popularity' ranking, not raw lifetime views.">
+          <option value="">recently updated</option>
+          <option value="popularity">popularity</option>
+        </select>
+      </div>
       <label class="checkbox"><input id="product-needs-refresh" type="checkbox"> stale rollup</label>
       <label class="checkbox"><input id="product-has-approved" type="checkbox"> has any summarized video</label>
       <label class="checkbox"><input id="product-missing-core" type="checkbox"> missing core</label>
@@ -1058,13 +1065,14 @@ async function deleteVideo(id) {
 // --------------------------------------------------------------------
 // Products tab
 // --------------------------------------------------------------------
-const productState = { search: '', brandId: '', published: '', status: '', needsRefresh: false, hasApproved: false, missingCore: false, missingCoverstock: false, offset: 0, limit: 50, lastCount: 0 };
+const productState = { search: '', brandId: '', published: '', status: '', sort: '', needsRefresh: false, hasApproved: false, missingCore: false, missingCoverstock: false, offset: 0, limit: 50, lastCount: 0 };
 
 function applyProductFilters() {
   productState.search = document.getElementById('product-search').value.trim();
   productState.brandId = document.getElementById('product-brand-id').value.trim();
   productState.published = document.getElementById('product-published').value;
   productState.status = document.getElementById('product-status').value;
+  productState.sort = document.getElementById('product-sort').value;
   productState.needsRefresh = document.getElementById('product-needs-refresh').checked;
   productState.hasApproved = document.getElementById('product-has-approved').checked;
   productState.missingCore = document.getElementById('product-missing-core').checked;
@@ -1089,6 +1097,7 @@ async function loadProducts() {
     if (productState.published === 'true') params.published = true;
     if (productState.published === 'false') params.published = false;
     if (productState.status) params.status = productState.status;
+    if (productState.sort) params.sort = productState.sort;
     if (productState.needsRefresh) params.needs_video_summary_refresh = true;
     if (productState.hasApproved) params.has_approved_video_summaries = true;
     if (productState.missingCore) params.missing_core = true;
@@ -1114,13 +1123,20 @@ function renderProducts(items) {
         '<td>' + (p.core_name ? escapeHtml(p.core_name) : '<span class="muted">&mdash;</span>') + '</td>' +
         '<td>' + (p.coverstock_name ? escapeHtml(p.coverstock_name) : '<span class="muted">&mdash;</span>') + '</td>' +
         '<td>' + (p.release_date ? fmtDateOnly(p.release_date) : '<span class="muted">&mdash;</span>') + '</td>' +
+        // popularity_score (always returned, see service.list_products'
+        // docstring) -- rounded, since the raw decay-weighted sum is a
+        // float with no meaningful fractional views. title= spells out
+        // the formula since "popularity" alone doesn't explain why two
+        // balls with the same approved-video view counts could show
+        // different numbers here (video age).
+        '<td title="Sum of each approved video\'s view_count, decayed by video age (180-day half-life)">' + fmtCount(p.popularity_score === null || p.popularity_score === undefined ? null : Math.round(p.popularity_score)) + '</td>' +
         '<td><button class="btn small ' + (p.published ? 'ok' : 'ghost') + '" onclick="togglePublish(\'' + p.id + '\', ' + (!p.published) + ')">' + (p.published ? 'Published' : 'Unpublished') + '</button></td>' +
         '<td>' + fmtDate(p.updated_at) + '</td>' +
         '<td class="actions"><button class="btn small ghost" onclick="toggleProductDetail(\'' + p.id + '\')">Detail</button></td>' +
         '</tr>' +
-        '<tr id="product-detail-' + p.id + '" class="detail-row hidden"><td colspan="9"></td></tr>';
+        '<tr id="product-detail-' + p.id + '" class="detail-row hidden"><td colspan="10"></td></tr>';
     }).join('');
-    listEl.innerHTML = '<table><thead><tr><th>Name</th><th>Brand</th><th>Status</th><th>Core</th><th>Coverstock</th><th>Release Date</th><th>Published</th><th>Updated</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    listEl.innerHTML = '<table><thead><tr><th>Name</th><th>Brand</th><th>Status</th><th>Core</th><th>Coverstock</th><th>Release Date</th><th>Popularity</th><th>Published</th><th>Updated</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
   document.getElementById('product-prev').disabled = productState.offset === 0;
   document.getElementById('product-next').disabled = productState.lastCount < productState.limit;
