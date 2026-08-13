@@ -2596,6 +2596,78 @@ sam build VideoDiscoveryFunction
 sam deploy
 ```
 
+**Follow-up, real incident: Shorts skewing the pipeline.** Al: "the
+intent of the video ingestion is review content and i have seen short
+popping up and skewing things and there is no audible content at all.
+maybe we put a duration requirment on videos." A YouTube Short carries
+no real review content (often no audio track at all), but neither
+`search.list` nor `score_match`'s heuristic can tell one apart from a
+real review -- duration is the only reliable signal, and duration only
+becomes known via the same `videos.list` enrichment call this whole
+section already added. Shorts also skew `popularity_score` (6l.5) hard:
+a viral Short can pull in view counts an honest multi-minute review
+never will, for zero actual review value.
+
+Presented Al a duration cutoff choice (YouTube's original 61s Shorts
+boundary vs. its newer 3-minute expanded window) and a choice on
+already-approved rows (auto-reject them too, vs. leave human approvals
+alone and just report on them). Al picked **61 seconds** and **auto-
+reject already-approved Shorts too**.
+
+`src/video_discovery/app.py` gained `MIN_VIDEO_DURATION_SECONDS = 61`
+and `SHORT_REJECTED_BY` (an audit-trail string, same "distinct from a
+real person's email" convention as `scripts/auto_approve_video_
+candidates.py`'s `DEFAULT_RESOLVED_BY`), plus two pure functions:
+`is_likely_short(duration_seconds)` (true only when duration is KNOWN
+and under the cutoff -- `None` is never treated as a Short, same
+"secondary data must not block/change the primary outcome" stance the
+rest of this pipeline already takes) and `filter_out_shorts(videos)`.
+Enforced in two places:
+- **Discovery time**: `handler`'s search loop calls `filter_out_shorts`
+  right after stats enrichment, before `insert_candidates` -- a
+  confirmed Short never becomes a `product_videos` row at all. A
+  candidate whose duration isn't known yet (enrichment failed) passes
+  through untouched.
+- **Refresh time**: `apply_video_stats` force-transitions a row to
+  `status = 'rejected'` when the freshly-fetched duration comes back
+  under the cutoff, **regardless of its current status** -- including
+  `'approved'`, per Al's explicit choice. Guarded with `and status <>
+  'rejected'` so a row a human already rejected for a real reason keeps
+  its original `resolved_at`/`resolved_by` rather than being silently
+  overwritten with the automated one. `refresh_video_stats`'s return
+  value gained `candidates_rejected_as_shorts` (visible in the
+  `logger.info("Refreshed video stats: %s", result)` line handler
+  already logs, so this shows up in CloudWatch without any UI change).
+
+This means the DailyStatsRefresh schedule (the section right above this
+one) is what actually cleans up the EXISTING backlog of already-inserted
+Shorts (including previously-'approved' ones) over the next several
+days as it works through the table -- there's no separate one-time
+cleanup script, since the refresh cadence already covers every row
+eventually and the reject logic runs inline on every refresh.
+
+Tests (`tests/test_video_discovery.py`, 63/63 passing, 11 new): pure
+`is_likely_short`/`filter_out_shorts` behavior (under cutoff, at cutoff,
+above cutoff, unknown duration, mixed lists); `apply_video_stats` force-
+rejecting a confirmed Short, NOT rejecting one that meets the minimum,
+and a SQL-shape check confirming the `status <> 'rejected'` guard is
+actually in the query text; `refresh_video_stats` counting shorts
+rejected in a batch; `handler` dropping a confirmed Short before insert
+while keeping one whose duration came back unknown. Two pre-existing
+tests (`test_apply_video_stats_with_stats_updates_all_fields`,
+`test_refresh_video_stats_updates_found_rows_and_marks_missing_ones_
+checked`) had their fixture durations bumped from a coincidentally-
+Short 60s (`PT1M`) to 120s (`PT2M`) so they stay focused on their
+original assertions rather than accidentally exercising the new reject
+path.
+
+No migration, no `template.yaml` change -- redeploy just
+`VideoDiscoveryFunction`:
+```bash
+sam build VideoDiscoveryFunction
+sam deploy
+```
+
 ### 6j. Home transcript fetcher (residential caption fetching) -- optional, run outside AWS entirely
 
 Real, live-tested finding this session (see

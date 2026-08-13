@@ -236,6 +236,46 @@ def test_parse_iso8601_duration_blank_or_unparseable_returns_none():
     assert app.parse_iso8601_duration("not a duration") is None
 
 
+# --- is_likely_short / filter_out_shorts: SHORTS FILTER (Al's ask -- "the
+# intent of the video ingestion is review content and i have seen short
+# popping up and skewing things and there is no audible content at all.
+# maybe we put a duration requirment on videos"). 61s cutoff, Al's own
+# choice over YouTube's newer 3-minute Shorts window (see module
+# docstring's SHORTS FILTER section for the full reasoning). ---
+
+def test_is_likely_short_true_under_the_cutoff():
+    assert app.is_likely_short(60) is True
+    assert app.is_likely_short(1) is True
+    assert app.is_likely_short(0) is True
+
+
+def test_is_likely_short_false_at_and_above_the_cutoff():
+    assert app.is_likely_short(app.MIN_VIDEO_DURATION_SECONDS) is False  # boundary: 61 itself is NOT a Short
+    assert app.is_likely_short(120) is False
+
+
+def test_is_likely_short_false_when_duration_unknown():
+    """Unknown duration (enrichment failed or hasn't run) is never
+    treated as a Short -- same 'secondary data must not block/change the
+    primary outcome' stance the rest of this pipeline already takes."""
+    assert app.is_likely_short(None) is False
+
+
+def test_filter_out_shorts_drops_only_confirmed_shorts():
+    videos = [
+        {"youtube_video_id": "v1", "duration_seconds": 30},   # Short -- dropped
+        {"youtube_video_id": "v2", "duration_seconds": 120},  # real length -- kept
+        {"youtube_video_id": "v3", "duration_seconds": None},  # unknown -- kept
+        {"youtube_video_id": "v4"},                             # key absent entirely -- kept
+    ]
+    kept = app.filter_out_shorts(videos)
+    assert [v["youtube_video_id"] for v in kept] == ["v2", "v3", "v4"]
+
+
+def test_filter_out_shorts_empty_list():
+    assert app.filter_out_shorts([]) == []
+
+
 # --- parse_video_details_response / fetch_video_statistics: videos.list,
 # the only call that ever returns view/like/comment counts (search.list's
 # snippet part never does -- see module docstring's VIDEO STATS section).
@@ -340,6 +380,7 @@ class _FakeCursor:
         self.last_marked_searched = None
         self.stats_updates = []  # list of (video_pk, params) for the full-stats UPDATE branch
         self.stats_fetched_at_only_updates = []  # list of video_pk for the no-stats UPDATE branch
+        self.short_reject_updates = []  # list of (fetched_at, resolved_by, video_pk) for the SHORTS FILTER reject branch
 
     def execute(self, query, params=None):
         params = params or []
@@ -365,6 +406,8 @@ class _FakeCursor:
             self._last_result = None
         elif q.startswith("update product_videos set view_count"):
             self.stats_updates.append(params)
+        elif q.startswith("update product_videos set status = 'rejected'"):
+            self.short_reject_updates.append(params)
         elif q.startswith("update product_videos set stats_fetched_at"):
             self.stats_fetched_at_only_updates.append(params[-1])
         else:
@@ -569,13 +612,18 @@ def test_select_video_ids_needing_stats_refresh_orders_stale_first():
 
 def test_apply_video_stats_with_stats_updates_all_fields():
     conn = _FakeConn()
+    # duration=120 (2 minutes) -- deliberately well above MIN_VIDEO_
+    # DURATION_SECONDS so this test stays about the plain full-field
+    # update, not the SHORTS FILTER path (see the dedicated tests below
+    # for that).
     stats = {"view_count": 100, "like_count": 10, "comment_count": 2,
-              "duration_seconds": 60, "description": "d"}
+              "duration_seconds": 120, "description": "d"}
     app.apply_video_stats(conn, "pv1", stats, "2026-08-13T00:00:00+00:00")
 
     assert conn.cursor().stats_updates == [
-        (100, 10, 2, 60, "d", "2026-08-13T00:00:00+00:00", "pv1"),
+        (100, 10, 2, 120, "d", "2026-08-13T00:00:00+00:00", "pv1"),
     ]
+    assert conn.cursor().short_reject_updates == []  # not a Short -- no reject
     assert conn.committed is True
 
 
@@ -589,7 +637,48 @@ def test_apply_video_stats_empty_stats_only_touches_fetched_at():
 
     assert conn.cursor().stats_updates == []  # the full-field UPDATE never ran
     assert conn.cursor().stats_fetched_at_only_updates == ["pv1"]
+    assert conn.cursor().short_reject_updates == []
     assert conn.committed is True
+
+
+# --- apply_video_stats' SHORTS FILTER enforcement (refresh time): Al's
+# explicit "auto-reject those too" choice -- a row found to be a Short on
+# refresh gets force-rejected regardless of its current status, guarded
+# against clobbering an existing human rejection. ---
+
+def test_apply_video_stats_force_rejects_a_confirmed_short():
+    conn = _FakeConn()
+    stats = {"view_count": 50000, "like_count": 1000, "comment_count": 20,
+              "duration_seconds": 30, "description": "a short clip"}
+    fetched_at = "2026-08-13T00:00:00+00:00"
+    app.apply_video_stats(conn, "pv1", stats, fetched_at)
+
+    # Stats still get written (view counts etc. stay accurate even for a
+    # video that's about to be rejected).
+    assert conn.cursor().stats_updates == [(50000, 1000, 20, 30, "a short clip", fetched_at, "pv1")]
+    assert conn.cursor().short_reject_updates == [(fetched_at, app.SHORT_REJECTED_BY, "pv1")]
+
+
+def test_apply_video_stats_does_not_reject_when_duration_meets_the_minimum():
+    conn = _FakeConn()
+    stats = {"view_count": 100, "duration_seconds": app.MIN_VIDEO_DURATION_SECONDS}
+    app.apply_video_stats(conn, "pv1", stats, "2026-08-13T00:00:00+00:00")
+
+    assert conn.cursor().short_reject_updates == []
+
+
+def test_apply_video_stats_reject_query_guards_against_clobbering_existing_rejection():
+    """SQL-shape check: the reject UPDATE must exclude rows already
+    status='rejected' so a human's own resolved_at/resolved_by (a real
+    rejection reason) is never silently overwritten with the automated
+    one."""
+    conn = _FakeConn()
+    stats = {"duration_seconds": 10}
+    app.apply_video_stats(conn, "pv1", stats, "2026-08-13T00:00:00+00:00")
+
+    reject_queries = [q for q, _ in conn.cursor().executed if "status = 'rejected'" in q]
+    assert len(reject_queries) == 1
+    assert "and status <> 'rejected'" in reject_queries[0]
 
 
 def test_refresh_video_stats_updates_found_rows_and_marks_missing_ones_checked():
@@ -599,7 +688,10 @@ def test_refresh_video_stats_updates_found_rows_and_marks_missing_ones_checked()
     ])
     videos_list_response = {
         "items": [
-            {"id": "v1", "statistics": {"viewCount": "100"}, "contentDetails": {"duration": "PT1M"}, "snippet": {}},
+            # PT2M (120s), well above MIN_VIDEO_DURATION_SECONDS -- this
+            # test is about the found/missing distinction, not the
+            # SHORTS FILTER (see the dedicated test below for that).
+            {"id": "v1", "statistics": {"viewCount": "100"}, "contentDetails": {"duration": "PT2M"}, "snippet": {}},
             # v2-deleted absent -- simulates a deleted/private video
         ],
     }
@@ -607,8 +699,8 @@ def test_refresh_video_stats_updates_found_rows_and_marks_missing_ones_checked()
 
     result = app.refresh_video_stats(conn, "fake-key", limit=200, session=fake)
 
-    assert result == {"candidates_checked": 2, "candidates_updated": 1}
-    assert conn.cursor().stats_updates == [(100, None, None, 60, None, conn.cursor().stats_updates[0][5], "pv1")]
+    assert result == {"candidates_checked": 2, "candidates_updated": 1, "candidates_rejected_as_shorts": 0}
+    assert conn.cursor().stats_updates == [(100, None, None, 120, None, conn.cursor().stats_updates[0][5], "pv1")]
     assert conn.cursor().stats_fetched_at_only_updates == ["pv2"]
 
 
@@ -620,7 +712,28 @@ def test_refresh_video_stats_no_rows_skips_the_api_call_entirely():
             raise AssertionError("should never be called -- nothing to refresh")
 
     result = app.refresh_video_stats(conn, "fake-key", limit=200, session=_ExplodingSession())
-    assert result == {"candidates_checked": 0, "candidates_updated": 0}
+    assert result == {"candidates_checked": 0, "candidates_updated": 0, "candidates_rejected_as_shorts": 0}
+
+
+def test_refresh_video_stats_counts_shorts_rejected_this_run():
+    conn = _FakeConn(refresh_rows=[
+        {"id": "pv1", "youtube_video_id": "v1-short"},
+        {"id": "pv2", "youtube_video_id": "v2-real"},
+    ])
+    videos_list_response = {
+        "items": [
+            {"id": "v1-short", "statistics": {"viewCount": "500000"}, "contentDetails": {"duration": "PT30S"}, "snippet": {}},
+            {"id": "v2-real", "statistics": {"viewCount": "100"}, "contentDetails": {"duration": "PT5M"}, "snippet": {}},
+        ],
+    }
+    fake = _FakeSession(_FakeResponse(200, json.dumps(videos_list_response), ok=True))
+
+    result = app.refresh_video_stats(conn, "fake-key", limit=200, session=fake)
+
+    assert result == {"candidates_checked": 2, "candidates_updated": 2, "candidates_rejected_as_shorts": 1}
+    assert conn.cursor().short_reject_updates == [
+        (conn.cursor().short_reject_updates[0][0], app.SHORT_REJECTED_BY, "pv1"),
+    ]
 
 
 # --- handler: search errors must NOT mark a product searched, success
@@ -752,6 +865,89 @@ def test_handler_stats_enrichment_failure_does_not_block_candidate_insertion(mon
     assert len(captured_videos) == 1  # still saved, just without stats
     assert captured_videos[0].get("view_count") is None
     assert body["new_candidates"] == 1
+
+
+# --- handler's SHORTS FILTER enforcement (discovery time): a confirmed
+# Short must never reach insert_candidates, but a candidate whose
+# duration is still unknown (stats enrichment failed) must still be
+# saved -- same distinction as is_likely_short's own docstring. ---
+
+def test_handler_drops_confirmed_shorts_before_insert(monkeypatch):
+    captured_videos = []
+
+    monkeypatch.setattr(app, "get_youtube_api_key", lambda: "fake-key")
+    monkeypatch.setattr(app, "get_db_connection", lambda: _FakeConn())
+    monkeypatch.setattr(app, "get_youtube_requests_session", lambda: object())
+    monkeypatch.setattr(
+        app, "fetch_products_to_search",
+        lambda conn, job, max_products: [{"id": "prod-good", "name": "Absolute", "brand_name": "Storm"}],
+    )
+    monkeypatch.setattr(
+        app, "search_youtube",
+        lambda api_key, query, max_results, session=None: [
+            {"youtube_video_id": "v-short", "title": "Storm Absolute quick look",
+             "channel_title": "c1", "published_at": None, "thumbnail_url": None},
+            {"youtube_video_id": "v-real", "title": "Storm Absolute Full Review",
+             "channel_title": "c1", "published_at": None, "thumbnail_url": None},
+        ],
+    )
+    monkeypatch.setattr(
+        app, "fetch_video_statistics",
+        lambda api_key, video_ids, session=None: {
+            "v-short": {"view_count": 900000, "duration_seconds": 25},  # a Short -- must be dropped
+            "v-real": {"view_count": 500, "duration_seconds": 300},     # a real review -- must be kept
+        },
+    )
+
+    def fake_insert(conn, pid, q, videos):
+        captured_videos.extend(videos)
+        return len(videos)
+
+    monkeypatch.setattr(app, "insert_candidates", fake_insert)
+    monkeypatch.setattr(app, "mark_product_searched", lambda conn, pid: None)
+
+    result = app.handler({}, None)
+    body = json.loads(result["body"])
+
+    assert [v["youtube_video_id"] for v in captured_videos] == ["v-real"]
+    assert body["new_candidates"] == 1
+
+
+def test_handler_keeps_candidates_whose_duration_is_unknown(monkeypatch):
+    """A confirmed Short gets dropped, but a candidate whose stats
+    enrichment simply never returned anything for it (partial videos.list
+    response, not a hard failure) must still be saved -- unknown duration
+    is never treated as 'must be a Short'."""
+    captured_videos = []
+
+    monkeypatch.setattr(app, "get_youtube_api_key", lambda: "fake-key")
+    monkeypatch.setattr(app, "get_db_connection", lambda: _FakeConn())
+    monkeypatch.setattr(app, "get_youtube_requests_session", lambda: object())
+    monkeypatch.setattr(
+        app, "fetch_products_to_search",
+        lambda conn, job, max_products: [{"id": "prod-good", "name": "Absolute", "brand_name": "Storm"}],
+    )
+    monkeypatch.setattr(
+        app, "search_youtube",
+        lambda api_key, query, max_results, session=None: [
+            {"youtube_video_id": "v-unknown", "title": "Storm Absolute Review",
+             "channel_title": "c1", "published_at": None, "thumbnail_url": None},
+        ],
+    )
+    # v-unknown absent from the enrichment result entirely -- duration_
+    # seconds is never set on the video dict at all.
+    monkeypatch.setattr(app, "fetch_video_statistics", lambda api_key, video_ids, session=None: {})
+
+    def fake_insert(conn, pid, q, videos):
+        captured_videos.extend(videos)
+        return len(videos)
+
+    monkeypatch.setattr(app, "insert_candidates", fake_insert)
+    monkeypatch.setattr(app, "mark_product_searched", lambda conn, pid: None)
+
+    app.handler({}, None)
+
+    assert [v["youtube_video_id"] for v in captured_videos] == ["v-unknown"]
 
 
 # --- handler's {"refresh_stats": true} job shape: a completely different

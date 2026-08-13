@@ -39,6 +39,25 @@ of how many of the up to 50 ids are packed into it, nowhere near
 search.list's 100 units/call -- so neither of these needed their own
 circuit breaker or the same conservative per-invocation cap.
 
+SHORTS FILTER: Al, real incident found in production -- "the intent of
+the video ingestion is review content and i have seen short popping up
+and skewing things and there is no audible content at all. maybe we put
+a duration requirment on videos." A YouTube Short has no real review
+content (often no audio track at all), but nothing about search.list or
+the match-confidence heuristic can tell one apart from a real review --
+duration is the only reliable signal, and duration only becomes known
+via the same videos.list enrichment call VIDEO STATS above already
+makes. MIN_VIDEO_DURATION_SECONDS (61 -- Al's own choice over YouTube's
+newer 3-minute Shorts-eligibility window, for the lower false-positive
+risk against real quick-take content) is enforced in two places:
+`filter_out_shorts` drops a confirmed Short before it's ever inserted as
+a new candidate, and `apply_video_stats` force-rejects one at refresh
+time -- including an already-'approved' row, Al's explicit "auto-reject
+those too" choice, since a Short could easily have been approved before
+anyone noticed the format (search.list's own results never carried
+duration). A video whose duration isn't known yet is never treated as a
+Short by either check -- see `is_likely_short`'s own docstring.
+
 The default/brand_id scopes deliberately do NOT require `published = true`
 (they only used to, until a real catalog check found why that mattered:
 142 'current' products, but only 1 with `published = true` -- almost the
@@ -193,6 +212,35 @@ MAX_VIDEO_IDS_PER_CALL = 50
 # call regardless of batch size, nowhere near search.list's 100 units/
 # call (see module docstring's VIDEO STATS section).
 DEFAULT_REFRESH_STATS_LIMIT = 200
+
+# SHORTS FILTER: Al's ask -- "the intent of the video ingestion is
+# review content and i have seen short popping up and skewing things and
+# there is no audible content at all. maybe we put a duration
+# requirment on videos." 61, not YouTube's newer expanded 3-minute
+# Shorts-eligibility window -- Al's own choice between the two, picked
+# for the lower false-positive risk (almost nothing with real review
+# commentary runs under a minute; a lot of legitimate quick-take/first-
+# impression content lives in the 1-3 minute range that the 3-minute
+# cutoff would also catch). Enforced in two places, not one:
+#   1. Discovery time (filter_out_shorts, called from handler before
+#      insert_candidates) -- a confirmed Short never becomes a
+#      product_videos row in the first place.
+#   2. Stats-refresh time (apply_video_stats) -- Al's explicit choice:
+#      duration is a HARD requirement regardless of past approval, so an
+#      already-'approved' Short (likely approved before anyone noticed
+#      the format, since search.list's own results never included
+#      duration -- see the VIDEO STATS section above) gets auto-rejected
+#      the next time its stats refresh, same as a still-'pending' one.
+# A video whose duration ISN'T known yet (enrichment failed, or hasn't
+# run yet) is never treated as a Short by either enforcement point --
+# see is_likely_short's own docstring.
+MIN_VIDEO_DURATION_SECONDS = 61
+
+# Distinct from a real person's email on purpose, same reasoning as
+# scripts/auto_approve_video_candidates.py's DEFAULT_RESOLVED_BY --
+# resolved_by is this project's audit trail for "who decided this," and
+# this is a rule, not a human decision.
+SHORT_REJECTED_BY = f"video_discovery (duration < {MIN_VIDEO_DURATION_SECONDS}s, likely a Short)"
 
 # Retried status codes: 429 is the real, confirmed cause here (YouTube's
 # per-minute search.list rate limit -- see module docstring's incident
@@ -371,6 +419,32 @@ def parse_iso8601_duration(duration) -> int:
     minutes = int(match.group("minutes") or 0)
     seconds = int(match.group("seconds") or 0)
     return hours * 3600 + minutes * 60 + seconds
+
+
+def is_likely_short(duration_seconds) -> bool:
+    """True only when duration is KNOWN and under MIN_VIDEO_DURATION_
+    SECONDS -- see the module docstring's SHORTS FILTER section for the
+    full reasoning (Al's ask, the 61s cutoff choice, and the two
+    enforcement points). A video whose duration hasn't been fetched yet
+    (None -- the enrichment call itself failed, or hasn't run) is never
+    treated as a Short here, same "secondary data must not block/change
+    the primary outcome" stance transcript_note/the enrichment try/
+    except already take elsewhere in this pipeline -- it just gets
+    caught later, once its duration IS known, by whichever enforcement
+    point (filter_out_shorts at discovery time, apply_video_stats at
+    refresh time) next has the chance to check it."""
+    return duration_seconds is not None and duration_seconds < MIN_VIDEO_DURATION_SECONDS
+
+
+def filter_out_shorts(videos: list) -> list:
+    """Drops candidates confirmed to be Shorts before they're ever
+    inserted -- Al: "the intent of the video ingestion is review content
+    and i have seen short popping up and skewing things and there is no
+    audible content at all." Called from handler, after stats enrichment
+    (so duration_seconds is populated when available) and before
+    insert_candidates. A candidate whose duration isn't known yet is
+    kept, not dropped -- see is_likely_short's own docstring."""
+    return [v for v in videos if not is_likely_short(v.get("duration_seconds"))]
 
 
 def parse_video_details_response(data: dict) -> dict:
@@ -599,7 +673,21 @@ def apply_video_stats(conn, video_pk: str, stats: dict, fetched_at) -> None:
     but deliberately leaves any previously-known view/like/comment/
     duration/description values untouched rather than nulling them out --
     a video that existed once and got taken down shouldn't lose its
-    last-known numbers."""
+    last-known numbers.
+
+    SHORTS FILTER, refresh-time enforcement (see module docstring): when
+    the freshly-fetched duration_seconds comes back under MIN_VIDEO_
+    DURATION_SECONDS, this row is force-transitioned to status=
+    'rejected' in a second update, regardless of its CURRENT status --
+    including 'approved'. Al's explicit choice: duration is a hard
+    requirement, not just a filter on brand-new candidates, so an
+    already-'approved' Short (likely approved before anyone noticed the
+    format, since search.list's own results never included duration)
+    gets cleaned up automatically the next time its stats refresh, same
+    as a still-'pending' one. Guarded with `and status <> 'rejected'` --
+    a row a human already rejected for a real reason keeps that
+    resolved_at/resolved_by untouched rather than being silently
+    overwritten with the automated one."""
     with conn.cursor() as cur:
         if stats:
             cur.execute(
@@ -615,6 +703,15 @@ def apply_video_stats(conn, video_pk: str, stats: dict, fetched_at) -> None:
                     stats.get("description"), fetched_at, video_pk,
                 ),
             )
+            if is_likely_short(stats.get("duration_seconds")):
+                cur.execute(
+                    """
+                    update product_videos
+                    set status = 'rejected', resolved_at = %s, resolved_by = %s
+                    where id = %s and status <> 'rejected'
+                    """,
+                    (fetched_at, SHORT_REJECTED_BY, video_pk),
+                )
         else:
             cur.execute(
                 "update product_videos set stats_fetched_at = %s where id = %s",
@@ -635,24 +732,35 @@ def refresh_video_stats(conn, api_key, limit: int = DEFAULT_REFRESH_STATS_LIMIT,
     statistics's docstring), and a single call already covers up to 50
     rows, so a `limit` of a few hundred is only a handful of HTTP calls
     total, not hundreds like the search flow's one-call-per-product
-    shape."""
+    shape. `candidates_rejected_as_shorts` in the return value (see
+    apply_video_stats' own SHORTS FILTER section) is a running count of
+    rows this call force-transitioned to status='rejected' -- includes
+    ones that were 'approved' before this refresh, per Al's explicit
+    "auto-reject those too" choice."""
     session = session if session is not None else get_youtube_requests_session()
     rows = select_video_ids_needing_stats_refresh(conn, limit)
     if not rows:
-        return {"candidates_checked": 0, "candidates_updated": 0}
+        return {"candidates_checked": 0, "candidates_updated": 0, "candidates_rejected_as_shorts": 0}
 
     video_ids = [row["youtube_video_id"] for row in rows]
     stats_by_id = fetch_video_statistics(api_key, video_ids, session=session)
     fetched_at = datetime.now(timezone.utc)
 
     updated = 0
+    rejected_as_shorts = 0
     for row in rows:
         stats = stats_by_id.get(row["youtube_video_id"], {})
         apply_video_stats(conn, row["id"], stats, fetched_at)
         if stats:
             updated += 1
+            if is_likely_short(stats.get("duration_seconds")):
+                rejected_as_shorts += 1
 
-    return {"candidates_checked": len(rows), "candidates_updated": updated}
+    return {
+        "candidates_checked": len(rows),
+        "candidates_updated": updated,
+        "candidates_rejected_as_shorts": rejected_as_shorts,
+    }
 
 
 def get_db_connection():
@@ -804,6 +912,20 @@ def handler(event, context):
                         "still be saved without view/like/comment/duration data)",
                         product["id"],
                     )
+
+            # SHORTS FILTER (see module docstring) -- drop confirmed
+            # Shorts before they ever become a product_videos row. Runs
+            # after enrichment, above, so duration_seconds is populated
+            # whenever the videos.list call succeeded; a candidate whose
+            # duration is still unknown (enrichment failed) passes
+            # through untouched (see filter_out_shorts/is_likely_short).
+            videos_before_shorts_filter = len(videos)
+            videos = filter_out_shorts(videos)
+            if len(videos) < videos_before_shorts_filter:
+                logger.info(
+                    "Dropped %d likely-Short candidate(s) for product_id=%s (duration < %ds)",
+                    videos_before_shorts_filter - len(videos), product["id"], MIN_VIDEO_DURATION_SECONDS,
+                )
 
             inserted = insert_candidates(conn, product["id"], query, videos)
             mark_product_searched(conn, product["id"])
