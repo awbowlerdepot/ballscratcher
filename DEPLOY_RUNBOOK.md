@@ -3050,6 +3050,55 @@ No `template.yaml` change, no new redeploy step beyond the two functions
 6l.5's original writeup already covers (`PublicApiFunction`/
 `AdminApiFunction`) -- this is a query-shape and frontend change only.
 
+**Follow-up, real incident: raw sum let video count dominate the
+ranking.** Al: "there needs to be some more thought put into the
+popularity, it currently is weighed heavily on number of videos because
+it is a raw sum of the videos ... do you have a suggestion on how
+balance this for when one ball have 4 videos and another has 20." The
+original `_POPULARITY_SCORE_SQL` (both files) summed every approved
+video's decayed view count -- a ball with 20 mediocre videos could
+outrank a ball with 4 genuinely popular ones purely because it had more
+of them, which measures "reviewed a lot," not "popular."
+
+Presented Al three options (asked via a real choice, not decided
+unilaterally, same as the half-life decision earlier in this section):
+plain average (no volume credit at all -- a single video would carry as
+much weight as 20 corroborating ones), average x sqrt(count) (milder
+dampening), and average x ln(1 + count) (recommended). Al picked
+**average x ln(1 + count)**.
+
+`_POPULARITY_SCORE_SQL` in both `public_api/service.py` and
+`admin_api/service.py` changed from `select sum(...)` to `select
+avg(...) * ln(1 + count(*))` in the same correlated subquery -- still
+one aggregate query per product, still no schema/migration change, still
+`status = 'approved'` and `view_count is not null` only (see the earlier
+6l.5 entry above -- that scope decision is untouched). `ln(1 + count)`
+still gives volume a real, deliberate boost -- more corroborating videos
+genuinely is more evidence of popularity -- just a sub-linear one instead
+of a straight multiplier: at equal per-video quality, a 20-video ball
+now scores `ln(21)/ln(5) ≈ 1.9x` a 4-video ball, not the old `20/4 =
+5x` a raw sum produced. A few standout videos can still beat a pile of
+average ones, since it's the AVERAGE being scaled, not the raw total.
+`count(*)` is always >= 1 whenever the WHERE clause matches any row, and
+the whole subquery returns `NULL` (then `0`, via the outer `coalesce`)
+when it matches zero rows -- no separate zero-video special case needed.
+
+Tests: `test_public_api_service.py` 53/53 passing (2 new --
+`test_list_products_popularity_score_averages_not_sums` confirms the SQL
+text shape, `test_popularity_formula_dampens_video_count_vs_a_raw_sum`
+is a pure-Python `math.log` sanity check with no DB, verifying the
+1.8x-2.0x claim in the code comment is actually correct arithmetic, not
+just an assertion). `test_admin_api_service.py` 125/125 passing (1 new,
+same SQL-shape check). Zero regressions in either file.
+
+No `template.yaml` change; redeploy the same two functions as 6l.5's
+original writeup:
+```bash
+sam build PublicApiFunction
+sam build AdminApiFunction
+sam deploy
+```
+
 ### 6m. Ball motion plotter (consumer site, standalone page)
 
 Al shared an existing interactive plotter he'd built in another Cowork

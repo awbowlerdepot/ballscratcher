@@ -136,10 +136,26 @@ POPULARITY_HALF_LIFE_DAYS = 180
 # Only status='approved' rows count (Al's confirmed choice) -- an
 # unreviewed 'pending' candidate might not even really be about this
 # product yet (see reassign_video_candidate's whole reason for existing).
+#
+# AVERAGE decayed view count per video, times ln(1 + video count) --
+# NOT a plain sum. Al's follow-up, real incident: a raw sum (the
+# original shape here) let video COUNT dominate the ranking -- a ball
+# with 20 mediocre videos could outrank a ball with 4 genuinely popular
+# ones purely on volume, which isn't "popular", it's "reviewed a lot."
+# ln(1 + count) still gives volume a real, deliberate boost (more
+# corroborating videos IS meaningfully more evidence of popularity than
+# fewer), just a sub-linear one instead of a straight multiplier: at
+# equal per-video quality, 20 videos score ~1.9x a 4-video ball (ln(21)
+# / ln(5)), not the old 5x (20/4) a raw sum produced. A few standout
+# videos can still beat a pile of average ones, since the AVERAGE is
+# what's being scaled, not the count itself. count(*) is always >= 1
+# whenever the WHERE clause matches any row, and the whole subquery
+# returns NULL (then 0, via the outer coalesce) when it matches zero
+# rows -- no separate zero-video special case needed.
 _POPULARITY_SCORE_SQL = f"""coalesce((
-                   select sum(
+                   select avg(
                        pv.view_count * power(2, -extract(epoch from (now() - coalesce(pv.published_at, pv.created_at))) / (86400.0 * {POPULARITY_HALF_LIFE_DAYS}))
-                   )
+                   ) * ln(1 + count(*))
                    from product_videos pv
                    where pv.product_id = p.id and pv.status = 'approved' and pv.view_count is not null
                ), 0)"""

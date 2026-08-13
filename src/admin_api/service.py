@@ -260,10 +260,21 @@ def list_brands(conn) -> list:
 # Products tab and sanity-check it before trusting it on the live site.
 POPULARITY_HALF_LIFE_DAYS = 180
 
+# AVERAGE decayed view count per video, times ln(1 + video count) -- NOT
+# a plain sum. Al's follow-up, real incident: a raw sum (the original
+# shape here) let video COUNT dominate -- a ball with 20 mediocre videos
+# could outrank a ball with 4 genuinely popular ones purely on volume.
+# ln(1 + count) still gives volume a real, deliberate boost (more
+# corroborating videos IS meaningfully more evidence of popularity), just
+# sub-linear instead of a straight multiplier: at equal per-video
+# quality, 20 videos score ~1.9x a 4-video ball (ln(21)/ln(5)), not the
+# old 5x (20/4) a raw sum produced. See public_api/service.py's identical
+# copy for the full writeup/worked numbers; kept in sync by hand, same
+# no-shared-module reasoning as everything else on this constant.
 _POPULARITY_SCORE_SQL = f"""coalesce((
-                   select sum(
+                   select avg(
                        pv.view_count * power(2, -extract(epoch from (now() - coalesce(pv.published_at, pv.created_at))) / (86400.0 * {POPULARITY_HALF_LIFE_DAYS}))
-                   )
+                   ) * ln(1 + count(*))
                    from product_videos pv
                    where pv.product_id = p.id and pv.status = 'approved' and pv.view_count is not null
                ), 0)"""

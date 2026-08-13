@@ -1863,6 +1863,19 @@ def test_list_products_popularity_score_uses_confirmed_half_life():
     assert service.POPULARITY_HALF_LIFE_DAYS == 180
 
 
+def test_list_products_popularity_score_averages_not_sums():
+    """Al's follow-up, real incident: a raw sum let video COUNT dominate
+    the ranking. Confirms the SQL averages per-video decayed views and
+    applies a sub-linear ln(1 + count) volume boost, not a plain sum."""
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "select avg(" in query
+    assert "* ln(1 + count(*))" in query
+    assert "select sum(" not in query
+
+
 def test_list_products_sort_popularity_orders_by_score_desc():
     conn = _QueryCapturingConnection()
     service.list_products(conn, sort="popularity", limit=50, offset=0)
