@@ -1467,6 +1467,52 @@ Watch for on first run:
   product beyond the three checked this session -- worth a real curl
   check before assuming it's the same bug recurring differently.
 
+### 6f.1. Fixed incident: "Tech Sheet" wording missed by `parse_tech_data_pdf_url`, zero `product_skus`
+
+Al: found product `56897c0b-e3ec-4314-a8dc-238e1b8b7a75` (Storm Tropical
+Surge Black/Cherry) with zero `product_skus` rows, despite the real page
+(`stormbowling.com/storm-tropical-surge-bowling-ball-black-cherry`)
+clearly showing weight/RG/differential values in its spec block.
+
+Root cause, confirmed by fetching that exact live page: `product_skus`
+comes ONLY from `parse_tech_data_pdf(pdf_bytes)` in `upsert_product`'s
+`for sku in pdf_skus:` loop -- the flat single-weight spec block on the
+page itself is cross-check-only, never the SKU source (see 6f's own
+COMMERCEBUILD_SCOPING.md writeup). `parse_tech_data_pdf_url` finds that
+PDF's URL by matching the Downloads-section link's TEXT against "tech
+data" -- but this product's link text is "Tech Sheet: Surge Black/Cherry
+PDF", not "Tech Data" (the "tech data" substring only appears in the
+PDF's own filename, `Storm_Tropical_Surge_Black_Cherry_Tech_Data.pdf`,
+which the original code never inspected). No match -> `tech_data_pdf_url`
+is `None` -> `parse_tech_data_pdf` never runs -> `pdf_skus` stays empty
+-> zero rows inserted, with no exception anywhere and a normal-looking
+`products` row (this is the same general failure shape as 6f's own "if
+archived products come back with EMPTY name/coverstock/color fields"
+watch-item above -- a silent, not-thrown gap in a specific field's
+sourcing, not a crash).
+
+**Fixed**: `parse_tech_data_pdf_url` now matches a small text-synonym
+list (`TECH_DATA_TEXT_SYNONYMS = ("tech data", "tech sheet")`, both
+confirmed real wordings) and falls back to a filename check
+(`_looks_like_tech_data_filename`, looks for "techdata" in the
+normalized filename) for any wording this module hasn't confirmed real
+yet. New regression fixture `TROPICAL_SURGE_HTML` in
+`tests/test_commercebuild_product_scraper.py` uses the real page's exact
+Downloads-section markup.
+
+**To fix already-affected products**: redeploy (`sam build && sam
+deploy`), then rescrape. There's no dedicated commercebuild rescrape
+script yet -- either re-invoke `CommercebuildProductScraperFunction`
+directly for the affected URL(s), or use the admin site's per-product
+"Rescrape" action (`POST /products/{id}/rescrape`, see 6i's core-backfill
+writeup for the same route used for a different platform) on this
+product and any others reported with the same symptom. Since this
+wording variance was only ever confirmed on one product, there's no
+known reason to assume it's widespread -- check for other zero-SKU
+`commercebuild` products (`source_platform = 'commercebuild'` with no
+matching `product_skus` rows) before assuming a catalog-wide rescrape is
+needed.
+
 ### 6f.5. Hammer (Shopify) -- if `HammerBrandId` was set
 
 No schedule wired up for `ShopifyUrlDiscoveryFunction` yet, same as every

@@ -340,18 +340,62 @@ def parse_description(html: str) -> str:
     return text or None
 
 
+# Real Downloads-section link-text wording confirmed to vary by product:
+# "Tech Data" (Alpha Crux) and, per a REAL INCIDENT below, "Tech Sheet"
+# (Storm Tropical Surge Black/Cherry). Kept as a small, evidence-based
+# synonym list rather than guessing at other plausible wordings this
+# module hasn't actually seen -- see _looks_like_tech_data_filename below
+# for the fallback that covers wording not yet confirmed real.
+TECH_DATA_TEXT_SYNONYMS = ("tech data", "tech sheet")
+
+
+def _looks_like_tech_data_filename(href: str) -> bool:
+    """Last-resort fallback for parse_tech_data_pdf_url when no link's
+    text matches TECH_DATA_TEXT_SYNONYMS -- strips spaces/%20/hyphens/
+    underscores and checks for "techdata" in the filename itself. This
+    module's own original docstring already found filenames vary more
+    wildly than link text ("Alpha Crux Tech Data Final.pdf" vs "Tech
+    Doc_HP3_GREMLIN.pdf"), so this is deliberately a fallback of last
+    resort, not the primary signal -- only reached when the text-based
+    pass finds nothing at all."""
+    name = href.rsplit("/", 1)[-1].lower()
+    normalized = re.sub(r"[\s_\-]|%20", "", name)
+    return "techdata" in normalized
+
+
 def parse_tech_data_pdf_url(html: str, base_url: str):
-    """Finds the "Tech Data" PDF link in the Downloads section by LINK
-    TEXT content ("tech data", case-insensitive), not by filename pattern
-    -- confirmed real filenames vary wildly ("Alpha Crux Tech Data
-    Final.pdf" vs "Tech Doc_HP3_GREMLIN.pdf") but the link text itself
-    reliably contains "Tech Data" on both products checked. Same
-    content-over-structure matching philosophy as the Craft-CMS scraper's
-    _nearby_label_text/parse_resources."""
-    for m in re.finditer(r'<a[^>]+href="([^"]+\.pdf)"[^>]*>([^<]*)</a>', html, re.I):
-        href, text = m.group(1), m.group(2)
-        if "tech data" in text.lower():
+    """Finds the "Tech Data" PDF link in the Downloads section, primarily
+    by LINK TEXT content (TECH_DATA_TEXT_SYNONYMS, case-insensitive),
+    falling back to filename pattern matching
+    (_looks_like_tech_data_filename) only if no link's text matches any
+    known synonym.
+
+    REAL INCIDENT: Al reported product 56897c0b-e3ec-4314-a8dc-238e1b8b7a75
+    (Storm Tropical Surge Black/Cherry) had zero product_skus despite its
+    real page (stormbowling.com) clearly showing weight/RG/differential
+    values. Root cause, confirmed via a live fetch of that exact page:
+    its Downloads section links the correct PDF with the text "Tech
+    Sheet: Surge Black/Cherry PDF" -- this function's original text match
+    only recognized the literal substring "tech data", so it never
+    matched here, tech_data_pdf_url came back None, parse_tech_data_pdf
+    was never called, and pdf_skus stayed empty -- upsert_product's `for
+    sku in pdf_skus:` loop then simply inserts zero product_skus rows,
+    with no exception anywhere in the pipeline (the products row itself
+    still gets written normally, so nothing about the resulting row looks
+    broken). Fixed by widening the text match to TECH_DATA_TEXT_SYNONYMS
+    and adding the filename fallback as a safety net for wording this
+    module hasn't confirmed real yet."""
+    candidates = list(re.finditer(r'<a[^>]+href="([^"]+\.pdf)"[^>]*>([^<]*)</a>', html, re.I))
+
+    for href, text in ((m.group(1), m.group(2)) for m in candidates):
+        text_lower = text.lower()
+        if any(synonym in text_lower for synonym in TECH_DATA_TEXT_SYNONYMS):
             return urljoin(base_url, href)
+
+    for href in (m.group(1) for m in candidates):
+        if _looks_like_tech_data_filename(href):
+            return urljoin(base_url, href)
+
     return None
 
 

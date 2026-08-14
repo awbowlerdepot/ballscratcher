@@ -109,6 +109,62 @@ GLOBAL_900_HTML = """
 </body></html>
 """
 
+# REAL INCIDENT fixture: confirmed live via a fetch of
+# https://www.stormbowling.com/storm-tropical-surge-bowling-ball-black-cherry
+# this session, product 56897c0b-e3ec-4314-a8dc-238e1b8b7a75 -- Al reported
+# it had zero product_skus despite the page clearly showing weight/RG/
+# differential values. Root cause: its Downloads section links the tech
+# data PDF with the text "Tech Sheet: Surge Black/Cherry PDF" -- the ONLY
+# "tech data" substring anywhere is inside the PDF's own FILENAME
+# (Storm_Tropical_Surge_Black_Cherry_Tech_Data.pdf), never in the link
+# text, so the original text-only match missed it entirely. Also
+# confirms the other real Downloads-section links (Ad Sheet, ball image,
+# 8's/Crazy 8's flyers, resurfacing/drilling guides) are correctly NOT
+# matched.
+TROPICAL_SURGE_HTML = """
+<html><head>
+<meta property="og:image" content="https://assets.1.commercebuild.com/d186dcd2044cf54d8e48876defef4907/contents/BT1TQY/BT1TQY.png" />
+<meta property="product:retailer_item_id" content="BT1TQY" />
+</head><body>
+<h1>TROPICAL SURGE BLACK-CHERRY</h1>
+<p>SKU: BT1TQY</p>
+<strong>Brand:</strong> Storm
+<strong>Line:</strong> Tropical
+<strong>Core:</strong> S_Light Weight
+<strong>Weight Block:</strong> S_Surge Core
+<strong>Finish:</strong> S_1500 Grit Polished
+<strong>Durometer:</strong> S_73-75
+<strong>Symmetry:</strong> S_Symmetrical
+<strong>Differential:</strong> 0.024
+<strong>Flare Potential:</strong> S_Low
+<strong>Radius of Gyration:</strong> 2.58
+<strong>Weight:</strong> 15
+<strong>Coverstock:</strong> S_Reactor Hybrid
+<strong>Color:</strong> Black/Cherry
+<strong>Fragrance:</strong> Cherry
+<strong>Avail. for Sales Orders:</strong> Yes
+<h2>DOWNLOADS</h2>
+<a href="https://stormproducts.nyc3.cdn.digitaloceanspaces.com/product_pages/Balls/Storm/Tropical_Surge/Storm_adsheet_TropicalSurge2024_nobleed.pdf">Tropical Surge 2024 Ad Sheet</a>
+<a href="https://stormproducts.nyc3.cdn.digitaloceanspaces.com/product_pages/Balls/Storm/Tropical_Surge/storm-tropical-surge-black-cherry-bowling-ball.png">Tropical Surge Black/Cherry Ball Image</a>
+<a href="https://stormproducts.nyc3.cdn.digitaloceanspaces.com/product_pages/Balls/Storm/Tropical_Surge/Storm_Tropical_Surge_Black_Cherry_Tech_Data.pdf">Tech Sheet: Surge Black/Cherry PDF</a>
+<a href="https://stormproducts.nyc3.cdn.digitaloceanspaces.com/product_pages/Balls/Storm/Tropical_Surge/8s_en_Tropical%20Surge.pdf">Tropical Surge 8's PDF</a>
+<a href="https://stormproducts.nyc3.cdn.digitaloceanspaces.com/product_pages/Balls/Storm/Universal_Downloads/Storm_Resurfacing_Guide.pdf">Storm Resurfacing Guide PDF</a>
+</body></html>
+"""
+
+# Synthetic -- confirms the filename-fallback path (_looks_like_tech_data_
+# filename) specifically, for wording this module hasn't seen live yet:
+# link text has neither "tech data" nor "tech sheet" in it anywhere, but
+# the filename itself contains "Tech_Data".
+UNKNOWN_WORDING_TECH_DATA_HTML = """
+<html><body>
+<h1>MYSTERY BALL</h1>
+<h2>DOWNLOADS</h2>
+<a href="https://example.com/downloads/Mystery_Ball_Ad_Sheet.pdf">Ad Sheet</a>
+<a href="https://example.com/downloads/Mystery_Ball_Tech_Data.pdf">Specifications</a>
+</body></html>
+"""
+
 # Real <ul id="breadcrumbs"> shape confirmed via curl against
 # storm-alpha-crux-bowling-ball (current) this session -- reconstructed
 # with the real schema.org markup and item text seen.
@@ -443,6 +499,46 @@ def test_parse_tech_data_pdf_url_matches_by_link_text_not_filename():
 
 def test_parse_tech_data_pdf_url_returns_none_when_absent():
     assert app.parse_tech_data_pdf_url(GLOBAL_900_HTML, URL) is None
+
+
+# --- REAL INCIDENT: "Tech Sheet" wording (Storm Tropical Surge Black/
+# Cherry, product 56897c0b-e3ec-4314-a8dc-238e1b8b7a75) was silently
+# producing zero product_skus -- see TROPICAL_SURGE_HTML's own comment
+# and parse_tech_data_pdf_url's docstring for the full root-cause writeup.
+
+def test_parse_tech_data_pdf_url_matches_tech_sheet_wording():
+    url = app.parse_tech_data_pdf_url(TROPICAL_SURGE_HTML, URL)
+    assert url == (
+        "https://stormproducts.nyc3.cdn.digitaloceanspaces.com/product_pages/"
+        "Balls/Storm/Tropical_Surge/Storm_Tropical_Surge_Black_Cherry_Tech_Data.pdf"
+    )
+
+
+def test_parse_tech_data_pdf_url_does_not_match_ad_sheet_or_flyers_for_tech_sheet_fixture():
+    # Confirms the other real Downloads-section links (Ad Sheet, ball
+    # image, 8's flyer, resurfacing guide) aren't accidentally matched --
+    # only the one link whose text actually says "Tech Sheet".
+    url = app.parse_tech_data_pdf_url(TROPICAL_SURGE_HTML, URL)
+    assert "Tech_Data" in url
+    assert "adsheet" not in url.lower()
+
+
+def test_parse_tech_data_pdf_url_falls_back_to_filename_when_text_matches_no_synonym():
+    # Synthetic wording this module has never seen live -- link text is
+    # "Specifications", not "Tech Data"/"Tech Sheet" -- but the filename
+    # itself contains "Tech_Data", so the fallback still finds it.
+    url = app.parse_tech_data_pdf_url(UNKNOWN_WORDING_TECH_DATA_HTML, URL)
+    assert url == "https://example.com/downloads/Mystery_Ball_Tech_Data.pdf"
+
+
+def test_parse_tech_data_pdf_url_still_matches_alpha_crux_tech_data_wording_unchanged():
+    # Regression guard: widening the match must not break the original
+    # confirmed-real "Tech Data" wording.
+    url = app.parse_tech_data_pdf_url(ALPHA_CRUX_HTML, URL)
+    assert url == (
+        "https://stormproducts.nyc3.cdn.digitaloceanspaces.com/product_pages/"
+        "Balls/Storm/Alpha_Crux/Alpha%20Crux%20Tech%20Data%20Final.pdf"
+    )
 
 
 # --- parse_description: confirmed live via Claude in Chrome against the
