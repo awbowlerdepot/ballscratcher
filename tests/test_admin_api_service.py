@@ -572,6 +572,39 @@ class FakeCursor:
             self._last_result = (count,)
             self.description = [("count",)]
 
+        elif q.startswith("select id, product_id, price_site_id, product_url, status, is_active, created_at"):
+            # dedupe_product_price_sources' own full-table scan.
+            rows = list(self.db.get("product_price_sources", {}).values())
+            rows.sort(key=lambda r: (r["product_id"], r["price_site_id"], r.get("created_at") or ""))
+            self._rows = [
+                (r["id"], r["product_id"], r["price_site_id"], r["product_url"],
+                 r["status"], r.get("is_active", True), r.get("created_at"))
+                for r in rows
+            ]
+            self.description = [
+                ("id",), ("product_id",), ("price_site_id",), ("product_url",),
+                ("status",), ("is_active",), ("created_at",),
+            ]
+
+        elif q.startswith("update product_price_sources set product_url = %s where id"):
+            product_url, source_id = params
+            self.db["product_price_sources"][source_id]["product_url"] = product_url
+            self._last_result = None
+
+        elif q.startswith("update product_price_history set price_source_id"):
+            new_id, old_id = params
+            for row in self.db.get("product_price_history", []):
+                if row["price_source_id"] == old_id:
+                    row["price_source_id"] = new_id
+            self._last_result = None
+
+        elif q.startswith("update product_sku_stock_history set price_source_id"):
+            new_id, old_id = params
+            for row in self.db.get("product_sku_stock_history", []):
+                if row["price_source_id"] == old_id:
+                    row["price_source_id"] = new_id
+            self._last_result = None
+
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
 
@@ -3247,6 +3280,137 @@ def test_get_pending_price_source_count_counts_only_pending():
     conn = FakeConnection(db)
 
     assert service.get_pending_price_source_count(conn) == 1
+
+
+# --- dedupe_product_price_sources: cleanup for the real duplicate-row bug
+# (Al: "there are duplicates now, the ones before having the baseurl and
+# now the ones that have it... same record just has different link").
+
+def _fake_db_with_duplicate_price_sources():
+    db = _fake_db_with_price_site()
+    db["products"] = {"prod-1": {"id": "prod-1"}}
+    db["product_price_sources"] = {
+        "src-old": {
+            "id": "src-old", "product_id": "prod-1", "price_site_id": "site-1",
+            "product_url": "/storm-alpha-crux/", "status": "approved", "is_active": True,
+            "source": "bigcommerce_api", "created_at": "2026-07-01",
+        },
+        "src-new": {
+            "id": "src-new", "product_id": "prod-1", "price_site_id": "site-1",
+            "product_url": "https://www.bowlerdepot.com/storm-alpha-crux/", "status": "pending",
+            "is_active": True, "source": "bigcommerce_api", "created_at": "2026-08-01",
+        },
+    }
+    db["product_price_history"] = [
+        {"id": "h-1", "price_source_id": "src-old", "price": 129.99},
+        {"id": "h-2", "price_source_id": "src-old", "price": 124.99},
+    ]
+    db["product_sku_stock_history"] = [
+        {"id": "s-1", "price_source_id": "src-old", "quantity": 3},
+    ]
+    return db
+
+
+def test_dedupe_keeps_approved_active_row_as_survivor():
+    db = _fake_db_with_duplicate_price_sources()
+    conn = FakeConnection(db)
+    result = service.dedupe_product_price_sources(conn)
+
+    assert result == {"groups_merged": 1, "rows_deleted": 1}
+    assert "src-old" in db["product_price_sources"]
+    assert "src-new" not in db["product_price_sources"]
+
+
+def test_dedupe_migrates_price_and_sku_stock_history_onto_survivor():
+    db = _fake_db_with_duplicate_price_sources()
+    conn = FakeConnection(db)
+    service.dedupe_product_price_sources(conn)
+
+    # The redundant row (src-new) never actually had history in this
+    # fixture, but the survivor (src-old) did -- confirming nothing was
+    # lost and the migration logic runs even when there's nothing to move
+    # for THIS particular group's non-survivor.
+    assert [h["price_source_id"] for h in db["product_price_history"]] == ["src-old", "src-old"]
+    assert [h["price_source_id"] for h in db["product_sku_stock_history"]] == ["src-old"]
+
+
+def test_dedupe_corrects_survivor_url_to_absolute_variant():
+    # The actual bug: the approved survivor (src-old) is the one stuck
+    # with the stale relative URL; the discarded duplicate (src-new) is
+    # the one with the correct absolute link. The survivor's product_url
+    # must end up corrected, not left relative.
+    db = _fake_db_with_duplicate_price_sources()
+    conn = FakeConnection(db)
+    service.dedupe_product_price_sources(conn)
+
+    assert db["product_price_sources"]["src-old"]["product_url"] == "https://www.bowlerdepot.com/storm-alpha-crux/"
+
+
+def test_dedupe_migrates_history_when_the_non_survivor_has_it_instead():
+    # Flip which row carries history -- src-old is pending (loses the
+    # approved/active tiebreak) and src-new is the approved+active
+    # survivor. History attached to the non-survivor (src-old) must still
+    # move onto whichever row actually wins.
+    db = _fake_db_with_price_site()
+    db["products"] = {"prod-1": {"id": "prod-1"}}
+    db["product_price_sources"] = {
+        "src-old": {
+            "id": "src-old", "product_id": "prod-1", "price_site_id": "site-1",
+            "product_url": "/storm-alpha-crux/", "status": "pending", "is_active": True,
+            "source": "bigcommerce_api", "created_at": "2026-07-01",
+        },
+        "src-new": {
+            "id": "src-new", "product_id": "prod-1", "price_site_id": "site-1",
+            "product_url": "https://www.bowlerdepot.com/storm-alpha-crux/", "status": "approved",
+            "is_active": True, "source": "bigcommerce_api", "created_at": "2026-08-01",
+        },
+    }
+    db["product_price_history"] = [{"id": "h-1", "price_source_id": "src-old", "price": 129.99}]
+    db["product_sku_stock_history"] = []
+    conn = FakeConnection(db)
+
+    result = service.dedupe_product_price_sources(conn)
+
+    assert result == {"groups_merged": 1, "rows_deleted": 1}
+    assert "src-new" in db["product_price_sources"]
+    assert "src-old" not in db["product_price_sources"]
+    assert db["product_price_history"][0]["price_source_id"] == "src-new"
+
+
+def test_dedupe_no_duplicates_is_a_noop():
+    db = _fake_db_with_price_source()  # single row, single (product_id, price_site_id)
+    db["product_price_history"] = []
+    db["product_sku_stock_history"] = []
+    conn = FakeConnection(db)
+
+    result = service.dedupe_product_price_sources(conn)
+
+    assert result == {"groups_merged": 0, "rows_deleted": 0}
+    assert list(db["product_price_sources"].keys()) == ["src-1"]
+
+
+def test_dedupe_leaves_distinct_products_and_sites_alone():
+    # Rows for different products, or the same product against different
+    # sites, are never duplicates of each other -- only an exact
+    # (product_id, price_site_id) match counts.
+    db = _fake_db_with_price_site()
+    db["products"] = {"prod-1": {"id": "prod-1"}, "prod-2": {"id": "prod-2"}}
+    db["product_price_sources"] = {
+        "src-1": {"id": "src-1", "product_id": "prod-1", "price_site_id": "site-1",
+                  "product_url": "https://a.example/p1", "status": "approved", "is_active": True,
+                  "source": "bigcommerce_api", "created_at": "2026-07-01"},
+        "src-2": {"id": "src-2", "product_id": "prod-2", "price_site_id": "site-1",
+                  "product_url": "https://a.example/p2", "status": "approved", "is_active": True,
+                  "source": "bigcommerce_api", "created_at": "2026-07-01"},
+    }
+    db["product_price_history"] = []
+    db["product_sku_stock_history"] = []
+    conn = FakeConnection(db)
+
+    result = service.dedupe_product_price_sources(conn)
+
+    assert result == {"groups_merged": 0, "rows_deleted": 0}
+    assert set(db["product_price_sources"].keys()) == {"src-1", "src-2"}
 
 
 # --- queue_price_check / queue_price_check_batch: same invoke-Lambda-

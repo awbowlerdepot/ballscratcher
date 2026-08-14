@@ -4288,6 +4288,56 @@ variant's weight against this product's own `product_skus` rows
    quantity readings, not stored as its own event, so this data becomes
    more useful the longer it accumulates.
 
+### 6o.7. Fixing/cleaning up duplicate price-source rows (a real bug, now fixed)
+
+Al, after filling in a previously-blank `price_sites.base_url` on a
+`fetch_method='api'` site and re-running discovery: "there are duplicates
+now, the ones before having the baseurl and now the ones that have
+it... same record just has different link."
+
+**Root cause:** `extract_bigcommerce_price_fields` falls back to the raw
+relative `custom_url` when `base_url` isn't configured, so a
+`product_price_sources` row discovered before `base_url` was filled in
+got a relative `product_url`. `insert_price_source_candidates`' `ON
+CONFLICT DO NOTHING` is keyed on the literal `(product_id, price_site_id,
+product_url)` triple (014) -- once `base_url` got filled in, the next
+discovery run computed a different (absolute) `product_url` for the
+exact same real-world product+site pair, so the conflict target didn't
+match and a second row got INSERTed instead of the first one being
+corrected in place.
+
+**Fixed going forward:** `discover_bigcommerce_candidates` now calls
+`price_checker.upsert_bigcommerce_price_source_candidate` instead of
+`insert_price_source_candidates` -- it looks up any existing row for
+`(product_id, price_site_id, source='bigcommerce_api')` first and
+corrects its `product_url`/`external_product_id` in place if they've
+drifted, only falling back to a fresh INSERT when no such row exists yet.
+This is `'api'`-source-specific (see that function's own docstring for
+why it can't just replace `insert_price_source_candidates` everywhere --
+a `'site_search'`/scrape site can legitimately produce several distinct
+candidate URLs per product).
+
+**Cleaning up rows that already duplicated before this fix shipped:**
+run the one-off cleanup once, same thin-one-shot-POST shape as
+`backfill_last_video_discovery_at.py`:
+
+```
+export ADMIN_API_URL="https://<your-api-id>.execute-api.us-west-1.amazonaws.com"
+export ADMIN_API_TOKEN="<the same bearer token used elsewhere>"
+python3 scripts/dedupe_product_price_sources.py
+```
+
+This calls `POST /admin/dedupe-price-sources` -> `service.dedupe_
+product_price_sources`, which finds every `(product_id, price_site_id)`
+pair with more than one row, keeps the approved+active row as survivor
+(else the oldest), migrates any `product_price_history`/`product_sku_
+stock_history` rows from the redundant rows onto the survivor first (so
+no price/stock history is lost), deletes the redundant rows, and
+corrects the survivor's `product_url` to whichever variant in the group
+is actually resolved (absolute). Idempotent and safe to re-run -- a
+catalog with no duplicate groups left just returns `groups_merged=0
+rows_deleted=0`.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

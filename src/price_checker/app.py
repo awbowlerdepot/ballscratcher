@@ -1099,6 +1099,86 @@ def insert_price_source_candidates(conn, product_id: str, price_site_id: str, qu
     return inserted
 
 
+def upsert_bigcommerce_price_source_candidate(conn, product_id: str, price_site_id: str, product_url: str,
+                                               external_product_id: str, query: str, match_confidence: str) -> int:
+    """The 'bigcommerce_api' sibling of insert_price_source_candidates,
+    used ONLY by discover_bigcommerce_candidates -- NOT a general
+    replacement, since a 'site_search' (scrape) site can legitimately
+    produce several distinct candidate URLs per product (multiple search
+    results for an admin to pick from), while an 'api' site's discovery
+    always resolves to exactly one BowlerDepot match per product (see
+    discover_bigcommerce_candidates' own docstring), so (product_id,
+    price_site_id) is really a unique key for this source specifically,
+    even though the table's own constraint is (product_id, price_site_id,
+    product_url).
+
+    Real bug found live: insert_price_source_candidates' ON CONFLICT is
+    keyed on the literal product_url TEXT. extract_bigcommerce_price_
+    fields resolves product_url against price_sites.base_url, so the
+    moment an admin fills in a previously-blank base_url (Al: "i can't
+    remember if i put in the base url"), the very next discovery run
+    computes a different (now-absolute) product_url for a product+site
+    pair that already had a row -- the conflict target doesn't match the
+    old row's stale (relative) product_url, so a brand-new duplicate row
+    gets INSERTed instead of the existing one being corrected in place.
+    Al: "there are duplicates now, the ones before having the baseurl and
+    now the ones that have it... same record just has different link."
+    See service.dedupe_product_price_sources (admin_api) for the one-off
+    cleanup of rows that already duplicated before this fix shipped.
+
+    Fix: look up any existing row for (product_id, price_site_id,
+    source='bigcommerce_api') FIRST. If one exists and its product_url
+    differs from the freshly-resolved value, UPDATE it in place (also
+    refreshing external_product_id, in case BowlerDepot's own id for this
+    product changed) -- status/is_active/resolved_at and all history stay
+    untouched, exactly like fixing a stale link should behave. If none
+    exists yet, INSERT a new pending row, same shape
+    insert_price_source_candidates already writes (still guarded by that
+    same ON CONFLICT DO NOTHING as a defensive fallback, in case two
+    concurrent discovery runs race each other).
+
+    Returns 1 if a row was inserted OR corrected, 0 if an existing row's
+    product_url already matched (nothing to do) -- discover_bigcommerce_
+    candidates sums this the same way it summed insert_price_source_
+    candidates' return value before."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select id, product_url from product_price_sources
+            where product_id = %s and price_site_id = %s and source = 'bigcommerce_api'
+            order by (status = 'approved' and is_active) desc, created_at asc
+            limit 1
+            """,
+            (product_id, price_site_id),
+        )
+        existing = cur.fetchone()
+
+        if existing is not None:
+            existing_id, existing_url = existing
+            if existing_url == product_url:
+                return 0
+            cur.execute(
+                "update product_price_sources set product_url = %s, external_product_id = %s where id = %s",
+                (product_url, external_product_id, existing_id),
+            )
+            conn.commit()
+            return 1
+
+        cur.execute(
+            """
+            insert into product_price_sources
+                (product_id, price_site_id, product_url, match_query,
+                 match_confidence, external_product_id, status, source)
+            values (%s, %s, %s, %s, %s, %s, 'pending', 'bigcommerce_api')
+            on conflict (product_id, price_site_id, product_url) do nothing
+            """,
+            (product_id, price_site_id, product_url, query, match_confidence, external_product_id),
+        )
+        changed = cur.rowcount
+    conn.commit()
+    return changed
+
+
 def list_bowlerdepot_matches(conn) -> list:
     """Reads bowlerdepot_reconciliation's already-maintained product_id <->
     BigCommerce-product-id mapping (001_init_schema.sql's bowlerdepot_
@@ -1133,19 +1213,27 @@ def discover_bigcommerce_candidates(conn, site: dict, product_ids_in_scope: set,
     product, this does ONE get_bigcommerce_credentials() call + ONE
     batched fetch_bigcommerce_products_by_ids() call covering every
     already-matched product in scope (via list_bowlerdepot_matches,
-    filtered down to product_ids_in_scope), then inserts one candidate per
-    match. match_confidence is derived straight from bowlerdepot_products.
-    match_status -- 'matched' (an exact normalized-name match, see
-    bowlerdepot_reconciliation.fuzzy_match_product) becomes 'high',
-    'ambiguous' (a fuzzy-but-not-exact match) becomes 'low' -- same two-
-    tier idea score_match uses for scrape candidates, just sourced from an
-    existing match decision instead of a fresh title heuristic.
+    filtered down to product_ids_in_scope), then upserts one candidate per
+    match via upsert_bigcommerce_price_source_candidate -- NOT plain
+    insert_price_source_candidates (see that function's own docstring for
+    why: a product_url text change, e.g. from a price_sites row's
+    base_url getting filled in after the fact, must correct the existing
+    row in place instead of silently creating a duplicate). match_
+    confidence is derived straight from bowlerdepot_products.match_status
+    -- 'matched' (an exact normalized-name match, see bowlerdepot_
+    reconciliation.fuzzy_match_product) becomes 'high', 'ambiguous' (a
+    fuzzy-but-not-exact match) becomes 'low' -- same two-tier idea
+    score_match uses for scrape candidates, just sourced from an existing
+    match decision instead of a fresh title heuristic.
 
     A match with no corresponding BigCommerce product in the fetched batch
     (deleted/unpublished since bowlerdepot_products was last synced) or no
     resolvable product_url is skipped and counted as an error, never
     raised -- same "one bad row can't stop the batch" convention as the
-    scrape-side loop this sits alongside."""
+    scrape-side loop this sits alongside.
+
+    "inserted" in the returned dict now means "created or corrected" --
+    see upsert_bigcommerce_price_source_candidate's own return-value note."""
     matches = [m for m in list_bowlerdepot_matches(conn) if m["product_id"] in product_ids_in_scope]
     if not matches:
         return {"inserted": 0, "errors": 0}
@@ -1176,14 +1264,10 @@ def discover_bigcommerce_candidates(conn, site: dict, product_ids_in_scope: set,
             errors += 1
             continue
 
-        candidate = {
-            "product_url": fields["product_url"],
-            "match_confidence": "high" if match["match_status"] == "matched" else "low",
-            "external_product_id": match["external_product_id"],
-        }
-        inserted += insert_price_source_candidates(
-            conn, match["product_id"], site["id"], "bowlerdepot_products match", [candidate],
-            source="bigcommerce_api",
+        inserted += upsert_bigcommerce_price_source_candidate(
+            conn, match["product_id"], site["id"], fields["product_url"],
+            match["external_product_id"], "bowlerdepot_products match",
+            "high" if match["match_status"] == "matched" else "low",
         )
 
     return {"inserted": inserted, "errors": errors}

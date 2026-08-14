@@ -130,11 +130,19 @@ class _FakeCursor:
     project for overlapping query prefixes."""
 
     def __init__(self, sources=None, sites=None, products=None, known_candidate_keys=None, bowlerdepot_matches=None,
-                 skus=None, review_queue_rows=None):
+                 skus=None, review_queue_rows=None, existing_bigcommerce_rows=None):
         self.sources = sources or []  # list of dicts: id, product_id, product_url, css_selector, is_active, is_site_active, last_checked_at, fetch_method, external_product_id
         self.sites = sites or []  # list of dicts: id, name, search_url_template, result_link_selector, default_css_selector, fetch_method, api_provider, base_url
         self.products = products or []  # list of dicts: id, name, brand_name
         self.known_candidate_keys = known_candidate_keys or set()  # set of (product_id, price_site_id, product_url)
+        # list of dicts: id, product_id, price_site_id, product_url, status,
+        # is_active, created_at -- pre-existing product_price_sources rows
+        # with source='bigcommerce_api', for upsert_bigcommerce_price_
+        # source_candidate's own existing-row lookup. Empty by default so
+        # every pre-existing discover_bigcommerce_candidates test (seeded
+        # with no such rows) keeps hitting the plain INSERT path unchanged.
+        self.existing_bigcommerce_rows = existing_bigcommerce_rows or []
+        self.bigcommerce_url_updates = []  # list of (product_url, external_product_id, id)
         # list of dicts: product_id, external_product_id, match_status --
         # bowlerdepot_products rows list_bowlerdepot_matches reads
         # (016_price_tracking_bigcommerce.sql).
@@ -227,6 +235,25 @@ class _FakeCursor:
                 self.known_candidate_keys.add(key)
                 self.rowcount = 1
 
+        elif q.startswith("select id, product_url from product_price_sources"):
+            product_id, price_site_id = params
+            matches = [
+                r for r in self.existing_bigcommerce_rows
+                if r["product_id"] == product_id and r["price_site_id"] == price_site_id
+            ]
+            matches.sort(key=lambda r: (0 if (r.get("status") == "approved" and r.get("is_active", True)) else 1,
+                                         r.get("created_at", "")))
+            self._rows = [(matches[0]["id"], matches[0]["product_url"])] if matches else []
+            self.description = [("id",), ("product_url",)]
+
+        elif q.startswith("update product_price_sources set product_url"):
+            product_url, external_product_id, source_id = params
+            self.bigcommerce_url_updates.append((product_url, external_product_id, source_id))
+            for r in self.existing_bigcommerce_rows:
+                if r["id"] == source_id:
+                    r["product_url"] = product_url
+                    r["external_product_id"] = external_product_id
+
         elif q.startswith("select product_id, bigcommerce_product_id, match_status from bowlerdepot_products"):
             self.description = [("product_id",), ("external_product_id",), ("match_status",)]
             self._rows = [(m["product_id"], m["external_product_id"], m["match_status"]) for m in self.bowlerdepot_matches]
@@ -286,9 +313,9 @@ class _FakeCursor:
 
 class _FakeConn:
     def __init__(self, sources=None, sites=None, products=None, known_candidate_keys=None, bowlerdepot_matches=None,
-                 skus=None, review_queue_rows=None):
+                 skus=None, review_queue_rows=None, existing_bigcommerce_rows=None):
         self._cursor = _FakeCursor(sources, sites, products, known_candidate_keys, bowlerdepot_matches,
-                                    skus, review_queue_rows)
+                                    skus, review_queue_rows, existing_bigcommerce_rows)
         self.committed = False
         self.closed = False
 
@@ -690,6 +717,84 @@ def test_insert_price_source_candidates_accepts_bigcommerce_api_source_and_exter
         "prod-1", "site-bd", "https://www.bowlerdepot.com/storm-alpha-crux/",
         "bowlerdepot_products match", "high", "100", "bigcommerce_api",
     )
+
+
+# --- upsert_bigcommerce_price_source_candidate: fixes the real duplicate-
+# row bug (Al: "there are duplicates now, the ones before having the
+# baseurl and now the ones that have it... same record just has different
+# link") instead of insert_price_source_candidates' plain INSERT ... ON
+# CONFLICT DO NOTHING, which is keyed on the literal product_url text and
+# so can't correct an existing row when that text changes. ---
+
+def test_upsert_bigcommerce_candidate_inserts_when_no_existing_row():
+    conn = _FakeConn()
+    inserted = app.upsert_bigcommerce_price_source_candidate(
+        conn, "prod-1", "site-bd", "https://www.bowlerdepot.com/storm-alpha-crux/", "100",
+        "bowlerdepot_products match", "high",
+    )
+    assert inserted == 1
+    inserts = [e for e in conn.cursor().executed if e[0].startswith("insert into product_price_sources")]
+    assert len(inserts) == 1
+    assert conn.cursor().bigcommerce_url_updates == []
+
+
+def test_upsert_bigcommerce_candidate_corrects_stale_relative_url_in_place():
+    # The actual bug scenario: an old row was discovered before base_url
+    # was configured, so it's stuck with a relative product_url. A fresh
+    # discovery run resolves the correct absolute URL -- this must UPDATE
+    # the existing row, not insert a second one.
+    conn = _FakeConn(existing_bigcommerce_rows=[
+        {"id": "src-old", "product_id": "prod-1", "price_site_id": "site-bd",
+         "product_url": "/storm-alpha-crux/", "status": "approved", "is_active": True, "created_at": "2026-07-01"},
+    ])
+    changed = app.upsert_bigcommerce_price_source_candidate(
+        conn, "prod-1", "site-bd", "https://www.bowlerdepot.com/storm-alpha-crux/", "100",
+        "bowlerdepot_products match", "high",
+    )
+    assert changed == 1
+    assert conn.cursor().bigcommerce_url_updates == [
+        ("https://www.bowlerdepot.com/storm-alpha-crux/", "100", "src-old"),
+    ]
+    # No new row -- the existing one was corrected in place.
+    inserts = [e for e in conn.cursor().executed if e[0].startswith("insert into product_price_sources")]
+    assert inserts == []
+
+
+def test_upsert_bigcommerce_candidate_noop_when_url_already_matches():
+    conn = _FakeConn(existing_bigcommerce_rows=[
+        {"id": "src-old", "product_id": "prod-1", "price_site_id": "site-bd",
+         "product_url": "https://www.bowlerdepot.com/storm-alpha-crux/", "status": "approved",
+         "is_active": True, "created_at": "2026-07-01"},
+    ])
+    changed = app.upsert_bigcommerce_price_source_candidate(
+        conn, "prod-1", "site-bd", "https://www.bowlerdepot.com/storm-alpha-crux/", "100",
+        "bowlerdepot_products match", "high",
+    )
+    assert changed == 0
+    assert conn.cursor().bigcommerce_url_updates == []
+
+
+def test_upsert_bigcommerce_candidate_prefers_approved_active_row_among_pre_existing_duplicates():
+    # Simulates a catalog that already has a duplicate pair from before
+    # this fix shipped (an admin_api dedupe pass, see service.dedupe_
+    # product_price_sources, is what actually cleans those up -- but this
+    # function must still behave sanely if it ever runs before that).
+    conn = _FakeConn(existing_bigcommerce_rows=[
+        {"id": "src-pending-dup", "product_id": "prod-1", "price_site_id": "site-bd",
+         "product_url": "https://www.bowlerdepot.com/storm-alpha-crux/", "status": "pending",
+         "is_active": True, "created_at": "2026-08-01"},
+        {"id": "src-approved", "product_id": "prod-1", "price_site_id": "site-bd",
+         "product_url": "/storm-alpha-crux/", "status": "approved", "is_active": True, "created_at": "2026-07-01"},
+    ])
+    app.upsert_bigcommerce_price_source_candidate(
+        conn, "prod-1", "site-bd", "https://www.bowlerdepot.com/storm-alpha-crux/", "100",
+        "bowlerdepot_products match", "high",
+    )
+    # The approved+active row is the survivor that gets corrected, not
+    # the newer pending duplicate.
+    assert conn.cursor().bigcommerce_url_updates == [
+        ("https://www.bowlerdepot.com/storm-alpha-crux/", "100", "src-approved"),
+    ]
 
 
 # --- discover_price_sources: orchestration, tolerates per-site failures ---

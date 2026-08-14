@@ -404,6 +404,24 @@ def backfill_last_video_discovery_at():
         conn.close()
 
 
+@app.post("/admin/dedupe-price-sources")
+def dedupe_price_sources():
+    # One-off cleanup for a real duplication bug -- Al: "there are
+    # duplicates now, the ones before having the baseurl and now the ones
+    # that have it... same record just has different link." See
+    # service.dedupe_product_price_sources' docstring for the root cause
+    # (a price_sites row's base_url getting filled in after some
+    # candidates were already discovered without it) and merge logic.
+    # No request body, no path param: catalog-wide by design, same shape
+    # as backfill-last-video-discovery-at below. Idempotent -- safe to
+    # call again if it's ever needed after another run of discovery.
+    conn = service.get_db_connection()
+    try:
+        return service.dedupe_product_price_sources(conn)
+    finally:
+        conn.close()
+
+
 @app.post("/admin/backfill-estimated-plotter-positions")
 def backfill_estimated_plotter_positions():
     # One-time (idempotent, safe to re-run) catalog-wide backfill for

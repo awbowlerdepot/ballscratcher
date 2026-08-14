@@ -15,6 +15,7 @@ yet). Approving a review_queue row applies its proposed_value to the real
 column it describes; rejecting leaves the stored value untouched.
 """
 import re
+from urllib.parse import urlparse
 
 # review_queue.field_name convention, established by pdf_parser.sync_pdf_skus:
 # a per-weight SKU field looks like "rg_16lb" / "differential_15lb" /
@@ -2457,6 +2458,109 @@ def delete_product_price_source(conn, source_id: str) -> dict:
             raise LookupError(f"No product_price_sources row with id {source_id}")
     conn.commit()
     return {"deleted": True, "id": source_id}
+
+
+def _is_absolute_url(url: str) -> bool:
+    """True when url has a scheme (http://, https://, etc) -- used below
+    to prefer an already-resolved product_url over a stray relative one
+    when merging duplicate rows. Same "has a scheme" definition as the
+    admin-site's own resolveExternalUrl JS helper, just via urlparse
+    instead of a regex since this runs server-side."""
+    return bool(url) and bool(urlparse(url).scheme)
+
+
+def dedupe_product_price_sources(conn) -> dict:
+    """One-off cleanup for a real duplication bug found live. Al: "there
+    are duplicates now, the ones before having the baseurl and now the
+    ones that have it... same record just has different link."
+
+    Root cause: extract_bigcommerce_price_fields (price_checker/app.py)
+    falls back to the raw relative custom_url when a price_sites row's
+    base_url isn't configured, so a product_price_sources row discovered
+    before base_url was filled in got a relative product_url.
+    insert_price_source_candidates' ON CONFLICT DO NOTHING is keyed on
+    the literal (product_id, price_site_id, product_url) triple (014_
+    price_tracking.sql) -- once base_url got filled in, re-running
+    discovery computed a different (absolute) product_url for the exact
+    same real-world product+site pair, so the conflict target didn't
+    match and a second row got INSERTed instead of the first one being
+    corrected in place. price_checker.upsert_bigcommerce_price_source_
+    candidate is the matching root-cause fix that stops this from
+    recurring going forward -- this function only cleans up rows that
+    already exist from before that fix shipped.
+
+    For every (product_id, price_site_id) pair with more than one row:
+    picks a single survivor -- approved+active first (that's the row any
+    real price/stock history would have accumulated on, since price_
+    checker only ever checks approved+active rows), else the oldest row
+    -- reassigns every other row's product_price_history and product_sku_
+    stock_history rows onto the survivor first (both tables' price_
+    source_id is `on delete cascade`, so deleting a redundant row without
+    this step would silently discard any history it happened to carry),
+    then deletes every non-survivor row in the group. Finally, if any row
+    in the group has a strictly more resolved product_url (absolute where
+    the survivor's own is still relative -- see _is_absolute_url) than
+    the survivor's current one, updates the survivor to that better
+    value -- covers the common case where the OLD, history-bearing row is
+    the one stuck with the stale relative URL and the freshly-discovered
+    duplicate is the one with the correct absolute link.
+
+    Idempotent and safe to re-run: a catalog with no duplicate groups left
+    just returns groups_merged=0 rows_deleted=0, doing nothing."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select id, product_id, price_site_id, product_url, status, is_active, created_at
+            from product_price_sources
+            order by product_id, price_site_id, created_at asc
+            """
+        )
+        rows = cur.fetchall()
+
+    groups = {}
+    for r in rows:
+        key = (r[1], r[2])
+        groups.setdefault(key, []).append(
+            {"id": r[0], "product_url": r[3], "status": r[4], "is_active": r[5], "created_at": r[6]}
+        )
+
+    groups_merged = 0
+    rows_deleted = 0
+    with conn.cursor() as cur:
+        for group_rows in groups.values():
+            if len(group_rows) < 2:
+                continue
+            groups_merged += 1
+
+            group_rows.sort(key=lambda row: (0 if (row["status"] == "approved" and row["is_active"]) else 1, row["created_at"]))
+            survivor = group_rows[0]
+            others = group_rows[1:]
+
+            best_url = survivor["product_url"]
+            for row in others:
+                if row["product_url"] and _is_absolute_url(row["product_url"]) and not _is_absolute_url(best_url):
+                    best_url = row["product_url"]
+
+            for row in others:
+                cur.execute(
+                    "update product_price_history set price_source_id = %s where price_source_id = %s",
+                    (survivor["id"], row["id"]),
+                )
+                cur.execute(
+                    "update product_sku_stock_history set price_source_id = %s where price_source_id = %s",
+                    (survivor["id"], row["id"]),
+                )
+                cur.execute("delete from product_price_sources where id = %s", (row["id"],))
+                rows_deleted += 1
+
+            if best_url != survivor["product_url"]:
+                cur.execute(
+                    "update product_price_sources set product_url = %s where id = %s",
+                    (best_url, survivor["id"]),
+                )
+
+    conn.commit()
+    return {"groups_merged": groups_merged, "rows_deleted": rows_deleted}
 
 
 def get_price_history(conn, product_id: str, days: int = 90) -> dict:
