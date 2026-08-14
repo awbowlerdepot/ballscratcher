@@ -686,6 +686,31 @@ function escapeHtml(s) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
   });
 }
+
+// Al: "the href in the admin ui on the price sources page is relative so
+// it is broken... it needs to be fully qualified for the site it is
+// for." product_url is SUPPOSED to already be absolute by the time it's
+// stored (price_checker resolves relative hrefs via urljoin before
+// insert -- see extract_bigcommerce_price_fields/parse_search_results),
+// but a price_sites row created without its own base_url filled in, or a
+// manually-added product_url pasted without a scheme, can still land
+// here relative -- which the browser then resolves against the CURRENT
+// page (this admin site) instead of the retailer's own domain. Resolving
+// defensively here, at render time, fixes every such row's link without
+// needing a DB backfill first. Returns '#' (a safe do-nothing href, same
+// fallback the Review Queue tab's own item.product_url already used) when
+// there's no url at all.
+function resolveExternalUrl(url, baseUrl) {
+  if (!url) return '#';
+  if (/^([a-z][a-z0-9+.-]*:)?\/\//i.test(url)) return url; // already absolute (or protocol-relative)
+  if (!baseUrl) return url; // nothing to resolve against -- best effort, unchanged
+  try {
+    return new URL(url, baseUrl).href;
+  } catch (e) {
+    return url;
+  }
+}
+
 function fmtDate(s) {
   if (!s) return '';
   try { return new Date(s).toLocaleString(); } catch (e) { return s; }
@@ -1399,7 +1424,7 @@ function renderPriceSources(items, pendingCount) {
       const sourceText = s.source === 'manual' ? 'manually added' : ('auto-matched, ' + (s.match_confidence || '—') + ' confidence');
       return '<tr>' +
         checkboxCell +
-        '<td><a href="' + escapeHtml(s.product_url) + '" target="_blank" rel="noopener">' + escapeHtml(s.site_name) + '</a>' +
+        '<td><a href="' + escapeHtml(resolveExternalUrl(s.product_url, s.base_url)) + '" target="_blank" rel="noopener">' + escapeHtml(s.site_name) + '</a>' +
         '<div class="muted small">' + escapeHtml(sourceText) + '</div></td>' +
         '<td>' + escapeHtml(s.product_name) + '<div class="muted small">' + escapeHtml(s.brand_name || '') + '</div></td>' +
         '<td>' + fmtDate(s.created_at) + '</td>' +
@@ -1869,7 +1894,7 @@ function buildPriceTrackingSection(id, priceSources, priceHistoryData, priceSite
     const sourceText = s.source === 'manual' ? 'manually added' : ('auto-matched, ' + (s.match_confidence || '—') + ' confidence');
     return '<tr>' +
       '<td>' + escapeHtml(s.site_name) + '<div class="muted small">' + escapeHtml(sourceText) + '</div></td>' +
-      '<td><a href="' + escapeHtml(s.product_url) + '" target="_blank" rel="noopener" class="mono small">' + escapeHtml(s.product_url) + '</a></td>' +
+      '<td><a href="' + escapeHtml(resolveExternalUrl(s.product_url, s.base_url)) + '" target="_blank" rel="noopener" class="mono small">' + escapeHtml(s.product_url) + '</a></td>' +
       '<td>' + latest + costStockCell + '<div class="muted small">' + (s.latest_checked_at ? fmtDate(s.latest_checked_at) : 'never checked') + '</div></td>' +
       '<td class="actions">' + statusCell +
       '<button class="btn small ghost danger" onclick="deletePriceSourceForProduct(\'' + id + '\', \'' + s.id + '\')">Delete</button></td>' +

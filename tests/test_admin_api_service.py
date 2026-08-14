@@ -2762,6 +2762,24 @@ def test_list_product_price_sources_includes_fetch_method_and_cost_stock():
     assert "h.in_stock" in query
 
 
+def test_list_product_price_sources_includes_base_url():
+    # Al: "the href in the admin ui on the price sources page is relative
+    # so it is broken... it needs to be fully qualified for the site it
+    # is for" -- ps.base_url lets the admin-site resolve a relative
+    # product_url defensively at render time.
+    conn = _QueryCapturingConnection()
+    service.list_product_price_sources(conn, "prod-1")
+    query = conn.cursor().queries[0]
+    assert "ps.base_url" in query
+
+
+def test_list_price_sources_includes_base_url():
+    conn = _QueryCapturingConnection()
+    service.list_price_sources(conn)
+    query = conn.cursor().queries[0]
+    assert "ps.base_url" in query
+
+
 def test_list_price_sources_defaults_to_pending_and_orders_by_confidence():
     conn = _QueryCapturingConnection()
     service.list_price_sources(conn)
@@ -2800,6 +2818,32 @@ def test_get_price_history_selects_cost_price_and_in_stock():
     history_query = conn.cursor().queries[1]
     assert "h.cost_price" in history_query
     assert "h.in_stock" in history_query
+
+
+# --- get_sku_stock_history: 017_price_tracking_sku_stock.sql read side.
+# Al: "for the instock i was refering to actual number of each sku
+# instock." Same two-query shape as get_price_history above. ---
+
+def test_get_sku_stock_history_scopes_by_product_id_and_days_window():
+    conn = _QueryCapturingConnection()
+    service.get_sku_stock_history(conn, "prod-1", days=30)
+    queries = conn.cursor().queries
+    assert len(queries) == 2  # skus query, then history query
+    assert "from product_skus" in queries[0]
+    assert "where product_id = %s" in queries[0]
+    assert "from product_sku_stock_history h" in queries[1]
+    assert "join product_skus sk on sk.id = h.product_sku_id" in queries[1]
+    assert "where sk.product_id = %s" in queries[1]
+    assert "h.checked_at >= now() - (%s || ' days')::interval" in queries[1]
+
+
+def test_get_sku_stock_history_selects_quantity_and_checked_at():
+    conn = _QueryCapturingConnection()
+    service.get_sku_stock_history(conn, "prod-1", days=30)
+    history_query = conn.cursor().queries[1]
+    assert "h.quantity" in history_query
+    assert "h.checked_at" in history_query
+    assert "h.price_source_id" in history_query
 
 
 def _fake_db_with_price_site():

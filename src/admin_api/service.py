@@ -2176,7 +2176,19 @@ def list_product_price_sources(conn, product_id: str, status: str = None) -> lis
     as latest_price/latest_checked_at/latest_error) let the admin-site
     show BowlerDepot's cost/stock data next to its price without a second
     call -- both are simply null for a scrape-sourced row, same as
-    latest_price is null for a source that's never been checked yet."""
+    latest_price is null for a source that's never been checked yet.
+
+    base_url (ps.base_url) is also included -- Al: "the href in the admin
+    ui on the price sources page is relative so it is broken... it needs
+    to be fully qualified for the site it is for." pps.product_url is
+    SUPPOSED to already be an absolute URL by the time it's stored (see
+    extract_bigcommerce_price_fields/parse_search_results, both resolve
+    relative hrefs via urljoin before insert), but a price_sites row
+    created without its own base_url filled in, or a manually-added
+    product_url pasted without a scheme, can still land here relative --
+    exposing the site's base_url lets the admin-site resolve either case
+    defensively at render time instead of trusting product_url is always
+    already absolute."""
     query = """
         select
             pps.id, pps.price_site_id, ps.name as site_name, ps.fetch_method, pps.product_url,
@@ -2192,7 +2204,8 @@ def list_product_price_sources(conn, product_id: str, status: str = None) -> lis
             (select h.cost_price from product_price_history h
              where h.price_source_id = pps.id order by h.checked_at desc limit 1) as latest_cost_price,
             (select h.in_stock from product_price_history h
-             where h.price_source_id = pps.id order by h.checked_at desc limit 1) as latest_in_stock
+             where h.price_source_id = pps.id order by h.checked_at desc limit 1) as latest_in_stock,
+            ps.base_url
         from product_price_sources pps
         join price_sites ps on ps.id = pps.price_site_id
         where pps.product_id = %s
@@ -2213,7 +2226,7 @@ def list_product_price_sources(conn, product_id: str, status: str = None) -> lis
             "status": r[8], "source": r[9], "is_active": r[10], "last_checked_at": r[11],
             "created_at": r[12], "resolved_at": r[13], "resolved_by": r[14],
             "latest_price": r[15], "latest_checked_at": r[16], "latest_error": r[17],
-            "latest_cost_price": r[18], "latest_in_stock": r[19],
+            "latest_cost_price": r[18], "latest_in_stock": r[19], "base_url": r[20],
         }
         for r in rows
     ]
@@ -2234,10 +2247,14 @@ def list_price_sources(conn, status: str = "pending", product_id: str = None, li
     docstring for the real production bug that tiebreaker fixes, which
     applies here just as much: a single discovery invocation can insert
     many product_price_sources rows with near-identical created_at
-    timestamps)."""
+    timestamps).
+
+    ps.base_url is included for the same "resolve a relative product_url
+    defensively at render time" reason list_product_price_sources' own
+    base_url column exists for -- see that function's docstring."""
     query = """
         select pps.id, pps.product_id, p.name as product_name, b.name as brand_name,
-               pps.price_site_id, ps.name as site_name, pps.product_url,
+               pps.price_site_id, ps.name as site_name, pps.product_url, ps.base_url,
                coalesce(pps.css_selector, ps.default_css_selector) as css_selector,
                pps.match_query, pps.match_confidence, pps.status, pps.source,
                pps.is_active, pps.last_checked_at,
