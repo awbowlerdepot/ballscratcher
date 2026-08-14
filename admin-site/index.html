@@ -815,6 +815,15 @@ let activeTab = 'review';
 // state uses.
 let priceSitesCache = null;
 
+// Full site rows from the Price Sites tab's own last load, keyed by id --
+// separate from priceSitesCache above (that one's shared with the
+// product-detail manual-add dropdown and only needs id/name/is_active-
+// shaped data). editPriceSite reads this to prefill its quick-edit
+// prompts with each field's CURRENT value -- Al: "i can't remember if i
+// put in the base url for the one that is currently setup but i also
+// cant edit all the fields." Populated by renderPriceSites on every load.
+let priceSiteRowsById = {};
+
 async function ensurePriceSitesLoaded() {
   if (priceSitesCache === null) {
     const data = await api('GET', '/price-sites');
@@ -2650,6 +2659,8 @@ function togglePriceSiteFetchMethodFields() {
 
 function renderPriceSites(items) {
   const listEl = document.getElementById('pricesite-list');
+  priceSiteRowsById = {};
+  items.forEach(function (s) { priceSiteRowsById[s.id] = s; });
   if (!items.length) {
     listEl.innerHTML = '<p class="muted">No price sites configured yet -- add one above.</p>';
     return;
@@ -2671,7 +2682,7 @@ function renderPriceSites(items) {
       (s.notes ? '<div class="muted small">' + escapeHtml(s.notes) + '</div>' : '') + '</td>' +
       '<td>' + configCell + '</td>' +
       '<td class="actions">' +
-      '<button class="btn small ghost" onclick="editPriceSite(\'' + s.id + '\', \'' + s.fetch_method + '\')">Edit</button>' +
+      '<button class="btn small ghost" onclick="editPriceSite(\'' + s.id + '\')">Edit</button>' +
       '<button class="btn small ghost" onclick="togglePriceSiteActive(\'' + s.id + '\', ' + s.is_active + ')">' + (s.is_active ? 'Deactivate' : 'Reactivate') + '</button>' +
       '<button class="btn small ghost danger" onclick="deletePriceSite(\'' + s.id + '\')">Delete</button>' +
       '</td></tr>';
@@ -2728,27 +2739,48 @@ async function createPriceSite() {
   } catch (e) { toast(e.message, true); }
 }
 
-async function editPriceSite(id, fetchMethod) {
-  // One prompt() per field, skipped (left unchanged) if the admin
-  // cancels or leaves it blank -- same "quick edit, not a full form"
-  // posture as reassignVideo's single prompt() above. Which prompts show
-  // depends on this site's own fetch_method (016_price_tracking_
-  // bigcommerce.sql) -- no point prompting for a search URL template on
-  // an 'api' site that doesn't have one, or vice versa.
-  const body = {};
-  if (fetchMethod === 'api') {
-    const apiProvider = prompt('New API provider, or leave blank to keep as-is:');
-    const baseUrl = prompt('New storefront base URL, or leave blank to keep as-is:');
-    if (apiProvider) body.api_provider = apiProvider;
-    if (baseUrl) body.base_url = baseUrl;
-  } else {
-    const searchUrlTemplate = prompt('New search URL template (must contain {query}), or leave blank to keep as-is:');
-    const resultLinkSelector = prompt('New result link selector, or leave blank to keep as-is:');
-    const defaultCssSelector = prompt('New default price selector, or leave blank to keep as-is:');
-    if (searchUrlTemplate) body.search_url_template = searchUrlTemplate;
-    if (resultLinkSelector) body.result_link_selector = resultLinkSelector;
-    if (defaultCssSelector) body.default_css_selector = defaultCssSelector;
+// One prompt() per field, EVERY field this site actually has (Al: "i
+// cant edit all the fields") -- and each prompt is now pre-filled with
+// its CURRENT value (Al: "i can't remember if i put in the base url for
+// the one that is currently setup"), via prompt(message, defaultValue),
+// so the admin can literally see what's set right now instead of typing
+// into a blank box and hoping. Cancel (returns null) always leaves that
+// field untouched, same as before; unlike the old version, clicking OK
+// with the text UNCHANGED also sends nothing for that field (nothing
+// actually changed, no reason to PATCH it) -- but clicking OK after
+// clearing the box to empty NOW sends an explicit '' update, which
+// wasn't possible before (blank used to mean "skip"), so a field can
+// finally be cleared out through this UI, not just filled in.
+function _promptFieldIfChanged(body, key, label, currentValue) {
+  const current = currentValue || '';
+  const next = prompt(label + ':', current);
+  if (next === null) return; // cancelled -- leave untouched
+  const trimmed = next.trim();
+  if (trimmed !== current) body[key] = trimmed;
+}
+
+async function editPriceSite(id) {
+  const s = priceSiteRowsById[id];
+  if (!s) {
+    toast('Site data not loaded yet -- reload this tab and try again.', true);
+    return;
   }
+  const body = {};
+  _promptFieldIfChanged(body, 'name', 'Name', s.name);
+  // fetch_method itself isn't editable here -- switching a site between
+  // 'scrape' and 'api' would also mean swapping which of the fields below
+  // even apply (016_price_tracking_bigcommerce.sql's own fetch_method
+  // check constraint); that's a delete-and-recreate, not a quick edit.
+  if (s.fetch_method === 'api') {
+    _promptFieldIfChanged(body, 'api_provider', 'API provider', s.api_provider);
+    _promptFieldIfChanged(body, 'base_url', 'Storefront base URL', s.base_url);
+  } else {
+    _promptFieldIfChanged(body, 'search_url_template', 'Search URL template (must contain {query})', s.search_url_template);
+    _promptFieldIfChanged(body, 'result_link_selector', 'Result link selector', s.result_link_selector);
+    _promptFieldIfChanged(body, 'default_css_selector', 'Default price selector', s.default_css_selector);
+  }
+  _promptFieldIfChanged(body, 'notes', 'Notes (optional)', s.notes);
+
   if (!Object.keys(body).length) return;
   try {
     await api('PATCH', '/price-sites/' + id, { body: body });
