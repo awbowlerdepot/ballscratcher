@@ -1501,17 +1501,32 @@ yet. New regression fixture `TROPICAL_SURGE_HTML` in
 Downloads-section markup.
 
 **To fix already-affected products**: redeploy (`sam build && sam
-deploy`), then rescrape. There's no dedicated commercebuild rescrape
-script yet -- either re-invoke `CommercebuildProductScraperFunction`
-directly for the affected URL(s), or use the admin site's per-product
-"Rescrape" action (`POST /products/{id}/rescrape`, see 6i's core-backfill
-writeup for the same route used for a different platform) on this
-product and any others reported with the same symptom. Since this
-wording variance was only ever confirmed on one product, there's no
-known reason to assume it's widespread -- check for other zero-SKU
-`commercebuild` products (`source_platform = 'commercebuild'` with no
-matching `product_skus` rows) before assuming a catalog-wide rescrape is
-needed.
+deploy`), then rescrape. `GET /products` now supports a `missing_skus=true`
+filter (products with zero `product_skus` rows -- a `not exists`
+subquery, unlike `missing_core`/`missing_coverstock`'s plain `is null`
+check, since `product_skus` is a separate table) and
+`scripts/rescrape_commercebuild_products.py` is a thin trigger for it,
+same `GET /products` (paginated) + `POST /products/{id}/rescrape` shape
+as `scripts/rescrape_netsuite_products.py`, scoped to `source_platform=
+commercebuild&missing_skus=true`:
+
+```
+export ADMIN_API_URL="https://<your-api-id>.execute-api.us-west-1.amazonaws.com"
+export ADMIN_API_TOKEN="<the same bearer token used elsewhere>"
+python3 scripts/rescrape_commercebuild_products.py
+```
+
+Only enqueues -- doesn't wait for the scrapes to finish. Re-run later (or
+re-check `GET /products?source_platform=commercebuild&missing_skus=true`)
+to see how much is left. Note this filter also catches genuinely
+archived/retired commercebuild products (documented platform limitation
+-- no obtainable SKU data by any method, see COMMERCEBUILD_SCOPING.md),
+so a nonzero count after rescraping isn't necessarily still-broken --
+there's no way to tell "archived, no data available" apart from "current,
+still hitting a parser gap" from the product row alone; spot-check a few
+in the admin UI. `missing_skus=true` is platform-agnostic (works for any
+`source_platform`, not just commercebuild), in case a similar silent
+zero-SKU gap ever turns up on another scraper.
 
 ### 6f.5. Hammer (Shopify) -- if `HammerBrandId` was set
 

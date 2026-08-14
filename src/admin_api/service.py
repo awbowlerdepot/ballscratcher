@@ -299,7 +299,8 @@ _DEFAULT_ORDER_BY = "p.updated_at desc, p.id asc"
 
 def list_products(conn, published: bool = None, brand_id: str = None, search: str = None,
                    needs_video_summary_refresh: bool = None, has_approved_video_summaries: bool = None,
-                   missing_core: bool = None, missing_coverstock: bool = None, source_platform: str = None,
+                   missing_core: bool = None, missing_coverstock: bool = None, missing_skus: bool = None,
+                   source_platform: str = None,
                    status: str = None, sort: str = None,
                    limit: int = 50, offset: int = 0) -> list:
     """status: filters to products.status ('current' or 'retired' -- see
@@ -392,6 +393,22 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     it wasn't dropped) so the Products tab can show and link into a
     shared coverstock without a second lookup.
 
+    missing_skus=True: products with ZERO product_skus rows -- unlike
+    missing_core/missing_coverstock (a nullable column directly on
+    products), product_skus is a separate table, so this is a `not
+    exists` subquery rather than an `is null` check. Built for
+    scripts/rescrape_commercebuild_products.py after a real incident
+    (Al: product 56897c0b-e3ec-4314-a8dc-238e1b8b7a75, Storm Tropical
+    Surge Black/Cherry, had zero product_skus despite its real page
+    clearly showing weight/RG/differential values -- root cause was
+    commercebuild_product_scraper's parse_tech_data_pdf_url missing a
+    "Tech Sheet" wording variant, now fixed, see that module's docstring)
+    -- this filter is how to find every OTHER product that fell into the
+    same silent gap before the fix shipped, regardless of platform (a
+    scrape/parse failure that produces zero SKUs isn't unique to
+    commercebuild, even though that's the one confirmed real case so
+    far).
+
     popularity_score (see _POPULARITY_SCORE_SQL above) is always
     computed and returned, same as public_api's copy of this query --
     cheap enough at this catalog's size to include unconditionally, so
@@ -457,6 +474,8 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
         query += " and p.core_id is null"
     if missing_coverstock:
         query += " and p.coverstock_id is null"
+    if missing_skus:
+        query += " and not exists (select 1 from product_skus ps where ps.product_id = p.id)"
     if source_platform:
         query += " and p.source_platform = %s"
         params.append(source_platform)

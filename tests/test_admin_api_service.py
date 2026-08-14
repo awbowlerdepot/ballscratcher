@@ -2278,6 +2278,42 @@ def test_list_products_omits_missing_coverstock_filter_by_default():
     assert "p.coverstock_id is null" not in query
 
 
+# --- list_products: missing_skus filter -- real incident, Al: product
+# 56897c0b-e3ec-4314-a8dc-238e1b8b7a75 (Storm Tropical Surge Black/Cherry)
+# had zero product_skus despite its real page clearly showing weight/RG/
+# differential values (root cause: commercebuild_product_scraper's
+# parse_tech_data_pdf_url missing a "Tech Sheet" wording variant, now
+# fixed). Unlike missing_core/missing_coverstock (a nullable column
+# directly on products), product_skus is a separate table, so this is a
+# `not exists` subquery.
+
+def test_list_products_missing_skus_adds_not_exists_filter_sql():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, missing_skus=True, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "not exists (select 1 from product_skus ps where ps.product_id = p.id)" in query
+
+
+def test_list_products_omits_missing_skus_filter_by_default():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "product_skus" not in query
+
+
+def test_list_products_missing_skus_combines_with_source_platform():
+    # scripts/rescrape_commercebuild_products.py's exact call shape --
+    # both filters must AND together, not override each other.
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, missing_skus=True, source_platform="commercebuild", limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "not exists (select 1 from product_skus ps where ps.product_id = p.id)" in query
+    assert "p.source_platform = %s" in query
+
+
 # --- list_coverstocks / get_coverstock: the exact same "other direction"
 # view as list_cores/get_core above, one migration later (008). Same
 # SQL-text-capturing convention, same reasoning (no real Postgres in this
