@@ -4054,6 +4054,34 @@ not a metered API like YouTube's).
    cat /tmp/price-discovery-out.json
    ```
 
+   **Catalog-wide, instead of one product at a time.** Al: "can we script
+   clicking find price sources for all items that are current." Every
+   product's own "Find price sources" click is really just a `POST
+   /products/{id}/discover-price-sources` with that one `product_id` --
+   the admin API also exposes the SAME job with no `product_ids`/`brand_id`
+   at all, `POST /admin/discover-all-price-sources`, which
+   `price_checker.fetch_products_to_discover` already defaults to
+   `products.status = 'current'` when scoped that generically (see that
+   function's own docstring) -- "all items that are current" is this
+   endpoint's own default, nothing extra to configure. `scripts/discover_
+   all_price_sources.py` is a thin trigger for it, same shape as `scripts/
+   refresh_video_stats.py`:
+   ```bash
+   export ADMIN_API_URL="https://<your-api-id>.execute-api.us-west-1.amazonaws.com"
+   export ADMIN_API_TOKEN="<the same bearer token used elsewhere>"
+   export REPEAT="5"             # optional -- see the script's own docstring
+   export INTERVAL_SECONDS="300" # optional, only matters if REPEAT > 1
+   python3 scripts/discover_all_price_sources.py
+   ```
+   One call searches up to `DEFAULT_MAX_PRODUCTS_PER_DISCOVERY_INVOCATION`
+   (100) current products, rotated via `products.last_price_discovery_at`
+   asc-nulls-first -- a catalog with more `current` products than that
+   needs either several manual re-runs over time, or `REPEAT > 1` to fire
+   several invocations (spaced `INTERVAL_SECONDS` apart, since the
+   underlying Lambda invoke is async/fire-and-forget) in one script run.
+   Like the single-product button, this only ever writes `pending`
+   candidates -- nothing is auto-approved.
+
 3. **Review and approve.** Candidates show up in the Price Sources tab
    (defaults to `status=pending`) or in the product's own Price Tracking
    section (which shows every status at once, same reasoning as the
