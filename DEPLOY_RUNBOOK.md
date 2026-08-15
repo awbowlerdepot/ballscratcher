@@ -4490,6 +4490,117 @@ is actually resolved (absolute). Idempotent and safe to re-run -- a
 catalog with no duplicate groups left just returns `groups_merged=0
 rows_deleted=0`.
 
+### 6o.8. Daily schedules wired up for every brand's URL discovery (real ask: "how long would it take to pick up a new ball?")
+
+Al asked how long a newly-released ball would take to get picked up.
+Answer at the time: it depended entirely on the brand -- Brunswick (and
+its Craft-CMS siblings' shared `UrlDiscoveryFunction`) already ran a
+daily sitemap diff, but every OTHER brand's own `*UrlDiscoveryFunction`
+existed with no `Schedule` event at all, invoke-manually-only, left that
+way specifically because each brand's `BrandId` parameter (and, for
+Shopify, its store-domain parameter) defaults to a blank string in
+`template.yaml` -- see each function's old "No schedule wired up yet...
+add once BrandId is actually set for a real deployment" comment. Follow-
+up ask: "lets wire up daily schedules for them all."
+
+**Every remaining `*UrlDiscoveryFunction` now has a `rate(1 day)`
+Schedule event, `Enabled: true`, same shape `UrlDiscoveryFunction`
+(Brunswick) already used**: `RadicalUrlDiscoveryFunction`,
+`Dv8UrlDiscoveryFunction`, `WooCommerceUrlDiscoveryFunction` (SWAG),
+`NetsuiteUrlDiscoveryFunction` (MOTIV), `CommercebuildUrlDiscoveryFunction`
+(Storm/Roto Grip/900 Global), `ShopifyUrlDiscoveryFunction` (Hammer),
+`TrackUrlDiscoveryFunction`, `EboniteUrlDiscoveryFunction`. That's 9 of 9
+brand-discovery functions on a daily cadence now.
+
+**`Enabled: true` is safe for this specific, live deployment** -- every
+one of those `BrandId`/store-domain parameters is already set to a real
+value here (every brand covered above already has real products in the
+catalog, confirmed throughout this project's own history). It would NOT
+be safe on a fresh/from-scratch redeploy of this stack with a brand
+intentionally left unconfigured: `BRAND_ID=""` would still let the
+Lambda run (`os.environ["BRAND_ID"]` doesn't raise on an empty string),
+but the resulting insert against `products.brand_id` (a real `uuid`
+column) would fail on every scheduled invocation rather than silently
+no-op. If this stack is ever redeployed without a given brand's id set,
+flip that one function's `Events.DailySchedule.Enabled` to `false` first
+-- same "documented assumption, not a CloudFormation Condition" pattern
+`BowlerDepotReconciliationFunction`'s own schedule already established
+(see 6h/6g's writeup) for the same class of problem.
+
+**What "picked up" now means end to end, once a schedule finds a new
+product URL** -- confirmed by tracing every platform's own queue wiring
+in `template.yaml`, no code changes needed since this is all already
+SQS-triggered:
+- Discovery function publishes the new URL onto that platform's own
+  scrape queue (`ProductScrapeQueue` for the Craft-CMS family,
+  `WooCommerceProductScrapeQueue`, `NetsuiteProductScrapeQueue`,
+  `CommercebuildProductScrapeQueue`, or the shared
+  `ShopifyProductScrapeQueue`).
+- The matching product-scraper function (`ProductScraperFunction`,
+  `WooCommerceProductScraperFunction`, `NetsuiteProductScraperFunction`,
+  `CommercebuildProductScraperFunction`, `ShopifyProductScraperFunction`)
+  is SQS-triggered off that queue -- no manual step. It parses specs,
+  looks up/creates the `cores`/`coverstocks` row (see 6.89-93's own
+  history), estimates `oil_motion_source` when no chart value exists yet
+  (see 6m), and for the Craft-CMS family publishes onto `PdfParseQueue`
+  if the page had an info sheet.
+- `ImageProcessorFunction` (SQS-triggered off the shared
+  `ImageProcessQueue`) and, for Brunswick/Radical/DV8,
+  `PdfParserFunction` (SQS-triggered off `PdfParseQueue`) both fire
+  automatically off whatever the scraper just published -- no manual
+  step either.
+
+So: specs, images, tech-data PDF parsing, core/coverstock rows, and the
+oil/motion plotter estimate are ALL hands-off now, catalog-wide, once a
+brand's own daily discovery run finds the new URL -- worst case, roughly
+24 hours from a manufacturer publishing the page to it fully existing in
+this catalog (sitemap/collection propagation delay aside), then seconds
+to a couple minutes for the scrape chain itself to drain.
+
+**Two things downstream are still deliberately manual, not oversights**:
+video-review discovery (`VideoDiscoveryFunction`'s `{"discover": true,
+...}` search job shape) stays invoke-only because YouTube's
+`search.list` quota is a hard 100 calls/day (see 6i's own module
+docstring) -- Al explicitly chose a subset-first, invoke-when-ready
+approach over an automated crawl that would burn the whole daily budget
+on new products alone. Price-source discovery
+(`PriceCheckerFunction`'s `{"discover": true, ...}` shape) stays
+invoke-only too, same reasoning as 6o's own writeup -- an admin decides
+when to widen price-source coverage rather than it running on its own
+cadence. Neither blocks a new ball from actually appearing in the
+catalog/consumer site; they only affect when its video reviews and
+tracked prices show up.
+
+**Known gap, unchanged by this work, worth watching now that real daily
+message volume will start flowing through it**: `CommercebuildUrlDiscoveryFunction`
+respects stormbowling.com's `Crawl-delay: 10` via its own 10s
+inter-brand sleep at discovery time, but `CommercebuildProductScraperFunction`
+consuming the resulting `CommercebuildProductScrapeQueue` has no matching
+per-message throttle of its own -- a burst of SQS messages (e.g. several
+new Storm/Roto Grip/900 Global balls landing on the same day) could hit
+the site faster than one request per 10s. Not fixed here; still needs an
+SQS event-source-mapping `MaximumConcurrency` once real volume is
+observed (see the original `template.yaml` comment above
+`CommercebuildUrlDiscoveryFunction`).
+
+No new tests -- this is pure infra (`template.yaml`'s `Events` blocks on
+8 existing functions, no new resources, no application code touched).
+Verified by re-parsing the whole template with the same CFN-tolerant
+PyYAML loader used throughout this project (54 resources, 38 outputs,
+parses clean) and confirming all 9 `*UrlDiscoveryFunction` resources
+(the original Brunswick one plus the 8 added here) each carry exactly
+one `Type: Schedule` event with `Enabled: true`.
+
+Requires a real `sam deploy` (not just `sam build`) for each of the 8
+functions, same as any other `Events:` addition -- a build alone doesn't
+create the underlying EventBridge rules:
+```bash
+sam build
+sam deploy
+```
+(A full `sam build`, not scoped per-function, since 8 different
+functions changed at once here.)
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

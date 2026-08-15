@@ -655,11 +655,18 @@ Resources:
   # src/url_discovery/'s existing, already-generic code -- exactly what
   # that module's own docstring anticipated.
   #
-  # No schedule wired up yet, same reasoning as WooCommerceUrlDiscoveryFunction/
-  # NetsuiteUrlDiscoveryFunction below -- add a Schedule event once
-  # RadicalBrandId/Dv8BrandId are actually set for a real deployment (insert
-  # the brand rows first, see DEPLOY_RUNBOOK.md section 4). Invoke manually
-  # in the meantime.
+  # Daily schedule added below on every *UrlDiscoveryFunction in this
+  # template (Radical/DV8/WooCommerce/NetSuite/commercebuild/Shopify x3) --
+  # Al's ask: "lets wire up daily schedules for them all." Same rate(1 day)
+  # pattern UrlDiscoveryFunction (Brunswick) already used. Enabled: true
+  # ASSUMES a real brand id (and, for the Shopify family, a real store
+  # domain) is already set for THIS deployment -- true for every brand
+  # covered here (all of them have live products in the DB by now, see
+  # DEPLOY_RUNBOOK.md section 4's seed instructions) -- but if you ever
+  # redeploy this stack fresh with a brand id left at its blank default,
+  # flip that function's Enabled back to false first; a scheduled run
+  # against BRAND_ID="" will insert into products.brand_id with an
+  # invalid/empty UUID and just fail daily instead of silently no-oping.
 
   RadicalUrlDiscoveryFunction:
     Type: AWS::Serverless::Function
@@ -682,6 +689,14 @@ Resources:
               Resource: !Ref DbSecretArn
         - SQSSendMessagePolicy:
             QueueName: !GetAtt ProductScrapeQueue.QueueName
+      Events:
+        DailySchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 day)
+            Name: bowling-scraper-radical-url-discovery-daily
+            Description: Sitemap diff against discovered_urls for Radical; emits new/changed product URLs.
+            Enabled: true
 
   Dv8UrlDiscoveryFunction:
     Type: AWS::Serverless::Function
@@ -704,6 +719,14 @@ Resources:
               Resource: !Ref DbSecretArn
         - SQSSendMessagePolicy:
             QueueName: !GetAtt ProductScrapeQueue.QueueName
+      Events:
+        DailySchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 day)
+            Name: bowling-scraper-dv8-url-discovery-daily
+            Description: Sitemap diff against discovered_urls for DV8; emits new/changed product URLs.
+            Enabled: true
 
   ProductScraperFunction:
     Type: AWS::Serverless::Function
@@ -1299,9 +1322,14 @@ Resources:
               Resource: !Ref DbSecretArn
         - SQSSendMessagePolicy:
             QueueName: !GetAtt WooCommerceProductScrapeQueue.QueueName
-      # No schedule wired up yet (unlike UrlDiscoveryFunction's daily
-      # trigger) -- add once SwagBrandId is actually set for a real
-      # deployment; a schedule referencing an empty BrandId isn't useful.
+      Events:
+        DailySchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 day)
+            Name: bowling-scraper-woocommerce-url-discovery-daily
+            Description: Category/sitemap diff against discovered_urls for SWAG; emits new/changed product URLs.
+            Enabled: true
 
   WooCommerceProductScraperFunction:
     Type: AWS::Serverless::Function
@@ -1392,7 +1420,14 @@ Resources:
               Resource: !Ref DbSecretArn
         - SQSSendMessagePolicy:
             QueueName: !GetAtt NetsuiteProductScrapeQueue.QueueName
-      # No schedule wired up yet, same reasoning as WooCommerceUrlDiscoveryFunction.
+      Events:
+        DailySchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 day)
+            Name: bowling-scraper-netsuite-url-discovery-daily
+            Description: Category-page diff against discovered_urls for MOTIV; emits new/changed product URLs.
+            Enabled: true
 
   NetsuiteProductScraperFunction:
     Type: AWS::Serverless::Function
@@ -1745,10 +1780,14 @@ Resources:
               Resource: !Ref DbSecretArn
         - SQSSendMessagePolicy:
             QueueName: !GetAtt CommercebuildProductScrapeQueue.QueueName
-      # No schedule wired up yet, same reasoning as
-      # WooCommerceUrlDiscoveryFunction/NetsuiteUrlDiscoveryFunction --
-      # add once StormBrandId/RotoGripBrandId/Global900BrandId are
-      # actually set for a real deployment.
+      Events:
+        DailySchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 day)
+            Name: bowling-scraper-commercebuild-url-discovery-daily
+            Description: Category/sitemap diff against discovered_urls for Storm/Roto Grip/900 Global; emits new/changed product URLs. Already respects stormbowling.com's Crawl-delay:10 via its own 10s inter-brand sleep -- see the KNOWN GAP comment above though, CommercebuildProductScraperFunction consuming the resulting queue has no matching per-message throttle yet, worth watching once daily-scheduled real message volume starts flowing.
+            Enabled: true
 
   CommercebuildProductScraperFunction:
     Type: AWS::Serverless::Function
@@ -1841,11 +1880,14 @@ Resources:
               Resource: !Ref DbSecretArn
         - SQSSendMessagePolicy:
             QueueName: !GetAtt ShopifyProductScrapeQueue.QueueName
-      # No schedule wired up yet (unlike UrlDiscoveryFunction's daily
-      # trigger) -- add once HammerBrandId is actually set for a real
-      # deployment; a schedule referencing an empty BrandId isn't useful.
-      # Same for TrackUrlDiscoveryFunction/EboniteUrlDiscoveryFunction
-      # below.
+      Events:
+        DailySchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 day)
+            Name: bowling-scraper-hammer-url-discovery-daily
+            Description: collections/*.json diff against discovered_urls for Hammer; emits new/changed product URLs.
+            Enabled: true
 
   TrackUrlDiscoveryFunction:
     Type: AWS::Serverless::Function
@@ -1872,7 +1914,15 @@ Resources:
       # see TrackStoreDomain/TrackCollectionHandles/TrackBrandId's
       # Parameters descriptions above for what's actually different about
       # Track vs. Hammer (collection-handle set, not the discovery logic
-      # itself). No schedule wired up yet, same reasoning as Hammer's.
+      # itself).
+      Events:
+        DailySchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 day)
+            Name: bowling-scraper-track-url-discovery-daily
+            Description: collections/*.json diff against discovered_urls for Track; emits new/changed product URLs.
+            Enabled: true
 
   EboniteUrlDiscoveryFunction:
     Type: AWS::Serverless::Function
@@ -1897,8 +1947,15 @@ Resources:
             QueueName: !GetAtt ShopifyProductScrapeQueue.QueueName
       # Same CodeUri as ShopifyUrlDiscoveryFunction, different env vars --
       # see EboniteStoreDomain/EboniteCollectionHandles/EboniteBrandId's
-      # Parameters descriptions above. No schedule wired up yet, same
-      # reasoning as Hammer's.
+      # Parameters descriptions above.
+      Events:
+        DailySchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 day)
+            Name: bowling-scraper-ebonite-url-discovery-daily
+            Description: collections/*.json diff against discovered_urls for Ebonite; emits new/changed product URLs.
+            Enabled: true
 
   ShopifyProductScraperFunction:
     Type: AWS::Serverless::Function
