@@ -4601,6 +4601,63 @@ sam deploy
 (A full `sam build`, not scoped per-function, since 8 different
 functions changed at once here.)
 
+### 6o.9. `missing_video_candidates` filter -- finding products that have never been searched
+
+Direct follow-up to 6o.8's own writeup: Al asked how video search is
+scheduled, learned it isn't (see 6o.8/6i -- `VideoDiscoveryFunction`'s
+actual search job stays manual/invoke-only, capped by YouTube's
+100-calls/day `search.list` quota), then: "can we add a filter check box
+to at least get all the products that don't have video candidates."
+
+**`list_products` gained `missing_video_candidates: bool = None`**
+(`admin_api/service.py`) -- `and not exists (select 1 from product_videos
+pv where pv.product_id = p.id)`, same `not exists`-subquery shape as
+`missing_skus` (product_videos is a separate table, not a nullable
+column on `products`). Deliberately different from `needs_video_summary_
+refresh`/`has_approved_video_summaries` (both of those require an
+EXISTING approved+summarized video, an `exists` check) -- this one wants
+the opposite: products with ZERO `product_videos` rows of ANY status,
+i.e. never searched at all. A product that WAS searched and genuinely
+came up with no matching reviews is indistinguishable from a never-
+searched one under this filter -- both have zero rows -- but that's an
+acceptable blur for "which products need a search run against them",
+not a claim about search history (see `video_discovery/app.py`'s own
+`last_video_discovery_at`/rotation logic, migration 005, for the
+per-product "when was this last searched" signal this filter
+deliberately doesn't need).
+
+`admin_api/app.py`'s `GET /products` gained the matching `?missing_video_
+candidates=true` query param, wired straight through.
+
+`admin-site/index.html`'s Products tab gained a "no video candidates"
+checkbox next to the existing "missing core"/"missing coverstock" ones,
+same `productState`/`applyProductFilters`/`loadProducts` wiring pattern
+every other Products-tab checkbox already uses.
+
+**No queuing/automation added here** -- this is a visibility filter only,
+same "surface the gap, admin decides what to do about it" spirit as
+`missing_core`/`missing_coverstock`/`missing_skus`. Finding a product via
+this checkbox still requires manually triggering its video search
+(the product detail page's own "rescan" button, or `POST /products/{id}/
+discover-videos`) -- deliberately not auto-wired to anything, for the
+same `search.list` quota reason the schedule itself doesn't exist.
+
+Tests: `test_admin_api_service.py` 194/194 passing (4 new: filter adds
+the exact `not exists` SQL text, omitted by default, combines with
+`status`, and is confirmed textually distinct from `needs_video_summary_
+refresh`'s own `exists` clause so the two filters can't be confused for
+each other).
+
+No migration, no `template.yaml` change -- rides `AdminApiFunction`'s
+existing `/{proxy+}` catch-all, same as every other `list_products`
+filter addition this project has made. Redeploy just the one function:
+```bash
+sam build AdminApiFunction
+sam deploy
+```
+(No admin-site redeploy step needed beyond re-uploading the static file
+-- it's not a Lambda-fronted deployable.)
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

@@ -300,6 +300,7 @@ _DEFAULT_ORDER_BY = "p.updated_at desc, p.id asc"
 def list_products(conn, published: bool = None, brand_id: str = None, search: str = None,
                    needs_video_summary_refresh: bool = None, has_approved_video_summaries: bool = None,
                    missing_core: bool = None, missing_coverstock: bool = None, missing_skus: bool = None,
+                   missing_video_candidates: bool = None,
                    source_platform: str = None,
                    status: str = None, sort: str = None,
                    limit: int = 50, offset: int = 0) -> list:
@@ -409,6 +410,26 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     commercebuild, even though that's the one confirmed real case so
     far).
 
+    missing_video_candidates=True: products with ZERO product_videos rows
+    of ANY status -- not just "no approved summary" the way has_approved_
+    video_summaries/needs_video_summary_refresh check. Al's direct ask
+    after learning VideoDiscoveryFunction's actual search job (the thing
+    that calls YouTube's search.list to find candidate review videos in
+    the first place) is deliberately manual/invoke-only, not scheduled,
+    because search.list is capped at a hard 100 calls/day for this
+    project -- there's no automatic "search every new product" step. This
+    filter is how to find every product that has never had a video search
+    run against it at all (a genuinely-searched-but-came-up-empty product
+    would still have zero product_videos rows too, and is indistinguishable
+    from a never-searched one here -- see video_discovery/app.py's own
+    fetch_products_to_search rotation logic and last_video_discovery_at
+    column, migration 005, for a per-product "when was this last
+    searched" signal this filter deliberately doesn't need/use, since the
+    ask here was just "which products have nothing at all yet", not "which
+    are overdue for a re-search"). Same `not exists` shape as missing_skus
+    (product_videos is a separate table, not a nullable column on
+    products).
+
     popularity_score (see _POPULARITY_SCORE_SQL above) is always
     computed and returned, same as public_api's copy of this query --
     cheap enough at this catalog's size to include unconditionally, so
@@ -476,6 +497,8 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
         query += " and p.coverstock_id is null"
     if missing_skus:
         query += " and not exists (select 1 from product_skus ps where ps.product_id = p.id)"
+    if missing_video_candidates:
+        query += " and not exists (select 1 from product_videos pv where pv.product_id = p.id)"
     if source_platform:
         query += " and p.source_platform = %s"
         params.append(source_platform)

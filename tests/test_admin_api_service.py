@@ -2314,6 +2314,68 @@ def test_list_products_missing_skus_combines_with_source_platform():
     assert "p.source_platform = %s" in query
 
 
+# --- list_products: missing_video_candidates filter -- Al's ask after
+# learning VideoDiscoveryFunction's search job (the thing that actually
+# calls YouTube's search.list to find candidate review videos) is
+# deliberately manual/invoke-only, not scheduled, because search.list is
+# capped at 100 calls/day for this project -- there's no automatic
+# "search every new product" step. This filter finds every product with
+# ZERO product_videos rows of any status, i.e. never searched at all
+# (indistinguishable here from "searched and came up empty" -- same
+# `not exists` shape as missing_skus, product_videos is a separate table).
+
+def test_list_products_missing_video_candidates_adds_not_exists_filter_sql():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, missing_video_candidates=True, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "not exists (select 1 from product_videos pv where pv.product_id = p.id)" in query
+
+
+def test_list_products_omits_missing_video_candidates_filter_by_default():
+    # Note: product_videos is ALREADY referenced in every query's SELECT
+    # list via _POPULARITY_SCORE_SQL (an `exists`-free correlated
+    # subquery scoped to pv.status = 'approved' and pv.view_count is not
+    # null) -- so this checks for the exact WHERE-clause text this
+    # filter adds (a plain, unscoped `not exists`), not just any mention
+    # of product_videos, to avoid a false positive against that
+    # pre-existing subquery.
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "not exists (select 1 from product_videos pv where pv.product_id = p.id)" not in query
+
+
+def test_list_products_missing_video_candidates_combines_with_status():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, missing_video_candidates=True, status="current", limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "not exists (select 1 from product_videos pv where pv.product_id = p.id)" in query
+    assert "p.status = %s" in query
+
+
+def test_list_products_missing_video_candidates_distinct_from_needs_video_summary_refresh():
+    """Not the same filter as needs_video_summary_refresh/has_approved_
+    video_summaries -- those both require an EXISTING approved+summarized
+    video (an `exists` check with pv.status/pv.summary conditions inside
+    it); this one requires the opposite, zero product_videos rows of any
+    status at all -- the WHERE-clause text this filter adds has no
+    status/summary condition inside it (unlike _POPULARITY_SCORE_SQL's
+    always-present SELECT-list subquery, which does)."""
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, missing_video_candidates=True, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "and not exists (select 1 from product_videos pv where pv.product_id = p.id)" in query
+    # needs_video_summary_refresh/has_approved_video_summaries' own `exists`
+    # clause text (single-spaced, matching how _QueryCapturingCursor
+    # normalizes whitespace) -- must NOT be present, confirming this is a
+    # genuinely different WHERE condition, not the same filter reused.
+    assert "and exists ( select 1 from product_videos pv where pv.product_id = p.id and pv.status = 'approved' and pv.summary is not null )" not in query
+
+
 # --- list_coverstocks / get_coverstock: the exact same "other direction"
 # view as list_cores/get_core above, one migration later (008). Same
 # SQL-text-capturing convention, same reasoning (no real Postgres in this

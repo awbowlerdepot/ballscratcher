@@ -411,6 +411,7 @@
       <label class="checkbox"><input id="product-has-approved" type="checkbox"> has any summarized video</label>
       <label class="checkbox"><input id="product-missing-core" type="checkbox"> missing core</label>
       <label class="checkbox"><input id="product-missing-coverstock" type="checkbox"> missing coverstock</label>
+      <label class="checkbox"><input id="product-missing-video-candidates" type="checkbox"> no video candidates</label>
       <button class="btn" type="submit">Filter</button>
     </form>
     <div id="product-list"><p class="muted">Set your API URL and token above, then this loads automatically.</p></div>
@@ -1565,7 +1566,7 @@ async function restorePriceSource(id) {
 // --------------------------------------------------------------------
 // Products tab
 // --------------------------------------------------------------------
-const productState = { search: '', brandId: '', published: '', status: '', sort: '', needsRefresh: false, hasApproved: false, missingCore: false, missingCoverstock: false, offset: 0, limit: 50, lastCount: 0 };
+const productState = { search: '', brandId: '', published: '', status: '', sort: '', needsRefresh: false, hasApproved: false, missingCore: false, missingCoverstock: false, missingVideoCandidates: false, offset: 0, limit: 50, lastCount: 0 };
 
 function applyProductFilters() {
   productState.search = document.getElementById('product-search').value.trim();
@@ -1577,6 +1578,7 @@ function applyProductFilters() {
   productState.hasApproved = document.getElementById('product-has-approved').checked;
   productState.missingCore = document.getElementById('product-missing-core').checked;
   productState.missingCoverstock = document.getElementById('product-missing-coverstock').checked;
+  productState.missingVideoCandidates = document.getElementById('product-missing-video-candidates').checked;
   productState.offset = 0;
   loadProducts();
 }
@@ -1602,6 +1604,7 @@ async function loadProducts() {
     if (productState.hasApproved) params.has_approved_video_summaries = true;
     if (productState.missingCore) params.missing_core = true;
     if (productState.missingCoverstock) params.missing_coverstock = true;
+    if (productState.missingVideoCandidates) params.missing_video_candidates = true;
     const data = await api('GET', '/products', { params: params });
     renderProducts(data.items || []);
   } catch (e) {
