@@ -45,22 +45,101 @@ only, not executed.
 import json
 import os
 
+# Module-level cache, deliberately NOT function-local -- see get_db_
+# connection's own docstring for why this is the whole point.
+_cached_conn = None
+_cached_secret = None
 
-def get_db_connection():
-    import boto3
+
+def _connect_with_secret(secret):
     import psycopg2
 
-    secret_arn = os.environ["DB_SECRET_ARN"]
-    client = boto3.client("secretsmanager")
-    secret = json.loads(client.get_secret_value(SecretId=secret_arn)["SecretString"])
-
-    return psycopg2.connect(
+    conn = psycopg2.connect(
         host=secret["host"],
         port=secret.get("port", 5432),
         dbname=secret["dbname"],
         user=secret["username"],
         password=secret["password"],
     )
+    # This API is entirely read-only (see this module's own docstring) --
+    # autocommit means a bare SELECT never leaves an implicit transaction
+    # open, so there's nothing to commit/rollback and nothing sitting
+    # "idle in transaction" on this connection between requests for
+    # however long the Lambda container stays warm.
+    conn.autocommit = True
+    return conn
+
+
+def _fetch_secret():
+    import boto3
+
+    secret_arn = os.environ["DB_SECRET_ARN"]
+    client = boto3.client("secretsmanager")
+    return json.loads(client.get_secret_value(SecretId=secret_arn)["SecretString"])
+
+
+def get_db_connection():
+    """Returns a connection REUSED across warm Lambda invocations instead
+    of opening a fresh one (plus a Secrets Manager round trip) on every
+    single request. REAL PERFORMANCE INCIDENT: Al, "the public site is
+    pretty slow" -- root-caused to the old version of this function
+    paying a fresh TCP/TLS/Postgres-auth handshake AND a
+    secretsmanager:GetSecretValue call on every request, even on an
+    already-warm container, since nothing was ever cached across
+    invocations.
+
+    Caches both the resolved secret (host/port/dbname/user/password don't
+    change between requests -- Secrets Manager is only re-queried if a
+    connection attempt using the cached secret actually fails, covering a
+    real credential rotation) and the open connection itself at MODULE
+    level, which Lambda's execution-context reuse keeps alive across
+    invocations on the same warm container -- the standard idiom for
+    connection reuse in Lambda (no RDS Proxy in front of this database,
+    so this is the cheap alternative).
+
+    A cheap `select 1` health-checks the cached connection before
+    returning it -- `conn.closed == 0` alone only reflects whether THIS
+    process ever closed it, not whether the server or an intermediate
+    network hop dropped it (RDS failover, idle timeout, etc), so a real
+    round trip is the only reliable check. On any failure, discards the
+    cached connection and reconnects using the cached secret; if THAT
+    also fails, treats the secret itself as stale (a real rotation) and
+    re-fetches it from Secrets Manager exactly once before giving up,
+    rather than getting stuck on a dead cached secret for the rest of
+    this container's warm lifetime.
+
+    Callers should NOT call conn.close() when done -- app.py's routes no
+    longer do (see that module) -- closing would defeat the whole point
+    by forcing the next request on this same warm container to pay the
+    handshake cost again."""
+    import psycopg2
+
+    global _cached_conn, _cached_secret
+
+    if _cached_conn is not None:
+        try:
+            with _cached_conn.cursor() as cur:
+                cur.execute("select 1")
+            return _cached_conn
+        except Exception:
+            try:
+                _cached_conn.close()
+            except Exception:
+                pass
+            _cached_conn = None
+
+    if _cached_secret is None:
+        _cached_secret = _fetch_secret()
+
+    try:
+        _cached_conn = _connect_with_secret(_cached_secret)
+    except psycopg2.OperationalError:
+        # Cached secret might be stale (a real credential rotation) --
+        # force one fresh Secrets Manager read and retry once.
+        _cached_secret = _fetch_secret()
+        _cached_conn = _connect_with_secret(_cached_secret)
+
+    return _cached_conn
 
 
 # --------------------------------------------------------------------

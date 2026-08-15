@@ -3395,6 +3395,97 @@ sam build AdminApiFunction
 sam deploy
 ```
 
+### 6l.6. Public API connection reuse (real incident: "the public site is pretty slow")
+
+Al's ask, direct: "the public site is pretty slow, what is the best way to
+speed that up." Investigated a few candidate causes (image sizing, cold
+starts, DB connection handling); Al scoped the work explicitly: "lets do
+connection re use. i want to work on an image resizing and cleaning up
+of backgrounds in the future so lets table image issues for now" -- so
+this entry covers connection reuse only. Image resizing/background
+cleanup is intentionally NOT touched here.
+
+**Root cause**: `public_api/service.py`'s old `get_db_connection()` did a
+full `secretsmanager:GetSecretValue` call AND opened a brand-new
+`psycopg2.connect(...)` (fresh TCP + TLS + Postgres auth handshake) on
+*every single request* -- even on an already-warm Lambda container that
+had served the exact same connection moments earlier. `public_api` has no
+RDS Proxy in front of it, so every one of those round trips landed
+directly on the request's latency.
+
+**Fix: module-level connection caching, keyed off Lambda execution-context
+reuse.** `_cached_conn`/`_cached_secret` are now plain module-level
+globals (not function-local) in `service.py` -- AWS Lambda reuses the same
+process/module state across invocations on a warm container, so a
+connection opened on one request is still sitting there, ready to reuse,
+on the next one. `get_db_connection()`:
+1. If `_cached_conn` is set, runs a real `select 1` round trip as a
+   health check (NOT `conn.closed` -- that flag only reflects whether
+   *this process* ever closed the connection, not whether the server or
+   network silently dropped it, e.g. an RDS failover or idle timeout). If
+   the health check succeeds, the same connection object is returned --
+   no new connect, no Secrets Manager call.
+2. If the health check fails (or there's no cached connection yet), the
+   dead connection (if any) is discarded and a fresh one is opened using
+   the cached secret -- no need to assume rotation just because the
+   connection dropped.
+3. If THAT connect attempt itself raises `psycopg2.OperationalError`
+   (implying the cached secret is actually stale -- a real credential
+   rotation), the secret is re-fetched from Secrets Manager exactly once
+   and the connect is retried.
+
+`conn.autocommit = True` is set on every new connection -- deliberate,
+since this API is entirely read-only (see `public_api/service.py`'s own
+module docstring on the "no auth, hard-scoped to published=true" design).
+Without autocommit, a reused connection would otherwise accumulate an
+"idle in transaction" session between requests for however long the
+Lambda container stays warm.
+
+`public_api/app.py`'s 6 routes (`/brands`, `/products`, `/products/
+plotter`, `/products/compare`, `/products/{product_id}`, `/products/
+{product_id}/similar`) each had their `try: ...; finally: conn.close()`
+wrapping removed -- closing the connection after every request would
+defeat the whole point of caching it. A comment on the first route points
+back to `get_db_connection`'s docstring for the reasoning, so a future
+reader doesn't "fix" the missing `finally` back in.
+
+**Real test-authoring gotcha hit and fixed along the way**: the new tests
+in `test_public_api_service.py` initially used generically-named fixture
+classes (`_FakeCursor`, `_FakeConn`, etc.) that collided with a
+DIFFERENT, unrelated `_FakeCursor` class already defined later in the
+same file (for the `get_product`/`list_products` fixtures). Python
+resolves a class name via the module's global namespace at CALL time, not
+at `class` statement time -- so by the time any test actually ran (after
+the whole file had finished executing top to bottom), `_FakeConn.cursor()`
+was silently returning an instance of the OTHER, later-defined
+`_FakeCursor`, whose query dispatcher doesn't recognize `"select 1"` and
+raises `NotImplementedError` -- which `get_db_connection`'s health check
+correctly treats as "connection is dead," forcing a real reconnect on
+literally every call. `conn1 is conn2 is conn3` failed even though the
+production code was already correct; a standalone minimal reproduction
+(hand-copied fixtures, run outside the test file) confirmed the real
+implementation caches correctly. Fixed by renaming every fixture in that
+test block to a unique `_ConnCache*` prefix
+(`_ConnCacheFakeCursor`/`_ConnCacheFakeConn`/`_ConnCacheFakePsycopg2`/
+`_ConnCacheFakeSecretsManagerClient`/`_ConnCacheFakeBoto3`/
+`_install_conn_cache_fakes`/`_reset_conn_cache`) so it can never again
+collide with a same-named fixture anywhere else in this file.
+
+Tests: `test_public_api_service.py` 58/58 passing (5 new: opens-once-
+reuses-across-calls, sets-autocommit-true, reconnects-when-dead,
+refetches-secret-when-stale, chains-both-failure-modes). Same
+`sys.modules["boto3"]`-injection technique `test_admin_api_service.py`
+already uses for `boto3`, extended here to fake-inject `psycopg2` too
+(no prior precedent in this codebase for faking `psycopg2` itself, since
+every OTHER test file in this project monkeypatches `get_db_connection`
+away entirely rather than testing its real internals).
+
+No migration, no `template.yaml` change -- redeploy just the one function:
+```bash
+sam build PublicApiFunction
+sam deploy
+```
+
 ### 6m. Ball motion plotter (consumer site, standalone page)
 
 Al shared an existing interactive plotter he'd built in another Cowork

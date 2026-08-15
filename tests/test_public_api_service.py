@@ -11,12 +11,234 @@ get_product/get_products_compare/list_similar_products against a small
 hand-built fake psycopg2-shaped cursor/connection (no real Postgres
 available in this sandbox, same limitation noted throughout this project).
 """
+import json
 import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src", "public_api"))
 
 import service  # noqa: E402
+
+
+# --- get_db_connection: module-level connection reuse across warm Lambda
+# invocations -- REAL PERFORMANCE INCIDENT, Al: "the public site is
+# pretty slow", root-caused to the old version paying a fresh TCP/TLS/
+# Postgres-auth handshake AND a secretsmanager:GetSecretValue call on
+# EVERY request, even on an already-warm container. Exercised against
+# fake boto3/psycopg2 modules injected via sys.modules (same technique
+# test_admin_api_service.py already uses for boto3 -- see its own
+# _FakeBoto3 usages), since neither is installed in this sandbox. Every
+# test resets service._cached_conn/_cached_secret to None first (module-
+# level state persists across tests otherwise) and restores the real
+# sys.modules entries in a finally block.
+
+class _ConnCacheFakeCursor:
+    # NOTE: deliberately NOT named _FakeCursor -- this file already
+    # defines a different _FakeCursor later on (the get_product/
+    # list_products fixture) with a totally different constructor/query
+    # shape. Class names in a module are resolved at CALL time via the
+    # module's global namespace, not at def time, so _FakeConn.cursor()
+    # below was silently picking up that OTHER, later-defined _FakeCursor
+    # once the whole file had finished executing -- its query dispatcher
+    # doesn't recognize "select 1" and raises NotImplementedError, which
+    # get_db_connection's health check swallows as "connection is dead",
+    # forcing a real reconnect on every single call. That's why
+    # conn1 is conn2 is conn3 failed even though the production code was
+    # already correct. Every fixture in this block is prefixed
+    # _ConnCache* for the same reason -- to never again collide with a
+    # same-named fixture anywhere else in this file.
+    def __init__(self, conn):
+        self.conn = conn
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, query, params=None):
+        if self.conn.broken:
+            raise RuntimeError("simulated dropped connection")
+
+
+class _ConnCacheFakeConn:
+    def __init__(self, host, broken=False):
+        self.host = host
+        self.broken = broken
+        self.closed_flag = 0
+        self.autocommit = False
+
+    def cursor(self):
+        return _ConnCacheFakeCursor(self)
+
+    def close(self):
+        self.closed_flag = 1
+
+
+class _ConnCacheFakePsycopg2:
+    class OperationalError(Exception):
+        pass
+
+    def __init__(self, fail_hosts=None):
+        self.fail_hosts = fail_hosts or set()
+        self.connect_calls = []
+
+    def connect(self, host, port, dbname, user, password):
+        self.connect_calls.append(host)
+        if host in self.fail_hosts:
+            raise self.OperationalError(f"could not connect to {host}")
+        return _ConnCacheFakeConn(host)
+
+
+class _ConnCacheFakeSecretsManagerClient:
+    def __init__(self, secrets_by_call):
+        # list of secret dicts returned in order, one per get_secret_value
+        # call -- lets a test simulate a credential rotation (second call
+        # returns different values than the first).
+        self.secrets_by_call = list(secrets_by_call)
+        self.calls = 0
+
+    def get_secret_value(self, SecretId):
+        secret = self.secrets_by_call[min(self.calls, len(self.secrets_by_call) - 1)]
+        self.calls += 1
+        return {"SecretString": json.dumps(secret)}
+
+
+class _ConnCacheFakeBoto3:
+    def __init__(self, secretsmanager_client):
+        self._client = secretsmanager_client
+
+    def client(self, name):
+        assert name == "secretsmanager"
+        return self._client
+
+
+def _install_conn_cache_fakes(fake_boto3, fake_psycopg2):
+    real_boto3 = sys.modules.get("boto3")
+    real_psycopg2 = sys.modules.get("psycopg2")
+    sys.modules["boto3"] = fake_boto3
+    sys.modules["psycopg2"] = fake_psycopg2
+    os.environ["DB_SECRET_ARN"] = "arn:aws:secretsmanager:us-west-1:000000000000:secret:fake"
+
+    def _restore():
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+        if real_psycopg2 is not None:
+            sys.modules["psycopg2"] = real_psycopg2
+        else:
+            del sys.modules["psycopg2"]
+        del os.environ["DB_SECRET_ARN"]
+
+    return _restore
+
+
+def _reset_conn_cache():
+    service._cached_conn = None
+    service._cached_secret = None
+
+
+def test_get_db_connection_opens_once_then_reuses_across_calls():
+    _reset_conn_cache()
+    secret = {"host": "db.example.internal", "dbname": "bowling", "username": "app", "password": "pw"}
+    fake_psycopg2 = _ConnCacheFakePsycopg2()
+    fake_client = _ConnCacheFakeSecretsManagerClient([secret])
+    restore = _install_conn_cache_fakes(_ConnCacheFakeBoto3(fake_client), fake_psycopg2)
+    try:
+        conn1 = service.get_db_connection()
+        conn2 = service.get_db_connection()
+        conn3 = service.get_db_connection()
+
+        assert conn1 is conn2 is conn3
+        assert len(fake_psycopg2.connect_calls) == 1  # only ONE real connect
+        assert fake_client.calls == 1  # only ONE Secrets Manager round trip
+    finally:
+        restore()
+        _reset_conn_cache()
+
+
+def test_get_db_connection_sets_autocommit_true():
+    # This API is entirely read-only -- see get_db_connection's own
+    # docstring for why a dangling "idle in transaction" session must
+    # never accumulate on a reused connection.
+    _reset_conn_cache()
+    secret = {"host": "db.example.internal", "dbname": "bowling", "username": "app", "password": "pw"}
+    restore = _install_conn_cache_fakes(_ConnCacheFakeBoto3(_ConnCacheFakeSecretsManagerClient([secret])), _ConnCacheFakePsycopg2())
+    try:
+        conn = service.get_db_connection()
+        assert conn.autocommit is True
+    finally:
+        restore()
+        _reset_conn_cache()
+
+
+def test_get_db_connection_reconnects_when_cached_connection_is_dead():
+    _reset_conn_cache()
+    secret = {"host": "db.example.internal", "dbname": "bowling", "username": "app", "password": "pw"}
+    fake_psycopg2 = _ConnCacheFakePsycopg2()
+    fake_client = _ConnCacheFakeSecretsManagerClient([secret])
+    restore = _install_conn_cache_fakes(_ConnCacheFakeBoto3(fake_client), fake_psycopg2)
+    try:
+        conn1 = service.get_db_connection()
+        conn1.broken = True  # simulate the server/network dropping it silently
+
+        conn2 = service.get_db_connection()
+
+        assert conn2 is not conn1
+        assert len(fake_psycopg2.connect_calls) == 2  # health check failed -- real reconnect
+        # The cached SECRET is still reused, no reason to assume rotation
+        # just because the connection dropped.
+        assert fake_client.calls == 1
+    finally:
+        restore()
+        _reset_conn_cache()
+
+
+def test_get_db_connection_refetches_secret_when_cached_one_is_stale():
+    # Simulates a real credential rotation: the cached secret's password
+    # no longer works, so connecting with it raises OperationalError --
+    # must re-fetch from Secrets Manager and retry once, not just fail.
+    _reset_conn_cache()
+    old_secret = {"host": "old.example.internal", "dbname": "bowling", "username": "app", "password": "stale"}
+    new_secret = {"host": "new.example.internal", "dbname": "bowling", "username": "app", "password": "fresh"}
+    fake_psycopg2 = _ConnCacheFakePsycopg2(fail_hosts={"old.example.internal"})
+    fake_client = _ConnCacheFakeSecretsManagerClient([old_secret, new_secret])
+    restore = _install_conn_cache_fakes(_ConnCacheFakeBoto3(fake_client), fake_psycopg2)
+    try:
+        conn = service.get_db_connection()
+
+        assert conn.host == "new.example.internal"
+        assert fake_client.calls == 2  # first (stale) + forced re-fetch
+        assert fake_psycopg2.connect_calls == ["old.example.internal", "new.example.internal"]
+    finally:
+        restore()
+        _reset_conn_cache()
+
+
+def test_get_db_connection_health_check_failure_also_falls_back_to_secret_refetch():
+    # Chains both failure modes: cached connection is dead AND the cached
+    # secret it would reconnect with has also gone stale in the meantime.
+    _reset_conn_cache()
+    old_secret = {"host": "old.example.internal", "dbname": "bowling", "username": "app", "password": "stale"}
+    new_secret = {"host": "new.example.internal", "dbname": "bowling", "username": "app", "password": "fresh"}
+    fake_psycopg2 = _ConnCacheFakePsycopg2(fail_hosts={"old.example.internal"})
+    fake_client = _ConnCacheFakeSecretsManagerClient([old_secret, new_secret])
+    restore = _install_conn_cache_fakes(_ConnCacheFakeBoto3(fake_client), fake_psycopg2)
+    try:
+        conn1 = service.get_db_connection()  # succeeds on first secret
+    finally:
+        pass
+    # Force the fake to start failing THIS host too (simulating the
+    # credential being rotated out from under an already-open connection).
+    fake_psycopg2.fail_hosts.add("old.example.internal")
+    conn1.broken = True
+    try:
+        conn2 = service.get_db_connection()
+        assert conn2.host == "new.example.internal"
+    finally:
+        restore()
+        _reset_conn_cache()
 
 
 # --- score_similarity / _reference_sku: pure, no DB ---

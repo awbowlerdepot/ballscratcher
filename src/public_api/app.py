@@ -34,11 +34,12 @@ def health():
 
 @app.get("/brands")
 def get_brands():
+    # No try/finally conn.close() here (or on any route below) -- see
+    # service.get_db_connection's own docstring. This connection is
+    # reused across warm Lambda invocations; closing it after every
+    # request would defeat that entirely.
     conn = service.get_db_connection()
-    try:
-        return {"items": service.list_brands(conn)}
-    finally:
-        conn.close()
+    return {"items": service.list_brands(conn)}
 
 
 @app.get("/products")
@@ -53,14 +54,11 @@ def get_products(
     offset: int = Query(0, ge=0),
 ):
     conn = service.get_db_connection()
-    try:
-        return {"items": service.list_products(
-            conn, status=status, brand_id=brand_id, core_id=core_id,
-            coverstock_id=coverstock_id, search=search, sort=sort,
-            limit=limit, offset=offset,
-        )}
-    finally:
-        conn.close()
+    return {"items": service.list_products(
+        conn, status=status, brand_id=brand_id, core_id=core_id,
+        coverstock_id=coverstock_id, search=search, sort=sort,
+        limit=limit, offset=offset,
+    )}
 
 
 @app.get("/products/plotter")
@@ -71,11 +69,8 @@ def get_products_plotter(
     # Same literal-path-before-{product_id}-param ordering reasoning as
     # /products/compare below.
     conn = service.get_db_connection()
-    try:
-        id_list = [i.strip() for i in ids.split(",") if i.strip()] if ids else None
-        return {"items": service.list_plotter_positions(conn, status=status, ids=id_list)}
-    finally:
-        conn.close()
+    id_list = [i.strip() for i in ids.split(",") if i.strip()] if ids else None
+    return {"items": service.list_plotter_positions(conn, status=status, ids=id_list)}
 
 
 @app.get("/products/compare")
@@ -89,34 +84,25 @@ def get_products_compare(ids: str = Query(..., description="Comma-separated prod
     if not product_ids:
         raise HTTPException(status_code=422, detail="ids must contain at least one product id")
     conn = service.get_db_connection()
-    try:
-        return {"items": service.get_products_compare(conn, product_ids)}
-    finally:
-        conn.close()
+    return {"items": service.get_products_compare(conn, product_ids)}
 
 
 @app.get("/products/{product_id}")
 def get_product(product_id: str):
     conn = service.get_db_connection()
-    try:
-        product = service.get_product(conn, product_id)
-        if product is None:
-            # Deliberately identical 404 whether the id doesn't exist or
-            # exists but isn't published -- see service.get_product's
-            # docstring for why that distinction must not leak here.
-            raise HTTPException(status_code=404, detail="Product not found")
-        return product
-    finally:
-        conn.close()
+    product = service.get_product(conn, product_id)
+    if product is None:
+        # Deliberately identical 404 whether the id doesn't exist or
+        # exists but isn't published -- see service.get_product's
+        # docstring for why that distinction must not leak here.
+        raise HTTPException(status_code=404, detail="Product not found")
+    return product
 
 
 @app.get("/products/{product_id}/similar")
 def get_similar_products(product_id: str, limit: int = Query(5, le=20)):
     conn = service.get_db_connection()
-    try:
-        return {"items": service.list_similar_products(conn, product_id, limit=limit)}
-    finally:
-        conn.close()
+    return {"items": service.list_similar_products(conn, product_id, limit=limit)}
 
 
 handler = Mangum(app)
