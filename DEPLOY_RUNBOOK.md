@@ -4422,6 +4422,26 @@ not a metered API like YouTube's).
    and again after the first price check shows a run of `error` rows in
    a product's Price Tracking section.
 
+   **Test a site's selectors before saving them**, Al: "how do i test
+   just that" (a new site's config, in isolation, without going through
+   the DB/admin API at all). `scripts/test_price_site.py` -- edit the
+   `SEARCH_URL_TEMPLATE`/`RESULT_LINK_SELECTOR`/`PRICE_CSS_SELECTOR`/
+   `QUERY` constants at the top for the site you're setting up, then:
+   ```bash
+   pip3 install -r scripts/requirements.txt
+   python3 scripts/test_price_site.py
+   ```
+   Runs the exact same selector logic as `search_site_for_product`/
+   `extract_price` in `src/price_checker/app.py` (copied in rather than
+   imported so this has zero AWS/DB/repo-layout dependencies -- just
+   `requests`+`beautifulsoup4`, run from anywhere), against the real site
+   directly. Prints the first search result it finds and the price it
+   extracted from that product page, ending in `PASS: found $X.XX on
+   <url>` or a `FAILED` line naming which selector didn't work. This is
+   the one-product-in-isolation check; "Find price sources" below is the
+   real discovery job and checks EVERY active site for that product, not
+   just the one you just added.
+
 2. **Trigger discovery for one product.** Open any product's detail view
    (Products tab -> click a row) and click "Find price sources" in its
    new Price Tracking section. This invokes `PriceCheckerFunction`
