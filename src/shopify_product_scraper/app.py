@@ -680,27 +680,27 @@ def get_or_create_coverstock_id(conn, brand_id: str, coverstock_name, material=N
 
 OIL_BASE_BY_MATERIAL = {
     "polyester_plastic": 2,
-    "urethane": 5,
+    "urethane": 6,
     "reactive_resin": 10,
 }
 OIL_ADJUST_BY_TYPE = {
     "pearl": -3,
     "hybrid": 0,
-    "solid": 3,
+    "solid": 0,
 }
 OIL_PARTICLE_BONUS = 2
 
 MOTION_BASE_BY_CORE_TYPE = {
-    "symmetric": 7,
-    "asymmetric": 12,
+    "symmetric": 4,
+    "asymmetric": 8,
 }
-MOTION_BASE_UNKNOWN_CORE = 9
+MOTION_BASE_UNKNOWN_CORE = 6
 MOTION_DIFF_MIDPOINT = 0.02
 MOTION_DIFF_SCALE = 0.045
-MOTION_DIFF_WEIGHT = 6
+MOTION_DIFF_WEIGHT = 8
 MOTION_ADJUST_BY_COVERSTOCK_TYPE = {
-    "pearl": 1,
-    "solid": -1,
+    "pearl": 2,
+    "solid": 1,
     "hybrid": 0,
 }
 

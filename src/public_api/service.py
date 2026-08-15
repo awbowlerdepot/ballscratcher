@@ -707,12 +707,23 @@ def list_similar_products(conn, product_id: str, limit: int = 5) -> list:
 # module's own header comment for the full backstory)
 # --------------------------------------------------------------------
 
-# estimate_oil_motion is a documented, ROUND, starting-point heuristic,
-# same spirit and same caveat as RG_RANGE/DIFF_RANGE above -- not fit
-# against any real "where would Brunswick actually place this ball"
-# data (there is none for the ~85%+ of the catalog their own chart
-# doesn't cover), built from general, common bowling-industry domain
-# knowledge about what drives each axis:
+# estimate_oil_motion is a documented heuristic -- same spirit and same
+# caveat as RG_RANGE/DIFF_RANGE above, still a small linear model over
+# core/coverstock features, NOT a real physics simulation. It STARTED as
+# pure general bowling-industry domain knowledge (see the original
+# reasoning paragraphs below, kept for context), but as of 2026-08-14 its
+# constants are REFIT against real data: Al's own reported experience
+# ("i feel like it is way off for most balls") plus the 2026-08-12
+# spot-check (see DEPLOY_RUNBOOK.md 6m) showed the original domain-
+# knowledge-only constants had real, systematic misses -- confirmed once
+# scripts/dump_plotter_estimate_training_data.py pulled the real (core/
+# coverstock inputs -> actual chart oil/motion) pairs for all 40 products
+# that were, at the time, matched onto a real Brunswick chart position
+# (oil_motion_source='chart').
+#
+# Original domain-knowledge reasoning (still directionally true, still
+# why each axis uses the inputs it does -- only the exact numbers below
+# changed):
 #
 #   oil (1 light -> 16 heavy) is primarily a COVERSTOCK friction/traction
 #   question -- higher-friction covers hook earlier and need more oil on
@@ -726,39 +737,92 @@ def list_similar_products(conn, product_id: str, limit: int = 5) -> list:
 #   asymmetric cores create a sharper, more defined direction change than
 #   symmetric ones, and that effect scales with differential (more flare
 #   potential = more angular). Coverstock type gets a smaller secondary
-#   nudge in the opposite direction from what oil-traction intuition
-#   might suggest: a solid cover reads EARLIER and arcs more smoothly
-#   overall, while a pearl skids further before breaking sharply at the
-#   end -- pearls tend to look more angular on a motion chart even though
-#   they're lower-traction, not more.
+#   nudge.
 #
-# Revisit this whole function once Al's own plotter data (or some other
-# real reference) can be used to validate or replace it -- see this
-# module's docstring for the same point made about the similarity scorer.
+# WHAT THE REAL DATA ACTUALLY SHOWED (40 chart-matched products,
+# 2026-08-14 refit -- see scripts/dump_plotter_estimate_training_data.py
+# and its own module docstring for how this was pulled):
+#
+#   The single biggest miss, by far: OIL_ADJUST_BY_TYPE's old flat "+3"
+#   for a solid coverstock. Real reactive-resin/solid balls (n=16, the
+#   single largest group in the data) average oil=10.0 -- essentially
+#   IDENTICAL to reactive-resin/hybrid's own real average (9.4), not 3
+#   points heavier. The old +3 overshot this whole class hard (e.g.
+#   Revenge Solid: real oil 3, old estimate 13) -- exactly the pattern
+#   DEPLOY_RUNBOOK.md's 2026-08-12 spot-check flagged. Fixed by dropping
+#   solid's oil adjustment to 0 (same as hybrid). Note this group is also
+#   the model's biggest remaining known weakness: real oil for reactive-
+#   resin/solid balls genuinely ranges from 3 (Revenge Solid) to 16 (Zero
+#   Mercy Solid) even holding material+type fixed -- a real, wide spread
+#   this 2-input model structurally can't capture. Worth a future revisit
+#   with a more granular input (e.g. which core LINE a ball belongs to)
+#   once that's available as structured data, not just a bigger version
+#   of this same formula.
+#
+#   Urethane's oil base nudged 5 -> 6 (real urethane balls average 6.0
+#   across the 5 samples available -- still a small sample, still worth
+#   more data over time).
+#
+#   Motion's real numbers ran higher across the board than the original
+#   guesses at every core-type base AND needed a stronger differential
+#   weight to match -- refit via ordinary least squares against all 40
+#   points (course inputs: core_type dummy, coverstock_type dummy,
+#   differential). One genuine surprise vs. the original hand-written
+#   reasoning: real solid-coverstock balls trend slightly MORE angular
+#   than hybrid, not less (the old "-1" was backwards; real data wants
+#   roughly "+1") -- pearl's real "more angular than hybrid" direction
+#   held up (old +1 was directionally right, just too small).
+#
+#   OIL_PARTICLE_BONUS and OIL_BASE_BY_MATERIAL["polyester_plastic"]
+#   could NOT be refit -- zero has_particle=true or polyester_plastic
+#   products exist in this 40-product real-chart dataset, so both are
+#   still the original, untested domain-knowledge guesses.
+#
+#   Measured accuracy, old vs. new formula, both scored against the same
+#   40 real chart positions: oil mean absolute error 3.05 -> 2.675 (on
+#   the 1-16 scale), exact matches 4/40 -> 4/40 (unchanged), within +/-2
+#   18/40 -> 18/40 (unchanged, oil's real spread inside the solid group
+#   above is the limiting factor, not the constants); motion mean
+#   absolute error 2.75 -> 2.5 (on the 1-18 scale), exact matches 3/40 ->
+#   6/40, within +/-2 22/40 -> 24/40. A real, modest, net improvement
+#   across the board (no metric regressed) -- not a dramatic fix, because
+#   real ball motion depends on more than these few inputs, but a
+#   genuine step up validated against real answers instead of guessed a
+#   second time.
+#
+# scripts/reestimate_plotter_positions.py (+ admin_api.reestimate_
+# plotter_positions) re-runs THIS formula against every product still
+# marked oil_motion_source='estimated' so products estimated under the
+# OLD constants actually get the fix, not just new ones.
+#
+# Revisit again once more real chart/reference data exists -- especially
+# the reactive-resin/solid spread flagged above, and OIL_PARTICLE_BONUS/
+# polyester_plastic once a real particle or plastic-cover chart match
+# shows up.
 
 OIL_BASE_BY_MATERIAL = {
-    "polyester_plastic": 2,
-    "urethane": 5,
+    "polyester_plastic": 2,   # unchanged -- no real polyester_plastic samples to refit against
+    "urethane": 6,
     "reactive_resin": 10,
 }
 OIL_ADJUST_BY_TYPE = {
-    "pearl": -3,
+    "pearl": -3,   # unchanged -- matched real data closely already
     "hybrid": 0,
-    "solid": 3,
+    "solid": 0,    # was +3 -- the single biggest fix, see comment above
 }
-OIL_PARTICLE_BONUS = 2
+OIL_PARTICLE_BONUS = 2  # unchanged -- no real has_particle=true samples to refit against
 
 MOTION_BASE_BY_CORE_TYPE = {
-    "symmetric": 7,
-    "asymmetric": 12,
+    "symmetric": 4,
+    "asymmetric": 8,
 }
-MOTION_BASE_UNKNOWN_CORE = 9  # neutral default when core_type is unset
-MOTION_DIFF_MIDPOINT = 0.02   # roughly the low end of a typical differential range
-MOTION_DIFF_SCALE = 0.045     # roughly the typical differential range's span
-MOTION_DIFF_WEIGHT = 6        # how many motion points a full-range differential swing is worth
+MOTION_BASE_UNKNOWN_CORE = 6  # default when core_type is unset
+MOTION_DIFF_MIDPOINT = 0.02   # unchanged -- still roughly the low end of a typical differential range
+MOTION_DIFF_SCALE = 0.045     # unchanged -- still roughly the typical differential range's span
+MOTION_DIFF_WEIGHT = 8        # how many motion points a full-range differential swing is worth
 MOTION_ADJUST_BY_COVERSTOCK_TYPE = {
-    "pearl": 1,
-    "solid": -1,
+    "pearl": 2,
+    "solid": 1,    # was -1 -- real data runs the opposite direction from the original guess, see comment above
     "hybrid": 0,
 }
 

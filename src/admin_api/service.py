@@ -1090,32 +1090,36 @@ def update_product_image(conn, product_id: str, image_id: str, is_visible: bool 
 # plotter page and an admin's backfill run should never disagree about
 # what a given core/coverstock combination estimates to. See public_api/
 # service.py's module-level comment above its own estimate_oil_motion
-# for the full reasoning behind every constant below.
+# for the full reasoning behind every constant below, INCLUDING the
+# 2026-08-14 refit against 40 real chart-matched products (Al: "i feel
+# like it is way off for most balls") -- that comment has the full
+# before/after accuracy numbers and per-constant reasoning; this copy
+# only carries the resulting values.
 # --------------------------------------------------------------------
 
 OIL_BASE_BY_MATERIAL = {
     "polyester_plastic": 2,
-    "urethane": 5,
+    "urethane": 6,
     "reactive_resin": 10,
 }
 OIL_ADJUST_BY_TYPE = {
     "pearl": -3,
     "hybrid": 0,
-    "solid": 3,
+    "solid": 0,
 }
 OIL_PARTICLE_BONUS = 2
 
 MOTION_BASE_BY_CORE_TYPE = {
-    "symmetric": 7,
-    "asymmetric": 12,
+    "symmetric": 4,
+    "asymmetric": 8,
 }
-MOTION_BASE_UNKNOWN_CORE = 9
+MOTION_BASE_UNKNOWN_CORE = 6
 MOTION_DIFF_MIDPOINT = 0.02
 MOTION_DIFF_SCALE = 0.045
-MOTION_DIFF_WEIGHT = 6
+MOTION_DIFF_WEIGHT = 8
 MOTION_ADJUST_BY_COVERSTOCK_TYPE = {
-    "pearl": 1,
-    "solid": -1,
+    "pearl": 2,
+    "solid": 1,
     "hybrid": 0,
 }
 

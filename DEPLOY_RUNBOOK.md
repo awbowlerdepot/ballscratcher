@@ -3732,15 +3732,60 @@ export ADMIN_API_TOKEN="<the same bearer token used elsewhere>"
 export PUBLIC_API_URL="https://<your-public-api-id>.execute-api.us-west-1.amazonaws.com"
 python3 scripts/dump_plotter_estimate_training_data.py --out /tmp/plotter_training_data.jsonl
 ```
-Once that real (inputs -> actual oil/motion) data is in hand,
+**Refit completed 2026-08-14.** Al ran the script above and shared
+`plotter_training_data.jsonl` -- 40 products with a real chart position
+at the time (up from the 32 the 2026-08-12 spot-check covered by hand,
+since this run covers both `status=current` and `status=retired`).
 `estimate_oil_motion`'s constants (`OIL_BASE_BY_MATERIAL`/
-`OIL_ADJUST_BY_TYPE`/`OIL_PARTICLE_BONUS`/`MOTION_*`, both copies --
-`public_api/service.py` and `admin_api/service.py` -- plus all five
-scraper duplicates) get refit to minimize error against it, replacing
-the original hand-tuned-from-domain-knowledge-only constants. **Not yet
-done as of this writing** -- pending Al running the script above and
-sharing its output; see this file's own accuracy numbers above for the
-baseline being improved on.
+`OIL_ADJUST_BY_TYPE`/`MOTION_*`, all 7 copies -- `public_api/service.py`,
+`admin_api/service.py`, and all five scraper duplicates) were refit
+against that real data via ordinary least squares (see `public_api/
+service.py`'s module comment directly above `estimate_oil_motion` for
+the full per-constant reasoning -- this paragraph only summarizes).
+
+The single biggest, best-supported fix: `OIL_ADJUST_BY_TYPE["solid"]`
+was a flat `+3` that overshot hard for the whole reactive-resin/solid
+class (n=16, the largest group in the data) -- real average oil for that
+group is 10.0, essentially identical to reactive-resin/hybrid's own real
+average (9.4), not 3 points heavier. Dropped to `0`. `OIL_BASE_BY_
+MATERIAL["urethane"]` nudged `5 -> 6` (small sample, n=5, still an
+improvement). `OIL_ADJUST_BY_TYPE["pearl"]` (`-3`) and `OIL_BASE_BY_
+MATERIAL["reactive_resin"]` (`10`) were left unchanged -- already close
+to real data. `OIL_PARTICLE_BONUS` and `OIL_BASE_BY_MATERIAL[
+"polyester_plastic"]` are UNCHANGED and still unverified -- zero real
+`has_particle=true` or `polyester_plastic` samples exist in this
+40-product dataset.
+
+Motion's constants moved further: `MOTION_BASE_BY_CORE_TYPE` `{symmetric:
+7, asymmetric: 12}` -> `{symmetric: 4, asymmetric: 8}`, `MOTION_BASE_
+UNKNOWN_CORE` `9 -> 6`, `MOTION_DIFF_WEIGHT` `6 -> 8` (`MOTION_DIFF_
+MIDPOINT`/`MOTION_DIFF_SCALE` unchanged), `MOTION_ADJUST_BY_COVERSTOCK_
+TYPE["solid"]` `-1 -> +1` and `["pearl"]` `+1 -> +2`. One genuine
+surprise: the original domain-knowledge reasoning had solid coverstocks
+reading LESS angular than hybrid -- real data says the opposite (real
+solid balls trend slightly MORE angular). Flagged, not silently
+overridden -- see the code comment.
+
+Measured accuracy, old vs. new, both scored against the same 40 real
+chart positions: oil mean absolute error **3.05 -> 2.675** (1-16 scale),
+exact matches 4/40 -> 4/40 (unchanged), within +/-2 18/40 -> 18/40
+(unchanged); motion mean absolute error **2.75 -> 2.5** (1-18 scale),
+exact matches 3/40 -> 6/40, within +/-2 22/40 -> 24/40. A real, modest,
+net improvement -- no metric regressed -- not a dramatic fix, since real
+motion clearly depends on more than these few inputs (the reactive-
+resin/solid group alone spans real oil values from 3 to 16 even holding
+material+type fixed -- Revenge Solid vs. Zero Mercy Solid -- a spread
+this 2-input model can't capture no matter how it's tuned). Flagged in
+code for a future revisit once more granular input (e.g. per-core-line
+data) is available.
+
+`test_admin_api_service.py`'s `test_estimate_oil_motion_matches_public_
+api_shape` and `test_reestimate_plotter_positions_overwrites_estimated_
+only` both updated to the new formula's output for the same inputs
+(`{"oil": 10, "motion": 15}`, was `{"oil": 13, "motion": 16}`). Full
+suite re-run clean (1011 tests across every manual-runner file, 0
+failures -- the only non-passing files are the 2 pre-existing, unrelated
+pytest-only files this project's sweeps have flagged all along).
 
 **New: `POST /admin/reestimate-plotter-positions`**
 (`admin_api.reestimate_plotter_positions`) -- the reason a formula fix
@@ -3783,6 +3828,25 @@ Tests: `tests/test_admin_api_service.py` gained
 total). `tests/test_dump_plotter_estimate_training_data.py` (11/11) and
 `tests/test_reestimate_plotter_positions.py` (6/6) are new files, same
 manual-runner pattern as every other script's tests in this project.
+
+**Deploy order for this fix:**
+```bash
+sam build PublicApiFunction
+sam build AdminApiFunction
+sam build BrunswickProductScraperFunction   # + each other scraper function
+                                             # (commercebuild/woocommerce/
+                                             # netsuite/shopify) -- all 7
+                                             # copies of estimate_oil_motion
+                                             # changed together
+sam deploy
+```
+Then run the re-estimate backfill ONCE to fix everything already in the
+catalog under the old constants:
+```bash
+export ADMIN_API_URL="https://<your-admin-api-id>.execute-api.us-west-1.amazonaws.com"
+export ADMIN_API_TOKEN="<the same bearer token used elsewhere>"
+python3 scripts/reestimate_plotter_positions.py
+```
 
 ### 6n. Consumer site (React SPA)
 

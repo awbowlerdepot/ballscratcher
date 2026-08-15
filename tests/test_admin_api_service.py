@@ -2768,11 +2768,15 @@ def test_set_plotter_position_missing_product_raises():
 # exhaustive sweep (that already lives in test_public_api_service.py).
 
 def test_estimate_oil_motion_matches_public_api_shape():
+    # oil: reactive_resin base 10 + solid adjust 0 (2026-08-14 refit, see
+    # public_api/service.py's module comment above its own estimate_
+    # oil_motion) = 10. motion: asymmetric base 8 + ((0.055-0.02)/0.045)*8
+    # ~= 6.22 + solid adjust 1 = 15.22 -> round -> 15.
     result = service.estimate_oil_motion(
         core_type="asymmetric", coverstock_type="solid",
         coverstock_material="reactive_resin", has_particle=False, differential=0.055,
     )
-    assert result == {"oil": 13, "motion": 16}
+    assert result == {"oil": 10, "motion": 15}
 
 
 def test_reference_sku_prefers_15lb():
@@ -2863,6 +2867,10 @@ def test_reestimate_plotter_positions_overwrites_estimated_only():
     db = {
         "products": {
             "prod-1": {
+                # Seeded with a STALE estimate (as if written by the pre-
+                # refit formula) -- the whole point of this test is
+                # confirming reestimate_plotter_positions overwrites it
+                # with whatever the CURRENT estimate_oil_motion computes.
                 "id": "prod-1", "oil_rating": 13, "motion_rating": 16, "oil_motion_source": "estimated",
                 "core_type": "asymmetric", "coverstock_type": "solid",
                 "coverstock_material": "reactive_resin", "has_particle": False,
@@ -2887,10 +2895,11 @@ def test_reestimate_plotter_positions_overwrites_estimated_only():
     result = service.reestimate_plotter_positions(conn)
 
     assert result == {"products_estimated": 1, "products_updated": 1}
-    # prod-1 (the only 'estimated' row) got recomputed -- same inputs as
-    # test_estimate_oil_motion_matches_public_api_shape above.
-    assert db["products"]["prod-1"]["oil_rating"] == 13
-    assert db["products"]["prod-1"]["motion_rating"] == 16
+    # prod-1 (the only 'estimated' row) got recomputed with the CURRENT
+    # formula -- same inputs as test_estimate_oil_motion_matches_public_
+    # api_shape above (oil=10, motion=15), NOT the stale seeded 13/16.
+    assert db["products"]["prod-1"]["oil_rating"] == 10
+    assert db["products"]["prod-1"]["motion_rating"] == 15
     assert db["products"]["prod-1"]["oil_motion_source"] == "estimated"  # unchanged
     # chart and manual positions are completely untouched.
     assert db["products"]["prod-2"] == {
