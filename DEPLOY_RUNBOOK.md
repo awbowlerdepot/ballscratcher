@@ -2892,6 +2892,62 @@ sam deploy
 ```
 and swap the static `admin-site/index.html` file as usual.
 
+### 6i.7. Product detail panel: sub-tabs (decluttering)
+
+Al: "the admin product details are getting a bit cluttered can we clean
+that up and maybe put the different sections in tabs." Fair -- the panel
+(`loadProductDetailInto`) had grown to nine stacked sections in one long
+scroll as feature after feature landed on it: images, core (+rescrape),
+description, video candidates (+bulk toolbar), video review rollup,
+price tracking (its own big section: buttons/table/SVG chart/manual-add
+form), SKUs, SKU stock (table + SVG chart), and the raw-fields
+`<details>` escape hatch.
+
+Grouped into five tabs, roughly by "what are you here to do":
+- **Overview** -- images, core (+ rescrape), description. What the ball
+  IS.
+- **Videos** (label shows a live count) -- candidates + bulk toolbar +
+  the rollup they feed. Everything about video review in one place.
+- **Pricing** (label shows a live count) -- the price tracking section,
+  unchanged internally, just moved.
+- **SKUs & Stock** (label shows a live count) -- specs table + SKU stock
+  table/chart.
+- **Raw Data** -- the existing all-columns `<details>` escape hatch,
+  unchanged, now also behind a tab click (a deliberate SECOND click to
+  reach it, same "don't show this by default" intent it already had).
+
+**Deliberately a separate mechanism from the top-level nav's `showTab`/
+`.tab`/`#tabs`, not a reuse.** The top-level nav only ever has ONE tab
+panel visible at a time, backed by a single global `activeTab`. This
+panel is different: more than one product's detail row can be expanded
+at once (`toggleProductDetail` toggles per-row independently, and
+nothing stops a user from opening several), so tab state has to be
+scoped per product id, not global. New `showDetailTab(id, name)`
+function + `.dtabs`/`.dtab` CSS classes (visually matching `nav#tabs`/
+`.tab`, just smaller and namespaced) -- every dtab element id is suffixed
+`-<id>` (`dtab-overview-<id>`, `dtab-videos-<id>`, etc.), and
+`showDetailTab` scopes its `querySelectorAll` to `#detail-panel-<id>`
+via `:scope >`, so switching tabs on one expanded row's panel never
+touches another expanded row's tab state.
+
+No functional/data change at all -- every existing element id (`rescrape-
+result-<id>`, `discover-videos-result-<id>`, `video-bulk-toolbar-<id>`,
+`discover-price-result-<id>`, etc.), every `onclick` handler, and every
+API call inside `loadProductDetailInto` is untouched; only the
+surrounding markup that WRAPS those pieces changed, from one flat
+`<div class="detail-panel">` to `<div class="detail-panel" id=
+"detail-panel-<id>">` containing a `.dtabs` nav plus five `.dtab` divs.
+`updateProductVideoBulkToolbar(id)`'s call site is unaffected (still
+`getElementById`-based, doesn't care about ancestor structure).
+
+Verified via `node --check` against the extracted `<script>` contents
+(no build step/framework for this file -- see its own header comment --
+so this is the same verification depth prior admin-site changes in this
+project have used, e.g. 6h/6i's "Validate admin-site/index.html" steps).
+No test suite covers this file (plain HTML/JS, no Python to unit test);
+no `template.yaml` or backend change -- swap the static file as usual,
+no redeploy of any Lambda needed.
+
 ### 6j. Home transcript fetcher (residential caption fetching) -- optional, run outside AWS entirely
 
 Real, live-tested finding this session (see
