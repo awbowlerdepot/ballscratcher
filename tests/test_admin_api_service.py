@@ -117,6 +117,25 @@ class FakeCursor:
             row["video_reviews_summary_updated_at"] = "now"
             self._last_result = None
 
+        elif q.startswith("update products set oil_rating") and "where id = %s and oil_motion_source = 'estimated'" in q:
+            # reestimate_plotter_positions' per-row OVERWRITE -- checked
+            # before the backfill branch below since both queries contain
+            # the literal text "oil_motion_source = 'estimated'"
+            # somewhere; this one is distinguished by that text living in
+            # the WHERE clause (re-checked at write time) rather than the
+            # SET clause, and only ever writes 2 columns (oil_rating/
+            # motion_rating), never touching oil_motion_source itself --
+            # it's still 'estimated' after a re-estimate, just a better
+            # estimate now.
+            oil_rating, motion_rating, product_id = params
+            row = self.db["products"].get(product_id)
+            self._last_result = None
+            if row is not None and row.get("oil_motion_source") == "estimated":
+                row["oil_rating"] = oil_rating
+                row["motion_rating"] = motion_rating
+                self._last_result = (product_id,)
+            self.description = [("id",)]
+
         elif q.startswith("update products set oil_rating") and "oil_motion_source = 'estimated'" in q:
             # backfill_estimated_plotter_positions' per-row write -- more
             # specific than (and must be checked before) set_plotter_
@@ -146,6 +165,21 @@ class FakeCursor:
                 row["oil_motion_source"] = source
                 self._last_result = (product_id,)
             self.description = [("id",)]
+
+        elif q.startswith("select p.id, c.core_type, p.coverstock_type, p.coverstock_material, p.has_particle") and "oil_motion_source = 'estimated'" in q:
+            # reestimate_plotter_positions' scan -- every product CURRENTLY
+            # marked 'estimated' (regardless of whether oil_rating is
+            # already set, which it always is for this source), checked
+            # before the missing-position branch below since both start
+            # with the same select-list prefix.
+            estimated = [
+                (pid, row.get("core_type"), row.get("coverstock_type"),
+                 row.get("coverstock_material"), row.get("has_particle"))
+                for pid, row in self.db["products"].items()
+                if row.get("oil_motion_source") == "estimated"
+            ]
+            self._rows = estimated
+            self.description = [("id",), ("core_type",), ("coverstock_type",), ("coverstock_material",), ("has_particle",)]
 
         elif q.startswith("select p.id, c.core_type, p.coverstock_type, p.coverstock_material, p.has_particle"):
             # backfill_estimated_plotter_positions' missing-position scan.
@@ -2817,6 +2851,89 @@ def test_backfill_estimated_plotter_positions_no_op_when_nothing_missing():
     result = service.backfill_estimated_plotter_positions(conn)
 
     assert result == {"products_missing_position": 0, "products_updated": 0}
+
+
+# --- reestimate_plotter_positions: the "go fix everything the OLD formula
+# already got wrong" pass -- Al: "i feel like it is way off for most
+# balls". Unlike backfill_estimated_plotter_positions above, this
+# OVERWRITES existing oil_motion_source='estimated' rows rather than only
+# filling nulls.
+
+def test_reestimate_plotter_positions_overwrites_estimated_only():
+    db = {
+        "products": {
+            "prod-1": {
+                "id": "prod-1", "oil_rating": 13, "motion_rating": 16, "oil_motion_source": "estimated",
+                "core_type": "asymmetric", "coverstock_type": "solid",
+                "coverstock_material": "reactive_resin", "has_particle": False,
+            },
+            "prod-2": {
+                "id": "prod-2", "oil_rating": 6, "motion_rating": 18, "oil_motion_source": "chart",
+                "core_type": "asymmetric", "coverstock_type": "solid",
+                "coverstock_material": "reactive_resin", "has_particle": False,
+            },
+            "prod-3": {
+                "id": "prod-3", "oil_rating": 9, "motion_rating": 17, "oil_motion_source": "manual",
+                "core_type": "asymmetric", "coverstock_type": "pearl",
+                "coverstock_material": "reactive_resin", "has_particle": False,
+            },
+        },
+        "product_skus_plotter": [
+            {"product_id": "prod-1", "weight_lbs": 15, "differential": 0.055},
+        ],
+    }
+    conn = FakeConnection(db)
+
+    result = service.reestimate_plotter_positions(conn)
+
+    assert result == {"products_estimated": 1, "products_updated": 1}
+    # prod-1 (the only 'estimated' row) got recomputed -- same inputs as
+    # test_estimate_oil_motion_matches_public_api_shape above.
+    assert db["products"]["prod-1"]["oil_rating"] == 13
+    assert db["products"]["prod-1"]["motion_rating"] == 16
+    assert db["products"]["prod-1"]["oil_motion_source"] == "estimated"  # unchanged
+    # chart and manual positions are completely untouched.
+    assert db["products"]["prod-2"] == {
+        "id": "prod-2", "oil_rating": 6, "motion_rating": 18, "oil_motion_source": "chart",
+        "core_type": "asymmetric", "coverstock_type": "solid",
+        "coverstock_material": "reactive_resin", "has_particle": False,
+    }
+    assert db["products"]["prod-3"]["oil_motion_source"] == "manual"
+    assert db["products"]["prod-3"]["oil_rating"] == 9
+    assert conn.committed
+
+
+def test_reestimate_plotter_positions_no_op_when_nothing_estimated():
+    db = {
+        "products": {
+            "prod-1": {"id": "prod-1", "oil_rating": 6, "motion_rating": 18, "oil_motion_source": "chart"},
+        },
+        "product_skus_plotter": [],
+    }
+    conn = FakeConnection(db)
+
+    result = service.reestimate_plotter_positions(conn)
+
+    assert result == {"products_estimated": 0, "products_updated": 0}
+
+
+def test_reestimate_plotter_positions_handles_no_usable_skus():
+    db = {
+        "products": {
+            "prod-1": {
+                "id": "prod-1", "oil_rating": 9, "motion_rating": 9, "oil_motion_source": "estimated",
+                "core_type": None, "coverstock_type": None, "coverstock_material": None, "has_particle": False,
+            },
+        },
+        "product_skus_plotter": [],
+    }
+    conn = FakeConnection(db)
+
+    result = service.reestimate_plotter_positions(conn)
+
+    assert result["products_updated"] == 1
+    assert db["products"]["prod-1"]["oil_rating"] is not None
+    assert db["products"]["prod-1"]["motion_rating"] is not None
 
 
 # ---------------------------------------------------------------------

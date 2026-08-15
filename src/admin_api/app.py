@@ -443,6 +443,25 @@ def backfill_estimated_plotter_positions():
         conn.close()
 
 
+@app.post("/admin/reestimate-plotter-positions")
+def reestimate_plotter_positions():
+    # One-time (idempotent, safe to re-run) catalog-wide re-run of the
+    # CURRENT estimate_oil_motion formula over every product still marked
+    # oil_motion_source='estimated' -- see service.reestimate_plotter_
+    # positions' docstring. Al: "i feel like it is way off for most
+    # balls". Run this once right after a formula-constant fix deploys;
+    # unlike backfill-estimated-plotter-positions above (which only ever
+    # fills a still-NULL position), this OVERWRITES existing estimates so
+    # products estimated under an old, worse formula actually get fixed
+    # rather than staying wrong forever. Never touches 'chart'/'manual'
+    # positions. No request body, no path param: catalog-wide by design.
+    conn = service.get_db_connection()
+    try:
+        return service.reestimate_plotter_positions(conn)
+    finally:
+        conn.close()
+
+
 @app.post("/admin/backfill-netsuite-status")
 def backfill_netsuite_status():
     # One-off correction for the MOTIV status bug -- see

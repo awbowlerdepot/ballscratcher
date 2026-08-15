@@ -1267,6 +1267,81 @@ def backfill_estimated_plotter_positions(conn) -> dict:
     return {"products_missing_position": len(missing), "products_updated": updated}
 
 
+def reestimate_plotter_positions(conn) -> dict:
+    """Real ask, Al: "i feel like it is way off for most balls" -- backed
+    up by DEPLOY_RUNBOOK.md 6m's spot-check against the 32 chart-matched
+    products, which found estimate_oil_motion's original constants only
+    landed 2/32 exact oil matches (mean error 3.3/16). Once those
+    constants were refit against that real data (see this file's own
+    estimate_oil_motion header for the refit), backfill_estimated_
+    plotter_positions above is the wrong tool to apply the fix catalog-
+    wide: it only ever fills a NULL position once and never revisits a
+    row, so every product estimated under the OLD, badly-miscalibrated
+    formula would keep that wrong value forever even after the formula
+    itself was fixed.
+
+    This is the one-time "go re-run the new formula over everything the
+    old one already got wrong" pass -- run it once, right after this fix
+    deploys. Not needed again after that: every NEWLY estimated product
+    from here on already uses the refit constants (same estimate_oil_
+    motion function, no separate code path for old vs. new), so there's
+    nothing left to reconcile going forward.
+
+    Scoped strictly to oil_motion_source = 'estimated' -- never touches
+    'chart' (Brunswick's own authoritative published data, migration 011)
+    or 'manual' (an admin's own correction, more trustworthy than any
+    formula by definition). The UPDATE re-checks oil_motion_source =
+    'estimated' at write time, not just at the initial SELECT, so a
+    product that got manually corrected or matched onto a chart position
+    in between is safely skipped instead of clobbered -- same two-pass,
+    recheck-on-write shape as backfill_estimated_plotter_positions
+    above, and oil_motion_source itself is left as 'estimated' (still an
+    estimate, just a better one now)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select p.id, c.core_type, p.coverstock_type, p.coverstock_material, p.has_particle
+            from products p
+            left join cores c on c.id = p.core_id
+            where p.oil_motion_source = 'estimated'
+            """
+        )
+        columns = [desc[0] for desc in cur.description]
+        estimated = [dict(zip(columns, row)) for row in cur.fetchall()]
+
+        product_ids = [p["id"] for p in estimated]
+        skus_by_product = {}
+        if product_ids:
+            cur.execute(
+                "select product_id, weight_lbs, differential from product_skus "
+                "where product_id = any(%s::uuid[]) and differential is not null",
+                (product_ids,),
+            )
+            sku_columns = [desc[0] for desc in cur.description]
+            for row in cur.fetchall():
+                sku = dict(zip(sku_columns, row))
+                skus_by_product.setdefault(sku["product_id"], []).append(sku)
+
+    updated = 0
+    with conn.cursor() as cur:
+        for p in estimated:
+            ref_sku = _reference_sku(skus_by_product.get(p["id"], []))
+            estimate = estimate_oil_motion(
+                core_type=p["core_type"], coverstock_type=p["coverstock_type"],
+                coverstock_material=p["coverstock_material"], has_particle=p["has_particle"],
+                differential=ref_sku["differential"] if ref_sku else None,
+            )
+            cur.execute(
+                "update products set oil_rating = %s, motion_rating = %s "
+                "where id = %s and oil_motion_source = 'estimated' returning id",
+                (estimate["oil"], estimate["motion"], p["id"]),
+            )
+            if cur.fetchone() is not None:
+                updated += 1
+    conn.commit()
+    return {"products_estimated": len(estimated), "products_updated": updated}
+
+
 def reorder_product_images(conn, product_id: str, image_ids: list) -> dict:
     """Rewrites display_order to match the position of each id in
     image_ids (0-based) -- the admin-site "move up/move down" controls

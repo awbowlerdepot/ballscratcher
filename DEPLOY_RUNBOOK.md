@@ -3707,6 +3707,83 @@ functional `/plotter` page wired to this endpoint. Its visual design is
 still a plain first pass, not a port of Al's original chart -- see 6n's
 own "what's not done yet" note.
 
+#### estimate_oil_motion refit + re-estimate backfill (real incident, Al: "i feel like it is way off for most balls")
+
+Confirmed by the 2026-08-12 spot-check above -- only 2/32 exact oil
+matches (MAE 3.3/16) and 3/32 exact motion matches (MAE 2.8/18) against
+the 32 real chart positions. Two pieces of tooling, built to actually fix
+this against real data rather than re-guessing new constants:
+
+**`scripts/dump_plotter_estimate_training_data.py`** -- redoes that
+spot-check as a reusable, shareable data pull: for every product with
+`oil_motion_source='chart'` (real Brunswick-published positions), writes
+one JSON line with its real oil/motion actuals alongside the same inputs
+`estimate_oil_motion` consumes (core_type, coverstock_type,
+coverstock_material, has_particle, reference-SKU differential). Reads
+`GET /products/plotter` (public_api, unauthenticated, both `status=
+current` and `status=retired`) to find the chart-matched ids, then `GET
+/products/{id}` (admin_api) for each one's real inputs. I (the agent)
+can't reach either live API from this sandbox -- the shell's proxy
+blocks the API Gateway domain by allowlist -- so this has to be run by
+Al and the output shared back:
+```bash
+export ADMIN_API_URL="https://<your-admin-api-id>.execute-api.us-west-1.amazonaws.com"
+export ADMIN_API_TOKEN="<the same bearer token used elsewhere>"
+export PUBLIC_API_URL="https://<your-public-api-id>.execute-api.us-west-1.amazonaws.com"
+python3 scripts/dump_plotter_estimate_training_data.py --out /tmp/plotter_training_data.jsonl
+```
+Once that real (inputs -> actual oil/motion) data is in hand,
+`estimate_oil_motion`'s constants (`OIL_BASE_BY_MATERIAL`/
+`OIL_ADJUST_BY_TYPE`/`OIL_PARTICLE_BONUS`/`MOTION_*`, both copies --
+`public_api/service.py` and `admin_api/service.py` -- plus all five
+scraper duplicates) get refit to minimize error against it, replacing
+the original hand-tuned-from-domain-knowledge-only constants. **Not yet
+done as of this writing** -- pending Al running the script above and
+sharing its output; see this file's own accuracy numbers above for the
+baseline being improved on.
+
+**New: `POST /admin/reestimate-plotter-positions`**
+(`admin_api.reestimate_plotter_positions`) -- the reason a formula fix
+alone wouldn't actually fix anything already in the catalog:
+`oil_rating`/`motion_rating` are written ONCE per product and never
+revisited (see this section's own "Persist-once revision" above) --
+`backfill_estimated_plotter_positions` only ever fills a still-NULL
+position, so every product already estimated under the OLD, badly-
+miscalibrated constants would keep that wrong value forever even after
+the formula itself is fixed. This new endpoint re-runs whatever
+`estimate_oil_motion` currently computes against every product still
+marked `oil_motion_source='estimated'` and OVERWRITES `oil_rating`/
+`motion_rating` -- never touches `'chart'` (Brunswick's own published
+data) or `'manual'` (an admin's own correction). The UPDATE re-checks
+`oil_motion_source = 'estimated'` at write time, not just at the initial
+read, so a product that got manually corrected or chart-matched in
+between is safely skipped rather than clobbered. Idempotent and safe to
+re-run -- a second run just updates 0 rows once there's nothing left to
+fix. `scripts/reestimate_plotter_positions.py` is the thin one-shot POST
+wrapper (same shape as `backfill_last_video_discovery_at.py`):
+```bash
+export ADMIN_API_URL="https://<your-admin-api-id>.execute-api.us-west-1.amazonaws.com"
+export ADMIN_API_TOKEN="<the same bearer token used elsewhere>"
+python3 scripts/reestimate_plotter_positions.py
+```
+Run this once, right after the refit constants above actually deploy --
+not needed again after that, since every newly-estimated product from
+then on already uses the refit formula (no separate old/new code path).
+No `template.yaml` change needed (same `AdminApiFunction` proxy+
+catch-all as every other `/admin/...` route). No admin-site button for
+this one, on purpose -- same as `backfill-estimated-plotter-positions`/
+`backfill-last-video-discovery-at`/`dedupe-price-sources` above, a rare
+one-time catalog-wide correction is curl-only, not worth a permanent UI
+control someone could click by accident.
+
+Tests: `tests/test_admin_api_service.py` gained
+`test_reestimate_plotter_positions_overwrites_estimated_only`,
+`test_reestimate_plotter_positions_no_op_when_nothing_estimated`,
+`test_reestimate_plotter_positions_handles_no_usable_skus` (197/197
+total). `tests/test_dump_plotter_estimate_training_data.py` (11/11) and
+`tests/test_reestimate_plotter_positions.py` (6/6) are new files, same
+manual-runner pattern as every other script's tests in this project.
+
 ### 6n. Consumer site (React SPA)
 
 `consumer-site/` -- Vite + React + TypeScript, client-side routed
