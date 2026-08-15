@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useLocation, useParams } from "react-router-dom";
 import { ApiError, getProduct, getSimilarProducts } from "../api/client";
 import type { ProductDetail, SimilarProduct } from "../api/types";
 import { useCompare } from "../context/CompareContext";
@@ -13,6 +13,19 @@ import { useCompare } from "../context/CompareContext";
 // current balls that best compare to the retired balls").
 export default function ProductDetailPage() {
   const { id } = useParams<{ id: string }>();
+  const location = useLocation();
+  // Real incident, Al: "if i have filtered the consumer products page and
+  // click on a product then go back my context is lost and it is
+  // confusing". ProductCard (and this page's own "Similar current balls"
+  // cards below) now pass `state: {from: "<path+query the visitor came
+  // from>"}` on every Link into a product page -- read it back here for
+  // "Back to Browse"'s own target so it returns to the exact filtered/
+  // sorted Browse view (or Compare/Plotter page) the visitor actually
+  // came from, not a bare "/" that silently drops ?status=/brand_id=/q=/
+  // sort=. Falls back to "/" when there's no state at all -- a shared
+  // direct link to /balls/<id>, or a fresh tab, has no "came from"
+  // anywhere to return to.
+  const backTo = (location.state as { from?: string } | null)?.from || "/";
   const [product, setProduct] = useState<ProductDetail | null>(null);
   const [similar, setSimilar] = useState<SimilarProduct[]>([]);
   const [notFound, setNotFound] = useState(false);
@@ -61,7 +74,7 @@ export default function ProductDetailPage() {
     return (
       <div className="page">
         <p>That ball couldn't be found.</p>
-        <Link to="/">Back to Browse</Link>
+        <Link to={backTo}>Back to Browse</Link>
       </div>
     );
   }
@@ -80,7 +93,7 @@ export default function ProductDetailPage() {
 
   return (
     <div className="page product-detail-page">
-      <Link to="/" className="back-link">
+      <Link to={backTo} className="back-link">
         &larr; Back to Browse
       </Link>
 
@@ -220,7 +233,7 @@ export default function ProductDetailPage() {
           <h2>Similar current balls</h2>
           <div className="product-grid">
             {similar.map((s) => (
-              <Link to={`/balls/${s.id}`} className="product-card similar-card" key={s.id}>
+              <Link to={`/balls/${s.id}`} state={{ from: backTo }} className="product-card similar-card" key={s.id}>
                 <div className="product-card-media">
                   {s.primary_image_url ? (
                     <img src={s.primary_image_url} alt={s.name} loading="lazy" />

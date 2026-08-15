@@ -4143,6 +4143,44 @@ default) keeps the distribution on its plain `*.cloudfront.net` URL with
 `CloudFrontDefaultCertificate: true` -- no action needed if you don't
 want a custom domain yet.
 
+### 6n.1. Fixed incident: "Back to Browse" lost filter/sort state (real incident)
+
+Al: "if i have filtered the consumer products page and click on a
+product then go back my context is lost and it is confusing."
+
+`BrowsePage.tsx` correctly keeps `status`/`brand_id`/`q`/`sort` in the
+URL's own query string (`useSearchParams()`, not local state), so a
+filtered/sorted view is a real, bookmarkable link. But
+`ProductDetailPage.tsx`'s "Back to Browse" link (both the main one and
+the not-found fallback) was a bare `<Link to="/">`, which throws that
+whole query string away and drops the visitor back on the default,
+unfiltered Browse view.
+
+Fixed by carrying the visitor's current location forward as React
+Router navigation `state` (not another URL param -- this is ephemeral
+"where did you come from" context, not shareable state) on every link
+into a product page:
+
+- `ProductCard.tsx` now computes `backState = { from:
+  `${location.pathname}${location.search}` }` (via `useLocation()`)
+  and passes `state={backState}` on both its links into `/balls/:id`
+  (image and name).
+- `ProductDetailPage.tsx` reads it back: `const backTo =
+  (location.state as { from?: string } | null)?.from || "/"` -- falls
+  back to `/` for a direct/shared link or a fresh tab, which has no
+  "came from" to return to. Both the not-found link and the main
+  "&larr; Back to Browse" link now target `backTo` instead of a bare
+  `/`.
+- The "Similar current balls" links (retired ball -> suggested current
+  balls) also pass `state={{ from: backTo }}` so a multi-hop chain
+  (Browse -> product -> similar product -> Back) still returns to the
+  *original* Browse filters, not just the immediately-previous product
+  page.
+
+No backend or URL-contract change -- pure consumer-site frontend fix,
+ships via the existing `deploy-consumer-site.yml` workflow on push to
+`main` (see 6n above). Verified with `npx tsc -b` (clean, no errors).
+
 ### 6o. Price tracking (retailer price search + review workflow)
 
 New feature, Al: "id like to start a price tracker... configurable to
