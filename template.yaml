@@ -1251,6 +1251,19 @@ Resources:
       CodeUri: src/public_api/
       Handler: app.handler
       Timeout: 30
+      # Bumped above the 256MB Globals default -- Al: "im still seeing
+      # some performance issues on the consumer site... some early
+      # requests take quite some time" (classic cold-start symptom: slow
+      # first hit, fine once warm). Lambda allocates CPU proportional to
+      # memory, so more memory shortens cold-init time (importing
+      # FastAPI/Mangum/psycopg2/boto3) on top of the first request's
+      # Secrets Manager call + fresh Postgres handshake -- none of which
+      # the existing connection-reuse fix (6l.6) touches, since that only
+      # helps *warm* invocations. Provisioned concurrency/reserved
+      # concurrency were ruled out -- see AdminApiFunction's own comment
+      # below on this account's 10-execution total concurrency ceiling,
+      # which a memory bump doesn't touch at all.
+      MemorySize: 1024
       Policies:
         - Statement:
             - Effect: Allow

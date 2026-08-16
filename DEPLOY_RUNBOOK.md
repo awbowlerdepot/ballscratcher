@@ -3827,6 +3827,57 @@ sam build PublicApiFunction
 sam deploy
 ```
 
+**Follow-up, later session -- real incident: "im still seeing some
+performance issues on the consumer site... some early requests take
+quite some time."** Al's own description ("better once it gets going")
+is the textbook Lambda cold-start pattern -- confirmed by re-checking
+what 6l.6's connection-reuse fix does and doesn't cover: it only pays
+off on a *warm* container (cached connection, skip the Secrets Manager
+call and fresh TCP+TLS+Postgres handshake). It does nothing for the
+first request to a cold container, which still pays full Lambda init
+(importing FastAPI/Mangum/psycopg2/boto3) stacked on top of that same
+Secrets Manager call + fresh handshake, all before any of 6l.6's caching
+can help.
+
+Investigated and ruled out before landing on the fix below: not
+VPC-attached (no ENI cold-start penalty), RDS is a plain externally-
+provisioned Postgres instance (not Aurora Serverless, no scale-to-zero
+resume delay), and CloudFront's cache config for the static bundle looks
+fine. Provisioned/reserved concurrency was considered and rejected --
+this AWS account has only 10 total concurrent Lambda executions
+available account-wide (see `AdminApiFunction`'s own comment in
+`template.yaml` about a reverted `ReservedConcurrentExecutions: 2`
+attempt for that same reason), leaving no room to reserve capacity for
+`PublicApiFunction` on top of it. A scheduled warmer ping was also an
+option (doesn't touch that concurrency ceiling, unlike reserved/
+provisioned concurrency) but Al chose the simpler fix for now.
+
+**Fix shipped: `PublicApiFunction`'s `MemorySize` raised from the 256MB
+`Globals` default to 1024MB.** AWS Lambda allocates CPU proportional to
+configured memory, so more memory shortens cold-init duration directly
+-- no code change, no new moving parts, and it doesn't touch the
+account's concurrency ceiling at all (memory is a per-invocation
+resource setting, unrelated to concurrent-execution limits). Cheapest,
+lowest-risk lever available given the other candidates were ruled out or
+blocked.
+
+Not done (kept in reserve if the memory bump alone isn't enough): a
+scheduled EventBridge "warmer" rule pinging `PublicApiFunction` every
+few minutes, same `Type: Schedule` pattern already used for the
+URL-discovery Lambdas elsewhere in `template.yaml` -- would reduce how
+often a cold start happens at all, at the cost of a small trickle of
+extra invocations. Worth revisiting if 1024MB doesn't move the needle
+enough on its own.
+
+No migration, no code change -- just the one `template.yaml` line.
+Verified the template still parses via the established CFN-tolerant
+PyYAML loader (54 resources, 38 outputs, same counts as the last
+verification). Redeploy:
+```bash
+sam build PublicApiFunction
+sam deploy
+```
+
 ### 6m. Ball motion plotter (consumer site, standalone page)
 
 Al shared an existing interactive plotter he'd built in another Cowork
