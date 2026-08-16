@@ -1917,6 +1917,77 @@ manually), then use admin-site's "Find price sources" on product
 `8e93b985-857b-4516-a29b-6f238f6652b1` to correct the existing approved
 row in place.
 
+**Follow-up, same session -- real incident continues, Al: "the word
+edition is not always used and is more commonly not used.
+bowlerdepot.com does not use edition."** After both fixes above were
+deployed, redeployed, and independently verified (fresh Lambda
+`LastModified`, clean CloudWatch logs across two manual invokes, product
+confirmed published/in-scope), Al still reported the same wrong match on
+re-checking the product detail page. This comment pointed at a third
+angle: our own product's stored name likely carries "Edition" as an
+extra word (a manufacturer-side qualifier for a re-release/special run)
+that BowlerDepot's storefront listing for the same ball typically drops
+-- the same shape as the already-handled "+ Bowling Ball" suffix, so
+"edition" was added to `_GENERIC_NAME_SUFFIX_TOKENS`.
+
+**That alone was not enough.** Live testing immediately turned up a
+second, deeper gap in the original 6h.1 fix: `_names_token_compatible`
+only ever controlled candidacy (whether a name is considered at all),
+never the actual match decision -- a token-compatible candidate still
+had to separately clear `SequenceMatcher(...).ratio() >=
+FUZZY_MATCH_THRESHOLD (0.80)`, computed against the raw, filler-word-
+included normalized strings. For a short base name, that's a real
+problem: `"storm iq tour edition"` vs `"storm iq tour"` scores only
+`0.7647` -- below threshold -- purely because "edition" (7 characters)
+is proportionally expensive against a 14-character base name, even
+though the token gate had already confirmed the only difference between
+the two names was generic filler noise. The exact same latent gap
+already existed for the original "Bowling Ball" tolerance; it just never
+surfaced in a real incident before now because every prior case (e.g.
+"Brunswick Fury Emerald/Black Hybrid") used a long enough base name that
+the same fixed-length suffix cost proportionally little.
+
+**Fix**: once `_names_token_compatible` has confirmed two names differ
+only by generic filler words, requiring them to ALSO clear an arbitrary
+character-ratio threshold is redundant and reintroduces exactly the
+false-negative the gate exists to prevent. `fuzzy_match_product` now
+floors a token-compatible candidate's effective ratio at a new
+`TOKEN_COMPATIBLE_MIN_RATIO = 0.90` (`max(raw_ratio,
+TOKEN_COMPATIBLE_MIN_RATIO)`) -- guaranteed to clear
+`FUZZY_MATCH_THRESHOLD` regardless of base-name length, while staying
+below `1.0` so it's still recorded as `'ambiguous'` (not silently auto-
+trusted) same as every other non-exact match. The raw ratio is still
+used to rank between multiple token-compatible candidates when more than
+one is present -- the floor only ever raises the ratio used for the
+threshold comparison, never lowers a candidate that already scored
+higher on its own.
+
+Tests: 3 new cases in `test_bowlerdepot_reconciliation.py` -- "Storm iQ
+Tour Edition" now matches "Storm iQ Tour" at the floor ratio despite its
+raw SequenceMatcher ratio being below threshold; the "AI" candidate is
+still hard-rejected even when both it and the real match are present
+(confirms the floor didn't reopen the original 6h.1 collision); and a
+long-base-name pair that already scores above the floor on raw
+character similarity keeps its own higher ratio (confirms `max()`, not a
+clamp/override). Full suite: 1025/1025 passing, zero regressions.
+
+No migration, no `template.yaml` change -- redeploy just the one
+function:
+```bash
+sam build BowlerDepotReconciliationFunction
+sam deploy
+```
+
+Same as the prior follow-up: this only fixes the algorithm going
+forward. If product `8e93b985-857b-4516-a29b-6f238f6652b1`'s own stored
+name is confirmed to include "Edition," clearing its existing stale
+price source still requires a fresh reconciliation run followed by
+re-triggering "Find price sources" on that product, per the note above.
+Al's exact database value for this product's stored name has not yet
+been directly confirmed -- this fix was validated against a
+representative test case ("Storm iQ Tour Edition" vs "Storm iQ Tour"),
+not against the live row itself.
+
 ### 6i. Video enrichment (YouTube + Bedrock) -- only after `YouTubeApiKeySecretArn` is set and the Bedrock model is granted access
 
 **Transcript fetching is now exclusively the home browser cron (6k), not

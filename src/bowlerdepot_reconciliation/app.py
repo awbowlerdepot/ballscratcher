@@ -191,16 +191,22 @@ def _normalize_name(name: str) -> str:
 # suffix" apart from "different product's suffix" will keep silently
 # matching the wrong ball to a real product's name.
 #
-# _GENERIC_NAME_SUFFIX_TOKENS is the one narrow exception carved back
-# out: the "+ Bowling Ball" suffix is the specific case FUZZY_MATCH_
-# THRESHOLD's own calibration comment already documented as intentional,
-# real-world-observed variance (see below) -- a purely generic retail
-# label, not a qualifier that ever names a different ball. Any OTHER
-# extra/missing word between two names is now a hard reject at the
-# candidate-selection stage, before SequenceMatcher ever gets a ratio to
-# score, so it can't be talked into a false match by favorable character
-# overlap the way "ai" was.
-_GENERIC_NAME_SUFFIX_TOKENS = {"bowling", "ball", "balls"}
+# _GENERIC_NAME_SUFFIX_TOKENS is the narrow set of exceptions carved back
+# out: words that are purely generic retail-listing noise, never a
+# qualifier that names a genuinely different ball, so a mismatch limited
+# to these words alone shouldn't block a match. "bowling"/"ball"/"balls"
+# is the case FUZZY_MATCH_THRESHOLD's own calibration comment already
+# documented as intentional, real-world-observed variance (see below).
+# "edition" (Al: "the word edition is not always used and is more
+# commonly not used. bowlerdepot.com does not use edition") is the same
+# shape -- a manufacturer's own product name sometimes carries "Edition"
+# (e.g. a re-release or special run of an existing ball) that
+# BowlerDepot's storefront listing for that SAME ball typically drops.
+# Any OTHER extra/missing word between two names is still a hard reject
+# at the candidate-selection stage, before SequenceMatcher ever gets a
+# ratio to score, so it can't be talked into a false match by favorable
+# character overlap the way "ai" was.
+_GENERIC_NAME_SUFFIX_TOKENS = {"bowling", "ball", "balls", "edition"}
 
 
 def _loose_tokens(name: str) -> set:
@@ -234,6 +240,32 @@ def _names_token_compatible(our_name: str, candidate_name: str) -> bool:
     return extra.issubset(_GENERIC_NAME_SUFFIX_TOKENS)
 
 
+# Real incident, same "edition" report as _GENERIC_NAME_SUFFIX_TOKENS
+# above: adding "edition" to the filler-word allowlist made
+# _names_token_compatible("Storm iQ Tour Edition", "Storm iQ Tour")
+# return True, but fuzzy_match_product STILL rejected the pair --
+# ratio: 0.7647058823529411 -- because the token gate only ever
+# controlled candidacy, not the actual match decision below it, which
+# still ran the raw SequenceMatcher ratio (computed against the
+# un-stripped, filler-word-included normalized strings) against
+# FUZZY_MATCH_THRESHOLD (0.80). SequenceMatcher's ratio is a character-
+# count-proportional metric, so a fixed-length filler word like
+# "edition" (7 chars) costs a short base name like "storm iq tour" (14
+# chars) much more, proportionally, than it costs a long one -- the
+# exact same "bowling ball" tolerance already had this latent gap, it
+# just never surfaced because every real incident so far used a longer
+# base name. Once _names_token_compatible has already confirmed the
+# ONLY difference between two names is generic filler noise, requiring
+# them to ALSO clear an arbitrary character-ratio threshold is
+# redundant and reintroduces exactly the false-negative this gate was
+# built to prevent -- so a token-compatible candidate's effective ratio
+# is floored at TOKEN_COMPATIBLE_MIN_RATIO regardless of base-name
+# length. Deliberately kept below 1.0 (not treated as a full exact
+# match) so it still round-trips through match_status as 'ambiguous'
+# rather than silently auto-trusted -- see check_coverage.
+TOKEN_COMPATIBLE_MIN_RATIO = 0.90
+
+
 def fuzzy_match_product(our_name: str, bigcommerce_products: list, threshold: float = FUZZY_MATCH_THRESHOLD):
     """Returns (product, ratio) for the best-scoring BigCommerce product
     match, or (None, 0.0) if nothing clears threshold. Exact normalized-
@@ -248,7 +280,16 @@ def fuzzy_match_product(our_name: str, bigcommerce_products: list, threshold: fl
     docstring for the real incident (a distinguishing suffix like "AI")
     this gate exists to block. A candidate that fails is simply skipped,
     same as if it scored 0.0; it can never win best_ratio no matter how
-    high its raw character-similarity would have been."""
+    high its raw character-similarity would have been.
+
+    A candidate that PASSES the gate has its ratio floored at
+    TOKEN_COMPATIBLE_MIN_RATIO -- see that constant's own docstring for
+    why a token-compatible pair can still legitimately score below
+    FUZZY_MATCH_THRESHOLD on raw character ratio alone for a short base
+    name, which isn't evidence of a worse match, just base-name-length
+    math. The raw ratio is still used to rank between multiple token-
+    compatible candidates, the floor only ever raises the ratio used for
+    the threshold comparison, never lowers it."""
     our_normalized = _normalize_name(our_name)
     best_product, best_ratio = None, 0.0
 
@@ -259,7 +300,8 @@ def fuzzy_match_product(our_name: str, bigcommerce_products: list, threshold: fl
             return product, 1.0
         if not _names_token_compatible(our_name, candidate_name):
             continue
-        ratio = SequenceMatcher(None, our_normalized, candidate_normalized).ratio()
+        raw_ratio = SequenceMatcher(None, our_normalized, candidate_normalized).ratio()
+        ratio = max(raw_ratio, TOKEN_COMPATIBLE_MIN_RATIO)
         if ratio > best_ratio:
             best_product, best_ratio = product, ratio
 

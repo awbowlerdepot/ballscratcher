@@ -145,6 +145,48 @@ def test_fuzzy_match_prefers_real_match_over_distinguishing_suffix_candidate():
     assert ratio == 1.0
 
 
+def test_fuzzy_match_edition_suffix_matches_despite_short_base_name_ratio_gap():
+    # Real incident, Al: "the word edition is not always used and is more
+    # commonly not used. bowlerdepot.com does not use edition" -- adding
+    # "edition" to _GENERIC_NAME_SUFFIX_TOKENS alone was NOT enough here.
+    # "storm iq tour edition" vs "storm iq tour" scores a raw
+    # SequenceMatcher ratio of ~0.7647 -- below FUZZY_MATCH_THRESHOLD
+    # (0.80) -- purely because "edition" (7 chars) is proportionally
+    # expensive against a short 14-char base name. The token-compatible
+    # candidate must still win via TOKEN_COMPATIBLE_MIN_RATIO's floor.
+    products = [{"id": 1, "name": "Storm iQ Tour", "sku": "REAL"}]
+    match, ratio = app.fuzzy_match_product("Storm iQ Tour Edition", products)
+    assert match["id"] == 1
+    assert ratio == app.TOKEN_COMPATIBLE_MIN_RATIO
+
+
+def test_fuzzy_match_edition_suffix_still_rejects_distinguishing_suffix_candidate():
+    # Same real incident, both candidates present -- confirms the ratio
+    # floor doesn't reopen the door to the original "AI" collision. The
+    # AI candidate is still hard-rejected by the token gate before any
+    # ratio (floored or not) is ever computed for it.
+    products = [
+        {"id": 1, "name": "Storm iQ Tour AI", "sku": "WRONG"},
+        {"id": 2, "name": "Storm iQ Tour", "sku": "RIGHT"},
+    ]
+    match, ratio = app.fuzzy_match_product("Storm iQ Tour Edition", products)
+    assert match["id"] == 2
+    assert ratio == app.TOKEN_COMPATIBLE_MIN_RATIO
+
+
+def test_fuzzy_match_token_compatible_ratio_floor_does_not_lower_high_ratios():
+    # The floor must be a max(), never a clamp/override -- a candidate
+    # that already scores above TOKEN_COMPATIBLE_MIN_RATIO on raw
+    # character similarity (a long enough base name that "Bowling Ball"
+    # only costs a small proportion of it) should keep its own, higher
+    # raw ratio, not get pulled down to the floor.
+    our_name = "Storm Phaze II Solid Reactive Pearl Hybrid Cover High Performance Ball"
+    products = [{"id": 1, "name": our_name + " Bowling", "sku": "X"}]
+    match, ratio = app.fuzzy_match_product(our_name, products)
+    assert match["id"] == 1
+    assert ratio > app.TOKEN_COMPATIBLE_MIN_RATIO
+
+
 # --- upsert_bowlerdepot_match ---
 # 018_bowlerdepot_products_dedupe_by_product.sql -- these use a minimal
 # fake conn/cursor that just records the executed SQL/params, since this
