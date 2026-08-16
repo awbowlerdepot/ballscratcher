@@ -3102,6 +3102,65 @@ redeploy needed. Verified via `node --check` against the extracted
 `<script>` contents and Python's `html.parser` for basic tag balance,
 same depth as prior admin-site-only changes in this project.
 
+### 6i.11. SKU stock table: industry-standard inventory forecasting (ADU / Days of Supply / est. stockout)
+
+Al: "with the data for stock levels can we apply some industry standard
+inventory forecasting to that data."
+
+Added Average Daily Usage (ADU) and Days of Supply (DOS) -- the standard
+building blocks behind a reorder-point calculation (Reorder Point = ADU
+x Lead Time + Safety Stock). This stops at ADU/DOS/an estimated stockout
+date rather than a full reorder-point recommendation, since this project
+has no supplier lead-time or safety-stock policy data anywhere in its
+schema.
+
+**Computed entirely client-side**, same "live-computed-not-stored, leave
+the delta math to the caller/chart layer" posture `get_sku_stock_history`
+already documents for itself. No backend/API change.
+
+**Methodology** (`computeSkuForecast` in admin-site/index.html): a fixed
+30-day trailing lookback (`FORECAST_LOOKBACK_DAYS`), deliberately
+independent of the chart's own display-range selector (7D/30D/90D/1Y/
+All) so the forecast number doesn't jump around just because someone
+changed what they're *looking at*. Only quantity *drops* between
+consecutive readings count as "sold" -- a rise is a restock and is
+excluded from the usage sum, same "drop=sold, rise=restock" reading
+`get_sku_stock_history`'s docstring already documents (including its
+honesty caveat that same-day sold-then-restocked activity can't be fully
+distinguished from the raw snapshots). ADU = total units sold in the
+window / elapsed days between the first and last reading in that window
+-- not simply a count of readings, since SKUs are checked on a rotation
+(`list_price_sources_due`) and won't land exactly once a day.
+
+Needs at least 2 readings inside the lookback window to produce a rate
+at all; below that, `adu`/`daysOfSupply`/`stockoutDate` are all `null`
+and the table shows "—". `daysOfSupply`/`stockoutDate` are also left
+`null` (not zero) when `adu` is 0 -- "no recent sales" and "sold out"
+are different claims, and conflating them would falsely flag a
+slow-moving weight as urgent. `latestQuantity <= 0` is handled as an
+explicit "out of stock" case (`daysOfSupply: 0`, stockout date = now)
+rather than falling out of the general division.
+
+**Table changes:** `buildSkuStockSection` now renders three new columns
+-- Avg daily usage, Days of supply, Est. stockout -- alongside the
+existing Weight/Quantity/Last checked columns. Days of supply uses badge
+styling for urgency: `<= 14` days is `.badge.danger` (new CSS rule,
+reusing the existing `--danger-dark` color variable), `<= 30` days is
+`.badge.muted`, otherwise `.badge.ok` (both already existed in the
+stylesheet).
+
+No change to the SKU stock *chart* itself -- the forecast is table-only
+for now. A dashed forecast/projection line on the chart would need the
+x-axis to extend past "today" for SKUs with a valid forecast, which
+would read as walking back the 6i.10 second-follow-up fix that pinned
+`scales.x.max` to today; not done without Al confirming he wants that
+tradeoff.
+
+Verified via `node --check` against the extracted `<script>` contents
+and Python's `html.parser` for tag balance, same convention as every
+other admin-site-only change in this project. Swap the static
+admin-site file as usual -- no Lambda redeploy needed.
+
 ### 6j. Home transcript fetcher (residential caption fetching) -- optional, run outside AWS entirely
 
 Real, live-tested finding this session (see
