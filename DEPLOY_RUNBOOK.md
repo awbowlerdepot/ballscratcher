@@ -2985,6 +2985,47 @@ runs. If you want Storm Equinox Hybrid's actual top result picked up
 now, redeploy first, then click "Find videos" on that product again (or
 re-run catalog-wide discovery).
 
+### 6i.9. Product detail Videos tab: bulk reassign + bulk delete
+
+Al: "on the product video tab can we add bulk reassign and bulk delete
+buttons" -- the product detail panel's Videos sub-tab (6i.7) already had
+bulk select/approve/reject (6h/6i's own "same checkbox bulk logic"
+asks); this extends the same selection mechanism with the two other
+actions its per-row buttons already supported (`reassignVideoForProduct`/
+`deleteVideoForProduct`), just applied to every selected row at once.
+
+**Checkbox column now shows on every row, not just pending ones.**
+Approve/Reject stay meaningful only against pending candidates (a bulk
+approve/reject that includes an already-resolved row just fails that one
+item, counted in the batch's `failed` total -- same tolerance every bulk
+action in this project already has), but Reassign/Delete are meaningful
+regardless of status, matching what their individual per-row buttons
+already allowed. "Select all pending" is now just "Select all".
+
+**Bulk reassign** prompts once for a target `product_id`, applied to
+every selected row -- same "single field applied to all" shape the
+existing bulk reject's reason prompt already uses. Each row still goes
+through the real per-item `reassign_video_candidate` logic (tombstone
+here, copy/merge onto the target), so a `merged_with_existing` outcome
+is still possible per row; the toast reports how many of the batch
+merged.
+
+**Bulk delete** is one confirm applied to the whole selection, then a
+`DELETE /video-candidates/{id}` per row, same as the single-video
+delete.
+
+Both new actions run through the same sequential (not `Promise.all`)
+loop as bulk approve/reject, same anti-throttling posture, in
+`runProductVideoBulkAction` (now handles all four actions -- `reason`
+only used by reject, `targetProductId` only by reassign).
+
+No backend/API change -- reuses the existing per-candidate
+reassign/delete endpoints from 6i's original build. Verified via
+`node --check` against the extracted `<script>` contents, same depth as
+prior admin-site-only changes in this project (no Python to unit test
+for this file); swap the static file as usual, no Lambda redeploy
+needed.
+
 ### 6j. Home transcript fetcher (residential caption fetching) -- optional, run outside AWS entirely
 
 Real, live-tested finding this session (see

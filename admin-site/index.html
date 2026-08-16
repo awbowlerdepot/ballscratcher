@@ -1818,23 +1818,30 @@ async function loadProductDetailInto(id, cell) {
     // just scoped to this one product and refreshing this panel afterward
     // (via the ProductVideo* handlers below) instead of that tab's list.
     //
-    // Bulk select/approve/reject -- Al: "can we add that same checkbox
-    // bulk logic to the product page video candidates list". Only pending
-    // rows get a checkbox (same reasoning as the tab: approved/rejected
-    // rows have nothing left to bulk-apply, and this list already mixes
-    // all three statuses together per the status:'all' fetch above, so
-    // there isn't a single showBulk-for-the-whole-view toggle like the
-    // tab has -- it's per-row instead). Selection lives in
+    // Bulk select/approve/reject/reassign/delete -- Al: "can we add that
+    // same checkbox bulk logic to the product page video candidates
+    // list", then later "can we add bulk reassign and bulk delete
+    // buttons" on this same section. Checkbox now shows on EVERY row
+    // regardless of status (not just pending) -- unlike Approve/Reject,
+    // Reassign/Delete are meaningful against an approved or rejected
+    // candidate too (their own per-row buttons already work on any
+    // status, see reassignVideoForProduct/deleteVideoForProduct below).
+    // A bulk Approve/Reject against a non-pending row simply fails that
+    // one item and gets counted in the failed total by
+    // runProductVideoBulkAction -- same "one bad row can't stop the
+    // batch" tolerance this project uses everywhere else, not worth a
+    // separate guard here. This list already mixes all three statuses
+    // together per the status:'all' fetch above, so there isn't a single
+    // showBulk-for-the-whole-view toggle like the Video Candidates tab
+    // has -- it's per-row instead. Selection lives in
     // productVideoSelected[id] (a Set, module-level map keyed by product
     // id since more than one product's detail row can be expanded at
     // once) and is reset every time this panel reloads, same reasoning as
     // videoState.selected/reviewState.selected.
     productVideoSelected[id] = new Set();
-    const anyPendingVideo = videos.some(function (v) { return v.status === 'pending'; });
+    const anySelectableVideo = videos.length > 0;
     const videoRows = videos.map(function (v) {
-      const checkboxCell = v.status === 'pending'
-        ? '<td><input type="checkbox" class="product-video-select" data-product-id="' + id + '" data-id="' + v.id + '" onchange="toggleProductVideoSelect(\'' + id + '\', \'' + v.id + '\', this.checked)"></td>'
-        : '<td></td>';
+      const checkboxCell = '<td><input type="checkbox" class="product-video-select" data-product-id="' + id + '" data-id="' + v.id + '" onchange="toggleProductVideoSelect(\'' + id + '\', \'' + v.id + '\', this.checked)"></td>';
       // Same Undo-next-to-badge treatment as the Video Candidates tab (see
       // renderVideoCandidates' own comment) -- restoreVideoForProduct
       // refreshes this product's panel afterward instead of that tab's list.
@@ -1856,12 +1863,14 @@ async function loadProductDetailInto(id, cell) {
         '<button class="btn small ghost danger" onclick="deleteVideoForProduct(\'' + id + '\', \'' + v.id + '\')">Delete</button></td>' +
         '</tr>';
     }).join('');
-    const videoBulkToolbar = anyPendingVideo
+    const videoBulkToolbar = anySelectableVideo
       ? '<div id="video-bulk-toolbar-' + id + '" class="filters" style="margin:6px 0;">' +
-        '<label class="checkbox"><input id="video-select-all-' + id + '" type="checkbox" onchange="toggleSelectAllProductVideos(\'' + id + '\', this.checked)"> Select all pending</label>' +
+        '<label class="checkbox"><input id="video-select-all-' + id + '" type="checkbox" onchange="toggleSelectAllProductVideos(\'' + id + '\', this.checked)"> Select all</label>' +
         '<span id="video-selected-count-' + id + '" class="badge muted">0 selected</span>' +
         '<button id="video-approve-selected-' + id + '" type="button" class="btn small ok" onclick="bulkApproveProductVideos(\'' + id + '\')" disabled>Approve selected</button>' +
         '<button id="video-reject-selected-' + id + '" type="button" class="btn small danger" onclick="bulkRejectProductVideos(\'' + id + '\')" disabled>Reject selected</button>' +
+        '<button id="video-reassign-selected-' + id + '" type="button" class="btn small ghost" onclick="bulkReassignProductVideos(\'' + id + '\')" disabled>Reassign selected</button>' +
+        '<button id="video-delete-selected-' + id + '" type="button" class="btn small ghost danger" onclick="bulkDeleteProductVideos(\'' + id + '\')" disabled>Delete selected</button>' +
         '</div>'
       : '';
     const priceTrackingHtml = buildPriceTrackingSection(id, priceSources, priceHistoryData, priceSites);
@@ -2328,8 +2337,12 @@ function updateProductVideoBulkToolbar(productId) {
   if (countEl) countEl.textContent = n + ' selected';
   const approveBtn = document.getElementById('video-approve-selected-' + productId);
   const rejectBtn = document.getElementById('video-reject-selected-' + productId);
+  const reassignBtn = document.getElementById('video-reassign-selected-' + productId);
+  const deleteBtn = document.getElementById('video-delete-selected-' + productId);
   if (approveBtn) approveBtn.disabled = n === 0;
   if (rejectBtn) rejectBtn.disabled = n === 0;
+  if (reassignBtn) reassignBtn.disabled = n === 0;
+  if (deleteBtn) deleteBtn.disabled = n === 0;
   const selectAllBox = document.getElementById('video-select-all-' + productId);
   if (selectAllBox) {
     const boxes = document.querySelectorAll('.product-video-select[data-product-id="' + productId + '"]');
@@ -2358,29 +2371,66 @@ async function bulkRejectProductVideos(productId) {
   await runProductVideoBulkAction(productId, ids, 'reject', by, reason || undefined);
 }
 
+// Al: "can we add bulk reassign and bulk delete buttons" (on this same
+// section). One target product_id prompted once and applied to every
+// selected row -- same "single field applied to all" shape bulkReject
+// above already uses for its reason prompt. Each item still goes through
+// the real reassign_video_candidate logic individually (tombstone here +
+// copy/merge onto the target), so a merge-with-existing-entry outcome is
+// still possible per item, same as the single-video reassignVideoForProduct.
+async function bulkReassignProductVideos(productId) {
+  const by = getSettings().resolvedBy;
+  if (!by) { toast('Set "Your name" in Settings first.', true); return; }
+  const ids = Array.from(productVideoSelected[productId] || []);
+  if (!ids.length) return;
+  const targetProductId = prompt('New product_id to reassign all ' + ids.length + ' selected video(s) to:');
+  if (!targetProductId) return;
+  await runProductVideoBulkAction(productId, ids, 'reassign', by, undefined, targetProductId.trim());
+}
+
+async function bulkDeleteProductVideos(productId) {
+  const ids = Array.from(productVideoSelected[productId] || []);
+  if (!ids.length) return;
+  if (!confirm('Permanently delete ' + ids.length + ' selected video candidate' + (ids.length === 1 ? '' : 's') + '? This cannot be undone.')) return;
+  await runProductVideoBulkAction(productId, ids, 'delete', undefined);
+}
+
 // Sequential, deliberately not Promise.all -- same anti-throttling
 // posture as runReviewBulkAction/runVideoBulkAction (see their own
-// comments above).
-async function runProductVideoBulkAction(productId, ids, action, resolvedBy, reason) {
+// comments above). Handles all four bulk actions this toolbar offers;
+// reason is only used by 'reject', targetProductId only by 'reassign'.
+async function runProductVideoBulkAction(productId, ids, action, resolvedBy, reason, targetProductId) {
+  const VERBING = { approve: 'Approving', reject: 'Rejecting', reassign: 'Reassigning', delete: 'Deleting' };
+  const PAST = { approve: 'approved', reject: 'rejected', reassign: 'reassigned', delete: 'deleted' };
+
   const approveBtn = document.getElementById('video-approve-selected-' + productId);
   const rejectBtn = document.getElementById('video-reject-selected-' + productId);
+  const reassignBtn = document.getElementById('video-reassign-selected-' + productId);
+  const deleteBtn = document.getElementById('video-delete-selected-' + productId);
   if (approveBtn) approveBtn.disabled = true;
   if (rejectBtn) rejectBtn.disabled = true;
+  if (reassignBtn) reassignBtn.disabled = true;
+  if (deleteBtn) deleteBtn.disabled = true;
 
-  let ok = 0, failed = 0;
+  let ok = 0, failed = 0, merged = 0;
   try {
     for (const id of ids) {
       try {
         if (action === 'approve') {
           await api('POST', '/video-candidates/' + id + '/approve', { body: { resolved_by: resolvedBy } });
-        } else {
+        } else if (action === 'reject') {
           await api('POST', '/video-candidates/' + id + '/reject', { body: { resolved_by: resolvedBy, reason: reason } });
+        } else if (action === 'reassign') {
+          const result = await api('POST', '/video-candidates/' + id + '/reassign', { body: { product_id: targetProductId, resolved_by: resolvedBy } });
+          if (result.merged_with_existing) merged++;
+        } else if (action === 'delete') {
+          await api('DELETE', '/video-candidates/' + id);
         }
         ok++;
       } catch (e) {
         failed++;
       }
-      toast((action === 'approve' ? 'Approving' : 'Rejecting') + ' ' + (ok + failed) + '/' + ids.length + '…');
+      toast(VERBING[action] + ' ' + (ok + failed) + '/' + ids.length + '…');
       await new Promise(function (r) { setTimeout(r, 300); });
     }
   } finally {
@@ -2390,7 +2440,12 @@ async function runProductVideoBulkAction(productId, ids, action, resolvedBy, rea
     const row = document.getElementById('product-detail-' + productId);
     if (row) await loadProductDetailInto(productId, row.querySelector('td'));
   }
-  toast(ok + ' ' + (action === 'approve' ? 'approved' : 'rejected') + (failed ? ', ' + failed + ' failed (still pending -- retry them)' : ''), failed > 0);
+  toast(
+    ok + ' ' + PAST[action] +
+    (merged ? ' (' + merged + ' merged with an existing entry)' : '') +
+    (failed ? ', ' + failed + ' failed' : ''),
+    failed > 0
+  );
 }
 
 async function approveVideoForProduct(productId, videoId) {
