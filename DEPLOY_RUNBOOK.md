@@ -3149,17 +3149,89 @@ reusing the existing `--danger-dark` color variable), `<= 30` days is
 `.badge.muted`, otherwise `.badge.ok` (both already existed in the
 stylesheet).
 
-No change to the SKU stock *chart* itself -- the forecast is table-only
-for now. A dashed forecast/projection line on the chart would need the
-x-axis to extend past "today" for SKUs with a valid forecast, which
-would read as walking back the 6i.10 second-follow-up fix that pinned
-`scales.x.max` to today; not done without Al confirming he wants that
-tradeoff.
+At ship time, the forecast was table-only -- adding a projection line to
+the chart itself would extend the x-axis past "today" for SKUs with a
+valid forecast, which reads as walking back the 6i.10 second-follow-up
+fix that pinned `scales.x.max` to today. Al confirmed he wants that
+tradeoff (see the follow-up immediately below), so the chart now carries
+the same forecast the table does.
 
 Verified via `node --check` against the extracted `<script>` contents
 and Python's `html.parser` for tag balance, same convention as every
 other admin-site-only change in this project. Swap the static
 admin-site file as usual -- no Lambda redeploy needed.
+
+**Follow-up, same session:** Al: "yes lets do the dashed line, we can
+have a vertical line for today so that is still obvious with left of
+that being historical real number and the right being forecasted." Also
+asked: "is there such a metric that is days until we run out based on
+the forecasted numbers" -- answered directly rather than building
+anything new for it: that's exactly Days of Supply / the estimated
+stockout date already in the 6i.11 table above, just visualized.
+
+**Dashed forecast line** (`renderSkuStockChart`): for each SKU with a
+non-null, non-zero `daysOfSupply` from `computeSkuForecast` (reused
+as-is, run against the *full* unfiltered history regardless of the
+chart's own display-range selection, since the forecast is always a
+fixed 30-day trailing rate), a second Chart.js dataset is added per SKU:
+two points, `{x: latest reading's timestamp, y: latest quantity}` to
+`{x: capped stockout timestamp, y: interpolated quantity at that
+timestamp}`, styled with `borderDash: [6, 4]` and the same per-SKU color
+as its solid line. `pointRadius`/`pointHoverRadius` are `[0, N]` arrays
+so only the line's end (the projected point) is a hoverable dot, not its
+start (which is already the last real data point on the solid line).
+Given `daysOfSupply === 0` (already out of stock) or `null` (no rate to
+project), no forecast dataset is added for that SKU -- nothing to draw a
+declining line toward.
+
+**How far the line extends** (`forecastHorizonDays`): capped at whichever
+comes first -- the SKU's own estimated stockout date, or a horizon that
+mirrors the currently-selected historical range's day count (30D of
+history shown -> up to 30 days of forecast shown; `All`, which has no
+fixed day count to mirror, falls back to a flat 90-day forward look).
+This keeps the forecast side of the "today" split roughly proportional
+to however much history is currently on screen, rather than either
+vanishing (a 7D view showing 1 day of a multi-month forecast) or
+dwarfing it (an `All` view of years of history showing a lookback that's
+mismatched with a short forecast).
+
+**Vertical "today" line** (new `todayLinePlugin`): a small custom
+Chart.js plugin using the `afterDraw` hook to stroke a vertical line +
+"Today" label at the current-time x-pixel, registered once globally via
+`Chart.register(...)` (guarded by the same `typeof Chart === 'undefined'`
+network-failure check every other Chart.js touchpoint already uses).
+Deliberately hand-rolled rather than pulling in the separate
+`chartjs-plugin-annotation` package -- keeps this project's only
+charting CDN dependency to Chart.js itself, same tradeoff already made
+and documented at the `<head>` `<script>` tag. Opt-in per chart via
+`options.plugins.todayLine.enabled`; only turned on for the SKU stock
+chart, and only when a forecast dataset actually extends the axis past
+today (so a chart with no forecast to show still looks exactly like it
+did before this follow-up -- no redundant line sitting on top of an
+axis that already ends at today).
+
+**Axis widening**: `options.scales.x.max` is now
+`Math.max(rangeBounds(...).max, forecastMaxX)` instead of always
+`rangeBounds(...).max` -- widens only when a forecast line needs the
+room, otherwise unchanged from the 6i.10 second-follow-up behavior (today
+as the fixed right edge). `options.scales.x.min` is untouched -- only the
+right/future edge moves.
+
+**Legend**: the forecast datasets are labeled `"<weight>lb (forecast)"`
+internally (for tooltip clarity) but filtered out of the visible legend
+(`options.plugins.legend.labels.filter`) so each weight still shows a
+single legend entry -- the dashed line style already communicates
+"forecast" without a second, redundant legend row per weight.
+
+**Shared helper added**: `latestSkuReadings(history)` -- the "most
+recent reading per SKU" lookup that `buildSkuStockSection`'s table and
+`renderSkuStockChart`'s new forecast line both need -- was pulled out of
+`buildSkuStockSection` into its own function so both call sites use the
+identical logic instead of two copies.
+
+No backend/API change. Verified via `node --check` against the extracted
+`<script>` contents and Python's `html.parser` for tag balance. Swap the
+static admin-site file as usual -- no Lambda redeploy needed.
 
 ### 6j. Home transcript fetcher (residential caption fetching) -- optional, run outside AWS entirely
 

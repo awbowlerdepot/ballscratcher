@@ -2083,16 +2083,7 @@ function buildPriceTrackingSection(id, priceSources, priceHistoryData, priceSite
 function buildSkuStockSection(id, skuStockHistoryData) {
   const skus = (skuStockHistoryData && skuStockHistoryData.skus) || [];
   const history = (skuStockHistoryData && skuStockHistoryData.history) || [];
-  // Latest reading per SKU (by checked_at) for the summary table --
-  // there can be more than one price_source_id per SKU in principle, but
-  // in practice only a BowlerDepot/'api' source ever writes to this
-  // table, so "latest across all sources for this weight" is the
-  // meaningful number to show, not a per-source breakdown.
-  const latestBySku = {};
-  history.forEach(function (h) {
-    const prev = latestBySku[h.product_sku_id];
-    if (!prev || new Date(h.checked_at) > new Date(prev.checked_at)) latestBySku[h.product_sku_id] = h;
-  });
+  const latestBySku = latestSkuReadings(history);
   const rows = skus.map(function (s) {
     const latest = latestBySku[s.id];
     const qtyCell = !latest || latest.quantity === null || latest.quantity === undefined
@@ -2136,6 +2127,22 @@ function buildSkuStockSection(id, skuStockHistoryData) {
     buildChartRangeToolbar(id, 'skuStock') +
     '<div class="chart-wrap"><canvas id="skuStock-chart-' + id + '"></canvas></div>' +
     '<p id="skuStock-chart-empty-' + id + '" class="muted small" style="display:none;"></p>';
+}
+
+// Latest reading per SKU (by checked_at) -- there can be more than one
+// price_source_id per SKU in principle, but in practice only a
+// BowlerDepot/'api' source ever writes to this table, so "latest across
+// all sources for this weight" is the meaningful number, not a
+// per-source breakdown. Shared by buildSkuStockSection's summary table
+// and renderSkuStockChart's forecast line -- both need "what do we
+// currently have on hand, per SKU" from the same raw history.
+function latestSkuReadings(history) {
+  const latestBySku = {};
+  history.forEach(function (h) {
+    const prev = latestBySku[h.product_sku_id];
+    if (!prev || new Date(h.checked_at) > new Date(prev.checked_at)) latestBySku[h.product_sku_id] = h;
+  });
+  return latestBySku;
 }
 
 // Trailing window for Average Daily Usage (ADU) -- a standard, commonly-
@@ -2234,6 +2241,46 @@ function destroyChart(canvasId) {
   }
 }
 
+// Draws a solid vertical "Today" line on a chart -- Al: "we can have a
+// vertical line for today so that is still obvious with left of that
+// being historical real number and the right being forecasted." A small
+// custom Chart.js plugin (afterDraw hook) rather than pulling in the
+// separate chartjs-plugin-annotation package, so this project's only
+// charting dependency stays Chart.js itself (see <head>'s CDN comment
+// for that same tradeoff reasoning). Opt-in per chart via
+// options.plugins.todayLine.enabled -- only the SKU stock chart turns it
+// on, and only when there's an actual forecast segment drawn past today
+// (see renderSkuStockChart); when the axis already ends exactly at
+// today (no forecast to show), the line would just sit on the right
+// edge and add nothing.
+const todayLinePlugin = {
+  id: 'todayLine',
+  afterDraw: function (chart) {
+    const opts = chart.options.plugins && chart.options.plugins.todayLine;
+    if (!opts || !opts.enabled) return;
+    const xScale = chart.scales.x;
+    const now = Date.now();
+    if (now < xScale.min || now > xScale.max) return;
+    const x = xScale.getPixelForValue(now);
+    const ctx = chart.ctx;
+    const top = chart.chartArea.top, bottom = chart.chartArea.bottom;
+    ctx.save();
+    ctx.beginPath();
+    ctx.setLineDash([]);
+    ctx.moveTo(x, top);
+    ctx.lineTo(x, bottom);
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = '#9ca3af';
+    ctx.stroke();
+    ctx.font = '10px sans-serif';
+    ctx.fillStyle = '#6b7280';
+    ctx.textAlign = 'center';
+    ctx.fillText('Today', x, top + 10);
+    ctx.restore();
+  },
+};
+if (typeof Chart !== 'undefined') Chart.register(todayLinePlugin);
+
 const CHART_COLORS = ['#2563eb', '#16a34a', '#dc2626', '#a855f7', '#f59e0b', '#0891b2'];
 
 // Range presets -- Al's "date time selection" ask. Filtering happens
@@ -2289,6 +2336,23 @@ function rangeBounds(rangeKey, timestampsMs) {
     return { min: timestampsMs.length ? Math.min.apply(null, timestampsMs) : now, max: now };
   }
   return { min: now - preset.days * 24 * 60 * 60 * 1000, max: now };
+}
+
+// How far past "today" the SKU stock chart's dashed forecast line is
+// allowed to extend. Mirrors the selected historical range's own day
+// span -- Al asked for a "vertical line for today" splitting historical
+// (left) from forecasted (right); showing an equal amount of forecast to
+// match however much history is currently on screen keeps the split
+// roughly centered rather than the forecast side dwarfing/vanishing
+// relative to the historical side. 'All' has no fixed day count to
+// mirror, so it falls back to a flat 90-day forward look (same as the
+// old default chart window). A SKU's own estimated stockout date still
+// caps its individual forecast line short of this horizon if it arrives
+// sooner -- this is just the outer bound.
+const FORECAST_HORIZON_FALLBACK_DAYS = 90;
+function forecastHorizonDays(rangeKey) {
+  const preset = CHART_RANGE_PRESETS.find(function (p) { return p.key === rangeKey; }) || CHART_RANGE_PRESETS[2];
+  return preset.days === null ? FORECAST_HORIZON_FALLBACK_DAYS : preset.days;
 }
 
 function buildChartRangeToolbar(productId, chartType) {
@@ -2467,15 +2531,60 @@ function renderSkuStockChart(productId, historyData) {
   const emptyEl = document.getElementById(emptyId);
   if (emptyEl) emptyEl.style.display = 'none';
 
+  // Dashed forecast projection past "today" -- Al: "let's do the dashed
+  // line... left of that being historical real number and the right
+  // being forecasted." Reuses computeSkuForecast (same ADU/Days-of-
+  // Supply math as the table above) against the FULL unfiltered history
+  // -- not the range-filtered `history` used for the solid line above --
+  // since the forecast rate is always a fixed 30-day trailing figure,
+  // independent of what range the user happens to be viewing.
+  const now = Date.now();
+  const rawHistory = ((historyData && historyData.history) || []).filter(function (h) { return h.quantity !== null && h.quantity !== undefined; });
+  const latestBySku = latestSkuReadings(rawHistory);
+  let forecastMaxX = now;
+  const horizonMs = forecastHorizonDays(rangeKey) * 24 * 60 * 60 * 1000;
+  const forecastDatasets = skus.map(function (s, i) {
+    const latest = latestBySku[s.id];
+    if (!latest) return null;
+    const forecast = computeSkuForecast(s.id, rawHistory, latest.quantity);
+    if (!forecast.daysOfSupply) return null; // null (no rate) or 0 (already out) -- nothing to project
+    const startX = new Date(latest.checked_at).getTime();
+    const startY = latest.quantity;
+    const stockoutX = forecast.stockoutDate.getTime();
+    const endX = Math.min(stockoutX, now + horizonMs);
+    const fraction = stockoutX > startX ? (endX - startX) / (stockoutX - startX) : 1;
+    const endY = Math.max(0, startY * (1 - fraction));
+    forecastMaxX = Math.max(forecastMaxX, endX);
+    return {
+      label: s.weight_lbs + 'lb (forecast)',
+      data: [{ x: startX, y: startY }, { x: endX, y: endY }],
+      borderColor: CHART_COLORS[i % CHART_COLORS.length],
+      backgroundColor: CHART_COLORS[i % CHART_COLORS.length],
+      borderDash: [6, 4],
+      pointRadius: [0, 4],
+      pointHoverRadius: [0, 6],
+      tension: 0,
+      fill: false,
+    };
+  }).filter(Boolean);
+
   const options = baseChartOptions(
     function (v) { return Number(v).toFixed(0); },
     function (item) { return item.dataset.label + ': ' + Number(item.parsed.y).toFixed(0); }
   );
   options.scales.y.min = 0;
+  // Hide the "(forecast)" legend entries -- the dashed style already
+  // distinguishes them from the solid actuals, and doubling the legend
+  // (one solid + one dashed entry per weight) would just add clutter.
+  options.plugins.legend.labels.filter = function (item) { return !/\(forecast\)$/.test(item.text); };
   const bounds = rangeBounds(rangeKey, history.map(function (h) { return new Date(h.checked_at).getTime(); }));
   options.scales.x.min = bounds.min;
-  options.scales.x.max = bounds.max;
-  chartInstances[canvasId] = new Chart(canvas.getContext('2d'), { type: 'line', data: { datasets: datasets }, options: options });
+  // Only widen the right edge past "today" when there's an actual
+  // forecast segment to show there -- otherwise keep the d7a3120 fix's
+  // behavior (today as the fixed right edge) exactly as-is.
+  options.scales.x.max = Math.max(bounds.max, forecastMaxX);
+  options.plugins.todayLine = { enabled: forecastMaxX > now };
+  chartInstances[canvasId] = new Chart(canvas.getContext('2d'), { type: 'line', data: { datasets: datasets.concat(forecastDatasets) }, options: options });
 }
 
 async function discoverPriceSourcesForProduct(id) {
