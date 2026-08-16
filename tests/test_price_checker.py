@@ -1083,6 +1083,61 @@ def test_extract_bigcommerce_price_fields_missing_custom_url_is_none():
     assert fields["product_url"] is None
 
 
+def test_extract_bigcommerce_price_fields_falls_back_to_variant_cost_when_product_cost_is_zero():
+    # Al: "the cost for products if not on the product itself is on the
+    # variants... if we get 0 from the product and we grab it from one
+    # of the variants" -- the real, common BigCommerce shape for a
+    # multi-weight product: product-level cost_price left at 0, real
+    # cost only set per-variant.
+    product = {
+        "price": 149.99, "cost_price": 0,
+        "variants": [
+            {"id": 1, "cost_price": 62.5},
+            {"id": 2, "cost_price": 62.5},
+        ],
+    }
+    fields = app.extract_bigcommerce_price_fields(product, base_url=None)
+    assert fields["cost_price"] == 62.5
+
+
+def test_extract_bigcommerce_price_fields_falls_back_to_variant_cost_when_product_cost_missing():
+    product = {
+        "price": 149.99,
+        "variants": [{"id": 1, "cost_price": None}, {"id": 2, "cost_price": 71.0}],
+    }
+    fields = app.extract_bigcommerce_price_fields(product, base_url=None)
+    assert fields["cost_price"] == 71.0
+
+
+def test_extract_bigcommerce_price_fields_prefers_product_level_cost_when_present():
+    # Fallback should never override a real, non-zero product-level
+    # value even if variants disagree (they shouldn't, per Al -- but the
+    # product-level number is still the first thing checked).
+    product = {
+        "price": 149.99, "cost_price": 80.0,
+        "variants": [{"id": 1, "cost_price": 999.0}],
+    }
+    fields = app.extract_bigcommerce_price_fields(product, base_url=None)
+    assert fields["cost_price"] == 80.0
+
+
+def test_extract_bigcommerce_price_fields_cost_none_when_product_and_all_variants_zero_or_missing():
+    product = {
+        "price": 149.99, "cost_price": 0,
+        "variants": [{"id": 1, "cost_price": 0}, {"id": 2, "cost_price": None}],
+    }
+    fields = app.extract_bigcommerce_price_fields(product, base_url=None)
+    assert fields["cost_price"] is None
+
+
+def test_extract_bigcommerce_price_fields_cost_none_when_no_variants_key_at_all():
+    # Guards the .get("variants", []) default -- a product dict without a
+    # "variants" key at all (e.g. a caller that fetched without
+    # include=variants) shouldn't raise.
+    fields = app.extract_bigcommerce_price_fields({"price": 10.0, "cost_price": 0}, base_url=None)
+    assert fields["cost_price"] is None
+
+
 def test_list_bowlerdepot_matches_shape():
     conn = _FakeConn(bowlerdepot_matches=[
         {"product_id": "p1", "external_product_id": "100", "match_status": "matched"},

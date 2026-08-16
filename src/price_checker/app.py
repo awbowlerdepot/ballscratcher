@@ -673,9 +673,31 @@ def extract_bigcommerce_price_fields(product: dict, base_url: str = None) -> dic
     (already imported for parse_search_results); when base_url isn't
     configured on the price_sites row, or custom_url is missing, falls
     back to the raw relative path rather than raising -- still usable as
-    an admin-UI link target, just not resolved to an absolute URL."""
+    an admin-UI link target, just not resolved to an absolute URL.
+
+    cost_price variant fallback -- Al: "the cost for products if not on
+    the product itself is on the variants. it should always be the same
+    for all the variants so if we get 0 from the product and we grab it
+    from one of the variants." BigCommerce commonly leaves a multi-
+    variant product's own top-level cost_price at 0/unset and only sets
+    real cost on each variant -- exactly this project's shape, since
+    every ball is sold as several weight variants. When the product-level
+    value is missing or exactly 0, this now falls back to the first
+    variant (in whatever order BigCommerce returned them) whose own
+    cost_price is a real, non-zero number -- Al confirmed cost is uniform
+    across a product's variants, so which one doesn't matter, only that
+    one has the real value. Both `variants` and `custom_fields` are
+    already included on every product this function ever sees (see
+    build_bigcommerce_products_by_id_url's include= param), so no new
+    API call is needed for this."""
     price = product.get("price")
     cost_price = product.get("cost_price")
+    if not cost_price:
+        for variant in product.get("variants", []) or []:
+            variant_cost = variant.get("cost_price")
+            if variant_cost:
+                cost_price = variant_cost
+                break
     custom_url = (product.get("custom_url") or {}).get("url")
     if custom_url and base_url:
         product_url = urljoin(base_url, custom_url)
@@ -684,7 +706,7 @@ def extract_bigcommerce_price_fields(product: dict, base_url: str = None) -> dic
 
     return {
         "price": float(price) if price is not None else None,
-        "cost_price": float(cost_price) if cost_price is not None else None,
+        "cost_price": float(cost_price) if cost_price else None,
         "product_url": product_url,
         "raw_price_text": None,
         "error": None,

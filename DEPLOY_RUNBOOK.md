@@ -3878,6 +3878,61 @@ sam build PublicApiFunction
 sam deploy
 ```
 
+### 6l.7. price_checker: variant cost_price fallback
+
+Al: "the cost for products if not on the product it's self is on the
+variants. it should always be the same for all the varaiants so if we
+get 0 from the product and we grab it from one of the variants?"
+
+**Root cause**: `extract_bigcommerce_price_fields` only ever read
+`product.get("cost_price")` -- the top-level BigCommerce product
+object's own field. BigCommerce also has a per-variant `cost_price`
+field, and for a multi-variant product (every ball here, sold as
+several weights) it's a common real-world shape for a merchant to only
+ever set cost on the variants, leaving the parent product's own
+`cost_price` at `0`/unset. `variants` was already being fetched on
+every request this function sees (`include=custom_fields,variants`,
+`build_bigcommerce_products_by_id_url`) for the unrelated per-SKU stock
+feature (017), so no new API call was needed to fix this -- the data
+was already sitting there, just unused for cost.
+
+**Fix**: when `product.get("cost_price")` is falsy (`None` or `0`),
+`extract_bigcommerce_price_fields` now walks `product["variants"]` and
+uses the first one with its own non-zero `cost_price`. Al confirmed
+cost is uniform across a product's variants, so which variant it comes
+from doesn't matter, only that one of them has the real number. A real,
+non-zero product-level value is still always used first and never
+overridden by variant data.
+
+**Intentional side effect**: if `cost_price` comes back `0`/unset at
+both the product level AND every variant, the result is now `None`
+(unknown) rather than the old behavior of storing a literal `0.0`. A
+bowling ball never really costs $0 to stock, so a lingering `0` was
+always really "not set" -- this makes that explicit rather than
+charting a fake zero-cost data point.
+
+Tests: 5 new cases in `test_price_checker.py` (falls back when product
+cost is exactly `0`, falls back when product cost key is missing
+entirely, product-level value still wins when present even if a variant
+disagrees, result is `None` when product and all variants are zero/
+missing, and a product dict with no `variants` key at all doesn't raise).
+Full suite: 1016/1016 passing, no regressions in
+`check_bigcommerce_sources`/`discover_bigcommerce_candidates` (both call
+this function and both already had their own cost_price-shape tests,
+none needed changes).
+
+Since cost_price is already historized per-check in
+`product_price_history` (see 6i.11/SKU-stock-adjacent history design --
+same append-only pattern), this fix takes effect starting from the next
+price check after redeploy; no backfill of past `0`/`None` rows.
+
+No migration, no `template.yaml` change -- redeploy just the one
+function:
+```bash
+sam build PriceCheckerFunction
+sam deploy
+```
+
 ### 6m. Ball motion plotter (consumer site, standalone page)
 
 Al shared an existing interactive plotter he'd built in another Cowork
