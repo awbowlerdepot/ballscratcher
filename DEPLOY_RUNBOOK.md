@@ -4139,6 +4139,72 @@ sam build PriceCheckerFunction
 sam deploy
 ```
 
+### 6l.8. price_checker discovery: zero-result fallback query for scrape sites
+
+Real incident, same "Storm !Q Tour Edition" ball as 6h.1's BowlerDepot
+match (see that section for the full backstory of how the real stored
+name was confirmed). Once the BowlerDepot ("api" fetch_method) match was
+fixed, Al reported the same product wasn't being found on bowling.com (a
+"scrape" fetch_method site) at all -- and instead of guessing, he tested
+bowling.com's own site search directly: "the product doesn't show up at
+all and the reason is the edition on the end cause zero results to show
+up."
+
+**Root cause**: `discover_price_sources`' scrape-site search loop builds
+one literal query per product (`build_search_query` = `"{brand} {product
+name}"`) and sends it straight to the site's own search page. Unlike
+BowlerDepot's catalog (an exact list this project fuzzy-matches against
+locally), a generic retailer's site search is a black box this project
+doesn't control -- and bowling.com's, specifically, appears to be too
+LITERAL: appending "Edition" to the query returns zero results even
+though the ball is on the site under a name without it. There's no way
+to fix a third-party search engine's own behavior, only to avoid sending
+it a word it can't handle.
+
+**Fix**: new `strip_generic_qualifiers(name)` drops any whole word from
+`_GENERIC_QUALIFIER_WORDS = {"bowling", "ball", "balls", "edition"}` --
+the same set as `bowlerdepot_reconciliation._GENERIC_NAME_SUFFIX_TOKENS`
+(6h.1), duplicated rather than imported per this module's own "each
+Lambda is its own deploy package" convention, since it's the identical
+real-world pattern (a manufacturer-only qualifier a retailer often
+drops), just breaking a different stage of the pipeline. `discover_
+price_sources` now retries a scrape-site search exactly once, only when
+the FIRST search for a product+site returns zero results (never on a
+request exception -- that's a network/site failure, a different problem
+this can't fix), using the stripped query. Whichever query actually
+produced results is what gets stored as the candidate's `match_query`,
+so an admin reviewing a pending candidate sees the query that explains
+why it showed up, not the original zero-result one.
+
+**Scope note**: this only touches the "product doesn't show up at all"
+failure mode. `score_match`'s own permissiveness (any one product-name
+token, not all) -- the separate "finding 5 completely different
+products" symptom Al also mentioned -- is unchanged; that's the same
+intentional, documented tradeoff `score_match`'s own docstring already
+covers (a pending candidate always needs admin review, this heuristic
+was never meant to eliminate false positives on its own). Not addressed
+here since Al confirmed the missing-match case was the one to look at
+first.
+
+Tests: 6 new cases in `test_price_checker.py` -- `strip_generic_
+qualifiers` unit tests (edition/bowling-ball removal, case-
+insensitivity, punctuation preserved on kept words, no-op when nothing
+to strip, empty string) plus end-to-end `discover_price_sources` cases:
+a zero-result first search retries with the stripped query and stores
+the candidate under the query that worked; a name with no qualifier
+words never gets a second, identical search attempt; both queries
+coming back empty still completes cleanly (marks the product searched,
+zero errors); and a failed fallback request counts as a search error
+without blocking the rest of the batch. Full suite: 1035/1035 passing,
+zero regressions.
+
+No migration, no `template.yaml` change -- redeploy just the one
+function:
+```bash
+sam build PriceCheckerFunction
+sam deploy
+```
+
 ### 6m. Ball motion plotter (consumer site, standalone page)
 
 Al shared an existing interactive plotter he'd built in another Cowork

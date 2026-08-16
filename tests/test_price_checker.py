@@ -551,6 +551,37 @@ def test_build_search_query_combines_brand_and_product():
     assert app.build_search_query("Storm", "Absolute") == "Storm Absolute"
 
 
+# --- strip_generic_qualifiers: real incident, Al (after testing bowling.
+# com's own site search himself): "the product doesn't show up at all and
+# the reason is the edition on the end cause zero results to show up." ---
+
+def test_strip_generic_qualifiers_removes_edition():
+    assert app.strip_generic_qualifiers("!Q Tour Edition") == "!Q Tour"
+
+
+def test_strip_generic_qualifiers_removes_bowling_ball_suffix():
+    assert app.strip_generic_qualifiers("Fury Emerald/Black Hybrid Bowling Ball") == "Fury Emerald/Black Hybrid"
+
+
+def test_strip_generic_qualifiers_is_case_insensitive():
+    assert app.strip_generic_qualifiers("Fury EDITION") == "Fury"
+
+
+def test_strip_generic_qualifiers_noop_when_nothing_to_strip():
+    assert app.strip_generic_qualifiers("Phaze II") == "Phaze II"
+
+
+def test_strip_generic_qualifiers_preserves_punctuation_on_kept_words():
+    # Only whole filler-word tokens are dropped -- a kept word's own
+    # punctuation (e.g. "!Q") must survive untouched, not get mangled by
+    # the same regex used to test each word against the filler set.
+    assert app.strip_generic_qualifiers("!Q Tour Edition") == "!Q Tour"
+
+
+def test_strip_generic_qualifiers_handles_empty_string():
+    assert app.strip_generic_qualifiers("") == ""
+
+
 # --- parse_search_results / search_site_for_product: bs4 selector +
 # urljoin, small hand-written HTML (same "no real network access in this
 # sandbox" honesty note as extract_price's tests above). ---
@@ -859,6 +890,102 @@ def test_discover_price_sources_scores_match_confidence(monkeypatch):
     app.discover_price_sources(conn, {}, session=None)
 
     assert captured["candidates"][0]["match_confidence"] == "high"
+
+
+# --- discover_price_sources: zero-result fallback retry, real incident
+# above (strip_generic_qualifiers) ---
+
+def test_discover_price_sources_retries_with_stripped_query_on_zero_results(monkeypatch):
+    conn = _FakeConn(
+        products=[{"id": "prod-1", "name": "!Q Tour Edition", "brand_name": "Storm"}],
+        sites=[_sample_sites()[0]],
+    )
+    queries_seen = []
+
+    def _fake_search(site, query, session=None, max_results=app.DEFAULT_MAX_RESULTS_PER_SITE_SEARCH):
+        queries_seen.append(query)
+        if query == "Storm !Q Tour Edition":
+            return []  # the real incident: the literal query gets zero results
+        return [{"product_url": "https://site-1.example/p1", "title": "Storm !Q Tour"}]
+
+    monkeypatch.setattr(app, "search_site_for_product", _fake_search)
+
+    result = app.discover_price_sources(conn, {}, session=None)
+
+    assert queries_seen == ["Storm !Q Tour Edition", "Storm !Q Tour"]
+    assert result["new_candidates"] == 1
+    # match_query stored against the candidate must be whichever query
+    # actually produced it, not the original zero-result one -- otherwise
+    # an admin reviewing the pending candidate sees a query that doesn't
+    # explain why this URL showed up.
+    inserts = [e for e in conn.cursor().executed if e[0].startswith("insert into product_price_sources")]
+    assert len(inserts) == 1
+    assert inserts[0][1][3] == "Storm !Q Tour"
+
+
+def test_discover_price_sources_no_retry_when_name_has_no_qualifier_words(monkeypatch):
+    conn = _FakeConn(
+        products=[{"id": "prod-1", "name": "Phaze II", "brand_name": "Storm"}],
+        sites=[_sample_sites()[0]],
+    )
+    queries_seen = []
+
+    def _fake_search(site, query, session=None, max_results=app.DEFAULT_MAX_RESULTS_PER_SITE_SEARCH):
+        queries_seen.append(query)
+        return []
+
+    monkeypatch.setattr(app, "search_site_for_product", _fake_search)
+
+    app.discover_price_sources(conn, {}, session=None)
+
+    # Nothing to strip from "Phaze II" -- only ever one search attempt,
+    # not a second identical retry.
+    assert queries_seen == ["Storm Phaze II"]
+
+
+def test_discover_price_sources_stays_empty_when_fallback_also_zero(monkeypatch):
+    conn = _FakeConn(
+        products=[{"id": "prod-1", "name": "!Q Tour Edition", "brand_name": "Storm"}],
+        sites=[_sample_sites()[0]],
+    )
+    queries_seen = []
+
+    def _fake_search(site, query, session=None, max_results=app.DEFAULT_MAX_RESULTS_PER_SITE_SEARCH):
+        queries_seen.append(query)
+        return []  # this product just isn't on this site at all
+
+    monkeypatch.setattr(app, "search_site_for_product", _fake_search)
+
+    result = app.discover_price_sources(conn, {}, session=None)
+
+    assert queries_seen == ["Storm !Q Tour Edition", "Storm !Q Tour"]
+    assert result["new_candidates"] == 0
+    assert result["search_errors"] == 0
+    # Still marked as searched -- a real, completed (if empty) pass.
+    assert conn.cursor().last_discovery_marked == ["prod-1"]
+
+
+def test_discover_price_sources_fallback_search_failure_counts_as_error(monkeypatch):
+    conn = _FakeConn(
+        products=[{"id": "prod-1", "name": "!Q Tour Edition", "brand_name": "Storm"}],
+        sites=[_sample_sites()[0]],
+    )
+
+    def _fake_search(site, query, session=None, max_results=app.DEFAULT_MAX_RESULTS_PER_SITE_SEARCH):
+        if query == "Storm !Q Tour Edition":
+            return []
+        raise ConnectionError("timed out")
+
+    monkeypatch.setattr(app, "search_site_for_product", _fake_search)
+
+    result = app.discover_price_sources(conn, {}, session=None)
+
+    assert result["new_candidates"] == 0
+    assert result["search_errors"] == 1
+    # A failed fallback attempt is still a completed pass for this
+    # product/site -- same "one bad row can't stop the batch" stance as
+    # every other search_errors path in this function.
+    assert conn.cursor().last_discovery_marked == ["prod-1"]
 
 
 # --- handler: {"discover": true} job-shape dispatch ---

@@ -176,6 +176,42 @@ def build_search_query(brand_name: str, product_name: str) -> str:
     return f"{brand_name} {product_name}"
 
 
+# Real incident, Al (bowling.com, after testing the site search himself):
+# "the product doesn't show up at all and the reason is the edition on the
+# end cause zero results to show up." Unlike BowlerDepot's own catalog
+# (bowlerdepot_reconciliation's _GENERIC_NAME_SUFFIX_TOKENS, matching/
+# scoring against a fetched product list), a generic scrape-search site's
+# own search engine is a black box this project doesn't control -- it can
+# be too LITERAL, not too loose, and there's no way to fix that except by
+# not sending it a word it apparently can't handle. Same qualifier-word
+# set as bowlerdepot_reconciliation's own _GENERIC_NAME_SUFFIX_TOKENS
+# (duplicated, not imported -- see this module's own comment above
+# _STOPWORDS for why: every Lambda here is its own deploy package), since
+# it's the same real-world naming pattern (a manufacturer-only qualifier
+# a retailer's own listing/search often drops), just breaking a different
+# part of the pipeline (site search returning zero results, not fuzzy-
+# matching a candidate list).
+_GENERIC_QUALIFIER_WORDS = {"bowling", "ball", "balls", "edition"}
+_QUALIFIER_WORD_RE = re.compile(r"[a-z0-9]+")
+
+
+def strip_generic_qualifiers(name: str) -> str:
+    """Drops any whole word in _GENERIC_QUALIFIER_WORDS from name
+    (case-insensitive, punctuation-preserving on the words that stay --
+    only whole tokens matching a filler word outright are removed, e.g.
+    "!Q Tour Edition" -> "!Q Tour", not a substring strip that could
+    mangle an unrelated word). Returns the original name unchanged if
+    nothing was stripped, so callers can cheaply check `!= name` to know
+    whether a fallback retry is even worth attempting."""
+    if not name:
+        return name
+    kept = [
+        word for word in name.split()
+        if "".join(_QUALIFIER_WORD_RE.findall(word.lower())) not in _GENERIC_QUALIFIER_WORDS
+    ]
+    return " ".join(kept)
+
+
 def get_requests_session():
     """Fresh requests.Session with urllib3 Retry mounted on https, same
     shape as video_discovery.get_youtube_requests_session -- see this
@@ -1347,7 +1383,14 @@ def discover_price_sources(conn, job: dict, session=None) -> dict:
 
     for product in products:
         query = build_search_query(product["brand_name"], product["name"])
+        stripped_name = strip_generic_qualifiers(product["name"])
+        fallback_query = (
+            build_search_query(product["brand_name"], stripped_name)
+            if stripped_name != product["name"] else None
+        )
+
         for site in scrape_sites:
+            used_query = query
             try:
                 results = search_site_for_product(site, query, session=session, max_results=max_results)
             except Exception:
@@ -1358,14 +1401,41 @@ def discover_price_sources(conn, job: dict, session=None) -> dict:
                 search_errors += 1
                 continue
 
+            # Real incident, Al: "the reason is the edition on the end
+            # cause zero results to show up" -- some sites' own search
+            # engines are too literal about a manufacturer-only
+            # qualifier word, unlike BowlerDepot's catalog match (which
+            # can fail loose/ambiguous but rarely returns zero). Retried
+            # ONLY on a genuine zero-result response, not on a request
+            # exception (that's a site/network failure, a different
+            # problem strip_generic_qualifiers can't fix) -- and only
+            # once, since a second stripped query that also comes back
+            # empty just means this product isn't on this site.
+            if not results and fallback_query:
+                try:
+                    results = search_site_for_product(site, fallback_query, session=session, max_results=max_results)
+                except Exception:
+                    logger.exception(
+                        "Price-source fallback search failed for product_id=%s site=%r query=%r",
+                        product["id"], site["name"], fallback_query,
+                    )
+                    search_errors += 1
+                    continue
+                if results:
+                    used_query = fallback_query
+                    logger.info(
+                        "product_id=%s site=%r query=%r -> 0 results, retried with query=%r",
+                        product["id"], site["name"], query, fallback_query,
+                    )
+
             for result in results:
                 result["match_confidence"] = score_match(result["title"], product["brand_name"], product["name"])
 
-            inserted = insert_price_source_candidates(conn, product["id"], site["id"], query, results)
+            inserted = insert_price_source_candidates(conn, product["id"], site["id"], used_query, results)
             total_candidates += inserted
             logger.info(
                 "product_id=%s site=%r query=%r -> %d results, %d new candidates",
-                product["id"], site["name"], query, len(results), inserted,
+                product["id"], site["name"], used_query, len(results), inserted,
             )
 
         mark_product_price_discovery_searched(conn, product["id"])
