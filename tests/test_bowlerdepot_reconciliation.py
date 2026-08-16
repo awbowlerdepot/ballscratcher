@@ -85,6 +85,66 @@ def test_fuzzy_match_picks_best_of_multiple_candidates():
     assert match["id"] == 2
 
 
+def test_fuzzy_match_rejects_distinguishing_suffix_real_incident():
+    # Real incident, Al: "it is finding the 'Storm iQ Tour AI' instead of
+    # the 'Storm iQ Tour'" -- a short appended word barely dents
+    # SequenceMatcher's character-ratio score (this scores ~0.90,
+    # comfortably above FUZZY_MATCH_THRESHOLD), but "AI" names a
+    # genuinely different ball, not retail-listing noise on the same one.
+    products = [{"id": 1, "name": "Storm iQ Tour AI", "sku": "X"}]
+    match, ratio = app.fuzzy_match_product("Storm iQ Tour", products)
+    assert match is None
+    assert ratio == 0.0
+
+
+def test_fuzzy_match_rejects_other_common_variant_suffixes():
+    # Same shape, other real bowling-naming suffixes that name a
+    # genuinely different ball, not filler.
+    for suffix in ("Solid", "Pearl", "Hybrid", "Pro"):
+        products = [{"id": 1, "name": f"Storm iQ Tour {suffix}", "sku": "X"}]
+        match, ratio = app.fuzzy_match_product("Storm iQ Tour", products)
+        assert match is None, f"should not match on '+{suffix}' suffix"
+
+
+def test_names_token_compatible_allows_bowling_ball_suffix():
+    # The one suffix this project already confirmed as harmless retail-
+    # listing noise (FUZZY_MATCH_THRESHOLD's own calibration comment) --
+    # the token-compatibility gate itself must still allow it. Tested
+    # directly against the helper (rather than through fuzzy_match_
+    # product's ratio/threshold) since SequenceMatcher's threshold math
+    # is separately, proportionally sensitive to base-name length --
+    # see test_fuzzy_match_close_but_not_exact for that existing,
+    # unrelated behavior on a longer base name -- and this test should
+    # only exercise the gate, not get entangled with it.
+    assert app._names_token_compatible("Storm iQ Tour", "Storm iQ Tour Bowling Ball") is True
+
+
+def test_fuzzy_match_close_but_not_exact_still_works_with_gate_added():
+    # End-to-end confirmation that the new token-compatibility gate
+    # didn't regress the pre-existing "+ Bowling Ball" tolerance through
+    # the real fuzzy_match_product path (same pair test_fuzzy_match_
+    # close_but_not_exact above already covers -- kept here so this
+    # file's own real-incident test block for the token gate is
+    # self-contained).
+    products = [{"id": 1, "name": "Brunswick Fury Emerald/Black Hybrid Bowling Ball", "sku": "X"}]
+    match, ratio = app.fuzzy_match_product("Brunswick Fury Emerald/Black Hybrid", products)
+    assert match["id"] == 1
+    assert 0.80 <= ratio < 1.0
+
+
+def test_fuzzy_match_prefers_real_match_over_distinguishing_suffix_candidate():
+    # The actual reported bug shape: both the real match AND the wrong
+    # (suffixed) candidate are present -- the real one must win, and the
+    # wrong one must never even be considered as a fallback.
+    products = [
+        {"id": 1, "name": "Storm iQ Tour AI", "sku": "WRONG"},
+        {"id": 2, "name": "Storm iQ Tour", "sku": "RIGHT"},
+    ]
+    match, ratio = app.fuzzy_match_product("Storm iQ Tour", products)
+    assert match["id"] == 2
+    assert ratio == 1.0
+
+
 # --- check_coverage ---
 
 def test_check_coverage_flags_missing_product():

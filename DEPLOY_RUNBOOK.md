@@ -1782,6 +1782,74 @@ false` on `BowlerDepotReconciliationFunction`'s `DailySchedule` event in
    when it's actually "not checking anything." See README's "QA
    cross-checks" section for the full caveat.
 
+### 6h.1. fuzzy_match_product real incident: matched "Storm iQ Tour" to "Storm iQ Tour AI"
+
+Al reported this indirectly, working backward from a symptom: "product
+[id] is missing counts for 15 and 13 weights" (a SKU stock table gap in
+admin) -> he manually verified on bowlerdepot.com that the real "Storm
+iQ Tour" listing has quantities for every weight -> "it is finding the
+'Storm iQ Tour AI' instead of the 'Storm iQ Tour'". price_checker's SKU
+matching was reading a genuinely DIFFERENT ball's BigCommerce variants
+the whole time, because `fuzzy_match_product` had linked our "Storm iQ
+Tour" product to BowlerDepot's separate "Storm iQ Tour AI" listing.
+
+**Root cause**: `fuzzy_match_product` scored candidates with plain
+`difflib.SequenceMatcher` character-ratio similarity only. "storm iq
+tour" vs "storm iq tour ai" scores ~0.90 -- comfortably above
+`FUZZY_MATCH_THRESHOLD = 0.80` -- because a short appended word barely
+dents a character-level ratio no matter what that word actually says.
+Bowling-ball naming convention is overwhelmingly "base name + a short
+suffix that names a genuinely different ball" (Solid/Pearl/Hybrid/Pro/
+AI/etc.), so this was a systemic risk, not a one-off -- any product
+whose exact-name match was ever missing/stale/unpublished on
+BowlerDepot's side, with a suffixed sibling ball present instead, was
+exposed to the same silent wrong-match.
+
+Correctly landed as `match_status = 'ambiguous'` (ratio 0.90 < 1.0), so
+it wasn't auto-trusted by `check_accuracy` -- but `discover_
+bigcommerce_candidates` still created a real, `'low'`-confidence
+BigCommerce price-source candidate pointing at the wrong product, and
+that candidate still had to be manually approved before price_checker
+would ever touch it (the module's own "never auto-approved" design) --
+the review step that existed didn't catch this specific failure mode.
+
+**Fix**: `fuzzy_match_product` now requires a new token-compatibility
+gate (`_names_token_compatible`, using a separate `_loose_tokens`
+tokenization -- punctuation-as-boundary, not punctuation-stripped, so it
+doesn't collide with `_normalize_name`'s existing "Emerald/Black" ->
+"emeraldblack" behavior that SequenceMatcher still relies on) BEFORE a
+candidate's ratio is even computed. Two names may only differ by words
+in `_GENERIC_NAME_SUFFIX_TOKENS = {"bowling", "ball", "balls"}` -- the
+one suffix `FUZZY_MATCH_THRESHOLD`'s own original calibration comment
+already documented as harmless retail-listing noise. Any OTHER extra/
+missing word (AI, Solid, Pearl, Hybrid, Pro, ...) now hard-rejects that
+candidate before SequenceMatcher gets a chance to score it favorably.
+
+Tests: 4 new real-incident cases in `test_bowlerdepot_reconciliation.py`
+(rejects the exact "Storm iQ Tour"/"Storm iQ Tour AI" pair, rejects
+Solid/Pearl/Hybrid/Pro variants of the same shape, still allows the "+
+Bowling Ball" suffix -- tested both directly against
+`_names_token_compatible` and end-to-end through `fuzzy_match_product`
+with a longer base name to avoid an unrelated short-name/threshold
+interaction -- and confirms the real match wins outright when both the
+correct and wrong-suffix candidates are present together). Full suite:
+1021/1021 passing, zero regressions.
+
+**Scope note**: Al asked specifically for the matching-algorithm fix.
+Not done as part of this: correcting product
+`8e93b985-857b-4516-a29b-6f238f6652b1`'s existing bad price-source row
+(still points at "Storm iQ Tour AI" until someone re-runs matching/
+re-approves a corrected candidate for it), and a catalog-wide scan for
+other already-approved price sources with this same collision shape.
+Both were offered and explicitly declined for now.
+
+No migration, no `template.yaml` change -- redeploy just the one
+function:
+```bash
+sam build BowlerDepotReconciliationFunction
+sam deploy
+```
+
 ### 6i. Video enrichment (YouTube + Bedrock) -- only after `YouTubeApiKeySecretArn` is set and the Bedrock model is granted access
 
 **Transcript fetching is now exclusively the home browser cron (6k), not

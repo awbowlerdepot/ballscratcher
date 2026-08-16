@@ -180,6 +180,60 @@ def _normalize_name(name: str) -> str:
     return re.sub(r"\s+", " ", cleaned).strip()
 
 
+# Real incident, Al: "it is finding the 'Storm iQ Tour AI' instead of the
+# 'Storm iQ Tour'" -- fuzzy_match_product's old SequenceMatcher-only
+# scoring is a character-level ratio, and a short appended word barely
+# dents it regardless of what that word is: "storm iq tour" vs "storm iq
+# tour ai" scores ~0.90, comfortably clearing FUZZY_MATCH_THRESHOLD.
+# Bowling-ball naming convention is overwhelmingly "base name + a short
+# suffix that names a genuinely DIFFERENT variant/ball" (Solid/Pearl/
+# Hybrid/Pro/AI/etc.), so a metric that can't tell "harmless retail
+# suffix" apart from "different product's suffix" will keep silently
+# matching the wrong ball to a real product's name.
+#
+# _GENERIC_NAME_SUFFIX_TOKENS is the one narrow exception carved back
+# out: the "+ Bowling Ball" suffix is the specific case FUZZY_MATCH_
+# THRESHOLD's own calibration comment already documented as intentional,
+# real-world-observed variance (see below) -- a purely generic retail
+# label, not a qualifier that ever names a different ball. Any OTHER
+# extra/missing word between two names is now a hard reject at the
+# candidate-selection stage, before SequenceMatcher ever gets a ratio to
+# score, so it can't be talked into a false match by favorable character
+# overlap the way "ai" was.
+_GENERIC_NAME_SUFFIX_TOKENS = {"bowling", "ball", "balls"}
+
+
+def _loose_tokens(name: str) -> set:
+    """Word-boundary-aware tokenization used ONLY by the token-
+    compatibility gate below -- deliberately a different normalization
+    from _normalize_name. _normalize_name strips punctuation entirely
+    (e.g. "Emerald/Black" -> "emeraldblack", one merged word) so
+    SequenceMatcher can still score a close character-level match despite
+    a dropped slash; but that same stripping would make a real
+    punctuation-only difference look like a word-count mismatch to a
+    token-set comparison and wrongly reject a good match (see
+    test_fuzzy_match_high_but_not_exact_when_slash_becomes_a_space).
+    Here, punctuation is replaced with a space instead of deleted, so
+    "Emerald/Black", "Emerald-Black", and "Emerald Black" all tokenize
+    identically to {"emerald", "black"}."""
+    spaced = re.sub(r"[^a-z0-9\s]", " ", name.lower())
+    return set(spaced.split())
+
+
+def _names_token_compatible(our_name: str, candidate_name: str) -> bool:
+    """True when our_name and candidate_name differ, if at all, only by
+    words in _GENERIC_NAME_SUFFIX_TOKENS on either side. fuzzy_match_
+    product uses this as a hard gate BEFORE computing a SequenceMatcher
+    ratio at all -- a candidate that fails this check is never a match
+    candidate, no matter how high its character-similarity ratio scores,
+    since a real distinguishing word (any word outside the generic-filler
+    set) is this project's strongest available signal that two names
+    refer to genuinely different balls, not typo/formatting variance of
+    the same one."""
+    extra = _loose_tokens(our_name) ^ _loose_tokens(candidate_name)
+    return extra.issubset(_GENERIC_NAME_SUFFIX_TOKENS)
+
+
 def fuzzy_match_product(our_name: str, bigcommerce_products: list, threshold: float = FUZZY_MATCH_THRESHOLD):
     """Returns (product, ratio) for the best-scoring BigCommerce product
     match, or (None, 0.0) if nothing clears threshold. Exact normalized-
@@ -187,14 +241,24 @@ def fuzzy_match_product(our_name: str, bigcommerce_products: list, threshold: fl
     difflib.SequenceMatcher ratio against normalized names -- a heuristic,
     not a guaranteed-correct match, which is exactly why every match this
     produces gets recorded with match_status rather than silently trusted
-    (see check_coverage/'ambiguous' handling)."""
+    (see check_coverage/'ambiguous' handling).
+
+    Every non-exact candidate must also pass _names_token_compatible
+    before its ratio is even computed -- see that function's own
+    docstring for the real incident (a distinguishing suffix like "AI")
+    this gate exists to block. A candidate that fails is simply skipped,
+    same as if it scored 0.0; it can never win best_ratio no matter how
+    high its raw character-similarity would have been."""
     our_normalized = _normalize_name(our_name)
     best_product, best_ratio = None, 0.0
 
     for product in bigcommerce_products:
-        candidate_normalized = _normalize_name(product.get("name", ""))
+        candidate_name = product.get("name", "")
+        candidate_normalized = _normalize_name(candidate_name)
         if candidate_normalized == our_normalized:
             return product, 1.0
+        if not _names_token_compatible(our_name, candidate_name):
+            continue
         ratio = SequenceMatcher(None, our_normalized, candidate_normalized).ratio()
         if ratio > best_ratio:
             best_product, best_ratio = product, ratio
