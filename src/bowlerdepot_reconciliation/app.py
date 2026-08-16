@@ -470,13 +470,33 @@ def get_product_skus(conn, product_id) -> list:
 
 
 def upsert_bowlerdepot_match(conn, product_id, bigcommerce_product_id, bigcommerce_sku, match_status: str):
+    """018_bowlerdepot_products_dedupe_by_product.sql -- real incident, Al:
+    "it still finds the ai version." The OLD conflict target here was
+    (bigcommerce_product_id, bigcommerce_sku) -- keyed on the BigCommerce
+    side, not on OUR product_id. That meant a corrected re-match for a
+    product that already had a stored (wrong) match didn't overwrite the
+    old row, it INSERTED A SECOND ROW for the same product_id, since the
+    new (correct) bigcommerce_product_id/sku pair had never been seen
+    before and didn't collide with anything. list_bowlerdepot_matches
+    (price_checker) had no dedup/ordering, so which of the two rows won
+    for a given product was effectively arbitrary -- explaining why even
+    a fixed, redeployed fuzzy_match_product kept "finding the AI version"
+    for a product that had already been (wrongly) matched once before.
+
+    Now conflicts on product_id itself -- each of our products has
+    exactly one current match row, and a fresh reconciliation run always
+    overwrites it in place rather than accumulating a duplicate. See the
+    migration's own header comment for how existing duplicate rows (one
+    per already-double-matched product) get collapsed to one before the
+    new unique constraint is added."""
     with conn.cursor() as cur:
         cur.execute(
             """
             insert into bowlerdepot_products (product_id, bigcommerce_product_id, bigcommerce_sku, match_status, last_synced_at)
             values (%s, %s, %s, %s, now())
-            on conflict (bigcommerce_product_id, bigcommerce_sku) do update set
-                product_id = excluded.product_id,
+            on conflict (product_id) do update set
+                bigcommerce_product_id = excluded.bigcommerce_product_id,
+                bigcommerce_sku = excluded.bigcommerce_sku,
                 match_status = excluded.match_status,
                 last_synced_at = now()
             """,

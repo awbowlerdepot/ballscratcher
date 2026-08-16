@@ -53,6 +53,7 @@ psql "$DATABASE_URL" -f db/migrations/014_price_tracking.sql
 psql "$DATABASE_URL" -f db/migrations/015_products_last_price_discovery_at.sql
 psql "$DATABASE_URL" -f db/migrations/016_price_tracking_bigcommerce.sql
 psql "$DATABASE_URL" -f db/migrations/017_price_tracking_sku_stock.sql
+psql "$DATABASE_URL" -f db/migrations/018_bowlerdepot_products_dedupe_by_product.sql
 ```
 
 (If you already ran an earlier subset in a prior deploy, just run whatever
@@ -1849,6 +1850,72 @@ function:
 sam build BowlerDepotReconciliationFunction
 sam deploy
 ```
+
+**Follow-up, same session -- real incident: "it still finds the ai
+version."** Reported after the fix above was already implemented (Al
+hadn't necessarily redeployed yet -- but this follow-up explains why
+even a redeploy alone wouldn't have been enough). Investigating turned
+up a SECOND, independent bug: `upsert_bowlerdepot_match`'s `ON CONFLICT`
+target was `(bigcommerce_product_id, bigcommerce_sku)` -- keyed on the
+BigCommerce side, not on our own `product_id`. A corrected re-match for
+a product that already had a stored (wrong) match therefore didn't
+overwrite that old row, it INSERTED A SECOND ROW for the same
+`product_id`, since the new/correct BigCommerce id+sku pair had never
+been seen before and didn't collide with anything.
+`price_checker.list_bowlerdepot_matches` has no `DISTINCT`/`ORDER BY`,
+so which of the two rows for a product "won" was effectively arbitrary
+-- meaning even the fixed, redeployed matching algorithm could still
+appear to "find the AI version" for a product that had already been
+wrongly matched once before this fix existed.
+
+**Fix, migration `018_bowlerdepot_products_dedupe_by_product.sql`**:
+1. Collapses any existing duplicate `bowlerdepot_products` rows per
+   `product_id` down to one (keeps the most-recently-synced row via a
+   `row_number() over (partition by product_id order by last_synced_at
+   desc nulls last, created_at desc, id desc)` window-function delete).
+2. Drops the old `(bigcommerce_product_id, bigcommerce_sku)` unique
+   constraint -- looked up dynamically via `pg_constraint`/`pg_attribute`
+   rather than hardcoding Postgres's auto-generated constraint name
+   (long enough to risk `NAMEDATALEN` truncation, not worth guessing).
+3. Adds a new `unique (product_id)` constraint -- each of our products
+   now has exactly one current match row, by design.
+
+`upsert_bowlerdepot_match` (`src/bowlerdepot_reconciliation/app.py`) now
+conflicts on `product_id` and does `update set bigcommerce_product_id =
+excluded.bigcommerce_product_id, bigcommerce_sku = excluded.
+bigcommerce_sku, ...` -- a fresh reconciliation run always overwrites a
+product's match in place going forward, never accumulates a duplicate.
+
+**Still not automatic**: this migration does not touch
+`product_price_sources`. An existing already-approved price source
+created from the old wrong match keeps pointing at the wrong
+BigCommerce product until an admin re-triggers "Find price sources"
+(`POST /products/{id}/discover-price-sources`) for that product, after
+BOTH this migration and the algorithm fix are deployed and a fresh
+reconciliation run has corrected the underlying `bowlerdepot_products`
+row -- `discover_bigcommerce_candidates`/`upsert_bigcommerce_price_
+source_candidate` already corrects an existing approved row in place
+when the underlying match has changed, it just isn't triggered
+automatically by the migration itself.
+
+Tests: `test_upsert_bowlerdepot_match_conflicts_on_product_id` (new,
+uses a minimal fake conn/cursor recording executed SQL -- this module
+has no established fake-Postgres pattern elsewhere, `handler`/`write_*`
+are documented as needing real credentials to verify) pins the new
+conflict target so this specific regression can't silently recur. Full
+suite: 1022/1022 passing.
+
+```bash
+psql "$DATABASE_URL" -f db/migrations/018_bowlerdepot_products_dedupe_by_product.sql
+sam build BowlerDepotReconciliationFunction
+sam deploy
+```
+
+Then, to clear THIS specific product's stale price source once the
+above is live: run reconciliation (its own daily schedule, or invoke
+manually), then use admin-site's "Find price sources" on product
+`8e93b985-857b-4516-a29b-6f238f6652b1` to correct the existing approved
+row in place.
 
 ### 6i. Video enrichment (YouTube + Bedrock) -- only after `YouTubeApiKeySecretArn` is set and the Bedrock model is granted access
 

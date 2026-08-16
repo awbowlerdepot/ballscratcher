@@ -145,6 +145,58 @@ def test_fuzzy_match_prefers_real_match_over_distinguishing_suffix_candidate():
     assert ratio == 1.0
 
 
+# --- upsert_bowlerdepot_match ---
+# 018_bowlerdepot_products_dedupe_by_product.sql -- these use a minimal
+# fake conn/cursor that just records the executed SQL/params, since this
+# module has no established fake-Postgres-connection test pattern
+# elsewhere in this file (handler/write_* functions are documented as
+# needing real credentials to verify, per this file's own module
+# docstring) -- good enough to pin the ON CONFLICT target itself, which
+# is the exact thing that regressed in the real incident.
+
+class _FakeCursor:
+    def __init__(self, store):
+        self.store = store
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def execute(self, sql, params=None):
+        self.store["sql"] = sql
+        self.store["params"] = params
+
+
+class _FakeConn:
+    def __init__(self):
+        self.store = {}
+        self.committed = False
+
+    def cursor(self):
+        return _FakeCursor(self.store)
+
+    def commit(self):
+        self.committed = True
+
+
+def test_upsert_bowlerdepot_match_conflicts_on_product_id():
+    # Real incident, Al: "it still finds the ai version" -- the OLD
+    # conflict target was (bigcommerce_product_id, bigcommerce_sku), so a
+    # corrected re-match for an already-matched product inserted a SECOND
+    # row instead of overwriting the wrong one. Pinning the conflict
+    # target in the executed SQL text so this specific regression can't
+    # silently come back.
+    conn = _FakeConn()
+    app.upsert_bowlerdepot_match(conn, "product-1", "999", "SKU-1", "matched")
+    sql = conn.store["sql"].lower()
+    assert "on conflict (product_id)" in sql
+    assert "on conflict (bigcommerce_product_id" not in sql
+    assert conn.store["params"] == ("product-1", "999", "SKU-1", "matched")
+    assert conn.committed is True
+
+
 # --- check_coverage ---
 
 def test_check_coverage_flags_missing_product():
