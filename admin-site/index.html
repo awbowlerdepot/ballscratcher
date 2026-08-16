@@ -36,6 +36,21 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Bowling Ball Scraper -- Admin</title>
+<!-- Chart.js, CDN-loaded -- the one external dependency this otherwise
+     zero-build/zero-dependency file (see this file's own header comment)
+     takes on, specifically for the price/SKU-stock charts (Al: "can we
+     upgrade the charts... they aren't styled very well... date time
+     selection... hover state... pop overs for each values for each of
+     the days all at once"). A hand-rolled SVG chart can't reasonably get
+     per-point hover + a combined multi-series tooltip without
+     reimplementing a meaningful chunk of what a real charting library
+     already does well. This page already requires network access to
+     reach the deployed admin API, so requiring it to reach a CDN too
+     isn't a new category of constraint -- renderPriceChart/
+     renderSkuStockChart (search this file) both guard `typeof Chart ===
+     'undefined'` and show a plain-text fallback if this script fails to
+     load, rather than throwing. -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <style>
   :root {
     --bg: #f5f6f8;
@@ -144,14 +159,25 @@
   .muted { color: var(--muted); }
   .actions { white-space: nowrap; }
 
-  /* Price tracking (migration 014/015) -- plain-SVG price-over-time
-     chart + its legend (see buildPriceChartSvg). No charting library, no
-     new CDN dependency -- consistent with this file's own "no build
-     step, no framework" design. */
-  .price-chart { width: 100%; max-width: 620px; height: 170px; }
-  .chart-legend { display: flex; flex-wrap: wrap; gap: 12px; margin: 4px 0 10px; font-size: 12px; color: var(--muted); }
-  .chart-legend-item { display: inline-flex; align-items: center; gap: 5px; }
-  .chart-legend-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  /* Price/SKU-stock charts (Chart.js, see <head>'s CDN comment) -- Al:
+     "can we upgrade the charts for the pricing and stock over time. they
+     aren't styled very well... some date time selection... hover state
+     for each of the data points... show pop overs for each values for
+     each of the days all at once." Replaces the old hand-rolled-SVG
+     .price-chart/.chart-legend* rules (Chart.js renders its own legend,
+     styled via JS options instead of these CSS classes). */
+  .chart-range { display: flex; gap: 4px; margin: 8px 0 6px; }
+  .chart-range button {
+    padding: 4px 10px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    border-radius: 6px;
+    font-size: 11px;
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .chart-range button.active { color: #fff; background: var(--primary); border-color: var(--primary); }
+  .chart-wrap { max-width: 620px; position: relative; height: 220px; margin-bottom: 6px; }
 
   .btn {
     padding: 5px 11px;
@@ -1750,13 +1776,22 @@ async function loadProductDetailInto(id, cell) {
       // site registry (for the manual-add dropdown) are all needed to
       // render the section below in one pass.
       api('GET', '/products/' + id + '/price-sources'),
-      api('GET', '/products/' + id + '/price-history', { params: { days: 90 } }),
+      // days widened from 90 to 3650 (~10 years, effectively "all of
+      // it") -- Al's chart-upgrade ask included range selection (7D/30D/
+      // 90D/1Y/All, see CHART_RANGE_PRESETS), and switching ranges needs
+      // to feel instant. Fetching the full history once and filtering
+      // client-side in renderPriceChart avoids a network round-trip per
+      // button click; a single product's history table scan bounded by
+      // product_id is cheap regardless of window size (see get_price_
+      // history's own docstring), so there's no real cost to asking for
+      // more than the default view shows.
+      api('GET', '/products/' + id + '/price-history', { params: { days: 3650 } }),
       ensurePriceSitesLoaded(),
       // Per-SKU stock quantities (017_price_tracking_sku_stock.sql) --
       // Al: "for the instock i was refering to actual number of each sku
       // instock." Same "fetch alongside everything else" reasoning as
-      // price-history above.
-      api('GET', '/products/' + id + '/sku-stock-history', { params: { days: 90 } }),
+      // price-history above, and same days-widening reasoning too.
+      api('GET', '/products/' + id + '/sku-stock-history', { params: { days: 3650 } }),
     ]);
     const videos = videoData.items || [];
     const priceSources = priceSourcesData.items || [];
@@ -1874,7 +1909,7 @@ async function loadProductDetailInto(id, cell) {
         '</div>'
       : '';
     const priceTrackingHtml = buildPriceTrackingSection(id, priceSources, priceHistoryData, priceSites);
-    const skuStockHtml = buildSkuStockSection(skuStockHistoryData);
+    const skuStockHtml = buildSkuStockSection(id, skuStockHistoryData);
 
     // Product detail sub-tabs -- Al: "the admin product details are
     // getting a bit cluttered can we clean that up and maybe put the
@@ -1946,6 +1981,12 @@ async function loadProductDetailInto(id, cell) {
       '<div class="dtab hidden" id="dtab-raw-' + id + '">' + renderProductRawFields(p) + '</div>' +
       '</div>';
     updateProductVideoBulkToolbar(id);
+    // Chart.js needs a live <canvas> already in the DOM -- called here,
+    // right after the innerHTML assignment above, same "build the markup
+    // string, then wire up the interactive bits against the now-real
+    // elements" ordering updateProductVideoBulkToolbar itself uses.
+    renderPriceChart(id, priceHistoryData);
+    renderSkuStockChart(id, skuStockHistoryData);
   } catch (e) {
     cell.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
   }
@@ -2002,6 +2043,12 @@ function buildPriceTrackingSection(id, priceSources, priceHistoryData, priceSite
   const siteOptions = (priceSites || []).filter(function (s) { return s.is_active; }).map(function (s) {
     return '<option value="' + s.id + '">' + escapeHtml(s.name) + '</option>';
   }).join('');
+  // Stashed for setChartRange's range-button handlers, which re-render
+  // just the chart against already-fetched data rather than re-fetching
+  // (see loadProductDetailInto's days:3650 comment) or re-rendering this
+  // whole panel.
+  productChartData[id] = productChartData[id] || {};
+  productChartData[id].price = priceHistoryData;
   return '<p style="margin-top:14px;"><strong>Price tracking</strong> (' + priceSources.length + ' source' + (priceSources.length === 1 ? '' : 's') + '):' +
     ' <button class="btn small ghost" onclick="discoverPriceSourcesForProduct(\'' + id + '\')">Find price sources</button>' +
     ' <button class="btn small ghost" onclick="checkPriceForProduct(\'' + id + '\')">Check price now</button></p>' +
@@ -2009,7 +2056,9 @@ function buildPriceTrackingSection(id, priceSources, priceHistoryData, priceSite
     (rows
       ? '<table class="mini"><thead><tr><th>Site</th><th>URL</th><th>Latest price (+ cost/stock, BowlerDepot only)</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>'
       : '<p class="muted">no price sources yet -- click "Find price sources" to search the configured Price Sites</p>') +
-    buildPriceChartSvg(priceHistoryData) +
+    buildChartRangeToolbar(id, 'price') +
+    '<div class="chart-wrap"><canvas id="price-chart-' + id + '"></canvas></div>' +
+    '<p id="price-chart-empty-' + id + '" class="muted small" style="display:none;"></p>' +
     '<div class="filters" style="margin-top:6px;">' +
     '<div class="field"><label>Add manually</label><select id="price-site-select-' + id + '">' +
     '<option value="">choose a site&hellip;</option>' + siteOptions + '</select></div>' +
@@ -2019,72 +2068,18 @@ function buildPriceTrackingSection(id, priceSources, priceHistoryData, priceSite
     '</div>';
 }
 
-// Plain SVG, no charting library -- one polyline per source, normalized
-// against the combined min/max price and min/max checked_at across every
-// source so they share one set of axes. Sources with no successful
-// (price != null) checks yet in the window are simply skipped -- a
-// still-pending or just-approved-but-not-yet-checked source has nothing
-// to plot, which is expected, not an error.
-function buildPriceChartSvg(historyData) {
-  const sources = (historyData && historyData.sources) || [];
-  const history = ((historyData && historyData.history) || []).filter(function (h) { return h.price !== null && h.price !== undefined; });
-  if (!sources.length || !history.length) {
-    return '<p class="muted">No successful price checks yet -- once an approved source is checked, its price history charts here.</p>';
-  }
-  const prices = history.map(function (h) { return h.price; });
-  const times = history.map(function (h) { return new Date(h.checked_at).getTime(); });
-  const priceMin = Math.min.apply(null, prices), priceMax = Math.max.apply(null, prices);
-  const pad = (priceMax - priceMin) * 0.1 || Math.max(priceMax * 0.1, 1);
-  const yMin = priceMin - pad, yMax = priceMax + pad;
-  const tMin = Math.min.apply(null, times), tMax = Math.max.apply(null, times);
-  const tSpan = (tMax - tMin) || 1;
-
-  const w = 600, h = 170, left = 46, right = 12, top = 10, bottom = 10;
-  const plotW = w - left - right, plotH = h - top - bottom;
-  const colors = ['#2563eb', '#16a34a', '#dc2626', '#a855f7', '#f59e0b', '#0891b2'];
-
-  let paths = '';
-  let legend = '';
-  sources.forEach(function (s, i) {
-    const rows = history
-      .filter(function (r) { return r.price_source_id === s.id; })
-      .slice()
-      .sort(function (a, b) { return new Date(a.checked_at) - new Date(b.checked_at); });
-    if (!rows.length) return;
-    const color = colors[i % colors.length];
-    const points = rows.map(function (r) {
-      const x = left + ((new Date(r.checked_at).getTime() - tMin) / tSpan) * plotW;
-      const y = top + plotH - ((r.price - yMin) / (yMax - yMin)) * plotH;
-      return x.toFixed(1) + ',' + y.toFixed(1);
-    }).join(' ');
-    paths += '<polyline points="' + points + '" fill="none" stroke="' + color + '" stroke-width="2"></polyline>';
-    legend += '<span class="chart-legend-item"><span class="chart-legend-dot" style="background:' + color + ';"></span>' + escapeHtml(s.site_name) + '</span>';
-  });
-  if (!paths) {
-    return '<p class="muted">No successful price checks yet -- once an approved source is checked, its price history charts here.</p>';
-  }
-
-  return '<svg viewBox="0 0 ' + w + ' ' + h + '" class="price-chart">' +
-    '<line x1="' + left + '" y1="' + top + '" x2="' + left + '" y2="' + (top + plotH) + '" stroke="#e0e2e7"></line>' +
-    '<line x1="' + left + '" y1="' + (top + plotH) + '" x2="' + (left + plotW) + '" y2="' + (top + plotH) + '" stroke="#e0e2e7"></line>' +
-    '<text x="2" y="' + (top + 8) + '" font-size="10" fill="#6b7280">$' + yMax.toFixed(2) + '</text>' +
-    '<text x="2" y="' + (top + plotH) + '" font-size="10" fill="#6b7280">$' + yMin.toFixed(2) + '</text>' +
-    paths + '</svg>' +
-    '<div class="chart-legend">' + legend + '</div>';
-}
-
 // --------------------------------------------------------------------
 // Product detail SKU Stock section (017_price_tracking_sku_stock.sql) --
 // Al, clarifying the price tracker's in_stock boolean: "for the instock i
 // was refering to actual number of each sku instock... track how many
 // are being sold and when are they restocked." Renders a latest-quantity
-// table (one row per weight) plus a plain-SVG quantity-over-time chart,
-// one polyline per weight -- same "no charting library" posture as
-// buildPriceChartSvg above, reusing its exact axis/legend approach with
-// quantity instead of price on the y-axis.
+// table (one row per weight) plus a Chart.js quantity-over-time chart,
+// one line per weight -- see renderPriceChart's own comment (chart
+// upgrade section below) for why this moved off hand-rolled SVG, and
+// renderSkuStockChart for the actual chart construction.
 // --------------------------------------------------------------------
 
-function buildSkuStockSection(skuStockHistoryData) {
+function buildSkuStockSection(id, skuStockHistoryData) {
   const skus = (skuStockHistoryData && skuStockHistoryData.skus) || [];
   const history = (skuStockHistoryData && skuStockHistoryData.history) || [];
   // Latest reading per SKU (by checked_at) for the summary table --
@@ -2105,62 +2100,258 @@ function buildSkuStockSection(skuStockHistoryData) {
     return '<tr><td>' + s.weight_lbs + 'lb</td><td>' + qtyCell + '</td>' +
       '<td class="muted small">' + (latest ? fmtDate(latest.checked_at) : 'never checked') + '</td></tr>';
   }).join('');
+  // Same stash-for-range-buttons reasoning as buildPriceTrackingSection.
+  productChartData[id] = productChartData[id] || {};
+  productChartData[id].skuStock = skuStockHistoryData;
   return '<p style="margin-top:14px;"><strong>SKU stock</strong> (BowlerDepot, per weight):</p>' +
     (rows
       ? '<table class="mini"><thead><tr><th>Weight</th><th>Quantity</th><th>Last checked</th></tr></thead><tbody>' + rows + '</tbody></table>'
       : '<p class="muted">no SKU stock data yet -- recorded alongside a BowlerDepot price check once a SKU\'s weight matches a variant</p>') +
-    buildSkuStockChartSvg(skus, history);
+    buildChartRangeToolbar(id, 'skuStock') +
+    '<div class="chart-wrap"><canvas id="skuStock-chart-' + id + '"></canvas></div>' +
+    '<p id="skuStock-chart-empty-' + id + '" class="muted small" style="display:none;"></p>';
 }
 
-// Readings with a null quantity (BigCommerce not tracking that variant's
-// inventory -- see product_sku_stock_history.quantity's own column
-// comment) are skipped when plotting, same "skip what we don't know"
-// stance buildPriceChartSvg already takes for a source with no
-// successful checks.
-function buildSkuStockChartSvg(skus, history) {
-  const known = history.filter(function (h) { return h.quantity !== null && h.quantity !== undefined; });
-  if (!skus.length || !known.length) {
-    return '<p class="muted">No SKU stock quantities recorded yet -- once a BowlerDepot check matches a SKU\'s weight, its quantity charts here.</p>';
+// --------------------------------------------------------------------
+// Chart.js machinery for the price/SKU-stock charts above -- Al: "can we
+// upgrade the charts for the pricing and stock over time. they aren't
+// styled very well and i think there could be some date time selection
+// for those. maybe some hover state for each of the data points on the
+// line. show pop overs for each values for each of the days all at
+// once." Replaces the old buildPriceChartSvg/buildSkuStockChartSvg
+// hand-rolled-SVG functions. See <head>'s comment for why a CDN
+// dependency is an acceptable trade-off here.
+// --------------------------------------------------------------------
+
+// One entry per canvas id -- Chart.js instances are destroyed and
+// recreated (not .update()'d in place) on every range-button click or
+// panel reload, since loadProductDetailInto already tears down/rebuilds
+// this whole panel's markup on reload (see its own comment), and a
+// range-button click swaps the canvas's own data wholesale anyway.
+// Explicit destroy() before each recreate avoids leaking a Chart
+// instance/canvas context every time a product's panel gets reloaded.
+const chartInstances = {};
+function destroyChart(canvasId) {
+  if (chartInstances[canvasId]) {
+    chartInstances[canvasId].destroy();
+    delete chartInstances[canvasId];
   }
-  const quantities = known.map(function (h) { return h.quantity; });
-  const times = known.map(function (h) { return new Date(h.checked_at).getTime(); });
-  const qMax = Math.max.apply(null, quantities.concat([1]));
-  const yMin = 0, yMax = qMax + Math.max(qMax * 0.1, 1);
-  const tMin = Math.min.apply(null, times), tMax = Math.max.apply(null, times);
-  const tSpan = (tMax - tMin) || 1;
+}
 
-  const w = 600, h = 170, left = 46, right = 12, top = 10, bottom = 10;
-  const plotW = w - left - right, plotH = h - top - bottom;
-  const colors = ['#2563eb', '#16a34a', '#dc2626', '#a855f7', '#f59e0b', '#0891b2'];
+const CHART_COLORS = ['#2563eb', '#16a34a', '#dc2626', '#a855f7', '#f59e0b', '#0891b2'];
 
-  let paths = '';
-  let legend = '';
-  skus.forEach(function (s, i) {
-    const rows = known
+// Range presets -- Al's "date time selection" ask. Filtering happens
+// client-side against the already-fetched ~10-year history (see
+// loadProductDetailInto's days:3650 comment), not a re-fetch per click,
+// so switching ranges is instant.
+const CHART_RANGE_PRESETS = [
+  { key: '7d', label: '7D', days: 7 },
+  { key: '30d', label: '30D', days: 30 },
+  { key: '90d', label: '90D', days: 90 },
+  { key: '1y', label: '1Y', days: 365 },
+  { key: 'all', label: 'All', days: null },
+];
+const DEFAULT_CHART_RANGE = '90d'; // matches the old fixed 90-day window's default view
+
+// Selected range per (chartType, productId) pair -- 'price'/'skuStock'
+// are two independent charts per product, and more than one product's
+// panel can be expanded at once (same per-product-id scoping every other
+// piece of this detail panel already needs -- see productVideoSelected's
+// own comment for the pattern this follows).
+const chartSelectedRange = {};
+
+// Raw (unfiltered) history data per product, stashed by buildPrice
+// TrackingSection/buildSkuStockSection so the range-button onclick
+// handlers below can re-filter and re-render without a network round
+// trip or access to loadProductDetailInto's closure.
+const productChartData = {};
+
+function filterHistoryByRange(rows, tsKey, rangeKey) {
+  const preset = CHART_RANGE_PRESETS.find(function (p) { return p.key === rangeKey; }) || CHART_RANGE_PRESETS[2];
+  if (preset.days === null) return rows;
+  const cutoff = Date.now() - preset.days * 24 * 60 * 60 * 1000;
+  return rows.filter(function (r) { return new Date(r[tsKey]).getTime() >= cutoff; });
+}
+
+function buildChartRangeToolbar(productId, chartType) {
+  const activeKey = chartSelectedRange[chartType + '-' + productId] || DEFAULT_CHART_RANGE;
+  return '<div class="chart-range" id="' + chartType + '-chart-range-' + productId + '">' +
+    CHART_RANGE_PRESETS.map(function (p) {
+      return '<button type="button" class="' + (p.key === activeKey ? 'active' : '') +
+        '" onclick="setChartRange(\'' + productId + '\', \'' + chartType + '\', \'' + p.key + '\')">' + p.label + '</button>';
+    }).join('') + '</div>';
+}
+
+function setChartRange(productId, chartType, rangeKey) {
+  chartSelectedRange[chartType + '-' + productId] = rangeKey;
+  const toolbar = document.getElementById(chartType + '-chart-range-' + productId);
+  if (toolbar) toolbar.outerHTML = buildChartRangeToolbar(productId, chartType);
+  const data = (productChartData[productId] || {})[chartType];
+  if (!data) return;
+  if (chartType === 'price') renderPriceChart(productId, data);
+  else renderSkuStockChart(productId, data);
+}
+
+// month/day only -- axis ticks are space-constrained, unlike the
+// tooltip title (see baseChartOptions below, which uses full fmtDate).
+function fmtChartAxisDate(epochMs) {
+  try { return new Date(epochMs).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }); }
+  catch (e) { return ''; }
+}
+
+// Shared options between the price and SKU-stock charts -- only the
+// y-axis tick formatter and the per-point tooltip label line differ,
+// both passed in by the caller. interaction/tooltip mode:'x' (not
+// 'index') is the actual answer to "show pop overs for each values for
+// each of the days all at once": 'index' mode matches by ARRAY POSITION
+// across datasets, which would misalign here since different sources/
+// SKUs get checked at different times and don't share the same set of
+// x-values -- 'x' mode instead matches every dataset's point nearest the
+// mouse's actual X pixel position, so hovering near a date shows one
+// combined tooltip box listing every series' value for that date at
+// once, regardless of whether their checks happened to land on exactly
+// the same timestamp. pointHoverRadius (vs. the smaller default
+// pointRadius) is the "hover state for each of the data points" ask.
+function baseChartOptions(yTickFormat, tooltipLabel) {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: false,
+    interaction: { mode: 'x', intersect: false },
+    scales: {
+      x: {
+        type: 'linear',
+        grid: { color: '#e0e2e7' },
+        ticks: { color: '#6b7280', font: { size: 10 }, callback: function (v) { return fmtChartAxisDate(v); } },
+      },
+      y: {
+        grid: { color: '#e0e2e7' },
+        ticks: { color: '#6b7280', font: { size: 10 }, callback: yTickFormat },
+      },
+    },
+    plugins: {
+      legend: { position: 'bottom', labels: { color: '#6b7280', font: { size: 11 }, boxWidth: 8, boxHeight: 8 } },
+      tooltip: {
+        mode: 'x',
+        intersect: false,
+        callbacks: {
+          title: function (items) { return items.length ? fmtDate(new Date(items[0].parsed.x)) : ''; },
+          label: tooltipLabel,
+        },
+      },
+    },
+  };
+}
+
+// Shows/hides the canvas + a text fallback together -- shared by both
+// render functions below for the "no data in this range" and "Chart.js
+// didn't load" cases alike.
+function showChartFallback(canvasId, emptyId, message) {
+  const canvas = document.getElementById(canvasId);
+  const emptyEl = document.getElementById(emptyId);
+  if (canvas) canvas.style.display = 'none';
+  if (emptyEl) { emptyEl.style.display = ''; emptyEl.textContent = message; }
+}
+
+function renderPriceChart(productId, historyData) {
+  const canvasId = 'price-chart-' + productId, emptyId = 'price-chart-empty-' + productId;
+  destroyChart(canvasId);
+  if (typeof Chart === 'undefined') {
+    showChartFallback(canvasId, emptyId, 'Charting library did not load (needs network access to cdn.jsdelivr.net) -- reload once you have a connection.');
+    return;
+  }
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+
+  const sources = (historyData && historyData.sources) || [];
+  const rangeKey = chartSelectedRange['price-' + productId] || DEFAULT_CHART_RANGE;
+  const history = filterHistoryByRange(
+    ((historyData && historyData.history) || []).filter(function (h) { return h.price !== null && h.price !== undefined; }),
+    'checked_at', rangeKey
+  );
+
+  const datasets = sources.map(function (s, i) {
+    const rows = history
+      .filter(function (r) { return r.price_source_id === s.id; })
+      .slice()
+      .sort(function (a, b) { return new Date(a.checked_at) - new Date(b.checked_at); });
+    return {
+      label: s.site_name,
+      data: rows.map(function (r) { return { x: new Date(r.checked_at).getTime(), y: r.price }; }),
+      borderColor: CHART_COLORS[i % CHART_COLORS.length],
+      backgroundColor: CHART_COLORS[i % CHART_COLORS.length],
+      pointRadius: 3,
+      pointHoverRadius: 6,
+      tension: 0.15,
+    };
+  }).filter(function (d) { return d.data.length > 0; });
+
+  if (!sources.length || !datasets.length) {
+    showChartFallback(canvasId, emptyId, 'No successful price checks yet in this range -- once an approved source is checked, its price history charts here.');
+    return;
+  }
+  canvas.style.display = '';
+  const emptyEl = document.getElementById(emptyId);
+  if (emptyEl) emptyEl.style.display = 'none';
+
+  const options = baseChartOptions(
+    function (v) { return '$' + Number(v).toFixed(2); },
+    function (item) { return item.dataset.label + ': $' + Number(item.parsed.y).toFixed(2); }
+  );
+  chartInstances[canvasId] = new Chart(canvas.getContext('2d'), { type: 'line', data: { datasets: datasets }, options: options });
+}
+
+function renderSkuStockChart(productId, historyData) {
+  const canvasId = 'skuStock-chart-' + productId, emptyId = 'skuStock-chart-empty-' + productId;
+  destroyChart(canvasId);
+  if (typeof Chart === 'undefined') {
+    showChartFallback(canvasId, emptyId, 'Charting library did not load (needs network access to cdn.jsdelivr.net) -- reload once you have a connection.');
+    return;
+  }
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+
+  const skus = (historyData && historyData.skus) || [];
+  const rangeKey = chartSelectedRange['skuStock-' + productId] || DEFAULT_CHART_RANGE;
+  // Readings with a null quantity (BigCommerce not tracking that
+  // variant's inventory -- see product_sku_stock_history.quantity's own
+  // column comment) are skipped, same "skip what we don't know" stance
+  // the old buildSkuStockChartSvg already took.
+  const history = filterHistoryByRange(
+    ((historyData && historyData.history) || []).filter(function (h) { return h.quantity !== null && h.quantity !== undefined; }),
+    'checked_at', rangeKey
+  );
+
+  const datasets = skus.map(function (s, i) {
+    const rows = history
       .filter(function (r) { return r.product_sku_id === s.id; })
       .slice()
       .sort(function (a, b) { return new Date(a.checked_at) - new Date(b.checked_at); });
-    if (!rows.length) return;
-    const color = colors[i % colors.length];
-    const points = rows.map(function (r) {
-      const x = left + ((new Date(r.checked_at).getTime() - tMin) / tSpan) * plotW;
-      const y = top + plotH - ((r.quantity - yMin) / (yMax - yMin)) * plotH;
-      return x.toFixed(1) + ',' + y.toFixed(1);
-    }).join(' ');
-    paths += '<polyline points="' + points + '" fill="none" stroke="' + color + '" stroke-width="2"></polyline>';
-    legend += '<span class="chart-legend-item"><span class="chart-legend-dot" style="background:' + color + ';"></span>' + s.weight_lbs + 'lb</span>';
-  });
-  if (!paths) {
-    return '<p class="muted">No SKU stock quantities recorded yet -- once a BowlerDepot check matches a SKU\'s weight, its quantity charts here.</p>';
-  }
+    return {
+      label: s.weight_lbs + 'lb',
+      data: rows.map(function (r) { return { x: new Date(r.checked_at).getTime(), y: r.quantity }; }),
+      borderColor: CHART_COLORS[i % CHART_COLORS.length],
+      backgroundColor: CHART_COLORS[i % CHART_COLORS.length],
+      pointRadius: 3,
+      pointHoverRadius: 6,
+      tension: 0.15,
+    };
+  }).filter(function (d) { return d.data.length > 0; });
 
-  return '<svg viewBox="0 0 ' + w + ' ' + h + '" class="price-chart">' +
-    '<line x1="' + left + '" y1="' + top + '" x2="' + left + '" y2="' + (top + plotH) + '" stroke="#e0e2e7"></line>' +
-    '<line x1="' + left + '" y1="' + (top + plotH) + '" x2="' + (left + plotW) + '" y2="' + (top + plotH) + '" stroke="#e0e2e7"></line>' +
-    '<text x="2" y="' + (top + 8) + '" font-size="10" fill="#6b7280">' + yMax.toFixed(0) + '</text>' +
-    '<text x="2" y="' + (top + plotH) + '" font-size="10" fill="#6b7280">' + yMin.toFixed(0) + '</text>' +
-    paths + '</svg>' +
-    '<div class="chart-legend">' + legend + '</div>';
+  if (!skus.length || !datasets.length) {
+    showChartFallback(canvasId, emptyId, 'No SKU stock quantities recorded yet in this range -- once a BowlerDepot check matches a SKU\'s weight, its quantity charts here.');
+    return;
+  }
+  canvas.style.display = '';
+  const emptyEl = document.getElementById(emptyId);
+  if (emptyEl) emptyEl.style.display = 'none';
+
+  const options = baseChartOptions(
+    function (v) { return Number(v).toFixed(0); },
+    function (item) { return item.dataset.label + ': ' + Number(item.parsed.y).toFixed(0); }
+  );
+  options.scales.y.min = 0;
+  chartInstances[canvasId] = new Chart(canvas.getContext('2d'), { type: 'line', data: { datasets: datasets }, options: options });
 }
 
 async function discoverPriceSourcesForProduct(id) {

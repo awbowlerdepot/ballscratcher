@@ -3026,6 +3026,60 @@ prior admin-site-only changes in this project (no Python to unit test
 for this file); swap the static file as usual, no Lambda redeploy
 needed.
 
+### 6i.10. Price/SKU-stock charts upgraded to Chart.js (styling, date-range, hover)
+
+Al: "can we upgrade the charts for the pricing and stock over time. they
+aren't styled very well and i think there could be some date time
+selection for those. maybe some hover state for each of the data points
+on the line. show pop overs for each values for each of the days all at
+once." Replaces the hand-rolled-SVG polyline charts (`buildPriceChartSvg`/
+`buildSkuStockChartSvg`) with Chart.js, loaded from a CDN.
+
+**New external dependency, by design.** This is the one thing in an
+otherwise zero-build/zero-dependency file (see the file's own header
+comment) that now needs network access to a CDN (`cdn.jsdelivr.net`),
+disclosed inline in `<head>`'s own comment. Judged worth it: a hand-
+rolled SVG chart can't reasonably get per-point hover plus a combined
+multi-series tooltip without reimplementing a real charting library's
+core job, and this page already needs network access to reach the
+deployed admin API regardless. `renderPriceChart`/`renderSkuStockChart`
+both guard `typeof Chart === 'undefined'` and show a plain-text fallback
+message instead of a blank chart if the CDN script fails to load.
+
+**Date range selection.** Five presets (7D/30D/90D/1Y/All) per chart,
+filtered client-side against an already-fetched, generously-windowed
+history (`days` widened from 90 to 3650 in `loadProductDetailInto`'s
+`price-history`/`sku-stock-history` fetches -- a single product's
+history scan is cheap regardless of window size, see `get_price_
+history`'s own docstring) so switching ranges is instant, no re-fetch
+per click. `setChartRange` re-renders just the toolbar + the one chart
+that changed, not the whole detail panel.
+
+**Hover state per point + combined tooltips.** `pointHoverRadius` gives
+each point a visible hover highlight (Al's "hover state for each of the
+data points" ask). The "pop overs for each values for each of the days
+all at once" ask is `interaction`/`tooltip` `mode: 'x'` (not `'index'`)
+-- `'index'` mode matches by array position across datasets, which
+would misalign here since different price sources/SKU weights get
+checked at different times and don't share the same set of timestamps;
+`'x'` mode instead matches every dataset's nearest point to the mouse's
+actual pixel position, so hovering near a date shows one combined
+tooltip listing every source's/weight's value for that date at once,
+regardless of exact-timestamp alignment.
+
+**Chart instance lifecycle.** `chartInstances` (keyed by canvas id) is
+destroyed and recreated on every range-button click or panel reload
+(`destroyChart` before each `new Chart(...)`) rather than `.update()`d
+in place, since `loadProductDetailInto` already tears down/rebuilds this
+whole panel's markup on reload -- avoids leaking a Chart instance/canvas
+context per reload.
+
+No backend/API change (days param already existed, just called with a
+larger value) -- swap the static admin-site file as usual, no Lambda
+redeploy needed. Verified via `node --check` against the extracted
+`<script>` contents and Python's `html.parser` for basic tag balance,
+same depth as prior admin-site-only changes in this project.
+
 ### 6j. Home transcript fetcher (residential caption fetching) -- optional, run outside AWS entirely
 
 Real, live-tested finding this session (see
