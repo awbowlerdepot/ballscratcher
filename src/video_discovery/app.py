@@ -101,11 +101,22 @@ multiple days -- not something fixable in this code.
 Match confidence is a simple two-tier heuristic (see score_match), not a
 real relevance score -- YouTube's search API already ranks by its own
 relevance signal, but a video titled just "bowling tips" for a query like
-"Storm Absolute bowling ball review" would still come back as a top result
+"Storm Absolute bowling ball" would still come back as a top result
 sometimes. Rather than guess at a numeric threshold, every candidate is
 still stored (never silently dropped), but tagged 'low' confidence when the
 brand+product name aren't both recognizable in the title -- this is exactly
 what the admin approval step is for.
+
+QUERY WORDING (real incident, 2026-08-15): build_search_query used to
+append "review" too ("<brand> <product> bowling ball review"). Al found a
+concrete case where that word actively hid the right result -- Storm
+Equinox Hybrid's actual #1 organic YouTube hit for the plain ball name
+never showed up as a discovered candidate, because search.list's own
+relevance ranking favors literal query-term matches and most real review/
+reaction titles don't happen to contain the word "review" itself. Dropped
+from the query (see build_search_query); "bowling ball" stays, since it's
+a generic disambiguator rather than a term real review titles would
+plausibly omit.
 
 REAL INCIDENT, first 90-product run against the whole never-searched
 backlog (Track/Ebonite's brand-new catalogs plus everything else that had
@@ -308,7 +319,20 @@ def score_match(title: str, brand_name: str, product_name: str) -> str:
 
 
 def build_search_query(brand_name: str, product_name: str) -> str:
-    return f"{brand_name} {product_name} bowling ball review"
+    # "review" dropped from the query text, 2026-08-15 -- real incident, Al:
+    # "it is the extra words you added. i don't think that is necessary.
+    # review is the word that breaks it and is not very commonly used to
+    # describe youtube videos for balls." Confirmed case: Storm Equinox
+    # Hybrid's actual #1 organic YouTube result for the plain ball name
+    # never came back from search.list once "review" was appended --
+    # search.list's relevance ranking favors literal query-term matches,
+    # and plenty of real review/reaction video titles never use the word
+    # "review" itself. "bowling ball" is kept -- it's a generic
+    # disambiguator (keeps a short/ambiguous product name like "Bionic"
+    # from pulling in unrelated non-bowling content) rather than a term
+    # that competing review titles would plausibly omit, so it doesn't
+    # have the same failure mode "review" did.
+    return f"{brand_name} {product_name} bowling ball"
 
 
 def get_youtube_requests_session():

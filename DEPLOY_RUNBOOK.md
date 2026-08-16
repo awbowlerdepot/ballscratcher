@@ -2948,6 +2948,43 @@ No test suite covers this file (plain HTML/JS, no Python to unit test);
 no `template.yaml` or backend change -- swap the static file as usual,
 no redeploy of any Lambda needed.
 
+### 6i.8. Video discovery: dropped "review" from the search query (real incident)
+
+Al noticed a specific, concrete gap: Storm Equinox Hybrid's actual #1
+organic YouTube result (searching the plain ball name himself) never
+showed up as a discovered candidate, even after manually clicking "Find
+videos" for that product. Traced to `build_search_query` -- it built
+`"<brand> <product> bowling ball review"`, appending "review" (and
+"bowling ball") to whatever the admin/user would actually type. Al's
+diagnosis, confirmed correct: "it is the extra words you added. i don't
+think that is necessary. review is the word that breaks it and is not
+very commonly used to describe youtube videos for balls." search.list's
+relevance ranking favors literal query-term matches, and plenty of real
+review/reaction video titles never contain the word "review" at all --
+appending it was actively suppressing the very content this pipeline
+exists to find.
+
+Fix: `build_search_query` now returns `"<brand> <product> bowling ball"`
+-- "review" dropped, "bowling ball" kept (a generic disambiguator for a
+short/ambiguous product name, not a term real review titles would
+plausibly omit the way "review" itself apparently is). See
+`src/video_discovery/app.py`'s updated module docstring (new QUERY
+WORDING section) and `build_search_query`'s own comment for the full
+writeup. `tests/test_video_discovery.py`'s `test_build_search_query`
+updated to match; full suite still 63/63.
+
+**This changes what search.list is asked for, so it only takes effect
+once `VideoDiscoveryFunction` is redeployed:**
+```bash
+sam build VideoDiscoveryFunction
+sam deploy
+```
+No DB/migration change -- existing `product_videos` rows are untouched;
+this only affects candidates found by future "Find videos"/discovery
+runs. If you want Storm Equinox Hybrid's actual top result picked up
+now, redeploy first, then click "Find videos" on that product again (or
+re-run catalog-wide discovery).
+
 ### 6j. Home transcript fetcher (residential caption fetching) -- optional, run outside AWS entirely
 
 Real, live-tested finding this session (see

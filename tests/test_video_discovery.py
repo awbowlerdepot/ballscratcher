@@ -62,7 +62,10 @@ def test_score_match_low_for_blank_title():
 
 
 def test_build_search_query():
-    assert app.build_search_query("Storm", "Absolute") == "Storm Absolute bowling ball review"
+    # "review" dropped 2026-08-15 -- see build_search_query's own comment
+    # (real incident: it suppressed Storm Equinox Hybrid's actual #1
+    # organic YouTube result from ever coming back as a candidate).
+    assert app.build_search_query("Storm", "Absolute") == "Storm Absolute bowling ball"
 
 
 # --- parse_search_response: shape documented by Google, not live-captured (see module docstring) ---
