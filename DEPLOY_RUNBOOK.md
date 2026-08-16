@@ -3074,6 +3074,13 @@ in place, since `loadProductDetailInto` already tears down/rebuilds this
 whole panel's markup on reload -- avoids leaking a Chart instance/canvas
 context per reload.
 
+**Follow-up, same session:** Al: "better, now can we make it the full
+width of the container." `.chart-wrap`'s `max-width: 620px` (a carried-
+over leftover from the old fixed-size SVG) dropped to `width: 100%` --
+Chart.js's own `responsive: true`/`maintainAspectRatio: false` (already
+set) makes the canvas fill whatever size its parent now resolves to, no
+JS change needed.
+
 No backend/API change (days param already existed, just called with a
 larger value) -- swap the static admin-site file as usual, no Lambda
 redeploy needed. Verified via `node --check` against the extracted
