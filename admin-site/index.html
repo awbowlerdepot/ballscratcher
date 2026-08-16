@@ -2173,6 +2173,28 @@ function filterHistoryByRange(rows, tsKey, rangeKey) {
   return rows.filter(function (r) { return new Date(r[tsKey]).getTime() >= cutoff; });
 }
 
+// Al: "for the date axis can you include all the days for the range
+// selected with or without data with the far right being today and then
+// plot the data where it should go with the adjusted [axis]." Chart.js's
+// linear x-scale otherwise auto-fits min/max to the actual data extent,
+// so a source that hasn't been checked in a few days would make the
+// chart's right edge appear to end "on schedule" instead of visibly
+// showing the gap up to today. Fixing scales.x.min/max explicitly to the
+// full selected window (independent of which timestamps actually have
+// data) is what makes today the fixed right edge and every day in the
+// range part of the visible axis -- the data points themselves aren't
+// moved, just where they land relative to a wider, gap-revealing domain.
+// 'All' has no fixed lookback window (see CHART_RANGE_PRESETS), so its
+// min is the earliest real timestamp in-range instead of a day count.
+function rangeBounds(rangeKey, timestampsMs) {
+  const now = Date.now();
+  const preset = CHART_RANGE_PRESETS.find(function (p) { return p.key === rangeKey; }) || CHART_RANGE_PRESETS[2];
+  if (preset.days === null) {
+    return { min: timestampsMs.length ? Math.min.apply(null, timestampsMs) : now, max: now };
+  }
+  return { min: now - preset.days * 24 * 60 * 60 * 1000, max: now };
+}
+
 function buildChartRangeToolbar(productId, chartType) {
   const activeKey = chartSelectedRange[chartType + '-' + productId] || DEFAULT_CHART_RANGE;
   return '<div class="chart-range" id="' + chartType + '-chart-range-' + productId + '">' +
@@ -2298,6 +2320,9 @@ function renderPriceChart(productId, historyData) {
     function (v) { return '$' + Number(v).toFixed(2); },
     function (item) { return item.dataset.label + ': $' + Number(item.parsed.y).toFixed(2); }
   );
+  const bounds = rangeBounds(rangeKey, history.map(function (h) { return new Date(h.checked_at).getTime(); }));
+  options.scales.x.min = bounds.min;
+  options.scales.x.max = bounds.max;
   chartInstances[canvasId] = new Chart(canvas.getContext('2d'), { type: 'line', data: { datasets: datasets }, options: options });
 }
 
@@ -2351,6 +2376,9 @@ function renderSkuStockChart(productId, historyData) {
     function (item) { return item.dataset.label + ': ' + Number(item.parsed.y).toFixed(0); }
   );
   options.scales.y.min = 0;
+  const bounds = rangeBounds(rangeKey, history.map(function (h) { return new Date(h.checked_at).getTime(); }));
+  options.scales.x.min = bounds.min;
+  options.scales.x.max = bounds.max;
   chartInstances[canvasId] = new Chart(canvas.getContext('2d'), { type: 'line', data: { datasets: datasets }, options: options });
 }
 

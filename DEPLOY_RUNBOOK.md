@@ -3081,6 +3081,21 @@ Chart.js's own `responsive: true`/`maintainAspectRatio: false` (already
 set) makes the canvas fill whatever size its parent now resolves to, no
 JS change needed.
 
+**Second follow-up, same session:** Al: "for the date axis can you
+include all the days for the range selected with or without data with
+the far right being today and then plot the data where it should go
+with the adjusted." Chart.js's linear x-scale otherwise auto-fits `min`/
+`max` to the actual data's own extent -- a source that hasn't been
+rechecked in a few days would make the chart's right edge silently end
+early instead of visibly showing the gap up to today. New `rangeBounds`
+helper fixes `options.scales.x.min`/`max` explicitly to the full
+selected window (today minus the preset's day count, or, for the `all`
+preset with no fixed lookback, the earliest real timestamp in range)
+regardless of which days actually have data -- the data points
+themselves don't move, they just land wherever their real timestamp
+falls within this now-wider, gap-revealing domain. Wired into both
+`renderPriceChart` and `renderSkuStockChart`.
+
 No backend/API change (days param already existed, just called with a
 larger value) -- swap the static admin-site file as usual, no Lambda
 redeploy needed. Verified via `node --check` against the extracted
