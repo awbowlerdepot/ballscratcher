@@ -1835,6 +1835,19 @@ Resources:
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Ref DbSecretArn
+            # OCR fallback, later session: 900 Global's Viking Conquest and
+            # similar Tech Data PDFs are genuinely image-based (0 chars via
+            # pdfplumber) -- parse_tech_data_pdf_via_textract() calls
+            # AnalyzeDocument to recover the full per-weight table instead
+            # of just the single HTML-fallback SKU. No Resource scoping
+            # available -- AnalyzeDocument doesn't support resource-level
+            # permissions (bytes are passed inline, not read from S3), so
+            # this is "*" same as every other AWS-documented Textract IAM
+            # example.
+            - Effect: Allow
+              Action:
+                - textract:AnalyzeDocument
+              Resource: "*"
         - SQSSendMessagePolicy:
             QueueName: !GetAtt ImageProcessQueue.QueueName
       Events:

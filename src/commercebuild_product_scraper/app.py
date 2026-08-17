@@ -645,6 +645,110 @@ def _skus_from_text(text: str) -> list:
     return skus
 
 
+def _textract_table_from_blocks(blocks: list) -> list:
+    """Pure logic for turning Amazon Textract's AnalyzeDocument response
+    Blocks (a flat list of TABLE/CELL/WORD block dicts, linked by Id via
+    Relationships) into the same list[list[str]] table shape pdfplumber's
+    page.extract_tables() already produces -- so it can be fed straight
+    into the existing, already-tested _skus_from_table() instead of a
+    second parallel weight/RG/differential extraction algorithm.
+
+    Real added scope, later session: 900 Global's Viking Conquest and
+    similar Tech Data PDFs are genuinely image-based (confirmed via
+    pdfplumber: 0 chars, embedded images tiling the full page, 0
+    lines/rects -- see parse_tech_data_pdf's docstring), so there's no
+    text layer for pdfplumber to ever read no matter how this function's
+    caller is tuned. Textract's AnalyzeDocument(FeatureTypes=["TABLES"])
+    OCRs the page and returns its own table structure instead -- one
+    TABLE block whose CHILD relationship lists CELL block Ids, each CELL
+    holding RowIndex/ColumnIndex (1-based) and its own CHILD relationship
+    listing the WORD block Ids that fell inside that cell.
+
+    Only the FIRST table block is used -- every real Tech Data PDF
+    confirmed so far has exactly one weight/RG/diff/PSA table per page,
+    and picking the first rather than merging multiple avoids silently
+    combining an unrelated table (e.g. a legend/footnote table some
+    products might have) into the SKU grid.
+
+    Returns [] (not a guess) when Textract found no TABLE block at all,
+    or a TABLE block with no CELL children -- e.g. a page that's a photo
+    of the ball with no tabular spec data on it, or a Textract call that
+    genuinely didn't detect a table on an unusual page shape. Missing
+    cells (Textract sometimes doesn't emit a CELL for what would be a
+    fully blank cell, unlike pdfplumber which reliably fills every
+    position) default to "" in the grid rather than skipping the whole
+    row, matching how pdfplumber represents blank cells."""
+    if not blocks:
+        return []
+
+    by_id = {b["Id"]: b for b in blocks if "Id" in b}
+    tables = [b for b in blocks if b.get("BlockType") == "TABLE"]
+    if not tables:
+        return []
+
+    cell_ids = []
+    for rel in tables[0].get("Relationships", []):
+        if rel.get("Type") == "CHILD":
+            cell_ids.extend(rel.get("Ids", []))
+    cells = [by_id[cid] for cid in cell_ids if by_id.get(cid, {}).get("BlockType") == "CELL"]
+    if not cells:
+        return []
+
+    max_row = max(c["RowIndex"] for c in cells)
+    max_col = max(c["ColumnIndex"] for c in cells)
+    grid = [["" for _ in range(max_col)] for _ in range(max_row)]
+    for cell in cells:
+        word_ids = []
+        for rel in cell.get("Relationships", []):
+            if rel.get("Type") == "CHILD":
+                word_ids.extend(rel.get("Ids", []))
+        words = [
+            by_id[wid]["Text"]
+            for wid in word_ids
+            if by_id.get(wid, {}).get("BlockType") == "WORD" and by_id[wid].get("Text")
+        ]
+        grid[cell["RowIndex"] - 1][cell["ColumnIndex"] - 1] = " ".join(words)
+
+    return grid
+
+
+def parse_tech_data_pdf_via_textract(pdf_bytes: bytes) -> list:
+    """OCR fallback for image-based Tech Data PDFs, called by
+    parse_tech_data_pdf() only when pdfplumber found zero characters on
+    every page -- i.e. only ever hits real cases like 900 Global's Viking
+    Conquest, never a normal text-based PDF (those are cheaper and faster
+    to parse via pdfplumber directly, no reason to OCR them too).
+
+    Chosen over Tesseract-in-a-Lambda-Layer: boto3 is already a project
+    dependency (Bedrock is used elsewhere in this repo), so this needs no
+    custom binary packaging or layer to maintain, at ~$0.015/page.
+    AnalyzeDocument is synchronous and single-call for a single-page
+    Tech Data PDF -- no S3 round-trip or async job polling needed, unlike
+    Textract's multi-page StartDocumentAnalysis API.
+
+    Deliberately does NOT catch/swallow Textract exceptions (e.g. a
+    throttling or unsupported-document error) -- letting them propagate
+    matches this project's "flag, don't guess" convention (see
+    parse_tech_data_pdf's own docstring): a real OCR failure should show
+    up in CloudWatch Logs and retry via this Lambda's SQS redrive, not
+    silently resolve to zero SKUs indistinguishable from "OCR ran clean
+    and genuinely found nothing."
+
+    Not unit tested directly (same convention as parse_tech_data_pdf
+    itself and every other function here that makes a real network/AWS
+    call) -- only the pure _textract_table_from_blocks() above, which
+    this delegates to, has test coverage."""
+    import boto3
+
+    client = boto3.client("textract")
+    response = client.analyze_document(
+        Document={"Bytes": pdf_bytes},
+        FeatureTypes=["TABLES"],
+    )
+    table = _textract_table_from_blocks(response.get("Blocks", []))
+    return _skus_from_table(table)
+
+
 def parse_tech_data_pdf(pdf_bytes: bytes) -> list:
     """Parses the per-weight spec table out of a Tech Data PDF -- see
     _skus_from_table()'s docstring for the real, confirmed table shapes
@@ -656,23 +760,38 @@ def parse_tech_data_pdf(pdf_bytes: bytes) -> list:
     confirmed via pdfplumber (0 chars, embedded images tiling the full
     page, 0 lines/rects) -- not a shape this function could ever parse
     regardless of table-detection logic, since there's no real text layer
-    to read. OCR could theoretically recover it but that's real added
-    scope (Tesseract in Lambda, reliability on numeric tables) not taken
-    on here. Logs a distinct warning for this case specifically so it's
-    never confused with "found a table but the shape didn't match" in the
-    logs -- they need different fixes.
+    to read. Falls back to Amazon Textract OCR for exactly this case (see
+    below) rather than giving up. Logs a distinct warning for this case
+    specifically so it's never confused with "found a table but the shape
+    didn't match" in the logs -- they need different fixes.
 
     Follow-up REAL INCIDENT, later session: this exact gap turned out to
     be Al's "900 Global balls are missing their skus and because of that
     pricing and other things that depend on that" report -- this
     function returning [] here means upsert_product's SKU-insert loop
     writes zero product_skus rows, and product_skus.weight_lbs is what
-    price_checker's weight-match keys off of. OCR is still not
-    implemented (same real-added-scope reasoning above still holds), but
-    _process_one now falls back to _html_fallback_skus (a single
-    HTML-sourced weight/RG/differential) whenever this function returns
-    empty, so at least one real SKU row exists instead of zero -- see
-    that function's own docstring and upsert_product's for the full fix.
+    price_checker's weight-match keys off of. First fix, same session:
+    _process_one falls back to _html_fallback_skus (a single HTML-sourced
+    weight/RG/differential) whenever this function returns empty, so at
+    least one real SKU row exists instead of zero.
+
+    Second follow-up, later still: Al reported "viking still only has 1
+    sku" -- the HTML fallback above was always a deliberate 1-SKU stopgap,
+    not the full per-weight table (see _html_fallback_skus's own
+    docstring). Investigated recovering the full table from the site's
+    own client-rendered variant widget instead of OCR; that widget calls
+    an authenticated same-origin API (stormbowling.com's
+    /api/v/1/products/search) that requires a real OAuth2 Bearer token --
+    deliberately not pursued here, that's a third party's protected
+    endpoint, not public content, regardless of how the token would be
+    obtained. Al agreed to OCR instead and chose Amazon Textract as the
+    engine. This function now calls parse_tech_data_pdf_via_textract()
+    below whenever it finds zero extractable characters, so the full
+    weight/RG/diff/PSA table -- not just one HTML-sourced row -- gets
+    recovered for these image-based PDFs. _html_fallback_skus remains in
+    place as a further-fallback safety net in _process_one for the rare
+    case Textract itself finds no table either (e.g. a page that's
+    genuinely just a product photo with no spec table on it at all).
 
     Second real finding, same smoke test: Storm Lightning Storm Clear has
     real, non-image text, but pdfplumber's table detection couldn't
@@ -697,8 +816,14 @@ def parse_tech_data_pdf(pdf_bytes: bytes) -> list:
     if not skus and total_chars == 0:
         logger.warning(
             "Tech Data PDF has no extractable text (likely image-based/scanned) -- "
-            "OCR would be required, not implemented, no per-weight data will be stored"
+            "falling back to Amazon Textract OCR"
         )
+        skus = parse_tech_data_pdf_via_textract(pdf_bytes)
+        if not skus:
+            logger.warning(
+                "Textract OCR fallback also found no per-weight data in this "
+                "image-based Tech Data PDF -- skipping, not guessing"
+            )
         return skus
 
     if not skus:

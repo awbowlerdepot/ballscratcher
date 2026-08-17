@@ -1618,6 +1618,91 @@ No new tests -- this tab has no existing test coverage of its own
 (admin-site/index.html is validated structurally, not unit-tested, same
 as every other admin-site change in this project).
 
+### 6f.3. Fixed follow-up: full per-weight table via Amazon Textract OCR, not just the 1-SKU HTML fallback
+
+Al, later session: "viking still only has 1 sku" -- the exact,
+predictable limitation 6f.2's HTML fallback documented up front (one
+real weight recovered, not the other four Viking Conquest's real Tech
+Data PDF would have given). Investigated recovering the full table
+without OCR, from the site's own client-rendered variant widget --
+`div-variant-product` calls a same-origin, authenticated
+`POST /api/v/1/products/search` that returns a real 401 (`"Full
+authentication is required to access this resource"`) regardless of
+credentials mode; confirmed this needs a genuine OAuth2 Bearer token, not
+a static client-side key. Deliberately not pursued -- that's a third
+party's protected endpoint, meaningfully different from the public PDF
+link or rendered HTML page this project already scrapes; authenticating
+against it to pull data beyond what's publicly rendered isn't something
+this project will automate, independent of whether a token URL is known.
+Al agreed to OCR instead and chose Amazon Textract as the engine.
+
+**Fixed**: `parse_tech_data_pdf`'s `total_chars == 0` branch (previously:
+log a warning, return `[]`, OCR "not taken on here") now calls new
+function `parse_tech_data_pdf_via_textract(pdf_bytes)`, which calls
+`boto3.client("textract").analyze_document(Document={"Bytes": pdf_bytes},
+FeatureTypes=["TABLES"])` -- synchronous, single call, no S3 round-trip
+or async job polling needed for a single-page PDF. Textract's `Blocks`
+response (`TABLE`/`CELL`/`WORD` block graph, `CELL`s holding 1-based
+`RowIndex`/`ColumnIndex` and their own `WORD` children) is converted by
+new pure function `_textract_table_from_blocks(blocks)` into the exact
+`list[list[str]]` shape pdfplumber's `extract_tables()` already produces,
+so it feeds straight into the existing, already-tested
+`_skus_from_table()` -- no second parallel weight/RG/diff extraction
+algorithm. Chosen over Tesseract-in-a-Lambda-Layer: boto3 is already a
+project dependency (Bedrock used elsewhere in this repo), so no custom
+binary packaging/layer to maintain, at ~$0.015/page.
+
+`_html_fallback_skus` (6f.2) stays in place in `_process_one` as a
+further-fallback safety net for the rare case Textract itself finds no
+table either (e.g. a page that's genuinely just a product photo, no spec
+table at all) -- `skus_to_write = pdf_skus if pdf_skus else
+_html_fallback_skus(parsed)` already handles "whatever
+`parse_tech_data_pdf` returns is empty" generically regardless of which
+internal path (real text, OCR) produced that result, so no change was
+needed there.
+
+New IAM permission: `textract:AnalyzeDocument` added to
+`CommercebuildProductScraperFunction`'s policy in `template.yaml`,
+`Resource: "*"` -- `AnalyzeDocument` doesn't support resource-level
+scoping (bytes passed inline, not read from S3), same as every
+AWS-documented example for this action.
+
+Tests: `tests/test_commercebuild_product_scraper.py`, 8 new
+(`test_textract_table_from_blocks_*`) covering grid reconstruction
+against a synthetic Viking-shaped table, feeding that output straight
+into `_skus_from_table` and confirming all 5 real weights come back
+(not just 1), multi-WORD cells correctly joined with a space (Textract
+commonly splits "16 lbs." into two WORD blocks), empty-blocks/no-TABLE-
+block/no-CELL-children all returning `[]` not guessing, a missing CELL
+(Textract's own documented gap-vs-pdfplumber behavior) defaulting to `""`
+without skipping/shifting the rest of the row, and multiple TABLE blocks
+correctly using only the first. `parse_tech_data_pdf_via_textract` itself
+is NOT unit tested, same established convention as `parse_tech_data_pdf`
+and every other function in this codebase that makes a real network/AWS
+call -- only its pure `_textract_table_from_blocks` helper has coverage.
+Full suite re-run clean (74/74 in this module's own test file, every
+other `test_*.py` in the repo also still green).
+
+**To fix already-affected products**: this is a code-level fix to
+`parse_tech_data_pdf` itself, not a new admin UI action -- the same
+"Backfill missing SKUs" panel (6f.2's follow-up) and per-product Rescrape
+button both already call into this function on every rescrape, so no new
+UI/script was needed. Because this adds a new IAM permission, the
+redeploy needs a real `sam deploy` for `CommercebuildProductScraperFunction`
+(not a code-only Lambda update):
+
+```bash
+sam build CommercebuildProductScraperFunction && sam deploy
+```
+
+Then re-run the missing-SKUs backfill (Batch Jobs tab's "Backfill missing
+SKUs" panel, or `python3 scripts/rescrape_commercebuild_products.py` with
+`ADMIN_API_URL`/`ADMIN_API_TOKEN` set -- already hardcoded to
+`missing_skus=true`, no flag needed) -- 900 Global products with an
+image-based Tech Data PDF should now come back with the full weight table
+(`source='pdf'`) instead of one `source='html'` row. Spot-check Viking
+Conquest specifically to confirm it now shows 5 SKUs, not 1.
+
 ### 6f.5. Hammer (Shopify) -- if `HammerBrandId` was set
 
 No schedule wired up for `ShopifyUrlDiscoveryFunction` yet, same as every

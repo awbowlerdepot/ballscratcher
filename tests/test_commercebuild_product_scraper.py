@@ -761,6 +761,135 @@ def test_skus_from_text_empty_string():
     assert app._skus_from_text("no numbers here at all") == []
 
 
+# --- _textract_table_from_blocks (Amazon Textract OCR fallback for
+# image-based Tech Data PDFs -- 900 Global's Viking Conquest and similar,
+# see parse_tech_data_pdf's docstring) ---
+#
+# Not built from a captured real Textract response (no live 900 Global
+# OCR call has been made yet) -- built instead to match the documented,
+# stable AnalyzeDocument(FeatureTypes=["TABLES"]) response shape (one
+# TABLE block whose CHILD Relationship lists CELL block Ids, each CELL
+# holding 1-based RowIndex/ColumnIndex and its own CHILD Relationship
+# listing WORD block Ids), the same convention this file already uses for
+# _skus_from_table's synthetic mismatched/no-PSA/empty-table cases above.
+# The realistic REAL_GREMLIN_TABLE-shaped tests below aren't a captured
+# fixture either, but exercise the exact shape Textract's own docs
+# describe and that this function is written against.
+
+def _synthetic_textract_blocks(grid, table_id="table-1"):
+    """Builds a flat Textract Blocks list for a table whose visible
+    grid content is exactly `grid` (list of rows, each a list of cell
+    strings, may contain multi-word cells like "16 lbs." which Textract
+    would ordinarily split into two separate WORD blocks -- reproduced
+    here as a whitespace-split so the join-with-space behavior is
+    genuinely exercised, not just assumed)."""
+    blocks = [{"Id": table_id, "BlockType": "TABLE", "Relationships": []}]
+    cell_ids = []
+    for row_idx, row in enumerate(grid, start=1):
+        for col_idx, cell_text in enumerate(row, start=1):
+            cell_id = f"cell-{table_id}-{row_idx}-{col_idx}"
+            cell_ids.append(cell_id)
+            word_ids = []
+            for w_idx, word in enumerate(cell_text.split(" ")):
+                if not word:
+                    continue
+                word_id = f"word-{table_id}-{row_idx}-{col_idx}-{w_idx}"
+                word_ids.append(word_id)
+                blocks.append({"Id": word_id, "BlockType": "WORD", "Text": word})
+            blocks.append({
+                "Id": cell_id,
+                "BlockType": "CELL",
+                "RowIndex": row_idx,
+                "ColumnIndex": col_idx,
+                "Relationships": [{"Type": "CHILD", "Ids": word_ids}] if word_ids else [],
+            })
+    blocks[0]["Relationships"] = [{"Type": "CHILD", "Ids": cell_ids}]
+    return blocks
+
+
+TEXTRACT_VIKING_GRID = [
+    ["WEIGHT", "RG", "DIFF", "PSA"],
+    ["16 lbs.", "2.53", ".051", ".018"],
+    ["15 lbs.", "2.54", ".049", ".017"],
+    ["14 lbs.", "2.57", ".047", ".015"],
+    ["13 lbs.", "2.60", ".027", ".012"],
+    ["12 lbs.", "2.62", ".024", ".010"],
+]
+
+
+def test_textract_table_from_blocks_reconstructs_grid_shape():
+    blocks = _synthetic_textract_blocks(TEXTRACT_VIKING_GRID)
+    grid = app._textract_table_from_blocks(blocks)
+    assert grid == TEXTRACT_VIKING_GRID
+
+
+def test_textract_table_from_blocks_feeds_skus_from_table_correctly():
+    """The real point of this function -- its output has to be
+    consumable by the existing, already-tested _skus_from_table() without
+    any special-casing, recovering the FULL 5-weight table (not just the
+    single HTML-fallback SKU -- see _html_fallback_skus) for an
+    image-based PDF like Viking Conquest's."""
+    blocks = _synthetic_textract_blocks(TEXTRACT_VIKING_GRID)
+    grid = app._textract_table_from_blocks(blocks)
+    skus = app._skus_from_table(grid)
+    assert len(skus) == 5
+    by_weight = {s["weight_lbs"]: s for s in skus}
+    assert by_weight[16] == {"weight_lbs": 16, "rg": 2.53, "differential": 0.051, "mass_bias": None, "psa": 0.018}
+    assert by_weight[12] == {"weight_lbs": 12, "rg": 2.62, "differential": 0.024, "mass_bias": None, "psa": 0.010}
+
+
+def test_textract_table_from_blocks_joins_multi_word_cells_with_space():
+    """Textract commonly OCRs "16 lbs." as two separate WORD blocks ("16"
+    and "lbs.") inside one CELL -- _synthetic_textract_blocks reproduces
+    that split, so this confirms the real join-with-space logic, not just
+    a single-WORD-per-cell happy path."""
+    blocks = _synthetic_textract_blocks([["16 lbs.", "2.53"]])
+    grid = app._textract_table_from_blocks(blocks)
+    assert grid == [["16 lbs.", "2.53"]]
+
+
+def test_textract_table_from_blocks_empty_blocks_list():
+    assert app._textract_table_from_blocks([]) == []
+
+
+def test_textract_table_from_blocks_no_table_block_returns_empty():
+    """A page Textract genuinely didn't detect any table on -- e.g. a
+    scanned page that's just a product photo with no spec table at all --
+    must return [] (not guess), same "flag, don't guess" spirit as
+    _skus_from_table's own empty-table handling."""
+    blocks = [{"Id": "word-1", "BlockType": "WORD", "Text": "hello"}]
+    assert app._textract_table_from_blocks(blocks) == []
+
+
+def test_textract_table_from_blocks_table_with_no_cell_children_returns_empty():
+    blocks = [{"Id": "table-1", "BlockType": "TABLE", "Relationships": []}]
+    assert app._textract_table_from_blocks(blocks) == []
+
+
+def test_textract_table_from_blocks_missing_cell_defaults_to_blank_not_skipped():
+    """Textract sometimes doesn't emit a CELL block at all for what would
+    be a fully blank cell (unlike pdfplumber, which reliably fills every
+    grid position) -- a gap here must default to "" and leave every other
+    real cell in place, not shift/skip/crash."""
+    blocks = _synthetic_textract_blocks([["16 lbs.", "2.53", ".051"]])
+    # Drop the middle cell (row 1, col 2) entirely, as if Textract never
+    # emitted a CELL block for it.
+    blocks = [b for b in blocks if not (b.get("BlockType") == "CELL" and b.get("ColumnIndex") == 2)]
+    grid = app._textract_table_from_blocks(blocks)
+    assert grid == [["16 lbs.", "", ".051"]]
+
+
+def test_textract_table_from_blocks_only_uses_first_table():
+    """Real Tech Data PDFs confirmed so far have exactly one weight table
+    per page -- if Textract ever returns more than one TABLE block (e.g.
+    a stray legend/footnote table), only the first is used rather than
+    merging them together into a garbled grid."""
+    first = _synthetic_textract_blocks(TEXTRACT_VIKING_GRID, table_id="table-1")
+    second = _synthetic_textract_blocks([["unrelated", "legend"]], table_id="table-2")
+    grid = app._textract_table_from_blocks(first + second)
+    assert grid == TEXTRACT_VIKING_GRID
+
+
 # --- _to_float (real bug: no-leading-zero values) ---
 
 def test_to_float_no_leading_zero_real_bug():
