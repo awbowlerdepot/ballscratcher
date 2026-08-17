@@ -349,6 +349,13 @@ _SORT_ORDER_BY = {
     "oldest": "p.release_date asc nulls last, p.id asc",
     "name_asc": "p.name asc, p.id asc",
     "name_desc": "p.name desc, p.id asc",
+    # Al: "can we add a sort to the admin ui products list for total
+    # ADU" -- direct follow-up to the Total ADU column itself (see
+    # _TOTAL_ADU_SQL above). No "nulls last" needed unlike
+    # newest/oldest: _TOTAL_ADU_SQL is wrapped in coalesce(..., 0), so
+    # it's never actually null, just possibly 0 for a product with no
+    # qualifying SKU readings.
+    "total_adu": "total_adu desc, p.id asc",
 }
 _DEFAULT_ORDER_BY = "p.updated_at desc, p.id asc"
 
@@ -499,7 +506,9 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
 
     total_adu (see _TOTAL_ADU_SQL above) is likewise always computed and
     returned -- Al: "can we add the sum of the ADUs for each product to
-    the main table." No sort option added for it (not asked for)."""
+    the main table." A 'total_adu' sort option (desc only, highest-
+    movers first) was added as a direct follow-up (see _SORT_ORDER_BY
+    above)."""
     # p alias + left join cores: needed once c.name entered the picture --
     # products and cores both have a plain "name" column, so every
     # previously-bare column reference below (name, published, brand_id,

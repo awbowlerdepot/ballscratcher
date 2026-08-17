@@ -2275,6 +2275,21 @@ def test_list_products_sort_name_desc_orders_reverse_alphabetically():
     assert "order by p.name desc, p.id asc limit %s offset %s" in query
 
 
+def test_list_products_sort_total_adu_orders_by_column_desc():
+    # Al's direct follow-up to the Total ADU column itself: "can we add
+    # a sort to the admin ui products list for total ADU". Orders by
+    # the select-list alias (total_adu, not a repeated subquery) --
+    # Postgres allows ORDER BY to reference a SELECT list alias, no
+    # need to duplicate _TOTAL_ADU_SQL a second time. No "nulls last"
+    # needed unlike newest/oldest since _TOTAL_ADU_SQL is always
+    # coalesce(..., 0), never actually null.
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, sort="total_adu", limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "order by total_adu desc, p.id asc limit %s offset %s" in query
+
+
 def test_list_products_every_sort_option_keeps_id_tiebreaker():
     conn = _QueryCapturingConnection()
     for sort_value in service._SORT_ORDER_BY:

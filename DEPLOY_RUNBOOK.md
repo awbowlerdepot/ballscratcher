@@ -5713,6 +5713,31 @@ sam deploy
 (Admin-site: re-upload the static `index.html`, no separate deploy
 pipeline for it.)
 
+**Follow-up, same session -- Al: "can we add a sort to the admin ui
+products list for total ADU":** `_SORT_ORDER_BY` (`admin_api/service.py`)
+gained a `"total_adu"` entry, `"total_adu desc, p.id asc"`, sorting the
+Products tab by highest-movers-first. Orders by the SELECT list's own
+`total_adu` alias rather than repeating `_TOTAL_ADU_SQL` a second time
+in the ORDER BY clause -- Postgres allows referencing a SELECT alias
+directly. No `nulls last` needed the way `newest`/`oldest` need one:
+`_TOTAL_ADU_SQL` is always wrapped in `coalesce(..., 0)`, so it's never
+actually `NULL`, just possibly `0` for a product with no qualifying SKU
+readings in the window. `admin-site/index.html`'s Products tab sort
+dropdown gained a "total ADU" option -- no other client-side wiring
+needed, `productState.sort` already flows every value through generically
+to the `?sort=` query param.
+
+Tests: `test_admin_api_service.py`, 1 new dedicated test
+(`test_list_products_sort_total_adu_orders_by_column_desc`) plus
+automatic coverage from the existing `test_list_products_every_sort_
+option_keeps_id_tiebreaker` (iterates `_SORT_ORDER_BY`'s keys, so the
+new entry is exercised there too without any test change). Full suite
+re-run clean: `test_admin_api_service.py` 206/206, every other
+`test_*.py` in the repo still green.
+
+No migration, no `template.yaml` change. Same redeploy as above --
+`AdminApiFunction` + re-upload `index.html`.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
