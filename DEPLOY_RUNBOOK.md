@@ -1601,6 +1601,23 @@ gap will now get exactly one `source='html'` row on their next scrape --
 check the admin UI's per-SKU stock/price sections to confirm price
 matching picks it up.
 
+**Follow-up, same session -- Al asked "where in the admin ui is the
+ability to do this?":** turned out there wasn't one -- the Products tab
+had a Brand filter and a per-product Rescrape button, but no bulk
+"missing SKUs" action, unlike `missing_core`/`missing_coverstock`, which
+both already had one in the Batch Jobs tab's config-driven `BATCH_
+CONFIGS` (`admin-site/index.html`). Added a matching `skus` entry
+(`filterParam: 'missing_skus'`, same `/rescrape` call/`queued`-shaped
+result as `core`/`coverstock`) plus a "Backfill missing SKUs" panel,
+identical shape to the coverstock one right above it (same `batch-
+start-/stop-/stats-/log-<kind>` id convention `runBatch`/`stopBatch`
+already key off of -- no JS changes needed beyond the one config entry).
+Verified via `node --check` on the extracted script (passed) and the
+project's own HTML tag-balance checker (passed, `unclosed at end: []`).
+No new tests -- this tab has no existing test coverage of its own
+(admin-site/index.html is validated structurally, not unit-tested, same
+as every other admin-site change in this project).
+
 ### 6f.5. Hammer (Shopify) -- if `HammerBrandId` was set
 
 No schedule wired up for `ShopifyUrlDiscoveryFunction` yet, same as every

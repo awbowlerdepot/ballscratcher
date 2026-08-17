@@ -604,6 +604,15 @@
       <div id="batch-stats-coverstock" class="mono small muted" style="margin-top:8px;"></div>
       <pre id="batch-log-coverstock" class="scrollbox" style="margin-top:6px;"></pre>
     </div>
+
+    <div class="panel">
+      <h3>Backfill missing SKUs</h3>
+      <p class="muted">Equivalent of scripts/rescrape_commercebuild_products.py (missing_skus filter): queues a rescrape for every product with zero product_skus rows, any platform. Real incident, Al: &ldquo;900 Global balls are missing their skus and because of that pricing and other things that depend on that&rdquo; -- most 900 Global gaps were a genuinely image-based Tech Data PDF (no text layer to parse at all); a rescrape now falls back to one SKU sourced straight from the page&rsquo;s own HTML when that happens (see commercebuild_product_scraper&rsquo;s _html_fallback_skus), so this should mostly clear on its own after a redeploy. This filter also catches genuinely archived/retired products with no obtainable SKU data by any method -- a nonzero count after rescraping isn&rsquo;t necessarily still-broken, spot-check a few. Only enqueues -- re-run later (or re-filter the Products tab) to see how much is left.</p>
+      <button id="batch-start-skus" class="btn" onclick="runBatch('skus')">Start</button>
+      <button id="batch-stop-skus" class="btn ghost" onclick="stopBatch('skus')" disabled>Stop</button>
+      <div id="batch-stats-skus" class="mono small muted" style="margin-top:8px;"></div>
+      <pre id="batch-log-skus" class="scrollbox" style="margin-top:6px;"></pre>
+    </div>
   </section>
 
 </main>
@@ -3432,6 +3441,12 @@ const BATCH_CONFIGS = {
   },
   coverstock: {
     filterParam: 'missing_coverstock',
+    call: function (id) { return api('POST', '/products/' + id + '/rescrape'); },
+    isSuccess: function (r) { return !!r.queued; },
+    describe: function (r) { return r.queued ? 'queued for rescrape' : r.reason; },
+  },
+  skus: {
+    filterParam: 'missing_skus',
     call: function (id) { return api('POST', '/products/' + id + '/rescrape'); },
     isSuccess: function (r) { return !!r.queued; },
     describe: function (r) { return r.queued ? 'queued for rescrape' : r.reason; },
