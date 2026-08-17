@@ -5631,6 +5631,88 @@ sam deploy
 (No admin-site redeploy step needed beyond re-uploading the static file
 -- it's not a Lambda-fronted deployable.)
 
+### 6o.10. "Total ADU" column on the Products tab main table
+
+Al: "can we add the sum of the ADUs for each product to the main table,
+if it need to be an async fetch that is fine. so that it will load
+faster or if it is fast enough to just grab in the initial call that is
+fine too."
+
+Per-SKU ADU (Average Daily Usage -- units sold/day, restocks excluded)
+already existed on the product detail page's SKU stock forecasting table
+(see 6i.11: `computeSkuForecast` in `admin-site/index.html`, client-side
+JS over `product_sku_stock_history` rows). This adds a per-PRODUCT
+rollup -- the sum of each of a product's SKUs' own ADU -- as a new
+column on the Products tab's main table, so you don't have to open each
+product to see whether it's moving units at all.
+
+**Went with "grab it in the initial call," not async** -- `_TOTAL_ADU_SQL`
+(`admin_api/service.py`) is a new correlated subquery added to
+`list_products`'s SELECT clause, computed unconditionally on every call,
+same precedent as `_POPULARITY_SCORE_SQL` (6l.5) which made the same
+call for the same reason: cheap enough at this catalog's size that a
+separate round-trip/async-fetch dance isn't worth the added complexity.
+`ADU_LOOKBACK_DAYS = 30` (matches `admin-site/index.html`'s own
+`FORECAST_LOOKBACK_DAYS` constant).
+
+**The SQL is a deliberate re-implementation of `computeSkuForecast`'s
+exact semantics, not a shared module** (no code is shared between
+`price_checker`, `admin_api`, and `admin-site`'s browser JS in this
+project, so there's nothing to import from) -- matched by hand:
+- Per SKU, only `product_sku_stock_history` rows within the trailing
+  `ADU_LOOKBACK_DAYS` window, non-null `quantity`.
+- `units_sold` sums only quantity DROPS between consecutive readings
+  (`lag() over (partition by product_sku_id order by checked_at)`) --
+  a rise between readings is a restock, explicitly excluded, not
+  counted as negative sales.
+- Requires at least 2 readings in the window (`having count(*) >= 2`)
+  and a positive `elapsed_days` between the first and last reading --
+  both guard against divide-by-zero/nonsense-ADU the same way
+  `computeSkuForecast` returns `adu: null` for those cases. A SKU that
+  fails either guard contributes 0 to the product's total, not `null`
+  or an error -- same "no signal yet" treatment `computeSkuForecast`
+  itself uses.
+- Product-level total is `sum(sku_adu)` across the product's SKUs,
+  wrapped in `coalesce(..., 0)` so a product with zero qualifying SKUs
+  shows `0`, not `NULL` (consistent with `total_adu === null` being
+  reserved in the frontend for "column not present in this response,"
+  not "product sells nothing" -- see admin-site comment below).
+
+**`admin-site/index.html`**: Products tab table gained a "Total ADU"
+column between Popularity and Published, tooltip explaining the metric,
+rendered as `Number(p.total_adu).toFixed(2)` (or an em dash if somehow
+absent). Detail row's empty-state `colspan` bumped 10 -> 11.
+
+Tests: `test_admin_api_service.py`, 6 new (`test_list_products_always_
+selects_total_adu` and friends) confirming the subquery is present
+unconditionally, uses the confirmed 30-day window, counts only drops,
+requires >=2 readings, guards zero elapsed days, and is scoped to the
+right product via `ps_adu.product_id = p.id`. Full suite re-run clean,
+zero regressions (`tests/test_admin_api_service.py` 205/205; every other
+`test_*.py` file in the repo also still green).
+
+**One incidental fix along the way**: two pre-existing tests
+(`test_list_products_popularity_score_averages_not_sums`,
+`test_list_products_omits_missing_skus_filter_by_default`) did blanket
+substring checks (`"select sum(" not in query`, `"product_skus" not in
+query`) against the FULL query string, written back when there was only
+one subquery/filter in play. `_TOTAL_ADU_SQL` legitimately introduces
+its own unrelated `select sum(...)` and unconditionally joins
+`product_skus` (aliased `ps_adu`), so both checks were narrowed to what
+they actually meant to verify -- the popularity check now inspects
+`service._POPULARITY_SCORE_SQL` directly instead of the joined query,
+and the missing-skus check now looks for the specific `not exists (...)`
+filter clause instead of the bare table name.
+
+No migration, no `template.yaml` change -- same `AdminApiFunction`
+`/{proxy+}` catch-all as every other `list_products` addition. Redeploy:
+```bash
+sam build AdminApiFunction
+sam deploy
+```
+(Admin-site: re-upload the static `index.html`, no separate deploy
+pipeline for it.)
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

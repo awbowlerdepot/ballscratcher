@@ -1694,13 +1694,24 @@ function renderProducts(items) {
         // balls with the same approved-video view counts could show
         // different numbers here (video age).
         '<td title="Sum of each approved video\'s view_count, decayed by video age (180-day half-life)">' + fmtCount(p.popularity_score === null || p.popularity_score === undefined ? null : Math.round(p.popularity_score)) + '</td>' +
+        // total_adu (always returned, see service.list_products'
+        // docstring) -- sum across this product's SKUs of each weight's
+        // own trailing-30-day Average Daily Usage (see computeSkuForecast
+        // and _TOTAL_ADU_SQL's matching definition). A SKU with fewer
+        // than 2 stock readings in the window contributes nothing (not a
+        // fabricated zero), same as that per-SKU forecast's own "adu:
+        // null" case -- so a product with no SKU stock history at all
+        // shows 0 here, same as "no recent sales", not a missing-data
+        // marker; the per-product detail view's own SKU Stock tab is
+        // where that distinction actually matters.
+        '<td title="Sum of each SKU\'s own trailing ' + FORECAST_LOOKBACK_DAYS + '-day Average Daily Usage (units sold/day, restocks excluded)">' + (p.total_adu === null || p.total_adu === undefined ? '<span class="muted">&mdash;</span>' : Number(p.total_adu).toFixed(2)) + '</td>' +
         '<td><button class="btn small ' + (p.published ? 'ok' : 'ghost') + '" onclick="togglePublish(\'' + p.id + '\', ' + (!p.published) + ')">' + (p.published ? 'Published' : 'Unpublished') + '</button></td>' +
         '<td>' + fmtDate(p.updated_at) + '</td>' +
         '<td class="actions"><button class="btn small ghost" onclick="toggleProductDetail(\'' + p.id + '\')">Detail</button></td>' +
         '</tr>' +
-        '<tr id="product-detail-' + p.id + '" class="detail-row hidden"><td colspan="10"></td></tr>';
+        '<tr id="product-detail-' + p.id + '" class="detail-row hidden"><td colspan="11"></td></tr>';
     }).join('');
-    listEl.innerHTML = '<table><thead><tr><th>Name</th><th>Brand</th><th>Status</th><th>Core</th><th>Coverstock</th><th>Release Date</th><th>Popularity</th><th>Published</th><th>Updated</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    listEl.innerHTML = '<table><thead><tr><th>Name</th><th>Brand</th><th>Status</th><th>Core</th><th>Coverstock</th><th>Release Date</th><th>Popularity</th><th>Total ADU</th><th>Published</th><th>Updated</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
   document.getElementById('product-prev').disabled = productState.offset === 0;
   document.getElementById('product-next').disabled = productState.lastCount < productState.limit;

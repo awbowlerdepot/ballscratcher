@@ -2139,14 +2139,22 @@ def test_list_products_popularity_score_uses_confirmed_half_life():
 def test_list_products_popularity_score_averages_not_sums():
     """Al's follow-up, real incident: a raw sum let video COUNT dominate
     the ranking. Confirms the SQL averages per-video decayed views and
-    applies a sub-linear ln(1 + count) volume boost, not a plain sum."""
+    applies a sub-linear ln(1 + count) volume boost, not a plain sum.
+
+    Scoped to the _POPULARITY_SCORE_SQL constant itself (not the full
+    query string) since list_products' query now also embeds
+    _TOTAL_ADU_SQL, which legitimately contains its own unrelated
+    "select sum(" (summing per-SKU ADU into a per-product total) --
+    a blanket substring check against the whole query would false-
+    positive on that, so this checks only the fragment this test
+    actually cares about."""
     conn = _QueryCapturingConnection()
     service.list_products(conn, limit=50, offset=0)
 
     query = conn.cursor().queries[0]
     assert "select avg(" in query
     assert "* ln(1 + count(*))" in query
-    assert "select sum(" not in query
+    assert "select sum(" not in service._POPULARITY_SCORE_SQL
 
 
 def test_list_products_sort_popularity_orders_by_score_desc():
@@ -2163,6 +2171,72 @@ def test_list_products_default_sort_unaffected_by_popularity_column():
 
     query = conn.cursor().queries[0]
     assert "order by p.updated_at desc, p.id asc limit %s offset %s" in query
+
+
+# --- list_products: total_adu -- Al: "can we add the sum of the ADUs
+# for each product to the main table." Same trailing-window/drops-only
+# ADU definition as admin-site's own computeSkuForecast, re-implemented
+# in SQL (see _TOTAL_ADU_SQL's own comment for why it can't be shared
+# with that JS copy and must be kept in lockstep by hand). ---
+
+def test_list_products_always_selects_total_adu():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "as total_adu" in query
+    assert "product_sku_stock_history" in query
+    assert "product_skus" in query
+
+
+def test_list_products_total_adu_uses_confirmed_lookback_window():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert f"interval '{service.ADU_LOOKBACK_DAYS} days'" in query
+    assert service.ADU_LOOKBACK_DAYS == 30
+
+
+def test_list_products_total_adu_only_counts_drops_not_restocks():
+    """The lag()-based delta must only sum NEGATIVE deltas (a quantity
+    drop = sold) -- a positive delta (restock) must never add to
+    units_sold, same "drop=sold, rise=restock" interpretation
+    computeSkuForecast's own docstring documents."""
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "case when h.delta < 0 then -h.delta else 0 end" in query
+    assert "lag(psh.quantity)" in query
+
+
+def test_list_products_total_adu_requires_at_least_two_readings():
+    """A SKU with fewer than 2 readings in the window can't compute a
+    rate at all -- must be excluded from the sum entirely (having
+    count(*) >= 2), not counted as a zero, same as computeSkuForecast's
+    own `rows.length < 2 -> adu: null`."""
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "having count(*) >= 2" in query
+
+
+def test_list_products_total_adu_guards_zero_elapsed_days():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "case when sku.elapsed_days > 0 then sku.units_sold / sku.elapsed_days else 0 end" in query
+
+
+def test_list_products_total_adu_scoped_to_this_product_only():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "ps_adu.product_id = p.id" in query
 
 
 # --- common-sense sort options (Al's ask: "lets add some common sense
@@ -2330,11 +2404,17 @@ def test_list_products_missing_skus_adds_not_exists_filter_sql():
 
 
 def test_list_products_omits_missing_skus_filter_by_default():
+    # Scoped to the specific NOT EXISTS filter clause rather than a
+    # blanket "product_skus" substring check -- _TOTAL_ADU_SQL now
+    # legitimately joins product_skus (aliased ps_adu) unconditionally
+    # on every call to compute the Total ADU column, so a bare
+    # "product_skus" absence check would false-positive now that it's
+    # a normal part of every query, filter or not.
     conn = _QueryCapturingConnection()
     service.list_products(conn, limit=50, offset=0)
 
     query = conn.cursor().queries[0]
-    assert "product_skus" not in query
+    assert "not exists (select 1 from product_skus ps where ps.product_id = p.id)" not in query
 
 
 def test_list_products_missing_skus_combines_with_source_platform():

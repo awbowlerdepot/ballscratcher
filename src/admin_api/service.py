@@ -280,6 +280,62 @@ _POPULARITY_SCORE_SQL = f"""coalesce((
                    where pv.product_id = p.id and pv.status = 'approved' and pv.view_count is not null
                ), 0)"""
 
+# Total Average Daily Usage across a product's SKUs (Al: "can we add the
+# sum of the ADUs for each product to the main table"). Same trailing-
+# window/drops-only ADU definition as admin-site's own computeSkuForecast
+# (index.html) -- deliberately re-implemented here in SQL rather than
+# shared, same no-shared-module reasoning as POPULARITY_HALF_LIFE_DAYS
+# above, but the two MUST stay in lockstep or the Products tab's summary
+# number would silently disagree with each product detail page's own
+# per-SKU ADU figures. ADU_LOOKBACK_DAYS mirrors admin-site's
+# FORECAST_LOOKBACK_DAYS = 30 constant.
+#
+# Per SKU, within the lookback window: units_sold = sum of only the
+# DROPS between consecutive readings (a rise is a restock, excluded --
+# same interpretation get_sku_stock_history's own docstring documents);
+# elapsed_days = time between the first and last reading in that window;
+# sku_adu = units_sold / elapsed_days. A SKU needs at least 2 readings in
+# the window to compute a rate at all (matching computeSkuForecast's
+# `rows.length < 2 -> adu: null`) -- excluded from the sum via the
+# `having count(*) >= 2` below, same effective "contributes nothing, not
+# a fabricated zero" behavior as the JS version returning null. Guarded
+# division on elapsed_days > 0 for the same edge case computeSkuForecast
+# itself guards (`elapsedDays <= 0 -> adu: null`).
+#
+# Chosen to run unconditionally in the initial GET /products call (same
+# tradeoff popularity_score above already made, at the same catalog
+# size) rather than a separate async round-trip -- Al offered either
+# ("if it need to be an async fetch that is fine... or if it is fast
+# enough to just grab in the initial call that is fine too"). If this
+# ever turns out to be the slow part of the page at a larger catalog
+# size, splitting it into its own endpoint the way needs_video_summary_
+# refresh's staleness check stayed OUT of this always-on path is the
+# fallback, not a rewrite.
+ADU_LOOKBACK_DAYS = 30
+
+_TOTAL_ADU_SQL = f"""coalesce((
+                   select sum(case when sku.elapsed_days > 0 then sku.units_sold / sku.elapsed_days else 0 end)
+                   from (
+                       select
+                           h.product_sku_id,
+                           sum(case when h.delta < 0 then -h.delta else 0 end) as units_sold,
+                           extract(epoch from (max(h.checked_at) - min(h.checked_at))) / 86400.0 as elapsed_days
+                       from (
+                           select
+                               psh.product_sku_id,
+                               psh.checked_at,
+                               psh.quantity - lag(psh.quantity) over (partition by psh.product_sku_id order by psh.checked_at) as delta
+                           from product_sku_stock_history psh
+                           join product_skus ps_adu on ps_adu.id = psh.product_sku_id
+                           where ps_adu.product_id = p.id
+                             and psh.quantity is not null
+                             and psh.checked_at >= now() - interval '{ADU_LOOKBACK_DAYS} days'
+                       ) h
+                       group by h.product_sku_id
+                       having count(*) >= 2
+                   ) sku
+               ), 0)"""
+
 # Common-sense sort options for the Products tab's "Sort" control -- Al's
 # ask: "lets add some common sense sort options for both the admin and
 # consumer UIs". Identical to public_api/service.py's copy (kept in sync
@@ -439,7 +495,11 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     (release_date), 'name_asc'/'name_desc' (alphabetical). Anything else
     (including the default None) keeps the existing updated_at-desc
     order, same unrecognized-value-is-harmless convention as every other
-    filter/sort value on this endpoint."""
+    filter/sort value on this endpoint.
+
+    total_adu (see _TOTAL_ADU_SQL above) is likewise always computed and
+    returned -- Al: "can we add the sum of the ADUs for each product to
+    the main table." No sort option added for it (not asked for)."""
     # p alias + left join cores: needed once c.name entered the picture --
     # products and cores both have a plain "name" column, so every
     # previously-bare column reference below (name, published, brand_id,
@@ -454,7 +514,8 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     query = f"""
         select p.id, p.brand_id, b.name as brand_name, p.name, p.url, p.status, p.published, p.updated_at,
                p.core_id, c.name as core_name, p.release_date, p.coverstock_id, p.coverstock_name,
-               {_POPULARITY_SCORE_SQL} as popularity_score
+               {_POPULARITY_SCORE_SQL} as popularity_score,
+               {_TOTAL_ADU_SQL} as total_adu
         from products p
         left join cores c on c.id = p.core_id
         left join brands b on b.id = p.brand_id
