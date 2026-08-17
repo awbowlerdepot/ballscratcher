@@ -363,6 +363,7 @@ _DEFAULT_ORDER_BY = "p.updated_at desc, p.id asc"
 def list_products(conn, published: bool = None, brand_id: str = None, search: str = None,
                    needs_video_summary_refresh: bool = None, has_approved_video_summaries: bool = None,
                    missing_core: bool = None, missing_coverstock: bool = None, missing_skus: bool = None,
+                   html_fallback_skus: bool = None,
                    missing_video_candidates: bool = None,
                    source_platform: str = None,
                    status: str = None, sort: str = None,
@@ -473,6 +474,24 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     commercebuild, even though that's the one confirmed real case so
     far).
 
+    html_fallback_skus=True: products whose product_skus rows all have
+    source='html' (and have at least one such row) -- deliberately
+    distinct from missing_skus (zero rows) above, this is the OTHER
+    real gap that fix left: 900 Global's image-based Tech Data PDFs
+    (Al: "viking still only has 1 sku") get exactly one source='html'
+    row from commercebuild_product_scraper's _html_fallback_skus
+    stopgap, which means they now have a nonzero product_skus count and
+    stop showing up under missing_skus at all -- this filter is how to
+    find them again now that parse_tech_data_pdf_via_textract exists to
+    actually recover the full table on a rescrape. `exists (...)` +
+    `not exists (... source <> 'html')` together (not just the `not
+    exists` alone) so a genuinely zero-row product doesn't vacuously
+    match here too -- that's missing_skus' job, not this one's. A
+    product that already got its full PDF-sourced table (source='pdf')
+    correctly never matches, even if it also happens to have a stray
+    source='html' row from some earlier partial state, since ANY
+    non-html row disqualifies it.
+
     missing_video_candidates=True: products with ZERO product_videos rows
     of ANY status -- not just "no approved summary" the way has_approved_
     video_summaries/needs_video_summary_refresh check. Al's direct ask
@@ -567,6 +586,11 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
         query += " and p.coverstock_id is null"
     if missing_skus:
         query += " and not exists (select 1 from product_skus ps where ps.product_id = p.id)"
+    if html_fallback_skus:
+        query += """
+            and exists (select 1 from product_skus ps3 where ps3.product_id = p.id)
+            and not exists (select 1 from product_skus ps4 where ps4.product_id = p.id and ps4.source <> 'html')
+        """
     if missing_video_candidates:
         query += " and not exists (select 1 from product_videos pv where pv.product_id = p.id)"
     if source_platform:

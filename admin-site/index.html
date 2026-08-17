@@ -613,6 +613,15 @@
       <div id="batch-stats-skus" class="mono small muted" style="margin-top:8px;"></div>
       <pre id="batch-log-skus" class="scrollbox" style="margin-top:6px;"></pre>
     </div>
+
+    <div class="panel">
+      <h3>Backfill 900 Global full weight table (Textract)</h3>
+      <p class="muted">Equivalent of GET /products?html_fallback_skus=true: queues a rescrape for every product whose ENTIRE product_skus set is a single source='html' row -- distinct from &ldquo;Backfill missing SKUs&rdquo; above, which only catches products with ZERO rows. Real incident, Al: &ldquo;viking still only has 1 sku&rdquo; -- these products already got the one-SKU HTML stopgap from the missing-SKUs fix, so they no longer show up under that filter at all, even though they're still missing 4 of their 5 real weights. commercebuild_product_scraper's parse_tech_data_pdf now falls back to Amazon Textract OCR for genuinely image-based Tech Data PDFs, so a rescrape from here should replace that single source='html' row with the full source='pdf' table. A nonzero count after rescraping isn&rsquo;t necessarily still-broken -- Textract itself can still come up empty on a page with no real table on it -- spot-check a few (Viking Conquest specifically). Only enqueues -- re-run later (or re-filter the Products tab) to see how much is left.</p>
+      <button id="batch-start-htmlSkus" class="btn" onclick="runBatch('htmlSkus')">Start</button>
+      <button id="batch-stop-htmlSkus" class="btn ghost" onclick="stopBatch('htmlSkus')" disabled>Stop</button>
+      <div id="batch-stats-htmlSkus" class="mono small muted" style="margin-top:8px;"></div>
+      <pre id="batch-log-htmlSkus" class="scrollbox" style="margin-top:6px;"></pre>
+    </div>
   </section>
 
 </main>
@@ -3447,6 +3456,12 @@ const BATCH_CONFIGS = {
   },
   skus: {
     filterParam: 'missing_skus',
+    call: function (id) { return api('POST', '/products/' + id + '/rescrape'); },
+    isSuccess: function (r) { return !!r.queued; },
+    describe: function (r) { return r.queued ? 'queued for rescrape' : r.reason; },
+  },
+  htmlSkus: {
+    filterParam: 'html_fallback_skus',
     call: function (id) { return api('POST', '/products/' + id + '/rescrape'); },
     isSuccess: function (r) { return !!r.queued; },
     describe: function (r) { return r.queued ? 'queued for rescrape' : r.reason; },

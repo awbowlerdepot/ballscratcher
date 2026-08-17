@@ -1695,13 +1695,78 @@ redeploy needs a real `sam deploy` for `CommercebuildProductScraperFunction`
 sam build CommercebuildProductScraperFunction && sam deploy
 ```
 
-Then re-run the missing-SKUs backfill (Batch Jobs tab's "Backfill missing
-SKUs" panel, or `python3 scripts/rescrape_commercebuild_products.py` with
-`ADMIN_API_URL`/`ADMIN_API_TOKEN` set -- already hardcoded to
-`missing_skus=true`, no flag needed) -- 900 Global products with an
-image-based Tech Data PDF should now come back with the full weight table
-(`source='pdf'`) instead of one `source='html'` row. Spot-check Viking
-Conquest specifically to confirm it now shows 5 SKUs, not 1.
+**Correction, same session, before Al even asked**: my first draft of
+this paragraph said to re-run the existing "Backfill missing SKUs" panel
+(`missing_skus` filter) to pick these back up -- wrong. Al asked "will
+missing skus find these now because they have one now" and the answer is
+no: `missing_skus` only matches products with ZERO `product_skus` rows,
+and every product this section's fix applies to already has exactly one
+(`source='html'`, from 6f.2's stopgap) -- a nonzero count that filter
+was never meant to catch. See 6f.4 immediately below for the actual
+fix -- a new, separate filter built specifically for this in-between
+state.
+
+### 6f.4. New filter to actually find 6f.3's target products: `html_fallback_skus`
+
+Direct follow-up, Al: "will missing skus find these now because they
+have one now" -- correctly caught the gap in 6f.3's original writeup
+above before it caused real confusion. `missing_skus` (6f.2) and
+`html_fallback_skus` are deliberately two different, non-overlapping
+filters on `GET /products`:
+
+- `missing_skus=true`: zero `product_skus` rows at all.
+- `html_fallback_skus=true`: at least one `product_skus` row exists,
+  AND every row that exists has `source='html'` -- i.e. a product that
+  already got 6f.2's one-SKU stopgap and is now invisible to
+  `missing_skus`, but still hasn't had a real rescrape run against
+  6f.3's new Textract path yet.
+
+`list_products` (`admin_api/service.py`) gained a `html_fallback_skus`
+param and a two-part WHERE clause -- `exists (select 1 from product_skus
+ps3 where ps3.product_id = p.id)` AND `not exists (select 1 from
+product_skus ps4 where ps4.product_id = p.id and ps4.source <> 'html')`
+-- BOTH parts together, not just the `not exists` alone, since a
+zero-row product would vacuously satisfy a bare `not exists (...source
+<> 'html')` too and get double-counted with `missing_skus`. A product
+that already has its real `source='pdf'` table (even just one row of it,
+some partial state) correctly never matches, since any non-html row
+disqualifies it. Wired straight through `admin_api/app.py`'s `GET
+/products` query param, no other endpoint changes needed.
+
+Admin-site: new "Backfill 900 Global full weight table (Textract)" panel
+in the Batch Jobs tab, `htmlSkus` entry in `BATCH_CONFIGS`
+(`filterParam: 'html_fallback_skus'`, same `/rescrape` call/`queued`-shaped
+result and `batch-start-/stop-/stats-/log-<kind>` id convention every
+other batch panel already uses -- no JS beyond the one config entry + one
+matching panel block). Verified via `node --check` on the extracted
+script (passed) and the project's own HTML tag-balance checker (passed,
+`unclosed at end: []`).
+
+Tests: `tests/test_admin_api_service.py`, 4 new
+(`test_list_products_html_fallback_skus_*`) covering the exact WHERE-
+clause text added, that it's absent by default, that it's genuinely
+distinct SQL from `missing_skus` (not just a semantic distinction that
+happens to produce the same query), and that it correctly ANDs with
+`source_platform`. Same `_QueryCapturingConnection` SQL-text-assertion
+pattern every other `missing_*` filter test in this file already uses --
+FakeCursor doesn't model EXISTS/NOT EXISTS subqueries, so row-level
+semantics aren't exercised, only the generated SQL. Full suite re-run
+clean (214/214 in this module, every other `test_*.py` in the repo also
+still green).
+
+No `template.yaml` changes needed -- this is a `GET /products` query-
+param addition on an already-deployed endpoint (`AdminApiFunction`'s
+proxy+ catch-all already covers it), not a new route or new IAM
+permission. Redeploy is a normal `sam build AdminApiFunction && sam
+deploy` (or a full `sam build && sam deploy` alongside 6f.3's Commerce-
+build redeploy, since both are in this same session's changes).
+
+To actually clear the backlog: after both this and 6f.3 are deployed,
+run the new "Backfill 900 Global full weight table (Textract)" panel
+(Batch Jobs tab) -- 900 Global products holding only a `source='html'`
+stopgap row should come back with the full `source='pdf'` table on their
+next scrape. Spot-check Viking Conquest specifically to confirm it now
+shows 5 SKUs, not 1.
 
 ### 6f.5. Hammer (Shopify) -- if `HammerBrandId` was set
 

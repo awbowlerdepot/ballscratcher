@@ -231,6 +231,7 @@ def get_products(
     missing_core: Optional[bool] = Query(None),
     missing_coverstock: Optional[bool] = Query(None),
     missing_skus: Optional[bool] = Query(None),
+    html_fallback_skus: Optional[bool] = Query(None),
     missing_video_candidates: Optional[bool] = Query(None),
     source_platform: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
@@ -245,7 +246,8 @@ def get_products(
             needs_video_summary_refresh=needs_video_summary_refresh,
             has_approved_video_summaries=has_approved_video_summaries,
             missing_core=missing_core, missing_coverstock=missing_coverstock,
-            missing_skus=missing_skus, missing_video_candidates=missing_video_candidates,
+            missing_skus=missing_skus, html_fallback_skus=html_fallback_skus,
+            missing_video_candidates=missing_video_candidates,
             source_platform=source_platform, status=status, sort=sort,
             limit=limit, offset=offset,
         )}

@@ -2443,6 +2443,68 @@ def test_list_products_missing_skus_combines_with_source_platform():
     assert "p.source_platform = %s" in query
 
 
+# --- list_products: html_fallback_skus filter -- later real follow-up,
+# Al: "viking still only has 1 sku". commercebuild_product_scraper's
+# _html_fallback_skus stopgap (missing_skus' own fix) gives an
+# image-based-PDF product exactly one source='html' product_skus row --
+# a nonzero count, so it stops matching missing_skus above at all, even
+# though it's still missing the other real weights until Amazon Textract
+# OCR (parse_tech_data_pdf_via_textract) recovers the full table on a
+# rescrape. This filter is how to find that specific in-between state
+# again: at least one product_skus row exists, AND none of them are
+# anything other than source='html'.
+
+def test_list_products_html_fallback_skus_adds_exists_and_not_exists_filter_sql():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, html_fallback_skus=True, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "exists (select 1 from product_skus ps3 where ps3.product_id = p.id)" in query
+    assert "not exists (select 1 from product_skus ps4 where ps4.product_id = p.id and ps4.source <> 'html')" in query
+
+
+def test_list_products_omits_html_fallback_skus_filter_by_default():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "ps4.source <> 'html'" not in query
+
+
+def test_list_products_html_fallback_skus_distinct_from_missing_skus():
+    """The two filters must add DIFFERENT where-clause text -- a zero-row
+    product should match missing_skus but not html_fallback_skus (there's
+    no row to be all-html), and a product with one source='html' row
+    should match html_fallback_skus but not missing_skus (it has a row).
+    This only asserts the generated SQL text differs when each filter is
+    used alone -- the actual row-level semantics aren't exercised here
+    (FakeCursor doesn't model NOT EXISTS/EXISTS subqueries), same
+    limitation as every other missing_*/html_fallback_skus test in this
+    file, all of which check generated SQL text via
+    _QueryCapturingConnection rather than real query execution."""
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, missing_skus=True, limit=50, offset=0)
+    missing_skus_query = conn.cursor().queries[0]
+
+    conn2 = _QueryCapturingConnection()
+    service.list_products(conn2, html_fallback_skus=True, limit=50, offset=0)
+    html_fallback_query = conn2.cursor().queries[0]
+
+    assert "not exists (select 1 from product_skus ps where ps.product_id = p.id)" in missing_skus_query
+    assert "not exists (select 1 from product_skus ps where ps.product_id = p.id)" not in html_fallback_query
+    assert "ps4.source <> 'html'" in html_fallback_query
+    assert "ps4.source <> 'html'" not in missing_skus_query
+
+
+def test_list_products_html_fallback_skus_combines_with_source_platform():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, html_fallback_skus=True, source_platform="commercebuild", limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "ps4.source <> 'html'" in query
+    assert "p.source_platform = %s" in query
+
+
 # --- list_products: missing_video_candidates filter -- Al's ask after
 # learning VideoDiscoveryFunction's search job (the thing that actually
 # calls YouTube's search.list to find candidate review videos) is
