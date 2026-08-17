@@ -1348,7 +1348,20 @@ def discover_price_sources(conn, job: dict, session=None) -> dict:
     per site the way the generic scrape search has to work. A failure
     there is logged and counted into the same search_errors total, never
     raised, so a BigCommerce outage can't block scrape-site discovery for
-    the same invocation."""
+    the same invocation.
+
+    {"scrape_only": true} skips every 'api' site entirely (no
+    discover_bigcommerce_candidates call at all, not even an empty one).
+    Real reason, Al, re-running a catalog-wide discovery pass while
+    testing a scrape-site config fix: "can we not run the bowlerdepot
+    price sources in this one, they have inventory numbers too" --
+    BowlerDepot ('api' fetch_method) is also the source
+    product_sku_stock_history's per-SKU inventory counts are read from
+    (see price_checker's own module docstring, 017), and a bulk re-run of
+    its own discovery isn't needed just to test/repair a scrape site --
+    it's already kept fresh by bowlerdepot_reconciliation's own daily
+    schedule and the existing match-correction workflow (DEPLOY_RUNBOOK.md
+    6h.1), independent of this discovery job entirely."""
     max_products = int(os.environ.get(
         "MAX_PRODUCTS_PER_DISCOVERY_INVOCATION", DEFAULT_MAX_PRODUCTS_PER_DISCOVERY_INVOCATION
     ))
@@ -1359,8 +1372,11 @@ def discover_price_sources(conn, job: dict, session=None) -> dict:
     products = fetch_products_to_discover(conn, job, max_products)
     sites = list_active_price_sites(conn)
     scrape_sites = [s for s in sites if s.get("fetch_method", "scrape") == "scrape"]
-    api_sites = [s for s in sites if s.get("fetch_method") == "api"]
-    logger.info("Discovering price sources for %d product(s) across %d site(s)", len(products), len(sites))
+    api_sites = [] if job.get("scrape_only") else [s for s in sites if s.get("fetch_method") == "api"]
+    logger.info(
+        "Discovering price sources for %d product(s) across %d scrape site(s) + %d api site(s) (scrape_only=%s)",
+        len(products), len(scrape_sites), len(api_sites), bool(job.get("scrape_only")),
+    )
 
     total_candidates = 0
     search_errors = 0

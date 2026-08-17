@@ -31,6 +31,15 @@ omitted, PriceCheckerFunction falls back to its own DEFAULT_MAX_PRODUCTS_
 PER_DISCOVERY_INVOCATION (100). A catalog with more than LIMIT current
 products needs more than one invocation to search all of them.
 
+SCRAPE_ONLY (optional, default "false"): skips every 'api' fetch_method
+site (BowlerDepot) for this run -- Al, re-running this catalog-wide while
+testing a scrape-site config fix: "can we not run the bowlerdepot price
+sources in this one, they have inventory numbers too." BowlerDepot is
+also where product_sku_stock_history's per-SKU inventory counts come
+from (017), and it's already kept fresh by bowlerdepot_reconciliation's
+own daily schedule independent of this script -- set SCRAPE_ONLY=true
+to leave it alone and only (re-)search the generic scrape sites.
+
 REPEAT / INTERVAL_SECONDS (both optional, default 1 / 300): rather than
 making Al re-run this script by hand to work through the rest of a large
 catalog, REPEAT fires the same trigger that many times in one run, sleeping
@@ -59,6 +68,7 @@ Usage:
     export LIMIT="100"            # optional, per-invocation cap
     export REPEAT="5"             # optional, default 1 -- one click's worth
     export INTERVAL_SECONDS="300" # optional, only matters if REPEAT > 1
+    export SCRAPE_ONLY="true"     # optional, default false -- skip BowlerDepot
     python3 scripts/discover_all_price_sources.py
 """
 import logging
@@ -103,17 +113,23 @@ def get_requests_session():
     return session
 
 
-def trigger_discovery(admin_api_url: str, token: str, limit: int = None, session=None) -> dict:
+def trigger_discovery(admin_api_url: str, token: str, limit: int = None, scrape_only: bool = False, session=None) -> dict:
     """Calls POST /admin/discover-all-price-sources once, with an optional
-    ?limit=. session defaults to a fresh retry-enabled one (see
-    get_requests_session) but is overridable so tests can inject a fake
-    transport instead of hitting the network."""
+    ?limit= and ?scrape_only=. session defaults to a fresh retry-enabled
+    one (see get_requests_session) but is overridable so tests can inject
+    a fake transport instead of hitting the network. scrape_only=True
+    skips BowlerDepot ('api' fetch_method) for this run -- see this
+    module's own docstring."""
     session = session if session is not None else get_requests_session()
 
-    params = {"limit": limit} if limit is not None else None
+    params = {}
+    if limit is not None:
+        params["limit"] = limit
+    if scrape_only:
+        params["scrape_only"] = "true"
     resp = session.post(
         f"{admin_api_url}/admin/discover-all-price-sources",
-        params=params,
+        params=params or None,
         headers={"Authorization": f"Bearer {token}"},
         timeout=60,
     )
@@ -122,7 +138,8 @@ def trigger_discovery(admin_api_url: str, token: str, limit: int = None, session
 
 
 def run(admin_api_url: str, token: str, limit: int = None, repeat: int = 1,
-        interval_seconds: int = DEFAULT_INTERVAL_SECONDS, trigger_fn=None, sleep_fn=None) -> list:
+        interval_seconds: int = DEFAULT_INTERVAL_SECONDS, scrape_only: bool = False,
+        trigger_fn=None, sleep_fn=None) -> list:
     """Fires trigger_discovery up to `repeat` times, sleeping
     interval_seconds between calls (never after the last one). Stops
     early -- without sleeping first -- the moment a call comes back
@@ -136,7 +153,7 @@ def run(admin_api_url: str, token: str, limit: int = None, repeat: int = 1,
 
     results = []
     for i in range(repeat):
-        result = trigger(admin_api_url, token, limit=limit)
+        result = trigger(admin_api_url, token, limit=limit, scrape_only=scrape_only)
         logger.info("Triggered (%d/%d): %s", i + 1, repeat, result)
         results.append(result)
         if not result.get("queued"):
@@ -158,8 +175,12 @@ def main():
     limit = int(limit_str) if limit_str else None
     repeat = int(os.environ.get("REPEAT", "1"))
     interval_seconds = int(os.environ.get("INTERVAL_SECONDS", str(DEFAULT_INTERVAL_SECONDS)))
+    scrape_only = os.environ.get("SCRAPE_ONLY", "false").strip().lower() in ("1", "true", "yes")
 
-    results = run(admin_api_url, token, limit=limit, repeat=repeat, interval_seconds=interval_seconds)
+    results = run(
+        admin_api_url, token, limit=limit, repeat=repeat,
+        interval_seconds=interval_seconds, scrape_only=scrape_only,
+    )
     if not results or not results[-1].get("queued"):
         sys.exit(1)
 

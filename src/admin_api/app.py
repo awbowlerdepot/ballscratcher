@@ -917,11 +917,14 @@ def discover_price_sources(product_id: str):
 
 
 @app.post("/admin/discover-all-price-sources")
-def discover_all_price_sources(limit: Optional[int] = Query(None, gt=0)):
+def discover_all_price_sources(limit: Optional[int] = Query(None, gt=0), scrape_only: bool = Query(False)):
     # Catalog-wide equivalent of discover-price-sources above -- same
     # shape as /admin/refresh-video-stats. See
-    # service.queue_price_discovery_batch's docstring.
-    return service.queue_price_discovery_batch(limit)
+    # service.queue_price_discovery_batch's docstring. scrape_only=true
+    # skips BowlerDepot ('api' fetch_method) for this run -- Al: "can we
+    # not run the bowlerdepot price sources in this one, they have
+    # inventory numbers too."
+    return service.queue_price_discovery_batch(limit, scrape_only=scrape_only)
 
 
 @app.post("/products/{product_id}/check-price")

@@ -2871,11 +2871,17 @@ def queue_price_discovery(conn, product_id: str) -> dict:
     return {"queued": True, "product_id": product_id}
 
 
-def queue_price_discovery_batch(limit: int = None) -> dict:
+def queue_price_discovery_batch(limit: int = None, scrape_only: bool = False) -> dict:
     """Catalog-wide "search for price sources" trigger -- same shape as
     queue_video_stats_refresh/queue_price_check_batch (no conn/existence
     check; limit=None lets price_checker fall back to its own
-    DEFAULT_MAX_PRODUCTS_PER_DISCOVERY_INVOCATION)."""
+    DEFAULT_MAX_PRODUCTS_PER_DISCOVERY_INVOCATION).
+
+    scrape_only=True passes {"scrape_only": true} straight through to
+    price_checker.discover_price_sources, skipping every 'api' fetch_
+    method site (BowlerDepot) entirely for this run -- see that
+    function's own docstring for why (Al: "can we not run the bowlerdepot
+    price sources in this one, they have inventory numbers too")."""
     function_name = os.environ.get("PRICE_CHECKER_FUNCTION_NAME")
     if not function_name:
         return {"queued": False, "reason": "PRICE_CHECKER_FUNCTION_NAME is not configured on this deployment"}
@@ -2885,6 +2891,8 @@ def queue_price_discovery_batch(limit: int = None) -> dict:
     payload = {"discover": True}
     if limit is not None:
         payload["limit"] = limit
+    if scrape_only:
+        payload["scrape_only"] = True
 
     lambda_client = boto3.client("lambda")
     lambda_client.invoke(
@@ -2892,4 +2900,4 @@ def queue_price_discovery_batch(limit: int = None) -> dict:
         InvocationType="Event",
         Payload=json.dumps(payload),
     )
-    return {"queued": True, "limit": limit}
+    return {"queued": True, "limit": limit, "scrape_only": scrape_only}

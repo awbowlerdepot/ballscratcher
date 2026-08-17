@@ -1661,6 +1661,63 @@ def test_discover_price_sources_bigcommerce_failure_does_not_block_scrape_sites(
     assert conn.cursor().last_discovery_marked == ["p1"]  # scrape loop still ran to completion
 
 
+# --- discover_price_sources: {"scrape_only": true}, Al: "can we not run
+# the bowlerdepot price sources in this one, they have inventory numbers
+# too" -> "maybe just scrape sources" ---
+
+def test_discover_price_sources_scrape_only_skips_api_sites_entirely(monkeypatch):
+    conn = _FakeConn(
+        products=[{"id": "p1", "name": "Absolute", "brand_name": "Storm"}],
+        sites=[
+            {"id": "site-1", "name": "Bowling.com", "search_url_template": "https://bowling.com/search?q={query}",
+             "result_link_selector": ".product-link", "default_css_selector": ".price", "fetch_method": "scrape"},
+            {"id": "site-bd", "name": "BowlerDepot", "fetch_method": "api", "api_provider": "bigcommerce",
+             "base_url": "https://www.bowlerdepot.com"},
+        ],
+        bowlerdepot_matches=[{"product_id": "p1", "external_product_id": "100", "match_status": "matched"}],
+    )
+
+    def _fake_search(site, query, session=None, max_results=app.DEFAULT_MAX_RESULTS_PER_SITE_SEARCH):
+        return [{"product_url": "https://bowling.com/p1", "title": "Storm Absolute"}]
+
+    def _boom():
+        raise AssertionError("BigCommerce credentials should never be requested when scrape_only=True")
+
+    monkeypatch.setattr(app, "search_site_for_product", _fake_search)
+    monkeypatch.setattr(app, "get_bigcommerce_credentials", _boom)
+
+    result = app.discover_price_sources(conn, {"scrape_only": True}, session=None)
+
+    assert result["new_candidates"] == 1  # only the scrape candidate
+    assert result["search_errors"] == 0  # not even counted as an error -- api site was never attempted
+    assert result["sites_searched"] == 2  # list_active_price_sites still returns both rows...
+    # ...but no bowlerdepot_products row was ever read, confirming
+    # discover_bigcommerce_candidates was never called at all (not called-
+    # and-short-circuited, genuinely skipped).
+    selects = [e for e in conn.cursor().executed if e[0].strip().lower().startswith("select product_id, bigcommerce_product_id")]
+    assert selects == []
+
+
+def test_discover_price_sources_scrape_only_false_still_runs_api_sites(monkeypatch):
+    # Default behavior unchanged -- omitting the key entirely (not just
+    # passing False) must still run the api-site pass, same as every
+    # existing discover_price_sources call in this file that doesn't set it.
+    conn = _FakeConn(
+        products=[{"id": "p1", "name": "Absolute", "brand_name": "Storm"}],
+        sites=[{"id": "site-bd", "name": "BowlerDepot", "fetch_method": "api", "api_provider": "bigcommerce",
+                "base_url": "https://www.bowlerdepot.com"}],
+        bowlerdepot_matches=[{"product_id": "p1", "external_product_id": "100", "match_status": "matched"}],
+    )
+    monkeypatch.setattr(app, "get_bigcommerce_credentials", lambda: ("store123", "tok"))
+    monkeypatch.setattr(app, "fetch_bigcommerce_products_by_ids", lambda store_hash, auth_token, ids, session=None: {
+        "100": {"id": 100, "custom_url": {"url": "/storm-absolute/"}},
+    })
+
+    result = app.discover_price_sources(conn, {"scrape_only": False}, session=None)
+
+    assert result["new_candidates"] == 1
+
+
 # --- list_active_price_sites / list_price_sources_due /
 # list_price_sources_for_products expose fetch_method (016_price_
 # tracking_bigcommerce.sql) ---

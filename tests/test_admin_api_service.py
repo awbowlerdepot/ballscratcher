@@ -3816,7 +3816,7 @@ def test_queue_price_discovery_batch_invokes_function_with_discover_and_limit():
             del sys.modules["boto3"]
         del os.environ["PRICE_CHECKER_FUNCTION_NAME"]
 
-    assert result == {"queued": True, "limit": 25}
+    assert result == {"queued": True, "limit": 25, "scrape_only": False}
     call = fake_lambda.invocations[0]
     assert call["InvocationType"] == "Event"
     assert json.loads(call["Payload"]) == {"discover": True, "limit": 25}
@@ -3844,6 +3844,62 @@ def test_queue_price_discovery_batch_no_limit_omits_it_from_payload():
 
     call = fake_lambda.invocations[0]
     assert json.loads(call["Payload"]) == {"discover": True}
+
+
+# --- queue_price_discovery_batch: scrape_only, real request, Al: "can we
+# not run the bowlerdepot price sources in this one, they have inventory
+# numbers too" -> "maybe just scrape sources" ---
+
+def test_queue_price_discovery_batch_scrape_only_included_in_payload():
+    fake_lambda = _FakeLambdaClient()
+
+    class _FakeBoto3:
+        def client(self, name):
+            assert name == "lambda"
+            return fake_lambda
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    os.environ["PRICE_CHECKER_FUNCTION_NAME"] = "bowling-scraper-price-checker"
+    try:
+        result = service.queue_price_discovery_batch(scrape_only=True)
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+        del os.environ["PRICE_CHECKER_FUNCTION_NAME"]
+
+    assert result == {"queued": True, "limit": None, "scrape_only": True}
+    call = fake_lambda.invocations[0]
+    assert json.loads(call["Payload"]) == {"discover": True, "scrape_only": True}
+
+
+def test_queue_price_discovery_batch_scrape_only_false_omits_it_from_payload():
+    fake_lambda = _FakeLambdaClient()
+
+    class _FakeBoto3:
+        def client(self, name):
+            assert name == "lambda"
+            return fake_lambda
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    os.environ["PRICE_CHECKER_FUNCTION_NAME"] = "bowling-scraper-price-checker"
+    try:
+        service.queue_price_discovery_batch(limit=10, scrape_only=False)
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+        del os.environ["PRICE_CHECKER_FUNCTION_NAME"]
+
+    call = fake_lambda.invocations[0]
+    # Default behavior unchanged -- omitted entirely, not sent as false,
+    # so an already-deployed price_checker without the scrape_only branch
+    # still gets exactly the payload shape it always has.
+    assert json.loads(call["Payload"]) == {"discover": True, "limit": 10}
 
 
 if __name__ == "__main__":

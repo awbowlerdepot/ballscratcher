@@ -4205,6 +4205,61 @@ sam build PriceCheckerFunction
 sam deploy
 ```
 
+### 6l.9. price_checker discovery: scrape_only scoping for catalog-wide re-runs
+
+Al, wanting to re-run `scripts/discover_all_price_sources.py` catalog-
+wide while iterating on a bowling.com config fix: "can we not run the
+bowlerdepot price sources in this one, they have inventory numbers too"
+-> "maybe just scrape sources." BowlerDepot ('api' fetch_method) is also
+where `product_sku_stock_history`'s per-SKU inventory counts come from
+(017) and is already kept fresh by `bowlerdepot_reconciliation`'s own
+daily schedule -- there was no reason for a scrape-site-focused discovery
+re-run to also touch it every time.
+
+**Fix**: new `{"scrape_only": true}` key on the discovery job dict.
+`discover_price_sources` now computes `api_sites = []` outright when set,
+instead of the normal `[s for s in sites if s.get("fetch_method") ==
+"api"]` -- `discover_bigcommerce_candidates` is never called at all for
+that invocation, not called-and-short-circuited. Threaded all the way
+through: `queue_price_discovery_batch(limit=None, scrape_only=False)`
+(admin_api/service.py) includes `"scrape_only": true` in the Lambda
+payload only when set (omitted -- not sent as `false` -- when default,
+so an already-deployed price_checker without this branch keeps getting
+the exact payload shape it always has); the `POST /admin/discover-all-
+price-sources` route gained a `?scrape_only=` query param (default
+`false`); and `scripts/discover_all_price_sources.py` gained a
+`SCRAPE_ONLY` env var (same "unset/false omits the param, set/true
+sends it" convention as `LIMIT`).
+
+Only added to the catalog-wide batch path, not the single-product "Find
+price sources" button/`queue_price_discovery` -- Al's ask was specifically
+about the catalog-wide script, and that button already only ever affects
+one product at a time regardless.
+
+Tests: `test_discover_price_sources_scrape_only_skips_api_sites_entirely`
+(confirms `get_bigcommerce_credentials` is never even called, and no
+`bowlerdepot_products` `select` is ever issued -- genuinely skipped, not
+just short-circuited) and `..._scrape_only_false_still_runs_api_sites` in
+`test_price_checker.py`; `test_queue_price_discovery_batch_scrape_only_
+included_in_payload` and `..._scrape_only_false_omits_it_from_payload` in
+`test_admin_api_service.py`; five new cases in `test_discover_all_price_
+sources.py` covering `trigger_discovery`'s query-param shape, `run`
+passing the flag through, and `main` reading `SCRAPE_ONLY` from the
+environment. Full suite: 1044/1044 passing, zero regressions.
+
+No migration, no `template.yaml` change -- redeploy the two touched
+functions:
+```bash
+sam build PriceCheckerFunction && sam build AdminApiFunction
+sam deploy
+```
+
+Usage, once deployed:
+```bash
+export SCRAPE_ONLY="true"
+python3 scripts/discover_all_price_sources.py
+```
+
 ### 6m. Ball motion plotter (consumer site, standalone page)
 
 Al shared an existing interactive plotter he'd built in another Cowork

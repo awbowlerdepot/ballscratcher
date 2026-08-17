@@ -94,11 +94,11 @@ def test_get_requests_session_returns_a_fresh_session_each_call():
 def test_run_defaults_to_a_single_call_no_sleep(monkeypatch):
     calls = []
     sleeps = []
-    monkeypatch.setattr(script, "trigger_discovery", lambda url, token, limit=None: {"queued": True, "limit": limit})
+    monkeypatch.setattr(script, "trigger_discovery", lambda url, token, limit=None, scrape_only=False: {"queued": True, "limit": limit})
 
     results = script.run(
         "https://admin.example", "tok", limit=200,
-        trigger_fn=lambda url, token, limit=None: calls.append(limit) or {"queued": True, "limit": limit},
+        trigger_fn=lambda url, token, limit=None, scrape_only=False: calls.append(limit) or {"queued": True, "limit": limit},
         sleep_fn=lambda s: sleeps.append(s),
     )
 
@@ -111,7 +111,7 @@ def test_run_repeat_fires_multiple_times_sleeping_between_but_not_after():
     calls = []
     sleeps = []
 
-    def fake_trigger(url, token, limit=None):
+    def fake_trigger(url, token, limit=None, scrape_only=False):
         calls.append(1)
         return {"queued": True, "limit": limit}
 
@@ -129,7 +129,7 @@ def test_run_stops_early_without_sleeping_when_not_queued():
     calls = []
     sleeps = []
 
-    def fake_trigger(url, token, limit=None):
+    def fake_trigger(url, token, limit=None, scrape_only=False):
         calls.append(1)
         return {"queued": False, "reason": "PRICE_CHECKER_FUNCTION_NAME is not configured on this deployment"}
 
@@ -153,10 +153,81 @@ def test_run_uses_real_time_sleep_by_default(monkeypatch):
 
     script.run(
         "https://admin.example", "tok", repeat=2, interval_seconds=5,
-        trigger_fn=lambda url, token, limit=None: {"queued": True, "limit": limit},
+        trigger_fn=lambda url, token, limit=None, scrape_only=False: {"queued": True, "limit": limit},
     )
 
     assert slept == [5]
+
+
+# --- scrape_only: Al, re-running catalog-wide discovery while testing a
+# scrape-site config fix: "can we not run the bowlerdepot price sources
+# in this one, they have inventory numbers too" -> "maybe just scrape
+# sources" ---
+
+def test_trigger_discovery_includes_scrape_only_param_when_true():
+    fake = _FakeSession(payload={"queued": True, "limit": None, "scrape_only": True})
+    script.trigger_discovery("https://admin.example", "tok", scrape_only=True, session=fake)
+
+    assert fake.post_calls[0]["params"] == {"scrape_only": "true"}
+
+
+def test_trigger_discovery_omits_scrape_only_param_when_false():
+    fake = _FakeSession()
+    script.trigger_discovery("https://admin.example", "tok", scrape_only=False, session=fake)
+
+    # Default behavior unchanged -- no scrape_only key at all, not sent
+    # as "false", same "omitted means default" convention as limit.
+    assert fake.post_calls[0]["params"] is None
+
+
+def test_trigger_discovery_combines_limit_and_scrape_only():
+    fake = _FakeSession()
+    script.trigger_discovery("https://admin.example", "tok", limit=50, scrape_only=True, session=fake)
+
+    assert fake.post_calls[0]["params"] == {"limit": 50, "scrape_only": "true"}
+
+
+def test_run_passes_scrape_only_through_to_trigger():
+    captured = []
+
+    def fake_trigger(url, token, limit=None, scrape_only=False):
+        captured.append(scrape_only)
+        return {"queued": True, "limit": limit}
+
+    script.run(
+        "https://admin.example", "tok", scrape_only=True,
+        trigger_fn=fake_trigger, sleep_fn=lambda s: None,
+    )
+
+    assert captured == [True]
+
+
+def test_main_reads_scrape_only_from_env(monkeypatch):
+    captured = {}
+
+    def fake_run(admin_api_url, token, limit=None, repeat=1, interval_seconds=300, scrape_only=False, trigger_fn=None, sleep_fn=None):
+        captured["scrape_only"] = scrape_only
+        return [{"queued": True}]
+
+    monkeypatch.setattr(script, "run", fake_run)
+    # Same manual os.environ save/restore convention as this project's
+    # other manual-runner test files (e.g. test_admin_api_service.py) --
+    # the local _MonkeyPatch shim below only implements setattr/undo, not
+    # pytest's own setenv/delenv.
+    saved = {k: os.environ.get(k) for k in ("ADMIN_API_URL", "ADMIN_API_TOKEN", "SCRAPE_ONLY")}
+    os.environ["ADMIN_API_URL"] = "https://admin.example"
+    os.environ["ADMIN_API_TOKEN"] = "tok"
+    os.environ["SCRAPE_ONLY"] = "true"
+    try:
+        script.main()
+    finally:
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    assert captured["scrape_only"] is True
 
 
 if __name__ == "__main__":
