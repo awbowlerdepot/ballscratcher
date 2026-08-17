@@ -1529,6 +1529,78 @@ in the admin UI. `missing_skus=true` is platform-agnostic (works for any
 `source_platform`, not just commercebuild), in case a similar silent
 zero-SKU gap ever turns up on another scraper.
 
+### 6f.2. Fixed incident: 900 Global's image-based Tech Data PDFs -> zero `product_skus` -> broken price matching
+
+Al: "900 Global balls are missing their skus and because of that pricing
+and other things that depend on that."
+
+Different root cause than 6f.1's -- confirmed via a live fetch of a real
+900 Global product (Viking): `parse_tech_data_pdf_url` finds the right
+PDF fine here (this brand's Downloads section already uses the literal
+"Tech Data" wording, no synonym gap). The failure is one level deeper,
+inside `parse_tech_data_pdf` itself, and was actually already documented
+in that function's own docstring from this project's first live smoke
+test: a real, confirmed finding that many 900 Global Tech Data PDFs are
+genuinely image-based (scanned/rasterized, zero real text layer -- 0
+chars via pdfplumber, embedded images tiling the page) -- not a
+table-shape gap `_skus_from_table` could ever be widened to cover, since
+there's no text to read at all. `pdf_skus` comes back `[]`,
+`upsert_product`'s `for sku in pdf_skus:` loop inserts zero
+`product_skus` rows, and since `product_skus.weight_lbs` is exactly what
+`price_checker`'s variant/weight matching (see that module's
+`check_bigcommerce_sources`) keys off of to attach cost/stock data to a
+specific SKU, every downstream thing keyed off a SKU row -- price
+checks, SKU stock history/forecasting, the Total ADU column -- silently
+has nothing to attach to for these products. Real OCR (Tesseract in
+Lambda) was explicitly scoped out at the time that finding was first
+made (real added scope: a new Lambda layer, reliability on numeric
+tables) and still is here -- not what this fix does.
+
+**Fixed**: `parse_product_page` already parses ONE real weight/RG/
+differential straight off the page's own visible HTML
+(`html_weight_lbs`/`html_rg`/`html_differential` -- previously used only
+by `cross_check_html_vs_pdf` for mismatch detection). New function
+`_html_fallback_skus(parsed_page)` turns that into a single-SKU list
+when called; `_process_one` now uses it as a fallback --
+`skus_to_write = pdf_skus if pdf_skus else _html_fallback_skus(parsed)`
+-- whenever the PDF path recovered nothing at all. The resulting
+`product_skus` row is tagged `source='html'` (not `'pdf'`) so it's
+distinguishable from a full PDF-sourced table at a glance --
+`spec_source` already has this value (migration 001;
+`woocommerce_product_scraper`/`shopify_product_scraper`/`netsuite_
+product_scraper`/`product_scraper` already write `'html'`-sourced SKUs
+as their only source, so this isn't a new convention). `upsert_product`'s
+SKU-insert loop now reads `source` per-dict (`sku.get("source", "pdf")`)
+instead of hardcoding `'pdf'` in the SQL, and its `ON CONFLICT` clause
+now also sets `source = excluded.source` (not coalesced) -- a rescrape
+that later finds the PDF newly readable should have its real `'pdf'` row
+replace a stale `'html'` fallback outright, not silently keep the old
+provenance.
+
+One real weight isn't the full per-weight table the PDF would have
+given -- other weights for these products still won't have `product_skus`
+rows until OCR is built -- but it's the difference between zero
+attachable SKUs and one, which is what actually unblocks price matching
+for the weight most likely to be in stock/being priced.
+
+Tests: `tests/test_commercebuild_product_scraper.py`, 4 new
+(`test_html_fallback_skus_builds_single_sku_from_html_values` and
+friends) covering the happy path, the "no html_weight_lbs at all" case
+(archived products, same "flag don't guess" `[]` convention as
+elsewhere), `None` rg/differential passthrough, and a missing-key dict.
+Full suite re-run clean (66/66 in this module's own test file, every
+other `test_*.py` in the repo also still green).
+
+**To fix already-affected products**: same mechanism as 6f.1 --
+redeploy (`sam build CommercebuildProductScraperFunction && sam
+deploy`), then re-run `scripts/rescrape_commercebuild_products.py`
+(scoped to `source_platform=commercebuild&missing_skus=true`, see 6f.1
+above) or target 900 Global specifically via its `brand_id` in the admin
+UI. Products that previously had zero `product_skus` because of this
+gap will now get exactly one `source='html'` row on their next scrape --
+check the admin UI's per-SKU stock/price sections to confirm price
+matching picks it up.
+
 ### 6f.5. Hammer (Shopify) -- if `HammerBrandId` was set
 
 No schedule wired up for `ShopifyUrlDiscoveryFunction` yet, same as every

@@ -827,6 +827,57 @@ def test_cross_check_no_matching_weight_returns_empty():
     assert app.cross_check_html_vs_pdf(parsed, pdf_skus) == []
 
 
+# --- _html_fallback_skus: REAL INCIDENT, Al: "900 Global balls are
+# missing their skus and because of that pricing and other things that
+# depend on that". Root cause: many 900 Global Tech Data PDFs are
+# genuinely image-based (see parse_tech_data_pdf's docstring) -- when
+# the PDF path finds nothing, _process_one falls back to the one
+# weight/RG/differential the product page's own HTML already shows,
+# tagged source='html' so it's distinguishable from a full PDF table. ---
+
+def test_html_fallback_skus_builds_single_sku_from_html_values():
+    parsed = {"html_weight_lbs": 15, "html_rg": 2.49, "html_differential": 0.051}
+    skus = app._html_fallback_skus(parsed)
+    assert skus == [{
+        "weight_lbs": 15,
+        "rg": 2.49,
+        "differential": 0.051,
+        "mass_bias": None,
+        "source": "html",
+    }]
+
+
+def test_html_fallback_skus_returns_empty_when_no_html_weight():
+    # Archived-product pages have no Weight/RG/Differential fields at
+    # all (see parse_product_page's own docstring) -- nothing to guess
+    # a fallback SKU from, so this returns [] rather than fabricating
+    # one, same "flag, don't guess" convention as the rest of this
+    # module.
+    parsed = {"html_weight_lbs": None, "html_rg": None, "html_differential": None}
+    assert app._html_fallback_skus(parsed) == []
+
+
+def test_html_fallback_skus_passes_through_none_rg_and_differential():
+    # A real page could show a weight without RG/Diff (unlikely but not
+    # impossible) -- the fallback SKU should still be written with
+    # whatever's actually available, not silently dropped.
+    parsed = {"html_weight_lbs": 14, "html_rg": None, "html_differential": None}
+    skus = app._html_fallback_skus(parsed)
+    assert skus == [{
+        "weight_lbs": 14,
+        "rg": None,
+        "differential": None,
+        "mass_bias": None,
+        "source": "html",
+    }]
+
+
+def test_html_fallback_skus_missing_key_entirely_treated_as_absent():
+    # parsed_page.get(...) -- a dict that never had the key at all
+    # (not just None) behaves the same as explicitly-None.
+    assert app._html_fallback_skus({}) == []
+
+
 if __name__ == "__main__":
     tests = [v for k, v in list(globals().items()) if k.startswith("test_")]
     passed = 0

@@ -662,6 +662,18 @@ def parse_tech_data_pdf(pdf_bytes: bytes) -> list:
     never confused with "found a table but the shape didn't match" in the
     logs -- they need different fixes.
 
+    Follow-up REAL INCIDENT, later session: this exact gap turned out to
+    be Al's "900 Global balls are missing their skus and because of that
+    pricing and other things that depend on that" report -- this
+    function returning [] here means upsert_product's SKU-insert loop
+    writes zero product_skus rows, and product_skus.weight_lbs is what
+    price_checker's weight-match keys off of. OCR is still not
+    implemented (same real-added-scope reasoning above still holds), but
+    _process_one now falls back to _html_fallback_skus (a single
+    HTML-sourced weight/RG/differential) whenever this function returns
+    empty, so at least one real SKU row exists instead of zero -- see
+    that function's own docstring and upsert_product's for the full fix.
+
     Second real finding, same smoke test: Storm Lightning Storm Clear has
     real, non-image text, but pdfplumber's table detection couldn't
     cleanly separate the per-weight data into columns at all -- see
@@ -733,6 +745,59 @@ def cross_check_html_vs_pdf(parsed_page: dict, pdf_skus: list, tolerance: float 
                 "reason": f"commercebuild html-vs-pdf: {field} at {parsed_page['html_weight_lbs']}lb disagrees (html={html_value}, pdf={pdf_value}, tolerance={tolerance})",
             })
     return mismatches
+
+
+def _html_fallback_skus(parsed_page: dict) -> list:
+    """REAL INCIDENT: Al reported "900 Global balls are missing their
+    skus and because of that pricing and other things that depend on
+    that." Confirmed root cause via a live fetch of a real 900 Global
+    product (Viking): parse_tech_data_pdf_url correctly finds the Tech
+    Data PDF link (this brand's Downloads section already uses the
+    "Tech Data" wording verbatim), but parse_tech_data_pdf's own
+    docstring already documented, from this deploy's first live smoke
+    test, that 900 Global's Tech Data PDFs are frequently genuinely
+    image-based (scanned/rasterized, zero real text layer) -- not a
+    table-shape gap _skus_from_table could ever be widened to cover,
+    since there's no text to read at all. pdf_skus then comes back
+    empty, and upsert_product's `for sku in pdf_skus:` loop simply
+    inserts zero product_skus rows -- exactly the downstream effect Al
+    is seeing, since product_skus.weight_lbs is what price_checker's
+    variant/weight matching (see that module's check_bigcommerce_
+    sources) keys off of to attach cost/stock data to a specific SKU.
+
+    Real OCR (Tesseract in Lambda) is still out of scope here, same as
+    parse_tech_data_pdf's own docstring already concluded -- genuinely
+    more work (reliability on numeric tables, a new Lambda layer) than
+    this fix. Instead: parse_product_page already parses ONE real
+    weight/RG/differential straight off the page's own visible HTML
+    (html_weight_lbs/html_rg/html_differential -- previously used only
+    for cross_check_html_vs_pdf's mismatch detection, see above). When
+    the PDF path recovers nothing at all, that single HTML-sourced
+    value is far better than zero SKUs: it's one real, confirmed weight
+    (whichever the page defaults to showing) instead of the full
+    per-weight table, but it's enough for price_checker's weight-match
+    to actually find a row to attach to, unblocking the pricing gap Al
+    flagged specifically. Tagged source='html' (not 'pdf') in the
+    product_skus row this produces -- spec_source already has this
+    value (see migration 001, and woocommerce_product_scraper/
+    shopify_product_scraper/netsuite_product_scraper/product_scraper,
+    which all use 'html' as their SKUs' only source already) -- so
+    admin/reporting can tell a single html-sourced estimate apart from
+    a full pdf-sourced table at a glance, same "flag, don't guess"
+    spirit as review_queue elsewhere in this module.
+
+    Returns [] (not a guess) when the page itself has no html_weight_lbs
+    either -- e.g. an archived product's page, which per this module's
+    own docstring has no Weight/RG/Differential fields at all."""
+    if parsed_page.get("html_weight_lbs") is None:
+        return []
+    return [{
+        "weight_lbs": parsed_page["html_weight_lbs"],
+        "rg": parsed_page.get("html_rg"),
+        "differential": parsed_page.get("html_differential"),
+        "mass_bias": None,
+        "source": "html",
+    }]
 
 
 # ---------------------------------------------------------------------
@@ -913,9 +978,11 @@ def estimate_oil_motion(core_type: str = None, coverstock_type: str = None,
 
 def _reference_differential(skus: list):
     """Picks the differential of the SKU that best represents this
-    product overall, straight off the just-parsed skus list (here,
-    pdf_skus -- this platform's RG/DIFF comes from the Tech Data PDF, not
-    html). Same 15lb-preferred convention as public_api._reference_sku."""
+    product overall, straight off the just-parsed skus list -- normally
+    the Tech Data PDF's table, or _html_fallback_skus' single estimated
+    row when the PDF path recovered nothing (see upsert_product's
+    docstring). Same 15lb-preferred convention as public_api._reference_
+    sku."""
     usable = [s for s in skus if s.get("differential") is not None and s.get("weight_lbs") is not None]
     if not usable:
         return None
@@ -925,13 +992,29 @@ def _reference_differential(skus: list):
     return min(usable, key=lambda s: abs(s["weight_lbs"] - 15))["differential"]
 
 
-def upsert_product(conn, brand_id: str, parsed: dict, pdf_skus: list, mismatches: list) -> dict:
-    """Insert/update the products row, its product_skus rows (sourced
-    from the Tech Data PDF -- source='pdf', the schema's existing
-    spec_source enum already supports this, no migration needed), and a
+def upsert_product(conn, brand_id: str, parsed: dict, skus: list, mismatches: list) -> dict:
+    """Insert/update the products row, its product_skus rows, and a
     single product_images row for the main image. Returns
     {"product_id": ..., "pending_image_jobs": [...]}, same shape as the
     other scrapers' upsert_product.
+
+    `skus`: normally the Tech Data PDF's parsed table (each dict has no
+    "source" key, defaulting to 'pdf' below). REAL INCIDENT (Al: "900
+    Global balls are missing their skus...pricing and other things
+    depend on that") -- when the PDF path recovers nothing at all
+    (confirmed real for 900 Global: many of that brand's Tech Data PDFs
+    are genuinely image-based/scanned, see parse_tech_data_pdf's own
+    docstring), the caller (_process_one) passes _html_fallback_skus'
+    single-SKU list instead, each dict explicitly tagged
+    "source": "html". Reading source per-dict (falling back to 'pdf'
+    when absent) rather than hardcoding one literal in the INSERT lets
+    that distinction survive into the DB -- spec_source already has an
+    'html' value for exactly this (migration 001; woocommerce_product_
+    scraper/shopify_product_scraper/netsuite_product_scraper/
+    product_scraper all already write 'html'-sourced SKUs as their only
+    source), so admin/reporting can tell a single html-sourced estimate
+    apart from a full pdf-sourced table at a glance -- same "flag,
+    don't guess" spirit as review_queue below.
 
     Any html-vs-pdf mismatches found are written to review_queue rather
     than silently preferring one source over the other -- same "flag,
@@ -983,18 +1066,26 @@ def upsert_product(conn, brand_id: str, parsed: dict, pdf_skus: list, mismatches
         )
         product_id = cur.fetchone()[0]
 
-        for sku in pdf_skus:
+        for sku in skus:
+            # source = excluded.source (not coalesced) -- unlike mass_bias,
+            # a rescrape's source should always win outright: if this
+            # weight was previously written by _html_fallback_skus
+            # ('html', one estimated row) and a later rescrape finds the
+            # Tech Data PDF newly readable (fixed upstream, or a future
+            # OCR path), the real 'pdf' row should replace the fallback
+            # estimate, not be silently kept alongside stale provenance.
             cur.execute(
                 """
                 insert into product_skus (product_id, weight_lbs, rg, differential, mass_bias, source)
-                values (%s, %s, %s, %s, %s, 'pdf')
+                values (%s, %s, %s, %s, %s, %s)
                 on conflict (product_id, weight_lbs) do update set
                     rg = excluded.rg,
                     differential = excluded.differential,
                     mass_bias = coalesce(excluded.mass_bias, product_skus.mass_bias),
+                    source = excluded.source,
                     updated_at = now()
                 """,
-                (product_id, sku["weight_lbs"], sku["rg"], sku["differential"], sku["mass_bias"]),
+                (product_id, sku["weight_lbs"], sku["rg"], sku["differential"], sku["mass_bias"], sku.get("source", "pdf")),
             )
 
         pending_image_jobs = []
@@ -1046,7 +1137,7 @@ def upsert_product(conn, brand_id: str, parsed: dict, pdf_skus: list, mismatches
             coverstock_type=parsed["coverstock_type"],
             coverstock_material=parsed["coverstock_material"],
             has_particle=has_particle,
-            differential=_reference_differential(pdf_skus),
+            differential=_reference_differential(skus),
         )
         cur.execute(
             "update products set oil_rating = %s, motion_rating = %s, oil_motion_source = 'estimated' "
@@ -1104,17 +1195,37 @@ def _process_one(job: dict) -> dict:
     else:
         logger.warning("No Tech Data PDF found for %s -- no per-weight SKU data will be stored", url)
 
+    # Cross-check against the ORIGINAL pdf_skus (before any fallback
+    # substitution below) -- cross_check_html_vs_pdf's whole purpose is
+    # comparing the page's HTML value against the PDF's table, so if the
+    # PDF path genuinely found nothing, there's nothing real to
+    # cross-check (same as always -- returns [], unchanged behavior).
     mismatches = cross_check_html_vs_pdf(parsed, pdf_skus)
+
+    # REAL INCIDENT (Al: "900 Global balls are missing their skus and
+    # because of that pricing and other things that depend on that") --
+    # see _html_fallback_skus' own docstring for the full root cause
+    # (many 900 Global Tech Data PDFs are genuinely image-based, no text
+    # layer, nothing table-parsing logic could ever recover). When the
+    # PDF path found nothing at all, fall back to the one weight/RG/
+    # differential the page's own HTML shows rather than writing zero
+    # product_skus rows -- one real, source='html'-tagged SKU is enough
+    # for price_checker's weight-match to find a row to attach cost/
+    # stock data to, unblocking the downstream gap Al flagged, even
+    # though it doesn't recover every weight the PDF table would have.
+    skus_to_write = pdf_skus if pdf_skus else _html_fallback_skus(parsed)
 
     conn = get_db_connection()
     try:
-        result = upsert_product(conn, brand_id, parsed, pdf_skus, mismatches)
+        result = upsert_product(conn, brand_id, parsed, skus_to_write, mismatches)
     finally:
         conn.close()
 
     logger.info(
-        "Scraped %s: %d SKUs from PDF, %d mismatches, %d pending image jobs",
-        url, len(pdf_skus), len(mismatches), len(result["pending_image_jobs"]),
+        "Scraped %s: %d SKUs from PDF, %d written (%s), %d mismatches, %d pending image jobs",
+        url, len(pdf_skus), len(skus_to_write),
+        "html fallback" if not pdf_skus and skus_to_write else "pdf",
+        len(mismatches), len(result["pending_image_jobs"]),
     )
 
     image_queue_url = os.environ.get("IMAGE_PROCESS_QUEUE_URL")
@@ -1128,7 +1239,7 @@ def _process_one(job: dict) -> dict:
 
     return {
         "product_id": str(result["product_id"]),
-        "sku_count": len(pdf_skus),
+        "sku_count": len(skus_to_write),
         "mismatch_count": len(mismatches),
         "image_jobs_published": image_jobs_published,
     }
