@@ -2039,6 +2039,187 @@ def test_list_brands_empty_when_none_exist():
     assert service.list_brands(conn) == []
 
 
+# --- get_dashboard_summary: Al: "can we create an admin dashboard with
+# some KPIs and top 10 lists... Top 10s i think we can do Popularity and
+# ADUs. An interesting number would be total ADUs across all balls, ADUs
+# by brand, and things like that." Four sequential queries (KPIs, top
+# popularity, top ADU, ADU by brand) -- _QueryCapturingConnection's
+# fetchone() defaults to None (unusable here, an aggregate query with no
+# GROUP BY always returns exactly one row), so a tiny local cursor
+# stands in for it that returns an empty-but-iterable row/rowset instead,
+# purely so the SQL TEXT of all four queries can still be captured and
+# asserted on without the function crashing trying to zip() a real
+# result together. Assembly-logic correctness (does each query's result
+# land in the right key) is covered separately below via
+# _SequencedConnection, same split as test_get_product_* already uses.
+
+class _DashboardQueryCapturingCursor:
+    def __init__(self):
+        self.queries = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, query, params=None):
+        self.queries.append(" ".join(query.split()))
+
+    @property
+    def description(self):
+        return []
+
+    def fetchall(self):
+        return []
+
+    def fetchone(self):
+        return ()  # iterable, unlike _QueryCapturingCursor's None default
+
+
+class _DashboardQueryCapturingConnection:
+    def __init__(self):
+        self._cursor = _DashboardQueryCapturingCursor()
+
+    def cursor(self):
+        return self._cursor
+
+
+def test_get_dashboard_summary_kpi_query_counts_expected_things():
+    conn = _DashboardQueryCapturingConnection()
+    service.get_dashboard_summary(conn)
+
+    kpi_query = conn.cursor().queries[0]
+    for fragment in (
+        "select count(*) from products",
+        "from products where status = 'current'",
+        "from products where status = 'retired'",
+        "from products where core_id is null",
+        "from products where coverstock_id is null",
+        "not exists ( select 1 from product_skus ps where ps.product_id = p.id )",
+        "pv.status = 'approved' and pv.summary is not null",
+        "pps.status = 'approved' and pps.is_active",
+    ):
+        assert fragment in kpi_query
+
+
+def test_get_dashboard_summary_kpi_query_reuses_total_adu_sql():
+    """total_catalog_adu must be the SAME _TOTAL_ADU_SQL expression
+    list_products' own total_adu column and sort option already use --
+    not a second, potentially-drifting definition of ADU."""
+    conn = _DashboardQueryCapturingConnection()
+    service.get_dashboard_summary(conn)
+
+    kpi_query = conn.cursor().queries[0]
+    assert "product_sku_stock_history" in kpi_query
+    assert "having count(*) >= 2" in kpi_query
+    assert "coalesce(sum(t.total_adu), 0)" in kpi_query
+    assert ") t) as total_catalog_adu" in kpi_query
+
+
+def test_get_dashboard_summary_top_popularity_query_shape():
+    conn = _DashboardQueryCapturingConnection()
+    service.get_dashboard_summary(conn)
+
+    query = conn.cursor().queries[1]
+    assert "left join brands b on b.id = p.brand_id" in query
+    assert "where t.popularity_score > 0" in query
+    assert "order by t.popularity_score desc, t.id asc limit 10" in query
+    # Reuses the real formula, same reasoning as the KPI query's total_adu.
+    assert "product_videos pv" in query
+    assert "ln(1 + count(*))" in query
+
+
+def test_get_dashboard_summary_top_adu_query_shape():
+    conn = _DashboardQueryCapturingConnection()
+    service.get_dashboard_summary(conn)
+
+    query = conn.cursor().queries[2]
+    assert "left join brands b on b.id = p.brand_id" in query
+    assert "where t.total_adu > 0" in query
+    assert "order by t.total_adu desc, t.id asc limit 10" in query
+    assert "product_sku_stock_history" in query
+
+
+def test_get_dashboard_summary_adu_by_brand_query_shape():
+    """Unlike the other two, this is a real GROUP BY over ALL brands
+    (left join, so a brand with zero matching products/ADU still shows
+    up at 0 -- Al's "ADUs by brand" ask reads as the full breakdown, not
+    a filtered top-N)."""
+    conn = _DashboardQueryCapturingConnection()
+    service.get_dashboard_summary(conn)
+
+    query = conn.cursor().queries[3]
+    assert "with sku_adu as" in query
+    assert "from brands b" in query
+    assert "left join products p on p.brand_id = b.id" in query
+    assert "group by b.name" in query
+    assert "order by total_adu desc" in query
+    assert "where t.total_adu > 0" not in query  # no >0 filter here, unlike top_adu
+
+
+def test_get_dashboard_summary_only_runs_four_queries():
+    conn = _DashboardQueryCapturingConnection()
+    service.get_dashboard_summary(conn)
+    assert len(conn.cursor().queries) == 4
+
+
+def test_get_dashboard_summary_assembles_all_four_results():
+    conn = _SequencedConnection([
+        {  # KPIs
+            "columns": [
+                "total_products", "current_products", "retired_products",
+                "missing_core", "missing_coverstock", "missing_skus",
+                "products_with_video", "products_with_price_tracking",
+                "total_catalog_adu",
+            ],
+            "one": (500, 350, 150, 12, 3, 7, 200, 180, "1234.5"),
+        },
+        {  # top_popularity
+            "columns": ["id", "name", "brand_name", "popularity_score"],
+            "all": [
+                ("prod-1", "Absolute", "Storm", "980.2"),
+                ("prod-2", "Phaze II", "Storm", "875.0"),
+            ],
+        },
+        {  # top_adu
+            "columns": ["id", "name", "brand_name", "total_adu"],
+            "all": [
+                ("prod-3", "Black Widow 3.0", "Hammer", "42.5"),
+            ],
+        },
+        {  # adu_by_brand
+            "columns": ["brand_name", "total_adu"],
+            "all": [
+                ("Storm", "300.1"),
+                ("Hammer", "150.0"),
+                ("Ebonite", "0"),
+            ],
+        },
+    ])
+
+    result = service.get_dashboard_summary(conn)
+
+    assert result["kpis"] == {
+        "total_products": 500, "current_products": 350, "retired_products": 150,
+        "missing_core": 12, "missing_coverstock": 3, "missing_skus": 7,
+        "products_with_video": 200, "products_with_price_tracking": 180,
+        "total_catalog_adu": "1234.5",
+    }
+    assert result["top_popularity"] == [
+        {"id": "prod-1", "name": "Absolute", "brand_name": "Storm", "popularity_score": "980.2"},
+        {"id": "prod-2", "name": "Phaze II", "brand_name": "Storm", "popularity_score": "875.0"},
+    ]
+    assert result["top_adu"] == [
+        {"id": "prod-3", "name": "Black Widow 3.0", "brand_name": "Hammer", "total_adu": "42.5"},
+    ]
+    assert result["adu_by_brand"] == [
+        {"brand_name": "Storm", "total_adu": "300.1"},
+        {"brand_name": "Hammer", "total_adu": "150.0"},
+        {"brand_name": "Ebonite", "total_adu": "0"},
+    ]
+
+
 # --- list_products: missing_core filter + the cores join (migration 007).
 # The p./c. aliasing above exists specifically because of this join --
 # products and cores both have a plain "name" column, so left-joining

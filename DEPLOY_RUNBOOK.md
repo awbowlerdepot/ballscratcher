@@ -6197,6 +6197,67 @@ re-run clean: `test_admin_api_service.py` 206/206, every other
 No migration, no `template.yaml` change. Same redeploy as above --
 `AdminApiFunction` + re-upload `index.html`.
 
+### 6o.11. Admin Dashboard tab: KPIs, top 10 lists, ADU-by-brand chart
+
+Real ask, Al: "can we create an admin dashboard with some KPIs and top
+10 lists. I'll let you pick most of the things to show but we have
+chart.js included now so we should be able to create some interesting
+visuals with some of the data we have pulled together. Top 10s i think
+we can do Popularity and ADUs. An interesting number would be total
+ADUs across all balls, ADUs by brand, and things like that."
+
+New `GET /admin/dashboard` endpoint (`service.get_dashboard_summary`),
+one call per tab load, no query params -- same "full catalog snapshot"
+shape as `/brands`. Deliberately reuses `_POPULARITY_SCORE_SQL` and
+`_TOTAL_ADU_SQL` as-is everywhere possible rather than re-deriving
+either formula a second time, so the Dashboard's numbers are guaranteed
+to agree with what the Products tab already shows for the same product.
+Four separate queries (KPIs, top 10 popularity, top 10 ADU, ADU by
+brand) -- structurally unrelated result shapes that don't share a
+natural GROUP BY, so combining them would mean either extra round trips
+anyway or a much harder to read query for no real win at this catalog's
+size.
+
+Returns:
+- `kpis`: total/current/retired product counts, missing_core/
+  missing_coverstock/missing_skus counts, products_with_video (>=1
+  approved+summarized video), products_with_price_tracking (>=1
+  approved+active price source), and total_catalog_adu (every product's
+  `_TOTAL_ADU_SQL` summed).
+- `top_popularity` / `top_adu`: up to 10 `{id, name, brand_name, ...}`
+  rows each, `> 0` only -- a product with nothing meaningful to rank
+  doesn't pad the list with zero-ties.
+- `adu_by_brand`: one row per brand (even a brand at 0 ADU), ordered
+  highest first -- a real `GROUP BY` aggregate (CTE reimplementing the
+  same drops-only/lookback-window/`>=2`-readings definition
+  `_TOTAL_ADU_SQL` already documents, un-correlated from any single
+  product so it can be grouped directly), not `_TOTAL_ADU_SQL` run once
+  per product and summed in Python.
+
+New Dashboard tab in `admin-site/index.html` -- added FIRST in the nav
+(most natural spot for an overview page) but `activeTab` still defaults
+to `'review'`, so existing muscle memory (page loads to Review Queue)
+is unchanged; Al just clicks it. KPI cards in a small responsive grid,
+Top 10 Popularity/ADU as two side-by-side `.mini` tables, and a
+Chart.js bar chart for ADU by brand (reuses the existing `chartInstances`/
+`destroyChart` machinery and `.chart-wrap` sizing the price/SKU-stock
+charts already use, plus the same "Chart.js failed to load" plain-text
+fallback both of those already guard for).
+
+Tests: `test_admin_api_service.py` -- SQL-text assertions (via a small
+local cursor whose `fetchone()` returns `()` instead of
+`_QueryCapturingConnection`'s default `None`, since an aggregate query
+with no GROUP BY always returns exactly one row and the function has no
+reason to guard against that) confirming each of the four queries'
+joins/filters/reused-SQL-constants, plus one `_SequencedConnection`-based
+test confirming the four query results assemble into the right keys.
+218/218 in this module; full repo `test_*.py` sweep clean.
+
+No migration, no `template.yaml` change (proxy+ catch-all already covers
+`/admin/dashboard`, same as `/cores` before it). Redeploy: `sam build
+AdminApiFunction && sam deploy` (or full unscoped build, per 6a.5), plus
+re-upload `index.html` wherever it's hosted.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

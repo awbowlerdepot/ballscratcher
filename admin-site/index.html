@@ -167,6 +167,19 @@
      each of the days all at once." Replaces the old hand-rolled-SVG
      .price-chart/.chart-legend* rules (Chart.js renders its own legend,
      styled via JS options instead of these CSS classes). */
+  /* Dashboard tab (Al: "can we create an admin dashboard with some KPIs
+     and top 10 lists... we have chart.js included now so we should be
+     able to create some interesting visuals with some of the data we
+     have pulled together"). Reuses .chart-wrap below for the ADU-by-
+     brand bar chart, same as the price/SKU-stock line charts. */
+  .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 22px; }
+  .kpi-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
+  .kpi-card .kpi-value { font-size: 24px; font-weight: 700; line-height: 1.2; }
+  .kpi-card .kpi-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .03em; margin-top: 4px; }
+  .dashboard-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 22px; }
+  .dashboard-cols h3 { margin: 0 0 8px; font-size: 13px; }
+  @media (max-width: 800px) { .dashboard-cols { grid-template-columns: 1fr; } }
+
   .chart-range { display: flex; gap: 4px; margin: 8px 0 6px; }
   .chart-range button {
     padding: 4px 10px;
@@ -275,6 +288,7 @@
 </section>
 
 <nav id="tabs">
+  <button data-tab="dashboard" onclick="showTab('dashboard')">Dashboard</button>
   <button data-tab="review" class="active" onclick="showTab('review')">Review Queue</button>
   <button data-tab="videos" onclick="showTab('videos')">Video Candidates</button>
   <button data-tab="pricesources" onclick="showTab('pricesources')">Price Sources</button>
@@ -286,6 +300,19 @@
 </nav>
 
 <main>
+
+  <!-- ============ Dashboard tab ============ -->
+  <!-- Al: "can we create an admin dashboard with some KPIs and top 10
+       lists... Top 10s i think we can do Popularity and ADUs. An
+       interesting number would be total ADUs across all balls, ADUs by
+       brand, and things like that." One GET /admin/dashboard call per
+       load (see service.get_dashboard_summary's own docstring for why
+       this is one endpoint, not several) -- no filters/pagination, same
+       "full catalog snapshot" shape as the Cores/Coverstocks tabs'
+       simplest views. -->
+  <section id="tab-dashboard" class="tab hidden">
+    <div id="dashboard-content"><p class="muted">Loading&hellip;</p></div>
+  </section>
 
   <!-- ============ Review Queue tab ============ -->
   <section id="tab-review" class="tab">
@@ -868,7 +895,7 @@ function renderRawTableList(items, emptyLabel) {
 // --------------------------------------------------------------------
 // Tabs
 // --------------------------------------------------------------------
-const TAB_LOADERS = { review: loadReviewQueue, videos: loadVideoCandidates, pricesources: loadPriceSources, products: loadProducts, cores: loadCores, coverstocks: loadCoverstocks, pricesites: loadPriceSites, batch: null };
+const TAB_LOADERS = { dashboard: loadDashboard, review: loadReviewQueue, videos: loadVideoCandidates, pricesources: loadPriceSources, products: loadProducts, cores: loadCores, coverstocks: loadCoverstocks, pricesites: loadPriceSites, batch: null };
 let activeTab = 'review';
 
 // Cached GET /price-sites result -- shared between the Price Sites tab
@@ -908,6 +935,119 @@ function showTab(name) {
 function loadActiveTab() {
   const fn = TAB_LOADERS[activeTab];
   if (fn) fn();
+}
+
+// --------------------------------------------------------------------
+// Dashboard tab -- Al: "can we create an admin dashboard with some KPIs
+// and top 10 lists... i'll let you pick most of the things to show but
+// we have chart.js included now so we should be able to create some
+// interesting visuals." One GET /admin/dashboard call per load (see
+// service.get_dashboard_summary's docstring for the full breakdown of
+// what it returns and why as one endpoint) -- reloaded fresh every time
+// the tab is clicked, same as every other tab's loadX() function, no
+// caching (this catalog's size makes four aggregate queries cheap
+// enough per the same tradeoff list_products' own popularity_score/
+// total_adu columns already made).
+// --------------------------------------------------------------------
+
+async function loadDashboard() {
+  const el = document.getElementById('dashboard-content');
+  el.innerHTML = '<p class="muted">Loading&hellip;</p>';
+  try {
+    const data = await api('GET', '/admin/dashboard');
+    renderDashboard(data);
+  } catch (e) {
+    el.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
+  }
+}
+
+// Total catalog ADU / top-10 ADU values -- same .toFixed(2) convention
+// the Products tab's own total_adu column already uses (see that
+// column's own comment), not fmtCount's integer grouping (ADU is a
+// units-per-day RATE, not a count).
+function fmtAdu(n) {
+  return n === null || n === undefined ? '—' : Number(n).toFixed(2);
+}
+
+function renderDashboard(data) {
+  const k = data.kpis || {};
+  const kpiCards = [
+    { label: 'Total Products', value: fmtCount(k.total_products) },
+    { label: 'Current', value: fmtCount(k.current_products) },
+    { label: 'Retired', value: fmtCount(k.retired_products) },
+    { label: 'Total Catalog ADU', value: fmtAdu(k.total_catalog_adu) },
+    { label: 'With Approved Video', value: fmtCount(k.products_with_video) },
+    { label: 'With Price Tracking', value: fmtCount(k.products_with_price_tracking) },
+    { label: 'Missing Core', value: fmtCount(k.missing_core) },
+    { label: 'Missing Coverstock', value: fmtCount(k.missing_coverstock) },
+    { label: 'Missing SKUs', value: fmtCount(k.missing_skus) },
+  ];
+  const kpiHtml = '<div class="kpi-grid">' + kpiCards.map(function (c) {
+    return '<div class="kpi-card"><div class="kpi-value">' + c.value + '</div><div class="kpi-label">' + escapeHtml(c.label) + '</div></div>';
+  }).join('') + '</div>';
+
+  const popRows = (data.top_popularity || []).map(function (p, i) {
+    return '<tr><td class="muted small">' + (i + 1) + '</td><td>' + escapeHtml(p.name) + '</td>' +
+      '<td class="muted">' + escapeHtml(p.brand_name || '—') + '</td>' +
+      '<td class="mono">' + Number(p.popularity_score).toFixed(1) + '</td></tr>';
+  }).join('');
+  const aduTopRows = (data.top_adu || []).map(function (p, i) {
+    return '<tr><td class="muted small">' + (i + 1) + '</td><td>' + escapeHtml(p.name) + '</td>' +
+      '<td class="muted">' + escapeHtml(p.brand_name || '—') + '</td>' +
+      '<td class="mono">' + fmtAdu(p.total_adu) + '</td></tr>';
+  }).join('');
+
+  document.getElementById('dashboard-content').innerHTML =
+    kpiHtml +
+    '<div class="dashboard-cols">' +
+      '<div><h3>Top 10 by Popularity</h3>' +
+        '<table class="mini"><thead><tr><th></th><th>Product</th><th>Brand</th><th>Score</th></tr></thead><tbody>' +
+        (popRows || '<tr><td colspan="4" class="muted">no ranked products yet</td></tr>') +
+        '</tbody></table></div>' +
+      '<div><h3>Top 10 by Total ADU</h3>' +
+        '<table class="mini"><thead><tr><th></th><th>Product</th><th>Brand</th><th>ADU</th></tr></thead><tbody>' +
+        (aduTopRows || '<tr><td colspan="4" class="muted">no SKU stock history yet</td></tr>') +
+        '</tbody></table></div>' +
+    '</div>' +
+    '<h3>Average Daily Usage by Brand</h3>' +
+    '<div class="chart-wrap"><canvas id="dashboard-adu-by-brand-chart"></canvas></div>';
+
+  renderAduByBrandChart(data.adu_by_brand || []);
+}
+
+function renderAduByBrandChart(rows) {
+  const canvasId = 'dashboard-adu-by-brand-chart';
+  destroyChart(canvasId);
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+  // Same Chart.js-missing fallback as renderPriceChart/renderSkuStockChart
+  // (see <head>'s CDN comment) -- a plain list instead of a silent blank
+  // box if the CDN script failed to load.
+  if (typeof Chart === 'undefined') {
+    const wrap = canvas.parentElement;
+    wrap.innerHTML = '<p class="muted small">' + rows.map(function (r) {
+      return escapeHtml(r.brand_name) + ': ' + fmtAdu(r.total_adu);
+    }).join(' &middot; ') + '</p>';
+    return;
+  }
+  chartInstances[canvasId] = new Chart(canvas.getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: rows.map(function (r) { return r.brand_name; }),
+      datasets: [{
+        label: 'Total ADU',
+        data: rows.map(function (r) { return Number(r.total_adu) || 0; }),
+        backgroundColor: CHART_COLORS[0],
+        borderRadius: 3,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: { y: { beginAtZero: true } },
+    },
+  });
 }
 
 // Product detail panel's own sub-tabs -- see loadProductDetailInto's own

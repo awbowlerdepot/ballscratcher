@@ -635,6 +635,150 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
         return [dict(zip(columns, row)) for row in cur.fetchall()]
 
 
+def get_dashboard_summary(conn) -> dict:
+    """Real ask from Al: "can we create an admin dashboard with some KPIs
+    and top 10 lists... Top 10s i think we can do Popularity and ADUs. An
+    interesting number would be total ADUs across all balls, ADUs by
+    brand, and things like that." Backs a new Dashboard tab -- one
+    endpoint, not several, since every number here is read-only and the
+    tab renders them all at once on load (same "one round trip" reasoning
+    list_products' popularity_score/total_adu columns already used at
+    this catalog's size).
+
+    Reuses _POPULARITY_SCORE_SQL and _TOTAL_ADU_SQL as-is everywhere
+    possible rather than re-deriving either formula a second time --
+    both are already the single source of truth list_products' own
+    columns and sort options read from, so the Dashboard's numbers are
+    guaranteed to agree with what the Products tab already shows for the
+    same product, not a second, potentially-drifting definition of
+    "popularity" or "ADU".
+
+    Four separate queries, not one giant one: KPI counts, top 10
+    popularity, top 10 ADU, and ADU-by-brand are structurally unrelated
+    result shapes (one row vs ten rows vs one row per brand) that don't
+    share a natural GROUP BY, so combining them would mean either extra
+    round trips anyway (subqueries returning arrays) or a much harder to
+    read query for no real performance win at this catalog's size.
+
+    Returns:
+      kpis: single dict -- total_products, current_products,
+        retired_products, missing_core, missing_coverstock, missing_skus,
+        products_with_video (>=1 approved+summarized video),
+        products_with_price_tracking (>=1 approved+active price source),
+        total_catalog_adu (sum of every product's total_adu).
+      top_popularity: up to 10 {id, name, brand_name, popularity_score}
+        dicts, popularity_score > 0 only (a product with zero approved
+        videos has nothing meaningful to rank -- omitted rather than
+        padding the list with ties at 0).
+      top_adu: up to 10 {id, name, brand_name, total_adu} dicts, same
+        > 0 reasoning (a product with no qualifying SKU stock readings
+        contributes nothing meaningful to a "top ADU" list).
+      adu_by_brand: one {brand_name, total_adu} dict per brand (every
+        brand, even one with total_adu = 0 -- Al's own "ADUs by brand"
+        ask reads as "show me the breakdown", which is more useful as a
+        complete picture across the whole catalog than a filtered list),
+        ordered highest total_adu first.
+    """
+    with conn.cursor() as cur:
+        cur.execute(f"""
+            select
+                (select count(*) from products) as total_products,
+                (select count(*) from products where status = 'current') as current_products,
+                (select count(*) from products where status = 'retired') as retired_products,
+                (select count(*) from products where core_id is null) as missing_core,
+                (select count(*) from products where coverstock_id is null) as missing_coverstock,
+                (select count(*) from products p where not exists (
+                    select 1 from product_skus ps where ps.product_id = p.id
+                )) as missing_skus,
+                (select count(distinct pv.product_id) from product_videos pv
+                    where pv.status = 'approved' and pv.summary is not null) as products_with_video,
+                (select count(distinct pps.product_id) from product_price_sources pps
+                    where pps.status = 'approved' and pps.is_active) as products_with_price_tracking,
+                (select coalesce(sum(t.total_adu), 0) from (
+                    select {_TOTAL_ADU_SQL} as total_adu from products p
+                ) t) as total_catalog_adu
+        """)
+        columns = [desc[0] for desc in cur.description]
+        kpis = dict(zip(columns, cur.fetchone()))
+
+        cur.execute(f"""
+            select * from (
+                select p.id, p.name, b.name as brand_name,
+                       {_POPULARITY_SCORE_SQL} as popularity_score
+                from products p
+                left join brands b on b.id = p.brand_id
+            ) t
+            where t.popularity_score > 0
+            order by t.popularity_score desc, t.id asc
+            limit 10
+        """)
+        columns = [desc[0] for desc in cur.description]
+        top_popularity = [dict(zip(columns, row)) for row in cur.fetchall()]
+
+        cur.execute(f"""
+            select * from (
+                select p.id, p.name, b.name as brand_name,
+                       {_TOTAL_ADU_SQL} as total_adu
+                from products p
+                left join brands b on b.id = p.brand_id
+            ) t
+            where t.total_adu > 0
+            order by t.total_adu desc, t.id asc
+            limit 10
+        """)
+        columns = [desc[0] for desc in cur.description]
+        top_adu = [dict(zip(columns, row)) for row in cur.fetchall()]
+
+        # ADU by brand: a real GROUP BY aggregate (not _TOTAL_ADU_SQL
+        # summed per product like the two queries above) -- reimplements
+        # the same per-SKU ADU definition documented on _TOTAL_ADU_SQL
+        # itself (drops-only, ADU_LOOKBACK_DAYS window, >=2 readings
+        # required), but un-correlated from any single product so it can
+        # be grouped by brand directly instead of running once per
+        # product and summing in Python. MUST stay in lockstep with
+        # _TOTAL_ADU_SQL's definition, same hand-synced-constant
+        # reasoning as POPULARITY_HALF_LIFE_DAYS/_POPULARITY_SCORE_SQL's
+        # own comment.
+        cur.execute(f"""
+            with sku_adu as (
+                select h.product_sku_id,
+                       sum(case when h.delta < 0 then -h.delta else 0 end) as units_sold,
+                       extract(epoch from (max(h.checked_at) - min(h.checked_at))) / 86400.0 as elapsed_days
+                from (
+                    select psh.product_sku_id, psh.checked_at,
+                           psh.quantity - lag(psh.quantity) over (partition by psh.product_sku_id order by psh.checked_at) as delta
+                    from product_sku_stock_history psh
+                    where psh.quantity is not null
+                      and psh.checked_at >= now() - interval '{ADU_LOOKBACK_DAYS} days'
+                ) h
+                group by h.product_sku_id
+                having count(*) >= 2
+            ),
+            product_adu as (
+                select ps.product_id,
+                       sum(case when sa.elapsed_days > 0 then sa.units_sold / sa.elapsed_days else 0 end) as total_adu
+                from product_skus ps
+                join sku_adu sa on sa.product_sku_id = ps.id
+                group by ps.product_id
+            )
+            select b.name as brand_name, coalesce(sum(pa.total_adu), 0) as total_adu
+            from brands b
+            left join products p on p.brand_id = b.id
+            left join product_adu pa on pa.product_id = p.id
+            group by b.name
+            order by total_adu desc
+        """)
+        columns = [desc[0] for desc in cur.description]
+        adu_by_brand = [dict(zip(columns, row)) for row in cur.fetchall()]
+
+    return {
+        "kpis": kpis,
+        "top_popularity": top_popularity,
+        "top_adu": top_adu,
+        "adu_by_brand": adu_by_brand,
+    }
+
+
 def get_product(conn, product_id: str):
     """Real ask from Al: he's noticed data issues in the admin UI he
     suspects trace back to the scrapers, and wants every column visible

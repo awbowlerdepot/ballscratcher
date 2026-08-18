@@ -151,6 +151,23 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/admin/dashboard")
+def get_dashboard():
+    # Backs the new Dashboard tab -- Al: "can we create an admin
+    # dashboard with some KPIs and top 10 lists... we have chart.js
+    # included now so we should be able to create some interesting
+    # visuals." No query params: one full-catalog snapshot per load,
+    # same "short, unpaginated, computed fresh every call" shape as
+    # /brands -- see service.get_dashboard_summary's own docstring for
+    # why this is one endpoint (four queries) rather than four separate
+    # ones.
+    conn = service.get_db_connection()
+    try:
+        return service.get_dashboard_summary(conn)
+    finally:
+        conn.close()
+
+
 @app.get("/review-queue")
 def get_review_queue(
     status: str = Query("pending"),
