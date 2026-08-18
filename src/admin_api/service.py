@@ -693,6 +693,85 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
         return [dict(zip(columns, row)) for row in cur.fetchall()]
 
 
+def list_sku_weights(conn) -> list:
+    """Distinct product_skus.weight_lbs values across the WHOLE catalog
+    (not just SKUs with a computable ADU/days-of-supply), sorted ascending
+    -- backs the Dashboard's Days-of-Supply weight-toggle filter. Al: "can
+    we put a filter so we can toggle the different weights so that we can
+    see 15 only or 15 and 14 etc," same 'toggle a few states' UI
+    convention list_products' own filter dropdowns already established.
+    Deliberately whole-catalog, not scoped to today's top-10-worst-DOS
+    SKUs -- a weight that isn't in today's top 10 should still be an
+    available checkbox (its SKUs just don't happen to be the most urgent
+    right now), not silently missing from the toggle."""
+    with conn.cursor() as cur:
+        cur.execute("select distinct weight_lbs from product_skus where weight_lbs is not null order by weight_lbs")
+        return [row[0] for row in cur.fetchall()]
+
+
+def get_top_days_of_supply(conn, weight_lbs: list = None) -> list:
+    """Up to 10 {product_id, name, brand_name, weight_lbs, adu,
+    latest_quantity, days_of_supply} dicts, ascending by days_of_supply
+    (soonest to stock out first) -- Al: "top 10 days of supply skus
+    descending so lowest number of days first." PER-SKU (not per-product
+    like top_popularity/top_adu), since days-of-supply is meaningless
+    summed across a product's weights -- a 16lb about to stock out
+    doesn't average out with a 12lb that's overstocked. adu > 0 is
+    required (adu <= 0 -> an infinite or negative days-of-supply, not a
+    real answer, same reasoning top_adu's own > 0 filter uses);
+    latest_quantity is that SKU's single most recent quantity reading
+    (not windowed -- "right now", same as computeSkuForecast's own
+    latestQuantity parameter), so a quantity of 0 correctly sorts to
+    days_of_supply = 0 at the very top -- already-out-of-stock is the
+    most urgent case, exactly matching computeSkuForecast's own
+    `latestQuantity <= 0 -> daysOfSupply: 0` branch (admin-site/
+    index.html) rather than a divide-by-zero or an excluded row.
+
+    Split out of get_dashboard_summary into its own function/endpoint
+    (GET /admin/dashboard/days-of-supply, same reasoning
+    get_catalog_adu_history already established for a Dashboard piece
+    that needs independent refresh) specifically so the weight_lbs filter
+    below doesn't force re-running the other six dashboard queries every
+    time a checkbox is toggled -- get_dashboard_summary no longer includes
+    this list at all; the Dashboard tab fetches it as a third parallel
+    call alongside GET /admin/dashboard and GET /admin/catalog-adu-history.
+
+    weight_lbs (optional): list of ints, e.g. [15, 14] -- Al: "so we can
+    see 15 only or 15 and 14 etc." Rendered as `and sk.weight_lbs =
+    any(%s)`, same positional-bound-array-param convention
+    list_price_sources_for_products' own `product_id = any(%s::uuid[])`
+    filter already uses (psycopg2 adapts a Python list straight to a
+    Postgres array). None/empty means no filter -- every weight, exactly
+    today's original unfiltered behavior."""
+    weight_filter_sql = "and sk.weight_lbs = any(%s)" if weight_lbs else ""
+    params = [weight_lbs] if weight_lbs else []
+    with conn.cursor() as cur:
+        cur.execute(f"""
+            with sa as {_sku_adu_cte(ADU_LOOKBACK_DAYS)},
+            latest_qty as (
+                select distinct on (product_sku_id) product_sku_id, quantity
+                from product_sku_stock_history
+                where quantity is not null
+                order by product_sku_id, checked_at desc
+            )
+            select p.id as product_id, p.name, b.name as brand_name, sk.weight_lbs,
+                   round(sa.adu::numeric, 2) as adu,
+                   lq.quantity as latest_quantity,
+                   round((lq.quantity / sa.adu)::numeric, 1) as days_of_supply
+            from sa
+            join product_skus sk on sk.id = sa.product_sku_id
+            join products p on p.id = sk.product_id
+            left join brands b on b.id = p.brand_id
+            join latest_qty lq on lq.product_sku_id = sa.product_sku_id
+            where sa.adu > 0 and lq.quantity is not null
+            {weight_filter_sql}
+            order by (lq.quantity / sa.adu) asc, sk.id asc
+            limit 10
+        """, params)
+        columns = [desc[0] for desc in cur.description]
+        return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
 def get_dashboard_summary(conn) -> dict:
     """Real ask from Al: "can we create an admin dashboard with some KPIs
     and top 10 lists... Top 10s i think we can do Popularity and ADUs. An
@@ -711,14 +790,18 @@ def get_dashboard_summary(conn) -> dict:
     same product, not a second, potentially-drifting definition of
     "popularity" or "ADU".
 
-    Seven separate queries, not one giant one: KPI counts, top 10
-    popularity, top 10 ADU, ADU-by-brand, top 10 days-of-supply, top 10
-    growing ADU, and top 10 shrinking ADU are structurally unrelated
-    result shapes (one row vs ten rows vs one row per brand vs ten
-    per-SKU rows) that don't share a natural GROUP BY, so combining them
-    would mean either extra round trips anyway (subqueries returning
-    arrays) or a much harder to read query for no real performance win at
-    this catalog's size.
+    Six separate queries, not one giant one: KPI counts, top 10
+    popularity, top 10 ADU, ADU-by-brand, top 10 growing ADU, and top 10
+    shrinking ADU are structurally unrelated result shapes (one row vs
+    ten rows vs one row per brand vs ten per-SKU rows) that don't share a
+    natural GROUP BY, so combining them would mean either extra round
+    trips anyway (subqueries returning arrays) or a much harder to read
+    query for no real performance win at this catalog's size.
+
+    NOTE: top_days_of_supply is deliberately NOT included here -- see
+    get_top_days_of_supply's own docstring for why it was split into its
+    own function/endpoint (GET /admin/dashboard/days-of-supply) instead of
+    being a seventh query below.
 
     Returns:
       kpis: single dict -- total_products, current_products,
@@ -738,22 +821,6 @@ def get_dashboard_summary(conn) -> dict:
         ask reads as "show me the breakdown", which is more useful as a
         complete picture across the whole catalog than a filtered list),
         ordered highest total_adu first.
-      top_days_of_supply: up to 10 {product_id, name, brand_name,
-        weight_lbs, adu, latest_quantity, days_of_supply} dicts -- Al:
-        "top 10 days of supply skus descending so lowest number of days
-        first." PER-SKU (not per-product, unlike top_popularity/top_adu
-        above), since days-of-supply is meaningless summed across a
-        product's weights -- a 16lb about to stock out doesn't average out
-        with a 12lb that's overstocked. Same adu > 0 requirement as
-        top_adu's own reasoning (adu <= 0 -> an infinite or negative
-        days-of-supply, not a real answer); latest_quantity is that SKU's
-        single most recent quantity reading (not windowed -- "right now",
-        same as computeSkuForecast's own latestQuantity parameter), so a
-        quantity of 0 correctly sorts to days_of_supply = 0, first in the
-        ascending list -- already-out-of-stock is the most urgent case,
-        exactly matching computeSkuForecast's own `latestQuantity <= 0 ->
-        daysOfSupply: 0` branch (admin-site/index.html) rather than a
-        divide-by-zero or an excluded row.
       top_growing_adu / top_shrinking_adu: up to 10 {product_id, name,
         brand_name, weight_lbs, previous_adu, current_adu, delta_adu}
         dicts each -- Al's two-sided ask, mirror-image queries (same shape
@@ -864,36 +931,6 @@ def get_dashboard_summary(conn) -> dict:
         columns = [desc[0] for desc in cur.description]
         adu_by_brand = [dict(zip(columns, row)) for row in cur.fetchall()]
 
-        # Days of supply, lowest first (Al: "top 10 days of supply skus
-        # descending so lowest number of days first") -- PER-SKU, see this
-        # function's own docstring for why. latest_qty is a DISTINCT ON
-        # pick of each SKU's single most recent reading (not windowed),
-        # same "right now" semantics computeSkuForecast's own
-        # latestQuantity argument uses.
-        cur.execute(f"""
-            with sa as {_sku_adu_cte(ADU_LOOKBACK_DAYS)},
-            latest_qty as (
-                select distinct on (product_sku_id) product_sku_id, quantity
-                from product_sku_stock_history
-                where quantity is not null
-                order by product_sku_id, checked_at desc
-            )
-            select p.id as product_id, p.name, b.name as brand_name, sk.weight_lbs,
-                   round(sa.adu::numeric, 2) as adu,
-                   lq.quantity as latest_quantity,
-                   round((lq.quantity / sa.adu)::numeric, 1) as days_of_supply
-            from sa
-            join product_skus sk on sk.id = sa.product_sku_id
-            join products p on p.id = sk.product_id
-            left join brands b on b.id = p.brand_id
-            join latest_qty lq on lq.product_sku_id = sa.product_sku_id
-            where sa.adu > 0 and lq.quantity is not null
-            order by (lq.quantity / sa.adu) asc, sk.id asc
-            limit 10
-        """)
-        columns = [desc[0] for desc in cur.description]
-        top_days_of_supply = [dict(zip(columns, row)) for row in cur.fetchall()]
-
         # Growing ADU, biggest increase first (Al: "top 10 growth ADUs...
         # by sku") -- current ADU_LOOKBACK_DAYS-day window vs the
         # ADU_LOOKBACK_DAYS days before that, see _sku_adu_cte's own
@@ -946,7 +983,6 @@ def get_dashboard_summary(conn) -> dict:
         "top_popularity": top_popularity,
         "top_adu": top_adu,
         "adu_by_brand": adu_by_brand,
-        "top_days_of_supply": top_days_of_supply,
         "top_growing_adu": top_growing_adu,
         "top_shrinking_adu": top_shrinking_adu,
     }

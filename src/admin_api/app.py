@@ -185,6 +185,29 @@ def get_catalog_adu_history():
         conn.close()
 
 
+@app.get("/admin/dashboard/days-of-supply")
+def get_dashboard_days_of_supply(
+    weight_lbs: Optional[str] = Query(None, description="Comma-separated weights in lbs to filter to, e.g. '15,14' -- omit for every weight"),
+):
+    # Backs the Dashboard's "Top 10 Days of Supply" weight-toggle filter --
+    # Al: "can we put a filter so we can toggle the different weights so
+    # that we can see 15 only or 15 and 14 etc." Split out from GET
+    # /admin/dashboard (see service.get_top_days_of_supply's own docstring
+    # for why) so toggling a weight checkbox only re-runs this one query,
+    # not the other six the main Dashboard payload carries. Comma-
+    # separated string -> List[int], same parsing convention public_api's
+    # GET /products/plotter uses for its own `ids` param.
+    conn = service.get_db_connection()
+    try:
+        weights = [int(w.strip()) for w in weight_lbs.split(",") if w.strip()] if weight_lbs else None
+        return {
+            "items": service.get_top_days_of_supply(conn, weight_lbs=weights),
+            "available_weights": service.list_sku_weights(conn),
+        }
+    finally:
+        conn.close()
+
+
 @app.get("/review-queue")
 def get_review_queue(
     status: str = Query("pending"),

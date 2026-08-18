@@ -965,15 +965,21 @@ async function loadDashboard() {
   try {
     // Fetched alongside the main dashboard summary, same "everything this
     // tab needs, one Promise.all, no cascading round trips" reasoning as
-    // loadProductDetailInto -- separate endpoint (not folded into GET
-    // /admin/dashboard) since a full daily-bucketed history is a
-    // structurally different, potentially much larger payload than the
-    // four small aggregate results that endpoint returns (see
-    // service.get_catalog_adu_history's own docstring for why this is a
-    // real but DIFFERENTLY-DEFINED number from kpis.total_catalog_adu).
-    const [data, aduHistoryData] = await Promise.all([
+    // loadProductDetailInto. /admin/catalog-adu-history is separate (not
+    // folded into GET /admin/dashboard) since a full daily-bucketed
+    // history is a structurally different, potentially much larger
+    // payload than the small aggregate results that endpoint returns
+    // (see service.get_catalog_adu_history's own docstring for why this
+    // is a real but DIFFERENTLY-DEFINED number from kpis.total_catalog_
+    // adu). /admin/dashboard/days-of-supply is ALSO separate, for a
+    // different reason -- see service.get_top_days_of_supply's own
+    // docstring: Al's weight-toggle ask ("can we put a filter so we can
+    // toggle the different weights") needs to re-run just this one query
+    // on every checkbox change without disturbing the other five.
+    const [data, aduHistoryData, dosData] = await Promise.all([
       api('GET', '/admin/dashboard'),
       api('GET', '/admin/catalog-adu-history'),
+      api('GET', '/admin/dashboard/days-of-supply'),
     ]);
     // Stashed under a fixed 'dashboard' pseudo-product-id -- reuses the
     // exact same per-(chartType,productId) range-picker machinery
@@ -982,6 +988,8 @@ async function loadDashboard() {
     // rather than a parallel one-off mechanism just for this chart.
     productChartData.dashboard = productChartData.dashboard || {};
     productChartData.dashboard.catalogAdu = aduHistoryData;
+    dashboardDosState.availableWeights = dosData.available_weights || [];
+    dashboardDosState.items = dosData.items || [];
     renderDashboard(data);
   } catch (e) {
     el.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
@@ -1030,14 +1038,12 @@ function renderDashboard(data) {
   // "weight_lbs + 'lb'" convention the SKU stock table/legend already use,
   // see s.weight_lbs usages elsewhere in this file), since these are
   // per-weight rows, not per-product like the two tables above.
-  const dosRows = (data.top_days_of_supply || []).map(function (s, i) {
-    return '<tr><td class="muted small">' + (i + 1) + '</td>' +
-      '<td>' + escapeHtml(s.name) + ' <span class="muted small">' + s.weight_lbs + 'lb</span></td>' +
-      '<td class="muted">' + escapeHtml(s.brand_name || '—') + '</td>' +
-      '<td class="mono">' + fmtAdu(s.adu) + '</td>' +
-      '<td class="mono">' + fmtCount(s.latest_quantity) + '</td>' +
-      '<td class="mono">' + Number(s.days_of_supply).toFixed(1) + '</td></tr>';
-  }).join('');
+  // Days of Supply itself is NOT built here -- it's rendered into its own
+  // #dos-container by renderDaysOfSupplyPanel() below, called once at the
+  // end of this function, so its weight-toggle checkboxes can re-render
+  // just that one panel on every click (see dashboardDosState's own
+  // comment) without renderDashboard tearing down and rebuilding the
+  // Growing/Shrinking tables or the charts underneath it.
   const growingRows = (data.top_growing_adu || []).map(function (s, i) {
     return '<tr><td class="muted small">' + (i + 1) + '</td>' +
       '<td>' + escapeHtml(s.name) + ' <span class="muted small">' + s.weight_lbs + 'lb</span></td>' +
@@ -1072,10 +1078,7 @@ function renderDashboard(data) {
         '</tbody></table></div>' +
     '</div>' +
     '<div class="dashboard-cols-3">' +
-      '<div><h3>Top 10 Days of Supply <span class="muted small">(lowest first)</span></h3>' +
-        '<table class="mini"><thead><tr><th></th><th>SKU</th><th>Brand</th><th>ADU</th><th>Qty</th><th>Days</th></tr></thead><tbody>' +
-        (dosRows || '<tr><td colspan="6" class="muted small">no SKU with both stock history and a current quantity yet</td></tr>') +
-        '</tbody></table></div>' +
+      '<div id="dos-container"></div>' +
       '<div><h3>Top 10 Growing ADU</h3>' +
         '<table class="mini"><thead><tr><th></th><th>SKU</th><th>Brand</th><th>ADU</th><th>Δ</th></tr></thead><tbody>' +
         (growingRows || trendEmptyMsg) +
@@ -1094,6 +1097,74 @@ function renderDashboard(data) {
 
   renderAduByBrandChart(data.adu_by_brand || []);
   renderCatalogAduChart(productChartData.dashboard.catalogAdu);
+  renderDaysOfSupplyPanel();
+}
+
+// Days of Supply weight-toggle filter (Al: "can we put a filter so we can
+// toggle the different weights so that we can see 15 only or 15 and 14
+// etc.") -- same "toggle a few states" UI convention list_products' own
+// filter checkboxes/dropdowns already use. Rendered into its own
+// #dos-container (see renderDashboard above) so toggling a weight only
+// re-renders this one panel, not the whole Dashboard tab.
+function renderDaysOfSupplyPanel() {
+  const container = document.getElementById('dos-container');
+  if (!container) return; // Dashboard tab not currently showing
+
+  const checkboxesHtml = dashboardDosState.availableWeights.map(function (w) {
+    const checked = dashboardDosState.selectedWeights.indexOf(w) !== -1 ? ' checked' : '';
+    return '<label style="margin-right:8px; font-size:11px; white-space:nowrap;">' +
+      '<input type="checkbox" value="' + w + '"' + checked + ' onchange="toggleDosWeight(' + w + ')"> ' + w + 'lb</label>';
+  }).join('');
+
+  const rows = (dashboardDosState.items || []).map(function (s, i) {
+    return '<tr><td class="muted small">' + (i + 1) + '</td>' +
+      '<td>' + escapeHtml(s.name) + ' <span class="muted small">' + s.weight_lbs + 'lb</span></td>' +
+      '<td class="muted">' + escapeHtml(s.brand_name || '—') + '</td>' +
+      '<td class="mono">' + fmtAdu(s.adu) + '</td>' +
+      '<td class="mono">' + fmtCount(s.latest_quantity) + '</td>' +
+      '<td class="mono">' + Number(s.days_of_supply).toFixed(1) + '</td></tr>';
+  }).join('');
+  const emptyMsg = dashboardDosState.selectedWeights.length
+    ? '<tr><td colspan="6" class="muted small">no SKU at the selected weight(s) with both stock history and a current quantity yet</td></tr>'
+    : '<tr><td colspan="6" class="muted small">no SKU with both stock history and a current quantity yet</td></tr>';
+
+  container.innerHTML =
+    '<h3>Top 10 Days of Supply <span class="muted small">(lowest first)</span></h3>' +
+    '<div style="margin-bottom:6px;">' + (checkboxesHtml || '<span class="muted small">no weights on file yet</span>') + '</div>' +
+    '<table class="mini"><thead><tr><th></th><th>SKU</th><th>Brand</th><th>ADU</th><th>Qty</th><th>Days</th></tr></thead><tbody>' +
+    (rows || emptyMsg) +
+    '</tbody></table>';
+}
+
+// Flips one weight in/out of dashboardDosState.selectedWeights and
+// re-fetches just GET /admin/dashboard/days-of-supply with the new
+// filter -- the whole point of splitting this query out of GET
+// /admin/dashboard (see service.get_top_days_of_supply's own docstring)
+// is that toggling a checkbox here doesn't touch the other five Dashboard
+// queries or their already-rendered tables/charts.
+async function toggleDosWeight(weight) {
+  const idx = dashboardDosState.selectedWeights.indexOf(weight);
+  if (idx === -1) dashboardDosState.selectedWeights.push(weight);
+  else dashboardDosState.selectedWeights.splice(idx, 1);
+  await fetchDaysOfSupply();
+  renderDaysOfSupplyPanel();
+}
+
+async function fetchDaysOfSupply() {
+  const qs = dashboardDosState.selectedWeights.length
+    ? '?weight_lbs=' + dashboardDosState.selectedWeights.join(',')
+    : '';
+  try {
+    const dosData = await api('GET', '/admin/dashboard/days-of-supply' + qs);
+    dashboardDosState.availableWeights = dosData.available_weights || [];
+    dashboardDosState.items = dosData.items || [];
+  } catch (e) {
+    // Leave previous items/checkboxes in place rather than blanking a
+    // working panel over a transient fetch error -- same "don't nuke
+    // good state over one failed call" instinct as everywhere else a
+    // background refresh can fail in this file.
+    console.error('Failed to refresh Days of Supply:', e);
+  }
 }
 
 // Total Catalog ADU over time (Al: "can we add some data over time
@@ -2618,6 +2689,15 @@ const chartSelectedRange = {};
 // handlers below can re-filter and re-render without a network round
 // trip or access to loadProductDetailInto's closure.
 const productChartData = {};
+
+// Dashboard "Top 10 Days of Supply" weight-toggle filter state (Al: "can
+// we put a filter so we can toggle the different weights so that we can
+// see 15 only or 15 and 14 etc.") -- kept as its own small piece of
+// global state, same shape as chartSelectedRange, rather than folded into
+// productChartData (this isn't chart data, it's a re-queryable list with
+// its own filter). selectedWeights empty means "no filter, every weight"
+// -- see fetchDaysOfSupply's own comment for the query-param mapping.
+const dashboardDosState = { availableWeights: [], selectedWeights: [], items: [] };
 
 function filterHistoryByRange(rows, tsKey, rangeKey) {
   const preset = CHART_RANGE_PRESETS.find(function (p) { return p.key === rangeKey; }) || CHART_RANGE_PRESETS[2];

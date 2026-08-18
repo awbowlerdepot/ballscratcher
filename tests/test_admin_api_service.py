@@ -2162,34 +2162,19 @@ def test_get_dashboard_summary_adu_by_brand_query_shape():
     assert "where t.total_adu > 0" not in query  # no >0 filter here, unlike top_adu
 
 
-def test_get_dashboard_summary_top_days_of_supply_query_shape():
-    """Al: "top 10 days of supply skus descending so lowest number of days
-    first." PER-SKU (product_skus/weight_lbs joined in, unlike the
-    per-product top_popularity/top_adu queries above), ordered ascending
-    (lowest days-of-supply -- soonest to stock out -- first)."""
-    conn = _DashboardQueryCapturingConnection()
-    service.get_dashboard_summary(conn)
-
-    query = conn.cursor().queries[4]
-    assert "with sa as" in query
-    assert "latest_qty as" in query
-    assert "distinct on (product_sku_id)" in query
-    assert "sk.weight_lbs" in query
-    assert "where sa.adu > 0 and lq.quantity is not null" in query
-    assert "order by (lq.quantity / sa.adu) asc, sk.id asc limit 10" in query
-
-
 def test_get_dashboard_summary_top_growing_adu_query_shape():
     """Al: "top 10 growth ADUs... by sku." Compares the current
     ADU_LOOKBACK_DAYS-day window's per-SKU rate against the
     ADU_LOOKBACK_DAYS days before that -- both windows driven off
     ADU_LOOKBACK_DAYS (not hardcoded literals), confirming the "current"
     window stays in lockstep with every other ADU query's own definition
-    of "current"."""
+    of "current". Index 4, not 5 -- top_days_of_supply is no longer one
+    of get_dashboard_summary's own queries (see
+    service.get_top_days_of_supply's own docstring for why)."""
     conn = _DashboardQueryCapturingConnection()
     service.get_dashboard_summary(conn)
 
-    query = conn.cursor().queries[5]
+    query = conn.cursor().queries[4]
     assert "with cw as" in query
     assert "pw as" in query
     assert ("interval '%d days'" % service.ADU_LOOKBACK_DAYS) in query
@@ -2204,20 +2189,20 @@ def test_get_dashboard_summary_top_shrinking_adu_query_shape():
     conn = _DashboardQueryCapturingConnection()
     service.get_dashboard_summary(conn)
 
-    query = conn.cursor().queries[6]
+    query = conn.cursor().queries[5]
     assert "with cw as" in query
     assert "pw as" in query
     assert "where cw.adu is not null and pw.adu is not null and (cw.adu - pw.adu) < 0" in query
     assert "order by (cw.adu - pw.adu) asc, sk.id asc limit 10" in query
 
 
-def test_get_dashboard_summary_only_runs_seven_queries():
+def test_get_dashboard_summary_only_runs_six_queries():
     conn = _DashboardQueryCapturingConnection()
     service.get_dashboard_summary(conn)
-    assert len(conn.cursor().queries) == 7
+    assert len(conn.cursor().queries) == 6
 
 
-def test_get_dashboard_summary_assembles_all_seven_results():
+def test_get_dashboard_summary_assembles_all_six_results():
     conn = _SequencedConnection([
         {  # KPIs
             "columns": [
@@ -2247,12 +2232,6 @@ def test_get_dashboard_summary_assembles_all_seven_results():
                 ("Storm", "300.1"),
                 ("Hammer", "150.0"),
                 ("Ebonite", "0"),
-            ],
-        },
-        {  # top_days_of_supply
-            "columns": ["product_id", "name", "brand_name", "weight_lbs", "adu", "latest_quantity", "days_of_supply"],
-            "all": [
-                ("prod-4", "Fallout", "Roto Grip", 15, "8.90", 4, "0.4"),
             ],
         },
         {  # top_growing_adu
@@ -2289,10 +2268,7 @@ def test_get_dashboard_summary_assembles_all_seven_results():
         {"brand_name": "Hammer", "total_adu": "150.0"},
         {"brand_name": "Ebonite", "total_adu": "0"},
     ]
-    assert result["top_days_of_supply"] == [
-        {"product_id": "prod-4", "name": "Fallout", "brand_name": "Roto Grip", "weight_lbs": 15,
-         "adu": "8.90", "latest_quantity": 4, "days_of_supply": "0.4"},
-    ]
+    assert "top_days_of_supply" not in result  # split out, see get_top_days_of_supply
     assert result["top_growing_adu"] == [
         {"product_id": "prod-5", "name": "Intel Tour", "brand_name": "900 Global", "weight_lbs": 16,
          "previous_adu": "2.00", "current_adu": "5.70", "delta_adu": "3.70"},
@@ -2301,6 +2277,119 @@ def test_get_dashboard_summary_assembles_all_seven_results():
         {"product_id": "prod-6", "name": "Bionic", "brand_name": "900 Global", "weight_lbs": 14,
          "previous_adu": "6.00", "current_adu": "1.50", "delta_adu": "-4.50"},
     ]
+
+
+# --- get_top_days_of_supply / list_sku_weights: split out of
+# get_dashboard_summary specifically so Al's weight-toggle ask ("can we
+# put a filter so we can toggle the different weights so that we can see
+# 15 only or 15 and 14 etc.") can re-run just this one query, not the
+# other six dashboard queries, on every checkbox change. A dedicated
+# params-capturing double is needed here (unlike the query-text-only
+# doubles above) since the whole point of this test is confirming
+# weight_lbs is actually bound as a query parameter, not just present in
+# the SQL text.
+
+class _ParamsCapturingCursor:
+    def __init__(self):
+        self.calls = []  # list of (query_text, params)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, query, params=None):
+        self.calls.append((" ".join(query.split()), params))
+
+    @property
+    def description(self):
+        return []
+
+    def fetchall(self):
+        return []
+
+
+class _ParamsCapturingConnection:
+    def __init__(self):
+        self._cursor = _ParamsCapturingCursor()
+
+    def cursor(self):
+        return self._cursor
+
+
+def test_get_top_days_of_supply_unfiltered_omits_weight_clause_and_params():
+    conn = _ParamsCapturingConnection()
+    service.get_top_days_of_supply(conn)
+
+    query, params = conn.cursor().calls[0]
+    assert "and sk.weight_lbs = any(" not in query
+    assert params == []
+
+
+def test_get_top_days_of_supply_filtered_adds_weight_clause_and_params():
+    conn = _ParamsCapturingConnection()
+    service.get_top_days_of_supply(conn, weight_lbs=[15, 14])
+
+    query, params = conn.cursor().calls[0]
+    assert "and sk.weight_lbs = any(%s)" in query
+    assert params == [[15, 14]]
+
+
+def test_get_top_days_of_supply_query_shape():
+    """Same query shape the old get_dashboard_summary-embedded version
+    had -- this function is a pure extraction, not a rewrite."""
+    conn = _ParamsCapturingConnection()
+    service.get_top_days_of_supply(conn)
+
+    query, _ = conn.cursor().calls[0]
+    assert "with sa as" in query
+    assert "latest_qty as" in query
+    assert "distinct on (product_sku_id)" in query
+    assert "sk.weight_lbs" in query
+    assert "where sa.adu > 0 and lq.quantity is not null" in query
+    assert "order by (lq.quantity / sa.adu) asc, sk.id asc limit 10" in query
+
+
+def test_get_top_days_of_supply_only_runs_one_query():
+    conn = _ParamsCapturingConnection()
+    service.get_top_days_of_supply(conn, weight_lbs=[15])
+    assert len(conn.cursor().calls) == 1
+
+
+def test_get_top_days_of_supply_assembles_rows():
+    conn = _SequencedConnection([
+        {
+            "columns": ["product_id", "name", "brand_name", "weight_lbs", "adu", "latest_quantity", "days_of_supply"],
+            "all": [
+                ("prod-4", "Fallout", "Roto Grip", 15, "8.90", 4, "0.4"),
+            ],
+        },
+    ])
+
+    result = service.get_top_days_of_supply(conn, weight_lbs=[15])
+
+    assert result == [
+        {"product_id": "prod-4", "name": "Fallout", "brand_name": "Roto Grip", "weight_lbs": 15,
+         "adu": "8.90", "latest_quantity": 4, "days_of_supply": "0.4"},
+    ]
+
+
+def test_list_sku_weights_query_shape():
+    conn = _QueryCapturingConnection()
+    service.list_sku_weights(conn)
+
+    query = conn.cursor().queries[0]
+    assert "select distinct weight_lbs from product_skus" in query
+    assert "where weight_lbs is not null" in query
+    assert "order by weight_lbs" in query
+
+
+def test_list_sku_weights_returns_flat_list():
+    conn = _SequencedConnection([
+        {"columns": ["weight_lbs"], "all": [(12,), (14,), (15,), (16,)]},
+    ])
+    assert service.list_sku_weights(conn) == [12, 14, 15, 16]
 
 
 # --- get_catalog_adu_history: real follow-up ask, same session, Al: "can

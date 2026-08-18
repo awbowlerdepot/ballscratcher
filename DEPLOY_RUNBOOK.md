@@ -6377,8 +6377,78 @@ test extended with three more `_SequencedConnection` entries plus
 assertions on the three new result keys. 225/225 in this module; full
 repo `test_*.py` sweep clean.
 
+**Superseded by 6o.14 below**: `top_days_of_supply` described here as
+`get_dashboard_summary`'s seventh query was subsequently split into its
+own function/endpoint (a same-session follow-up ask, weight-toggle
+filtering) -- `get_dashboard_summary` is back down to six queries as of
+6o.14. `top_growing_adu`/`top_shrinking_adu` stayed put.
+
 No migration, no `template.yaml` change. Redeploy: same as 6o.11/6o.12 --
 `sam build AdminApiFunction && sam deploy`, plus re-upload `index.html`.
+
+### 6o.14. Days of Supply: weight-toggle filter, split into its own endpoint
+
+Real follow-up ask, same session as 6o.13, after Al saw the new Days of
+Supply list: "can we put a filter so we can toggle the different weights
+so that we can see 15 only or 15 and 14 etc."
+
+Filtering has to happen BEFORE the `limit 10`, not after -- a client-side
+filter of an already-limited top 10 would silently miss a 15lb SKU that
+ranked #14 catalog-wide but would be #3 among just 15lb SKUs. That means
+every checkbox toggle needs a real round trip.
+
+Rather than adding a `weight_lbs` query param to `GET /admin/dashboard`
+itself (which would re-run all six of that endpoint's other queries on
+every toggle), `top_days_of_supply` was split out of
+`get_dashboard_summary` entirely into its own function
+(`service.get_top_days_of_supply(conn, weight_lbs=None)`) and endpoint
+(`GET /admin/dashboard/days-of-supply?weight_lbs=15,14`) -- same
+independent-refresh reasoning 6o.12's `get_catalog_adu_history` split
+already established, just for a different trigger (a filter toggle
+instead of a chart-range button). `get_dashboard_summary` now runs six
+queries, not seven; the Dashboard tab fetches Days of Supply as a THIRD
+parallel call in `loadDashboard`'s `Promise.all` (alongside `/admin/
+dashboard` and `/admin/catalog-adu-history`), both on initial load and
+again on every weight toggle.
+
+`weight_lbs` (optional): comma-separated ints in the query string
+(`?weight_lbs=15,14`), same parsing convention `GET /products/plotter`'s
+own `ids` param already uses in `public_api`. Rendered as `and
+sk.weight_lbs = any(%s)` -- a real bound array parameter (psycopg2 adapts
+a Python list straight to a Postgres array), same convention
+`list_price_sources_for_products`' own `product_id = any(%s::uuid[])`
+filter uses, not string-interpolated. None/omitted means no filter, the
+original unfiltered top 10.
+
+New `service.list_sku_weights(conn)` returns every distinct
+`product_skus.weight_lbs` value catalog-wide (not just today's top-10's
+own weights) so the checkbox row always offers every real weight, even
+ones that don't happen to be in today's worst-DOS list. Returned
+alongside `items` in the endpoint's response as `available_weights`.
+
+admin-site: new `dashboardDosState` (`{availableWeights, selectedWeights,
+items}`) plus `renderDaysOfSupplyPanel()` / `toggleDosWeight(weight)` /
+`fetchDaysOfSupply()`. The Days of Supply panel now renders into its own
+`#dos-container` div (was inline in `renderDashboard`'s big innerHTML
+before) specifically so a checkbox click can re-render just that one
+panel -- not the KPIs, not Growing/Shrinking ADU, not either chart.
+
+Tests: `test_admin_api_service.py` -- `get_dashboard_summary`'s query
+count/assembly tests updated to six (days-of-supply removed), its
+growing/shrinking query-shape tests re-indexed (4/5, not 5/6). New
+`get_top_days_of_supply`/`list_sku_weights` tests via a new
+`_ParamsCapturingConnection` double (captures BOTH query text and bound
+params -- needed here specifically to confirm `weight_lbs` is actually
+passed as a parameter, not just present in the SQL string):
+unfiltered-omits-clause-and-params, filtered-adds-clause-and-params,
+query-shape (same shape as the pre-split inline version), single-query
+count, and a `_SequencedConnection`-based assembly test.
+`list_sku_weights` gets its own query-shape and flat-list-assembly tests.
+231/231 in this module; full repo `test_*.py` sweep clean.
+
+No migration, no `template.yaml` change (proxy+ catch-all already covers
+the new route). Redeploy: same as 6o.11/6o.12/6o.13 -- `sam build
+AdminApiFunction && sam deploy`, plus re-upload `index.html`.
 
 ## 7. Ongoing operations
 
