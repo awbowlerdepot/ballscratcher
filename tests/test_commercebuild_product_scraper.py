@@ -704,30 +704,131 @@ def test_skus_from_table_phaze_ii_design_intent_row_ignored():
     assert len(skus) == 5
 
 
-# --- _skus_from_table: real Amazon Textract row-merge corruption bug,
+# --- _skus_from_table: real Amazon Textract "column-weight" table shape,
 # later session, Al: "it looks like it got data from the pdf but it is
 # not correct. weights seem to be across the 16 lb instead of RG and
 # Diff values" -- confirmed via Al's screenshot of Viking's actual
 # stored SKU row: weight_lbs=16 (correct), rg=15, differential=14. Those
 # aren't real RG/Diff decimals (always ~2.4-2.7 / ~0.02-0.06 for these
 # balls) -- they're literally the next two weights in descending order.
-# Reconstructed hypothesis, not a captured real Textract Blocks response
-# (no AWS access from this session to call AnalyzeDocument directly or
-# pull the real PDF's raw bytes): Textract's own table-structure
-# detection collapsed this image-based PDF's real 5-row table into a
-# single overly-wide row, so weight_col_idx's row held the OTHER
-# weights' own "15 lbs."/"14 lbs." tokens in the very columns the old
-# code assumed held real RG/Diff data -- and _to_float's intentionally
-# permissive regex (extracts the first number found anywhere in a
-# string) happily parsed "15 lbs." as 15.0 instead of failing loudly.
+#
+# FIRST hypothesis here (now known wrong, kept only in git history):
+# Textract's table-structure detection collapsed a real 5-row table into
+# one overly-wide row smearing every weight's own RG/Diff/PSA together --
+# reconstructed, since this sandbox has no AWS access to capture a real
+# Textract Blocks response directly.
+#
+# CORRECTED, same session, once Al actually pulled the real CloudWatch
+# line for Viking (first with a defensive guard that only revealed the
+# flagged row, then with full-table logging that revealed everything):
+REAL_VIKING_TEXTRACT_TABLE = [
+    ["NOTES", "", "", "", "", "", ""],
+    ["", "16lb", "15lb", "14lb", "13lb", "12lb", ""],
+    ["RG", "2.50", "2.51", "2.52", "2.56", "2.58", ""],
+    ["DIFF", ".050", ".052", ".051", ".034", ".031", ""],
+    ["PSA", ".014", ".016", ".014", ".011", ".009", ""],
+]
+# This is a genuine 4th table shape (see _skus_from_table's own
+# docstring for the full list): a weight HEADER row holding every weight
+# as its own separate cell (columns 1-5 above), followed by separate
+# METRIC rows below it (RG/DIFF/PSA), each labeled in whichever cell
+# isn't a weight column, values aligned under each weight's own column.
+# The old long-mode code's weight_col_idx search matched the header row
+# itself as if it were one weight's own data row (finding "16lb" at
+# column 1, then reading columns 2-5's OTHER weight labels as if they
+# were that row's RG/Diff/PSA) -- which is what the defensive guard
+# caught and is still what fires the warning below, since the new
+# column-weight parsing branch (checked first, see _skus_from_table) now
+# recognizes and correctly handles this shape instead of ever reaching
+# that guard for a real table like this one.
+
+
+def test_skus_from_table_column_weight_mode_real_viking_shape():
+    """The actual real fix, once the true table shape was known: this
+    exact table (pulled live from CloudWatch) must now return all 5 real
+    SKUs, not an empty list."""
+    skus = app._skus_from_table(REAL_VIKING_TEXTRACT_TABLE)
+    assert skus == [
+        {"weight_lbs": 16, "rg": 2.50, "differential": 0.050, "mass_bias": 0.014},
+        {"weight_lbs": 15, "rg": 2.51, "differential": 0.052, "mass_bias": 0.016},
+        {"weight_lbs": 14, "rg": 2.52, "differential": 0.051, "mass_bias": 0.014},
+        {"weight_lbs": 13, "rg": 2.56, "differential": 0.034, "mass_bias": 0.011},
+        {"weight_lbs": 12, "rg": 2.58, "differential": 0.031, "mass_bias": 0.009},
+    ]
+
+
+def test_skus_from_table_column_weight_mode_unrecognized_label_row_ignored():
+    """The "NOTES" row (and the header row itself, whose first non-blank
+    cell is a weight label like "16lb") must not produce a bogus SKU or
+    overwrite real values -- only cells whose label maps to a known
+    metric (RG/DIFF/PSA/MB) are ever read."""
+    table = [
+        ["NOTES", "some free-text note", "", "", "", "", ""],
+        ["", "16lb", "15lb", ""],
+        ["RG", "2.50", "2.51", ""],
+    ]
+    skus = app._skus_from_table(table)
+    assert skus == [
+        {"weight_lbs": 16, "rg": 2.50, "differential": None, "mass_bias": None},
+        {"weight_lbs": 15, "rg": 2.51, "differential": None, "mass_bias": None},
+    ]
+
+
+def test_skus_from_table_column_weight_mode_mb_label_also_means_mass_bias():
+    """Some Tech Data PDFs may label this column "MB" instead of "PSA" --
+    both are the same real product_skus.mass_bias column (see the
+    PSA-is-mass_bias fix elsewhere in this function), so both labels must
+    map to the same field."""
+    table = [
+        ["", "16lb", "15lb"],
+        ["MB", "0.014", "0.016"],
+    ]
+    skus = app._skus_from_table(table)
+    assert skus == [
+        {"weight_lbs": 16, "rg": None, "differential": None, "mass_bias": 0.014},
+        {"weight_lbs": 15, "rg": None, "differential": None, "mass_bias": 0.016},
+    ]
+
+
 REAL_VIKING_TEXTRACT_MERGED_ROW = [
     ["16 lbs.", "15 lbs.", "14 lbs.", "13 lbs.", "12 lbs.", "2.50", "0.050", "0.014"],
 ]
 
 
 def test_skus_from_table_weight_shaped_other_value_skipped_not_guessed():
+    """This row mixes 5 weight-shaped cells with 3 real decimal-looking
+    values in the SAME row -- column-weight mode's purity check (every
+    non-blank cell must be weight-shaped) correctly rejects it as a
+    header, since a real header row is ONLY weight labels (see the real
+    Viking table above, whose header row has nothing else in it). Falls
+    through to long mode, whose own guard then refuses to write a
+    weight-shaped value into RG/Diff/PSA."""
     skus = app._skus_from_table(REAL_VIKING_TEXTRACT_MERGED_ROW)
     assert skus == []
+
+
+def test_skus_from_table_column_weight_mode_does_not_hijack_corrupted_long_mode_row():
+    """A genuine 5-row long-mode table (real header + one row per weight,
+    see Gremlin's own real shape elsewhere in this file) where exactly
+    ONE data row got corrupted with an extra weight-shaped value must
+    still parse the other 4 rows correctly -- the corrupted row alone
+    must not get misread as this table's "header" and hijack the whole
+    parse into column-weight mode, discarding 4 perfectly good rows."""
+    table = [
+        ["WEIGHT", "RG", "DIFF", "PSA"],
+        ["16 lbs.", "2.50", "0.050", "0.014"],
+        ["15 lbs.", "14 lbs.", "0.052", "0.016"],  # corrupted: RG slot holds a weight token
+        ["14 lbs.", "2.52", "0.051", "0.014"],
+        ["13 lbs.", "2.56", "0.034", "0.011"],
+        ["12 lbs.", "2.58", "0.031", "0.009"],
+    ]
+    skus = app._skus_from_table(table)
+    assert skus == [
+        {"weight_lbs": 16, "rg": 2.50, "differential": 0.050, "mass_bias": 0.014},
+        {"weight_lbs": 14, "rg": 2.52, "differential": 0.051, "mass_bias": 0.014},
+        {"weight_lbs": 13, "rg": 2.56, "differential": 0.034, "mass_bias": 0.011},
+        {"weight_lbs": 12, "rg": 2.58, "differential": 0.031, "mass_bias": 0.009},
+    ]
 
 
 def test_skus_from_table_weight_shaped_guard_only_fires_on_real_weight_tokens():

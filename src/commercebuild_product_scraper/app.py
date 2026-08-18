@@ -517,6 +517,18 @@ def _skus_from_table(table: list) -> list:
        one index, AND no PSA column at all for this product. The old
        fixed-index version silently read DIFF values into the PSA slot
        here instead of catching the shift.
+    4. 900 Global Viking (image-based PDF, routed through the Textract
+       OCR path, not pdfplumber): a genuinely different 4th shape,
+       confirmed real via Al pulling the actual CloudWatch log line
+       after two earlier guesses in this same function's git history
+       both turned out wrong. A weight HEADER row holds every weight as
+       its own separate cell (not newline-joined within one cell like
+       case 1/3, and not one weight per row like case 2) --
+       `['', '16lb', '15lb', '14lb', '13lb', '12lb', '']` -- followed by
+       separate METRIC rows below it, one per RG/DIFF/PSA, each labeled
+       in whichever cell isn't a weight column:
+       `['RG', '2.50', '2.51', '2.52', '2.56', '2.58', '']`, etc. See the
+       "Column-weight ('transposed') mode" block below for the real fix.
 
     Rather than hardcoding three separate branches (fragile against a
     still-undiscovered fourth shape), this locates the weight column by
@@ -616,6 +628,78 @@ def _skus_from_table(table: list) -> list:
                         "mass_bias": _to_float(values[2]) if len(values) > 2 else None,
                     })
                 return skus
+
+    # Column-weight ("transposed") mode: a real 4th shape, confirmed via
+    # Al pulling the actual CloudWatch line for Viking after the two
+    # false-start guesses above (see git history -- first hypothesis was
+    # a Textract row-merge, corrected once the raw row turned out to be
+    # a weight-only header; that correction's own comment admitted the
+    # real metric rows were still unseen, since they'd been silently
+    # hitting long mode's `if not weight_match: continue` this whole
+    # time). The real table:
+    #   ['NOTES', '', '', '', '', '', '']
+    #   ['', '16lb', '15lb', '14lb', '13lb', '12lb', '']
+    #   ['RG', '2.50', '2.51', '2.52', '2.56', '2.58', '']
+    #   ['DIFF', '.050', '.052', '.051', '.034', '.031', '']
+    #   ['PSA', '.014', '.016', '.014', '.011', '.009', '']
+    # A HEADER row holds every weight as its own separate cell (not
+    # newline-joined within one cell like wide mode, and not one weight
+    # per row like long mode below) -- then separate METRIC rows below
+    # it, one per RG/DIFF/PSA, labeled in whichever cell isn't a weight
+    # column, with each weight's value living in that same weight's
+    # column. Detected by: a row with 2+ non-blank cells where EVERY
+    # non-blank cell matches WEIGHT_TOKEN_RE -- deliberately stricter
+    # than "any 2+ weight-shaped cells", because long mode's own
+    # defensive guard below (weight_shaped) exists specifically for a
+    # row that mixes ONE real weight cell with genuinely corrupted
+    # decimal-ish data elsewhere in that same row -- a row like that has
+    # non-weight-shaped cells too (real RG/Diff numbers), so requiring
+    # purity here means a single corrupted long-mode row can never get
+    # misread as this table's header and hijack an otherwise-legitimate
+    # 5-row long-mode table (case 2 above) into being parsed as this
+    # shape instead. Long mode's weight_col_idx search only ever looks
+    # for the FIRST weight-shaped cell in a row, which is exactly how it
+    # misread a genuine header row like this one as if it were itself one
+    # weight's own data row before this fix existed.
+    header_weight_cols = {}
+    for row in table:
+        non_blank = [((cell or "").strip()) for cell in row if (cell or "").strip()]
+        if len(non_blank) >= 2 and all(WEIGHT_TOKEN_RE.match(v) for v in non_blank):
+            header_weight_cols = {
+                idx: int(re.search(r"(\d{1,2})", cell).group(1))
+                for idx, cell in enumerate(row)
+                if (cell or "").strip()
+            }
+            break
+
+    if header_weight_cols:
+        # PSA-is-mass_bias, same real fix as wide/long mode -- see those
+        # branches' comments (Al: "in this case the mass bias is
+        # referred to as the PSA and those are interchangeable").
+        metric_fields = {
+            "rg": "rg",
+            "diff": "differential",
+            "differential": "differential",
+            "psa": "mass_bias",
+            "mb": "mass_bias",
+            "massbias": "mass_bias",
+        }
+        by_weight = {
+            w: {"weight_lbs": w, "rg": None, "differential": None, "mass_bias": None}
+            for w in header_weight_cols.values()
+        }
+        for row in table:
+            label = next(((c or "").strip() for c in row if (c or "").strip()), "")
+            field = metric_fields.get(re.sub(r"[^a-z]", "", label.lower()))
+            if not field:
+                continue  # e.g. "NOTES" or the header row itself -- not a metric row, skip don't guess
+            for idx, w in header_weight_cols.items():
+                if idx >= len(row):
+                    continue
+                val = (row[idx] or "").strip()
+                if val:
+                    by_weight[w][field] = _to_float(val)
+        return list(by_weight.values())
 
     # Long mode: one row per weight, each row's weight cell a single token.
     skus = []
