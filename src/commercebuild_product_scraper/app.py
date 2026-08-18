@@ -574,6 +574,20 @@ def _skus_from_table(table: list) -> list:
                     if not weight_match:
                         continue
                     values = [c[i].strip() for c in other_cols]
+                    # Same defensive guard as long mode below -- see that
+                    # branch's comment for the real Textract row-merge bug
+                    # this catches (a genuinely wrong table shape landing
+                    # weight tokens where decimal RG/Diff/PSA data was
+                    # expected).
+                    weight_shaped = [v for v in values if WEIGHT_TOKEN_RE.match(v)]
+                    if weight_shaped:
+                        logger.warning(
+                            "Tech Data PDF wide-format table: weight %s has a "
+                            "weight-shaped value (%s) where RG/Diff/PSA data was "
+                            "expected -- skipping, not guessing",
+                            weight_match.group(1), weight_shaped,
+                        )
+                        continue
                     skus.append({
                         "weight_lbs": int(weight_match.group(1)),
                         "rg": _to_float(values[0]) if len(values) > 0 else None,
@@ -625,6 +639,39 @@ def _skus_from_table(table: list) -> list:
             for i in range(len(row))
             if i != weight_col_idx and (row[i] or "").strip()
         ]
+        # Real bug, later session, confirmed via Al's screenshot of
+        # Viking's actual stored SKU: weight_lbs=16 (correct) but
+        # rg=15, differential=14 -- literally the NEXT TWO WEIGHTS in
+        # the sequence, not real RG/Diff decimals (which are always in
+        # the ~2.4-2.7 / ~0.02-0.06 ranges for these balls). Root cause:
+        # Amazon Textract's own table-structure detection collapsed this
+        # image-based PDF's real 5-row table into what its Blocks
+        # response represented as a single overly-wide row (one row
+        # total reached this loop, not five) -- so weight_col_idx's OWN
+        # row ended up holding the OTHER weights' own "15 lbs."/"14
+        # lbs." tokens in the very columns this code assumed held real
+        # RG/Diff data, and _to_float's intentionally-permissive regex
+        # (it extracts the first number found anywhere in a string, see
+        # that function's own docstring) happily parsed "15 lbs." as
+        # 15.0 rather than failing loudly. Rather than trying to
+        # guess the real intended column mapping from a table shape
+        # this function was never built to handle, this checks whether
+        # any value about to be written as RG/Diff/PSA itself LOOKS
+        # like a weight token first -- a real decimal RG/Diff/PSA value
+        # never matches WEIGHT_TOKEN_RE, so this only ever fires on a
+        # genuinely mis-shaped row, same "flag, don't guess" spirit as
+        # every other defensive check in this function.
+        weight_shaped = [v for v in other_values if WEIGHT_TOKEN_RE.match(v)]
+        if weight_shaped:
+            logger.warning(
+                "Tech Data PDF long-format table: row for %s lb has a "
+                "weight-shaped value (%s) where RG/Diff/PSA data was "
+                "expected -- table structure looks wrong (row/column "
+                "merge, likely from OCR), skipping this row rather than "
+                "writing corrupted data",
+                weight_match.group(1), weight_shaped,
+            )
+            continue
         skus.append({
             "weight_lbs": int(weight_match.group(1)),
             "rg": _to_float(other_values[0]) if len(other_values) > 0 else None,

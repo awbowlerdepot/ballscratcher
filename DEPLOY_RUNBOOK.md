@@ -1803,21 +1803,64 @@ is empty."** Two genuinely separate things came out of this report:
    (74/74 in this module, every other `test_*.py` in the repo also still
    green).
 
-2. **Still open, unconfirmed root cause**: weight values landing in the
-   RG/Diff slots. No DB or AWS access available to inspect the real
-   stored rows or Textract's actual `AnalyzeDocument` response for
-   Viking directly, and the real Tech Data PDF's raw bytes couldn't be
-   pulled into this session either (network-allowlist and an
-   intentional anti-exfiltration safeguard on raw/base64 binary both
-   blocked it, same as an earlier session's PDF-bytes investigation) --
-   so this hasn't been root-caused yet, only ruled OUT as a pdfplumber-
-   path issue (confirmed Textract-path via the image-based-PDF check
-   above). Waiting on Al to paste/screenshot the actual per-weight
-   values the admin UI is showing for a real diagnosis rather than a
-   guess-patch. Real ground-truth values ARE available though, pulled
-   live from stormbowling.com's own rendered product page (public
-   content, same category as any other rendered-HTML field this project
-   already scrapes) for whenever this gets root-caused:
+2. **Fixed**: weight values landing in the RG/Diff slots. Al pasted the
+   actual admin UI values for Viking's real stored row: `weight_lbs=16`
+   (correct), `rg=15`, `differential=14`, `mass_bias=` (empty), `source=
+   pdf` -- ONE row total, not five. `rg`/`differential` aren't real RG/
+   Diff decimals (always ~2.4-2.7 / ~0.02-0.06 for these balls) -- they're
+   literally the next two weights in descending order. No DB or AWS
+   access available from this session to inspect Textract's actual
+   `AnalyzeDocument` response directly or pull the real Tech Data PDF's
+   raw bytes (network-allowlist and an intentional anti-exfiltration
+   safeguard on raw/base64 binary both blocked it, same as an earlier
+   session's PDF-bytes investigation), so the root cause here is a
+   reconstructed hypothesis fit to the real evidence, not a captured
+   real Textract response: Textract's own table-structure detection
+   almost certainly collapsed Viking's real 5-row table into a single
+   overly-wide row for this specific scanned page, so `weight_col_idx`'s
+   own row ended up holding the OTHER weights' own `"15 lbs."`/`"14
+   lbs."` tokens in the columns `_skus_from_table`'s long-mode code
+   assumed held real RG/Diff data -- and `_to_float`'s intentionally
+   permissive regex (extracts the first number found anywhere in a
+   string, per that function's own docstring) happily parsed `"15
+   lbs."` as `15.0` instead of failing loudly. Only 1 total row also
+   matches this exactly: the "for row in table" loop only ran once,
+   because Textract's reconstructed grid genuinely only had one row for
+   this page, not five.
+
+   Rather than trying to guess the real intended column mapping for a
+   table shape this function was never built to handle, both `_skus_
+   from_table` branches (long mode -- the confirmed real case here -- and
+   wide mode, for defense-in-depth/consistency) now check whether any
+   value about to be written as RG/Diff/PSA itself LOOKS like a weight
+   token (matches `WEIGHT_TOKEN_RE`) before writing it -- a real decimal
+   RG/Diff/PSA value never matches that pattern (no `"lb"`/`"lbs"` text),
+   so this only ever fires on a genuinely mis-shaped row. When it fires,
+   that row is skipped with a warning logged rather than writing
+   corrupted data -- same "flag, don't guess" spirit as every other
+   defensive check already in this function. For Viking specifically,
+   this converts "1 row of wrong numbers, silently accepted" into "0
+   rows from Textract, safely falls back to `_html_fallback_skus`'s
+   existing single real-HTML-sourced SKU" -- worse in raw SKU count, but
+   correct in the sense that nothing wrong gets stored, and it'll surface
+   clearly via the `html_fallback_skus` filter/panel for follow-up
+   later, same as any other still-image-based PDF this doesn't fully
+   solve.
+
+   Tests: 4 new in `tests/test_commercebuild_product_scraper.py` --
+   reproducing the exact real Viking-shaped merged row and confirming it
+   now returns `[]` instead of a corrupted SKU, confirming the guard only
+   fires on genuine weight TOKENS (not just any value sharing digits with
+   a weight, e.g. a real RG of 2.16 or PSA of 0.015 must still parse
+   normally), and the same wide-mode coverage. Full suite re-run clean
+   (77/77 in this module, every other `test_*.py` in the repo also still
+   green).
+
+   Real ground-truth values for Viking, pulled live from
+   stormbowling.com's own rendered product page (public content, same
+   category as any other rendered-HTML field this project already
+   scrapes) -- useful reference if this specific product ever needs a
+   manual correction or a future OCR-quality improvement is attempted:
    16 lb: RG=2.50, Diff=0.050, PSA=0.014; 15 lb: RG=2.51, Diff=0.052,
    PSA=0.016; 14 lb: RG=2.52, Diff=0.051, PSA=0.014; 13 lb: RG=2.64,
    Diff=0.034, PSA=0.011; 12 lb: RG=2.58, Diff=0.031, PSA=0.009.

@@ -704,6 +704,71 @@ def test_skus_from_table_phaze_ii_design_intent_row_ignored():
     assert len(skus) == 5
 
 
+# --- _skus_from_table: real Amazon Textract row-merge corruption bug,
+# later session, Al: "it looks like it got data from the pdf but it is
+# not correct. weights seem to be across the 16 lb instead of RG and
+# Diff values" -- confirmed via Al's screenshot of Viking's actual
+# stored SKU row: weight_lbs=16 (correct), rg=15, differential=14. Those
+# aren't real RG/Diff decimals (always ~2.4-2.7 / ~0.02-0.06 for these
+# balls) -- they're literally the next two weights in descending order.
+# Reconstructed hypothesis, not a captured real Textract Blocks response
+# (no AWS access from this session to call AnalyzeDocument directly or
+# pull the real PDF's raw bytes): Textract's own table-structure
+# detection collapsed this image-based PDF's real 5-row table into a
+# single overly-wide row, so weight_col_idx's row held the OTHER
+# weights' own "15 lbs."/"14 lbs." tokens in the very columns the old
+# code assumed held real RG/Diff data -- and _to_float's intentionally
+# permissive regex (extracts the first number found anywhere in a
+# string) happily parsed "15 lbs." as 15.0 instead of failing loudly.
+REAL_VIKING_TEXTRACT_MERGED_ROW = [
+    ["16 lbs.", "15 lbs.", "14 lbs.", "13 lbs.", "12 lbs.", "2.50", "0.050", "0.014"],
+]
+
+
+def test_skus_from_table_weight_shaped_other_value_skipped_not_guessed():
+    skus = app._skus_from_table(REAL_VIKING_TEXTRACT_MERGED_ROW)
+    assert skus == []
+
+
+def test_skus_from_table_weight_shaped_guard_only_fires_on_real_weight_tokens():
+    """The guard checks for a genuine weight TOKEN (digit(s) + "lb"/"lbs"
+    suffix, via the same WEIGHT_TOKEN_RE the weight column itself is
+    found with) -- a normal row whose real RG/Diff/PSA values just
+    happen to share digits with a weight (e.g. an RG of 2.16, or a PSA
+    of 0.015) must never false-positive and get skipped, since neither
+    "2.16" nor "0.015" matches WEIGHT_TOKEN_RE (no "lb"/"lbs" text)."""
+    table = [
+        ["WEIGHT", "RG", "DIFF", "PSA"],
+        ["16 lbs.", "2.16", "0.015", "0.012"],
+    ]
+    skus = app._skus_from_table(table)
+    assert len(skus) == 1
+    assert skus[0] == {"weight_lbs": 16, "rg": 2.16, "differential": 0.015, "mass_bias": 0.012}
+
+
+def test_skus_from_table_weight_shaped_guard_wide_mode():
+    """Same guard, wide-mode branch (one row, newline-joined values) --
+    included for consistency/defense-in-depth even though the confirmed
+    real incident was long-mode; a genuinely correct wide-format row's
+    real decimal values must still parse normally."""
+    good_table = [[
+        "16 lb\n15 lb\n14 lb\n13 lb\n12 lb",
+        "2.48\n2.48\n2.52\n2.56\n2.58",
+        "0.052\n0.053\n0.051\n0.034\n0.031",
+        "0.017\n0.018\n0.016\n0.011\n0.009",
+    ]]
+    skus = app._skus_from_table(good_table)
+    assert len(skus) == 5  # unaffected -- no weight-shaped value in any RG/Diff/PSA column
+
+    bad_table = [[
+        "16 lb\n15 lb",
+        "15 lb\n14 lb",  # corrupted RG column -- weight-shaped, like the real Viking bug
+        "2.48\n2.49",
+        "0.052\n0.053",
+    ]]
+    assert app._skus_from_table(bad_table) == []
+
+
 # --- _skus_from_text (real Tech Data PDF that isn't table-shaped at all) ---
 
 # Real extract_text() output confirmed via pdfplumber against Storm
