@@ -606,8 +606,12 @@ def test_skus_from_table_real_alpha_crux_shape():
     skus = app._skus_from_table(REAL_ALPHA_CRUX_TABLE)
     assert len(skus) == 5
     by_weight = {s["weight_lbs"]: s for s in skus}
-    assert by_weight[16] == {"weight_lbs": 16, "rg": 2.48, "differential": 0.052, "mass_bias": None, "psa": 0.017}
-    assert by_weight[12] == {"weight_lbs": 12, "rg": 2.58, "differential": 0.031, "mass_bias": None, "psa": 0.009}
+    # Real bug fix, later session, Al: "in this case the mass bias is
+    # referred to as the PSA and those are interchangeable" -- PSA's
+    # parsed value now lands directly in mass_bias (product_skus has no
+    # separate psa column), not silently dropped.
+    assert by_weight[16] == {"weight_lbs": 16, "rg": 2.48, "differential": 0.052, "mass_bias": 0.017}
+    assert by_weight[12] == {"weight_lbs": 12, "rg": 2.58, "differential": 0.031, "mass_bias": 0.009}
     assert by_weight[14]["rg"] == 2.52
 
 
@@ -630,7 +634,7 @@ def test_skus_from_table_no_psa_column():
     table = [["16 lb\n15 lb", "2.48\n2.49", "0.052\n0.053"]]
     skus = app._skus_from_table(table)
     assert len(skus) == 2
-    assert skus[0]["psa"] is None
+    assert skus[0]["mass_bias"] is None
 
 
 # Exact real shape confirmed via pdfplumber.extract_tables() against the
@@ -655,8 +659,8 @@ def test_skus_from_table_real_gremlin_long_format_shape():
     by_weight = {s["weight_lbs"]: s for s in skus}
     # No-leading-zero DIFF/PSA values (".056", ".011") must parse as
     # 0.056/0.011, not 56.0/11.0 -- see _to_float's docstring.
-    assert by_weight[16] == {"weight_lbs": 16, "rg": 2.50, "differential": 0.056, "mass_bias": None, "psa": 0.011}
-    assert by_weight[12] == {"weight_lbs": 12, "rg": 2.59, "differential": 0.029, "mass_bias": None, "psa": 0.008}
+    assert by_weight[16] == {"weight_lbs": 16, "rg": 2.50, "differential": 0.056, "mass_bias": 0.011}
+    assert by_weight[12] == {"weight_lbs": 12, "rg": 2.59, "differential": 0.029, "mass_bias": 0.008}
 
 
 def test_skus_from_table_gremlin_header_row_not_mistaken_for_data():
@@ -685,12 +689,12 @@ def test_skus_from_table_real_phaze_ii_shifted_columns_no_psa():
     skus = app._skus_from_table(REAL_PHAZE_II_TABLE)
     assert len(skus) == 5
     by_weight = {s["weight_lbs"]: s for s in skus}
-    # Old fixed-index code would have read this DIFF value into psa
-    # instead -- confirms the real bug is actually fixed, not just that
-    # SOME data comes back.
-    assert by_weight[16] == {"weight_lbs": 16, "rg": 2.48, "differential": 0.051, "mass_bias": None, "psa": None}
+    # Old fixed-index code would have read this DIFF value into the
+    # PSA/mass_bias slot instead -- confirms the real bug is actually
+    # fixed, not just that SOME data comes back.
+    assert by_weight[16] == {"weight_lbs": 16, "rg": 2.48, "differential": 0.051, "mass_bias": None}
     assert by_weight[12]["differential"] == 0.035
-    assert all(s["psa"] is None for s in skus)  # Phaze II genuinely has no PSA column
+    assert all(s["mass_bias"] is None for s in skus)  # Phaze II genuinely has no PSA column
 
 
 def test_skus_from_table_phaze_ii_design_intent_row_ignored():
@@ -735,8 +739,8 @@ def test_skus_from_text_real_lightning_storm_clear():
     skus = app._skus_from_text(REAL_LIGHTNING_TEXT)
     assert len(skus) == 5
     by_weight = {s["weight_lbs"]: s for s in skus}
-    assert by_weight[16] == {"weight_lbs": 16, "rg": 2.68, "differential": 0.006, "mass_bias": None, "psa": None}
-    assert by_weight[12] == {"weight_lbs": 12, "rg": 2.72, "differential": 0.005, "mass_bias": None, "psa": None}
+    assert by_weight[16] == {"weight_lbs": 16, "rg": 2.68, "differential": 0.006, "mass_bias": None}
+    assert by_weight[12] == {"weight_lbs": 12, "rg": 2.72, "differential": 0.005, "mass_bias": None}
 
 
 def test_skus_from_text_ignores_phone_email_website_lines():
@@ -753,7 +757,7 @@ def test_skus_from_text_handles_optional_psa_column():
     text = "WEIGHT RG DIFF PSA\n16 2.50 0.056 0.011\n15 2.50 0.058 0.010"
     skus = app._skus_from_text(text)
     assert len(skus) == 2
-    assert skus[0] == {"weight_lbs": 16, "rg": 2.50, "differential": 0.056, "mass_bias": None, "psa": 0.011}
+    assert skus[0] == {"weight_lbs": 16, "rg": 2.50, "differential": 0.056, "mass_bias": 0.011}
 
 
 def test_skus_from_text_empty_string():
@@ -834,8 +838,8 @@ def test_textract_table_from_blocks_feeds_skus_from_table_correctly():
     skus = app._skus_from_table(grid)
     assert len(skus) == 5
     by_weight = {s["weight_lbs"]: s for s in skus}
-    assert by_weight[16] == {"weight_lbs": 16, "rg": 2.53, "differential": 0.051, "mass_bias": None, "psa": 0.018}
-    assert by_weight[12] == {"weight_lbs": 12, "rg": 2.62, "differential": 0.024, "mass_bias": None, "psa": 0.010}
+    assert by_weight[16] == {"weight_lbs": 16, "rg": 2.53, "differential": 0.051, "mass_bias": 0.018}
+    assert by_weight[12] == {"weight_lbs": 12, "rg": 2.62, "differential": 0.024, "mass_bias": 0.010}
 
 
 def test_textract_table_from_blocks_joins_multi_word_cells_with_space():

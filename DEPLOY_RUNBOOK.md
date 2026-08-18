@@ -1768,6 +1768,60 @@ stopgap row should come back with the full `source='pdf'` table on their
 next scrape. Spot-check Viking Conquest specifically to confirm it now
 shows 5 SKUs, not 1.
 
+**Follow-up, same session -- real bug found live testing 6f.3/6f.4, Al:
+"it looks like it got data from the pdf but it is not correct. weights
+seem to be across the 16 lb instead of RG and Diff values and mass bias
+is empty."** Two genuinely separate things came out of this report:
+
+1. **Fixed**: mass_bias always empty. Confirmed via live fetch of
+   stormbowling.com/900-global-viking-bowling-ball: Viking's Tech Data
+   PDF is genuinely image-based (fetched directly, "no machine-readable
+   text"), confirming this rescrape went through 6f.3's new Textract
+   path, not the old pdfplumber path. Root cause turned out to be older
+   than the Textract work though, and real independent of it: Al: "in
+   this case the mass bias is referred to as the PSA and those are
+   interchangeable." `_skus_from_table`/`_skus_from_text` were already
+   correctly parsing a PSA value out of every table shape, but writing
+   it to a dict key (`"psa"`) `upsert_product`'s SQL insert never reads
+   -- silently dropped on every commercebuild product, PDF- or
+   Textract-sourced alike, `mass_bias` hardcoded `None` regardless of
+   what the source page actually showed. `product_skus` has no separate
+   psa column at all (migration 001, `mass_bias numeric(5,3) -- null
+   unless asymmetric core`) -- Brunswick's `product_scraper.py` already
+   writes real mass_bias data the same way, sourced from ITS platform's
+   own ASY/MB-labeled fields; this is that same column under
+   commercebuild's own PSA label. Fixed by writing the parsed PSA value
+   directly into each sku dict's `"mass_bias"` key (both `_skus_from_
+   table` branches and `_skus_from_text`) instead of a separate,
+   never-read `"psa"` key -- `upsert_product` needed no changes at all,
+   it was already reading `sku["mass_bias"]` correctly. This also means
+   the fix applies automatically to BOTH the pdfplumber and Textract
+   paths, since Textract's output already fed through the same `_skus_
+   from_table`. Tests: 6 existing `tests/test_commercebuild_product_
+   scraper.py` tests updated (dropped the dead `"psa"` key from expected
+   dicts, folded its value into `"mass_bias"`). Full suite re-run clean
+   (74/74 in this module, every other `test_*.py` in the repo also still
+   green).
+
+2. **Still open, unconfirmed root cause**: weight values landing in the
+   RG/Diff slots. No DB or AWS access available to inspect the real
+   stored rows or Textract's actual `AnalyzeDocument` response for
+   Viking directly, and the real Tech Data PDF's raw bytes couldn't be
+   pulled into this session either (network-allowlist and an
+   intentional anti-exfiltration safeguard on raw/base64 binary both
+   blocked it, same as an earlier session's PDF-bytes investigation) --
+   so this hasn't been root-caused yet, only ruled OUT as a pdfplumber-
+   path issue (confirmed Textract-path via the image-based-PDF check
+   above). Waiting on Al to paste/screenshot the actual per-weight
+   values the admin UI is showing for a real diagnosis rather than a
+   guess-patch. Real ground-truth values ARE available though, pulled
+   live from stormbowling.com's own rendered product page (public
+   content, same category as any other rendered-HTML field this project
+   already scrapes) for whenever this gets root-caused:
+   16 lb: RG=2.50, Diff=0.050, PSA=0.014; 15 lb: RG=2.51, Diff=0.052,
+   PSA=0.016; 14 lb: RG=2.52, Diff=0.051, PSA=0.014; 13 lb: RG=2.64,
+   Diff=0.034, PSA=0.011; 12 lb: RG=2.58, Diff=0.031, PSA=0.009.
+
 ### 6f.5. Hammer (Shopify) -- if `HammerBrandId` was set
 
 No schedule wired up for `ShopifyUrlDiscoveryFunction` yet, same as every

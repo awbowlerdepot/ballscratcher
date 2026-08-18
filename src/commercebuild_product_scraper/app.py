@@ -534,7 +534,18 @@ def _skus_from_table(table: list) -> list:
     A row/table where no column's tokens all look like weight values
     (e.g. Gremlin's own header row, or a stray "DESIGN INTENT:" row
     pdfplumber sometimes captures as part of the same table -- both
-    confirmed real) is skipped rather than guessed at."""
+    confirmed real) is skipped rather than guessed at.
+
+    Real bug, later session, Al: "in this case the mass bias is referred
+    to as the PSA and those are interchangeable." "PSA" above is this
+    catalog's own column label for the same physical value
+    product_skus.mass_bias already exists to hold ("null unless
+    asymmetric core", migration 001 -- there's no separate psa column at
+    all). This function's returned dicts key that value as "mass_bias"
+    directly (not a separate "psa" key), same key Brunswick's
+    product_scraper.py already writes real mass_bias data into, sourced
+    from ITS platform's own ASY/MB-labeled fields -- this is that same
+    real column under this catalog's own label for it."""
     if not table:
         return []
 
@@ -567,8 +578,23 @@ def _skus_from_table(table: list) -> list:
                         "weight_lbs": int(weight_match.group(1)),
                         "rg": _to_float(values[0]) if len(values) > 0 else None,
                         "differential": _to_float(values[1]) if len(values) > 1 else None,
-                        "mass_bias": None,
-                        "psa": _to_float(values[2]) if len(values) > 2 else None,
+                        # Real bug, later session, Al: "in this case the
+                        # mass bias is referred to as the PSA and those are
+                        # interchangeable" -- product_skus has no separate
+                        # psa column at all (migration 001), only
+                        # mass_bias, "null unless asymmetric core". This
+                        # value was being parsed correctly but written to a
+                        # dict key ("psa") upsert_product never reads,
+                        # silently dropping it and leaving mass_bias
+                        # hardcoded None for every commercebuild product --
+                        # confirmed real for Viking specifically, whose
+                        # source page genuinely does show a PSA value per
+                        # weight. Brunswick's product_scraper.py already
+                        # writes real mass_bias data the same way, sourced
+                        # from fields it finds labeled ASY/MB -- this is
+                        # the commercebuild-platform equivalent under this
+                        # catalog's own PSA label.
+                        "mass_bias": _to_float(values[2]) if len(values) > 2 else None,
                     })
                 return skus
 
@@ -603,8 +629,9 @@ def _skus_from_table(table: list) -> list:
             "weight_lbs": int(weight_match.group(1)),
             "rg": _to_float(other_values[0]) if len(other_values) > 0 else None,
             "differential": _to_float(other_values[1]) if len(other_values) > 1 else None,
-            "mass_bias": None,
-            "psa": _to_float(other_values[2]) if len(other_values) > 2 else None,
+            # Same PSA-is-mass_bias fix as wide mode above -- see that
+            # branch's comment.
+            "mass_bias": _to_float(other_values[2]) if len(other_values) > 2 else None,
         })
     return skus
 
@@ -639,8 +666,9 @@ def _skus_from_text(text: str) -> list:
             "weight_lbs": int(weight),
             "rg": _to_float(rg),
             "differential": _to_float(diff),
-            "mass_bias": None,
-            "psa": _to_float(psa) if psa else None,
+            # Same PSA-is-mass_bias fix as _skus_from_table above -- see
+            # that function's docstring/comments.
+            "mass_bias": _to_float(psa) if psa else None,
         })
     return skus
 
