@@ -2453,6 +2453,16 @@ def test_list_products_missing_skus_combines_with_source_platform():
 # rescrape. This filter is how to find that specific in-between state
 # again: at least one product_skus row exists, AND none of them are
 # anything other than source='html'.
+#
+# REAL BUG, caught live via the batch panel itself: without a
+# source_platform scope, this filter matched roughly the entire non-
+# commercebuild catalog -- Al pasted a batch log of 1034 "matches" that
+# turned out to be real Hammer/Track/Ebonite ball names (Black Widow,
+# Raw Hammer, Theorem Delta, Paradox, Scandal, all confirmed against
+# this repo's own tests/fixtures/hammer_*.json/track_*.json), because
+# every non-commercebuild scraper writes source='html' as its SKUs'
+# ONLY, correct, healthy source -- "every row is html" only means
+# "still needs OCR" on commercebuild specifically.
 
 def test_list_products_html_fallback_skus_adds_exists_and_not_exists_filter_sql():
     conn = _QueryCapturingConnection()
@@ -2461,6 +2471,19 @@ def test_list_products_html_fallback_skus_adds_exists_and_not_exists_filter_sql(
     query = conn.cursor().queries[0]
     assert "exists (select 1 from product_skus ps3 where ps3.product_id = p.id)" in query
     assert "not exists (select 1 from product_skus ps4 where ps4.product_id = p.id and ps4.source <> 'html')" in query
+
+
+def test_list_products_html_fallback_skus_scoped_to_commercebuild():
+    """Real regression test for the Hammer/Track/Ebonite false-positive
+    bug above -- this filter must ALWAYS restrict to commercebuild, even
+    when the caller doesn't pass source_platform explicitly, since "all
+    SKU rows are source='html'" is the normal, correct, healthy state on
+    every other platform."""
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, html_fallback_skus=True, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "p.source_platform = 'commercebuild'" in query
 
 
 def test_list_products_omits_html_fallback_skus_filter_by_default():
@@ -2497,11 +2520,16 @@ def test_list_products_html_fallback_skus_distinct_from_missing_skus():
 
 
 def test_list_products_html_fallback_skus_combines_with_source_platform():
+    """Passing source_platform explicitly alongside html_fallback_skus is
+    redundant (the filter already hardcodes the commercebuild scope) but
+    harmless -- both the hardcoded literal and the parameterized clause
+    end up in the query, ANDed together, not conflicting."""
     conn = _QueryCapturingConnection()
     service.list_products(conn, html_fallback_skus=True, source_platform="commercebuild", limit=50, offset=0)
 
     query = conn.cursor().queries[0]
     assert "ps4.source <> 'html'" in query
+    assert "p.source_platform = 'commercebuild'" in query
     assert "p.source_platform = %s" in query
 
 

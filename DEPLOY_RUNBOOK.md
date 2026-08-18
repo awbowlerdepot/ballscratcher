@@ -1887,6 +1887,60 @@ is empty."** Two genuinely separate things came out of this report:
    PSA=0.016; 14 lb: RG=2.52, Diff=0.051, PSA=0.014; 13 lb: RG=2.64,
    Diff=0.034, PSA=0.011; 12 lb: RG=2.58, Diff=0.031, PSA=0.009.
 
+### 6f.4.1. Fixed follow-up to 6f.4: `html_fallback_skus` matched almost the entire non-commercebuild catalog
+
+**Real bug, caught live running 6f.4's own "Backfill 900 Global full
+weight table (Textract)" panel, Al: "i don't think we fixed the viking
+issue, also the batch just found: total: 1034 done: 342 errors: 14."**
+Al then confirmed via the pasted batch log that this was that same
+panel. The log's ~340 "queued for rescrape" lines were overwhelmingly
+real Hammer/Track/Ebonite ball names -- Black Widow, Raw Hammer, Theorem
+Delta, Paradox, Scandal, 3-D Offset, Absolut Curve, Fallout, and more --
+cross-checked directly against this repo's own `tests/fixtures/hammer_
+*.json` / `track_*.json` / `ebonite_*.json` fixtures, confirming these
+are real products, not noise.
+
+Root cause: `html_fallback_skus`'s WHERE clause (added in 6f.4) checked
+only "product has >=1 SKU row AND none of them have source <> 'html'"
+-- i.e. "every SKU row is source='html'." That's the right signal ONLY
+on commercebuild, where `source='pdf'` is the normal path and a single
+`source='html'` row is a STOPGAP written when the real PDF table
+couldn't be recovered (6f.3). On every OTHER platform -- `product_
+scraper.py`/Brunswick, `woocommerce_product_scraper.py`/SWAG, `netsuite_
+product_scraper.py`/MOTIV, `shopify_product_scraper.py`/Hammer+Track+
+Ebonite -- `source='html'` is the NORMAL, CORRECT, ONLY source: those
+scrapers pull real per-weight RG/Diff data straight out of rendered
+HTML, no PDF involved at all. "Every row is source='html'" is the
+expected healthy state on those platforms, not a sign anything's
+missing. Without a platform scope, 6f.4's filter matched roughly the
+entire non-commercebuild catalog.
+
+Fixed by adding `and p.source_platform = 'commercebuild'` to the
+filter's WHERE clause in `src/admin_api/service.py` (`list_products`),
+so `html_fallback_skus` now only ever matches commercebuild products,
+regardless of whether the caller also passes `source_platform`
+explicitly. The 14 "ERROR ...: 503:" lines in that same batch log were
+very likely a symptom of this bug too (1034 near-simultaneous rescrape
+requests queued at once) rather than a separate issue -- worth
+confirming after redeploy by re-running the panel and checking whether
+the count drops to a small, correctly-scoped number with no 503s.
+
+Tests: `tests/test_admin_api_service.py` -- new `test_list_products_
+html_fallback_skus_scoped_to_commercebuild` (asserts the hardcoded
+`p.source_platform = 'commercebuild'` literal is present even when the
+caller passes no `source_platform` arg at all), and `test_list_
+products_html_fallback_skus_combines_with_source_platform` updated to
+also assert the hardcoded scope alongside the existing parameterized
+`source_platform` clause (both apply, ANDed together, not conflicting).
+211/211 in this module; full repo `test_*.py` sweep also clean.
+
+Redeploy: same as 6f.4 -- `sam build AdminApiFunction && sam deploy`
+(or a full unscoped build, per the 6a.5 caveat). Al still needs to
+confirm current Viking behavior post-redeploy separately -- the "i
+don't think we fixed the viking issue" half of his report was about
+6f.3's Textract path (see the Viking follow-up above), not this filter,
+and hasn't been re-checked yet since he moved straight to the batch log.
+
 ### 6f.5. Hammer (Shopify) -- if `HammerBrandId` was set
 
 No schedule wired up for `ShopifyUrlDiscoveryFunction` yet, same as every

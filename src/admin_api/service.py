@@ -492,6 +492,25 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     source='html' row from some earlier partial state, since ANY
     non-html row disqualifies it.
 
+    REAL BUG, caught live via the batch panel itself, Al pasted a batch
+    log of 1034 matched products that turned out to be almost entirely
+    real Hammer/Track/Ebonite ball names (Black Widow, Raw Hammer,
+    Theorem Delta, Paradox, Scandal, etc -- confirmed against this
+    repo's own tests/fixtures/hammer_*.json/track_*.json). Root cause:
+    every OTHER platform's scraper (product_scraper/Brunswick,
+    woocommerce_product_scraper/SWAG, netsuite_product_scraper/MOTIV,
+    shopify_product_scraper/Hammer+Track+Ebonite) writes source='html'
+    as its SKUs' ONLY, NORMAL, CORRECT source -- those platforms get
+    their real per-weight RG/Diff data straight from HTML, no PDF
+    involved at all, so "every row is source='html'" is the expected
+    healthy state there, not a sign of anything broken. Only
+    commercebuild's own scraper ever writes source='pdf' as its normal
+    path AND falls back to a single source='html' stopgap row -- so only
+    on THAT platform does "every row is html" actually mean "still
+    needs the real table." Scoped to `p.source_platform = 'commercebuild'`
+    below to fix this -- without that scope this filter fired a pointless
+    rescrape against roughly the entire non-commercebuild catalog.
+
     missing_video_candidates=True: products with ZERO product_videos rows
     of ANY status -- not just "no approved summary" the way has_approved_
     video_summaries/needs_video_summary_refresh check. Al's direct ask
@@ -588,6 +607,7 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
         query += " and not exists (select 1 from product_skus ps where ps.product_id = p.id)"
     if html_fallback_skus:
         query += """
+            and p.source_platform = 'commercebuild'
             and exists (select 1 from product_skus ps3 where ps3.product_id = p.id)
             and not exists (select 1 from product_skus ps4 where ps4.product_id = p.id and ps4.source <> 'html')
         """
