@@ -6258,6 +6258,60 @@ No migration, no `template.yaml` change (proxy+ catch-all already covers
 AdminApiFunction && sam deploy` (or full unscoped build, per 6a.5), plus
 re-upload `index.html` wherever it's hosted.
 
+### 6o.12. Dashboard: "Total Catalog ADU Over Time" chart (7D/30D/90D/1Y/All)
+
+Real follow-up ask, same session, Al: "can we add some data over time
+charts to the dashboard, maybe total catalog adu over time similar to
+what we have per product 7d, 30d, 90d, 1y and all picker."
+
+New `GET /admin/catalog-adu-history` endpoint
+(`service.get_catalog_adu_history`), fetched alongside `GET
+/admin/dashboard` (via `Promise.all`, same "everything this tab needs,
+one round trip pair, no cascading fetches" reasoning
+`loadProductDetailInto` already uses) and stashed under a fixed
+`'dashboard'` pseudo-product-id in `productChartData` so the Dashboard's
+new chart reuses the EXACT SAME range-picker machinery the price/SKU-
+stock charts already established (`chartSelectedRange`/
+`buildChartRangeToolbar`/`setChartRange`/`filterHistoryByRange`/
+`CHART_RANGE_PRESETS`) rather than a parallel one-off mechanism. Full
+history fetched once, filtered to 7D/30D/90D/1Y/All entirely
+client-side -- switching ranges is instant, no re-fetch.
+
+**Important, disclosed rather than glossed over**: this is a REAL but
+DIFFERENTLY-DEFINED number from the Dashboard's own `kpis.
+total_catalog_adu` (6o.11 above). That KPI is `_TOTAL_ADU_SQL` (a
+PER-SKU trailing-30-day window, only counting a SKU once it has >=2
+readings in that specific window) summed across every product. Re-
+running that exact per-SKU-gated formula at every historical calendar
+day would need one correlated subquery PER DAY -- expensive, and
+arguably not even the right shape for a smooth trend line (a SKU
+dropping in/out of "has >=2 readings this window" would make the line
+jump for reasons unrelated to real demand). Instead: total units sold
+(drops only, restocks excluded, same interpretation as everywhere else
+in this project) across every SKU in the whole catalog, bucketed by
+calendar day (gap days filled in as real zeros via `generate_series`,
+not silently dropped), then a rolling `ADU_LOOKBACK_DAYS`-day (30)
+trailing sum divided by a flat 30 -- a real, honest, catalog-wide
+rolling average, just not byte-identical to the KPI card's own
+per-SKU-gated snapshot. In practice the two track each other closely and
+the chart's rightmost point should usually be close to the KPI card's
+current value, but they are not guaranteed to match exactly -- worth
+knowing if this is ever compared side-by-side and the numbers don't
+line up perfectly.
+
+Tests: `test_admin_api_service.py` -- SQL-text assertions (bounds/
+generate_series/lag/drops-only/rolling-window-size-driven-off-
+`ADU_LOOKBACK_DAYS` clauses all present) via `_QueryCapturingConnection`
+(this query only ever calls `fetchall()`, whose default `[]` return is
+already iterable, unlike `get_dashboard_summary`'s KPI query which
+needed a custom cursor for its `fetchone()` call), plus a
+`_SequencedConnection`-based assembly test and an empty-history test.
+222/222 in this module; full repo `test_*.py` sweep clean.
+
+No migration, no `template.yaml` change (proxy+ catch-all already covers
+the new route). Redeploy: same as 6o.11 -- `sam build AdminApiFunction
+&& sam deploy`, plus re-upload `index.html`.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

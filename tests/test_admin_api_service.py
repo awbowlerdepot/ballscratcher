@@ -2220,6 +2220,63 @@ def test_get_dashboard_summary_assembles_all_four_results():
     ]
 
 
+# --- get_catalog_adu_history: real follow-up ask, same session, Al: "can
+# we add some data over time charts to the dashboard, maybe total catalog
+# adu over time similar to what we have per product 7d, 30d, 90d, 1y and
+# all picker." A DIFFERENT definition from kpis.total_catalog_adu above
+# (see the function's own docstring) -- a real, honest, catalog-wide
+# rolling-ADU_LOOKBACK_DAYS-day average, not that exact per-SKU-gated
+# formula replayed at every historical day.
+
+def test_get_catalog_adu_history_query_shape():
+    conn = _QueryCapturingConnection()
+    service.get_catalog_adu_history(conn)
+
+    query = conn.cursor().queries[0]
+    assert "with bounds as" in query
+    assert "generate_series(min_day, max_day, interval '1 day')" in query
+    assert "product_sku_stock_history" in query
+    assert "lag(psh.quantity) over (partition by psh.product_sku_id order by psh.checked_at)" in query
+    # Drops-only, same interpretation as _TOTAL_ADU_SQL/adu_by_brand.
+    assert "case when delta < 0 then -delta else 0 end" in query
+    # Rolling 30-day trailing window, driven off ADU_LOOKBACK_DAYS (not a
+    # second hardcoded literal) -- confirms the two stay in lockstep.
+    assert ("rows between %d preceding and current row" % (service.ADU_LOOKBACK_DAYS - 1)) in query
+    assert ("/ %s as total_adu" % float(service.ADU_LOOKBACK_DAYS)) in query
+
+
+def test_get_catalog_adu_history_only_runs_one_query():
+    conn = _QueryCapturingConnection()
+    service.get_catalog_adu_history(conn)
+    assert len(conn.cursor().queries) == 1
+
+
+def test_get_catalog_adu_history_assembles_day_and_total_adu_rows():
+    conn = _SequencedConnection([
+        {
+            "columns": ["day", "total_adu"],
+            "all": [
+                ("2026-07-01", "0.00"),
+                ("2026-07-02", "3.50"),
+                ("2026-07-03", "3.90"),
+            ],
+        },
+    ])
+
+    result = service.get_catalog_adu_history(conn)
+
+    assert result == [
+        {"day": "2026-07-01", "total_adu": "0.00"},
+        {"day": "2026-07-02", "total_adu": "3.50"},
+        {"day": "2026-07-03", "total_adu": "3.90"},
+    ]
+
+
+def test_get_catalog_adu_history_empty_when_no_stock_history():
+    conn = _SequencedConnection([{"columns": ["day", "total_adu"], "all": []}])
+    assert service.get_catalog_adu_history(conn) == []
+
+
 # --- list_products: missing_core filter + the cores join (migration 007).
 # The p./c. aliasing above exists specifically because of this join --
 # products and cores both have a plain "name" column, so left-joining

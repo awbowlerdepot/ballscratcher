@@ -168,6 +168,23 @@ def get_dashboard():
         conn.close()
 
 
+@app.get("/admin/catalog-adu-history")
+def get_catalog_adu_history():
+    # Backs the Dashboard tab's new "Total Catalog ADU over time" chart --
+    # Al: "can we add some data over time charts to the dashboard, maybe
+    # total catalog adu over time similar to what we have per product
+    # 7d, 30d, 90d, 1y and all picker." Full history, no query params --
+    # same "fetch once, filter client-side per range button" shape as
+    # /products/{id}/sku-stock-history (see service.get_catalog_adu_
+    # history's own docstring for the full definition and how it differs
+    # from the Dashboard's own total_catalog_adu KPI).
+    conn = service.get_db_connection()
+    try:
+        return {"items": service.get_catalog_adu_history(conn)}
+    finally:
+        conn.close()
+
+
 @app.get("/review-queue")
 def get_review_queue(
     status: str = Query("pending"),

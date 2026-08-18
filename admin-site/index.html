@@ -954,7 +954,25 @@ async function loadDashboard() {
   const el = document.getElementById('dashboard-content');
   el.innerHTML = '<p class="muted">Loading&hellip;</p>';
   try {
-    const data = await api('GET', '/admin/dashboard');
+    // Fetched alongside the main dashboard summary, same "everything this
+    // tab needs, one Promise.all, no cascading round trips" reasoning as
+    // loadProductDetailInto -- separate endpoint (not folded into GET
+    // /admin/dashboard) since a full daily-bucketed history is a
+    // structurally different, potentially much larger payload than the
+    // four small aggregate results that endpoint returns (see
+    // service.get_catalog_adu_history's own docstring for why this is a
+    // real but DIFFERENTLY-DEFINED number from kpis.total_catalog_adu).
+    const [data, aduHistoryData] = await Promise.all([
+      api('GET', '/admin/dashboard'),
+      api('GET', '/admin/catalog-adu-history'),
+    ]);
+    // Stashed under a fixed 'dashboard' pseudo-product-id -- reuses the
+    // exact same per-(chartType,productId) range-picker machinery
+    // (chartSelectedRange/buildChartRangeToolbar/setChartRange/
+    // productChartData) the price/SKU-stock charts already established,
+    // rather than a parallel one-off mechanism just for this chart.
+    productChartData.dashboard = productChartData.dashboard || {};
+    productChartData.dashboard.catalogAdu = aduHistoryData;
     renderDashboard(data);
   } catch (e) {
     el.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
@@ -1009,10 +1027,66 @@ function renderDashboard(data) {
         (aduTopRows || '<tr><td colspan="4" class="muted">no SKU stock history yet</td></tr>') +
         '</tbody></table></div>' +
     '</div>' +
-    '<h3>Average Daily Usage by Brand</h3>' +
+    '<h3>Total Catalog ADU Over Time</h3>' +
+    buildChartRangeToolbar('dashboard', 'catalogAdu') +
+    '<div class="chart-wrap"><canvas id="catalogAdu-chart-dashboard"></canvas></div>' +
+    '<p id="catalogAdu-chart-empty-dashboard" class="muted small" style="display:none;"></p>' +
+    '<h3 style="margin-top:22px;">Average Daily Usage by Brand</h3>' +
     '<div class="chart-wrap"><canvas id="dashboard-adu-by-brand-chart"></canvas></div>';
 
   renderAduByBrandChart(data.adu_by_brand || []);
+  renderCatalogAduChart(productChartData.dashboard.catalogAdu);
+}
+
+// Total Catalog ADU over time (Al: "can we add some data over time
+// charts to the dashboard, maybe total catalog adu over time similar to
+// what we have per product 7d, 30d, 90d, 1y and all picker") -- reuses
+// filterHistoryByRange/rangeBounds/baseChartOptions/showChartFallback,
+// same machinery renderPriceChart/renderSkuStockChart already use, just
+// a single catalog-wide series instead of one dataset per source/SKU.
+function renderCatalogAduChart(historyData) {
+  const canvasId = 'catalogAdu-chart-dashboard', emptyId = 'catalogAdu-chart-empty-dashboard';
+  destroyChart(canvasId);
+  if (typeof Chart === 'undefined') {
+    showChartFallback(canvasId, emptyId, 'Charting library did not load (needs network access to cdn.jsdelivr.net) -- reload once you have a connection.');
+    return;
+  }
+  const canvas = document.getElementById(canvasId);
+  if (!canvas) return;
+
+  const rangeKey = chartSelectedRange['catalogAdu-dashboard'] || DEFAULT_CHART_RANGE;
+  const rows = filterHistoryByRange((historyData && historyData.items) || [], 'day', rangeKey)
+    .slice()
+    .sort(function (a, b) { return new Date(a.day) - new Date(b.day); });
+
+  if (!rows.length) {
+    showChartFallback(canvasId, emptyId, 'No SKU stock history recorded yet in this range -- this fills in once BowlerDepot price checks start recording quantities.');
+    return;
+  }
+  canvas.style.display = '';
+  const emptyEl = document.getElementById(emptyId);
+  if (emptyEl) emptyEl.style.display = 'none';
+
+  const dataset = {
+    label: 'Total Catalog ADU (30-day trailing)',
+    data: rows.map(function (r) { return { x: new Date(r.day).getTime(), y: Number(r.total_adu) }; }),
+    borderColor: CHART_COLORS[0],
+    backgroundColor: CHART_COLORS[0],
+    pointRadius: 2,
+    pointHoverRadius: 6,
+    tension: 0.15,
+    fill: false,
+  };
+
+  const options = baseChartOptions(
+    function (v) { return Number(v).toFixed(1); },
+    function (item) { return item.dataset.label + ': ' + Number(item.parsed.y).toFixed(2); }
+  );
+  options.scales.y.min = 0;
+  const bounds = rangeBounds(rangeKey, rows.map(function (r) { return new Date(r.day).getTime(); }));
+  options.scales.x.min = bounds.min;
+  options.scales.x.max = bounds.max;
+  chartInstances[canvasId] = new Chart(canvas.getContext('2d'), { type: 'line', data: { datasets: [dataset] }, options: options });
 }
 
 function renderAduByBrandChart(rows) {
@@ -2549,6 +2623,10 @@ function setChartRange(productId, chartType, rangeKey) {
   const data = (productChartData[productId] || {})[chartType];
   if (!data) return;
   if (chartType === 'price') renderPriceChart(productId, data);
+  // catalogAdu -- the Dashboard tab's single catalog-wide chart, stashed
+  // under the fixed 'dashboard' pseudo-product-id (see loadDashboard's
+  // own comment) -- takes no productId, unlike the other two.
+  else if (chartType === 'catalogAdu') renderCatalogAduChart(data);
   else renderSkuStockChart(productId, data);
 }
 

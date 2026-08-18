@@ -779,6 +779,85 @@ def get_dashboard_summary(conn) -> dict:
     }
 
 
+def get_catalog_adu_history(conn) -> list:
+    """Real follow-up ask, same session, Al: "can we add some data over
+    time charts to the dashboard, maybe total catalog adu over time
+    similar to what we have per product 7d, 30d, 90d, 1y and all
+    picker." Backs a new line chart on the Dashboard tab, reusing the
+    SAME client-side range-picker machinery (CHART_RANGE_PRESETS/
+    filterHistoryByRange/buildChartRangeToolbar in admin-site/index.html)
+    the price/SKU-stock charts already established: fetch the FULL
+    history once, filter to 7D/30D/90D/1Y/All client-side, so switching
+    ranges is instant with no re-fetch -- same reasoning as
+    loadProductDetailInto's own days:3650 comment.
+
+    IMPORTANT, disclosed rather than silently glossed over: this is a
+    REAL but DIFFERENTLY-DEFINED number from the Dashboard's own
+    `kpis.total_catalog_adu` (see get_dashboard_summary above), not a
+    time-series of that exact same point-in-time formula. The KPI card's
+    total_catalog_adu is `_TOTAL_ADU_SQL` summed across every product --
+    a PER-SKU trailing-ADU_LOOKBACK_DAYS-window figure that only counts a
+    SKU at all once it has >=2 readings in that specific window (see
+    _TOTAL_ADU_SQL's own docstring). Re-running that exact per-SKU-gated
+    definition at every historical calendar day would need one
+    correlated subquery PER DAY in the requested range -- expensive, and
+    arguably not even what "ADU over time" should look like day to day
+    (a SKU dropping in and out of "has >=2 readings this window" would
+    make the line jump around for reasons that have nothing to do with
+    real demand). Instead: total units sold (drops only, restocks
+    excluded -- same interpretation as everywhere else in this project)
+    across EVERY SKU in the whole catalog, bucketed by calendar day, then
+    a rolling ADU_LOOKBACK_DAYS-day trailing SUM divided by
+    ADU_LOOKBACK_DAYS (a flat 30, not each SKU's own actual elapsed-
+    reading-span) for every day in the observed history -- a real,
+    honest, catalog-wide rolling average, just not byte-identical to the
+    KPI card's own snapshot. In practice the two should track each other
+    closely and the chart's rightmost point will usually be close to
+    (but is not guaranteed to exactly equal) the KPI card's current
+    total_catalog_adu -- worth knowing if Al or a future dev ever
+    compares the two and expects them to match exactly.
+
+    Days with zero recorded drops are real zeros, not gaps -- the
+    generate_series call below fills in every calendar day across the
+    full observed product_sku_stock_history range (not just days that
+    happen to have a reading), so the rolling window's divisor is always
+    a true 30 calendar days, never silently shrunk by missing days the
+    way a naive `group by day` alone would drop entirely."""
+    with conn.cursor() as cur:
+        cur.execute(f"""
+            with bounds as (
+                select min(checked_at)::date as min_day, max(checked_at)::date as max_day
+                from product_sku_stock_history
+                where quantity is not null
+            ),
+            days as (
+                select generate_series(min_day, max_day, interval '1 day')::date as day
+                from bounds
+                where min_day is not null
+            ),
+            all_deltas as (
+                select psh.product_sku_id, psh.checked_at::date as day,
+                       psh.quantity - lag(psh.quantity) over (partition by psh.product_sku_id order by psh.checked_at) as delta
+                from product_sku_stock_history psh
+                where psh.quantity is not null
+            ),
+            daily_units_sold as (
+                select day, sum(case when delta < 0 then -delta else 0 end) as units_sold
+                from all_deltas
+                group by day
+            )
+            select d.day,
+                   coalesce(sum(dus.units_sold) over (
+                       order by d.day rows between {ADU_LOOKBACK_DAYS - 1} preceding and current row
+                   ), 0) / {float(ADU_LOOKBACK_DAYS)} as total_adu
+            from days d
+            left join daily_units_sold dus on dus.day = d.day
+            order by d.day
+        """)
+        columns = [desc[0] for desc in cur.description]
+        return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
 def get_product(conn, product_id: str):
     """Real ask from Al: he's noticed data issues in the admin UI he
     suspects trace back to the scrapers, and wants every column visible
