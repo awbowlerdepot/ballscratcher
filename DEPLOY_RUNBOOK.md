@@ -1941,6 +1941,53 @@ don't think we fixed the viking issue" half of his report was about
 6f.3's Textract path (see the Viking follow-up above), not this filter,
 and hasn't been re-checked yet since he moved straight to the batch log.
 
+### 6f.3.1. Real fix, finally: Viking's actual Tech Data table shape
+
+The Viking follow-up in 6f.3 above documents two false starts before
+this: a "row-merge" hypothesis (wrong), then a "weight-header-row"
+correction that still couldn't see the real data because it was being
+silently discarded. Both were reconstructed guesses -- this sandbox has
+no AWS access, so nothing could be confirmed without Al pulling actual
+CloudWatch log lines himself, twice, following commands given to him in
+this session.
+
+The real full table, from Al's own CloudWatch pull:
+
+```
+['NOTES', '', '', '', '', '', '']
+['', '16lb', '15lb', '14lb', '13lb', '12lb', '']
+['RG', '2.50', '2.51', '2.52', '2.56', '2.58', '']
+['DIFF', '.050', '.052', '.051', '.034', '.031', '']
+['PSA', '.014', '.016', '.014', '.011', '.009', '']
+```
+
+A genuine 4th Tech Data table shape (`_skus_from_table`'s docstring now
+documents all four): a weight HEADER row holding every weight as its
+own separate column, followed by separate METRIC rows (RG/DIFF/PSA)
+below it, values aligned under each weight's own column. Added a real
+"column-weight" parsing branch for this shape, checked after wide mode
+and before long mode.
+
+Guarded against a subtle regression: header detection requires EVERY
+non-blank cell in a candidate row to be weight-shaped, not just 2+ of
+them. Without that, a single corrupted cell inside an otherwise-normal
+5-row long-mode table (Roto Grip Gremlin's real shape, case 2) could get
+misread as this table's header and silently discard 4 good rows just
+because one row went bad -- covered by its own regression test
+(`test_skus_from_table_column_weight_mode_does_not_hijack_corrupted_
+long_mode_row`).
+
+Tests: real Viking table now returns all 5 correct SKUs. New tests for
+unrecognized label rows ("NOTES"), MB-as-mass_bias (same PSA-is-
+mass_bias fix as the other two modes), and the hijack-prevention case
+above. 81/81 in `test_commercebuild_product_scraper.py`, full repo
+sweep clean.
+
+Redeploy: `sam build CommercebuildProductScraperFunction && sam deploy`
+(or full unscoped build, per 6a.5). Then Rescrape Viking (button now
+lives in the Raw Data tab, see 6f.4.1 area) and confirm it comes back
+with 5 real SKU rows instead of the single html-fallback row.
+
 ### 6f.5. Hammer (Shopify) -- if `HammerBrandId` was set
 
 No schedule wired up for `ShopifyUrlDiscoveryFunction` yet, same as every
