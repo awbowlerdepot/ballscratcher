@@ -3772,7 +3772,7 @@ same depth as prior admin-site-only changes in this project.
 Al: "with the data for stock levels can we apply some industry standard
 inventory forecasting to that data."
 
-Added Average Daily Usage (ADU) and Days of Supply (DOS) -- the standard
+Added Average Daily Units (ADU) and Days of Supply (DOS) -- the standard
 building blocks behind a reorder-point calculation (Reorder Point = ADU
 x Lead Time + Safety Stock). This stops at ADU/DOS/an estimated stockout
 date rather than a full reorder-point recommendation, since this project
@@ -6097,7 +6097,7 @@ if it need to be an async fetch that is fine. so that it will load
 faster or if it is fast enough to just grab in the initial call that is
 fine too."
 
-Per-SKU ADU (Average Daily Usage -- units sold/day, restocks excluded)
+Per-SKU ADU (Average Daily Units -- units sold/day, restocks excluded)
 already existed on the product detail page's SKU stock forecasting table
 (see 6i.11: `computeSkuForecast` in `admin-site/index.html`, client-side
 JS over `product_sku_stock_history` rows). This adds a per-PRODUCT

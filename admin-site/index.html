@@ -470,7 +470,7 @@
       </div>
       <div class="field">
         <label>Sort</label>
-        <select id="product-sort" title="Popularity = sum of each approved video's view_count, decayed by video age (180-day half-life) -- see service.list_products' docstring. A live-computed 'current popularity' ranking, not raw lifetime views. Newest/Oldest sort by release_date (not scrape time). Total ADU = sum of each SKU's own trailing 30-day Average Daily Usage, highest movers first.">
+        <select id="product-sort" title="Popularity = sum of each approved video's view_count, decayed by video age (180-day half-life) -- see service.list_products' docstring. A live-computed 'current popularity' ranking, not raw lifetime views. Newest/Oldest sort by release_date (not scrape time). Total ADU = sum of each SKU's own trailing 30-day Average Daily Units, highest movers first.">
           <option value="">recently updated</option>
           <option value="popularity">popularity</option>
           <option value="total_adu">total ADU</option>
@@ -1031,7 +1031,7 @@ function renderDashboard(data) {
     buildChartRangeToolbar('dashboard', 'catalogAdu') +
     '<div class="chart-wrap"><canvas id="catalogAdu-chart-dashboard"></canvas></div>' +
     '<p id="catalogAdu-chart-empty-dashboard" class="muted small" style="display:none;"></p>' +
-    '<h3 style="margin-top:22px;">Average Daily Usage by Brand</h3>' +
+    '<h3 style="margin-top:22px;">Average Daily Units by Brand</h3>' +
     '<div class="chart-wrap"><canvas id="dashboard-adu-by-brand-chart"></canvas></div>';
 
   renderAduByBrandChart(data.adu_by_brand || []);
@@ -1929,7 +1929,7 @@ function renderProducts(items) {
         '<td title="Sum of each approved video\'s view_count, decayed by video age (180-day half-life)">' + fmtCount(p.popularity_score === null || p.popularity_score === undefined ? null : Math.round(p.popularity_score)) + '</td>' +
         // total_adu (always returned, see service.list_products'
         // docstring) -- sum across this product's SKUs of each weight's
-        // own trailing-30-day Average Daily Usage (see computeSkuForecast
+        // own trailing-30-day Average Daily Units (see computeSkuForecast
         // and _TOTAL_ADU_SQL's matching definition). A SKU with fewer
         // than 2 stock readings in the window contributes nothing (not a
         // fabricated zero), same as that per-SKU forecast's own "adu:
@@ -1937,7 +1937,7 @@ function renderProducts(items) {
         // shows 0 here, same as "no recent sales", not a missing-data
         // marker; the per-product detail view's own SKU Stock tab is
         // where that distinction actually matters.
-        '<td title="Sum of each SKU\'s own trailing ' + FORECAST_LOOKBACK_DAYS + '-day Average Daily Usage (units sold/day, restocks excluded)">' + (p.total_adu === null || p.total_adu === undefined ? '<span class="muted">&mdash;</span>' : Number(p.total_adu).toFixed(2)) + '</td>' +
+        '<td title="Sum of each SKU\'s own trailing ' + FORECAST_LOOKBACK_DAYS + '-day Average Daily Units (units sold/day, restocks excluded)">' + (p.total_adu === null || p.total_adu === undefined ? '<span class="muted">&mdash;</span>' : Number(p.total_adu).toFixed(2)) + '</td>' +
         '<td><button class="btn small ' + (p.published ? 'ok' : 'ghost') + '" onclick="togglePublish(\'' + p.id + '\', ' + (!p.published) + ')">' + (p.published ? 'Published' : 'Unpublished') + '</button></td>' +
         '<td>' + fmtDate(p.updated_at) + '</td>' +
         '<td class="actions"><button class="btn small ghost" onclick="toggleProductDetail(\'' + p.id + '\')">Detail</button></td>' +
@@ -2374,7 +2374,7 @@ function buildSkuStockSection(id, skuStockHistoryData) {
   return '<p style="margin-top:14px;"><strong>SKU stock</strong> (BowlerDepot, per weight):</p>' +
     (rows
       ? '<table class="mini"><thead><tr><th>Weight</th><th>Quantity</th><th>Avg daily usage</th><th>Days of supply</th><th>Est. stockout</th><th>Last checked</th></tr></thead><tbody>' + rows + '</tbody></table>' +
-        '<p class="muted small">Forecast columns use a trailing ' + FORECAST_LOOKBACK_DAYS + '-day Average Daily Usage (ADU) -- see this table\'s own tooltip-free methodology note in DEPLOY_RUNBOOK.md.</p>'
+        '<p class="muted small">Forecast columns use a trailing ' + FORECAST_LOOKBACK_DAYS + '-day Average Daily Units (ADU) -- see this table\'s own tooltip-free methodology note in DEPLOY_RUNBOOK.md.</p>'
       : '<p class="muted">no SKU stock data yet -- recorded alongside a BowlerDepot price check once a SKU\'s weight matches a variant</p>') +
     buildChartRangeToolbar(id, 'skuStock') +
     '<div class="chart-wrap"><canvas id="skuStock-chart-' + id + '"></canvas></div>' +
@@ -2397,7 +2397,7 @@ function latestSkuReadings(history) {
   return latestBySku;
 }
 
-// Trailing window for Average Daily Usage (ADU) -- a standard, commonly-
+// Trailing window for Average Daily Units (ADU) -- a standard, commonly-
 // cited default lookback for a usage-rate calculation in inventory
 // management (alongside 60/90-day variants). Fixed and independent of
 // the SKU stock chart's own display-range selector (CHART_RANGE_PRESETS)
@@ -2406,7 +2406,7 @@ function latestSkuReadings(history) {
 const FORECAST_LOOKBACK_DAYS = 30;
 
 // Al: "with the data for stock levels can we apply some industry
-// standard inventory forecasting to that data." Average Daily Usage
+// standard inventory forecasting to that data." Average Daily Units
 // (ADU) and Days of Supply (DOS) are the standard building blocks behind
 // a reorder-point calculation (Reorder Point = ADU x Lead Time + Safety
 // Stock) -- this project has no supplier lead-time or safety-stock

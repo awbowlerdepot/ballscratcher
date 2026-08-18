@@ -280,7 +280,7 @@ _POPULARITY_SCORE_SQL = f"""coalesce((
                    where pv.product_id = p.id and pv.status = 'approved' and pv.view_count is not null
                ), 0)"""
 
-# Total Average Daily Usage across a product's SKUs (Al: "can we add the
+# Total Average Daily Units across a product's SKUs (Al: "can we add the
 # sum of the ADUs for each product to the main table"). Same trailing-
 # window/drops-only ADU definition as admin-site's own computeSkuForecast
 # (index.html) -- deliberately re-implemented here in SQL rather than
