@@ -1765,9 +1765,19 @@ async function toggleProductDetail(id) {
 // matches/p.bowwwl_matches are excluded from the top-level product table
 // (they're objects/arrays -- rendered as their own sub-tables instead of
 // JSON-stringified blobs, which would defeat the point).
-function renderProductRawFields(p) {
+function renderProductRawFields(p, id) {
   const nestedKeys = ['skus', 'images', 'discovered_url', 'bowlerdepot_matches', 'bowwwl_matches'];
+  // Rescrape button lives here now, not in Overview -- Al: "can we move
+  // that button to the raw data tab, there is only a rescrape button
+  // near the core line in the overview tab". Raw Data is the "escape
+  // hatch" tab already (see the tab-ify comment above loadProductDetailInto),
+  // and a forced rescrape is itself an escape-hatch action (bypasses
+  // every batch filter, see the html_fallback_skus platform-scope
+  // conversation this came out of), so it fits better here than next to
+  // a single specific field (Core) it isn't really about.
   return (
+    '<p><button class="btn small ghost" onclick="rescrapeProduct(\'' + id + '\')">Rescrape</button></p>' +
+    '<p id="rescrape-result-' + id + '" class="muted small"></p>' +
     '<details class="raw-fields"><summary>Show all fields (raw)</summary>' +
     '<h4>Product</h4>' + renderRawTable(p, nestedKeys) +
     '<h4>SKUs (' + (p.skus || []).length + ')</h4>' + renderRawTableList(p.skus, 'no SKUs') +
@@ -1979,9 +1989,7 @@ async function loadProductDetailInto(id, cell) {
       '<p><strong>Images</strong> (' + (p.images || []).length + '):</p>' +
       '<div class="image-grid">' + (imageCards || '<p class="muted">none pulled down yet</p>') + '</div>' +
       '<p><strong>Core:</strong> ' + escapeHtml(p.core_name || '(not identified yet)') +
-        (p.core_type ? ' <span class="muted">(' + escapeHtml(p.core_type) + ')</span>' : '') +
-        ' <button class="btn small ghost" onclick="rescrapeProduct(\'' + id + '\')">Rescrape</button></p>' +
-      '<p id="rescrape-result-' + id + '" class="muted small"></p>' +
+        (p.core_type ? ' <span class="muted">(' + escapeHtml(p.core_type) + ')</span>' : '') + '</p>' +
       '<p><strong>Description:</strong></p><pre class="scrollbox">' + escapeHtml(p.description || '(none scraped yet)') + '</pre>';
 
     const videosHtml =
@@ -2009,7 +2017,7 @@ async function loadProductDetailInto(id, cell) {
       '<div class="dtab hidden" id="dtab-videos-' + id + '">' + videosHtml + '</div>' +
       '<div class="dtab hidden" id="dtab-pricing-' + id + '">' + priceTrackingHtml + '</div>' +
       '<div class="dtab hidden" id="dtab-skus-' + id + '">' + skusHtml + '</div>' +
-      '<div class="dtab hidden" id="dtab-raw-' + id + '">' + renderProductRawFields(p) + '</div>' +
+      '<div class="dtab hidden" id="dtab-raw-' + id + '">' + renderProductRawFields(p, id) + '</div>' +
       '</div>';
     updateProductVideoBulkToolbar(id);
     // Chart.js needs a live <canvas> already in the DOM -- called here,
