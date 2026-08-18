@@ -575,24 +575,22 @@ def _skus_from_table(table: list) -> list:
                         continue
                     values = [c[i].strip() for c in other_cols]
                     # Same defensive guard as long mode below -- see that
-                    # branch's comment for the real Textract row-merge bug
-                    # this catches (a genuinely wrong table shape landing
-                    # weight tokens where decimal RG/Diff/PSA data was
-                    # expected).
+                    # branch's comment for what this actually turned out
+                    # to be (a weight-HEADER row shape, not a merged data
+                    # row as originally guessed) once Al pulled a real
+                    # CloudWatch line.
                     weight_shaped = [v for v in values if WEIGHT_TOKEN_RE.match(v)]
                     if weight_shaped:
-                        # Full raw row logged too -- see the matching
-                        # comment in the long-mode branch below for why
-                        # (Al confirmed this reproduces across multiple
-                        # real 900 Global products, not just Viking, so
-                        # the next occurrence's CloudWatch log line is
-                        # what unblocks an actual fix instead of another
-                        # guess).
+                        # Full TABLE logged now, not just this one row --
+                        # see the matching comment in the long-mode branch
+                        # below for why (the real RG/Diff/PSA rows are
+                        # elsewhere in this table and were never being
+                        # logged at all before this).
                         logger.warning(
                             "Tech Data PDF wide-format table: weight %s has a "
                             "weight-shaped value (%s) where RG/Diff/PSA data was "
-                            "expected -- skipping, not guessing. Full raw row: %s",
-                            weight_match.group(1), weight_shaped, row,
+                            "expected -- skipping, not guessing. Full table (%d rows): %s",
+                            weight_match.group(1), weight_shaped, len(table), table,
                         )
                         continue
                     skus.append({
@@ -646,52 +644,51 @@ def _skus_from_table(table: list) -> list:
             for i in range(len(row))
             if i != weight_col_idx and (row[i] or "").strip()
         ]
-        # Real bug, later session, confirmed via Al's screenshot of
-        # Viking's actual stored SKU: weight_lbs=16 (correct) but
-        # rg=15, differential=14 -- literally the NEXT TWO WEIGHTS in
-        # the sequence, not real RG/Diff decimals (which are always in
-        # the ~2.4-2.7 / ~0.02-0.06 ranges for these balls). Root cause:
-        # Amazon Textract's own table-structure detection collapsed this
-        # image-based PDF's real 5-row table into what its Blocks
-        # response represented as a single overly-wide row (one row
-        # total reached this loop, not five) -- so weight_col_idx's OWN
-        # row ended up holding the OTHER weights' own "15 lbs."/"14
-        # lbs." tokens in the very columns this code assumed held real
-        # RG/Diff data, and _to_float's intentionally-permissive regex
-        # (it extracts the first number found anywhere in a string, see
-        # that function's own docstring) happily parsed "15 lbs." as
-        # 15.0 rather than failing loudly. Rather than trying to
-        # guess the real intended column mapping from a table shape
-        # this function was never built to handle, this checks whether
-        # any value about to be written as RG/Diff/PSA itself LOOKS
-        # like a weight token first -- a real decimal RG/Diff/PSA value
-        # never matches WEIGHT_TOKEN_RE, so this only ever fires on a
-        # genuinely mis-shaped row, same "flag, don't guess" spirit as
-        # every other defensive check in this function.
+        # Real bug, originally diagnosed via Al's screenshot of Viking's
+        # stored SKU (weight_lbs=16, rg=15, differential=14 -- the NEXT
+        # TWO WEIGHTS in sequence, not real RG/Diff decimals which run
+        # ~2.4-2.7 / ~0.02-0.06 for these balls). The ORIGINAL hypothesis
+        # here was that Textract's table-structure detection collapsed a
+        # real 5-row table into one overly-wide row holding every
+        # weight's own data smeared together. CORRECTED, same session,
+        # once Al pulled the actual CloudWatch line (this sandbox has no
+        # AWS access to capture one directly): the real raw row is
+        # `['', '16lb', '15lb', '14lb', '13lb', '12lb', '']` -- five
+        # weight LABELS spread across five separate columns, with no
+        # numeric data anywhere in this row at all. This isn't a merged
+        # data row, it's a WEIGHT HEADER row from a table shape neither
+        # "long mode" (one row per weight) nor "wide mode" above (one
+        # cell holding newline-joined weight tokens) was built to
+        # recognize: weights as separate COLUMNS, with RG/Diff/PSA
+        # presumably living in separate rows below, one metric per row,
+        # values aligned under each weight's column. This loop's
+        # weight_col_idx search matches column 1 ("16lb") as if it were
+        # A weight's own row, which it isn't -- it's the header. Every
+        # OTHER row in this table (the real RG/Diff/PSA rows) has been
+        # silently hitting the `if not weight_match: continue` line above
+        # this whole time, invisibly, since that line was written for the
+        # genuinely unrelated case of a stray label row like "DESIGN
+        # INTENT:". Confirmed live, Al: "just the ones i clicked rescrape
+        # on have this, they are all 900 global balls so they have the
+        # same issues as the viking" -- reproducible across multiple real
+        # PDFs, not a one-off, so worth building real support for this
+        # shape rather than permanently treating it as unparseable.
+        # Rather than guessing the real column mapping a second time,
+        # this still just refuses to write a weight-shaped value into
+        # RG/Diff/PSA and logs the FULL TABLE (not just this one row) --
+        # the missing piece is what the real metric rows look like, which
+        # this comment's earlier version couldn't see because they were
+        # never logged at all.
         weight_shaped = [v for v in other_values if WEIGHT_TOKEN_RE.match(v)]
         if weight_shaped:
-            # Full raw row logged here (not just the offending values) --
-            # Al confirmed live, later session, that this isn't Viking-
-            # specific: "the ones i clicked rescrape on have this, they
-            # are all 900 global balls so they have the same issues as
-            # the viking". That means the merged-row hypothesis above is
-            # reproducible across multiple real Tech Data PDFs, not a
-            # one-off, so it's now worth actually recovering the real
-            # per-weight table instead of just falling back to the html
-            # stopgap every time -- but that requires seeing a REAL
-            # Textract row shape first (this sandbox has no AWS access to
-            # capture one directly). Logging the full row here means the
-            # next time this fires, the full raw shape is sitting in
-            # CloudWatch logs for /aws/lambda/bowling-scraper-
-            # commercebuild-product-scraper -- pull it and paste it back
-            # in rather than guessing at a parser again.
             logger.warning(
                 "Tech Data PDF long-format table: row for %s lb has a "
                 "weight-shaped value (%s) where RG/Diff/PSA data was "
-                "expected -- table structure looks wrong (row/column "
-                "merge, likely from OCR), skipping this row rather than "
-                "writing corrupted data. Full raw row: %s",
-                weight_match.group(1), weight_shaped, row,
+                "expected -- table structure looks wrong (likely a "
+                "weight-header-row shape this parser doesn't support "
+                "yet), skipping this row rather than writing corrupted "
+                "data. Full table (%d rows): %s",
+                weight_match.group(1), weight_shaped, len(table), table,
             )
             continue
         skus.append({
