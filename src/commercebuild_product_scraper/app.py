@@ -581,11 +581,18 @@ def _skus_from_table(table: list) -> list:
                     # expected).
                     weight_shaped = [v for v in values if WEIGHT_TOKEN_RE.match(v)]
                     if weight_shaped:
+                        # Full raw row logged too -- see the matching
+                        # comment in the long-mode branch below for why
+                        # (Al confirmed this reproduces across multiple
+                        # real 900 Global products, not just Viking, so
+                        # the next occurrence's CloudWatch log line is
+                        # what unblocks an actual fix instead of another
+                        # guess).
                         logger.warning(
                             "Tech Data PDF wide-format table: weight %s has a "
                             "weight-shaped value (%s) where RG/Diff/PSA data was "
-                            "expected -- skipping, not guessing",
-                            weight_match.group(1), weight_shaped,
+                            "expected -- skipping, not guessing. Full raw row: %s",
+                            weight_match.group(1), weight_shaped, row,
                         )
                         continue
                     skus.append({
@@ -663,13 +670,28 @@ def _skus_from_table(table: list) -> list:
         # every other defensive check in this function.
         weight_shaped = [v for v in other_values if WEIGHT_TOKEN_RE.match(v)]
         if weight_shaped:
+            # Full raw row logged here (not just the offending values) --
+            # Al confirmed live, later session, that this isn't Viking-
+            # specific: "the ones i clicked rescrape on have this, they
+            # are all 900 global balls so they have the same issues as
+            # the viking". That means the merged-row hypothesis above is
+            # reproducible across multiple real Tech Data PDFs, not a
+            # one-off, so it's now worth actually recovering the real
+            # per-weight table instead of just falling back to the html
+            # stopgap every time -- but that requires seeing a REAL
+            # Textract row shape first (this sandbox has no AWS access to
+            # capture one directly). Logging the full row here means the
+            # next time this fires, the full raw shape is sitting in
+            # CloudWatch logs for /aws/lambda/bowling-scraper-
+            # commercebuild-product-scraper -- pull it and paste it back
+            # in rather than guessing at a parser again.
             logger.warning(
                 "Tech Data PDF long-format table: row for %s lb has a "
                 "weight-shaped value (%s) where RG/Diff/PSA data was "
                 "expected -- table structure looks wrong (row/column "
                 "merge, likely from OCR), skipping this row rather than "
-                "writing corrupted data",
-                weight_match.group(1), weight_shaped,
+                "writing corrupted data. Full raw row: %s",
+                weight_match.group(1), weight_shaped, row,
             )
             continue
         skus.append({
