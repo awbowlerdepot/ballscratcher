@@ -315,6 +315,28 @@ sam deploy --guided
 function directory that needs a third-party package has one as of this
 repo's current state.
 
+**Build speed, later session, Al: "the build is starting to take
+forever."** With 25 functions and `use_container = true` (a real Docker
+build per function), a full `sam build` was doing every function's
+`requirements.txt` install from scratch, sequentially, every single
+time -- even though most functions share large chunks of the same
+dependencies (`requests`/`psycopg2-binary`/`boto3` repeat across a
+dozen+ of them). `samconfig.toml`'s `[default.build.parameters]` now
+also sets `cached = true` (reuses a dependency-install cache keyed by
+each function's own `requirements.txt` content hash, under
+`.aws-sam/deps/`, instead of reinstalling unchanged dependency sets) and
+`parallel = true` (builds independent functions concurrently instead of
+one at a time). Both are supported alongside `use_container = true`, no
+other config changes needed -- plain `sam build` picks this up
+automatically.
+
+This is separate from 6a.5 below (scoped `sam build AdminApiFunction`
+shipping a broken zip missing `fastapi`) -- that workaround still
+stands. If a similar "phantom missing dependency" failure ever shows up
+specifically after enabling the cache, clear it first: `sam build
+--clear-cache` (or delete `.aws-sam/build/` and `.aws-sam/deps/`
+directly) before rebuilding.
+
 `sam deploy --guided` will prompt for every parameter in `template.yaml`.
 Here's what to give it:
 
