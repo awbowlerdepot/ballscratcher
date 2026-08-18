@@ -336,6 +336,64 @@ _TOTAL_ADU_SQL = f"""coalesce((
                    ) sku
                ), 0)"""
 
+
+def _sku_adu_cte(min_days_ago: int, max_days_ago: int = 0) -> str:
+    """Shared building block for the Dashboard's Days-of-Supply and ADU-
+    trend (growing/shrinking) queries below -- Al: "can we add top 10 days
+    of supply skus descending so lowest number of days first... can we
+    build something would show top 10 growth ADUs and top 10 shrinking
+    ADUs by sku." Same drops-only, >=2-readings-required, elapsed_days-
+    based per-SKU rate _TOTAL_ADU_SQL and adu_by_brand's own inline sku_adu
+    CTE already establish, just parameterized by an arbitrary trailing
+    window instead of a single hardcoded ADU_LOOKBACK_DAYS -- the growing/
+    shrinking queries need TWO different windows (the current
+    ADU_LOOKBACK_DAYS one, and a second ADU_LOOKBACK_DAYS-to-
+    2*ADU_LOOKBACK_DAYS-days-ago "previous" one to compare it against), so
+    a third hand-copied literal here would mean the exact silent-drift risk
+    this project's hand-synced-constant comments elsewhere
+    (POPULARITY_HALF_LIFE_DAYS, ADU_LOOKBACK_DAYS itself) already warn
+    about. One parameterized function instead -- still SQL text
+    interpolation, not a shared Python module across services, so it
+    doesn't conflict with that same no-shared-module reasoning.
+
+    min_days_ago/max_days_ago are both "days before now" (max_days_ago=0
+    meaning "up through right now"). The current window is
+    (ADU_LOOKBACK_DAYS, 0); the previous comparison window is
+    (2*ADU_LOOKBACK_DAYS, ADU_LOOKBACK_DAYS) -- non-overlapping, same
+    length.
+
+    Returns a parenthesized subquery of (product_sku_id, adu) -- adu is
+    NULL (not a bare division) whenever elapsed_days isn't > 0, same
+    guarded-division convention _TOTAL_ADU_SQL's own `case when
+    sku.elapsed_days > 0 then ... else 0 end` uses, just NULL instead of 0
+    here since these callers need to entirely exclude a SKU without a
+    computable rate (0 would be a nonsensical "no growth" or "infinite
+    days of supply" result), not fold it into a sum. Callers filter on
+    `adu is not null` / `adu > 0` as needed and never divide by
+    elapsed_days themselves."""
+    bounds = f"psh.checked_at >= now() - interval '{min_days_ago} days'"
+    if max_days_ago:
+        bounds += f" and psh.checked_at < now() - interval '{max_days_ago} days'"
+    return f"""(
+        select eh.product_sku_id,
+               case when eh.elapsed_days > 0 then eh.units_sold / eh.elapsed_days else null end as adu
+        from (
+            select h.product_sku_id,
+                   sum(case when h.delta < 0 then -h.delta else 0 end) as units_sold,
+                   extract(epoch from (max(h.checked_at) - min(h.checked_at))) / 86400.0 as elapsed_days
+            from (
+                select psh.product_sku_id, psh.checked_at,
+                       psh.quantity - lag(psh.quantity) over (partition by psh.product_sku_id order by psh.checked_at) as delta
+                from product_sku_stock_history psh
+                where psh.quantity is not null
+                  and {bounds}
+            ) h
+            group by h.product_sku_id
+            having count(*) >= 2
+        ) eh
+    )"""
+
+
 # Common-sense sort options for the Products tab's "Sort" control -- Al's
 # ask: "lets add some common sense sort options for both the admin and
 # consumer UIs". Identical to public_api/service.py's copy (kept in sync
@@ -653,12 +711,14 @@ def get_dashboard_summary(conn) -> dict:
     same product, not a second, potentially-drifting definition of
     "popularity" or "ADU".
 
-    Four separate queries, not one giant one: KPI counts, top 10
-    popularity, top 10 ADU, and ADU-by-brand are structurally unrelated
-    result shapes (one row vs ten rows vs one row per brand) that don't
-    share a natural GROUP BY, so combining them would mean either extra
-    round trips anyway (subqueries returning arrays) or a much harder to
-    read query for no real performance win at this catalog's size.
+    Seven separate queries, not one giant one: KPI counts, top 10
+    popularity, top 10 ADU, ADU-by-brand, top 10 days-of-supply, top 10
+    growing ADU, and top 10 shrinking ADU are structurally unrelated
+    result shapes (one row vs ten rows vs one row per brand vs ten
+    per-SKU rows) that don't share a natural GROUP BY, so combining them
+    would mean either extra round trips anyway (subqueries returning
+    arrays) or a much harder to read query for no real performance win at
+    this catalog's size.
 
     Returns:
       kpis: single dict -- total_products, current_products,
@@ -678,6 +738,39 @@ def get_dashboard_summary(conn) -> dict:
         ask reads as "show me the breakdown", which is more useful as a
         complete picture across the whole catalog than a filtered list),
         ordered highest total_adu first.
+      top_days_of_supply: up to 10 {product_id, name, brand_name,
+        weight_lbs, adu, latest_quantity, days_of_supply} dicts -- Al:
+        "top 10 days of supply skus descending so lowest number of days
+        first." PER-SKU (not per-product, unlike top_popularity/top_adu
+        above), since days-of-supply is meaningless summed across a
+        product's weights -- a 16lb about to stock out doesn't average out
+        with a 12lb that's overstocked. Same adu > 0 requirement as
+        top_adu's own reasoning (adu <= 0 -> an infinite or negative
+        days-of-supply, not a real answer); latest_quantity is that SKU's
+        single most recent quantity reading (not windowed -- "right now",
+        same as computeSkuForecast's own latestQuantity parameter), so a
+        quantity of 0 correctly sorts to days_of_supply = 0, first in the
+        ascending list -- already-out-of-stock is the most urgent case,
+        exactly matching computeSkuForecast's own `latestQuantity <= 0 ->
+        daysOfSupply: 0` branch (admin-site/index.html) rather than a
+        divide-by-zero or an excluded row.
+      top_growing_adu / top_shrinking_adu: up to 10 {product_id, name,
+        brand_name, weight_lbs, previous_adu, current_adu, delta_adu}
+        dicts each -- Al's two-sided ask, mirror-image queries (same shape
+        as top_popularity/top_adu being separate despite their own
+        near-identical shape). delta_adu = current_adu - previous_adu,
+        comparing this SKU's current ADU_LOOKBACK_DAYS-day rate against
+        its own rate over the ADU_LOOKBACK_DAYS days before that (see
+        _sku_adu_cte's own docstring for the two-window definition).
+        top_growing_adu keeps delta_adu > 0 ordered desc (biggest increase
+        first); top_shrinking_adu keeps delta_adu < 0 ordered asc (biggest
+        decrease first). HONEST CAVEAT, same "disclosed not glossed over"
+        convention as get_catalog_adu_history's own docstring: both lists
+        require a SKU to have a qualifying rate in BOTH windows, i.e.
+        genuinely need up to 2*ADU_LOOKBACK_DAYS (60) days of accumulated
+        product_sku_stock_history to ever return anything -- expect these
+        two lists to stay empty for a while on a freshly-launched catalog
+        (see admin-site's own empty-state copy for this).
     """
     with conn.cursor() as cur:
         cur.execute(f"""
@@ -771,11 +864,91 @@ def get_dashboard_summary(conn) -> dict:
         columns = [desc[0] for desc in cur.description]
         adu_by_brand = [dict(zip(columns, row)) for row in cur.fetchall()]
 
+        # Days of supply, lowest first (Al: "top 10 days of supply skus
+        # descending so lowest number of days first") -- PER-SKU, see this
+        # function's own docstring for why. latest_qty is a DISTINCT ON
+        # pick of each SKU's single most recent reading (not windowed),
+        # same "right now" semantics computeSkuForecast's own
+        # latestQuantity argument uses.
+        cur.execute(f"""
+            with sa as {_sku_adu_cte(ADU_LOOKBACK_DAYS)},
+            latest_qty as (
+                select distinct on (product_sku_id) product_sku_id, quantity
+                from product_sku_stock_history
+                where quantity is not null
+                order by product_sku_id, checked_at desc
+            )
+            select p.id as product_id, p.name, b.name as brand_name, sk.weight_lbs,
+                   round(sa.adu::numeric, 2) as adu,
+                   lq.quantity as latest_quantity,
+                   round((lq.quantity / sa.adu)::numeric, 1) as days_of_supply
+            from sa
+            join product_skus sk on sk.id = sa.product_sku_id
+            join products p on p.id = sk.product_id
+            left join brands b on b.id = p.brand_id
+            join latest_qty lq on lq.product_sku_id = sa.product_sku_id
+            where sa.adu > 0 and lq.quantity is not null
+            order by (lq.quantity / sa.adu) asc, sk.id asc
+            limit 10
+        """)
+        columns = [desc[0] for desc in cur.description]
+        top_days_of_supply = [dict(zip(columns, row)) for row in cur.fetchall()]
+
+        # Growing ADU, biggest increase first (Al: "top 10 growth ADUs...
+        # by sku") -- current ADU_LOOKBACK_DAYS-day window vs the
+        # ADU_LOOKBACK_DAYS days before that, see _sku_adu_cte's own
+        # docstring for the two-window definition and this function's own
+        # docstring for the "needs up to 60 days of history" caveat.
+        cur.execute(f"""
+            with cw as {_sku_adu_cte(ADU_LOOKBACK_DAYS)},
+            pw as {_sku_adu_cte(2 * ADU_LOOKBACK_DAYS, ADU_LOOKBACK_DAYS)}
+            select p.id as product_id, p.name, b.name as brand_name, sk.weight_lbs,
+                   round(pw.adu::numeric, 2) as previous_adu,
+                   round(cw.adu::numeric, 2) as current_adu,
+                   round((cw.adu - pw.adu)::numeric, 2) as delta_adu
+            from cw
+            join pw on pw.product_sku_id = cw.product_sku_id
+            join product_skus sk on sk.id = cw.product_sku_id
+            join products p on p.id = sk.product_id
+            left join brands b on b.id = p.brand_id
+            where cw.adu is not null and pw.adu is not null and (cw.adu - pw.adu) > 0
+            order by (cw.adu - pw.adu) desc, sk.id asc
+            limit 10
+        """)
+        columns = [desc[0] for desc in cur.description]
+        top_growing_adu = [dict(zip(columns, row)) for row in cur.fetchall()]
+
+        # Shrinking ADU -- mirror image of top_growing_adu immediately
+        # above (same shape/columns, opposite filter+sort direction), same
+        # "separate query despite near-identical shape" convention
+        # top_popularity/top_adu already established.
+        cur.execute(f"""
+            with cw as {_sku_adu_cte(ADU_LOOKBACK_DAYS)},
+            pw as {_sku_adu_cte(2 * ADU_LOOKBACK_DAYS, ADU_LOOKBACK_DAYS)}
+            select p.id as product_id, p.name, b.name as brand_name, sk.weight_lbs,
+                   round(pw.adu::numeric, 2) as previous_adu,
+                   round(cw.adu::numeric, 2) as current_adu,
+                   round((cw.adu - pw.adu)::numeric, 2) as delta_adu
+            from cw
+            join pw on pw.product_sku_id = cw.product_sku_id
+            join product_skus sk on sk.id = cw.product_sku_id
+            join products p on p.id = sk.product_id
+            left join brands b on b.id = p.brand_id
+            where cw.adu is not null and pw.adu is not null and (cw.adu - pw.adu) < 0
+            order by (cw.adu - pw.adu) asc, sk.id asc
+            limit 10
+        """)
+        columns = [desc[0] for desc in cur.description]
+        top_shrinking_adu = [dict(zip(columns, row)) for row in cur.fetchall()]
+
     return {
         "kpis": kpis,
         "top_popularity": top_popularity,
         "top_adu": top_adu,
         "adu_by_brand": adu_by_brand,
+        "top_days_of_supply": top_days_of_supply,
+        "top_growing_adu": top_growing_adu,
+        "top_shrinking_adu": top_shrinking_adu,
     }
 
 

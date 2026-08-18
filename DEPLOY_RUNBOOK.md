@@ -6312,6 +6312,74 @@ No migration, no `template.yaml` change (proxy+ catch-all already covers
 the new route). Redeploy: same as 6o.11 -- `sam build AdminApiFunction
 && sam deploy`, plus re-upload `index.html`.
 
+### 6o.13. Dashboard: per-SKU "SKU health" lists -- days of supply, growing/shrinking ADU
+
+Real follow-up ask, same session, after Al noticed the Dashboard's
+`total_catalog_adu` KPI (406) didn't match the "Total Catalog ADU Over
+Time" chart's max (39.5) -- investigated live via several rounds of Al
+pasting real `psql` output rather than guessing: root cause turned out to
+be `_TOTAL_ADU_SQL`'s per-SKU `elapsed_days` denominator being small
+(~3 days) simply because `product_sku_stock_history` was only 5 days old
+at the time, not a rotation/capacity bug (156 total active price sources
+comfortably fit under `DEFAULT_PRICE_CHECK_LIMIT`'s 200/day cap, and 784
+of 814 in-scope SKUs were already getting checked daily) -- the KPI and
+chart numbers converge on their own as more daily history accumulates, no
+code change needed for that part. Al's actual follow-up ask, once that was
+settled: "can we add top 10 days of supply skus descending so lowest
+number of days first... can we build something would show top 10 growth
+ADUs and top 10 shrinking ADUs by sku."
+
+Three more lists added to `GET /admin/dashboard`
+(`service.get_dashboard_summary`, now seven queries instead of four) and
+rendered as a new `.dashboard-cols-3` row beneath the existing Popularity/
+Total ADU row:
+
+- **Top 10 Days of Supply** (`top_days_of_supply`) -- PER-SKU (not
+  per-product like `top_adu`/`top_popularity`, since days-of-supply is
+  meaningless averaged across a product's weights), ascending so the
+  SKUs closest to stocking out sort first. `latest_quantity` is each SKU's
+  single most recent reading (not windowed); a quantity of 0 correctly
+  sorts to `days_of_supply = 0` at the very top, matching
+  `computeSkuForecast`'s own `latestQuantity <= 0 -> daysOfSupply: 0`
+  branch rather than a divide-by-zero or an excluded row.
+- **Top 10 Growing ADU** / **Top 10 Shrinking ADU**
+  (`top_growing_adu`/`top_shrinking_adu`) -- compares each SKU's current
+  `ADU_LOOKBACK_DAYS`-day (30) rate against its own rate over the 30 days
+  before that. Mirror-image queries (growing: `delta_adu > 0` desc;
+  shrinking: `delta_adu < 0` asc), same "separate query despite
+  near-identical shape" convention `top_popularity`/`top_adu` already
+  established.
+
+New shared SQL helper `service._sku_adu_cte(min_days_ago, max_days_ago=0)`
+-- same drops-only/`>=2`-readings/elapsed-days-based per-SKU rate
+`_TOTAL_ADU_SQL` and `adu_by_brand`'s own inline CTE already use, just
+parameterized by an arbitrary trailing window (instead of a third
+hand-copied `ADU_LOOKBACK_DAYS`-only literal) since the growing/shrinking
+queries need two different, non-overlapping windows to compare. Returns
+`adu` as `NULL` (via `case when elapsed_days > 0 ... else null end`) for
+a SKU without a computable rate, not a bare division -- callers filter on
+`adu is not null`/`adu > 0` and never divide by `elapsed_days` themselves.
+
+**Honest caveat, disclosed in both the docstring and the UI's own
+empty-state copy**: `top_growing_adu`/`top_shrinking_adu` require a SKU to
+have a qualifying rate in BOTH windows, i.e. up to `2 * ADU_LOOKBACK_DAYS`
+(60) days of accumulated `product_sku_stock_history` before they can ever
+return anything. Expect both lists to show "not enough stock history yet"
+for a while on this still-young dataset (5 days old as of this write-up) --
+not a bug, just not enough history yet. `top_days_of_supply` only needs
+the existing single `ADU_LOOKBACK_DAYS` window, so it starts populating
+sooner.
+
+Tests: `test_admin_api_service.py` -- three new SQL-shape tests (one per
+new query) via `_DashboardQueryCapturingConnection`, the existing
+four-query count test renamed/updated to seven, and the existing assembly
+test extended with three more `_SequencedConnection` entries plus
+assertions on the three new result keys. 225/225 in this module; full
+repo `test_*.py` sweep clean.
+
+No migration, no `template.yaml` change. Redeploy: same as 6o.11/6o.12 --
+`sam build AdminApiFunction && sam deploy`, plus re-upload `index.html`.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

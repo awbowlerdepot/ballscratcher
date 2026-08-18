@@ -180,6 +180,15 @@
   .dashboard-cols h3 { margin: 0 0 8px; font-size: 13px; }
   @media (max-width: 800px) { .dashboard-cols { grid-template-columns: 1fr; } }
 
+  /* Three per-SKU "SKU health" lists (Al: "top 10 days of supply skus...
+     top 10 growth ADUs and top 10 shrinking ADUs") -- a separate 3-up grid
+     from dashboard-cols' 2-up (Popularity/Total ADU) above, since three
+     genuinely-related lists read best side by side rather than forcing an
+     awkward leftover single column in a 2-up grid. */
+  .dashboard-cols-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 22px; }
+  .dashboard-cols-3 h3 { margin: 0 0 8px; font-size: 13px; }
+  @media (max-width: 1100px) { .dashboard-cols-3 { grid-template-columns: 1fr; } }
+
   .chart-range { display: flex; gap: 4px; margin: 8px 0 6px; }
   .chart-range button {
     padding: 4px 10px;
@@ -1015,6 +1024,41 @@ function renderDashboard(data) {
       '<td class="mono">' + fmtAdu(p.total_adu) + '</td></tr>';
   }).join('');
 
+  // Per-SKU "SKU health" rows (Al: "top 10 days of supply skus descending
+  // so lowest number of days first... top 10 growth ADUs and top 10
+  // shrinking ADUs by sku") -- product NAME plus weight badge (same
+  // "weight_lbs + 'lb'" convention the SKU stock table/legend already use,
+  // see s.weight_lbs usages elsewhere in this file), since these are
+  // per-weight rows, not per-product like the two tables above.
+  const dosRows = (data.top_days_of_supply || []).map(function (s, i) {
+    return '<tr><td class="muted small">' + (i + 1) + '</td>' +
+      '<td>' + escapeHtml(s.name) + ' <span class="muted small">' + s.weight_lbs + 'lb</span></td>' +
+      '<td class="muted">' + escapeHtml(s.brand_name || '—') + '</td>' +
+      '<td class="mono">' + fmtAdu(s.adu) + '</td>' +
+      '<td class="mono">' + fmtCount(s.latest_quantity) + '</td>' +
+      '<td class="mono">' + Number(s.days_of_supply).toFixed(1) + '</td></tr>';
+  }).join('');
+  const growingRows = (data.top_growing_adu || []).map(function (s, i) {
+    return '<tr><td class="muted small">' + (i + 1) + '</td>' +
+      '<td>' + escapeHtml(s.name) + ' <span class="muted small">' + s.weight_lbs + 'lb</span></td>' +
+      '<td class="muted">' + escapeHtml(s.brand_name || '—') + '</td>' +
+      '<td class="mono">' + fmtAdu(s.previous_adu) + ' → ' + fmtAdu(s.current_adu) + '</td>' +
+      '<td class="mono" style="color:#1a7f37;">+' + fmtAdu(s.delta_adu) + '</td></tr>';
+  }).join('');
+  const shrinkingRows = (data.top_shrinking_adu || []).map(function (s, i) {
+    return '<tr><td class="muted small">' + (i + 1) + '</td>' +
+      '<td>' + escapeHtml(s.name) + ' <span class="muted small">' + s.weight_lbs + 'lb</span></td>' +
+      '<td class="muted">' + escapeHtml(s.brand_name || '—') + '</td>' +
+      '<td class="mono">' + fmtAdu(s.previous_adu) + ' → ' + fmtAdu(s.current_adu) + '</td>' +
+      '<td class="mono" style="color:#c0392b;">' + fmtAdu(s.delta_adu) + '</td></tr>';
+  }).join('');
+  // Both growing/shrinking need up to 2*ADU_LOOKBACK_DAYS (60) days of
+  // accumulated stock history before they can ever return anything (see
+  // service.get_dashboard_summary's own docstring) -- an empty state that
+  // just says "no data" would look broken on a freshly-launched catalog,
+  // so this spells out the real reason rather than leaving Al to guess.
+  const trendEmptyMsg = '<tr><td colspan="5" class="muted small">not enough stock history yet -- needs up to 60 days accumulated</td></tr>';
+
   document.getElementById('dashboard-content').innerHTML =
     kpiHtml +
     '<div class="dashboard-cols">' +
@@ -1025,6 +1069,20 @@ function renderDashboard(data) {
       '<div><h3>Top 10 by Total ADU</h3>' +
         '<table class="mini"><thead><tr><th></th><th>Product</th><th>Brand</th><th>ADU</th></tr></thead><tbody>' +
         (aduTopRows || '<tr><td colspan="4" class="muted">no SKU stock history yet</td></tr>') +
+        '</tbody></table></div>' +
+    '</div>' +
+    '<div class="dashboard-cols-3">' +
+      '<div><h3>Top 10 Days of Supply <span class="muted small">(lowest first)</span></h3>' +
+        '<table class="mini"><thead><tr><th></th><th>SKU</th><th>Brand</th><th>ADU</th><th>Qty</th><th>Days</th></tr></thead><tbody>' +
+        (dosRows || '<tr><td colspan="6" class="muted small">no SKU with both stock history and a current quantity yet</td></tr>') +
+        '</tbody></table></div>' +
+      '<div><h3>Top 10 Growing ADU</h3>' +
+        '<table class="mini"><thead><tr><th></th><th>SKU</th><th>Brand</th><th>ADU</th><th>Δ</th></tr></thead><tbody>' +
+        (growingRows || trendEmptyMsg) +
+        '</tbody></table></div>' +
+      '<div><h3>Top 10 Shrinking ADU</h3>' +
+        '<table class="mini"><thead><tr><th></th><th>SKU</th><th>Brand</th><th>ADU</th><th>Δ</th></tr></thead><tbody>' +
+        (shrinkingRows || trendEmptyMsg) +
         '</tbody></table></div>' +
     '</div>' +
     '<h3>Total Catalog ADU Over Time</h3>' +

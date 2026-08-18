@@ -2042,16 +2042,20 @@ def test_list_brands_empty_when_none_exist():
 # --- get_dashboard_summary: Al: "can we create an admin dashboard with
 # some KPIs and top 10 lists... Top 10s i think we can do Popularity and
 # ADUs. An interesting number would be total ADUs across all balls, ADUs
-# by brand, and things like that." Four sequential queries (KPIs, top
-# popularity, top ADU, ADU by brand) -- _QueryCapturingConnection's
-# fetchone() defaults to None (unusable here, an aggregate query with no
-# GROUP BY always returns exactly one row), so a tiny local cursor
-# stands in for it that returns an empty-but-iterable row/rowset instead,
-# purely so the SQL TEXT of all four queries can still be captured and
-# asserted on without the function crashing trying to zip() a real
-# result together. Assembly-logic correctness (does each query's result
-# land in the right key) is covered separately below via
-# _SequencedConnection, same split as test_get_product_* already uses.
+# by brand, and things like that." Later same session, follow-up ask:
+# "can we add top 10 days of supply skus descending so lowest number of
+# days first... can we build something would show top 10 growth ADUs and
+# top 10 shrinking ADUs by sku." Seven sequential queries total (KPIs, top
+# popularity, top ADU, ADU by brand, top days-of-supply, top growing ADU,
+# top shrinking ADU) -- _QueryCapturingConnection's fetchone() defaults to
+# None (unusable here, an aggregate query with no GROUP BY always returns
+# exactly one row), so a tiny local cursor stands in for it that returns
+# an empty-but-iterable row/rowset instead, purely so the SQL TEXT of all
+# seven queries can still be captured and asserted on without the
+# function crashing trying to zip() a real result together.
+# Assembly-logic correctness (does each query's result land in the right
+# key) is covered separately below via _SequencedConnection, same split
+# as test_get_product_* already uses.
 
 class _DashboardQueryCapturingCursor:
     def __init__(self):
@@ -2158,13 +2162,62 @@ def test_get_dashboard_summary_adu_by_brand_query_shape():
     assert "where t.total_adu > 0" not in query  # no >0 filter here, unlike top_adu
 
 
-def test_get_dashboard_summary_only_runs_four_queries():
+def test_get_dashboard_summary_top_days_of_supply_query_shape():
+    """Al: "top 10 days of supply skus descending so lowest number of days
+    first." PER-SKU (product_skus/weight_lbs joined in, unlike the
+    per-product top_popularity/top_adu queries above), ordered ascending
+    (lowest days-of-supply -- soonest to stock out -- first)."""
     conn = _DashboardQueryCapturingConnection()
     service.get_dashboard_summary(conn)
-    assert len(conn.cursor().queries) == 4
+
+    query = conn.cursor().queries[4]
+    assert "with sa as" in query
+    assert "latest_qty as" in query
+    assert "distinct on (product_sku_id)" in query
+    assert "sk.weight_lbs" in query
+    assert "where sa.adu > 0 and lq.quantity is not null" in query
+    assert "order by (lq.quantity / sa.adu) asc, sk.id asc limit 10" in query
 
 
-def test_get_dashboard_summary_assembles_all_four_results():
+def test_get_dashboard_summary_top_growing_adu_query_shape():
+    """Al: "top 10 growth ADUs... by sku." Compares the current
+    ADU_LOOKBACK_DAYS-day window's per-SKU rate against the
+    ADU_LOOKBACK_DAYS days before that -- both windows driven off
+    ADU_LOOKBACK_DAYS (not hardcoded literals), confirming the "current"
+    window stays in lockstep with every other ADU query's own definition
+    of "current"."""
+    conn = _DashboardQueryCapturingConnection()
+    service.get_dashboard_summary(conn)
+
+    query = conn.cursor().queries[5]
+    assert "with cw as" in query
+    assert "pw as" in query
+    assert ("interval '%d days'" % service.ADU_LOOKBACK_DAYS) in query
+    assert ("interval '%d days'" % (2 * service.ADU_LOOKBACK_DAYS)) in query
+    assert "where cw.adu is not null and pw.adu is not null and (cw.adu - pw.adu) > 0" in query
+    assert "order by (cw.adu - pw.adu) desc, sk.id asc limit 10" in query
+
+
+def test_get_dashboard_summary_top_shrinking_adu_query_shape():
+    """Mirror image of top_growing_adu immediately above -- same shape,
+    opposite filter/sort direction (biggest decrease first)."""
+    conn = _DashboardQueryCapturingConnection()
+    service.get_dashboard_summary(conn)
+
+    query = conn.cursor().queries[6]
+    assert "with cw as" in query
+    assert "pw as" in query
+    assert "where cw.adu is not null and pw.adu is not null and (cw.adu - pw.adu) < 0" in query
+    assert "order by (cw.adu - pw.adu) asc, sk.id asc limit 10" in query
+
+
+def test_get_dashboard_summary_only_runs_seven_queries():
+    conn = _DashboardQueryCapturingConnection()
+    service.get_dashboard_summary(conn)
+    assert len(conn.cursor().queries) == 7
+
+
+def test_get_dashboard_summary_assembles_all_seven_results():
     conn = _SequencedConnection([
         {  # KPIs
             "columns": [
@@ -2196,6 +2249,24 @@ def test_get_dashboard_summary_assembles_all_four_results():
                 ("Ebonite", "0"),
             ],
         },
+        {  # top_days_of_supply
+            "columns": ["product_id", "name", "brand_name", "weight_lbs", "adu", "latest_quantity", "days_of_supply"],
+            "all": [
+                ("prod-4", "Fallout", "Roto Grip", 15, "8.90", 4, "0.4"),
+            ],
+        },
+        {  # top_growing_adu
+            "columns": ["product_id", "name", "brand_name", "weight_lbs", "previous_adu", "current_adu", "delta_adu"],
+            "all": [
+                ("prod-5", "Intel Tour", "900 Global", 16, "2.00", "5.70", "3.70"),
+            ],
+        },
+        {  # top_shrinking_adu
+            "columns": ["product_id", "name", "brand_name", "weight_lbs", "previous_adu", "current_adu", "delta_adu"],
+            "all": [
+                ("prod-6", "Bionic", "900 Global", 14, "6.00", "1.50", "-4.50"),
+            ],
+        },
     ])
 
     result = service.get_dashboard_summary(conn)
@@ -2217,6 +2288,18 @@ def test_get_dashboard_summary_assembles_all_four_results():
         {"brand_name": "Storm", "total_adu": "300.1"},
         {"brand_name": "Hammer", "total_adu": "150.0"},
         {"brand_name": "Ebonite", "total_adu": "0"},
+    ]
+    assert result["top_days_of_supply"] == [
+        {"product_id": "prod-4", "name": "Fallout", "brand_name": "Roto Grip", "weight_lbs": 15,
+         "adu": "8.90", "latest_quantity": 4, "days_of_supply": "0.4"},
+    ]
+    assert result["top_growing_adu"] == [
+        {"product_id": "prod-5", "name": "Intel Tour", "brand_name": "900 Global", "weight_lbs": 16,
+         "previous_adu": "2.00", "current_adu": "5.70", "delta_adu": "3.70"},
+    ]
+    assert result["top_shrinking_adu"] == [
+        {"product_id": "prod-6", "name": "Bionic", "brand_name": "900 Global", "weight_lbs": 14,
+         "previous_adu": "6.00", "current_adu": "1.50", "delta_adu": "-4.50"},
     ]
 
 
