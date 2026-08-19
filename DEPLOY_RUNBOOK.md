@@ -33,7 +33,7 @@ Any Postgres 13+ instance works (RDS is the obvious choice, but this
 repo doesn't assume it). Note the connection details -- you'll need them
 for step 3's `DbSecretArn` secret and to run migrations directly.
 
-## 2. Run the seventeen migrations, in order
+## 2. Run the nineteen migrations, in order
 
 ```bash
 psql "$DATABASE_URL" -f db/migrations/001_init_schema.sql
@@ -54,6 +54,7 @@ psql "$DATABASE_URL" -f db/migrations/015_products_last_price_discovery_at.sql
 psql "$DATABASE_URL" -f db/migrations/016_price_tracking_bigcommerce.sql
 psql "$DATABASE_URL" -f db/migrations/017_price_tracking_sku_stock.sql
 psql "$DATABASE_URL" -f db/migrations/018_bowlerdepot_products_dedupe_by_product.sql
+psql "$DATABASE_URL" -f db/migrations/019_products_product_type.sql
 ```
 
 (If you already ran an earlier subset in a prior deploy, just run whatever
@@ -6449,6 +6450,152 @@ count, and a `_SequencedConnection`-based assembly test.
 No migration, no `template.yaml` change (proxy+ catch-all already covers
 the new route). Redeploy: same as 6o.11/6o.12/6o.13 -- `sam build
 AdminApiFunction && sam deploy`, plus re-upload `index.html`.
+
+### 6p. Multi-category support, phase 1: Bags catalog scraping (Brunswick)
+
+Al's ask: "currently all the products are bowling ball and im thinking of
+pulling in bags shoes and other items, what do you think is the best way
+to pull in additional categories and product types." Scoped down via
+follow-up questions: first category is **Bags**, prototyped on
+**Brunswick** (same brand/platform already scraped for balls), and this
+first pass is **catalog only** -- name/color/part_number/description/
+images -- deliberately NOT price/stock/ADU/DOS tracking. That's a real,
+separate follow-up (see "Deferred: bag price/stock tracking" below), not
+an oversight.
+
+**Investigation, not guesswork.** Every structural claim below was
+confirmed live this session via Claude in Chrome (`fetch()` issued from
+inside a real browser tab, same discipline as every other real-page-shape
+claim in this doc) against three actual bag product pages
+(`blitz-double-roller-black`, `punisher-triple-tote-blue-green`,
+`sidekick-single-tote`) and Brunswick's real sitemap:
+
+- Brunswick's sitemap has 416 total URLs: 258 balls (the only category
+  `url_discovery`'s old default pattern captured), 54 shoes (not onboarded
+  yet), 51 bags (`/products/bags/(roller-bags|carry-bags)/<slug>` -- 26
+  roller, 25 carry), plus 49 accessory pages and 4 non-product landing
+  pages.
+- Bag pages have **zero `<table>` tags** -- none of the spec-table/Core-
+  Numbers-table/RG-DIFF structure ball pages have. Instead: a plain,
+  always-visible `<h3>Features and Benefits</h3>` followed by a `<ul>` of
+  bullet points (a "Dimensions: 10&quot; L x 15&quot; D x 23&quot; H" line
+  is just one more `<li>` in that list, not a separate field -- no hidden
+  `.u-hide` description div the way balls have), and an
+  `<h3>Part Number(s):</h3>` followed by a `<p>` of `<br>`-separated
+  "`<part number> - <color>`" lines (plural heading wording for a
+  multi-color bag, singular for a single-color one).
+- **Each color is its own page/URL**, not a `product_skus`-style variant
+  of one shared product the way ball weights are -- confirmed via the
+  sitemap (`.../blitz-double-roller-black` and
+  `.../blitz-double-roller-purple` both exist as separate entries) and via
+  the page itself (the Black page's own H1 is "Blitz Double Roller -
+  Black", even though its Part Numbers list still shows all four
+  siblings' part numbers for cross-nav). So this only ever writes ONE
+  `product_skus`-equivalent value per page -- handled by reusing the
+  existing `products.color`/`products.part_number` columns (same ones
+  balls already populate from their spec table), not a new table.
+- **No current/retired URL split for bags** -- Brunswick doesn't appear to
+  expose a public retired-bags archive (none in the sitemap). Status
+  defaults to `'current'`. This is an assumption, not confirmed against a
+  real retired-bag page; flag to Al if a bag ever needs manually marking
+  retired.
+
+**Migration 019** (`db/migrations/019_products_product_type.sql`): adds
+`products.product_type text not null default 'ball'` + a check constraint
+(`'ball'`, `'bag'`, `'shoe'`). Every existing row is 100% ball today, so
+the `default` backfills every pre-existing row as part of the `ADD COLUMN`
+itself -- no separate `UPDATE` needed. This is the single dispatch column
+every layer branches on going forward.
+
+**`src/product_scraper/app.py`:**
+- `detect_product_type(url)` reads the category straight off the URL path
+  (`/products/(balls|bags|shoes)/`) -- no page-content inspection needed,
+  confirmed live that Brunswick segments every category into its own path
+  segment. Defaults to `'ball'` for anything unrecognized (preserves
+  every pre-existing ball URL's behavior).
+- `parse_product_page()` now branches at the top: `product_type == 'bag'`
+  routes to the new `parse_bag_product_page()`; everything else is the
+  original, byte-for-byte-unchanged ball parsing path (both paths return
+  the same dict shape, now including a `product_type` key, so
+  `upsert_product` and every caller don't need to branch themselves).
+- New bag-only helpers: `_find_heading`/`_next_sibling_tag` (generic
+  "first `<h3>` matching this text, then its next sibling tag" walk --
+  same "match by visible label text, not CSS class" philosophy this
+  file's ball-parsing functions already follow), `parse_bag_description`
+  (joins the Features and Benefits `<li>`s, semicolon-separated),
+  `parse_bag_color_and_part_number` (matches THIS page's own color,
+  parsed off its `<h1>`'s " - &lt;color&gt;" tail, against the Part
+  Numbers list to pick the one part number that's actually this page's --
+  returns `(title_color, None)` rather than guessing when nothing
+  matches, so a mismatch surfaces as a missing part_number for review
+  instead of a silently wrong one).
+- `upsert_product`: `product_type` added to the `products` insert/
+  on-conflict-update. The oil/motion plotter estimate-on-scrape block
+  (migrations 011/012) is now guarded to `product_type == 'ball'` only --
+  bags have no core/coverstock/differential to estimate a position from,
+  and would otherwise get a meaningless mid-range 'estimated' rating
+  written onto every row. `get_or_create_core_id`/
+  `get_or_create_coverstock_id` already short-circuit to `None` for a bag
+  (its `core_name`/`coverstock_name` are always `None`), so no extra
+  branching was needed there.
+
+**`template.yaml`:** new `BagsUrlPathPattern` parameter (default
+`/products/bags/(roller-bags|carry-bags)/`) and a new
+`BrunswickBagsUrlDiscoveryFunction` resource -- same reuse convention as
+`RadicalUrlDiscoveryFunction`/`Dv8UrlDiscoveryFunction` (identical
+`src/url_discovery/` code, just a different env var), except here it's the
+SAME brand (`BrandId`)/sitemap (`SitemapUrl`) as the existing
+`UrlDiscoveryFunction`, just a different `URL_PATH_PATTERN`. Publishes
+onto the same `ProductScrapeQueue`/`ProductScraperFunction` as every other
+Craft-CMS deployment -- `ProductScraperFunction` itself needed no new
+deployment, env var, or `template.yaml` change at all, since it already
+takes `{url, brand_id}` as a generic pass-through job and now dispatches
+on `product_type` internally. `src/url_discovery/app.py` needed **zero**
+code changes -- its regex capture group (`roller-bags|carry-bags`) just
+lands in `discovered_urls.status_path` instead of `current`/`retired`,
+which that column doesn't validate against a fixed set. Daily schedule
+wired the same as every other `*UrlDiscoveryFunction` in this template.
+
+**Tests:** `tests/fixtures/blitz_double_roller.html` -- new fixture, same
+"trimmed but real-shape, every value copied verbatim from a literal raw
+fetch" discipline as `crown_78u.html`/`defender.html`. New tests in
+`tests/test_product_scraper.py`: `detect_product_type` (ball/bag/shoe/
+unrecognized-defaults-to-ball), end-to-end fixture assertions (product_type,
+name, status, color/part_number picked correctly out of a 4-color list,
+description includes the Dimensions bullet, every ball-only field stays
+`None`/empty, images still filtered correctly via the unchanged
+`parse_images`), and direct unit tests of `parse_bag_description`/
+`parse_bag_color_and_part_number` covering the single-color-no-suffix
+case, the multi-color-matches-title case, a slash-in-color-name case
+("Blue / Green"), the no-match-returns-title-color-and-None case, and the
+no-Part-Numbers-section-at-all case.
+
+`pytest` isn't installed in this sandbox this session (pypi.org is
+blocked by the sandbox's own network allowlist, same restriction already
+hit earlier fetching brunswickbowling.com directly) -- every new
+assertion above was instead run manually via a throwaway script calling
+the same functions/fixtures directly (all passed), and the existing ball
+fixtures (crown_78u/defender/combat_solid) were re-run the same way to
+confirm zero regressions on the ball path. The full non-pytest
+`test_*.py` sweep (`tests/test_admin_api_service.py` and everything else
+that isn't `test_product_scraper.py`/`test_url_discovery.py`) ran clean.
+Al should re-run `pytest tests/test_product_scraper.py -v` in his own
+environment to get the real pytest confirmation once he pulls this.
+
+**Deferred: bag price/stock tracking.** `price_checker.py`'s whole
+stock-matching pipeline (`match_sku_weights_to_variants`) is hard-keyed
+off `product_skus.weight_lbs` (`not null`), which bags don't have --
+extending it to bags needs a new matching key (likely `part_number`,
+since that's now real catalog data once this scrapes), and whether
+retailer sites even expose a matching part number/SKU for bags hasn't
+been checked. Deliberately out of scope for this pass (Al confirmed:
+catalog first) -- real follow-up once there's actual bag catalog data in
+hand to test a matching key against.
+
+**Redeploy:** `sam build BrunswickBagsUrlDiscoveryFunction
+ProductScraperFunction && sam deploy` after running migration 019.
+`BrunswickBagsUrlDiscoveryFunction` can also be invoked manually first to
+smoke-test before waiting for its daily schedule.
 
 ## 7. Ongoing operations
 

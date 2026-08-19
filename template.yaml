@@ -57,6 +57,23 @@ Parameters:
       UUID of the row in the `brands` table this deployment discovers URLs
       for (see db/migrations/001_init_schema.sql). Insert the brand row via
       the migration/seed data before deploying, then pass its id here.
+  BagsUrlPathPattern:
+    Type: String
+    Default: /products/bags/(roller-bags|carry-bags)/
+    Description: >
+      Migration 019: first non-ball category onboarded (Al's ask -- "im
+      thinking of pulling in bags shoes and other items"), prototyped on
+      Brunswick since it's the same Craft-CMS platform/brand/sitemap
+      already scraped for balls -- BrunswickBagsUrlDiscoveryFunction below
+      reuses SitemapUrl/BrandId as-is, just with this different path
+      pattern, same reuse convention as RadicalUrlDiscoveryFunction/
+      Dv8UrlDiscoveryFunction reusing UrlPathPattern. src/url_discovery/
+      app.py needed zero code changes for this -- the capture group here
+      (roller-bags|carry-bags) just lands in discovered_urls.status_path
+      instead of current/retired, which that column doesn't validate.
+      src/product_scraper/app.py's parse_product_page reads product_type
+      (ball/bag/shoe) off the URL itself, not off this pattern, so this
+      only needs to be permissive enough to select bag product pages.
   RadicalSitemapUrl:
     Type: String
     Default: https://radicalbowling.com/sitemaps-1-section-bowlerProducts-1-sitemap.xml
@@ -726,6 +743,44 @@ Resources:
             Schedule: rate(1 day)
             Name: bowling-scraper-dv8-url-discovery-daily
             Description: Sitemap diff against discovered_urls for DV8; emits new/changed product URLs.
+            Enabled: true
+
+  # Bags on Brunswick (migration 019) -- same brand/sitemap/BrandId as
+  # UrlDiscoveryFunction above, just a different URL_PATH_PATTERN (see
+  # BagsUrlPathPattern's own comment for why zero url_discovery/app.py
+  # changes were needed). Publishes onto the SAME ProductScrapeQueue/
+  # ProductScraperFunction as every other Craft-CMS deployment here --
+  # ProductScraperFunction's own parse_product_page now branches on
+  # product_type read off the URL, so it needed no new deployment or env
+  # var of its own for this.
+  BrunswickBagsUrlDiscoveryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-brunswick-bags-url-discovery
+      CodeUri: src/url_discovery/
+      Handler: app.handler
+      Environment:
+        Variables:
+          SITEMAP_URL: !Ref SitemapUrl
+          URL_PATH_PATTERN: !Ref BagsUrlPathPattern
+          BRAND_ID: !Ref BrandId
+          PRODUCT_SCRAPE_QUEUE_URL: !Ref ProductScrapeQueue
+      Policies:
+        - VPCAccessPolicy: {}
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt ProductScrapeQueue.QueueName
+      Events:
+        DailySchedule:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 day)
+            Name: bowling-scraper-brunswick-bags-url-discovery-daily
+            Description: Sitemap diff against discovered_urls for Brunswick bags; emits new/changed bag product URLs.
             Enabled: true
 
   ProductScraperFunction:
@@ -2435,6 +2490,8 @@ Outputs:
     Value: !GetAtt RadicalUrlDiscoveryFunction.Arn
   Dv8UrlDiscoveryFunctionArn:
     Value: !GetAtt Dv8UrlDiscoveryFunction.Arn
+  BrunswickBagsUrlDiscoveryFunctionArn:
+    Value: !GetAtt BrunswickBagsUrlDiscoveryFunction.Arn
   ProductScraperFunctionArn:
     Value: !GetAtt ProductScraperFunction.Arn
   PdfParserFunctionArn:

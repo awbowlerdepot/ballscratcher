@@ -41,6 +41,10 @@ from app import (  # noqa: E402
     _normalize_coverstock_name,
     _find_table_by_row_labels,
     SPEC_TABLE_LABELS,
+    detect_product_type,
+    parse_bag_description,
+    parse_bag_color_and_part_number,
+    parse_bag_product_page,
 )
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
@@ -62,6 +66,14 @@ def defender():
 def combat_solid():
     html = (FIXTURES / "combat_solid.html").read_text()
     return parse_product_page(html, "https://brunswickbowling.com/products/balls/current/combat-solid")
+
+
+@pytest.fixture
+def blitz_double_roller():
+    html = (FIXTURES / "blitz_double_roller.html").read_text()
+    return parse_product_page(
+        html, "https://brunswickbowling.com/products/bags/roller-bags/blitz-double-roller-black"
+    )
 
 
 # --- Crown 78U: current ball, full per-weight table, no inline mass bias ---
@@ -586,3 +598,146 @@ def test_nearby_label_text_falls_back_to_own_text_when_nothing_more_specific():
     soup = BeautifulSoup('<a href="x.pdf">Download</a>', "lxml")
     link = soup.find("a")
     assert _nearby_label_text(link) == "Download"
+
+
+# --- Bags (product_type='bag', migration 019) ------------------------------
+#
+# Al's ask: "currently all the products are bowling ball and im thinking of
+# pulling in bags shoes and other items, what do you think is the best way
+# to pull in additional categories and product types." First category
+# onboarded, prototyped on Brunswick. See app.py's module-level comment
+# above parse_bag_product_page for what's real-verified (three live pages
+# checked via Claude in Chrome this session: Blitz Double Roller, Punisher
+# Triple Tote, Sidekick Single Tote) vs. still an assumption (status
+# defaulting to 'current' -- no retired-bag page exists in the sitemap to
+# confirm against).
+
+def test_detect_product_type_ball_url():
+    assert detect_product_type("https://brunswickbowling.com/products/balls/current/crown-78u") == "ball"
+
+
+def test_detect_product_type_bag_url():
+    assert detect_product_type(
+        "https://brunswickbowling.com/products/bags/roller-bags/blitz-double-roller-black"
+    ) == "bag"
+
+
+def test_detect_product_type_shoe_url():
+    """Shoes aren't wired up with their own url_discovery deployment or bag-
+    style parser yet -- this only confirms the URL-based dispatch itself is
+    forward-compatible (returns 'shoe', doesn't crash/fall through to
+    'ball') for when that follow-up happens."""
+    assert detect_product_type("https://brunswickbowling.com/products/shoes/fury-white") == "shoe"
+
+
+def test_detect_product_type_defaults_to_ball_for_unrecognized_path():
+    assert detect_product_type("https://brunswickbowling.com/coolwick") == "ball"
+
+
+def test_blitz_double_roller_basic_fields(blitz_double_roller):
+    assert blitz_double_roller["product_type"] == "bag"
+    assert blitz_double_roller["name"] == "Blitz Double Roller - Black"
+    # No current/retired URL segment on any real bag page found -- see
+    # BAG_DEFAULT_STATUS's comment in app.py.
+    assert blitz_double_roller["status"] == "current"
+
+
+def test_blitz_double_roller_color_and_part_number_match_title(blitz_double_roller):
+    """Real markup: the Part Numbers list on this page has FOUR colors
+    (Black/Blue/Purple/Pink, for cross-nav to "Additional Colors"), but
+    this page's own URL/H1 is specifically the Black colorway -- only its
+    own part number should be picked, not the first line in the list."""
+    assert blitz_double_roller["color"] == "Black"
+    assert blitz_double_roller["part_number"] == "59-BR2200-001"
+
+
+def test_blitz_double_roller_description_includes_dimensions_bullet(blitz_double_roller):
+    """Dimensions is just one more <li> in the Features and Benefits list on
+    this platform, not a separate field -- see app.py's module comment."""
+    desc = blitz_double_roller["description"]
+    assert "Retractable and locking handle system" in desc
+    assert 'Dimensions: 10" L x 15" D x 23" H' in desc
+    assert "5-year limited warranty" in desc
+
+
+def test_blitz_double_roller_ball_only_fields_stay_empty(blitz_double_roller):
+    """Confirms this platform's bag pages genuinely have none of the
+    ball-only structure -- core/coverstock/RG-DIFF/weights/release date all
+    stay None/empty rather than the ball parser's fallback guesses leaking
+    through (there's no spec table or Core Numbers table on a bag page at
+    all, so _find_table_by_row_labels/_find_core_numbers_table would both
+    return None if this ever ran through the ball path by mistake)."""
+    assert blitz_double_roller["core_name"] is None
+    assert blitz_double_roller["coverstock_name"] is None
+    assert blitz_double_roller["weights_available"] is None
+    assert blitz_double_roller["release_date"] is None
+    assert blitz_double_roller["skus"] == []
+
+
+def test_blitz_double_roller_images(blitz_double_roller):
+    """parse_images() is reused unchanged for bags -- confirms it still
+    correctly keeps the real gallery image and drops the low-res thumbnail-
+    nav duplicate (same MIN_IMAGE_WIDTH filter as balls)."""
+    image_types = [img["image_type"] for img in blitz_double_roller["images"]]
+    assert image_types == ["main"]
+
+
+def test_parse_bag_description_returns_none_when_section_absent():
+    soup = BeautifulSoup("<html><body><h1>No Bag Info Here</h1></body></html>", "lxml")
+    assert parse_bag_description(soup) is None
+
+
+def test_parse_bag_color_and_part_number_single_color_no_title_suffix():
+    """Real shape from Sidekick Single Tote: H1 has no " - <color>" suffix
+    (the bag only comes in one color), and the Part Number(s) list has
+    exactly one line -- used directly regardless of any title match."""
+    soup = BeautifulSoup(
+        "<h3>Part Number:</h3><p>59-BS5900-001 - Black</p>",
+        "lxml",
+    )
+    color, part_number = parse_bag_color_and_part_number(soup, "Sidekick Single Tote")
+    assert color == "Black"
+    assert part_number == "59-BS5900-001"
+
+
+def test_parse_bag_color_and_part_number_multi_color_matches_title():
+    soup = BeautifulSoup(
+        "<h3>Part Numbers:</h3>"
+        "<p>59-BR2200-001 - Black<br>59-BR2200-002 - Blue<br>59-BR2200-006 - Purple<br>59-BR2200-007 - Pink</p>",
+        "lxml",
+    )
+    color, part_number = parse_bag_color_and_part_number(soup, "Blitz Double Roller - Purple")
+    assert color == "Purple"
+    assert part_number == "59-BR2200-006"
+
+
+def test_parse_bag_color_and_part_number_slash_color_real_shape():
+    """Real shape from Punisher Triple Tote: color itself contains a
+    " / " (Blue / Green) -- rsplit(" - ", 1) must not be confused by that."""
+    soup = BeautifulSoup(
+        "<h3>Part Numbers:</h3><p>59-123304-012 - Blue / Green</p>",
+        "lxml",
+    )
+    color, part_number = parse_bag_color_and_part_number(soup, "Punisher Triple Tote - Blue / Green")
+    assert color == "Blue / Green"
+    assert part_number == "59-123304-012"
+
+
+def test_parse_bag_color_and_part_number_no_match_returns_title_color_and_none():
+    """Title has a color suffix but nothing in the part-number list matches
+    it -- returns the title's own color and None for part_number rather
+    than guessing which line belongs to this page."""
+    soup = BeautifulSoup(
+        "<h3>Part Numbers:</h3><p>59-BR2200-002 - Blue<br>59-BR2200-006 - Purple</p>",
+        "lxml",
+    )
+    color, part_number = parse_bag_color_and_part_number(soup, "Blitz Double Roller - Black")
+    assert color == "Black"
+    assert part_number is None
+
+
+def test_parse_bag_color_and_part_number_no_heading_returns_none_none():
+    soup = BeautifulSoup("<h1>No Part Numbers Section</h1>", "lxml")
+    color, part_number = parse_bag_color_and_part_number(soup, "Some Bag")
+    assert color is None
+    assert part_number is None

@@ -1,0 +1,51 @@
+<!--
+Trimmed, real-shape fixture for a Brunswick bag product page (migration
+019, first non-ball category onboarded). Every element/text value below was
+confirmed live this session via a literal `fetch()` issued from inside a
+real browser tab against
+https://brunswickbowling.com/products/bags/roller-bags/blitz-double-roller-black
+(same "no page-content inspection tool ever returns a markdown-converted
+view" discipline the ball fixtures' own header comments describe) -- the
+<h3>Features and Benefits</h3> -> <ul><li> structure, the exact 8 bullet
+lines (including "Dimensions: ..." as just one more <li>, not a separate
+field), and the <h3>Part Numbers:</h3> -> <p> with <br>-separated
+"<part number> - <color>" lines are all copied verbatim from the real raw
+HTML response, not reconstructed from a summary. Unrelated real page
+furniture (nav, footer, cookie banner, ~300KB of tracking scripts) is
+stripped, same convention as crown_78u.html/defender.html.
+-->
+<html>
+<body>
+<main>
+  <h1>Blitz Double Roller - Black</h1>
+
+  <div class="c-general-content">
+    <h3>Features and Benefits</h3>
+    <ul>
+      <li>Retractable and locking handle system</li>
+      <li>3.5-inch wheels</li>
+      <li>Large front zippered pocket</li>
+      <li>Holds up to size 17 men&rsquo;s shoes</li>
+      <li>Screen printed logos</li>
+      <li>600D material</li>
+      <li>Dimensions: 10" L x 15" D x 23" H</li>
+      <li>5-year limited warranty</li>
+    </ul>
+  </div>
+
+  <div class="c-general-content c-general-content--column c-general-content--left">
+    <h3>Part Numbers:</h3>
+    <p>59-BR2200-001 - Black<br>59-BR2200-002 - Blue<br>59-BR2200-006 - Purple<br>59-BR2200-007 - Pink</p>
+  </div>
+
+  <img src="https://brunswickbowling.com/images/blitz-double-roller-black_main_1600x1600_abc123.png"
+       srcset="https://brunswickbowling.com/images/blitz-double-roller-black_main_700_1600x1600_abc123.png 700w,
+               https://brunswickbowling.com/images/blitz-double-roller-black_main_1400_1600x1600_abc123.png 1400w"
+       alt="Blitz Double Roller Black">
+  <img src="https://brunswickbowling.com/images/blitz-double-roller-black_thumb_1600x1600_abc123.png"
+       srcset="https://brunswickbowling.com/images/blitz-double-roller-black_thumb_64_1600x1600_abc123.png 64w,
+               https://brunswickbowling.com/images/blitz-double-roller-black_thumb_128_1600x1600_abc123.png 128w"
+       alt="Blitz Double Roller Black thumbnail">
+</main>
+</body>
+</html>

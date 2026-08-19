@@ -74,6 +74,28 @@ logger.setLevel(logging.INFO)
 WEIGHT_HEADER_RE = re.compile(r"(\d{1,2})\s*lb", re.IGNORECASE)
 STATUS_FROM_URL_RE = re.compile(r"/products/balls/(current|retired)/")
 
+# --- Multi-category support (migration 019) -------------------------------
+# Al's ask: onboard bags (and eventually shoes) alongside balls, prototyped
+# on Brunswick first since it's the same Craft-CMS platform/brand already
+# scraped for balls. product_type is read straight off the URL path --
+# confirmed live that Brunswick segments every category into its own
+# /products/<category>/ path (balls/bags/shoes), so no page-content
+# inspection is needed to tell them apart before picking a parser.
+PRODUCT_TYPE_FROM_URL_RE = re.compile(r"/products/(balls|bags|shoes)/")
+URL_SEGMENT_TO_PRODUCT_TYPE = {"balls": "ball", "bags": "bag", "shoes": "shoe"}
+
+
+def detect_product_type(url: str) -> str:
+    """Which catalog category this page belongs to. Defaults to 'ball' for
+    any URL that doesn't match a recognized /products/<category>/ segment --
+    preserves this scraper's original behavior for every ball URL scraped
+    before this function existed (all of them match /products/balls/
+    anyway, so this is a safe default, not a guess)."""
+    match = PRODUCT_TYPE_FROM_URL_RE.search(url)
+    if match:
+        return URL_SEGMENT_TO_PRODUCT_TYPE.get(match.group(1), "ball")
+    return "ball"
+
 # Known Spec Table row labels. Detection requires only a majority match
 # (not all of these) since real pages are inconsistent about which fields
 # they include -- e.g. a retired Defender page has no Release Date row,
@@ -538,8 +560,154 @@ def parse_images(soup: BeautifulSoup, base_url: str) -> list:
     return images
 
 
+# --- Bags (product_type='bag') --------------------------------------------
+# Confirmed live this session against three real bag pages (Blitz Double
+# Roller, Punisher Triple Tote, Sidekick Single Tote): bag pages have none
+# of the spec-table/RG-DIFF/core/coverstock structure ball pages do -- zero
+# <table> tags on any of the three pages checked. Instead:
+#   - The marketing description is a plain, always-visible <ul> under an
+#     <h3>Features and Benefits</h3> heading (no hidden .u-hide div the way
+#     balls have -- see parse_description above) -- and a "Dimensions: ..."
+#     line is just one more <li> in that same list, not a separate field.
+#   - Part number(s) are a <br>-separated <p> under an <h3>Part Number(s):
+#     </h3> heading (singular wording for a single-color bag, plural for a
+#     multi-color one) -- also not a table.
+# There's also no current/retired URL segment for bags the way balls have
+# (/products/balls/(current|retired)/) -- Brunswick doesn't appear to
+# expose a public retired-bags archive (none found in the sitemap), so
+# status defaults to 'current' below. This is an assumption, not confirmed
+# against a real retired-bag page -- flag to Al if a bag ever needs to be
+# marked retired by hand.
+BAG_DEFAULT_STATUS = "current"
+
+
+def _find_heading(soup, label_substring: str):
+    """First <h3> (Brunswick's bag pages use <h3> for every section
+    heading, confirmed on all three real pages checked) whose text
+    contains label_substring, case-insensitive. Returns None if not found
+    -- callers treat that as "this page doesn't have this section" rather
+    than raising."""
+    for heading in soup.find_all("h3"):
+        if label_substring in _clean(heading.get_text()).lower():
+            return heading
+    return None
+
+
+def _next_sibling_tag(start, tag_name: str):
+    """Walks forward through start's element siblings for the first one
+    named tag_name. Bounded implicitly by running out of siblings -- real
+    markup on every page checked has the target tag within 1-2 siblings of
+    its heading, never buried deeper."""
+    node = start.find_next_sibling()
+    while node is not None and getattr(node, "name", None) != tag_name:
+        node = node.find_next_sibling()
+    return node
+
+
+def parse_bag_description(soup) -> str:
+    """Joins the Features and Benefits bullet list (which includes the
+    Dimensions line as just one more <li> -- see module comment above)
+    into one semicolon-separated description string. Returns None if the
+    page doesn't have this section."""
+    heading = _find_heading(soup, "features and benefits")
+    if heading is None:
+        return None
+    ul = _next_sibling_tag(heading, "ul")
+    if ul is None:
+        return None
+    items = [_clean(li.get_text(separator=" ")) for li in ul.find_all("li")]
+    items = [item for item in items if item]
+    return "; ".join(items) if items else None
+
+
+def parse_bag_color_and_part_number(soup, name: str):
+    """Returns (color, part_number) for THIS specific page.
+
+    Real markup (confirmed on 3 live pages): a "Part Number(s):" heading is
+    followed by a <p> of <br>-separated "<part number> - <color>" lines --
+    one line per color this bag model comes in, not just this page's own
+    color (e.g. Blitz Double Roller's page for the Black colorway still
+    lists Blue/Purple/Pink too, for cross-nav to the "Additional Colors"
+    section). This page's OWN color is read off the tail of its <h1>
+    ("Blitz Double Roller - Black" -> "Black"); when the title has no
+    " - <color>" suffix (e.g. "Sidekick Single Tote"), the bag only comes
+    in one color and the part-number list has exactly one line -- used
+    directly in that case.
+
+    Matching is case-insensitive against the title's color tail. If
+    nothing matches and there's more than one candidate line, returns
+    (title_color, None) rather than guessing which line is this page's --
+    a mismatch here should surface as a missing part_number for review,
+    not a silently wrong one."""
+    heading = _find_heading(soup, "part number")
+    part_number_lines = []
+    if heading is not None:
+        p = _next_sibling_tag(heading, "p")
+        if p is not None:
+            raw = p.get_text(separator="\n")
+            part_number_lines = [_clean(line) for line in raw.split("\n") if _clean(line)]
+
+    title_color = None
+    if " - " in name:
+        title_color = _clean(name.rsplit(" - ", 1)[1])
+
+    parsed_lines = []
+    for line in part_number_lines:
+        if " - " in line:
+            part_num, color = line.rsplit(" - ", 1)
+            parsed_lines.append((_clean(part_num), _clean(color)))
+
+    if len(parsed_lines) == 1:
+        return parsed_lines[0][1], parsed_lines[0][0]
+
+    if title_color:
+        for part_num, color in parsed_lines:
+            if color.lower() == title_color.lower():
+                return color, part_num
+
+    return title_color, None
+
+
+def parse_bag_product_page(soup, url: str) -> dict:
+    """Bag-page counterpart to the ball parsing below -- same return shape
+    (every key the ball path returns is present here too, so upsert_product
+    and every caller don't need to branch on product_type themselves), just
+    with every ball-only field (core/coverstock/RG-DIFF/weights/release
+    date) left None/empty since this platform's bag pages genuinely don't
+    have them. See the module comment above this function for what's real-
+    verified vs. deferred."""
+    h1 = soup.find("h1")
+    name = _clean(h1.get_text()) if h1 else None
+    color, part_number = parse_bag_color_and_part_number(soup, name or "")
+
+    return {
+        "url": url,
+        "status": BAG_DEFAULT_STATUS,
+        "product_type": "bag",
+        "name": name,
+        "color": color,
+        "core_name": None,
+        "coverstock_name": None,
+        "coverstock_material": None,
+        "coverstock_type": None,
+        "factory_finish": None,
+        "part_number": part_number,
+        "weights_available": None,
+        "release_date_raw": None,
+        "release_date": None,
+        "description": parse_bag_description(soup),
+        "skus": [],
+        "resources": parse_resources(soup, url),
+        "images": parse_images(soup, url),
+    }
+
+
 def parse_product_page(html: str, url: str) -> dict:
     soup = BeautifulSoup(html, "lxml")
+
+    product_type = detect_product_type(url)
+    if product_type == "bag":
+        return parse_bag_product_page(soup, url)
 
     status_match = STATUS_FROM_URL_RE.search(url)
     status = status_match.group(1) if status_match else None
@@ -569,6 +737,7 @@ def parse_product_page(html: str, url: str) -> dict:
     return {
         "url": url,
         "status": status,
+        "product_type": "ball",
         "name": name,
         "color": spec.get("color"),
         "core_name": spec.get("core"),
@@ -828,11 +997,16 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
     # This platform doesn't expose a dedicated symmetric/asymmetric field
     # anywhere on the page (see parse_product_page) -- core_type stays None
     # here, same as it always has. Only core_name is new.
+    #
+    # For non-ball product_types (migration 019), core_name/coverstock_name
+    # are always None (see parse_bag_product_page) so these two calls just
+    # short-circuit to None -- no bag-specific branching needed here.
     core_id = get_or_create_core_id(conn, brand_id, parsed.get("core_name"))
     coverstock_id = get_or_create_coverstock_id(
         conn, brand_id, parsed.get("coverstock_name"),
         parsed.get("coverstock_material"), parsed.get("coverstock_type"),
     )
+    product_type = parsed.get("product_type", "ball")
 
     # discontinued_detected_at logic (see migration 003's comments for the
     # full reasoning): on INSERT, set to now() if the product is already
@@ -848,12 +1022,12 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
                 brand_id, name, url, color, coverstock_material, coverstock_type,
                 coverstock_name, factory_finish, part_number, weights_available,
                 status, source_platform, release_date, description, discontinued_detected_at,
-                core_id, coverstock_id
+                core_id, coverstock_id, product_type
             )
             values (
                 %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::int4range, %s, 'craft_cms', %s, %s,
                 case when %s = 'retired' then now() else null end,
-                %s, %s
+                %s, %s, %s
             )
             on conflict (url) do update set
                 name = excluded.name,
@@ -865,6 +1039,7 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
                 part_number = excluded.part_number,
                 weights_available = excluded.weights_available,
                 status = excluded.status,
+                product_type = excluded.product_type,
                 release_date = coalesce(excluded.release_date, products.release_date),
                 -- coalesce, not overwrite: a page-parse hiccup that misses
                 -- the hidden u-hide description (see parse_description's
@@ -890,7 +1065,7 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
                 parsed["coverstock_material"], parsed["coverstock_type"],
                 parsed["coverstock_name"], parsed["factory_finish"], parsed["part_number"],
                 weights_range, parsed["status"], parsed["release_date"], parsed["description"],
-                parsed["status"], core_id, coverstock_id,
+                parsed["status"], core_id, coverstock_id, product_type,
             ),
         )
         product_id = cur.fetchone()[0]
@@ -1002,26 +1177,35 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
     # symmetric/asymmetric field), so it's read back from the cores row
     # itself, which may have picked one up from a different platform's
     # scrape of the same shared core or an admin correction.
-    with conn.cursor() as cur:
-        core_type = None
-        if core_id is not None:
-            cur.execute("select core_type from cores where id = %s", (core_id,))
-            row = cur.fetchone()
-            core_type = row[0] if row else None
-        cur.execute("select has_particle from products where id = %s", (product_id,))
-        has_particle = cur.fetchone()[0]
-        estimate = estimate_oil_motion(
-            core_type=core_type,
-            coverstock_type=parsed["coverstock_type"],
-            coverstock_material=parsed["coverstock_material"],
-            has_particle=has_particle,
-            differential=_reference_differential(parsed["skus"]),
-        )
-        cur.execute(
-            "update products set oil_rating = %s, motion_rating = %s, oil_motion_source = 'estimated' "
-            "where id = %s and oil_rating is null",
-            (estimate["oil"], estimate["motion"], product_id),
-        )
+    #
+    # Ball-only (migration 019): the whole oil/motion plotter concept is
+    # ball-specific -- a bag has no core/coverstock/differential to
+    # estimate a position from, and core_id/coverstock_id are always None
+    # for a bag anyway (see above), so this would otherwise write a
+    # meaningless mid-range estimate onto every bag row. Skipped entirely
+    # for non-ball product_types rather than letting it silently produce a
+    # bogus 'estimated' rating.
+    if product_type == "ball":
+        with conn.cursor() as cur:
+            core_type = None
+            if core_id is not None:
+                cur.execute("select core_type from cores where id = %s", (core_id,))
+                row = cur.fetchone()
+                core_type = row[0] if row else None
+            cur.execute("select has_particle from products where id = %s", (product_id,))
+            has_particle = cur.fetchone()[0]
+            estimate = estimate_oil_motion(
+                core_type=core_type,
+                coverstock_type=parsed["coverstock_type"],
+                coverstock_material=parsed["coverstock_material"],
+                has_particle=has_particle,
+                differential=_reference_differential(parsed["skus"]),
+            )
+            cur.execute(
+                "update products set oil_rating = %s, motion_rating = %s, oil_motion_source = 'estimated' "
+                "where id = %s and oil_rating is null",
+                (estimate["oil"], estimate["motion"], product_id),
+            )
 
     conn.commit()
     return {"product_id": product_id, "pending_image_jobs": pending_image_jobs, "stale_image_rows": stale_image_rows}
