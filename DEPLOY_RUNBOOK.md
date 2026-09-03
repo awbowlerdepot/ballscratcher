@@ -6836,11 +6836,15 @@ non-pytest `test_*.py` sweep ran clean after both additions.
 --check` against the extracted `<script>` contents, plus an HTML
 tag-balance check) -- both passed.
 
-**Redeploy**: run migration 021, then `sam build AdminApiFunction
-BowlerdepotVideoSyncFunction && sam deploy`, then swap the static
-`admin-site/index.html` file as usual (no redeploy step -- open it via
-`file://` or wherever it's hosted). No BigCommerce-side changes needed
-for this piece.
+**Redeploy**: run migration 021, then a full unscoped `sam build && sam
+deploy` (NOT `sam build AdminApiFunction ...` -- this deploy touches
+`AdminApiFunction`, and 6a.5 documents two confirmed real incidents of
+a scoped build on that function alone shipping a broken zip missing
+`fastapi`; always use the full unscoped build/deploy whenever
+`AdminApiFunction` is one of the functions changing), then swap the
+static `admin-site/index.html` file as usual (no redeploy step -- open
+it via `file://` or wherever it's hosted). No BigCommerce-side changes
+needed for this piece.
 
 ## 7. Ongoing operations
 
