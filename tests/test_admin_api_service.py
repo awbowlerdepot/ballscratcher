@@ -639,6 +639,58 @@ class FakeCursor:
                     row["price_source_id"] = new_id
             self._last_result = None
 
+        # --- 021_blocked_video_channels.sql: the competitor-channel
+        # filter feeding bowlerdepot_video_sync's list_videos_needing_
+        # sync (Al: "some of these videos are from our competitors and we
+        # should avoid putting those on there"). db["blocked_video_channels"]
+        # is a plain dict keyed by id, same shape as db["price_sites"].
+
+        elif q.startswith("select id, channel_title, note, created_at from blocked_video_channels order by created_at desc"):
+            rows = sorted(
+                self.db.get("blocked_video_channels", {}).values(),
+                key=lambda r: r.get("created_at") or "", reverse=True,
+            )
+            self._rows = [(r["id"], r["channel_title"], r.get("note"), r.get("created_at")) for r in rows]
+            self.description = [("id",), ("channel_title",), ("note",), ("created_at",)]
+
+        elif q.startswith("insert into blocked_video_channels"):
+            channel_title, note = params
+            existing = next(
+                (r for r in self.db.get("blocked_video_channels", {}).values()
+                 if r["channel_title"].lower() == channel_title.lower()),
+                None,
+            )
+            if existing is not None:
+                # on conflict (lower(channel_title)) do nothing -- no row
+                # returned, service.create_blocked_channel falls back to
+                # the lookup-by-lower(channel_title) select below.
+                self._last_result = None
+            else:
+                self.db.setdefault("_blocked_channel_id_seq", 0)
+                self.db["_blocked_channel_id_seq"] += 1
+                new_id = f"blocked-new-{self.db['_blocked_channel_id_seq']}"
+                row = {"id": new_id, "channel_title": channel_title, "note": note, "created_at": "now"}
+                self.db.setdefault("blocked_video_channels", {})[new_id] = row
+                self._last_result = (row["id"], row["channel_title"], row["note"], row["created_at"])
+            self.description = [("id",), ("channel_title",), ("note",), ("created_at",)]
+
+        elif q.startswith("select id, channel_title, note, created_at from blocked_video_channels where lower(channel_title)"):
+            (channel_title,) = params
+            row = next(
+                (r for r in self.db.get("blocked_video_channels", {}).values()
+                 if r["channel_title"].lower() == channel_title.lower()),
+                None,
+            )
+            self._last_result = (row["id"], row["channel_title"], row.get("note"), row.get("created_at")) if row else None
+            self.description = [("id",), ("channel_title",), ("note",), ("created_at",)]
+
+        elif q.startswith("delete from blocked_video_channels where id = %s"):
+            (channel_id,) = params
+            existed = channel_id in self.db.get("blocked_video_channels", {})
+            self.db.get("blocked_video_channels", {}).pop(channel_id, None)
+            self._last_result = (channel_id,) if existed else None
+            self.description = [("id",)]
+
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
 
@@ -3832,6 +3884,79 @@ def test_delete_price_site_missing_raises():
     conn = FakeConnection(db)
     try:
         service.delete_price_site(conn, "no-such-site")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+# --- 021_blocked_video_channels.sql: competitor-channel filter feeding
+# bowlerdepot_video_sync (Al: "some of these videos are from our
+# competitors and we should avoid putting those on there"). Same
+# list/create-with-dedupe/delete-by-id shape as price_sites above.
+
+def test_list_blocked_channels_returns_all_most_recent_first():
+    db = {"blocked_video_channels": {
+        "b1": {"id": "b1", "channel_title": "Bowling.com", "note": None, "created_at": "2026-01-01"},
+        "b2": {"id": "b2", "channel_title": "BowlingBall.com", "note": "competitor retailer", "created_at": "2026-02-01"},
+    }}
+    conn = FakeConnection(db)
+
+    result = service.list_blocked_channels(conn)
+
+    assert [r["id"] for r in result] == ["b2", "b1"]
+    assert result[0] == {"id": "b2", "channel_title": "BowlingBall.com", "note": "competitor retailer", "created_at": "2026-02-01"}
+
+
+def test_create_blocked_channel_inserts_row():
+    db = {"blocked_video_channels": {}}
+    conn = FakeConnection(db)
+
+    result = service.create_blocked_channel(conn, "Bowling.com", note="competitor retailer")
+
+    assert result["channel_title"] == "Bowling.com"
+    assert result["note"] == "competitor retailer"
+    new_id = result["id"]
+    assert db["blocked_video_channels"][new_id]["channel_title"] == "Bowling.com"
+    assert conn.committed is True
+
+
+def test_create_blocked_channel_dedupes_case_insensitively():
+    """Re-blocking an already-blocked channel (even with different
+    casing) is a harmless no-op that returns the EXISTING row, not a
+    second row or an error -- mirrors the case-insensitive unique index
+    021_blocked_video_channels.sql adds."""
+    db = {"blocked_video_channels": {
+        "b1": {"id": "b1", "channel_title": "Bowling.com", "note": None, "created_at": "2026-01-01"},
+    }}
+    conn = FakeConnection(db)
+
+    result = service.create_blocked_channel(conn, "BOWLING.COM", note="second attempt")
+
+    assert result["id"] == "b1"
+    assert len(db["blocked_video_channels"]) == 1
+    # The original row's note is untouched -- create_blocked_channel's
+    # ON CONFLICT DO NOTHING means the second call's note is simply
+    # dropped, not merged.
+    assert db["blocked_video_channels"]["b1"]["note"] is None
+
+
+def test_delete_blocked_channel_removes_row():
+    db = {"blocked_video_channels": {
+        "b1": {"id": "b1", "channel_title": "Bowling.com", "note": None, "created_at": "2026-01-01"},
+    }}
+    conn = FakeConnection(db)
+
+    result = service.delete_blocked_channel(conn, "b1")
+
+    assert result == {"deleted": True, "id": "b1"}
+    assert "b1" not in db["blocked_video_channels"]
+
+
+def test_delete_blocked_channel_missing_raises():
+    db = {"blocked_video_channels": {}}
+    conn = FakeConnection(db)
+    try:
+        service.delete_blocked_channel(conn, "no-such-channel")
         assert False, "expected LookupError"
     except LookupError:
         pass

@@ -3447,3 +3447,86 @@ def queue_price_discovery_batch(limit: int = None, scrape_only: bool = False) ->
         Payload=json.dumps(payload),
     )
     return {"queued": True, "limit": limit, "scrape_only": scrape_only}
+
+
+# ---------------------------------------------------------------------
+# Blocked video channels (021_blocked_video_channels.sql) -- Al: "i feel
+# like a filter is probably necessary because some of these videos are
+# from our competitors and we should avoid putting those on there."
+# A simple admin-curated blocklist by channel display name (no stable
+# channel_id is captured anywhere in this pipeline -- see the migration's
+# own header comment), consumed only by src/bowlerdepot_video_sync's
+# list_videos_needing_sync query to keep a competitor's actual video off
+# BowlerDepot's product pages. Deliberately does NOT touch video
+# discovery, approval, or the video_reviews_summary rollup -- Al
+# explicitly wants the rollup to keep drawing on every approved video's
+# summary regardless of channel ("I would like to include the summary of
+# summaries even if it is built off of one of theirs").
+# ---------------------------------------------------------------------
+
+def list_blocked_channels(conn) -> list:
+    """Every blocked channel, most-recently-added first -- the small
+    admin-site panel just needs a flat list to render with a delete
+    button per row, same shape as list_price_sites but with no
+    active/inactive state (a row here IS the block; removing it is just
+    a delete, see delete_blocked_channel)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select id, channel_title, note, created_at
+            from blocked_video_channels
+            order by created_at desc
+            """
+        )
+        rows = cur.fetchall()
+    return [
+        {"id": r[0], "channel_title": r[1], "note": r[2], "created_at": r[3]}
+        for r in rows
+    ]
+
+
+def create_blocked_channel(conn, channel_title: str, note: str = None) -> dict:
+    """Adds one channel to the blocklist. `on conflict ... do nothing`
+    against the case-insensitive unique index (021_blocked_video_
+    channels.sql) means re-blocking an already-blocked channel (even
+    with different casing) is a harmless no-op rather than an
+    IntegrityError -- same "let the DB constraint be the source of
+    truth, but don't make the caller pre-check" posture as
+    insert_price_source_candidates' own on-conflict-do-nothing insert."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into blocked_video_channels (channel_title, note)
+            values (%s, %s)
+            on conflict (lower(channel_title)) do nothing
+            returning id, channel_title, note, created_at
+            """,
+            (channel_title, note),
+        )
+        row = cur.fetchone()
+        if row is None:
+            # Already blocked (case-insensitive match) -- look up the
+            # existing row so the caller still gets a real id back
+            # rather than None, same "return the row that actually
+            # exists" courtesy as any other dedupe-on-conflict path.
+            cur.execute(
+                "select id, channel_title, note, created_at from blocked_video_channels where lower(channel_title) = lower(%s)",
+                (channel_title,),
+            )
+            row = cur.fetchone()
+    conn.commit()
+    return {"id": row[0], "channel_title": row[1], "note": row[2], "created_at": row[3]}
+
+
+def delete_blocked_channel(conn, channel_id: str) -> dict:
+    """Un-blocks a channel -- hard delete, same reasoning as
+    delete_price_site: nothing else in this pipeline will ever re-create
+    a blocked_video_channels row on its own, so there's no
+    tombstone/resurface risk to guard against."""
+    with conn.cursor() as cur:
+        cur.execute("delete from blocked_video_channels where id = %s returning id", (channel_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError(f"No blocked_video_channels row with id {channel_id}")
+    conn.commit()
+    return {"deleted": True, "id": channel_id}

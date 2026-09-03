@@ -46,6 +46,14 @@ pushes a video once -- "needs sync" is simply bowlerdepot_synced_at is
 null, same convention as product_price_sources.last_checked_at elsewhere
 in this codebase.
 
+Competitor-channel filter (021_blocked_video_channels.sql, added right
+after this module first shipped -- Al: "some of these videos are from
+our competitors and we should avoid putting those on there"):
+list_videos_needing_sync excludes any video whose channel_title matches
+an admin-curated blocked_video_channels row. See that function's own
+docstring for the full scoping -- this only ever affects what gets
+pushed here, never discovery/approval/the rollup summary.
+
 Prerequisite Al needs to confirm/set up himself (not something this code
 can verify or fix): the BigCommerce API token behind BIGCOMMERCE_SECRET_ARN
 was created for price_checker/bowlerdepot_reconciliation's read-only price
@@ -125,6 +133,21 @@ def list_videos_needing_sync(conn) -> list:
     -- this sync should never push a video the public site itself
     wouldn't show.
 
+    Also excludes any video whose channel_title matches (case-
+    insensitively) a row in blocked_video_channels
+    (021_blocked_video_channels.sql) -- Al: "i feel like a filter is
+    probably necessary because some of these videos are from our
+    competitors and we should avoid putting those on there." This is
+    deliberately scoped to ONLY this push -- a blocked channel's video
+    can still be 'approved' with a real summary, still counts toward
+    products.video_reviews_summary_video_count, and its own per-video
+    summary still feeds into video_summarizer's aggregate rollup
+    paragraph (Al explicitly wants that: "I would like to include the
+    summary of summaries even if it is built off of one of theirs").
+    Blocking only ever removes rows from what THIS function returns, so
+    a blocked video simply never gets pushed to BigCommerce -- nothing
+    upstream (discovery, approval, the rollup) is touched.
+
     already_synced_count (a correlated count of this product's
     already-synced videos) seeds the per-product sort_order counter the
     handler keeps as it works through the batch -- computed once here
@@ -148,6 +171,10 @@ def list_videos_needing_sync(conn) -> list:
               and pv.bowlerdepot_synced_at is null
               and bp.match_status = 'matched'
               and p.published = true
+              and not exists (
+                  select 1 from blocked_video_channels bvc
+                  where lower(bvc.channel_title) = lower(pv.channel_title)
+              )
             order by pv.product_id, pv.published_at desc nulls last, pv.id
             """
         )

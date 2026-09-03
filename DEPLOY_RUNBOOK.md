@@ -33,7 +33,7 @@ Any Postgres 13+ instance works (RDS is the obvious choice, but this
 repo doesn't assume it). Note the connection details -- you'll need them
 for step 3's `DbSecretArn` secret and to run migrations directly.
 
-## 2. Run the twenty migrations, in order
+## 2. Run the twenty-one migrations, in order
 
 ```bash
 psql "$DATABASE_URL" -f db/migrations/001_init_schema.sql
@@ -56,6 +56,7 @@ psql "$DATABASE_URL" -f db/migrations/017_price_tracking_sku_stock.sql
 psql "$DATABASE_URL" -f db/migrations/018_bowlerdepot_products_dedupe_by_product.sql
 psql "$DATABASE_URL" -f db/migrations/019_products_product_type.sql
 psql "$DATABASE_URL" -f db/migrations/020_bowlerdepot_video_sync.sql
+psql "$DATABASE_URL" -f db/migrations/021_blocked_video_channels.sql
 ```
 
 (If you already ran an earlier subset in a prior deploy, just run whatever
@@ -6744,6 +6745,102 @@ new Lambda can also be invoked manually first
 (`aws lambda invoke --function-name bowling-scraper-bowlerdepot-video-sync ...`,
 same pattern as 6e's manual-invoke instructions) to smoke-test before its
 hourly schedule picks it up.
+
+### 6r. Competitor-channel filter for the BowlerDepot video sync
+
+Al's follow-up right after 6q shipped: "i feel like a filter is probably
+necessary because some of these videos are from our competitors and we
+should avoid putting those on there. I would like to include the summary
+of summaries even if it is built off of one of theirs."
+
+Two very different asks bundled together:
+
+1. Don't push a **competitor's own YouTube video** onto BowlerDepot's
+   product page via `bowlerdepot_video_sync` -- a real gap, since
+   nothing in the pipeline previously distinguished a manufacturer/
+   reviewer channel from a competitor retailer's own review channel.
+2. Keep drawing the aggregate `video_reviews_summary` rollup paragraph
+   from **every** approved video's per-video summary regardless of
+   channel -- explicitly a non-change. `video_summarizer`'s rollup query
+   is untouched by this feature.
+
+**Investigation before building**: checked whether any "competitor
+channel" concept already existed anywhere in this codebase (video
+discovery, approval, admin-site) -- it didn't. `product_videos.channel_
+title` (migration 004) is the only channel signal ever captured, and it's
+a YouTube display name, not a stable channel id (`video_discovery/app.py`
+never captured YouTube's own `snippet.channelId`, even though the API
+returns it). Approval today is also purely title/brand-token matching
+(`video_discovery.score_match`) with no channel awareness, and a large
+share of approvals happen via `scripts/auto_approve_video_candidates.py`
+with zero human ever looking at the channel name. So this needed a real,
+new, admin-curated blocklist -- not something that could be inferred from
+existing data.
+
+**Migration 021** (`db/migrations/021_blocked_video_channels.sql`): new
+`blocked_video_channels` table (`id, channel_title, note, created_at`),
+with a case-insensitive unique index on `channel_title` (`lower(channel_
+title)`) so "Bowling.com" and "bowling.com" can't both get added as
+separate rows and silently only half-match.
+
+**`src/admin_api`**: `list_blocked_channels`/`create_blocked_channel`/
+`delete_blocked_channel` in `service.py`, mirroring `price_sites`' own
+list/create-with-dedupe/delete-by-id shape exactly (`create_blocked_
+channel` uses `insert ... on conflict (lower(channel_title)) do nothing`,
+falling back to a lookup-by-lower-title select so re-blocking an
+already-blocked channel is a harmless no-op that returns the existing
+row, not an error). New routes `GET/POST /blocked-channels` and
+`DELETE /blocked-channels/{id}` in `app.py` -- no `template.yaml` change
+needed, `AdminHttpApi`'s existing `/{proxy+}` GET/POST/PATCH/DELETE
+catch-all already covers them (same precedent as every other small
+reference-table endpoint added to this API).
+
+**`src/bowlerdepot_video_sync/app.py`**: `list_videos_needing_sync`'s
+query gained one `and not exists (select 1 from blocked_video_channels
+bvc where lower(bvc.channel_title) = lower(pv.channel_title))` clause.
+That's the ENTIRE change -- a blocked channel's videos stay `approved`,
+still count toward `video_reviews_summary_video_count`, and their
+per-video summaries still feed the rollup; they simply never appear in
+what this function returns, so the sync's `handler` never pushes them to
+BigCommerce. Nothing upstream (discovery/approval/the rollup) was
+touched.
+
+**`admin-site/index.html`**: a small "Blocked channels" panel added
+inside the existing Video Candidates tab (`#tab-videos`) -- deliberately
+NOT a new top-level nav tab like Cores/Coverstocks/Price Sites, since
+this blocklist is small and tightly coupled to that tab's own `channel_
+title` column rather than a general product-facing reference table. Add-
+channel form + a list with an "Unblock" button per row
+(`loadBlockedChannels`/`renderBlockedChannels`/`createBlockedChannel`/
+`deleteBlockedChannel`), loaded alongside the video candidates list
+itself. Each video row in the candidates table also got a one-click
+"Block channel" button (`blockChannelForVideo`) -- reads the channel name
+off the button's own `data-channel` attribute rather than embedding free
+text into an `onclick` string (every other `onclick` in this file only
+ever embeds a safe id, never arbitrary text, for exactly this reason: a
+channel name with a quote or apostrophe in it would otherwise break the
+attribute).
+
+**Tests**: `tests/test_admin_api_service.py` gained 5 tests for the new
+service functions (list ordering, insert, case-insensitive dedupe-
+returns-existing-row, delete, delete-missing-raises) -- 231 to 236, zero
+regressions. `tests/test_bowlerdepot_video_sync.py` gained a test
+asserting the executed `list_videos_needing_sync` query text actually
+contains the `blocked_video_channels`/`not exists` clause (the fake
+cursor in that file returns pre-canned "already filtered" rows, same
+limitation as every other DB-touching test file here with no real
+Postgres available, so this can only confirm the filter is wired into
+the query, not exercise real SQL filtering behavior) -- 12 to 13. Full
+non-pytest `test_*.py` sweep ran clean after both additions.
+`admin-site/index.html` verified the same way prior sessions have (`node
+--check` against the extracted `<script>` contents, plus an HTML
+tag-balance check) -- both passed.
+
+**Redeploy**: run migration 021, then `sam build AdminApiFunction
+BowlerdepotVideoSyncFunction && sam deploy`, then swap the static
+`admin-site/index.html` file as usual (no redeploy step -- open it via
+`file://` or wherever it's hosted). No BigCommerce-side changes needed
+for this piece.
 
 ## 7. Ongoing operations
 

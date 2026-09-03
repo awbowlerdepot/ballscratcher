@@ -113,6 +113,15 @@ class PriceSiteUpdateRequest(BaseModel):
     base_url: Optional[str] = None
 
 
+class BlockedChannelCreateRequest(BaseModel):
+    # Matched case-insensitively against product_videos.channel_title by
+    # bowlerdepot_video_sync's list_videos_needing_sync -- see
+    # 021_blocked_video_channels.sql's header comment for why display
+    # name (not a stable channel_id) is what's captured/matched.
+    channel_title: str
+    note: Optional[str] = None
+
+
 class ProductPriceSourceCreateRequest(BaseModel):
     # Manual-override path only -- see service.create_product_price_source's
     # docstring. The normal way a product_price_sources row comes into
@@ -804,6 +813,37 @@ def delete_price_site(site_id: str):
     conn = service.get_db_connection()
     try:
         return service.delete_price_site(conn, site_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
+# --- Blocked video channels (competitor-channel filter for bowlerdepot_video_sync) ---
+
+@app.get("/blocked-channels")
+def get_blocked_channels():
+    conn = service.get_db_connection()
+    try:
+        return {"items": service.list_blocked_channels(conn)}
+    finally:
+        conn.close()
+
+
+@app.post("/blocked-channels")
+def create_blocked_channel(body: BlockedChannelCreateRequest):
+    conn = service.get_db_connection()
+    try:
+        return service.create_blocked_channel(conn, body.channel_title, body.note)
+    finally:
+        conn.close()
+
+
+@app.delete("/blocked-channels/{channel_id}")
+def delete_blocked_channel(channel_id: str):
+    conn = service.get_db_connection()
+    try:
+        return service.delete_blocked_channel(conn, channel_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
     finally:

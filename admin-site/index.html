@@ -366,6 +366,30 @@
 
   <!-- ============ Video Candidates tab ============ -->
   <section id="tab-videos" class="tab hidden">
+    <!-- Blocked channels -- Al: "i feel like a filter is probably
+         necessary because some of these videos are from our competitors
+         and we should avoid putting those on there." Lives here (not its
+         own top-level nav tab like Cores/Coverstocks/Price Sites) because
+         it's a small blocklist tightly coupled to this tab's own
+         channel_title column -- see the "Block channel" button on each
+         row below, and service.list_blocked_channels/create_blocked_
+         channel/delete_blocked_channel. Only affects
+         src/bowlerdepot_video_sync's push to BigCommerce -- blocking a
+         channel here does NOT un-approve its videos or remove them from
+         the video_reviews_summary rollup (Al: "I would like to include
+         the summary of summaries even if it is built off of one of
+         theirs"). -->
+    <div class="panel">
+      <h3>Blocked channels</h3>
+      <p class="muted small">Videos from a blocked channel stay approved and still feed the aggregate video summary, but are never pushed to BigCommerce's Product Videos feature on bowlerdepot.com. Match is case-insensitive on the channel's display name.</p>
+      <div class="filters">
+        <div class="field"><label>Channel name</label><input id="blockedchannel-new-title" type="text" placeholder="e.g. Bowling.com"></div>
+        <div class="field"><label>Note (optional)</label><input id="blockedchannel-new-note" type="text" placeholder="e.g. competitor retailer"></div>
+        <button class="btn" type="button" onclick="createBlockedChannel()">Block</button>
+      </div>
+      <div id="blockedchannel-list"><p class="muted">Set your API URL and token above, then this loads automatically.</p></div>
+    </div>
+
     <form class="filters" onsubmit="applyVideoFilters(); return false;">
       <div class="field">
         <label>Status</label>
@@ -1490,6 +1514,83 @@ async function loadVideoCandidates() {
   } catch (e) {
     listEl.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
   }
+  // Loaded alongside the candidates list itself (not a separate
+  // TAB_LOADERS entry) since the Blocked Channels panel lives inside
+  // this same tab -- see that panel's own HTML comment.
+  loadBlockedChannels();
+}
+
+// --- Blocked channels -- see #tab-videos' own HTML comment for the ask
+// and scope. service.list_blocked_channels/create_blocked_channel/
+// delete_blocked_channel back these three.
+
+async function loadBlockedChannels() {
+  const listEl = document.getElementById('blockedchannel-list');
+  listEl.innerHTML = '<p class="muted">Loading&hellip;</p>';
+  try {
+    const data = await api('GET', '/blocked-channels');
+    renderBlockedChannels(data.items || []);
+  } catch (e) {
+    listEl.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
+  }
+}
+
+function renderBlockedChannels(items) {
+  const listEl = document.getElementById('blockedchannel-list');
+  if (!items.length) {
+    listEl.innerHTML = '<p class="muted">No blocked channels yet.</p>';
+    return;
+  }
+  const rows = items.map(function (c) {
+    return '<tr><td>' + escapeHtml(c.channel_title) + '</td>' +
+      '<td class="muted small">' + escapeHtml(c.note || '') + '</td>' +
+      '<td class="actions"><button class="btn small ghost danger" onclick="deleteBlockedChannel(\'' + c.id + '\')">Unblock</button></td></tr>';
+  }).join('');
+  listEl.innerHTML = '<table><thead><tr><th>Channel</th><th>Note</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
+}
+
+async function createBlockedChannel() {
+  const channelTitle = document.getElementById('blockedchannel-new-title').value.trim();
+  const note = document.getElementById('blockedchannel-new-note').value.trim() || undefined;
+  if (!channelTitle) {
+    toast('Channel name is required.', true);
+    return;
+  }
+  try {
+    await api('POST', '/blocked-channels', { body: { channel_title: channelTitle, note: note } });
+    document.getElementById('blockedchannel-new-title').value = '';
+    document.getElementById('blockedchannel-new-note').value = '';
+    toast('Blocked "' + channelTitle + '"');
+    loadBlockedChannels();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function deleteBlockedChannel(id) {
+  if (!confirm('Unblock this channel? Its videos become eligible for the BigCommerce push again on the next sync run.')) return;
+  try {
+    await api('DELETE', '/blocked-channels/' + id);
+    toast('Unblocked');
+    loadBlockedChannels();
+  } catch (e) { toast(e.message, true); }
+}
+
+// Quick-block from a video row -- reads channel off the button's own
+// data-channel attribute (set via escapeHtml when the row was rendered)
+// rather than an onclick-embedded string, so a channel name containing a
+// quote/apostrophe can't break the attribute. See renderVideoCandidates'
+// "Block channel" button.
+async function blockChannelForVideo(btn) {
+  const channel = btn.dataset.channel;
+  if (!channel) {
+    toast('This video has no channel name to block.', true);
+    return;
+  }
+  if (!confirm('Block channel "' + channel + '"? Its approved videos stay approved (and still feed the summary rollup) but will never be pushed to BigCommerce.')) return;
+  try {
+    await api('POST', '/blocked-channels', { body: { channel_title: channel } });
+    toast('Blocked "' + channel + '"');
+    loadBlockedChannels();
+  } catch (e) { toast(e.message, true); }
 }
 
 function renderVideoCandidates(items, pendingCount) {
@@ -1552,6 +1653,12 @@ function renderVideoCandidates(items, pendingCount) {
         '<td class="actions">' + statusCell +
         '<button class="btn small ghost" onclick="reassignVideo(\'' + v.id + '\')">Reassign</button>' +
         '<button class="btn small ghost danger" onclick="deleteVideo(\'' + v.id + '\')">Delete</button>' +
+        // data-channel (not embedded in the onclick string) so a channel
+        // name with a quote/apostrophe in it can't break the attribute --
+        // same reasoning every other onclick in this file only ever
+        // embeds a safe id, never free text. blockChannelForVideo reads
+        // it off the button element itself.
+        '<button class="btn small ghost" data-channel="' + escapeHtml(v.channel_title || '') + '" onclick="blockChannelForVideo(this)">Block channel</button>' +
         '<button class="btn small ghost" onclick="toggleVideoDetail(\'' + v.id + '\')">Detail</button></td>' +
         '</tr>' +
         '<tr id="video-detail-' + v.id + '" class="detail-row hidden"><td colspan="' + (showBulk ? 8 : 7) + '"></td></tr>';

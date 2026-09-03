@@ -141,6 +141,23 @@ def test_list_videos_needing_sync_empty_when_nothing_pending():
     assert app.list_videos_needing_sync(conn) == []
 
 
+def test_list_videos_needing_sync_query_excludes_blocked_channels():
+    """The fake cursor above doesn't simulate real SQL filtering (no
+    Postgres available in this sandbox, same limitation as every other
+    DB-touching test file here) -- videos_needing_sync is returned as-is,
+    already "post-filter". What this test CAN verify is that the
+    executed query text actually contains the blocked_video_channels
+    exclusion (021_blocked_video_channels.sql) rather than that filter
+    having been silently dropped or never wired up."""
+    conn = _FakeConnection(videos_needing_sync=[])
+    app.list_videos_needing_sync(conn)
+
+    executed_query = conn._cursor.executed[0][0]
+    assert "blocked_video_channels" in executed_query
+    assert "not exists" in executed_query
+    assert "lower(bvc.channel_title) = lower(pv.channel_title)" in executed_query
+
+
 # --- push_video_to_bigcommerce: fake requests-Session-shaped object ---
 
 class _FakeResponse:
