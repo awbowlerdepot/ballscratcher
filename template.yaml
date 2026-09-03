@@ -2273,6 +2273,60 @@ Resources:
             Description: Checks price for the most-overdue approved+active product_price_sources rows (see list_price_sources_due).
             Enabled: true
 
+  BowlerdepotVideoSyncFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-bowlerdepot-video-sync
+      CodeUri: src/bowlerdepot_video_sync/
+      Handler: app.handler
+      # Same 30s-per-request BigCommerce POST as price_checker's own
+      # fetches, but no per-source retry loop here, and expected batch
+      # volume (newly-approved videos catalog-wide since the last run) is
+      # small -- 120s is generous headroom, not sized against a confirmed
+      # incident the way PriceCheckerFunction's 280s was.
+      Timeout: 120
+      # BIGCOMMERCE_SECRET_ARN -- same secret PriceCheckerFunction/
+      # BowlerDepotReconciliationFunction already read, reused here (see
+      # BigCommerceSecretArn's own parameter description). Unlike those
+      # two, THIS function's POST calls need the token to actually carry
+      # the Products "modify" OAuth scope, not just read-only -- see
+      # get_bigcommerce_credentials' docstring in app.py. If the existing
+      # token predates this feature and was only ever granted read-only
+      # access, every push will 403 until Al upgrades it (or issues a
+      # second token) in BigCommerce's API Accounts settings -- nothing
+      # in this template can detect or fix that for him.
+      Environment:
+        Variables:
+          BIGCOMMERCE_SECRET_ARN: !Ref BigCommerceSecretArn
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              # Same HasBigCommerceSecret conditional as
+              # PriceCheckerFunction/BowlerDepotReconciliationFunction's
+              # own grants above -- an empty-string BigCommerceSecretArn
+              # isn't a valid IAM Resource value.
+              Resource: !If
+                - HasBigCommerceSecret
+                - - !Ref DbSecretArn
+                  - !Ref BigCommerceSecretArn
+                - - !Ref DbSecretArn
+      # Hourly rather than daily -- Al's ask was specifically about a
+      # video showing up on the storefront promptly once approved in the
+      # admin review queue, not once a day. list_videos_needing_sync's
+      # own query is cheap (only ever-outstanding rows), so an hourly
+      # cadence costs nothing extra when there's nothing due, same
+      # reasoning as this project's other frequent-poll schedules.
+      Events:
+        HourlySync:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 hour)
+            Name: bowling-scraper-bowlerdepot-video-sync-hourly
+            Description: Pushes newly-approved, summarized videos for matched BowlerDepot products into BigCommerce's native Product Videos feature.
+            Enabled: true
+
   # --- Consumer site static hosting (consumer-site/, the React SPA) ---
   #
   # Private S3 bucket + CloudFront in front of it via Origin Access
@@ -2553,6 +2607,8 @@ Outputs:
     Value: !GetAtt BowwwlCrossCheckFunction.Arn
   BowlerDepotReconciliationFunctionArn:
     Value: !GetAtt BowlerDepotReconciliationFunction.Arn
+  BowlerdepotVideoSyncFunctionArn:
+    Value: !GetAtt BowlerdepotVideoSyncFunction.Arn
   VideoDiscoveryFunctionArn:
     Value: !GetAtt VideoDiscoveryFunction.Arn
   VideoTranscriptFetcherFunctionArn:

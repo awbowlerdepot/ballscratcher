@@ -33,7 +33,7 @@ Any Postgres 13+ instance works (RDS is the obvious choice, but this
 repo doesn't assume it). Note the connection details -- you'll need them
 for step 3's `DbSecretArn` secret and to run migrations directly.
 
-## 2. Run the nineteen migrations, in order
+## 2. Run the twenty migrations, in order
 
 ```bash
 psql "$DATABASE_URL" -f db/migrations/001_init_schema.sql
@@ -55,6 +55,7 @@ psql "$DATABASE_URL" -f db/migrations/016_price_tracking_bigcommerce.sql
 psql "$DATABASE_URL" -f db/migrations/017_price_tracking_sku_stock.sql
 psql "$DATABASE_URL" -f db/migrations/018_bowlerdepot_products_dedupe_by_product.sql
 psql "$DATABASE_URL" -f db/migrations/019_products_product_type.sql
+psql "$DATABASE_URL" -f db/migrations/020_bowlerdepot_video_sync.sql
 ```
 
 (If you already ran an earlier subset in a prior deploy, just run whatever
@@ -6596,6 +6597,153 @@ hand to test a matching key against.
 ProductScraperFunction && sam deploy` after running migration 019.
 `BrunswickBagsUrlDiscoveryFunction` can also be invoked manually first to
 smoke-test before waiting for its daily schedule.
+
+### 6q. BowlerDepot video sync: pushing this project's video data onto live bowlerdepot.com product pages
+
+Al's ask: "for the public side of things what is the best way to include a
+section containing the data from this project on our bigcommerce product
+pages. so when you visit a ball it will pull in the video section into the
+video section of the bigcommerce product page" -- followed by: "I do but
+one thing I would love to also pull in is the summary that we have."
+
+**Investigation, not guesswork.** Before writing any code, the live
+bowlerdepot.com storefront (Supermarket theme, BigCommerce) was checked
+via Claude in Chrome against a real product page
+(`bowlerdepot.com/brunswick-combat-solid/`):
+
+- Every PDP's add-to-cart form has `<input name="product_id">` holding
+  BigCommerce's own numeric product id (confirmed value `"4390"` for that
+  product) -- the same id `bowlerdepot_products.bigcommerce_product_id`
+  already stores.
+- The theme already has a **native "Videos" tab**
+  (`#tab-videos > .videoGallery--inTab`), populated entirely by
+  BigCommerce's own built-in Product Videos feature -- NOT a custom theme
+  addition -- already showing a manufacturer video for that product.
+  BigCommerce's own v3 Catalog API
+  (`POST /stores/{store_hash}/v3/catalog/products/{id}/videos`, confirmed
+  live via BigCommerce's own docs; required field `video_id`, optional
+  `title`/`description`/`sort_order`/`type`) writes directly into that
+  same native slot.
+
+This reshaped the whole design away from a client-built video widget
+toward a **server-side push into BigCommerce's own feature** for the
+per-video piece, plus a **small standalone script** for the one piece
+BigCommerce has no native slot for: the aggregate `video_reviews_summary`
+rollup paragraph (there's no "aggregate summary across all videos" field
+on a BigCommerce product, only a per-video description). Al explicitly
+chose the small-script approach (over a native custom-field-only
+alternative) when asked.
+
+**Part 1 -- server-side video push (`src/bowlerdepot_video_sync/app.py`,
+new Lambda, `rate(1 hour)` schedule):**
+
+- **Migration 020** (`db/migrations/020_bowlerdepot_video_sync.sql`) adds
+  `product_videos.bowlerdepot_video_id`/`bowlerdepot_synced_at` --
+  idempotency bookkeeping so a re-run only ever pushes a given video once
+  (`bowlerdepot_synced_at is null` is the "needs sync" gate), same
+  convention `product_price_sources.last_checked_at` already uses
+  elsewhere in this codebase.
+- `list_videos_needing_sync` selects every video that is
+  `status = 'approved'` AND `summary is not null` (the exact bar
+  `public_api.get_product`'s own video select already uses for
+  "public-ready" -- this sync should never push something the public site
+  itself wouldn't show) AND joined through `bowlerdepot_products` scoped
+  to `match_status = 'matched'` only (an `'ambiguous'`/`'unmatched'` row
+  is a known-unreliable match by that module's own design -- see the real
+  Storm iQ Tour / iQ Tour AI suffix-collision incident in 6h.1 -- pushing
+  a video to the WRONG BigCommerce product would be worse than not
+  pushing at all) AND `products.published = true`.
+- `build_bigcommerce_video_payload` maps a row to BigCommerce's documented
+  request body, `description` set to our own per-video AI summary
+  (`product_videos.summary`) -- this gets the summary onto the storefront
+  "for free" as part of the native video push, distinct from Part 2's
+  aggregate rollup.
+- `handler` is a scheduled batch job (not SQS-driven, same
+  "run once, do everything outstanding" shape as `UrlDiscoveryFunction`),
+  processes every currently-due video in one invocation, catches and
+  records a per-video failure (`_process_one_video`) so one bad push
+  (e.g. a stale `bigcommerce_product_id`) doesn't abort the rest of the
+  batch, and tracks a per-product running `sort_order` counter (seeded
+  from each product's own already-synced count) so a failed push never
+  wastes or skips a `sort_order` slot for the next real success.
+- **Real prerequisite Al must confirm/fix himself, unverifiable from this
+  sandbox**: writing a Product Video needs the BigCommerce API token to
+  have the Products **modify** scope (`store_v2_products`), not just
+  read-only (`store_v2_products_read_only`) -- the scope
+  `price_checker`/`bowlerdepot_reconciliation`'s existing token gets by
+  with for their read-only lookups. If the token behind
+  `BIGCOMMERCE_SECRET_ARN` is still read-only, every push will 403; check
+  BigCommerce's own API Accounts settings and upgrade the token's scope
+  if needed before this function's first scheduled run.
+
+**Part 2 -- aggregate summary embed script
+(`embeds/bowlerdepot-video-summary.js`, new top-level `embeds/`
+directory):**
+
+- New `public_api` route,
+  `GET /bowlerdepot/products/{bigcommerce_product_id}/video-summary`
+  (`service.get_video_summary_by_bigcommerce_product_id`) -- looks up
+  `products.video_reviews_summary`/`video_reviews_summary_video_count`
+  through the same `bowlerdepot_products` `match_status = 'matched'` +
+  `published = true` gating as Part 1. Deliberately always 200s with
+  `video_reviews_summary: None` rather than 404ing when there's no
+  match/no rollup yet -- that's the normal case for most of the catalog
+  (only a confidently-matched product that's also had `video_summarizer`
+  actually produce a rollup ever has one), not an error condition the
+  embed script needs to special-case. No `template.yaml` change needed --
+  `PublicHttpApi`'s existing `/{proxy+}` GET catch-all already covers the
+  new route the same way it has for every other `public_api` addition.
+- `embeds/bowlerdepot-video-summary.js`: a small, dependency-free,
+  standalone JS file (NOT part of any Lambda) that reads
+  `input[name="product_id"]` off the live page, calls the new route, and
+  -- only if a summary comes back -- inserts a styled box into
+  `#tab-videos` (before `.videoGallery` if present, otherwise at the top
+  of the tab). No-ops silently on every "nothing to show" case (no
+  matching product, no rollup yet, network error, missing DOM) since this
+  is a page enhancement, never something that should surface an error to
+  a storefront visitor.
+- **Deploy mechanics (Al must do these himself -- no live AWS/BigCommerce
+  credentials in this sandbox):**
+  1. Edit `embeds/bowlerdepot-video-summary.js`'s `API_BASE_URL` constant
+     to this deployment's real `PublicApiUrl` (from `template.yaml`
+     Outputs).
+  2. Upload it to the same S3 bucket/CloudFront distribution already
+     serving consumer-site (`ConsumerSiteBucket`/`ConsumerSiteDistribution`
+     -- reused, not a new bucket) --
+     `aws s3 cp embeds/bowlerdepot-video-summary.js s3://<ConsumerSiteBucket>/embeds/bowlerdepot-video-summary.js`
+     -- then invalidate CloudFront for that path
+     (`aws cloudfront create-invalidation --distribution-id <id> --paths "/embeds/bowlerdepot-video-summary.js"`).
+  3. In BigCommerce's control panel: **Storefront > Script Manager >
+     Create a Script**, scoped to Product Pages, pointing at
+     `<script src="https://<your-cloudfront-domain>/embeds/bowlerdepot-video-summary.js"></script>`.
+     Updating the script's logic later only needs a re-upload + cache
+     invalidation, never touching Script Manager again.
+
+**Tests:** `tests/test_bowlerdepot_video_sync.py` (new file) covers
+`build_bigcommerce_video_payload` (field mapping, title truncation,
+missing-field defaults), `list_videos_needing_sync` (row-to-dict mapping
+against a fake cursor), `push_video_to_bigcommerce` (posts to the
+expected URL/headers/payload against a fake requests-Session-shaped
+object; raises on a non-2xx response), `mark_video_synced`,
+`_process_one_video` (success and caught-failure cases), and `handler`
+(zero-videos early return; per-product `sort_order` counter only
+advancing on a successful push, verified across two products including
+one failure). `tests/test_public_api_service.py` gained
+`test_get_video_summary_by_bigcommerce_product_id_*` covering matched/
+published (real summary returned), no bowlerdepot_products row at all,
+`match_status` of `unmatched`/`ambiguous` (excluded), unpublished product
+(excluded), and matched-but-no-rollup-yet -- all five return the same
+`{video_reviews_summary: None, video_reviews_summary_video_count: 0}`
+default except the first. Full non-pytest `test_*.py` sweep ran clean
+(zero regressions) after these additions.
+
+**Redeploy:** run migration 020, then
+`sam build BowlerdepotVideoSyncFunction && sam deploy`, then do the
+Part 2 deploy mechanics above (embed script upload + Script Manager). The
+new Lambda can also be invoked manually first
+(`aws lambda invoke --function-name bowling-scraper-bowlerdepot-video-sync ...`,
+same pattern as 6e's manual-invoke instructions) to smoke-test before its
+hourly schedule picks it up.
 
 ## 7. Ongoing operations
 

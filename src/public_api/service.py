@@ -493,6 +493,54 @@ def get_product(conn, product_id: str):
         return product
 
 
+def get_video_summary_by_bigcommerce_product_id(conn, bigcommerce_product_id: str) -> dict:
+    """Backs the small embed script Al's asked to run on live BowlerDepot
+    (BigCommerce) product pages: reads the BigCommerce product id straight
+    off the storefront page's own add-to-cart form (confirmed live --
+    every Stencil PDP has <input name="product_id">), calls this route,
+    and inserts the returned video_reviews_summary paragraph into the
+    theme's existing native Videos tab. See src/bowlerdepot_video_sync/
+    app.py's module docstring for the sibling piece (pushing individual
+    videos into BigCommerce's own Product Videos feature) -- that part
+    needs no public route at all (server-to-server), only this aggregate
+    rollup-summary lookup does, since there's no native BigCommerce slot
+    for an aggregate paragraph the way there is for a per-video
+    description.
+
+    Deliberately always returns 200 with video_reviews_summary: None
+    rather than 404 when there's no match/no summary yet -- this is the
+    NORMAL case for most of BowlerDepot's catalog (only products
+    bowlerdepot_reconciliation has confidently matched, and only once
+    video_summarizer has actually produced a rollup, ever have one), not
+    an error condition the embed script needs special-case handling for;
+    it just no-ops when the field is null.
+
+    Joined through bowlerdepot_products the same way admin_api surfaces
+    bowlerdepot_matches, but scoped to match_status = 'matched' only (an
+    'ambiguous'/'unmatched' row is a known-unreliable match by that
+    module's own design -- showing a summary for the WRONG product on
+    BowlerDepot would be worse than showing nothing) and p.published =
+    true (same public-only gate every other route in this module
+    enforces unconditionally)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select p.video_reviews_summary, p.video_reviews_summary_video_count
+            from bowlerdepot_products bp
+            join products p on p.id = bp.product_id
+            where bp.bigcommerce_product_id = %s
+              and bp.match_status = 'matched'
+              and p.published = true
+            """,
+            (bigcommerce_product_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return {"video_reviews_summary": None, "video_reviews_summary_video_count": 0}
+        summary, video_count = row
+        return {"video_reviews_summary": summary, "video_reviews_summary_video_count": video_count}
+
+
 def get_products_compare(conn, ids: list) -> list:
     """Batch fetch for the comparison page -- Al's ask for "an intuitive
     way to populate a ball comparison page" needs the frontend to be able

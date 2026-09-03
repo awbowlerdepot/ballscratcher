@@ -735,6 +735,22 @@ class _FakeCursor:
                         rows.append((pid, s["weight_lbs"], s.get("rg"), s["differential"]))
             self._result_rows = rows
 
+        elif q.startswith("select p.video_reviews_summary, p.video_reviews_summary_video_count"):
+            bigcommerce_product_id = params[0]
+            match = self.db["bowlerdepot_products"].get(bigcommerce_product_id)
+            self._description = [("video_reviews_summary",), ("video_reviews_summary_video_count",)]
+            if (
+                match is None
+                or match["match_status"] != "matched"
+                or not self.db["products"].get(match["product_id"], {}).get("published")
+            ):
+                self._result_row = None
+            else:
+                p = self.db["products"][match["product_id"]]
+                self._result_row = (
+                    p.get("video_reviews_summary"), p.get("video_reviews_summary_video_count", 0),
+                )
+
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
 
@@ -758,7 +774,10 @@ class _FakeConnection:
 
 
 def _fresh_db():
-    return {"brands": {}, "products": {}, "cores": {}, "coverstocks": {}, "skus": {}, "images": {}, "videos": {}}
+    return {
+        "brands": {}, "products": {}, "cores": {}, "coverstocks": {}, "skus": {}, "images": {},
+        "videos": {}, "bowlerdepot_products": {},
+    }
 
 
 def _seed_published_current_product(db, pid="prod-1", brand_id="brand-1", **overrides):
@@ -771,6 +790,19 @@ def _seed_published_current_product(db, pid="prod-1", brand_id="brand-1", **over
     product.update(overrides)
     db["products"][pid] = product
     return pid
+
+
+def _seed_bowlerdepot_match(db, product_id, bigcommerce_product_id, match_status="matched"):
+    """bowlerdepot_products is keyed by bigcommerce_product_id in this
+    fixture (a plain string, matching what the real column stores and
+    what the query below filters on), not by our own product_id --
+    mirrors migration 018's real unique constraint being on product_id,
+    but the lookup this fixture backs (get_video_summary_by_bigcommerce_
+    product_id) always starts FROM the BigCommerce id, so that's the more
+    useful key here."""
+    db["bowlerdepot_products"][bigcommerce_product_id] = {
+        "product_id": product_id, "match_status": match_status,
+    }
 
 
 # get_product
@@ -1193,6 +1225,83 @@ def test_list_plotter_positions_empty_ids_list_falls_back_to_status():
     results = service.list_plotter_positions(_FakeConnection(db), ids=[])
 
     assert [r["id"] for r in results] == ["current-1"]
+
+
+def test_get_video_summary_by_bigcommerce_product_id_matched_and_published():
+    db = _fresh_db()
+    pid = _seed_published_current_product(
+        db, pid="prod-1",
+        video_reviews_summary="Reviewers love the flare potential.",
+        video_reviews_summary_video_count=3,
+    )
+    _seed_bowlerdepot_match(db, pid, "4390", match_status="matched")
+
+    result = service.get_video_summary_by_bigcommerce_product_id(_FakeConnection(db), "4390")
+
+    assert result == {
+        "video_reviews_summary": "Reviewers love the flare potential.",
+        "video_reviews_summary_video_count": 3,
+    }
+
+
+def test_get_video_summary_by_bigcommerce_product_id_no_match_row():
+    """No bowlerdepot_products row at all for this BigCommerce id -- the
+    normal case for most of BowlerDepot's catalog (see the service
+    function's own docstring: this must always 200, never 404)."""
+    db = _fresh_db()
+
+    result = service.get_video_summary_by_bigcommerce_product_id(_FakeConnection(db), "9999")
+
+    assert result == {"video_reviews_summary": None, "video_reviews_summary_video_count": 0}
+
+
+def test_get_video_summary_by_bigcommerce_product_id_unmatched_status_excluded():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1", video_reviews_summary="Some summary")
+    _seed_bowlerdepot_match(db, pid, "4390", match_status="unmatched")
+
+    result = service.get_video_summary_by_bigcommerce_product_id(_FakeConnection(db), "4390")
+
+    assert result == {"video_reviews_summary": None, "video_reviews_summary_video_count": 0}
+
+
+def test_get_video_summary_by_bigcommerce_product_id_ambiguous_status_excluded():
+    """An 'ambiguous' match is just as untrustworthy as 'unmatched' here --
+    see bowlerdepot_reconciliation's own known suffix-collision incident
+    (Storm iQ Tour vs. iQ Tour AI) for why showing a summary against an
+    unreliable match would be worse than showing nothing."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1", video_reviews_summary="Some summary")
+    _seed_bowlerdepot_match(db, pid, "4390", match_status="ambiguous")
+
+    result = service.get_video_summary_by_bigcommerce_product_id(_FakeConnection(db), "4390")
+
+    assert result == {"video_reviews_summary": None, "video_reviews_summary_video_count": 0}
+
+
+def test_get_video_summary_by_bigcommerce_product_id_unpublished_product_excluded():
+    db = _fresh_db()
+    pid = _seed_published_current_product(
+        db, pid="prod-1", published=False, video_reviews_summary="Some summary",
+    )
+    _seed_bowlerdepot_match(db, pid, "4390", match_status="matched")
+
+    result = service.get_video_summary_by_bigcommerce_product_id(_FakeConnection(db), "4390")
+
+    assert result == {"video_reviews_summary": None, "video_reviews_summary_video_count": 0}
+
+
+def test_get_video_summary_by_bigcommerce_product_id_matched_but_no_summary_yet():
+    """Matched product, but video_summarizer hasn't produced a rollup yet
+    -- also normal, not an error; video_reviews_summary is null by
+    default until a rollup exists."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_bowlerdepot_match(db, pid, "4390", match_status="matched")
+
+    result = service.get_video_summary_by_bigcommerce_product_id(_FakeConnection(db), "4390")
+
+    assert result == {"video_reviews_summary": None, "video_reviews_summary_video_count": 0}
 
 
 if __name__ == "__main__":

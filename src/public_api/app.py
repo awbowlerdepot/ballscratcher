@@ -105,4 +105,15 @@ def get_similar_products(product_id: str, limit: int = Query(5, le=20)):
     return {"items": service.list_similar_products(conn, product_id, limit=limit)}
 
 
+@app.get("/bowlerdepot/products/{bigcommerce_product_id}/video-summary")
+def get_bowlerdepot_video_summary(bigcommerce_product_id: str):
+    # Backs the embed script running on live bowlerdepot.com product
+    # pages (see service.get_video_summary_by_bigcommerce_product_id's
+    # docstring) -- always 200, never 404, since "no match/no summary
+    # yet" is the normal case for most of BowlerDepot's catalog, not an
+    # error the script needs to special-case.
+    conn = service.get_db_connection()
+    return service.get_video_summary_by_bigcommerce_product_id(conn, bigcommerce_product_id)
+
+
 handler = Mangum(app)
