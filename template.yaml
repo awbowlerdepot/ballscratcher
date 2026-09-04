@@ -1966,23 +1966,25 @@ Resources:
             # "us." prefix (us.stability.stable-image-remove-background-
             # v1:0) matches Bedrock's own regional cross-Region inference
             # profile naming convention (compare BedrockModelId's
-            # "global." prefix above) rather than a bare on-demand model
-            # id -- NOT independently confirmed against Bedrock's IAM docs
-            # for this specific model family (Stability's Image Services
-            # collection is new enough, GA'd Sept 2025, that its own IAM
-            # requirements weren't separately documented at research time),
-            # so this grants BOTH shapes defensively: the inference-profile
-            # resource itself, AND the underlying foundation-model resource
-            # with the same Condition pattern GrantGlobalCrisInference
-            # ProfileInRegionModelAccess above uses (minus the "Global"/
-            # region-less third statement, since "us." profiles are scoped
-            # to the US geography, not worldwide). If invocation still
-            # fails with an AccessDeniedException naming a Region other
-            # than BedrockRemoveBgRegion, that means this CRIS profile
-            # routes through more Regions than just its own -- add a
-            # per-Region foundation-model statement for each one named in
-            # the error, same as you would for BedrockModelId's own Global
-            # CRIS grant above.
+            # "global." prefix above), and this is now CONFIRMED, not just
+            # suspected -- a real invocation's AccessDeniedException named
+            # the underlying resource as
+            # arn:aws:bedrock:us-east-2::foundation-model/stability.stable-
+            # image-remove-background-v1:0, i.e. this profile routed the
+            # actual InvokeModel call to us-east-2 even though the client
+            # itself is constructed with region_name=BedrockRemoveBgRegion
+            # (us-east-1) -- exactly the same "us." CRIS behavior
+            # BedrockModelId's own "global." CRIS grant already accounts
+            # for with its three-statement shape below. So this now uses
+            # that SAME three-statement shape, not the two-statement one
+            # originally shipped here: the inference-profile resource
+            # itself (scoped to BedrockRemoveBgRegion, where the profile
+            # ARN itself lives), a same-Region foundation-model grant, AND
+            # a REGION-LESS foundation-model grant (empty Region segment)
+            # to cover routing to any other Region within the profile's
+            # geography -- us-east-2 was simply the first one an actual
+            # invocation happened to hit; there could be others (e.g.
+            # us-west-2) this account never happens to get routed to.
             - Sid: GrantRemoveBgInferenceProfileAccess
               Effect: Allow
               Action:
@@ -1993,6 +1995,14 @@ Resources:
               Action:
                 - bedrock:InvokeModel
               Resource: !Sub "arn:aws:bedrock:${BedrockRemoveBgRegion}::foundation-model/*"
+              Condition:
+                StringEquals:
+                  bedrock:InferenceProfileArn: !Sub "arn:aws:bedrock:${BedrockRemoveBgRegion}:${AWS::AccountId}:inference-profile/${BedrockRemoveBgModelId}"
+            - Sid: GrantRemoveBgAnyRegionModelAccess
+              Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: "arn:aws:bedrock:::foundation-model/*"
               Condition:
                 StringEquals:
                   bedrock:InferenceProfileArn: !Sub "arn:aws:bedrock:${BedrockRemoveBgRegion}:${AWS::AccountId}:inference-profile/${BedrockRemoveBgModelId}"

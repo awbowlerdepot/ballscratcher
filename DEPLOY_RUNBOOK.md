@@ -7199,22 +7199,27 @@ the existing `BEDROCK_IMAGE_MODEL_ID`/`BEDROCK_IMAGE_REGION`/
 `IMAGE_BUCKET`. Two new parameters, `BedrockRemoveBgModelId` (default
 `us.stability.stable-image-remove-background-v1:0`) and
 `BedrockRemoveBgRegion` (default `us-east-1`). New IAM statements
-`GrantRemoveBgInferenceProfileAccess`/`GrantRemoveBgInRegionModelAccess`
--- the `us.`-prefixed model id matches Bedrock's own regional
-cross-Region inference profile naming convention (compare `BedrockModelId`'s
-`global.` prefix), so both an inference-profile-resource grant AND a
-foundation-model-resource grant (with the same `InferenceProfileArn`
-Condition pattern the text model's own CRIS grant uses) are included
-defensively -- this was NOT independently confirmed against Bedrock's own
-IAM docs for this specific model family (new enough, GA'd Sept 2025, that
-its IAM requirements weren't separately documented at research time). If
-the first real invocation fails with an `AccessDeniedException` naming a
-Region other than `BedrockRemoveBgRegion`, that means this CRIS profile
-routes through more Regions than just its own -- see the IAM statement's
-own inline comment in `template.yaml` for what to add. Verified via the
-CFN-tolerant YAML loader (57 resources, unchanged count; both new
-parameters present; new env vars and both new IAM statements present on
-`ProductArticleGeneratorFunction`).
+`GrantRemoveBgInferenceProfileAccess`/`GrantRemoveBgInRegionModelAccess`/
+`GrantRemoveBgAnyRegionModelAccess` -- the `us.`-prefixed model id
+matches Bedrock's own regional cross-Region inference profile naming
+convention (compare `BedrockModelId`'s `global.` prefix). **This was
+originally shipped as a 2-statement grant with an explicit hedge that it
+wasn't independently confirmed against Bedrock's own IAM docs -- a real
+first invocation confirmed it wrong within hours**: the
+`AccessDeniedException` named the denied resource as
+`arn:aws:bedrock:us-east-2::foundation-model/stability.stable-image-
+remove-background-v1:0` -- this CRIS profile routed the actual call to
+**`us-east-2`**, a Region the original grant never covered (it only
+covered `BedrockRemoveBgRegion` itself, `us-east-1`, plus the
+inference-profile resource). Fixed by adding the third, REGION-LESS
+statement (`arn:aws:bedrock:::foundation-model/*`, same `Inference
+ProfileArn` Condition) that `BedrockModelId`'s own Global CRIS grant
+already uses for exactly this reason (`GrantGlobalCrisInferenceProfile
+GlobalModelAccess`) -- now all three grants mirror that established
+3-statement shape instead of the abbreviated 2-statement one this
+started with. Verified via the CFN-tolerant YAML loader (57 resources,
+unchanged count; both new parameters present; new env vars and all THREE
+new IAM statements present on `ProductArticleGeneratorFunction`).
 
 **`src/admin_api/service.py` / `admin-site/index.html` / `src/public_
 api/service.py`**: unchanged from the original 6t writeup below -- the
