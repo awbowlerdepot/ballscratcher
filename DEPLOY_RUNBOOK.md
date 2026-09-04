@@ -7280,6 +7280,111 @@ AND `us.stability.stable-image-remove-background-v1:0` in `us-east-1`
 real invocation, or the image step will fail with an access-denied error
 despite the IAM policy being correct.
 
+**Mechanism v3 -- back to a single image-to-image call, dropping v2
+entirely** (migration `025_product_article_images_theme_driven_pipeline
+.sql`, again NO schema change, comment-only): the v2 IAM saga above ended
+with a policy that byte-for-byte matched AWS's own documented Geographic-
+CRIS shape, but before that fix was even verified against a live
+invocation, Al reviewed real reference examples elsewhere on the web --
+a bowling.com-style multi-colorway lane shot, and a separate "Fallout"
+ball whose background clearly took its cue from the ball's own name --
+and gave direct feedback that v2's own output wasn't matching that bar,
+backgrounds should be driven by the PRODUCT'S OWN NAME/BRANDING rather
+than a generic lane/studio backdrop, and, verbatim, "I think we are
+trying to be to technical on this maybe there is a better ai model for
+this." Asked directly whether v2's "never alter the ball" guarantee could
+be traded for a simpler, higher-quality approach: yes. That answer is
+what actually killed v2 -- not a bug, a direct call that the architecture
+itself was over-engineered relative to the achievable output quality.
+
+v3 reverts to a SINGLE Stable Diffusion 3.5 Large image-to-image call per
+variant -- the same model and mechanism 023's original ship used, one
+Bedrock call instead of three, one Region (`us-west-2`) instead of three
+-- but keeps two real improvements over the original:
+
+1. **Theme-driven prompts**: `build_article_prompt` (the article-
+   generation call itself) now asks the text model for an OPTIONAL
+   `visual_theme` field -- 1-2 sentences describing a scene concept
+   grounded in what the product's OWN NAME evokes (the prompt's own
+   example: "Fallout" evokes a post-apocalyptic wasteland), falling back
+   to an elevated/premium scene if the name has no strong connotation.
+   `visual_theme` deliberately stays OUT of `_REQUIRED_ARTICLE_KEYS` --
+   it's for image generation only, never shown to readers, and existing/
+   older parsed responses without it must keep working. `build_image_
+   prompts` (revived, was removed in v2) reads `visual_theme` first,
+   falling back to `performance_summary` then `hook` if it's empty --
+   same fallback chain v2's `build_background_prompts` used, kept because
+   it's still the right degradation order.
+2. **Letterboxed aspect ratio, not `aspect_ratio`**: Al's "specific
+   aspect ratio" ask (16:9 action / 1:1 product) is now satisfied by a
+   NEW `build_reference_canvas` function -- pure Pillow, no Bedrock call
+   -- that letterboxes the real reference photo onto a canvas of the
+   target PIXEL dimensions (1536x864 / 1024x1024, the same pixel budgets
+   v2's background-generation calls used) before the img2img call, since
+   Stable Diffusion's `aspect_ratio` parameter only works in text-to-
+   image mode and image-to-image mode instead just preserves whatever
+   shape the input already has.
+
+Ball fidelity is now explicitly best-effort (`call_bedrock_for_image`
+conditions on the reference photo via `strength=0.65`, slightly higher
+than the original 0.6, trading a little more fidelity for better results
+per Al's own answer), not the pixel-identical guarantee v2's cutout+
+composite pipeline provided -- a deliberate tradeoff Al made, not a
+regression.
+
+**Everything v2 added is now REMOVED, not left dead alongside v3**:
+`call_bedrock_remove_background`, `build_background_prompts`, `call_
+bedrock_generate_background`, `composite_ball_on_background`, and
+`_BACKGROUND_NEGATIVE_PROMPT` are gone from `app.py`. `generate_article_
+images`/`generate_article_for_product`/`handler` are back to the pre-v2
+shape: `generate_article_images` takes 8 params again (dropped `bedrock_
+removebg_client`/`removebg_model_id`), `generate_article_for_product`
+takes 4 image params again (`s3_client`/`bedrock_image_client`/
+`image_model_id`/`image_bucket`), and `handler()` constructs only TWO
+bedrock-runtime clients again (text + image), not three. In
+`template.yaml`, the `BedrockRemoveBgModelId`/`BedrockRemoveBgRegion`/
+`BedrockRemoveBgBaseModelId` parameters, `BEDROCK_REMOVEBG_MODEL_ID`/
+`BEDROCK_REMOVEBG_REGION` env vars, and the `GrantRemoveBgInferenceProfile
+Access`/`GrantRemoveBgModelAccess` IAM statements are all deleted -- the
+whole Geographic-CRIS IAM saga documented above is now dead code cleanup,
+not a live grant, though the writeup above is kept as-is since it's a
+real, hard-won lesson about Global-vs-Geographic CRIS IAM shapes that's
+worth having on hand if a future feature ever needs a Geographic profile
+again. `BedrockImageModelId`/`BedrockImageRegion`/`GrantImageModelAccess`
+are unchanged (that half of v2 was never broken). `ProductArticleGenerator
+Function`'s `Timeout` stays at 600s (now generous rather than tight,
+since it's back to two Bedrock calls per product instead of three -- no
+cost to keeping the margin).
+
+**Tests**: `tests/test_product_article_generator.py`'s image section was
+rewritten again around the v3 mechanism (63 tests total) -- `build_
+reference_canvas` (output matches the requested canvas size, scales a
+large reference DOWN to fit without cropping, never upscales a small one,
+centers it on a flat neutral fill, and the two variant canvas sizes match
+`_VARIANT_CANVAS_SIZES`), `build_image_prompts` (visual_theme takes
+priority over performance_summary/hook, describes the ball positively
+again unlike v2's prompts, produces two distinct scenes), `call_bedrock_
+for_image` (confirms the img2img request shape -- `mode`/`image`/
+`strength`/`negative_prompt` present, `aspect_ratio` deliberately absent
+since it's text-to-image-only), and `generate_article_images`/`generate_
+article_for_product`/`handler`'s re-plumbed orchestration back to the
+8-param/4-image-param/2-client shape. Full non-pytest `test_*.py` sweep
+ran clean after these changes.
+
+**Redeploy**: run migration 025 (comment-only, safe after 022/023/024
+regardless of whether 024 was ever actually deployed against a live
+Remove-Background invocation), then a full unscoped `sam build && sam
+deploy` -- this redeploy actually REMOVES IAM statements/env vars/
+parameters from the stack, unlike 6t's earlier two redeploys which only
+added them, so expect CloudFormation to show removals in the change set,
+not just additions. No new Bedrock Marketplace subscription is needed --
+v3 only calls `stability.sd3-5-large-v1:0` in `us-west-2`, already
+subscribed since 6t's original ship; the Stability AI Image Services
+subscription for Remove Background is no longer needed by this stack at
+all (safe to leave subscribed if you don't want to touch Marketplace
+state, or unsubscribe if you'd rather clean it up -- nothing in this
+codebase calls it anymore either way).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
