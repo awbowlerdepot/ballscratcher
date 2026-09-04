@@ -8238,19 +8238,22 @@ statement confirmed present).
 effect (a new IAM statement, not a parameter -- no `parameter_overrides`
 involved).
 
-### Separate issue seen in the same log, NOT a code bug: `GeminiRegion` came through as `global=` with a trailing `=`
+### Separate issue seen in the same log, NOT a code bug (RESOLVED): `GeminiRegion` came through as `global=` with a trailing `=`
 
 The same CloudWatch tail also showed `call_gemini_for_image` trying to
 resolve host `global=-aiplatform.googleapis.com` and path
 `locations/global=` -- a literal trailing `=` character inside the
 region value itself. `call_gemini_for_image`'s own code only ever
 produces a clean `"global"` string when given one (see this incident's
-part two and its regression test) -- this has to be how the
+part two and its regression test) -- this had to be how the
 `GeminiRegion` parameter override actually got applied on the AWS side
 (a typo in samconfig.toml's `parameter_overrides` line, or in the exact
 `sam deploy`/`aws cloudformation deploy` command used), not a bug in
-this repo's code. Flagged for Al to check his own samconfig.toml/deploy
-command for how `GeminiRegion` was actually set before this run.
+this repo's code.
+
+**Resolved**: confirmed by Al as a deploy-side samconfig.toml/deploy-command
+typo, fixed on his end (no repo change needed). All-clear confirmed on
+a live run.
 
 ## 7. Ongoing operations
 
