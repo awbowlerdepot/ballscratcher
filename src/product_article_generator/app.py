@@ -1022,16 +1022,27 @@ def call_gemini_for_image(gemini_auth: dict, model_id: str, prompt: str,
     threading it through, stays a single "auth bundle" argument, same
     shape v4's own single api_key argument had.
 
-    IMPORTANT: this function's request/response shape is built from
-    Google's own published REST examples and Vertex AI Gemini 3 Pro Image
-    sample notebook, NOT verified against a live invocation from inside
-    this environment (no outbound access to *.googleapis.com from this
-    sandbox, no real service-account key to test with) -- confirm on the
-    first real invocation, don't assume this is exactly right. In
-    particular, the response field casing (`inlineData` in REST JSON vs.
-    `inline_data` in the Python SDK's own object model) is defended
-    against both ways below since published examples were inconsistent
-    about which one is authoritative."""
+    IMPORTANT / REAL INCIDENT: this function's request/response shape was
+    originally built from Google's own published REST examples and Vertex
+    AI Gemini 3 Pro Image sample notebook, NOT verified against a live
+    invocation -- and the first real invocation (2026-09-04) confirmed
+    that caution was warranted: every call came back `400 Bad Request`.
+    Fixed based on a closer read of Google's own REST curl examples, which
+    consistently show TWO things this function's original body was
+    missing: (1) `"role": "user"` on the content object -- the Developer
+    API tolerates omitting it, Vertex AI's stricter proto-JSON validation
+    apparently does not; (2) camelCase `inlineData`/`mimeType` on the
+    OUTGOING request, not snake_case `inline_data`/`mime_type` -- Vertex
+    AI's JSON schema is proto-JSON-mapped (camelCase by convention), and
+    the snake_case shape was carried over unexamined from v4's own
+    Developer-API version of this function, which itself was never
+    verified live either. Response parsing below still defends BOTH
+    casings for the INCOMING response, since that part of published
+    examples was genuinely inconsistent -- only the outgoing request
+    shape has been corrected. This fix has ALSO not yet been confirmed
+    against a live call -- if you hit another 400, the response body is
+    now logged (see except block below) so the actual Google-side error
+    message is visible in CloudWatch instead of a bare HTTPError."""
     import base64
 
     import requests
@@ -1043,9 +1054,10 @@ def call_gemini_for_image(gemini_auth: dict, model_id: str, prompt: str,
     )
     body = {
         "contents": [{
+            "role": "user",
             "parts": [
                 {"text": prompt},
-                {"inline_data": {"mime_type": "image/png", "data": reference_image_b64}},
+                {"inlineData": {"mimeType": "image/png", "data": reference_image_b64}},
             ],
         }],
         "generationConfig": {
@@ -1058,7 +1070,17 @@ def call_gemini_for_image(gemini_auth: dict, model_id: str, prompt: str,
                       "Content-Type": "application/json"},
         json=body, timeout=60,
     )
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except requests.exceptions.HTTPError:
+        # Log the actual response body before re-raising -- raise_for_
+        # status()'s own exception message doesn't include it, and
+        # without this a real Google-side error (bad request shape,
+        # disabled API, model not enabled for this project, etc.) is
+        # invisible in CloudWatch, same blind spot that made the
+        # 2026-09-04 incident above take an extra round trip to diagnose.
+        logger.error("Vertex AI generateContent returned %s: %s", response.status_code, response.text)
+        raise
     payload = response.json()
 
     candidates = payload.get("candidates") or []

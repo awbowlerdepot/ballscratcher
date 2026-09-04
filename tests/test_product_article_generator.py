@@ -1383,9 +1383,15 @@ def test_call_gemini_for_image_sends_correct_request_shape_and_auth_header():
         "locations/us-central1/publishers/google/models/gemini-3-pro-image:generateContent"
     )
     assert call["headers"]["Authorization"] == "Bearer token-abc-123"
+    # "role": "user" is REQUIRED by Vertex AI (unlike the Developer API,
+    # which tolerated omitting it) -- confirmed the hard way against a
+    # real invocation on 2026-09-04, see this function's own docstring.
+    assert call["json"]["contents"][0]["role"] == "user"
     parts = call["json"]["contents"][0]["parts"]
     assert parts[0]["text"] == "a scene"
-    assert parts[1]["inline_data"] == {"mime_type": "image/png", "data": "ref-b64"}
+    # camelCase, not the snake_case v4's own Developer-API version used --
+    # also confirmed the hard way, same incident.
+    assert parts[1]["inlineData"] == {"mimeType": "image/png", "data": "ref-b64"}
     assert call["json"]["generationConfig"]["imageConfig"]["aspectRatio"] == "16:9"
 
 

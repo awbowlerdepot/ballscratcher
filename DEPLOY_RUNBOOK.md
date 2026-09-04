@@ -7804,6 +7804,80 @@ actual request/response shape AND `mint_gemini_access_token`'s real
 token-exchange behavior against a live invocation on first use, before
 trusting the feature end to end.
 
+### REAL INCIDENT (2026-09-04): first live v5 invocation, three independent failures
+
+The first real post-deploy invocation produced `images_generated: false`.
+Diagnosed via CloudWatch logs (`aws logs tail /aws/lambda/bowling-scraper-
+product-article-generator`) and `aws lambda get-function-configuration`,
+not guessed at. Three genuinely separate problems, in the order they were
+found and fixed:
+
+1. **`GEMINI_SERVICE_ACCOUNT_SECRET_ARN` was empty on the deployed
+   function.** No error in the logs at all for this one -- `handler()`'s
+   `if gemini_secret_arn:` guard just silently doesn't fire when the env
+   var is blank, so `gemini_auth` stayed `None` and the whole image
+   branch (not just Gemini) was skipped without a trace. Root cause: the
+   `GeminiServiceAccountSecretArn` parameter never actually got added to
+   `samconfig.toml`'s `parameter_overrides` after the secret was created.
+   **Lesson for next time**: after ANY redeploy that's supposed to change
+   a secret/parameter, confirm it actually landed with `aws lambda get-
+   function-configuration --function-name bowling-scraper-product-
+   article-generator --query 'Environment.Variables'` BEFORE assuming a
+   downstream failure means the code is wrong -- this cost a full
+   diagnose-fix-redeploy cycle that turned out to be a config-not-applied
+   issue, not a bug.
+
+2. **Bedrock `AccessDeniedException` on the Remove Background call**:
+   "Model access is denied due to IAM user or service role is not
+   authorized to perform the required AWS Marketplace actions... Your AWS
+   Marketplace subscription for this model cannot be completed at this
+   time." This is `us.stability.stable-image-remove-background-v1:0`'s
+   own recurring AWS Marketplace subscription requirement -- see 6t's v2
+   writeup above for the first time this was hit and solved. **Not a code
+   issue, nothing to redeploy** -- fix is in the AWS Console: Bedrock ->
+   Model access -> find Stability AI's "Stable Image Remove Background"
+   in **us-east-1** specifically (not this stack's home Region) ->
+   request/resubscribe access. Confirm access shows "Access granted"
+   before the next invocation.
+
+3. **Vertex AI `400 Bad Request` on all 4 Gemini calls.** Two compounding
+   causes:
+   - The URL showed `gemini-2.5-flash-image`, not the new default
+     `gemini-3-pro-image` -- `GeminiModelId=gemini-2.5-flash-image` was
+     still sitting in `samconfig.toml`'s `parameter_overrides` from
+     configuring v4, and an explicit override always beats `template.
+     yaml`'s Default. Fixed by updating that line to
+     `GeminiModelId=gemini-3-pro-image` (or deleting the override
+     entirely to fall through to the new Default).
+   - Separately, and more fundamentally: `call_gemini_for_image`'s
+     request body was wrong. `response.raise_for_status()` doesn't
+     surface the response BODY, only a generic HTTPError, so the exact
+     reason wasn't visible from the first failure alone -- fixed that
+     blind spot first (the function now logs `response.status_code`/
+     `response.text` on any non-2xx response before re-raising). Then,
+     comparing more carefully against Google's own published REST curl
+     examples, found the request was missing `"role": "user"` on the
+     content object (the Developer API tolerates omitting it; Vertex
+     AI's stricter proto-JSON validation apparently does not), and was
+     using snake_case `inline_data`/`mime_type` where Vertex AI's JSON
+     schema expects camelCase `inlineData`/`mimeType` -- both carried
+     over unexamined from v4's own Developer-API version of this
+     function, which was ALSO never verified against a live call (see
+     v4's own writeup above). Both fixed in `call_gemini_for_image`;
+     `tests/test_product_article_generator.py`'s request-shape test
+     updated to assert `role`/camelCase (85/85 still passing, full
+     41-file sweep still clean).
+
+**This exact request-shape fix has itself NOT yet been confirmed against
+a live call** -- the response-body logging added alongside it means the
+NEXT invocation, if it still fails, will show the real Google-side error
+message directly in CloudWatch instead of requiring another guess-and-
+redeploy cycle. After redeploying with the corrected `GeminiModelId`
+override, the Remove Background Marketplace resubscription, and this
+code fix, re-run the same on-demand invocation and check `images_
+generated` in the response body, then pull the logs regardless (success
+or failure) to confirm what Vertex AI actually returned.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
