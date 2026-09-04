@@ -3543,6 +3543,71 @@ sam build VideoDiscoveryFunction
 sam deploy
 ```
 
+**Follow-up (2026-09-04): PRE-RELEASE FILTER, auto-rejecting videos that predate a ball's own release.** Al: "use the youtube video date and
+the release date to auto reject youtube videos for balls where the video
+was released prior to the ball release. it is almost always likely to
+not match and be a similar name or a sibling." Same shape as the Shorts
+follow-up right above -- a real false-positive pattern noticed in review,
+fixed with the identical two-enforcement-point structure, reusing
+`products.release_date` (001_init_schema.sql/003_date_tracking_and_
+bowwwl.sql) rather than adding anything new to the schema.
+
+`src/video_discovery/app.py` gained `PRE_RELEASE_REJECTED_BY` (same
+audit-trail convention as `SHORT_REJECTED_BY`) and two pure functions:
+`is_before_release(published_at, release_date)` (true only when BOTH
+dates are known and the video's publish date is strictly before
+release_date -- same-calendar-day is NOT rejected; either date missing
+means "never reject", same "unknown is never disqualifying" posture as
+`is_likely_short`) and `filter_out_pre_release_videos(videos,
+release_date)`. Enforced in the same two places:
+- **Discovery time**: `fetch_products_to_search` now also selects
+  `p.release_date`; `handler`'s search loop calls `filter_out_pre_
+  release_videos` right after the Shorts filter, before
+  `insert_candidates` -- a pre-release candidate never becomes a
+  `product_videos` row.
+- **Refresh time**: `select_video_ids_needing_stats_refresh` now joins
+  `products` for `release_date` and also returns each row's own
+  `published_at` (both already-known facts -- neither needs a fresh
+  YouTube call); `apply_video_stats` force-transitions a row to
+  `status = 'rejected'` when they show a pre-release match, regardless
+  of current status (including `'approved'`) and regardless of whether
+  `stats={}` this run, since this check -- unlike the Shorts one --
+  doesn't depend on anything freshly fetched. Same `and status <>
+  'rejected'` guard against clobbering a human's real rejection reason.
+  `refresh_video_stats`'s return value gained `candidates_rejected_
+  as_pre_release`, visible in CloudWatch the same way `candidates_
+  rejected_as_shorts` already is.
+
+Same operational consequence as the Shorts fix: the DailyStatsRefresh
+schedule is what sweeps the EXISTING backlog (candidates stored before
+this filter existed, or whose product's `release_date` only got
+backfilled/corrected afterward) into compliance over the next several
+days -- no separate one-time backfill script needed, for the same reason
+one wasn't needed for Shorts.
+
+Tests (`tests/test_video_discovery.py`, 83/83 passing, 20 new):
+`is_before_release`'s full truth table (before/after/exact-release-day/
+unknown-either-side/both-unknown/native-datetime-vs-ISO8601-string/
+unparseable-string-never-raises), `filter_out_pre_release_videos`;
+`apply_video_stats` force-rejecting a pre-release row (including when
+`stats={}`), not rejecting an on/after-release row, the `status <>
+'rejected'` guard, and no reject at all when either date is missing;
+`refresh_video_stats` counting pre-release rejections in a batch,
+independent of the Shorts counter; `handler` dropping a pre-release
+candidate before insert while keeping one whose product has no known
+`release_date`. One pre-existing test
+(`test_select_video_ids_needing_stats_refresh_orders_stale_first`) had
+its query-shape assertion updated for the new `join products` and
+`pv.`-qualified `order by` (unqualified `id`/`stats_fetched_at` would
+now be ambiguous between the two joined tables).
+
+No migration, no `template.yaml` change -- redeploy just
+`VideoDiscoveryFunction`:
+```bash
+sam build VideoDiscoveryFunction
+sam deploy
+```
+
 **Follow-up, real incident: admin-site batch size + bulk actions.** Al:
 "can we have the refresh stats button do more videos at a time, also the
 same check boxes and bulk actions on the video candidates page as we

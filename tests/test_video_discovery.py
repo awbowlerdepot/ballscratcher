@@ -19,6 +19,7 @@ instance available in this sandbox.
 import json
 import os
 import sys
+from datetime import date, datetime, timezone
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src", "video_discovery"))
 
@@ -279,6 +280,73 @@ def test_filter_out_shorts_empty_list():
     assert app.filter_out_shorts([]) == []
 
 
+# --- is_before_release / filter_out_pre_release_videos: PRE-RELEASE
+# FILTER (Al's ask -- "use the youtube video date and the release date to
+# auto reject youtube videos for balls where the video was released prior
+# to the ball release. it is almost always likely to not match and be a
+# similar name or a sibling"). ---
+
+def test_is_before_release_true_when_video_predates_release():
+    assert app.is_before_release("2019-01-01T00:00:00Z", date(2021, 6, 1)) is True
+
+
+def test_is_before_release_false_when_video_postdates_release():
+    assert app.is_before_release("2022-01-01T00:00:00Z", date(2021, 6, 1)) is False
+
+
+def test_is_before_release_false_on_the_exact_release_day():
+    """Same-calendar-day is NOT before release -- a same-day launch
+    review is a legitimate, if fast, real review."""
+    assert app.is_before_release("2021-06-01T23:00:00Z", date(2021, 6, 1)) is False
+
+
+def test_is_before_release_false_when_published_at_unknown():
+    assert app.is_before_release(None, date(2021, 6, 1)) is False
+
+
+def test_is_before_release_false_when_release_date_unknown():
+    """release_date is frequently null (see 003_date_tracking_and_
+    bowwwl.sql) -- must never reject in that case."""
+    assert app.is_before_release("2019-01-01T00:00:00Z", None) is False
+
+
+def test_is_before_release_false_when_both_unknown():
+    assert app.is_before_release(None, None) is False
+
+
+def test_is_before_release_accepts_native_datetime_not_just_a_string():
+    """Refresh-time callers pass a real datetime (read back from
+    product_videos.published_at via psycopg2), not the raw ISO8601
+    string search.list/videos.list return at discovery time."""
+    assert app.is_before_release(datetime(2019, 1, 1, tzinfo=timezone.utc), date(2021, 6, 1)) is True
+    assert app.is_before_release(datetime(2022, 1, 1, tzinfo=timezone.utc), date(2021, 6, 1)) is False
+
+
+def test_is_before_release_false_on_unparseable_published_at():
+    """A malformed string must never raise -- treated the same as
+    'unknown', not as a crash."""
+    assert app.is_before_release("not-a-real-date", date(2021, 6, 1)) is False
+
+
+def test_filter_out_pre_release_videos_drops_only_pre_release_candidates():
+    videos = [
+        {"youtube_video_id": "v-old", "published_at": "2019-01-01T00:00:00Z"},
+        {"youtube_video_id": "v-new", "published_at": "2022-01-01T00:00:00Z"},
+        {"youtube_video_id": "v-unknown", "published_at": None},
+    ]
+    kept = app.filter_out_pre_release_videos(videos, date(2021, 6, 1))
+    assert [v["youtube_video_id"] for v in kept] == ["v-new", "v-unknown"]
+
+
+def test_filter_out_pre_release_videos_keeps_everything_when_release_date_unknown():
+    videos = [{"youtube_video_id": "v-old", "published_at": "2019-01-01T00:00:00Z"}]
+    assert app.filter_out_pre_release_videos(videos, None) == videos
+
+
+def test_filter_out_pre_release_videos_empty_list():
+    assert app.filter_out_pre_release_videos([], date(2021, 6, 1)) == []
+
+
 # --- parse_video_details_response / fetch_video_statistics: videos.list,
 # the only call that ever returns view/like/comment counts (search.list's
 # snippet part never does -- see module docstring's VIDEO STATS section).
@@ -390,12 +458,15 @@ class _FakeCursor:
         q = " ".join(query.split())
         self.executed.append((q, params))
 
-        if q.startswith("select p.id, p.name, b.name as brand_name"):
-            self.description = [("id",), ("name",), ("brand_name",)]
-            self._rows = [(p["id"], p["name"], p["brand_name"]) for p in self.products]
-        elif q.startswith("select id, youtube_video_id from product_videos"):
-            self.description = [("id",), ("youtube_video_id",)]
-            self._rows = [(r["id"], r["youtube_video_id"]) for r in self.refresh_rows]
+        if q.startswith("select p.id, p.name, b.name as brand_name, p.release_date"):
+            self.description = [("id",), ("name",), ("brand_name",), ("release_date",)]
+            self._rows = [(p["id"], p["name"], p["brand_name"], p.get("release_date")) for p in self.products]
+        elif q.startswith("select pv.id, pv.youtube_video_id, pv.published_at, p.release_date"):
+            self.description = [("id",), ("youtube_video_id",), ("published_at",), ("release_date",)]
+            self._rows = [
+                (r["id"], r["youtube_video_id"], r.get("published_at"), r.get("release_date"))
+                for r in self.refresh_rows
+            ]
         elif q.startswith("insert into product_videos"):
             product_id, youtube_video_id = params[0], params[1]
             key = (product_id, youtube_video_id)
@@ -451,7 +522,7 @@ def test_fetch_products_to_search_defaults_to_current_status_only():
     conn = _FakeConn(products=[{"id": "p1", "name": "Absolute", "brand_name": "Storm"}])
     products = app.fetch_products_to_search(conn, {}, max_products=90)
 
-    assert products == [{"id": "p1", "name": "Absolute", "brand_name": "Storm"}]
+    assert products == [{"id": "p1", "name": "Absolute", "brand_name": "Storm", "release_date": None}]
     query, params = conn.cursor().executed[0]
     assert "p.published = true" not in query
     assert "p.status = 'current'" in query
@@ -607,10 +678,27 @@ def test_select_video_ids_needing_stats_refresh_orders_stale_first():
     conn = _FakeConn(refresh_rows=[{"id": "pv1", "youtube_video_id": "v1"}])
     rows = app.select_video_ids_needing_stats_refresh(conn, limit=200)
 
-    assert rows == [{"id": "pv1", "youtube_video_id": "v1"}]
+    assert rows == [{"id": "pv1", "youtube_video_id": "v1", "published_at": None, "release_date": None}]
     query, params = conn.cursor().executed[0]
-    assert "order by stats_fetched_at asc nulls first, id asc limit %s" in query
+    assert "join products p on p.id = pv.product_id" in query
+    assert "order by pv.stats_fetched_at asc nulls first, pv.id asc limit %s" in query
     assert params == (200,)
+
+
+def test_select_video_ids_needing_stats_refresh_includes_published_at_and_release_date():
+    """New columns needed for the PRE-RELEASE FILTER (see module
+    docstring) -- apply_video_stats can't enforce it at refresh time
+    without both of these coming back from this query."""
+    conn = _FakeConn(refresh_rows=[
+        {"id": "pv1", "youtube_video_id": "v1", "published_at": "2020-01-01T00:00:00+00:00",
+         "release_date": "2021-06-01"},
+    ])
+    rows = app.select_video_ids_needing_stats_refresh(conn, limit=200)
+
+    assert rows == [{
+        "id": "pv1", "youtube_video_id": "v1",
+        "published_at": "2020-01-01T00:00:00+00:00", "release_date": "2021-06-01",
+    }]
 
 
 def test_apply_video_stats_with_stats_updates_all_fields():
@@ -684,6 +772,66 @@ def test_apply_video_stats_reject_query_guards_against_clobbering_existing_rejec
     assert "and status <> 'rejected'" in reject_queries[0]
 
 
+# --- apply_video_stats' PRE-RELEASE FILTER enforcement (refresh time):
+# doesn't depend on freshly-fetched stats at all -- published_at/
+# release_date are already-known facts passed straight through from
+# select_video_ids_needing_stats_refresh. ---
+
+def test_apply_video_stats_force_rejects_a_pre_release_video():
+    conn = _FakeConn()
+    fetched_at = "2026-08-13T00:00:00+00:00"
+    app.apply_video_stats(
+        conn, "pv1", {"view_count": 10, "duration_seconds": 300}, fetched_at,
+        published_at="2019-01-01T00:00:00Z", release_date=date(2021, 6, 1),
+    )
+
+    assert conn.cursor().short_reject_updates == [(fetched_at, app.PRE_RELEASE_REJECTED_BY, "pv1")]
+
+
+def test_apply_video_stats_does_not_reject_when_published_on_or_after_release():
+    conn = _FakeConn()
+    app.apply_video_stats(
+        conn, "pv1", {"duration_seconds": 300}, "2026-08-13T00:00:00+00:00",
+        published_at="2022-01-01T00:00:00Z", release_date=date(2021, 6, 1),
+    )
+
+    assert conn.cursor().short_reject_updates == []
+
+
+def test_apply_video_stats_pre_release_reject_runs_even_when_stats_empty():
+    """Unlike the Shorts check, this one doesn't need anything freshly
+    fetched -- a row whose stats lookup came back empty (deleted/private
+    video) must still be caught if it's a pre-release match."""
+    conn = _FakeConn()
+    fetched_at = "2026-08-13T00:00:00+00:00"
+    app.apply_video_stats(
+        conn, "pv1", {}, fetched_at,
+        published_at="2019-01-01T00:00:00Z", release_date=date(2021, 6, 1),
+    )
+
+    assert conn.cursor().stats_fetched_at_only_updates == ["pv1"]
+    assert conn.cursor().short_reject_updates == [(fetched_at, app.PRE_RELEASE_REJECTED_BY, "pv1")]
+
+
+def test_apply_video_stats_pre_release_reject_query_guards_against_clobbering_existing_rejection():
+    conn = _FakeConn()
+    app.apply_video_stats(
+        conn, "pv1", {}, "2026-08-13T00:00:00+00:00",
+        published_at="2019-01-01T00:00:00Z", release_date=date(2021, 6, 1),
+    )
+
+    reject_queries = [q for q, _ in conn.cursor().executed if "status = 'rejected'" in q]
+    assert len(reject_queries) == 1
+    assert "and status <> 'rejected'" in reject_queries[0]
+
+
+def test_apply_video_stats_no_pre_release_reject_when_dates_missing():
+    conn = _FakeConn()
+    app.apply_video_stats(conn, "pv1", {"duration_seconds": 300}, "2026-08-13T00:00:00+00:00")
+
+    assert conn.cursor().short_reject_updates == []
+
+
 def test_refresh_video_stats_updates_found_rows_and_marks_missing_ones_checked():
     conn = _FakeConn(refresh_rows=[
         {"id": "pv1", "youtube_video_id": "v1"},
@@ -702,7 +850,10 @@ def test_refresh_video_stats_updates_found_rows_and_marks_missing_ones_checked()
 
     result = app.refresh_video_stats(conn, "fake-key", limit=200, session=fake)
 
-    assert result == {"candidates_checked": 2, "candidates_updated": 1, "candidates_rejected_as_shorts": 0}
+    assert result == {
+        "candidates_checked": 2, "candidates_updated": 1,
+        "candidates_rejected_as_pre_release": 0, "candidates_rejected_as_shorts": 0,
+    }
     assert conn.cursor().stats_updates == [(100, None, None, 120, None, conn.cursor().stats_updates[0][5], "pv1")]
     assert conn.cursor().stats_fetched_at_only_updates == ["pv2"]
 
@@ -715,7 +866,10 @@ def test_refresh_video_stats_no_rows_skips_the_api_call_entirely():
             raise AssertionError("should never be called -- nothing to refresh")
 
     result = app.refresh_video_stats(conn, "fake-key", limit=200, session=_ExplodingSession())
-    assert result == {"candidates_checked": 0, "candidates_updated": 0, "candidates_rejected_as_shorts": 0}
+    assert result == {
+        "candidates_checked": 0, "candidates_updated": 0,
+        "candidates_rejected_as_shorts": 0, "candidates_rejected_as_pre_release": 0,
+    }
 
 
 def test_refresh_video_stats_counts_shorts_rejected_this_run():
@@ -733,9 +887,42 @@ def test_refresh_video_stats_counts_shorts_rejected_this_run():
 
     result = app.refresh_video_stats(conn, "fake-key", limit=200, session=fake)
 
-    assert result == {"candidates_checked": 2, "candidates_updated": 2, "candidates_rejected_as_shorts": 1}
+    assert result == {
+        "candidates_checked": 2, "candidates_updated": 2,
+        "candidates_rejected_as_shorts": 1, "candidates_rejected_as_pre_release": 0,
+    }
     assert conn.cursor().short_reject_updates == [
         (conn.cursor().short_reject_updates[0][0], app.SHORT_REJECTED_BY, "pv1"),
+    ]
+
+
+def test_refresh_video_stats_counts_pre_release_rejections_this_run():
+    """Distinct from the Shorts counter above -- this rejection doesn't
+    depend on anything freshly fetched from YouTube (published_at/
+    release_date are already known), so it must still count even for a
+    row whose stats lookup came back empty this run."""
+    conn = _FakeConn(refresh_rows=[
+        {"id": "pv1", "youtube_video_id": "v1-pre-release",
+         "published_at": "2019-01-01T00:00:00+00:00", "release_date": date(2021, 6, 1)},
+        {"id": "pv2", "youtube_video_id": "v2-fine",
+         "published_at": "2021-07-01T00:00:00+00:00", "release_date": date(2021, 6, 1)},
+    ])
+    videos_list_response = {
+        "items": [
+            {"id": "v1-pre-release", "statistics": {"viewCount": "10"}, "contentDetails": {"duration": "PT5M"}, "snippet": {}},
+            {"id": "v2-fine", "statistics": {"viewCount": "20"}, "contentDetails": {"duration": "PT5M"}, "snippet": {}},
+        ],
+    }
+    fake = _FakeSession(_FakeResponse(200, json.dumps(videos_list_response), ok=True))
+
+    result = app.refresh_video_stats(conn, "fake-key", limit=200, session=fake)
+
+    assert result == {
+        "candidates_checked": 2, "candidates_updated": 2,
+        "candidates_rejected_as_shorts": 0, "candidates_rejected_as_pre_release": 1,
+    }
+    assert conn.cursor().short_reject_updates == [
+        (conn.cursor().short_reject_updates[0][0], app.PRE_RELEASE_REJECTED_BY, "pv1"),
     ]
 
 
@@ -951,6 +1138,90 @@ def test_handler_keeps_candidates_whose_duration_is_unknown(monkeypatch):
     app.handler({}, None)
 
     assert [v["youtube_video_id"] for v in captured_videos] == ["v-unknown"]
+
+
+# --- handler's PRE-RELEASE FILTER enforcement (discovery time): a video
+# published before the product's own release_date must never reach
+# insert_candidates, but a candidate whose published_at is unknown, or a
+# product with no known release_date, must still be saved. ---
+
+def test_handler_drops_pre_release_candidates_before_insert(monkeypatch):
+    captured_videos = []
+
+    monkeypatch.setattr(app, "get_youtube_api_key", lambda: "fake-key")
+    monkeypatch.setattr(app, "get_db_connection", lambda: _FakeConn())
+    monkeypatch.setattr(app, "get_youtube_requests_session", lambda: object())
+    monkeypatch.setattr(
+        app, "fetch_products_to_search",
+        lambda conn, job, max_products: [
+            {"id": "prod-good", "name": "Absolute", "brand_name": "Storm", "release_date": date(2021, 6, 1)},
+        ],
+    )
+    monkeypatch.setattr(
+        app, "search_youtube",
+        lambda api_key, query, max_results, session=None: [
+            {"youtube_video_id": "v-too-early", "title": "Some other Storm ball",
+             "channel_title": "c1", "published_at": "2019-01-01T00:00:00Z", "thumbnail_url": None},
+            {"youtube_video_id": "v-real", "title": "Storm Absolute Full Review",
+             "channel_title": "c1", "published_at": "2021-07-01T00:00:00Z", "thumbnail_url": None},
+        ],
+    )
+    monkeypatch.setattr(
+        app, "fetch_video_statistics",
+        lambda api_key, video_ids, session=None: {
+            "v-too-early": {"view_count": 500, "duration_seconds": 300},
+            "v-real": {"view_count": 500, "duration_seconds": 300},
+        },
+    )
+
+    def fake_insert(conn, pid, q, videos):
+        captured_videos.extend(videos)
+        return len(videos)
+
+    monkeypatch.setattr(app, "insert_candidates", fake_insert)
+    monkeypatch.setattr(app, "mark_product_searched", lambda conn, pid: None)
+
+    result = app.handler({}, None)
+    body = json.loads(result["body"])
+
+    assert [v["youtube_video_id"] for v in captured_videos] == ["v-real"]
+    assert body["new_candidates"] == 1
+
+
+def test_handler_keeps_candidates_when_product_release_date_unknown(monkeypatch):
+    """release_date is frequently None (see fetch_products_to_search's
+    own docstring) -- must never drop a candidate on that basis."""
+    captured_videos = []
+
+    monkeypatch.setattr(app, "get_youtube_api_key", lambda: "fake-key")
+    monkeypatch.setattr(app, "get_db_connection", lambda: _FakeConn())
+    monkeypatch.setattr(app, "get_youtube_requests_session", lambda: object())
+    monkeypatch.setattr(
+        app, "fetch_products_to_search",
+        lambda conn, job, max_products: [{"id": "prod-good", "name": "Absolute", "brand_name": "Storm"}],
+    )
+    monkeypatch.setattr(
+        app, "search_youtube",
+        lambda api_key, query, max_results, session=None: [
+            {"youtube_video_id": "v-old", "title": "Storm Absolute Full Review",
+             "channel_title": "c1", "published_at": "2019-01-01T00:00:00Z", "thumbnail_url": None},
+        ],
+    )
+    monkeypatch.setattr(
+        app, "fetch_video_statistics",
+        lambda api_key, video_ids, session=None: {"v-old": {"view_count": 500, "duration_seconds": 300}},
+    )
+
+    def fake_insert(conn, pid, q, videos):
+        captured_videos.extend(videos)
+        return len(videos)
+
+    monkeypatch.setattr(app, "insert_candidates", fake_insert)
+    monkeypatch.setattr(app, "mark_product_searched", lambda conn, pid: None)
+
+    app.handler({}, None)
+
+    assert [v["youtube_video_id"] for v in captured_videos] == ["v-old"]
 
 
 # --- handler's {"refresh_stats": true} job shape: a completely different

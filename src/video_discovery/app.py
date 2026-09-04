@@ -58,6 +58,41 @@ anyone noticed the format (search.list's own results never carried
 duration). A video whose duration isn't known yet is never treated as a
 Short by either check -- see `is_likely_short`'s own docstring.
 
+PRE-RELEASE FILTER (2026-09-04): Al, real ask after seeing enough false-
+positive candidates in review -- "use the youtube video date and the
+release date to auto reject youtube videos for balls where the video was
+released prior to the ball release. it is almost always likely to not
+match and be a similar name or a sibling." A bowling ball review video
+can't legitimately predate the ball's own manufacturer-published release
+-- unlike consumer tech, there's no embargoed-early-review culture around
+bowling equipment -- so a candidate whose YouTube publishedAt is earlier
+than the product's own release_date (001_init_schema.sql/003_date_
+tracking_and_bowwwl.sql) is almost always about a similar-named product,
+a prior-generation ball, or a sibling in the same line that happened to
+score a search-relevance hit, exactly as Al described. `is_before_
+release` is the pure comparison (see its own docstring for why it treats
+either date being unknown as "never reject" -- release_date is frequently
+null, see 003_date_tracking_and_bowwwl.sql's own header comment on how
+sparse it is), enforced in the same two places as the SHORTS FILTER
+above, for the same reason:
+  1. Discovery time (`filter_out_pre_release_videos`, called from
+     handler right after the Shorts filter, before insert_candidates) --
+     a pre-release candidate never becomes a product_videos row.
+  2. Stats-refresh time (`apply_video_stats`, via the release_date/
+     published_at now joined into select_video_ids_needing_stats_
+     refresh) -- force-rejects a row regardless of current status,
+     including 'approved', same as the Shorts enforcement. This is what
+     sweeps EXISTING candidates (stored before this filter existed, or
+     whose product's release_date only got backfilled/corrected later)
+     into compliance the next time their stats happen to refresh, via
+     the exact same scheduled refresh-stats trigger (see task #238) that
+     already does this for Shorts -- no separate one-off backfill script
+     needed.
+Unlike the Shorts check, this one needs no NEW data fetch at refresh
+time -- published_at is already known from discovery, and release_date
+is already known on products -- so it runs unconditionally in apply_
+video_stats, not gated behind `if stats:` the way the Shorts check is.
+
 The default/brand_id scopes deliberately do NOT require `published = true`
 (they only used to, until a real catalog check found why that mattered:
 142 'current' products, but only 1 with `published = true` -- almost the
@@ -252,6 +287,11 @@ MIN_VIDEO_DURATION_SECONDS = 61
 # resolved_by is this project's audit trail for "who decided this," and
 # this is a rule, not a human decision.
 SHORT_REJECTED_BY = f"video_discovery (duration < {MIN_VIDEO_DURATION_SECONDS}s, likely a Short)"
+
+# PRE-RELEASE FILTER (see module docstring): a video published before
+# the product's own release_date is almost certainly about a different
+# (similar-named/sibling/prior-generation) product, not this one.
+PRE_RELEASE_REJECTED_BY = "video_discovery (published before product's release_date)"
 
 # Retried status codes: 429 is the real, confirmed cause here (YouTube's
 # per-minute search.list rate limit -- see module docstring's incident
@@ -471,6 +511,46 @@ def filter_out_shorts(videos: list) -> list:
     return [v for v in videos if not is_likely_short(v.get("duration_seconds"))]
 
 
+def is_before_release(published_at, release_date) -> bool:
+    """True only when BOTH dates are known and the video's publish date
+    is strictly earlier than the product's release_date -- see the
+    module docstring's PRE-RELEASE FILTER section for the full reasoning
+    (Al's ask, why a pre-release video is almost always a wrong match).
+    Conservative both ways, same "unknown is never treated as
+    disqualifying" posture as is_likely_short: a video with no known
+    publish date, or a product with no known release_date (release_date
+    is frequently null -- see 003_date_tracking_and_bowwwl.sql), is
+    never flagged here.
+
+    published_at accepts either shape this pipeline actually produces:
+    the raw ISO8601 string YouTube's search.list/videos.list responses
+    use (discovery time, before a candidate is ever inserted) or a
+    native datetime already parsed by psycopg2 (refresh time, read back
+    from product_videos.published_at). release_date is always a plain
+    date (products.release_date's column type) or None. Same-calendar-
+    day is NOT rejected (only strictly BEFORE is) -- a same-day launch
+    review is a legitimate, if fast, real review."""
+    if not published_at or not release_date:
+        return False
+    if isinstance(published_at, str):
+        try:
+            published_at = datetime.fromisoformat(published_at.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+    published_date = published_at.date() if hasattr(published_at, "date") else published_at
+    return published_date < release_date
+
+
+def filter_out_pre_release_videos(videos: list, release_date) -> list:
+    """Drops candidates whose published_at predates the product's own
+    release_date (see is_before_release) -- called from handler right
+    after the Shorts filter, before insert_candidates. release_date=None
+    (the common case -- see 003_date_tracking_and_bowwwl.sql on how
+    sparse it is) means every candidate is kept, same as a video with no
+    known publish date."""
+    return [v for v in videos if not is_before_release(v.get("published_at"), release_date)]
+
+
 def parse_video_details_response(data: dict) -> dict:
     """Returns {youtube_video_id: {view_count, like_count, comment_count,
     duration_seconds, description}}. An id YouTube doesn't return an item
@@ -545,12 +625,18 @@ def fetch_video_statistics(api_key, video_ids: list, session=None) -> dict:
 
 def fetch_products_to_search(conn, job: dict, max_products: int) -> list:
     """Resolves the job's scope (see module docstring) into a list of
-    {id, name, brand_name} dicts, capped at max_products. 'current' (non-
-    retired) products only, by default -- retired balls are lower priority
-    for review-video enrichment and can be added to product_ids explicitly
-    if ever wanted. Deliberately does NOT require published = true (see
-    module docstring's real catalog numbers on why that was dropped) --
-    discovery is meant to run ahead of publishing, not after it.
+    {id, name, brand_name, release_date} dicts, capped at max_products.
+    'current' (non-retired) products only, by default -- retired balls
+    are lower priority for review-video enrichment and can be added to
+    product_ids explicitly if ever wanted. Deliberately does NOT require
+    published = true (see module docstring's real catalog numbers on why
+    that was dropped) -- discovery is meant to run ahead of publishing,
+    not after it.
+
+    release_date (see module docstring's PRE-RELEASE FILTER section) is
+    frequently None -- handler() passes it straight through to filter_
+    out_pre_release_videos, which treats a missing release_date as
+    "never reject", same as every other caller of is_before_release.
 
     Default/brand_id scopes order by last_video_discovery_at asc nulls
     first (see module docstring's ROTATION section) -- this is what makes
@@ -560,7 +646,7 @@ def fetch_products_to_search(conn, job: dict, max_products: int) -> list:
     choice, not something to rotate) but still orders by p.id for
     deterministic results when len(product_ids) > max_products."""
     query = """
-        select p.id, p.name, b.name as brand_name
+        select p.id, p.name, b.name as brand_name, p.release_date
         from products p
         join brands b on b.id = p.brand_id
     """
@@ -664,27 +750,37 @@ def insert_candidates(conn, product_id: str, query: str, videos: list) -> int:
 
 
 def select_video_ids_needing_stats_refresh(conn, limit: int) -> list:
-    """Rows ordered stats_fetched_at asc nulls first, pv.id asc as a final
-    tiebreaker (same determinism reasoning as admin_api/service.py's
+    """Rows ordered pv.stats_fetched_at asc nulls first, pv.id asc as a
+    final tiebreaker (same determinism reasoning as admin_api/service.py's
     list_video_candidates' own id tiebreaker) -- never-refreshed candidates
     sort first, then the longest-stale ones, so repeated {"refresh_stats":
     true} invocations naturally cycle through the whole table the same way
     fetch_products_to_search's last_video_discovery_at ordering cycles
-    through products."""
+    through products.
+
+    Now joins products for release_date, and also returns this row's own
+    published_at, so apply_video_stats can enforce the PRE-RELEASE FILTER
+    (see module docstring) at refresh time without a second query --
+    neither value depends on anything freshly fetched from YouTube, both
+    are already sitting in the DB by the time this runs."""
     with conn.cursor() as cur:
         cur.execute(
             """
-            select id, youtube_video_id
-            from product_videos
-            order by stats_fetched_at asc nulls first, id asc
+            select pv.id, pv.youtube_video_id, pv.published_at, p.release_date
+            from product_videos pv
+            join products p on p.id = pv.product_id
+            order by pv.stats_fetched_at asc nulls first, pv.id asc
             limit %s
             """,
             (limit,),
         )
-        return [{"id": row[0], "youtube_video_id": row[1]} for row in cur.fetchall()]
+        return [
+            {"id": row[0], "youtube_video_id": row[1], "published_at": row[2], "release_date": row[3]}
+            for row in cur.fetchall()
+        ]
 
 
-def apply_video_stats(conn, video_pk: str, stats: dict, fetched_at) -> None:
+def apply_video_stats(conn, video_pk: str, stats: dict, fetched_at, published_at=None, release_date=None) -> None:
     """Updates one product_videos row by its own primary key, not
     youtube_video_id -- the same YouTube video can legitimately appear
     under more than one product_videos row (e.g. after reassign_video_
@@ -711,7 +807,16 @@ def apply_video_stats(conn, video_pk: str, stats: dict, fetched_at) -> None:
     as a still-'pending' one. Guarded with `and status <> 'rejected'` --
     a row a human already rejected for a real reason keeps that
     resolved_at/resolved_by untouched rather than being silently
-    overwritten with the automated one."""
+    overwritten with the automated one.
+
+    PRE-RELEASE FILTER, refresh-time enforcement (see module docstring):
+    when published_at/release_date (passed through from select_video_
+    ids_needing_stats_refresh -- both already-known facts, nothing
+    freshly fetched) show this row predates the product's release_date,
+    it's force-transitioned to status='rejected' the same way and with
+    the same guard, regardless of whether stats={} this refresh -- this
+    check doesn't depend on the freshly-fetched stats at all, so it runs
+    outside the `if stats:` branch, unlike the Shorts check above."""
     with conn.cursor() as cur:
         if stats:
             cur.execute(
@@ -741,6 +846,15 @@ def apply_video_stats(conn, video_pk: str, stats: dict, fetched_at) -> None:
                 "update product_videos set stats_fetched_at = %s where id = %s",
                 (fetched_at, video_pk),
             )
+        if is_before_release(published_at, release_date):
+            cur.execute(
+                """
+                update product_videos
+                set status = 'rejected', resolved_at = %s, resolved_by = %s
+                where id = %s and status <> 'rejected'
+                """,
+                (fetched_at, PRE_RELEASE_REJECTED_BY, video_pk),
+            )
     conn.commit()
 
 
@@ -760,11 +874,18 @@ def refresh_video_stats(conn, api_key, limit: int = DEFAULT_REFRESH_STATS_LIMIT,
     apply_video_stats' own SHORTS FILTER section) is a running count of
     rows this call force-transitioned to status='rejected' -- includes
     ones that were 'approved' before this refresh, per Al's explicit
-    "auto-reject those too" choice."""
+    "auto-reject those too" choice. `candidates_rejected_as_pre_release`
+    is the same idea for the PRE-RELEASE FILTER (see module docstring)
+    -- counted independently of whether stats_by_id had anything for
+    that row this run, since published_at/release_date never depend on
+    the freshly-fetched stats."""
     session = session if session is not None else get_youtube_requests_session()
     rows = select_video_ids_needing_stats_refresh(conn, limit)
     if not rows:
-        return {"candidates_checked": 0, "candidates_updated": 0, "candidates_rejected_as_shorts": 0}
+        return {
+            "candidates_checked": 0, "candidates_updated": 0,
+            "candidates_rejected_as_shorts": 0, "candidates_rejected_as_pre_release": 0,
+        }
 
     video_ids = [row["youtube_video_id"] for row in rows]
     stats_by_id = fetch_video_statistics(api_key, video_ids, session=session)
@@ -772,17 +893,24 @@ def refresh_video_stats(conn, api_key, limit: int = DEFAULT_REFRESH_STATS_LIMIT,
 
     updated = 0
     rejected_as_shorts = 0
+    rejected_as_pre_release = 0
     for row in rows:
         stats = stats_by_id.get(row["youtube_video_id"], {})
-        apply_video_stats(conn, row["id"], stats, fetched_at)
+        apply_video_stats(
+            conn, row["id"], stats, fetched_at,
+            published_at=row.get("published_at"), release_date=row.get("release_date"),
+        )
         if stats:
             updated += 1
             if is_likely_short(stats.get("duration_seconds")):
                 rejected_as_shorts += 1
+        if is_before_release(row.get("published_at"), row.get("release_date")):
+            rejected_as_pre_release += 1
 
     return {
         "candidates_checked": len(rows),
         "candidates_updated": updated,
+        "candidates_rejected_as_pre_release": rejected_as_pre_release,
         "candidates_rejected_as_shorts": rejected_as_shorts,
     }
 
@@ -949,6 +1077,20 @@ def handler(event, context):
                 logger.info(
                     "Dropped %d likely-Short candidate(s) for product_id=%s (duration < %ds)",
                     videos_before_shorts_filter - len(videos), product["id"], MIN_VIDEO_DURATION_SECONDS,
+                )
+
+            # PRE-RELEASE FILTER (see module docstring) -- drop candidates
+            # published before this product's own release_date. release_
+            # date is frequently None (see fetch_products_to_search's own
+            # docstring); filter_out_pre_release_videos is a no-op in
+            # that case, same as when a candidate's own published_at is
+            # unknown.
+            videos_before_pre_release_filter = len(videos)
+            videos = filter_out_pre_release_videos(videos, product.get("release_date"))
+            if len(videos) < videos_before_pre_release_filter:
+                logger.info(
+                    "Dropped %d pre-release candidate(s) for product_id=%s (published before release_date=%s)",
+                    videos_before_pre_release_filter - len(videos), product["id"], product.get("release_date"),
                 )
 
             inserted = insert_candidates(conn, product["id"], query, videos)
