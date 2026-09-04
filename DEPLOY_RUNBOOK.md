@@ -33,7 +33,7 @@ Any Postgres 13+ instance works (RDS is the obvious choice, but this
 repo doesn't assume it). Note the connection details -- you'll need them
 for step 3's `DbSecretArn` secret and to run migrations directly.
 
-## 2. Run the twenty-two migrations, in order
+## 2. Run the twenty-three migrations, in order
 
 ```bash
 psql "$DATABASE_URL" -f db/migrations/001_init_schema.sql
@@ -58,6 +58,7 @@ psql "$DATABASE_URL" -f db/migrations/019_products_product_type.sql
 psql "$DATABASE_URL" -f db/migrations/020_bowlerdepot_video_sync.sql
 psql "$DATABASE_URL" -f db/migrations/021_blocked_video_channels.sql
 psql "$DATABASE_URL" -f db/migrations/022_product_articles.sql
+psql "$DATABASE_URL" -f db/migrations/023_product_article_images.sql
 ```
 
 (If you already ran an earlier subset in a prior deploy, just run whatever
@@ -7029,6 +7030,225 @@ Function`'s own daily schedule will start generating articles for
 already-qualifying products automatically after deploy -- they land as
 `pending` and need an admin approval pass in the new Articles tab before
 they're visible via the new public_api endpoint.
+
+### 6t. Article images (action shot + product shot, generated alongside the text)
+
+Al's follow-up ask, right after 6s shipped: "can we have it generate some
+images for the article from the bowling ball images and using the article
+to give it some context". Scoped via a follow-up 2-question exchange
+before writing any code:
+
+1. **Image style**: Al chose **"Both"** (NOT either single-image-type
+   option, and not the recommended default) -- generate BOTH an action/
+   lifestyle hero shot (the ball in motion on the lane, editorial style,
+   matching how bowling.com's own articles use art) AND a stylized
+   product hero shot (an elevated, premium rendering, not in motion) per
+   article.
+2. **Trigger**: Al's choice, "recommended" this time -- **automatically
+   with the article**, in the same Lambda run as the text (both the daily
+   batch and the on-demand regenerate path), still gated behind the
+   article's own existing pending/approved/rejected review before going
+   live, not a separately-reviewed thing.
+
+**Model choice + Region, researched before building** (same defensive
+posture this project already takes toward Bedrock model/Region
+availability -- see 6i's own Haiku-4.5-in-us-west-1 saga): checked each
+Bedrock image model's own "Regional availability" table (2026-09-03)
+before picking one, rather than assuming Amazon Nova Canvas (the obvious
+first guess, given `product_article_generator` already uses Bedrock).
+Two hard blockers ruled it out: Nova Canvas is Legacy with an EOL of
+**2026-09-30** (weeks away as of this writing) and was **never available
+in `us-west-1`** to begin with (only `us-east-1`/`eu-west-1`/
+`ap-northeast-1`, all themselves Legacy). Amazon Titan Image Generator
+G1 v2 is **already past** its own 2026-06-30 EOL. Neither model supports
+Geo/Global cross-Region inference profiles at all (unlike the text model
+this project already uses), so there's no CRIS workaround for either --
+AWS's own current guidance is to migrate to Stability AI's models
+instead. Landed on **Stability AI Stable Diffusion 3.5 Large**
+(`stability.sd3-5-large-v1:0`, not Legacy), which supports image-to-image
+generation (conditioning on a reference photo, not just a bare text
+prompt) via a `mode`/`image`/`strength` request shape -- but it's only
+available in **`us-west-2`** (Oregon) on Bedrock, not this stack's own
+home Region (`us-west-1`). Rather than block the feature on that gap,
+`product_article_generator.handler()` constructs a SECOND bedrock-runtime
+client with an explicit `region_name=BEDROCK_IMAGE_REGION` (default
+`us-west-2`), separate from the text model's own default-Region client --
+a plain cross-Region API call, not Bedrock's own CRIS mechanism (which
+image models don't support at all). The IAM policy's `GrantImageModelAccess`
+statement is likewise hardcoded to `${BedrockImageRegion}`, not
+`${AWS::Region}`. New `template.yaml` parameters `BedrockImageModelId`
+(default `stability.sd3-5-large-v1:0`) and `BedrockImageRegion` (default
+`us-west-2`) carry both settings, each with a long inline comment
+documenting this whole research trail so a future change doesn't have to
+redo it -- see those parameters' own `Description` blocks, and
+`src/product_article_generator/app.py`'s module docstring, for the full
+reasoning if you're revisiting this later (worth re-checking whether
+Bedrock has since added a non-Legacy image model to `us-west-1`, since
+Nova Canvas's Sept 2026 EOL means this whole area of Bedrock's model
+catalog is actively shifting).
+
+**Migration 023** (`db/migrations/023_product_article_images.sql`):
+additive columns on the existing `product_articles` table (not a new
+table) -- `action_shot_image_key`/`action_shot_image_url`,
+`product_shot_image_key`/`product_shot_image_url`, and
+`images_generated_at`. Images are AI-generated content proper to the
+article itself (grounded in the article's own generated text plus the
+product's real photo as visual reference), not live product data with a
+separate source of truth to stay in sync with -- unlike specs/
+comparison_table (022's own header comment), there's nothing to join
+live, so the URLs are stored directly on the row. `images_generated_at`
+is tracked separately from the existing `generated_at` (text) column
+because image generation is a SECOND, independently-fallible step in the
+same run -- article text can succeed and store even if the image step
+errors entirely, and a non-null `generated_at` with a null
+`images_generated_at` is how that partial-failure case is told apart from
+"not attempted this run" without digging through logs. Per that column's
+own comment, `images_generated_at` is set once EITHER image succeeds, not
+gated on both -- the two Bedrock calls fail independently, so check the
+two `_image_key` columns individually to see which one(s) actually
+landed. Same "whole row is one reviewed unit" convention 022 already
+established: a regenerate resets the WHOLE row -- including these image
+columns -- back through `status = 'pending'` alongside the text, not just
+the text; there's no separate per-image review UI.
+
+**`src/product_article_generator/app.py`** (same file, extended, not a
+new Lambda): `fetch_reference_image_url` reuses the exact same "pick the
+one best image" `coalesce(...)` pattern `public_api.service.py` already
+uses five times (`is_visible`, `is_thumbnail desc`, `display_order`,
+`id`, falling back to `products.primary_image_url`) to find the
+product's own real photo. `fetch_reference_image_bytes` is a plain HTTPS
+GET against that already-public URL (works identically whether it's our
+own S3 `stored_url` or a manufacturer CDN URL) -- checked first whether
+any existing Lambda in this codebase reads an image object back out of
+S3 directly; none do (only `s3:ListBucket`-for-orphan-cleanup precedent
+exists), so this deliberately doesn't add a new S3-read code path either.
+`_reference_image_to_base64_png` re-encodes through Pillow (added to
+`requirements.txt`, same version pin as `image_processor`'s own) to
+normalize whatever format the source photo actually is into PNG.
+`build_image_prompts` grounds each image's text prompt in the
+JUST-GENERATED article's own `performance_summary` (or `hook`, if empty)
+plus the product's color -- Al's explicit "using the article to give it
+some context" ask, not just the bare spec sheet. `call_bedrock_for_image`
+sends Stable Diffusion's `image-to-image` mode with `strength=0.6`
+(leaves room for the scene -- lane, lighting, background -- to change
+while still anchoring the ball's actual color/coverstock pattern to the
+reference photo) plus a short `negative_prompt` to keep the model from
+adding invented text/logos/watermarks. `store_article_image` mirrors
+`image_processor.upload_variants`' exact key/URL convention (raw
+`https://{bucket}.s3.amazonaws.com/{key}` PNG URLs on the same
+public-read `IMAGE_BUCKET`) but under an `article-images/` prefix rather
+than `image_processor`'s own `product-images/` prefix, specifically so
+these generated images stay OUT of `product_scraper`'s
+`product-images/*` orphan-cleanup listing (they aren't a product's real
+photos). `generate_article_images` orchestrates all of the above as
+**best-effort and non-fatal**: by the time it runs, the article TEXT has
+already generated successfully, so any image failure (bad/missing
+reference photo, a Bedrock error, a filtered prompt) is logged and
+swallowed -- the article's own text still stores and goes to review
+either way. The two images are generated in separate `try`/`except`
+blocks so one variant failing doesn't take the other, still-good image
+down with it. `generate_article_for_product` and `handler` both thread
+`s3_client`/`bedrock_image_client`/`image_model_id`/`image_bucket`
+through end to end; all four must be supplied for the image step to run
+at all (a partially-configured deployment, e.g. `IMAGE_BUCKET` unset,
+skips images entirely rather than half-running) -- same defensive
+"not configured -> soft no-op" posture `admin_api.queue_article_
+generation` already uses for the text function name.
+
+**`template.yaml`**: `ProductArticleGeneratorFunction`'s `Timeout` bumped
+280s -> 600s (each product now also costs a reference-photo HTTP fetch
+plus two Stable Diffusion `InvokeModel` calls on top of the original text
+generation -- real added per-product latency in the batch loop). New env
+vars `BEDROCK_IMAGE_MODEL_ID`/`BEDROCK_IMAGE_REGION`/`IMAGE_BUCKET`. New
+`GrantImageModelAccess` IAM statement (plain `bedrock:InvokeModel` on the
+Region-hardcoded foundation-model ARN -- no inference-profile/Condition,
+since image models don't support CRIS at all, unlike the three-statement
+grant just above it for the text model). New `s3:PutObject` statement
+scoped to `${ImageBucket}/article-images/*` only -- deliberately no
+`s3:GetObject` grant, since the reference photo is fetched via plain
+HTTPS (see `fetch_reference_image_bytes` above), not the S3 API. Two new
+parameters, `BedrockImageModelId` and `BedrockImageRegion` (see "Model
+choice + Region" above for their own long `Description` blocks). Verified
+via the CFN-tolerant YAML loader (57 resources, unchanged count since
+this only extends the existing `ProductArticleGeneratorFunction`
+resource rather than adding a new one; both new parameters present; new
+env vars and the new IAM statement all present on that function).
+
+**`src/admin_api/service.py`**: `list_articles`' own select gained
+`pa.action_shot_image_url, pa.product_shot_image_url,
+pa.images_generated_at` so the Articles tab's list view can show a
+thumbnail/badge without opening each row. `get_article`'s existing
+`select pa.*` already picks up the new migration 023 columns with zero
+code change (same reasoning `get_video_candidate` and friends already
+lean on for "whatever's on the row" detail fetches).
+
+**`admin-site/index.html`**: the Articles tab's list row now shows a
+small 32x32 thumbnail of the action shot next to the title (or a "no
+images" note if `images_generated_at` is set but neither image
+succeeded) -- a quick "did images generate at all" scan without opening
+every row. `renderArticlePreviewHtml` (the ONE shared render function
+used by both the top-level Articles tab's expand-row preview AND the
+per-product Article sub-tab -- see 6s) gained an `.article-image-row`
+block showing both full-size images side by side (or the same "ran but
+produced neither image" note) right under the title, before the hook --
+images aren't given separate approve/reject controls, since they're
+reviewed as part of the same whole-row unit as the text (see migration
+023's own header comment).
+
+**`src/public_api/service.py`**: `get_product_article`'s own article
+select gained `action_shot_image_url, product_shot_image_url` -- read
+straight off the row (not live-joined, unlike the spec fields just below
+them in that same function), consistent with 023's "AI-generated content
+proper to the article, nothing to keep in sync" reasoning. Either or both
+may be null; a frontend should treat that as "no image" (the normal case
+right after text generation, before/if image generation runs or
+succeeds), not an error. No `template.yaml` change needed -- same
+`/{proxy+}` GET catch-all as every other public_api route.
+
+**Tests**: `tests/test_product_article_generator.py` gained 22 new tests
+(54 total, up from 32) covering `fetch_reference_image_url`/`fetch_
+reference_image_bytes`/`_reference_image_to_base64_png` (the last two
+against the REAL `requests`/`PIL` packages, both of which -- unlike
+boto3 -- are actually importable in this sandbox; `requests.get` is
+monkeypatched directly rather than needing boto3's `sys.modules`-
+injection trick), `build_image_prompts`, `call_bedrock_for_image`'s
+Stable-Diffusion-specific request/response shape (including the
+non-null-`finish_reasons`-means-filtered case), `store_article_image`'s
+key/URL convention, `generate_article_images`' best-effort orchestration
+(no reference image / reference fetch fails / one variant fails, other
+still succeeds / both succeed), and `generate_article_for_product`/
+`handler` actually threading the new image plumbing through end to end
+(including a dedicated test confirming `handler()` constructs the image
+Bedrock client with the correct cross-Region `region_name`, not the
+Lambda's own home Region). Three PRE-EXISTING tests needed updates for
+the new `store_article`/`generate_article_for_product` param-count and
+return-shape changes (fixed positional indices instead of `[-2]`/`[-1]`
+negative indexing into the insert-params tuple, an added `images_
+generated: False` key in the orchestration result dict, and the two
+`handler` tests' fake `generate_article_for_product` stand-ins updated to
+accept the new keyword args via `**kwargs`) -- all caught by simply
+running the file and reading the failures, not missed. `tests/test_
+admin_api_service.py` gained 2 new tests for `list_articles`/`get_
+article`'s image fields (253 total, up from 251) plus default-null image
+columns added to the shared `_fake_article_row` helper. `tests/test_
+public_api_service.py` gained 2 new tests for `get_product_article`'s
+image fields (74 total, up from 72). Full non-pytest `test_*.py` sweep
+(42 files) ran clean after all three files' changes.
+
+**Redeploy**: run migration 023 (after 022, if not already applied), then
+a full unscoped `sam build && sam deploy` (touches `AdminApiFunction`
+again via the `list_articles`/`get_article` changes -- same 6a.5
+fastapi-missing-zip caution as every prior section that touches that
+function), then swap the static `admin-site/index.html` file as usual. No
+new IAM identity/secret is needed for Stable Diffusion beyond what's
+already in this section's own `template.yaml` changes -- but DO confirm
+the deploying AWS account actually has Bedrock model access enabled for
+`stability.sd3-5-large-v1:0` in `us-west-2` specifically (Bedrock model
+access is granted per-Region, per-model, in the Bedrock console, same
+one-time setup step this project's own 6i section already documents for
+the text model) before the first real invocation, or every image call
+will fail with an access-denied error despite the IAM policy being
+correct.
 
 ## 7. Ongoing operations
 

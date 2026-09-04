@@ -773,6 +773,7 @@ class _FakeCursor:
                 "id", "title", "hook", "performance_summary", "who_should_buy", "who_should_skip",
                 "pros", "cons", "buying_tips", "verdict", "faq", "sibling_product_ids",
                 "source_video_ids", "generated_at",
+                "action_shot_image_url", "product_shot_image_url",
             )]
             if article is None or article.get("status") != "approved":
                 self._result_row = None
@@ -784,6 +785,7 @@ class _FakeCursor:
                     article.get("buying_tips"), article.get("verdict"), article.get("faq", []),
                     article.get("sibling_product_ids", []), article.get("source_video_ids", []),
                     article.get("generated_at"),
+                    article.get("action_shot_image_url"), article.get("product_shot_image_url"),
                 )
 
         elif q.startswith("select p.name, p.url, c.name as core_name, c.core_type,"):
@@ -1476,6 +1478,42 @@ def test_get_product_article_comparison_table_drops_unpublished_siblings():
 
     comparison_ids = [row["id"] for row in result["article"]["comparison_table"]]
     assert comparison_ids == ["sib-published"]
+
+
+def test_get_product_article_includes_image_urls_when_present():
+    """023_product_article_images.sql -- action_shot_image_url/product_
+    shot_image_url are read straight off the article row (not live-joined
+    like the spec fields), so a public GET /products/{id}/article response
+    includes them once image generation has produced them."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(
+        db, pid,
+        action_shot_image_url="https://bucket.s3.amazonaws.com/article-images/prod-1/action_shot.png",
+        product_shot_image_url="https://bucket.s3.amazonaws.com/article-images/prod-1/product_shot.png",
+    )
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    article = result["article"]
+    assert article["action_shot_image_url"] == "https://bucket.s3.amazonaws.com/article-images/prod-1/action_shot.png"
+    assert article["product_shot_image_url"] == "https://bucket.s3.amazonaws.com/article-images/prod-1/product_shot.png"
+
+
+def test_get_product_article_image_urls_null_when_not_yet_generated():
+    """The normal case for most articles right after 022's own text
+    generation -- image generation hasn't run (or hasn't succeeded) yet,
+    so both URLs are null rather than missing keys, matching this
+    function's own always-shaped-response contract."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid)  # no image overrides -- defaults to no image columns at all
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    article = result["article"]
+    assert article["action_shot_image_url"] is None
+    assert article["product_shot_image_url"] is None
 
 
 if __name__ == "__main__":

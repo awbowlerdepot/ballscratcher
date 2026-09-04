@@ -3554,7 +3554,8 @@ def list_articles(conn, status: str = "pending", product_id: str = None, limit: 
     query = """
         select pa.id, pa.product_id, p.name as product_name, b.name as brand_name,
                pa.status, pa.title, pa.generated_at, pa.reviewed_at,
-               pa.resolved_by, pa.created_at
+               pa.resolved_by, pa.created_at,
+               pa.action_shot_image_url, pa.product_shot_image_url, pa.images_generated_at
         from product_articles pa
         join products p on p.id = pa.product_id
         join brands b on b.id = p.brand_id

@@ -576,7 +576,16 @@ def get_product_article(conn, product_id: str):
     sibling that's since been unpublished or deleted silently drops out
     of the table rather than erroring the whole article -- a stale
     heuristic reference shouldn't be able to break an otherwise-good,
-    already-approved article."""
+    already-approved article.
+
+    action_shot_image_url/product_shot_image_url (023_product_article_
+    images.sql) ARE read straight off the article row, unlike the spec
+    values above -- these are AI-generated content proper to the article
+    itself (not live product data with a separate source of truth to stay
+    in sync with), so there's nothing to join live. Either or both may be
+    null if image generation hasn't run yet or didn't succeed for this
+    article -- a frontend should treat a null image URL as "no image",
+    not an error."""
     with conn.cursor() as cur:
         cur.execute("select id from products where id = %s and published = true", (product_id,))
         if cur.fetchone() is None:
@@ -586,7 +595,8 @@ def get_product_article(conn, product_id: str):
             """
             select id, title, hook, performance_summary, who_should_buy, who_should_skip,
                    pros, cons, buying_tips, verdict, faq, sibling_product_ids,
-                   source_video_ids, generated_at
+                   source_video_ids, generated_at,
+                   action_shot_image_url, product_shot_image_url
             from product_articles
             where product_id = %s and status = 'approved'
             """,

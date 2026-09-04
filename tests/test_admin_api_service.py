@@ -715,12 +715,14 @@ class FakeCursor:
             self._rows = [
                 (r["id"], r["product_id"], r["product_name"], r["brand_name"], r["status"],
                  r.get("title"), r.get("generated_at"), r.get("reviewed_at"), r.get("resolved_by"),
-                 r.get("created_at"))
+                 r.get("created_at"), r.get("action_shot_image_url"), r.get("product_shot_image_url"),
+                 r.get("images_generated_at"))
                 for r in rows
             ]
             self.description = [
                 ("id",), ("product_id",), ("product_name",), ("brand_name",), ("status",),
                 ("title",), ("generated_at",), ("reviewed_at",), ("resolved_by",), ("created_at",),
+                ("action_shot_image_url",), ("product_shot_image_url",), ("images_generated_at",),
             ]
 
         elif q.startswith("select pa.*, p.name as product_name, b.name as brand_name"):
@@ -4046,6 +4048,12 @@ def _fake_article_row(**overrides):
         "comparison_table": [], "sibling_product_ids": [], "source_video_ids": ["vid-1"],
         "generated_at": "2026-08-01", "reviewed_at": None, "resolved_by": None,
         "created_at": "2026-08-01",
+        # 023_product_article_images.sql -- default to "not generated yet"
+        # (all null) so existing tests that don't care about images don't
+        # need to know these columns exist at all.
+        "action_shot_image_key": None, "action_shot_image_url": None,
+        "product_shot_image_key": None, "product_shot_image_url": None,
+        "images_generated_at": None,
     }
     row.update(overrides)
     return row
@@ -4104,6 +4112,48 @@ def test_get_article_returns_none_for_missing_id():
     db = {"product_articles": {}}
     conn = FakeConnection(db)
     assert service.get_article(conn, "does-not-exist") is None
+
+
+def test_list_articles_includes_image_fields():
+    """023_product_article_images.sql -- list_articles' select was
+    extended to include both image URLs plus images_generated_at so the
+    admin-site Articles tab can show a thumbnail/badge without opening
+    each row (see that tab's own renderArticles change)."""
+    db = {"product_articles": {
+        "art-1": _fake_article_row(
+            id="art-1",
+            action_shot_image_url="https://bucket.s3.amazonaws.com/article-images/prod-1/action_shot.png",
+            product_shot_image_url="https://bucket.s3.amazonaws.com/article-images/prod-1/product_shot.png",
+            images_generated_at="2026-08-01",
+        ),
+    }}
+    conn = FakeConnection(db)
+
+    result = service.list_articles(conn, status="pending")
+
+    assert result[0]["action_shot_image_url"] == "https://bucket.s3.amazonaws.com/article-images/prod-1/action_shot.png"
+    assert result[0]["product_shot_image_url"] == "https://bucket.s3.amazonaws.com/article-images/prod-1/product_shot.png"
+    assert result[0]["images_generated_at"] == "2026-08-01"
+
+
+def test_get_article_includes_all_image_columns():
+    """get_article's own `select pa.*` picks up whatever columns exist on
+    the row with no code change needed -- this just confirms the fake's
+    default row (and therefore the real migration 023 columns) actually
+    round-trip through, including the null case."""
+    db = {"product_articles": {"art-1": _fake_article_row(
+        action_shot_image_key="article-images/prod-1/action_shot.png",
+        action_shot_image_url="https://bucket.s3.amazonaws.com/article-images/prod-1/action_shot.png",
+    )}}
+    conn = FakeConnection(db)
+
+    result = service.get_article(conn, "art-1")
+
+    assert result["action_shot_image_key"] == "article-images/prod-1/action_shot.png"
+    assert result["action_shot_image_url"] == "https://bucket.s3.amazonaws.com/article-images/prod-1/action_shot.png"
+    # Neither image was generated for the product-shot variant in this row.
+    assert result["product_shot_image_key"] is None
+    assert result["product_shot_image_url"] is None
 
 
 def test_approve_article_sets_status_and_resolved_by():

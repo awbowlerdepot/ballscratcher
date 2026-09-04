@@ -187,14 +187,25 @@ def test_build_article_prompt_caps_total_transcript_budget_across_videos():
 
 # --- Fake psycopg2-shaped cursor/connection ---
 
+_UNSET = object()
+
+
 class _FakeCursor:
     def __init__(self, needing_article=None, product_row=None, video_rows=None,
-                 sibling_candidates=None, store_article_id="article-1"):
+                 sibling_candidates=None, store_article_id="article-1",
+                 reference_image_url=_UNSET):
         self.needing_article = needing_article or []
         self.product_row = product_row
         self.video_rows = video_rows or []
         self.sibling_candidates = sibling_candidates or []
         self.store_article_id = store_article_id
+        # _UNSET (not None) as the default so a test that never touches
+        # fetch_reference_image_url gets a clear NotImplementedError if
+        # that query somehow fires unexpectedly, rather than silently
+        # returning None and masking a bug -- None is itself a valid,
+        # meaningful value here (see fetch_reference_image_url's own
+        # docstring: "no image at all").
+        self.reference_image_url = reference_image_url
         self.executed = []
         self.description = None
         self._rows = []
@@ -238,6 +249,15 @@ class _FakeCursor:
             self.inserted.append(params)
             self.description = [("id",)]
             self._rows = [(self.store_article_id,)]
+
+        elif q.startswith("select coalesce("):
+            if self.reference_image_url is _UNSET:
+                raise NotImplementedError(
+                    "FakeCursor: reference_image_url wasn't configured for this test "
+                    "but fetch_reference_image_url's query fired"
+                )
+            self.description = [("coalesce",)]
+            self._rows = [(self.reference_image_url,)]
 
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
@@ -452,12 +472,23 @@ def test_generate_article_for_product_full_success_path():
 
     assert result == {
         "product_id": "prod-1", "generated": True, "article_id": "article-99",
-        "video_count": 1, "sibling_count": 1,
+        "video_count": 1, "sibling_count": 1, "images_generated": False,
     }
-    # The stored row carries the real source video id and inferred sibling id.
+    # The stored row carries the real source video id and inferred sibling id
+    # -- fixed positional indices (12/13), not insert_params[-2]/[-1], since
+    # store_article's insert tuple now has 5 more (image) fields appended
+    # after source_video_ids (see store_article's own param list) --
+    # negative indexing would silently start reading the wrong fields.
     insert_params = conn._cursor.inserted[0]
-    assert json.loads(insert_params[-2]) == ["prod-2"]  # sibling_product_ids
-    assert json.loads(insert_params[-1]) == ["vid-1"]   # source_video_ids
+    assert json.loads(insert_params[12]) == ["prod-2"]  # sibling_product_ids
+    assert json.loads(insert_params[13]) == ["vid-1"]   # source_video_ids
+    # No s3_client/bedrock_image_client/image_model_id/image_bucket were
+    # supplied to generate_article_for_product in this test, so the image
+    # step is skipped entirely -- all four image columns stay null and
+    # images_generated_at's own case-when short-circuits to null (has_images
+    # param, index 18, is False).
+    assert insert_params[14:18] == (None, None, None, None)
+    assert insert_params[18] is False
 
 
 def test_generate_article_for_product_propagates_bad_bedrock_json():
@@ -541,8 +572,14 @@ def test_handler_on_demand_product_id_forces_single_generation():
     conn = _FakeConnection()
     calls = []
 
-    def _fake_generate(conn_, bedrock, model_id, product_id, force=False):
-        calls.append((product_id, force))
+    # handler() now always passes s3_client/bedrock_image_client/
+    # image_model_id/image_bucket through as keywords (see handler's own
+    # docstring) -- the fake must accept them (via **kwargs) even though
+    # this test doesn't care about their values, or a real TypeError
+    # (unexpected keyword argument) would mask whatever the test actually
+    # means to check.
+    def _fake_generate(conn_, bedrock, model_id, product_id, force=False, **kwargs):
+        calls.append((product_id, force, kwargs))
         return {"product_id": product_id, "generated": True, "article_id": "a1",
                 "video_count": 1, "sibling_count": 0}
 
@@ -555,7 +592,12 @@ def test_handler_on_demand_product_id_forces_single_generation():
     finally:
         guard.restore()
 
-    assert calls == [("prod-1", True)]
+    assert len(calls) == 1
+    product_id, force, kwargs = calls[0]
+    assert (product_id, force) == ("prod-1", True)
+    # Image plumbing was actually threaded through, not silently dropped.
+    assert kwargs["image_model_id"] == app.DEFAULT_BEDROCK_IMAGE_MODEL_ID
+    assert set(kwargs.keys()) == {"s3_client", "bedrock_image_client", "image_model_id", "image_bucket"}
     body = json.loads(result["body"])
     assert body["results"] == [{"product_id": "prod-1", "generated": True, "article_id": "a1",
                                  "video_count": 1, "sibling_count": 0}]
@@ -568,7 +610,7 @@ def test_handler_batch_mode_continues_after_one_product_errors():
     def _fake_list(conn_):
         return ["prod-1", "prod-2"]
 
-    def _fake_generate(conn_, bedrock, model_id, product_id, force=False):
+    def _fake_generate(conn_, bedrock, model_id, product_id, force=False, **kwargs):
         if product_id == "prod-1":
             raise ValueError("bad bedrock json")
         return {"product_id": product_id, "generated": True, "article_id": "a1",
@@ -590,6 +632,460 @@ def test_handler_batch_mode_continues_after_one_product_errors():
     assert body["results"][0] == {"product_id": "prod-1", "generated": False, "reason": "error"}
     assert body["results"][1]["generated"] is True
     assert conn.closed is True
+
+
+def test_handler_constructs_image_bedrock_client_in_configured_region():
+    """handler() must construct bedrock_image_client with an explicit
+    region_name (BEDROCK_IMAGE_REGION, default us-west-2) -- a plain
+    boto3.client("bedrock-runtime") call (no region_name) would use the
+    Lambda's own home Region (us-west-1), where Stable Diffusion 3.5
+    Large isn't available at all (see app.py's own module docstring)."""
+    conn = _FakeConnection()
+    client_calls = []
+
+    def _fake_boto3_client(service_name, **kwargs):
+        client_calls.append((service_name, kwargs))
+        return _FakeBedrockClient("{}")
+
+    def _fake_generate(conn_, bedrock, model_id, product_id, force=False, **kwargs):
+        return {"product_id": product_id, "generated": True, "article_id": "a1",
+                "video_count": 1, "sibling_count": 0}
+
+    import types
+    fake_boto3 = types.ModuleType("boto3")
+    fake_boto3.client = _fake_boto3_client
+
+    guard = _HandlerPatchGuard()
+    try:
+        guard.set_module("boto3", fake_boto3)
+        guard.set(app, "get_db_connection", lambda: conn)
+        guard.set(app, "generate_article_for_product", _fake_generate)
+        app.handler({"product_id": "prod-1"}, None)
+    finally:
+        guard.restore()
+
+    bedrock_runtime_calls = [c for c in client_calls if c[0] == "bedrock-runtime"]
+    assert len(bedrock_runtime_calls) == 2
+    # The text model's own client -- no region_name override.
+    assert bedrock_runtime_calls[0][1] == {}
+    # The image model's client -- explicit region_name, defaulting to
+    # DEFAULT_BEDROCK_IMAGE_REGION when BEDROCK_IMAGE_REGION isn't set.
+    assert bedrock_runtime_calls[1][1] == {"region_name": app.DEFAULT_BEDROCK_IMAGE_REGION}
+    assert ("s3", {}) in client_calls
+
+
+# --- Article images (023_product_article_images.sql) ---
+
+def test_fetch_reference_image_url_returns_configured_value():
+    conn = _FakeConnection(reference_image_url="https://example.com/ball.jpg")
+    assert app.fetch_reference_image_url(conn, "prod-1") == "https://example.com/ball.jpg"
+
+
+def test_fetch_reference_image_url_returns_none_when_product_has_no_image():
+    # coalesce()'s own SQL NULL comes back as a one-row, one-column result
+    # with a None value -- NOT zero rows -- see fetch_reference_image_url's
+    # own docstring for why row[0] (not "row is None") is the right check.
+    conn = _FakeConnection(reference_image_url=None)
+    assert app.fetch_reference_image_url(conn, "prod-1") is None
+
+
+def test_fetch_reference_image_url_query_uses_pick_one_best_image_pattern():
+    """Same coalesce/is_visible/is_thumbnail-desc/display_order pattern
+    public_api.service.py's own get_product_article uses -- confirms this
+    isn't a reinvented, differently-ordered query."""
+    conn = _FakeConnection(reference_image_url=None)
+    app.fetch_reference_image_url(conn, "prod-1")
+    query = conn._cursor.executed[0][0]
+    assert "pi.is_visible = true" in query
+    assert "order by pi.is_thumbnail desc, pi.display_order, pi.id" in query
+    assert "p.primary_image_url" in query
+
+
+def test_fetch_reference_image_bytes_returns_response_content():
+    """requests IS actually importable in this sandbox (unlike boto3), so
+    this monkeypatches requests.get directly rather than needing the
+    sys.modules-injection trick _HandlerPatchGuard uses for boto3."""
+    import requests
+
+    class _FakeResponse:
+        content = b"fake-image-bytes"
+
+        def raise_for_status(self):
+            pass
+
+    calls = []
+    original_get = requests.get
+
+    def _fake_get(url, timeout=None):
+        calls.append((url, timeout))
+        return _FakeResponse()
+
+    requests.get = _fake_get
+    try:
+        result = app.fetch_reference_image_bytes("https://example.com/ball.jpg")
+    finally:
+        requests.get = original_get
+
+    assert result == b"fake-image-bytes"
+    assert calls == [("https://example.com/ball.jpg", 30)]
+
+
+def test_fetch_reference_image_bytes_raises_on_http_error():
+    import requests
+
+    class _FakeErrorResponse:
+        def raise_for_status(self):
+            raise requests.exceptions.HTTPError("404")
+
+    original_get = requests.get
+    requests.get = lambda url, timeout=None: _FakeErrorResponse()
+    try:
+        try:
+            app.fetch_reference_image_bytes("https://example.com/missing.jpg")
+            assert False, "expected HTTPError"
+        except requests.exceptions.HTTPError:
+            pass
+    finally:
+        requests.get = original_get
+
+
+def test_reference_image_to_base64_png_roundtrips_through_pillow():
+    """PIL IS actually importable in this sandbox -- generates a tiny real
+    JPEG (deliberately not PNG, to prove the re-encode-to-PNG step is
+    doing real work, not just base64-ing the input bytes unchanged) and
+    confirms the output decodes back to a valid PNG."""
+    import base64
+    import io
+
+    from PIL import Image
+
+    src = Image.new("RGB", (8, 8), color=(10, 20, 30))
+    buf = io.BytesIO()
+    src.save(buf, format="JPEG")
+    jpeg_bytes = buf.getvalue()
+
+    b64_png = app._reference_image_to_base64_png(jpeg_bytes)
+    decoded = base64.b64decode(b64_png)
+    roundtripped = Image.open(io.BytesIO(decoded))
+    assert roundtripped.format == "PNG"
+    assert roundtripped.size == (8, 8)
+
+
+# --- build_image_prompts: pure, no DB, no network ---
+
+_SAMPLE_ARTICLE = dict(_VALID_ARTICLE_JSON, performance_summary="Reads early and hooks hard off the friction.")
+
+
+def test_build_image_prompts_includes_ball_color_and_article_context():
+    product = {"color": "Blue/Black"}
+    prompts = app.build_image_prompts(product, _SAMPLE_ARTICLE)
+    assert "Blue/Black bowling ball" in prompts["action_shot"]
+    assert "Blue/Black bowling ball" in prompts["product_shot"]
+    assert "Reads early and hooks hard off the friction." in prompts["action_shot"]
+    assert "Reads early and hooks hard off the friction." in prompts["product_shot"]
+
+
+def test_build_image_prompts_falls_back_to_hook_when_no_performance_summary():
+    article = dict(_VALID_ARTICLE_JSON, performance_summary="", hook="A late-night league anecdote.")
+    prompts = app.build_image_prompts({"color": "Red"}, article)
+    assert "A late-night league anecdote." in prompts["action_shot"]
+
+
+def test_build_image_prompts_two_distinct_scenes():
+    prompts = app.build_image_prompts({"color": "Purple"}, _SAMPLE_ARTICLE)
+    assert "rolling down a bowling lane" in prompts["action_shot"]
+    assert "studio product photograph" in prompts["product_shot"]
+    assert prompts["action_shot"] != prompts["product_shot"]
+
+
+# --- call_bedrock_for_image: Stable Diffusion 3.5 Large request/response shape ---
+
+class _FakeImageBedrockClient:
+    def __init__(self, response_payload: dict):
+        self.response_payload = response_payload
+        self.calls = []
+
+    def invoke_model(self, modelId, contentType, accept, body):
+        self.calls.append({"modelId": modelId, "body": json.loads(body)})
+        return {"body": _FakeBedrockBody(self.response_payload)}
+
+
+def test_call_bedrock_for_image_sends_image_to_image_request_shape():
+    import base64
+
+    fake_png = base64.b64encode(b"fake-png-bytes").decode("ascii")
+    client = _FakeImageBedrockClient({"images": [fake_png], "finish_reasons": [None], "seeds": [1]})
+
+    result = app.call_bedrock_for_image(client, "stability.sd3-5-large-v1:0", "a blue ball", "ref-b64")
+
+    assert result == b"fake-png-bytes"
+    sent_body = client.calls[0]["body"]
+    assert sent_body["mode"] == "image-to-image"
+    assert sent_body["image"] == "ref-b64"
+    assert sent_body["prompt"] == "a blue ball"
+    assert 0 < sent_body["strength"] < 1
+    assert sent_body["negative_prompt"]  # non-empty, keeps text/watermarks out
+
+
+def test_call_bedrock_for_image_raises_on_non_null_finish_reason():
+    """A filtered prompt/output comes back as a non-null finish_reasons
+    entry with NO images key at all (see Stable Diffusion 3.5 Large's own
+    documented response shape) -- must raise, not silently return empty
+    bytes or crash on a missing "images" key."""
+    client = _FakeImageBedrockClient({"finish_reasons": ["Filter reason: prompt"]})
+    try:
+        app.call_bedrock_for_image(client, "stability.sd3-5-large-v1:0", "bad prompt", "ref-b64")
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "Filter reason: prompt" in str(exc)
+
+
+def test_call_bedrock_for_image_raises_on_empty_images_list():
+    client = _FakeImageBedrockClient({"images": [], "finish_reasons": [None]})
+    try:
+        app.call_bedrock_for_image(client, "stability.sd3-5-large-v1:0", "prompt", "ref-b64")
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "no images" in str(exc)
+
+
+# --- store_article_image ---
+
+class _FakeS3Client:
+    def __init__(self):
+        self.put_calls = []
+
+    def put_object(self, **kwargs):
+        self.put_calls.append(kwargs)
+
+
+def test_store_article_image_builds_article_images_prefix_key_and_url():
+    s3 = _FakeS3Client()
+    result = app.store_article_image(s3, "my-bucket", "prod-1", "action_shot", b"pngbytes")
+
+    assert result == {
+        "key": "article-images/prod-1/action_shot.png",
+        "url": "https://my-bucket.s3.amazonaws.com/article-images/prod-1/action_shot.png",
+    }
+    assert s3.put_calls == [{
+        "Bucket": "my-bucket", "Key": "article-images/prod-1/action_shot.png",
+        "Body": b"pngbytes", "ContentType": "image/png",
+    }]
+
+
+# --- generate_article_images: orchestration, best-effort/non-fatal ---
+
+def test_generate_article_images_returns_empty_when_no_reference_image():
+    conn = _FakeConnection(reference_image_url=None)
+    result = app.generate_article_images(
+        conn, bedrock_image_client=None, s3_client=None, image_model_id="model-id",
+        image_bucket="bucket", product={"id": "prod-1", "color": "Blue"}, article=_SAMPLE_ARTICLE,
+    )
+    assert result == {}
+
+
+def test_generate_article_images_returns_empty_when_reference_fetch_fails():
+    import requests
+
+    conn = _FakeConnection(reference_image_url="https://example.com/ball.jpg")
+    original_get = requests.get
+
+    def _raise(*args, **kwargs):
+        raise requests.exceptions.ConnectionError("network down")
+
+    requests.get = _raise
+    try:
+        result = app.generate_article_images(
+            conn, bedrock_image_client=object(), s3_client=object(), image_model_id="model-id",
+            image_bucket="bucket", product={"id": "prod-1", "color": "Blue"}, article=_SAMPLE_ARTICLE,
+        )
+    finally:
+        requests.get = original_get
+
+    assert result == {}
+
+
+def test_generate_article_images_both_succeed():
+    import base64
+    import requests
+
+    conn = _FakeConnection(reference_image_url="https://example.com/ball.jpg")
+    fake_png_b64 = base64.b64encode(b"generated-bytes").decode("ascii")
+    bedrock = _FakeImageBedrockClient({"images": [fake_png_b64], "finish_reasons": [None]})
+    s3 = _FakeS3Client()
+
+    # Use a real tiny JPEG so the PIL round-trip inside generate_article_images succeeds
+    # (_reference_image_to_base64_png needs PIL to actually open the bytes, not arbitrary data).
+    from PIL import Image
+    import io
+    buf = io.BytesIO()
+    Image.new("RGB", (4, 4)).save(buf, format="JPEG")
+
+    class _FakeRealResponse:
+        content = buf.getvalue()
+
+        def raise_for_status(self):
+            pass
+
+    original_get = requests.get
+    requests.get = lambda url, timeout=None: _FakeRealResponse()
+    try:
+        result = app.generate_article_images(
+            conn, bedrock_image_client=bedrock, s3_client=s3, image_model_id="model-id",
+            image_bucket="bucket", product={"id": "prod-1", "color": "Blue"}, article=_SAMPLE_ARTICLE,
+        )
+    finally:
+        requests.get = original_get
+
+    assert result == {
+        "action_shot_image_key": "article-images/prod-1/action_shot.png",
+        "action_shot_image_url": "https://bucket.s3.amazonaws.com/article-images/prod-1/action_shot.png",
+        "product_shot_image_key": "article-images/prod-1/product_shot.png",
+        "product_shot_image_url": "https://bucket.s3.amazonaws.com/article-images/prod-1/product_shot.png",
+    }
+    # Both variants actually hit Bedrock, independently.
+    assert len(bedrock.calls) == 2
+    assert len(s3.put_calls) == 2
+
+
+def test_generate_article_images_one_variant_fails_other_still_succeeds():
+    """Each variant is generated in its own try/except -- see generate_
+    article_images' own docstring on why one Bedrock failure must not take
+    the other, still-good image down with it."""
+    import base64
+    import io
+    import requests
+    from PIL import Image
+
+    conn = _FakeConnection(reference_image_url="https://example.com/ball.jpg")
+
+    class _FlakyBedrockClient:
+        def __init__(self):
+            self.calls = 0
+
+        def invoke_model(self, modelId, contentType, accept, body):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("Bedrock throttled")
+            fake_png_b64 = base64.b64encode(b"second-image-bytes").decode("ascii")
+            return {"body": _FakeBedrockBody({"images": [fake_png_b64], "finish_reasons": [None]})}
+
+    bedrock = _FlakyBedrockClient()
+    s3 = _FakeS3Client()
+
+    buf = io.BytesIO()
+    Image.new("RGB", (4, 4)).save(buf, format="JPEG")
+
+    class _FakeRealResponse:
+        content = buf.getvalue()
+
+        def raise_for_status(self):
+            pass
+
+    original_get = requests.get
+    requests.get = lambda url, timeout=None: _FakeRealResponse()
+    try:
+        result = app.generate_article_images(
+            conn, bedrock_image_client=bedrock, s3_client=s3, image_model_id="model-id",
+            image_bucket="bucket", product={"id": "prod-1", "color": "Blue"}, article=_SAMPLE_ARTICLE,
+        )
+    finally:
+        requests.get = original_get
+
+    # action_shot (generated first) failed; product_shot (generated
+    # second) succeeded -- only the successful variant's keys are present.
+    assert result == {
+        "product_shot_image_key": "article-images/prod-1/product_shot.png",
+        "product_shot_image_url": "https://bucket.s3.amazonaws.com/article-images/prod-1/product_shot.png",
+    }
+    assert bedrock.calls == 2
+    assert len(s3.put_calls) == 1
+
+
+# --- generate_article_for_product wired with image plumbing ---
+
+def test_generate_article_for_product_wires_images_when_all_four_image_args_supplied():
+    product_row = (
+        "prod-1", "Equinox Solid", "Blue", "reactive", "hybrid",
+        "R2S Hybrid", True, "500/1000 Abralon",
+        12, 17, "2024-01-01", "A great ball.",
+        "brand-1", "Storm", "Sonar", "asymmetric",
+    )
+    video_rows = [("vid-1", "Review", "Some Channel", "A summary.", "transcript text")]
+    conn = _FakeConnection(product_row=product_row, video_rows=video_rows,
+                            reference_image_url=None, store_article_id="article-1")
+    bedrock = _FakeBedrockClient(json.dumps(_VALID_ARTICLE_JSON))
+
+    # reference_image_url=None -> generate_article_images short-circuits to
+    # {} without ever touching bedrock_image_client/s3_client, so passing
+    # simple sentinel objects for those is enough to prove the plumbing
+    # reaches generate_article_images at all (see the "no reference image"
+    # test above for that function's own behavior in isolation).
+    result = app.generate_article_for_product(
+        conn, bedrock, "model-id", "prod-1",
+        s3_client=object(), bedrock_image_client=object(),
+        image_model_id="model-id", image_bucket="bucket",
+    )
+
+    assert result["images_generated"] is False
+    insert_params = conn._cursor.inserted[0]
+    assert insert_params[14:18] == (None, None, None, None)
+    assert insert_params[18] is False
+
+
+def test_generate_article_for_product_skips_images_when_any_image_arg_missing():
+    """s3_client/bedrock_image_client/image_model_id/image_bucket must ALL
+    be supplied for the image step to run (see generate_article_for_
+    product's own docstring) -- a partially-configured deployment (e.g.
+    IMAGE_BUCKET unset) should skip images entirely, not half-run."""
+    product_row = (
+        "prod-1", "Equinox", None, None, None, None, None, None,
+        None, None, None, None, "brand-1", "Storm", None, None,
+    )
+    video_rows = [("vid-1", "Review", "Channel", "Summary", "transcript")]
+    conn = _FakeConnection(product_row=product_row, video_rows=video_rows)
+    bedrock = _FakeBedrockClient(json.dumps(_VALID_ARTICLE_JSON))
+
+    result = app.generate_article_for_product(
+        conn, bedrock, "model-id", "prod-1",
+        s3_client=object(), bedrock_image_client=object(),
+        image_model_id="model-id", image_bucket=None,  # missing
+    )
+
+    assert result["images_generated"] is False
+    # reference_image_url query never even fired -- confirms the whole
+    # image branch was skipped, not attempted-and-quietly-swallowed.
+    assert not any(q.startswith("select coalesce(") for q, _ in conn._cursor.executed)
+
+
+# --- store_article: images param wiring ---
+
+def test_store_article_with_images_sets_images_generated_at_flag_true():
+    conn = _FakeConnection()
+    images = {
+        "action_shot_image_key": "article-images/prod-1/action_shot.png",
+        "action_shot_image_url": "https://bucket.s3.amazonaws.com/article-images/prod-1/action_shot.png",
+    }
+    app.store_article(conn, "prod-1", dict(_VALID_ARTICLE_JSON), [], [], images=images)
+
+    insert_params = conn._cursor.inserted[0]
+    assert insert_params[14] == images["action_shot_image_key"]
+    assert insert_params[15] == images["action_shot_image_url"]
+    assert insert_params[16] is None  # product_shot_image_key not in this partial dict
+    assert insert_params[17] is None
+    # has_images (the images_generated_at case-when's boolean param) is
+    # True even though only ONE of the two images actually succeeded --
+    # see 023_product_article_images.sql's own column comment: "at least
+    # one", not "both".
+    assert insert_params[18] is True
+
+
+def test_store_article_query_includes_new_image_columns():
+    conn = _FakeConnection()
+    app.store_article(conn, "prod-1", dict(_VALID_ARTICLE_JSON), [], [])
+    query = conn._cursor.executed[0][0]
+    assert "action_shot_image_key = excluded.action_shot_image_key" in query
+    assert "images_generated_at = excluded.images_generated_at" in query
 
 
 if __name__ == "__main__":

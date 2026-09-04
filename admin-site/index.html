@@ -150,6 +150,15 @@
   .badge.muted { background: #f1f2f5; color: var(--muted); }
   .badge.danger { background: #fee2e2; color: var(--danger-dark); }
 
+  /* Article images (023_product_article_images.sql) -- small inline peek
+     next to the article title in the Articles tab list row; full-size
+     versions render in renderArticlePreviewHtml's own .article-image-row. */
+  .article-thumb { width: 32px; height: 32px; object-fit: cover; border-radius: 4px; vertical-align: middle; margin-right: 6px; border: 1px solid var(--border); }
+  .article-image-row { display: flex; gap: 10px; margin: 8px 0; flex-wrap: wrap; }
+  .article-image-row figure { margin: 0; width: 220px; }
+  .article-image-row img { width: 100%; height: 160px; object-fit: cover; border-radius: var(--radius); border: 1px solid var(--border); display: block; }
+  .article-image-row figcaption { font-size: 11px; color: var(--muted); text-align: center; margin-top: 4px; }
+
   table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
   table.mini { border: none; }
   th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
@@ -1988,8 +1997,19 @@ function renderArticles(items) {
         ? '<button class="btn small" onclick="approveArticle(\'' + a.id + '\')">Approve</button>' +
           '<button class="btn small danger" onclick="rejectArticle(\'' + a.id + '\')">Reject</button>'
         : '<span class="badge ' + escapeHtml(a.status) + '">' + escapeHtml(a.status) + '</span>';
+      // Thumbnail-sized peek at the action-shot image (023_product_
+      // article_images.sql) right in the list row -- a full-size preview
+      // still requires opening the row (see renderArticlePreviewHtml),
+      // but this lets an admin scan for "did images generate at all"
+      // without opening every row. images_generated_at non-null but no
+      // thumbnail (both URLs null) means the run attempted image
+      // generation and neither image succeeded -- see that column's own
+      // migration comment.
+      const thumbHtml = a.action_shot_image_url
+        ? '<img src="' + escapeHtml(a.action_shot_image_url) + '" alt="" class="article-thumb" title="Action shot" />'
+        : (a.images_generated_at ? '<span class="muted small" title="Image generation ran but produced no images">no images</span>' : '');
       return '<tr>' +
-        '<td>' + escapeHtml(a.title || '(untitled)') + '</td>' +
+        '<td>' + thumbHtml + escapeHtml(a.title || '(untitled)') + '</td>' +
         '<td>' + escapeHtml(a.product_name) + '<div class="muted small">' + escapeHtml(a.brand_name || '') + '</div></td>' +
         '<td>' + fmtDate(a.generated_at) + '</td>' +
         '<td>' + (a.resolved_by ? (escapeHtml(a.resolved_by) + '<div class="muted small">' + fmtDate(a.reviewed_at) + '</div>') : '—') + '</td>' +
@@ -2085,8 +2105,24 @@ function renderArticlePreviewHtml(a) {
   const comparisonBlock = (a.comparison_table || []).length
     ? '<p><strong>Comparison table</strong> (' + a.comparison_table.length + ' row(s)):</p><pre class="scrollbox">' + escapeHtml(JSON.stringify(a.comparison_table, null, 2)) + '</pre>'
     : '';
+  // Article images (023_product_article_images.sql) -- both generated
+  // automatically alongside the text (Al's "Both image types,
+  // automatically with the article" answer) and reviewed as part of the
+  // same whole-row pending/approved/rejected unit, so they're just shown
+  // here rather than having their own separate approve/reject controls.
+  // images_generated_at non-null but both URLs null means image
+  // generation ran and produced neither image (see that column's own
+  // migration comment) -- surfaced as a plain note, not an error, since
+  // the article text itself is still perfectly fine to review.
+  const imageFigure = function (url, label) {
+    return url ? '<figure><img src="' + escapeHtml(url) + '" alt="' + escapeHtml(label) + '" loading="lazy" /><figcaption>' + escapeHtml(label) + '</figcaption></figure>' : '';
+  };
+  const imagesBlock = (a.action_shot_image_url || a.product_shot_image_url)
+    ? '<div class="article-image-row">' + imageFigure(a.action_shot_image_url, 'Action shot') + imageFigure(a.product_shot_image_url, 'Product shot') + '</div>'
+    : (a.images_generated_at ? '<p class="muted small">Image generation ran but produced no images for this article.</p>' : '');
   return '<div class="detail-panel">' +
     '<h3>' + escapeHtml(a.title || '(untitled)') + '</h3>' +
+    imagesBlock +
     (a.hook ? '<p><em>' + escapeHtml(a.hook) + '</em></p>' : '') +
     (a.performance_summary ? '<p><strong>Performance summary:</strong></p><p>' + escapeHtml(a.performance_summary) + '</p>' : '') +
     listBlock('Who should buy this', a.who_should_buy) +

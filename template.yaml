@@ -378,6 +378,43 @@ Parameters:
       CloudFormation has no string-strip function to derive this from
       BedrockModelId automatically, hence the second parameter -- keep the
       two in sync if you ever change the model.
+  BedrockImageModelId:
+    Type: String
+    Default: stability.sd3-5-large-v1:0
+    Description: >
+      Bedrock modelId product_article_generator passes to InvokeModel for
+      article images (023_product_article_images.sql). NOT Amazon Nova
+      Canvas or Titan Image Generator -- checked both models' own
+      "Regional availability" tables (2026-09-03) before picking this one:
+      Nova Canvas is Legacy with an EOL of 2026-09-30 (weeks away as of
+      this writing) and Titan Image Generator G1 v2 is already past its
+      own 2026-06-30 EOL. Stable Diffusion 3.5 Large supports image-to-
+      image generation (conditioning on the product's real photo, not just
+      a text prompt) and is not Legacy. See BedrockImageRegion just below
+      for the Region caveat, and src/product_article_generator/app.py's
+      own module docstring for the full research trail. If you're
+      changing this, re-check the new model's own Regional availability
+      table first -- don't assume it matches this one's shape.
+  BedrockImageRegion:
+    Type: String
+    Default: us-west-2
+    Description: >
+      The AWS Region BedrockImageModelId is actually available in --
+      Stable Diffusion 3.5 Large is us-west-2 (Oregon) only as of this
+      writing, NOT this stack's own home Region (us-west-1). Unlike
+      BedrockModelId above, there is no Global cross-Region inference
+      profile option for image models to route through instead (checked;
+      every Bedrock image model's own Regional availability table shows
+      Geo/Global as unsupported) -- so product_article_generator's
+      handler() constructs a SECOND bedrock-runtime client with
+      region_name=this parameter's value, a plain cross-Region API call,
+      separate from the text model's own default-Region client. The IAM
+      policy below grants bedrock:InvokeModel on a Resource ARN scoped to
+      this same Region, not ${AWS::Region}. If Bedrock ever adds Stable
+      Diffusion (or whatever you change BedrockImageModelId to) support in
+      this stack's own Region, you can simplify back to a single-Region
+      client and drop this parameter -- check the model's own current
+      Regional availability table first, don't assume.
   ConsumerSiteDomainName:
     Type: String
     Default: ""
@@ -1809,11 +1846,26 @@ Resources:
       # lists/pros-cons/buying tips/verdict/FAQ array/comparison table),
       # plus this loops over every qualifying product in one invocation
       # on the scheduled path -- generous headroom over that function's
-      # own 150s, not sized against a confirmed incident.
-      Timeout: 280
+      # own 150s, not sized against a confirmed incident. Bumped from an
+      # original 280s to 600s when article images were added
+      # (023_product_article_images.sql) -- each product now also costs a
+      # reference-photo HTTP fetch plus two Stable Diffusion InvokeModel
+      # calls (cross-Region, see BEDROCK_IMAGE_REGION below) on top of the
+      # original text generation, real added latency per product in the
+      # batch loop.
+      Timeout: 600
       Environment:
         Variables:
           BEDROCK_MODEL_ID: !Ref BedrockModelId
+          # Article images (023_product_article_images.sql) -- see
+          # src/product_article_generator/app.py's own module docstring
+          # for the full research trail on why Stable Diffusion 3.5 Large
+          # + us-west-2 was chosen over Nova Canvas/Titan Image Generator
+          # (both Legacy/EOL and never available in this stack's home
+          # us-west-1 Region anyway).
+          BEDROCK_IMAGE_MODEL_ID: !Ref BedrockImageModelId
+          BEDROCK_IMAGE_REGION: !Ref BedrockImageRegion
+          IMAGE_BUCKET: !Ref ImageBucket
       Policies:
         - VPCAccessPolicy: {}
         - Statement:
@@ -1845,6 +1897,36 @@ Resources:
               Condition:
                 StringEquals:
                   bedrock:InferenceProfileArn: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockModelId}"
+            # Article images: Stable Diffusion 3.5 Large has NO Geo/Global
+            # cross-Region inference profile support at all (checked --
+            # every Bedrock image model's own "Regional availability"
+            # table shows Geo/Global as unsupported, unlike the text
+            # model above), so this is a single plain bedrock:InvokeModel
+            # grant on the foundation-model resource -- no inference-
+            # profile ARN, no Condition. The Resource is hardcoded to
+            # BedrockImageRegion (us-west-2) rather than ${AWS::Region}
+            # (this stack's actual us-west-1 home) because the model
+            # itself is only available there -- app.py's own
+            # bedrock_image_client is likewise constructed with an
+            # explicit region_name, a plain cross-Region API call.
+            - Sid: GrantImageModelAccess
+              Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: !Sub "arn:aws:bedrock:${BedrockImageRegion}::foundation-model/${BedrockImageModelId}"
+            # Generated article image write only -- the reference photo
+            # (product's real image) is fetched via a plain HTTPS GET
+            # against its already-public stored_url/primary_image_url
+            # (see app.py's fetch_reference_image_bytes), not the S3 API,
+            # so no s3:GetObject grant is needed for that. Scoped to just
+            # this function's own article-images/ prefix (narrower than
+            # ProductScraperFunction's product-images/*-scoped
+            # s3:DeleteObject grant below, since this function never
+            # touches product-images/ at all).
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: !Sub arn:aws:s3:::${ImageBucket}/article-images/*
       Events:
         DailySchedule:
           Type: Schedule

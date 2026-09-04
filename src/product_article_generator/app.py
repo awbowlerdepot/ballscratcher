@@ -57,6 +57,52 @@ backend/best-night narrative) per sibling, keyed by product_id -- the
 actual numbers get joined from the live products/product_skus/cores/
 coverstocks tables at READ time (by the eventual public_api endpoint),
 so a later spec correction doesn't require regenerating the article.
+
+Article images (023_product_article_images.sql): Al's follow-up ask,
+"can we have it generate some images for the article from the bowling
+ball images and using the article to give it some context" -- scoped via
+a follow-up AskUserQuestion exchange to generate BOTH an action/
+lifestyle hero shot and a stylized product hero shot, automatically in
+this same Lambda run (both the daily batch and the on-demand regenerate
+path), gated behind the article's existing pending/approved/rejected
+review same as the text. Uses image-to-image generation (not plain
+text-to-image) so the product's own real photo -- fetched via the same
+"pick the one best image" coalesce query public_api.service.py uses five
+times (is_visible, is_thumbnail desc, display_order, id, falling back to
+products.primary_image_url) -- is passed in as the reference image,
+keeping the ball's actual color/pattern intact rather than letting the
+model invent one. Each image's text prompt is grounded in the
+JUST-GENERATED article's own performance_summary/hook (Al's "using the
+article to give it some context"), not just the bare spec sheet. Image
+generation is deliberately best-effort and non-fatal: if it fails (bad
+reference photo, Bedrock error, etc.) the article's own text still stores
+and goes to review -- see generate_article_images' own docstring.
+
+Model choice + Region, researched (not assumed) before building, same
+defensive posture as the text model's own us-west-1 CRIS situation above:
+checked each Bedrock image model's own "Regional availability" table
+(2026-09-03) before picking one. Amazon Nova Canvas is Legacy with an
+EOL of 2026-09-30 (weeks away) and was never available in us-west-1 to
+begin with (only us-east-1/eu-west-1/ap-northeast-1, all Legacy). Amazon
+Titan Image Generator G1 v2 is ALREADY past its EOL (2026-06-30). Neither
+supports Geo/Global cross-Region inference profiles at all (unlike the
+text model above), so there's no CRIS workaround available for either --
+AWS's own current guidance is to migrate to Stability AI's models
+instead. This module uses Stability AI Stable Diffusion 3.5 Large
+(`stability.sd3-5-large-v1:0`, not Legacy), which supports image-to-image
+generation via a `mode`/`image`/`strength` request shape -- but it's only
+available in `us-west-2` (Oregon), not this stack's home Region
+(`us-west-1`). Rather than block the feature on that gap, the image
+Bedrock client is constructed with an explicit `region_name` (see
+handler(), BEDROCK_IMAGE_REGION) pointed at `us-west-2` while the rest of
+the stack (including the text model's own bedrock-runtime client) stays
+in `us-west-1` -- a plain cross-Region API call, not Bedrock's own CRIS
+mechanism (which image models don't support), so the IAM Resource ARN
+below is hardcoded to `us-west-2` rather than `${AWS::Region}`. If you're
+reading this after Nova Canvas's Sept 2026 EOL has passed and Bedrock has
+since added Stability (or a successor) support to us-west-1, simplify
+back to a single-Region client and drop BEDROCK_IMAGE_REGION -- check the
+model's own current "Regional availability" table first, don't assume.
 """
 import json
 import logging
@@ -70,6 +116,26 @@ logger.setLevel(logging.INFO)
 # module's own comment on why this is a Global cross-Region inference
 # profile id, not a bare on-demand model id.
 DEFAULT_BEDROCK_MODEL_ID = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+# Stability AI Stable Diffusion 3.5 Large -- see this module's own
+# docstring for why (Nova Canvas Legacy/EOL 2026-09-30, Titan Image
+# Generator G1 v2 already past its 2026-06-30 EOL, neither ever available
+# in us-west-1 anyway). Invoked as a plain on-demand foundation model (no
+# CRIS inference profile -- image models don't support Geo/Global cross-
+# Region inference at all, unlike the text model above), but in a
+# DIFFERENT Region than the rest of this stack -- see
+# DEFAULT_BEDROCK_IMAGE_REGION just below.
+DEFAULT_BEDROCK_IMAGE_MODEL_ID = "stability.sd3-5-large-v1:0"
+
+# Stable Diffusion 3.5 Large is only available in us-west-2 (Oregon) on
+# Bedrock as of this writing -- not this stack's home Region (us-west-1).
+# handler() constructs the bedrock-runtime client used for image calls
+# with region_name=this value explicitly, separate from the text model's
+# own bedrock_client (which stays in the Lambda's home Region) -- a plain
+# cross-Region API call, since there's no CRIS profile for image models
+# to route through instead. See this module's own docstring for the full
+# research trail.
+DEFAULT_BEDROCK_IMAGE_REGION = "us-west-2"
 
 # An article is a much bigger structured generation than the rollup's
 # one paragraph (title + hook + narrative + 2 bullet lists + pros/cons +
@@ -403,21 +469,207 @@ def parse_article_json(raw_text: str) -> dict:
     return data
 
 
+def fetch_reference_image_url(conn, product_id: str):
+    """The product's own real photo, for use as Nova Canvas' IMAGE_
+    VARIATION reference -- same canonical "pick the one best image"
+    coalesce pattern public_api.service.py uses five times (is_visible
+    true, order by is_thumbnail desc, display_order, id, limit 1),
+    falling back to products.primary_image_url if no product_images row
+    qualifies. Returns None (not a KeyError/exception) if the product has
+    no image at all -- generate_article_images treats that as "skip
+    images for this run", not a failure."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select coalesce(
+                (
+                    select pi.stored_url from product_images pi
+                    where pi.product_id = p.id and pi.is_visible = true
+                    order by pi.is_thumbnail desc, pi.display_order, pi.id
+                    limit 1
+                ),
+                p.primary_image_url
+            )
+            from products p
+            where p.id = %s
+            """,
+            (product_id,),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+
+
+def fetch_reference_image_bytes(reference_image_url: str) -> bytes:
+    """Reference photo lives at a public https URL -- either our own S3
+    stored_url or, absent that, the manufacturer's own primary_image_url
+    -- and no existing Lambda in this codebase reads an image back out of
+    S3 directly (checked; only s3:ListBucket-for-orphan-cleanup precedent
+    exists). A plain HTTP GET works identically for both URL shapes
+    without needing to special-case which bucket/host it came from."""
+    import requests
+
+    response = requests.get(reference_image_url, timeout=30)
+    response.raise_for_status()
+    return response.content
+
+
+def _reference_image_to_base64_png(raw_bytes: bytes) -> str:
+    """Nova Canvas requires a base64-encoded PNG or JPEG; re-encoding
+    through Pillow (same library/version pin as image_processor's own
+    requirements.txt) normalizes whatever format the source photo
+    actually is (often JPEG from a manufacturer CDN) into PNG rather than
+    trusting the source's own file extension."""
+    import base64
+    import io
+
+    from PIL import Image
+
+    image = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def build_image_prompts(product: dict, article: dict) -> dict:
+    """Two short, literal scene-description prompts for Stable Diffusion
+    3.5 Large's image-to-image mode -- grounded in the just-generated
+    article's own performance_summary (or hook, if that's empty) plus the
+    product's color, per Al's explicit ask to use the article for
+    context, not just the bare spec sheet. Kept short and literal (not
+    the article's own narrative prose) since image-generation prompts
+    read best as concrete visual descriptions, not marketing copy. Each
+    also carries a short negative_prompt (see call_bedrock_for_image) to
+    keep the model from adding invented text/logos/watermarks onto the
+    ball."""
+    ball_desc = f"a {product.get('color') or ''} bowling ball".strip()
+    context = (article.get("performance_summary") or article.get("hook") or "").strip()[:300]
+
+    action_prompt = (
+        f"Editorial action photograph of {ball_desc} rolling down a bowling lane "
+        "toward the pins, motion blur on the lane arrows, dramatic side lighting, "
+        "shallow depth of field, professional sports photography style, keep the "
+        "ball's exact color and coverstock pattern from the reference image."
+    )
+    product_prompt = (
+        f"Elevated studio product photograph of {ball_desc}, centered, resting on "
+        "a reflective dark surface, dramatic rim lighting, premium catalog "
+        "photography style, clean background, no added text or logos, keep the "
+        "ball's exact color and coverstock pattern from the reference image."
+    )
+    if context:
+        action_prompt += f" Scene should evoke: {context}"
+        product_prompt += f" Scene should evoke: {context}"
+
+    return {"action_shot": action_prompt, "product_shot": product_prompt}
+
+
+_IMAGE_NEGATIVE_PROMPT = "text, watermark, logo, signature, extra balls, distorted proportions, blurry, low quality"
+
+
+def call_bedrock_for_image(bedrock_image_client, model_id: str, prompt: str, reference_image_b64: str) -> bytes:
+    """Stable Diffusion 3.5 Large's image-to-image mode -- conditions on
+    the reference image (the product's real photo) plus a text prompt,
+    rather than plain text-to-image generation from text alone,
+    specifically so the ball's actual color/coverstock pattern carries
+    through instead of the model inventing one. strength=0.6 (0=only the
+    reference image, 1=ignores it entirely) leaves room for the scene
+    itself (lane, lighting, background) to change while still anchoring
+    the ball's own appearance to the source photo. bedrock_image_client
+    is a bedrock-runtime client scoped to DEFAULT_BEDROCK_IMAGE_REGION
+    (us-west-2), a different Region than the text model's own
+    bedrock_client -- see this module's docstring for why."""
+    import base64
+
+    body = json.dumps({
+        "prompt": prompt,
+        "mode": "image-to-image",
+        "image": reference_image_b64,
+        "strength": 0.6,
+        "negative_prompt": _IMAGE_NEGATIVE_PROMPT,
+        "output_format": "png",
+    })
+    response = bedrock_image_client.invoke_model(modelId=model_id, contentType="application/json",
+                                                   accept="application/json", body=body)
+    payload = json.loads(response["body"].read())
+    finish_reasons = [r for r in (payload.get("finish_reasons") or []) if r]
+    if finish_reasons:
+        raise RuntimeError(f"Stable Diffusion returned a non-null finish reason: {finish_reasons}")
+    images = payload.get("images") or []
+    if not images:
+        raise RuntimeError("Stable Diffusion response contained no images")
+    return base64.b64decode(images[0])
+
+
+def store_article_image(s3_client, bucket: str, product_id: str, variant: str, png_bytes: bytes) -> dict:
+    """Mirrors image_processor.upload_variants' exact key/URL convention
+    -- raw https://{bucket}.s3.amazonaws.com/{key} PNG URLs on the same
+    public-read IMAGE_BUCKET -- but under an "article-images/" prefix
+    rather than image_processor's own "product-images/" prefix (see
+    023_product_article_images.sql's header comment: these aren't a
+    product's real photos and shouldn't be swept up in product_scraper's
+    product-images/* orphan-cleanup listing)."""
+    key = f"article-images/{product_id}/{variant}.png"
+    s3_client.put_object(Bucket=bucket, Key=key, Body=png_bytes, ContentType="image/png")
+    return {"key": key, "url": f"https://{bucket}.s3.amazonaws.com/{key}"}
+
+
+def generate_article_images(conn, bedrock_image_client, s3_client, image_model_id: str,
+                             image_bucket: str, product: dict, article: dict) -> dict:
+    """Best-effort, non-fatal: by the time this runs the article TEXT has
+    already been generated successfully (see generate_article_for_
+    product) -- an image failure here must never lose an otherwise-good
+    article, so every failure path here logs and returns whatever subset
+    of {action_shot_image_key, action_shot_image_url, product_shot_
+    image_key, product_shot_image_url} actually succeeded (possibly
+    empty) rather than raising. The two images are generated
+    independently (separate try/except per variant) so one failing
+    doesn't take the other down with it."""
+    reference_url = fetch_reference_image_url(conn, product["id"])
+    if not reference_url:
+        logger.info("No reference image available for product_id=%s, skipping article images", product["id"])
+        return {}
+
+    try:
+        reference_bytes = fetch_reference_image_bytes(reference_url)
+        reference_b64 = _reference_image_to_base64_png(reference_bytes)
+    except Exception:
+        logger.exception("Failed to fetch/prepare reference image for product_id=%s", product["id"])
+        return {}
+
+    prompts = build_image_prompts(product, article)
+    results = {}
+    for variant, prompt in (("action_shot", prompts["action_shot"]), ("product_shot", prompts["product_shot"])):
+        try:
+            png_bytes = call_bedrock_for_image(bedrock_image_client, image_model_id, prompt, reference_b64)
+            stored = store_article_image(s3_client, image_bucket, product["id"], variant, png_bytes)
+            results[f"{variant}_image_key"] = stored["key"]
+            results[f"{variant}_image_url"] = stored["url"]
+        except Exception:
+            logger.exception("Failed to generate %s image for product_id=%s", variant, product["id"])
+
+    return results
+
+
 def store_article(conn, product_id: str, article: dict, source_video_ids: list,
-                   sibling_product_ids: list) -> str:
+                   sibling_product_ids: list, images: dict = None) -> str:
     """Upsert -- a regenerate overwrites the existing row in place and
     resets status to 'pending' (see 022_product_articles.sql's own
     header comment for why: a previously-approved article going back
     through review on regenerate, rather than silently replacing live
     content, is deliberate)."""
+    images = images or {}
+    has_images = bool(images)
     with conn.cursor() as cur:
         cur.execute(
             """
             insert into product_articles
                 (product_id, status, title, hook, performance_summary, who_should_buy,
                  who_should_skip, pros, cons, buying_tips, verdict, faq, comparison_table,
-                 sibling_product_ids, source_video_ids, generated_at)
-            values (%s, 'pending', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                 sibling_product_ids, source_video_ids, generated_at,
+                 action_shot_image_key, action_shot_image_url,
+                 product_shot_image_key, product_shot_image_url, images_generated_at)
+            values (%s, 'pending', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(),
+                    %s, %s, %s, %s, case when %s then now() else null end)
             on conflict (product_id) do update set
                 status = 'pending',
                 title = excluded.title,
@@ -434,6 +686,11 @@ def store_article(conn, product_id: str, article: dict, source_video_ids: list,
                 sibling_product_ids = excluded.sibling_product_ids,
                 source_video_ids = excluded.source_video_ids,
                 generated_at = excluded.generated_at,
+                action_shot_image_key = excluded.action_shot_image_key,
+                action_shot_image_url = excluded.action_shot_image_url,
+                product_shot_image_key = excluded.product_shot_image_key,
+                product_shot_image_url = excluded.product_shot_image_url,
+                images_generated_at = excluded.images_generated_at,
                 reviewed_at = null,
                 resolved_by = null
             returning id
@@ -444,6 +701,9 @@ def store_article(conn, product_id: str, article: dict, source_video_ids: list,
                 json.dumps(article["pros"]), json.dumps(article["cons"]), article["buying_tips"],
                 article["verdict"], json.dumps(article["faq"]), json.dumps(article["comparison_table"]),
                 json.dumps(sibling_product_ids), json.dumps(source_video_ids),
+                images.get("action_shot_image_key"), images.get("action_shot_image_url"),
+                images.get("product_shot_image_key"), images.get("product_shot_image_url"),
+                has_images,
             ),
         )
         article_id = cur.fetchone()[0]
@@ -452,12 +712,26 @@ def store_article(conn, product_id: str, article: dict, source_video_ids: list,
 
 
 def generate_article_for_product(conn, bedrock_client, model_id: str, product_id: str,
+                                  s3_client=None, bedrock_image_client=None,
+                                  image_model_id: str = None, image_bucket: str = None,
                                   force: bool = False) -> dict:
     """Orchestrates one product's full generation. force=True (the
     admin-triggered on-demand path -- see admin_api.queue_article_
     generation) skips the "already has an article" check the batch
     handler's own list_products_needing_article query applies; a human
-    explicitly asking for a regenerate should always get one."""
+    explicitly asking for a regenerate should always get one.
+
+    s3_client/bedrock_image_client/image_model_id/image_bucket are all
+    optional (default None) so existing/simpler callers -- and every test
+    that only cares about the article TEXT -- don't need to thread image
+    plumbing through just to call this. When all four are supplied (the
+    real handler() always supplies them, per Al's "automatically with the
+    article" answer), image generation runs as an extra best-effort step
+    after the article text is parsed but before it's stored, so both text
+    and whatever images succeeded land in the same store_article call/
+    row. bedrock_image_client is deliberately a SEPARATE client from
+    bedrock_client (not reused) -- it's scoped to a different Region (see
+    DEFAULT_BEDROCK_IMAGE_REGION / this module's docstring)."""
     product = fetch_product_content(conn, product_id)
     if product is None:
         return {"product_id": product_id, "generated": False, "reason": "product_not_found"}
@@ -470,13 +744,18 @@ def generate_article_for_product(conn, bedrock_client, model_id: str, product_id
     raw = call_bedrock_for_article(bedrock_client, model_id, prompt)
     article = parse_article_json(raw)
 
+    images = {}
+    if s3_client is not None and bedrock_image_client is not None and image_model_id and image_bucket:
+        images = generate_article_images(conn, bedrock_image_client, s3_client, image_model_id, image_bucket, product, article)
+
     source_video_ids = [v["id"] for v in product["videos"]]
     sibling_product_ids = [s["id"] for s in siblings]
-    article_id = store_article(conn, product_id, article, source_video_ids, sibling_product_ids)
+    article_id = store_article(conn, product_id, article, source_video_ids, sibling_product_ids, images=images)
 
     return {
         "product_id": product_id, "generated": True, "article_id": article_id,
         "video_count": len(source_video_ids), "sibling_count": len(sibling_product_ids),
+        "images_generated": bool(images),
     }
 
 
@@ -488,17 +767,38 @@ def handler(event, context):
     AdminApiFunction (see admin_api.queue_article_generation) -- same
     "batch job also accepts a direct manual/admin invoke" shape this
     project already uses for VideoDiscoveryFunction and Video
-    TranscriptFetcherFunction."""
+    TranscriptFetcherFunction. Both paths pass s3_client/
+    bedrock_image_client/image_model_id/image_bucket through to
+    generate_article_for_product so images generate automatically
+    alongside the text in every run (Al's "Both image types,
+    automatically with the article" answer) -- there is no separate
+    on-demand-only image trigger. bedrock_image_client is constructed
+    with an explicit region_name (BEDROCK_IMAGE_REGION), separate from
+    bedrock_client's own default-Region construction -- see this module's
+    docstring for why Stable Diffusion 3.5 Large has to be called
+    cross-Region from this stack's us-west-1 home. If IMAGE_BUCKET isn't
+    configured on a given deployment, image_bucket is falsy and
+    generate_article_for_product's own image branch is skipped entirely,
+    same defensive "not configured -> soft no-op" posture admin_api.
+    queue_article_generation already uses for the text function name."""
     import boto3
 
     bedrock_client = boto3.client("bedrock-runtime")
+    image_region = os.environ.get("BEDROCK_IMAGE_REGION", DEFAULT_BEDROCK_IMAGE_REGION)
+    bedrock_image_client = boto3.client("bedrock-runtime", region_name=image_region)
+    s3_client = boto3.client("s3")
     model_id = os.environ.get("BEDROCK_MODEL_ID", DEFAULT_BEDROCK_MODEL_ID)
+    image_model_id = os.environ.get("BEDROCK_IMAGE_MODEL_ID", DEFAULT_BEDROCK_IMAGE_MODEL_ID)
+    image_bucket = os.environ.get("IMAGE_BUCKET")
 
     conn = get_db_connection()
     try:
         if event.get("product_id"):
             result = generate_article_for_product(
-                conn, bedrock_client, model_id, event["product_id"], force=True,
+                conn, bedrock_client, model_id, event["product_id"],
+                s3_client=s3_client, bedrock_image_client=bedrock_image_client,
+                image_model_id=image_model_id, image_bucket=image_bucket,
+                force=True,
             )
             return {"statusCode": 200, "body": json.dumps({"results": [result]})}
 
@@ -506,7 +806,11 @@ def handler(event, context):
         results = []
         for product_id in product_ids:
             try:
-                results.append(generate_article_for_product(conn, bedrock_client, model_id, product_id))
+                results.append(generate_article_for_product(
+                    conn, bedrock_client, model_id, product_id,
+                    s3_client=s3_client, bedrock_image_client=bedrock_image_client,
+                    image_model_id=image_model_id, image_bucket=image_bucket,
+                ))
             except Exception:
                 logger.exception("Failed to generate article for product_id=%s", product_id)
                 results.append({"product_id": product_id, "generated": False, "reason": "error"})
