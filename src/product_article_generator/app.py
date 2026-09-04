@@ -176,9 +176,29 @@ from both `us-west-1` and `us-west-2`).
     away from when this v5 work started. Shipping v5 against a model that
     dies in weeks would just trade one broken thing for another, so this
     was surfaced to Al directly before writing any code; he picked Gemini
-    3 Pro Image ("Nano Banana Pro", `gemini-3-pro-image`) over the
+    3 Pro Image ("Nano Banana Pro", `gemini-3-pro-image-preview`) over the
     cheaper/faster Gemini 3.1 Flash Image successor and over staying on
     the doomed 2.5 model -- see DEFAULT_GEMINI_IMAGE_MODEL_ID.
+
+    REAL INCIDENT (2026-09-04): the first live call against `gemini-3-
+    pro-image` (missing the `-preview` suffix) returned a Vertex AI 404
+    ("Publisher model ... was not found or your project does not have
+    access to it"). Root-caused via Google's own Model Garden listing and
+    corroborating developer-forum threads: ALL Gemini 3 models are
+    currently in preview on Vertex AI and carry a `-preview` suffix in
+    their actual publisher-model id (`gemini-3-pro-image-preview`, not
+    `gemini-3-pro-image`) -- fixed below. Separately, and NOT fixed by
+    that id correction alone: `gemini-3-pro-image-preview` is allowlist-
+    gated on Vertex AI (confirmed via numerous other developers hitting
+    this exact same 404 and filing allowlist requests on Google's AI
+    Developers Forum, https://discuss.ai.google.dev) -- a brand-new GCP
+    project has no guaranteed access even with the correct id, and
+    there's no published approval SLA. Al chose to fix the id now and
+    file that allowlist request himself rather than fall back to
+    `gemini-2.5-flash-image` (which still works and isn't retiring until
+    2026-10-02) -- so images may keep failing with this same 404 until
+    Google grants access, which is expected, not a new bug, until
+    confirmed otherwise.
 
     Token minting deliberately does NOT pull in `google-cloud-aiplatform`
     or `google-genai` (both heavy, protobuf/grpc-backed SDKs this project
@@ -281,7 +301,7 @@ DEFAULT_BEDROCK_REMOVE_BG_REGION = "us-east-1"
 # newer/better image-editing model later, this is the one parameter to
 # change (kept as its own constant/env var rather than hardcoded in call_
 # gemini_for_image for exactly that reason).
-DEFAULT_GEMINI_IMAGE_MODEL_ID = "gemini-3-pro-image"
+DEFAULT_GEMINI_IMAGE_MODEL_ID = "gemini-3-pro-image-preview"
 
 # Vertex AI's own default region for calling Gemini/Nano Banana models --
 # distinct from every Bedrock Region this module already uses (us-west-1/

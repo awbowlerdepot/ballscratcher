@@ -7974,6 +7974,68 @@ against a live invocation** -- the Gemini side in particular is a prompt
 change, not a hard constraint, so its actual effect on output can only
 be judged by looking at a real generated image after redeploying.
 
+### REAL INCIDENT (2026-09-04): Vertex AI 404 on gemini-3-pro-image -- wrong id AND allowlist gating
+
+After confirming `GeminiModelId` was correctly deployed as `gemini-3-pro-
+image` (matching template.yaml's own default, no samconfig drift), a
+fresh regenerate still failed -- every Gemini candidate call returned:
+
+```
+Vertex AI generateContent returned 404: {
+  "error": {
+    "code": 404,
+    "message": "Publisher model `projects/.../locations/us-central1/publishers/google/models/gemini-3-pro-image` was not found or your project does not have access to it. ..."
+  }
+}
+```
+
+Two genuinely separate problems, found via web research (Google's own
+Model Garden listing plus corroborating developer-forum threads), not
+guessed at:
+
+1. **Wrong model id.** All Gemini 3 models are still preview-only on
+   Vertex AI and carry a `-preview` suffix in their actual publisher-
+   model id. The correct id is `gemini-3-pro-image-preview`, not
+   `gemini-3-pro-image` -- fixed in `DEFAULT_GEMINI_IMAGE_MODEL_ID`
+   (app.py) and `GeminiModelId`'s Default (template.yaml).
+2. **Allowlist gating, independent of the id fix.** `gemini-3-pro-image-
+   preview` requires explicit Google allowlist approval per GCP project
+   -- confirmed by finding numerous other developers hitting this exact
+   same 404 and filing access requests on Google's AI Developers Forum
+   (https://discuss.ai.google.dev). There's no published approval SLA.
+   **Fixing the id string alone does NOT guarantee the model will work**
+   -- if it still 404s after redeploying with the corrected id, that's
+   expected until Google grants access, not a new bug.
+
+**Al's choice** (offered the option to fall back to `gemini-2.5-flash-
+image` for now, since it still works and doesn't retire until 2026-10-
+02): fix the id now and file the Google allowlist request himself,
+accepting that images may keep failing in the meantime. To request
+access: post on https://discuss.ai.google.dev following the same
+"Allowlist request: gemini-3-pro-image-preview on Vertex AI" pattern
+other developers used, including your GCP project ID, region
+(us-central1), confirmation that billing and the Vertex AI API are
+enabled, and your use case. If access doesn't come through in time
+before 2026-10-02, falling back to `gemini-2.5-flash-image` (just
+`GeminiModelId=gemini-2.5-flash-image` in samconfig.toml's parameter_
+overrides + redeploy) remains a safe interim option -- it's a config
+change, not a code change, so no redeploy of app.py is needed to switch
+back and forth.
+
+**Redeploy note**: per the earlier stale-parameter incident (6t v5
+section above), CloudFormation does NOT auto-adopt a template's new
+Default on an already-deployed stack -- explicitly set `GeminiModelId=
+gemini-3-pro-image-preview` in samconfig.toml's `parameter_overrides`
+(don't just remove an old override and rely on the new template
+default) before redeploying.
+
+Full test file: 89/89 (unchanged fixture assertions in `tests/test_
+product_article_generator.py` around `call_gemini_for_image`'s URL
+construction still pass -- they exercise the function generically with
+an arbitrary model_id string, not the default constant). Full 41-file
+regression sweep: clean. Template verified via the CFN-tolerant YAML
+loader (57 resources, unchanged count, new default confirmed).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
