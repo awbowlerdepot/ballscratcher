@@ -1218,6 +1218,33 @@ def test_composite_ball_on_background_output_matches_background_size_and_is_flat
     assert out.mode == "RGB"  # flattened for storage -- no alpha channel in the final stored PNG
 
 
+def test_composite_ball_on_background_ball_fills_most_of_the_frames_shorter_side():
+    """2026-09-04, Al's ask: the ball was reading too small/distant.
+    Confirms the pasted cutout's rendered size is a LARGE majority of the
+    background's shorter side (bumped from a 0.62 to a 0.82 target
+    fraction -- see composite_ball_on_background's own docstring), not
+    just that compositing runs. Measures the ball's actual rendered
+    width by scanning the output's own pixels for the cutout's known
+    fill color, rather than trusting an internal implementation detail,
+    so this test would still catch a regression even if the scaling
+    logic were reshuffled."""
+    import io
+
+    from PIL import Image, ImageDraw
+
+    cutout = Image.new("RGBA", (400, 400), (0, 0, 0, 0))
+    ImageDraw.Draw(cutout).ellipse([100, 100, 300, 300], fill=(255, 0, 0, 255))
+    background = Image.new("RGBA", (1000, 1000), (0, 0, 255, 255))
+
+    result_bytes = app.composite_ball_on_background(_png_bytes(cutout), _png_bytes(background))
+
+    out = Image.open(io.BytesIO(result_bytes)).convert("RGB")
+    row_y = out.size[1] // 2  # the ellipse's widest row once pasted, per the preceding pixel test
+    red_xs = [x for x in range(out.size[0]) if out.getpixel((x, row_y)) == (255, 0, 0)]
+    ball_width = max(red_xs) - min(red_xs) + 1
+    assert ball_width / min(out.size) > 0.7  # comfortably above the old 0.62 fraction
+
+
 def test_composite_ball_on_background_leaves_background_untouched_away_from_the_ball():
     import io
 
@@ -1325,6 +1352,20 @@ def test_build_gemini_scene_prompt_distinguishes_action_from_product_framing():
     assert "action/lifestyle photograph" in action_prompt
     assert "not in motion" in product_prompt
     assert action_prompt != product_prompt
+
+
+def test_build_gemini_scene_prompt_instructs_ball_to_be_large_and_prominent():
+    """2026-09-04, Al's ask: the ball was reading too small/distant in
+    generated images. Gemini gets no pixel-level size control (unlike
+    the Stability path's composite_ball_on_background, which places the
+    cutout at an explicit fraction of the frame) -- the prompt itself is
+    the only lever, so it has to say so explicitly, for both variants."""
+    action_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "action_shot")
+    product_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "product_shot")
+    for prompt in (action_prompt, product_prompt):
+        assert "hero subject" in prompt
+        assert "large and prominent" in prompt
+        assert "not small or distant" in prompt
 
 
 class _FakeGeminiResponse:

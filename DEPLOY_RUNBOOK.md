@@ -7942,6 +7942,38 @@ code bug**:
   minutes for propagation and retry, since AWS Marketplace subscription
   changes aren't always instant.
 
+### Ball prominence tuning (2026-09-04)
+
+Al's feedback on the generated article images: the ball itself was
+reading too small/distant in the frame. Both image-generation paths had
+to be tuned separately, since they place the ball two completely
+different ways:
+
+- **Stability composite path** (`composite_ball_on_background`): the
+  ball's on-screen size is a pixel-level implementation detail, not a
+  prompt -- it's a plain Pillow paste of the real cutout at a fixed
+  fraction of the background's shorter side. That fraction was `0.62`;
+  bumped to `0.82`. New regression test
+  `test_composite_ball_on_background_ball_fills_most_of_the_frames_
+  shorter_side` measures the ball's actual rendered width by scanning
+  the output's pixels (not just checking the internal constant), so a
+  future refactor of the scaling logic would still be caught if it
+  regressed the size.
+- **Gemini path** (`build_gemini_scene_prompt`): Gemini gets no cutout
+  and no pixel-level control at all -- placement and scale are both
+  whatever the prompt says. Added explicit "the ball is the hero
+  subject... large and prominent... filling a substantial portion of the
+  frame, not small or distant" language, for both variants. New
+  regression test
+  `test_build_gemini_scene_prompt_instructs_ball_to_be_large_and_
+  prominent` asserts this language is present in both the action_shot
+  and product_shot prompts.
+
+Full test file: 89/89. Full 41-file sweep: clean. **Not yet confirmed
+against a live invocation** -- the Gemini side in particular is a prompt
+change, not a hard constraint, so its actual effect on output can only
+be judged by looking at a real generated image after redeploying.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

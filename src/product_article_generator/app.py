@@ -896,7 +896,12 @@ def composite_ball_on_background(cutout_png_bytes: bytes, background_png_bytes: 
     grounding. A soft, blurred shadow ellipse is drawn on its own layer
     UNDER the cutout paste purely for visual grounding; it never risks
     obscuring the ball's own pixels since it's composited first, then the
-    untouched cutout goes on top of it."""
+    untouched cutout goes on top of it.
+
+    target_size's fraction was bumped from 0.62 to 0.82 (2026-09-04, Al's
+    "make sure the ball is larger and more prominent" ask) -- the ball is
+    the product being sold, so it should read as the clear hero subject
+    at a glance, not a small accent within the scene."""
     import io
 
     from PIL import Image, ImageDraw, ImageFilter
@@ -910,7 +915,7 @@ def composite_ball_on_background(cutout_png_bytes: bytes, background_png_bytes: 
     if bbox:
         cutout = cutout.crop(bbox)
 
-    target_size = int(min(bg_w, bg_h) * 0.62)
+    target_size = int(min(bg_w, bg_h) * 0.82)
     cutout_w, cutout_h = cutout.size
     scale = target_size / max(cutout_w, cutout_h, 1)
     new_size = (max(1, int(cutout_w * scale)), max(1, int(cutout_h * scale)))
@@ -955,18 +960,24 @@ def build_gemini_scene_prompt(product: dict, article: dict, variant: str) -> str
     scene_desc = context or "an elevated, premium studio scene"
 
     if variant == "action_shot":
-        framing = "a dynamic editorial action/lifestyle photograph"
+        framing = "a dynamic editorial action/lifestyle photograph, with the ball large and prominent in the frame"
     else:
-        framing = "an elevated, premium product photograph, not in motion"
+        framing = (
+            "an elevated, premium product photograph, not in motion, shot close-up "
+            "so the ball is large and prominent in the frame"
+        )
 
     return (
         f"Generate a scene depicting {scene_desc}, then place the exact bowling "
-        f"ball shown in the reference image into that scene as {framing}. Keep the "
-        "ball itself completely unchanged -- the same colors, surface pattern, and "
-        "logo/text exactly as shown in the reference image -- only change what's "
-        "around it. Match the lighting and color grading of the new scene onto the "
-        "ball naturally, with a realistic contact shadow and ambient light on its "
-        "surface. Photorealistic, high quality, no text overlays, no watermark."
+        f"ball shown in the reference image into that scene as {framing}. The ball "
+        "is the hero subject of the image -- it should be large and prominent, "
+        "filling a substantial portion of the frame, not small or distant within "
+        "the scene. Keep the ball itself completely unchanged -- the same colors, "
+        "surface pattern, and logo/text exactly as shown in the reference image -- "
+        "only change what's around it. Match the lighting and color grading of the "
+        "new scene onto the ball naturally, with a realistic contact shadow and "
+        "ambient light on its surface. Photorealistic, high quality, no text "
+        "overlays, no watermark."
     )
 
 
