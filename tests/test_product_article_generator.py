@@ -1445,6 +1445,40 @@ def test_call_gemini_for_image_sends_correct_request_shape_and_auth_header():
     assert call["json"]["generationConfig"]["imageConfig"]["aspectRatio"] == "16:9"
 
 
+def test_call_gemini_for_image_uses_global_host_shape_for_global_region():
+    """REAL INCIDENT (2026-09-04), part two regression test: with region=
+    "global" (now DEFAULT_GEMINI_REGION -- see that constant's own
+    comment), the URL must use the bare `aiplatform.googleapis.com` host
+    (NO per-Region subdomain prefix), not `global-aiplatform.googleapis.
+    com` -- that wrong prefixed-host guess is exactly what caused a real
+    404 even after the model id itself was confirmed correct. Only the
+    `locations/` path segment says "global"; the host does not carry it."""
+    import requests
+
+    calls = []
+    payload = {"candidates": [{"content": {"parts": [{"inlineData": {
+        "mimeType": "image/png", "data": "ZmFrZQ==",
+    }}]}}]}
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        calls.append(url)
+        return _FakeGeminiResponse(payload)
+
+    gemini_auth = {"access_token": "tok", "project_id": "my-gcp-project", "region": "global"}
+
+    original_post = requests.post
+    requests.post = _fake_post
+    try:
+        app.call_gemini_for_image(gemini_auth, "gemini-3-pro-image", "a scene", "ref-b64", "16:9")
+    finally:
+        requests.post = original_post
+
+    assert calls[0] == (
+        "https://aiplatform.googleapis.com/v1/projects/my-gcp-project/"
+        "locations/global/publishers/google/models/gemini-3-pro-image:generateContent"
+    )
+
+
 def test_call_gemini_for_image_handles_snake_case_inline_data_field():
     """Defends against BOTH inlineData (REST JSON casing) and inline_data
     (Python SDK object-model casing) in the response -- see call_gemini_

@@ -556,28 +556,29 @@ Parameters:
       Console's own Model Garden version table (checked directly) shows
       gemini-3-pro-image is Generally Available (2026-05-27), while
       gemini-3-pro-image-preview (2025-11-20) is the older, superseded
-      preview snapshot. The bare id here is correct and current. The
-      original 404's real cause is still open -- see call_gemini_for_
-      image's own docstring and GeminiRegion's description below (the
-      `global` location question) for what's left to check.
+      preview snapshot. The bare id here is correct and current -- the
+      original 404's real cause turned out to be GeminiRegion (see its
+      own description below), not this id.
   GeminiRegion:
     Type: String
-    Default: us-central1
+    Default: global
     Description: >
       The Vertex AI location (Google Cloud's term for Region) GeminiModelId
       is called in -- NOT derived from the service account key file (a
       service account isn't tied to one Region the way BedrockImageRegion/
       BedrockRemoveBgRegion are tied to specific Bedrock models), so this
-      is its own parameter. us-central1 is Google's own most broadly-
-      available Vertex AI Region for Gemini/Nano Banana models; only
-      change this if your GCP project has a data-residency requirement
-      pointing elsewhere. FLAGGED, NOT YET CHANGED (2026-09-04): Google's
-      own official Vertex AI sample code for Gemini 3 Pro Image uses
-      `location="global"`, not a specific region -- unconfirmed whether
-      that's required (vs. just Google's own sample choice) for this
-      model specifically. Left as us-central1 until the next real
-      invocation's error response confirms or rules this out as a cause
-      of the 2026-09-04 404 incident (see GeminiModelId above).
+      is its own parameter. REAL INCIDENT (2026-09-04), part two: this was
+      `us-central1`, and a real call with the (now-confirmed-correct)
+      `gemini-3-pro-image` id still 404'd -- the error message linked
+      straight to Vertex AI's locations doc, and Google's own official
+      sample code for this model uses `location="global"`, not a per-
+      Region location. Switched to match. `global` is also a different
+      HOST shape at the HTTP level, not just a different `locations/`
+      path segment -- see call_gemini_for_image in src/product_article_
+      generator/app.py for how that's handled. Only change this away
+      from `global` if your GCP project needs a data-residency-specific
+      Region instead, and confirm that Region actually serves this model
+      before assuming it will.
   ConsumerSiteDomainName:
     Type: String
     Default: ""

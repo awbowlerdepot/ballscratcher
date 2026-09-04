@@ -193,18 +193,23 @@ from both `us-west-1` and `us-west-2`).
         gemini-3-pro-image           2026-05-27   Generally Available
         gemini-3-pro-image-preview   2025-11-20   Preview (older snapshot)
     The bare id is correct and current -- reverted back to it. The 404
-    was therefore NOT an id-string problem. Most likely explanation left
-    standing: allowlist/access gating on a brand-new GCP project (real
-    developer-forum threads describe this for various Gemini 3 models,
-    though not confirmed for this exact GA id), or possibly a wrong
-    `GEMINI_REGION` -- Google's own official Vertex AI sample code for
-    this model uses `location="global"`, not a specific region like this
-    module's `DEFAULT_GEMINI_REGION` (`us-central1`); NOT yet changed
-    here since it hasn't been confirmed as the actual cause -- flagged
-    for the next real invocation's error response (404 vs 403 will tell
-    us which). Until then, images may keep failing; `gemini-2.5-flash-
-    image` (still working, not retiring until 2026-10-02) remains the
-    fallback if Al wants one before this is fully resolved.
+    was therefore NOT an id-string problem after all. Confirmed on the
+    very next real invocation: with the id fixed, the SAME 404 still
+    came back -- and its error message this time linked straight to
+    Vertex AI's own locations doc, which was the tell. `DEFAULT_GEMINI_
+    REGION` was `us-central1`; Google's own official sample code for this
+    model uses `location="global"`. That's not just a different
+    `locations/` path segment either -- Vertex AI's "global" location
+    also uses a different HOST (bare `aiplatform.googleapis.com`, no
+    per-Region subdomain prefix), which call_gemini_for_image's original
+    URL-building code never accounted for. Both fixed together: `DEFAULT_
+    GEMINI_REGION` is now `"global"`, and call_gemini_for_image branches
+    on the host shape. Not yet reconfirmed against a live call -- if this
+    still 404s or comes back 403, that points at allowlist/access gating
+    instead (real developer-forum threads describe that for various
+    Gemini 3 models, not confirmed for this exact GA id). Until fully
+    confirmed, `gemini-2.5-flash-image` (still working, not retiring
+    until 2026-10-02) remains the fallback if Al wants one.
 
     Token minting deliberately does NOT pull in `google-cloud-aiplatform`
     or `google-genai` (both heavy, protobuf/grpc-backed SDKs this project
@@ -319,13 +324,23 @@ DEFAULT_BEDROCK_REMOVE_BG_REGION = "us-east-1"
 # problem -- see this module's own docstring for what's still open.
 DEFAULT_GEMINI_IMAGE_MODEL_ID = "gemini-3-pro-image"
 
-# Vertex AI's own default region for calling Gemini/Nano Banana models --
-# distinct from every Bedrock Region this module already uses (us-west-1/
-# us-west-2/us-east-1), since this is a wholly separate cloud (GCP, not
-# AWS). us-central1 is Google's own most broadly-available Vertex AI
-# Region for Gemini models; overridable via GEMINI_REGION if Al's GCP
-# project needs a different one (e.g. data-residency requirements).
-DEFAULT_GEMINI_REGION = "us-central1"
+# Vertex AI's own default region (Google's term: "location") for calling
+# Gemini/Nano Banana models -- distinct from every Bedrock Region this
+# module already uses (us-west-1/us-west-2/us-east-1), since this is a
+# wholly separate cloud (GCP, not AWS).
+#
+# REAL INCIDENT (2026-09-04), part two: this was "us-central1" through
+# the model-id fix above, and every live call still 404'd -- the 404's
+# own error message linked to Vertex AI's locations doc, which was the
+# tell. Google's own official sample code for Gemini 3 Pro Image uses
+# location="global", not a per-Region location -- switched to match.
+# "global" is also a different HOST shape, not just a different
+# `locations/` path value -- see call_gemini_for_image's own handling of
+# that. Only change this from "global" if Al's GCP project has a
+# data-residency requirement that needs a specific Region instead (and
+# confirm that Region actually serves this model before assuming it will
+# -- this incident is exactly why that assumption bit us twice already).
+DEFAULT_GEMINI_REGION = "global"
 
 # The single OAuth2 scope this module's service-account Bearer token
 # needs -- "cloud-platform" is Google's own broad scope covering Vertex
@@ -1094,9 +1109,25 @@ def call_gemini_for_image(gemini_auth: dict, model_id: str, prompt: str,
 
     import requests
 
+    region = gemini_auth["region"]
+    # REAL INCIDENT (2026-09-04), part two: fixing the model id (see
+    # DEFAULT_GEMINI_IMAGE_MODEL_ID) did NOT fix the 404 -- the id was
+    # never the problem. Google's own official Vertex AI sample code for
+    # this model uses location="global", and Vertex AI's "global"
+    # location is not just a different `locations/` path segment, it
+    # ALSO uses a different host: no per-Region subdomain prefix at all
+    # (a regional call is `{region}-aiplatform.googleapis.com`; the
+    # global endpoint is bare `aiplatform.googleapis.com`). The original
+    # code always built the regional host shape, even when GEMINI_REGION
+    # was "global" (which it wasn't yet, since DEFAULT_GEMINI_REGION was
+    # "us-central1") -- so every call went to a regional endpoint that
+    # (per the 404's own error message, which linked straight to Vertex
+    # AI's locations doc) doesn't have Gemini 3 Pro Image published to it.
+    # Handle both shapes explicitly rather than assuming one.
+    host = "aiplatform.googleapis.com" if region == "global" else f"{region}-aiplatform.googleapis.com"
     url = (
-        f"https://{gemini_auth['region']}-aiplatform.googleapis.com/v1/projects/"
-        f"{gemini_auth['project_id']}/locations/{gemini_auth['region']}/publishers/google/"
+        f"https://{host}/v1/projects/"
+        f"{gemini_auth['project_id']}/locations/{region}/publishers/google/"
         f"models/{model_id}:generateContent"
     )
     body = {

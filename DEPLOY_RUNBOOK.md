@@ -8049,6 +8049,71 @@ an arbitrary model_id string, not the default constant). Full 41-file
 regression sweep: clean. Template verified via the CFN-tolerant YAML
 loader (57 resources, unchanged count, reverted default confirmed).
 
+### REAL INCIDENT (2026-09-04), part two: same 404 persisted with the correct id -- GeminiRegion, not the id, was the actual cause
+
+Redeployed with the corrected `gemini-3-pro-image` id above, then ran a
+fresh regenerate. The SAME 404 came back, byte-for-byte the same error
+shape:
+
+```
+Vertex AI generateContent returned 404: {
+  "error": {
+    "code": 404,
+    "message": "Publisher model `projects/bowling-content-aggergator/locations/us-central1/publishers/google/models/gemini-3-pro-image` was not found or your project does not have access to it. Ensure you are using a valid model name and that the model is available in the specified region. For more information, see: https://docs.cloud.google.com/gemini-enterprise-agent-platform/resources/locations.",
+    "status": "NOT_FOUND"
+  }
+}
+```
+
+The error's own text and its linked doc (`.../resources/locations`) both
+point at Region, not the id -- and Google's own official Vertex AI
+sample code for Gemini 3 Pro Image uses `location="global"`, not a
+per-Region location. `GEMINI_REGION` was `us-central1`.
+
+Fixed two things together, since `global` isn't just a different
+`locations/` path value:
+
+1. `DEFAULT_GEMINI_REGION` (app.py) and `GeminiRegion`'s Default
+   (template.yaml): `us-central1` -> `global`.
+2. `call_gemini_for_image`'s URL construction: Vertex AI's regional
+   endpoints use host `{region}-aiplatform.googleapis.com`, but the
+   `global` location uses a bare `aiplatform.googleapis.com` host with
+   NO per-Region subdomain prefix. The original code always built the
+   regional host shape regardless of region value -- harmless while
+   `GEMINI_REGION` really was a region, but would have silently built
+   the wrong host (`global-aiplatform.googleapis.com`, which doesn't
+   exist) the moment `GEMINI_REGION` became `global`. Now branches
+   explicitly on `region == "global"`.
+
+Also present in the same log, separate and already-known: the Bedrock
+Remove Background `AccessDeniedException` (AWS Marketplace subscription
+issue, `us.stability.stable-image-remove-background-v1:0` in
+`us-east-1`) -- fix is in the AWS Console (Bedrock -> Model access ->
+resubscribe), not code, and unrelated to the Gemini region fix.
+
+New regression test: `test_call_gemini_for_image_uses_global_host_shape_
+for_global_region` asserts the bare-host URL shape for `region=
+"global"`; the existing `test_call_gemini_for_image_sends_correct_
+request_shape_and_auth_header` continues to assert the regional
+prefixed-host shape for `region="us-central1"`, so both host shapes are
+now covered.
+
+**Redeploy note**: explicitly set `GeminiRegion=global` in
+samconfig.toml's `parameter_overrides` (same stale-parameter caveat as
+GeminiModelId above -- CloudFormation won't adopt the new template
+default on an already-deployed stack on its own).
+
+**Not yet reconfirmed against a live call.** If this still 404s after
+redeploying, or comes back as a 403 instead, that points at allowlist/
+access gating on the GCP project instead (see the allowlist-gating
+discussion in the first part of this incident above) -- file a request
+on https://discuss.ai.google.dev if so. `gemini-2.5-flash-image` remains
+available as a fallback in the meantime.
+
+Full test file: 90/90. Full 41-file regression sweep: clean. Template
+verified via the CFN-tolerant YAML loader (57 resources, unchanged
+count, `GeminiRegion` default confirmed as `global`).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
