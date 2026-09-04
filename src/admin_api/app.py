@@ -131,6 +131,17 @@ class BlockedChannelCreateRequest(BaseModel):
     note: Optional[str] = None
 
 
+class ManualSeedUrlCreateRequest(BaseModel):
+    # See 027_manual_seed_urls.sql's header comment for the real Storm
+    # Equinox orphan-page incident this exists for. brand_id, not a
+    # platform/brand name string, same "let the caller already know the
+    # real UUID" convention every other brand_id-keyed create endpoint in
+    # this file uses (e.g. ProductPriceSourceCreateRequest's price_site_id).
+    brand_id: str
+    url: str
+    note: Optional[str] = None
+
+
 class ProductPriceSourceCreateRequest(BaseModel):
     # Manual-override path only -- see service.create_product_price_source's
     # docstring. The normal way a product_price_sources row comes into
@@ -853,6 +864,39 @@ def delete_blocked_channel(channel_id: str):
     conn = service.get_db_connection()
     try:
         return service.delete_blocked_channel(conn, channel_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
+# --- Manual seed URLs (orphan-page catch for url_discovery Lambdas -- see
+# 027_manual_seed_urls.sql's header comment for the real Storm Equinox
+# incident this exists for) ---
+
+@app.get("/manual-seed-urls")
+def get_manual_seed_urls():
+    conn = service.get_db_connection()
+    try:
+        return {"items": service.list_manual_seed_urls(conn)}
+    finally:
+        conn.close()
+
+
+@app.post("/manual-seed-urls")
+def create_manual_seed_url(body: ManualSeedUrlCreateRequest):
+    conn = service.get_db_connection()
+    try:
+        return service.create_manual_seed_url(conn, body.brand_id, body.url, body.note)
+    finally:
+        conn.close()
+
+
+@app.delete("/manual-seed-urls/{seed_id}")
+def delete_manual_seed_url(seed_id: str):
+    conn = service.get_db_connection()
+    try:
+        return service.delete_manual_seed_url(conn, seed_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
     finally:

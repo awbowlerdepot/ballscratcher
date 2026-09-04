@@ -290,6 +290,60 @@ def test_diff_against_known_mixed_new_and_unchanged():
     assert diff["unchanged"] == ["https://www.stormbowling.com/roto-grip-gremlin-bowling-ball"]
 
 
+# --- discover_manual_seed_urls (migration 027, real Storm Equinox incident) ---
+
+class _FakeSeedCursor:
+    """Minimal fake matching discover_manual_seed_urls' own query shape --
+    a plain select filtered by brand_id, no insert/update path needed
+    since this function is read-only (seeding happens via admin_api, not
+    this Lambda)."""
+    def __init__(self, rows_by_brand):
+        self.rows_by_brand = rows_by_brand
+        self._last_result = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        assert "manual_seed_urls" in sql
+        assert "brand_id" in sql
+        (brand_id,) = params
+        self._last_result = [(url,) for url in self.rows_by_brand.get(brand_id, [])]
+
+    def fetchall(self):
+        return self._last_result
+
+
+class _FakeSeedConn:
+    def __init__(self, rows_by_brand):
+        self.rows_by_brand = rows_by_brand
+
+    def cursor(self):
+        return _FakeSeedCursor(self.rows_by_brand)
+
+
+def test_discover_manual_seed_urls_returns_this_brands_urls_only():
+    """Real motivating case: storm-equinox-bowling-ball, orphaned on-site
+    (present in neither the category listing nor the sitemap -- see
+    module docstring's incident writeup), seeded manually for the
+    "storm" brand. A different brand's own seed rows must not leak in."""
+    conn = _FakeSeedConn({
+        "storm-brand-uuid": ["https://www.stormbowling.com/storm-equinox-bowling-ball"],
+        "roto-grip-brand-uuid": ["https://www.stormbowling.com/roto-grip-something-orphaned-bowling-ball"],
+    })
+    urls = app.discover_manual_seed_urls(conn, "storm-brand-uuid")
+    assert urls == {"https://www.stormbowling.com/storm-equinox-bowling-ball"}
+
+
+def test_discover_manual_seed_urls_empty_for_brand_with_no_seeds():
+    conn = _FakeSeedConn({"storm-brand-uuid": ["https://www.stormbowling.com/storm-equinox-bowling-ball"]})
+    urls = app.discover_manual_seed_urls(conn, "roto-grip-brand-uuid")
+    assert urls == set()
+
+
 # --- build_scrape_messages ---
 
 def test_build_scrape_messages_shape():

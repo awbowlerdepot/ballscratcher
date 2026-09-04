@@ -3532,6 +3532,81 @@ def delete_blocked_channel(conn, channel_id: str) -> dict:
     return {"deleted": True, "id": channel_id}
 
 
+# --- Manual seed URLs (orphan-page catch, 027_manual_seed_urls.sql) ----------
+#
+# REAL INCIDENT (2026-09-04): Al reported storm-equinox-bowling-ball
+# missing from the site. Root-caused as a genuine orphan page (live,
+# in-stock, but linked from neither commercebuild_url_discovery's
+# category-listing crawl nor its sitemap fetch -- stormbowling.com itself
+# stopped linking to it internally). A one-off manual Lambda invocation
+# fixed that one product; this table + these three functions are the
+# permanent catch for the next page like it. See commercebuild_url_
+# discovery/app.py's discover_manual_seed_urls for the consuming side.
+
+def list_manual_seed_urls(conn) -> list:
+    """Every seed URL, most-recently-added first, joined to the brand's
+    own name so the admin-site panel can show something more useful than
+    a raw brand_id -- same "join for display, don't make the frontend do
+    a second lookup" posture as get_product's core/coverstock joins."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select m.id, m.brand_id, b.name as brand_name, m.url, m.note, m.created_at
+            from manual_seed_urls m
+            join brands b on b.id = m.brand_id
+            order by m.created_at desc
+            """
+        )
+        columns = [desc[0] for desc in cur.description]
+        return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
+def create_manual_seed_url(conn, brand_id: str, url: str, note: str = None) -> dict:
+    """Adds one seed URL. `on conflict (url) do nothing` (plain unique
+    constraint, NOT case-insensitive like blocked_video_channels -- see
+    027_manual_seed_urls.sql's header comment on why URLs are treated
+    differently from free-text channel names) means re-seeding an
+    already-seeded URL is a harmless no-op, same dedupe-on-conflict
+    posture as create_blocked_channel."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into manual_seed_urls (brand_id, url, note)
+            values (%s, %s, %s)
+            on conflict (url) do nothing
+            returning id, brand_id, url, note, created_at
+            """,
+            (brand_id, url, note),
+        )
+        row = cur.fetchone()
+        if row is None:
+            # Already seeded -- look up the existing row so the caller
+            # still gets a real id back rather than None, same courtesy
+            # as create_blocked_channel's own conflict path.
+            cur.execute(
+                "select id, brand_id, url, note, created_at from manual_seed_urls where url = %s",
+                (url,),
+            )
+            row = cur.fetchone()
+    conn.commit()
+    return {"id": row[0], "brand_id": row[1], "url": row[2], "note": row[3], "created_at": row[4]}
+
+
+def delete_manual_seed_url(conn, seed_id: str) -> dict:
+    """Removes a seed -- hard delete. Does NOT touch discovered_urls or
+    any product/SKU data already scraped from that URL if it was already
+    picked up by a discovery run; this only stops it from being
+    RE-seeded/re-emphasized going forward, same "delete the intent, not
+    the downstream effect" reasoning as delete_blocked_channel."""
+    with conn.cursor() as cur:
+        cur.execute("delete from manual_seed_urls where id = %s returning id", (seed_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError(f"No manual_seed_urls row with id {seed_id}")
+    conn.commit()
+    return {"deleted": True, "id": seed_id}
+
+
 # --- Ball-review-article generation (022_product_articles.sql) --------------
 #
 # Al: "Do you think we generate ball review article like the one here:

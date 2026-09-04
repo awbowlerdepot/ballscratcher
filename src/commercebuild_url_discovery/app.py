@@ -4,9 +4,10 @@ Global -- one site, stormbowling.com, three brands). See
 COMMERCEBUILD_SCOPING.md and commercebuild_product_scraper/app.py's module
 docstring for the full research trail.
 
-**Two discovery sources, unioned per brand, both confirmed real this
-session (a later session than COMMERCEBUILD_SCOPING.md's original
-research -- see below for what changed):**
+**Three discovery sources, unioned per brand** (the first two both
+confirmed real this session, a later session than COMMERCEBUILD_
+SCOPING.md's original research -- see below for what changed; the
+third added in a still-later session, see its own note below):
 
 1. The "Bowling Balls" category listing, filtered per brand via a
    `custom1` facet query param, e.g.:
@@ -25,6 +26,20 @@ research -- see below for what changed):**
    URL set alongside the listing above (harmless overlap on current
    products, since diff_against_known() dedupes against discovered_urls
    by URL either way).
+
+3. `manual_seed_urls` (see discover_manual_seed_urls() below, migration
+   027) -- a small admin-curated table of URLs to always include,
+   regardless of what the two crawlable sources above find. REAL
+   INCIDENT (2026-09-04): Al reported storm-equinox-bowling-ball
+   missing from the site. Root-caused as a genuine orphan page -- live,
+   in-stock, indexable, but present in NEITHER source above, because
+   stormbowling.com itself stopped linking to it internally (superseded
+   on-site by "Equinox Hybrid"/"Equinox Solid" variant pages). A
+   one-off manual Lambda invocation fixed that one product but left no
+   permanent catch for the next page like it -- this third source is
+   that catch. Seeded rows flow through the exact same diff_against_
+   known()/SQS-publish path as anything else, so a seed only gets
+   (re-)scraped once, not on every run, once it lands in discovered_urls.
 
 **Real finding this session that changes the picture from
 COMMERCEBUILD_SCOPING.md's original research:** that doc's one remaining
@@ -214,6 +229,20 @@ def discover_urls_from_sitemap(fetch_fn, sitemap_url: str = DEFAULT_SITEMAP_URL)
     return buckets
 
 
+def discover_manual_seed_urls(conn, brand_id: str) -> set:
+    """The third discovery source (migration 027, see module docstring's
+    real Storm Equinox incident) -- every manual_seed_urls row for this
+    brand, regardless of whether the site's own category listing or
+    sitemap currently link to it. Deliberately a flat set with the same
+    shape as discover_urls_for_brand/discover_urls_from_sitemap's own
+    per-brand results, so handler() can union all three identically and
+    diff_against_known() doesn't need to know or care which source a URL
+    came from."""
+    with conn.cursor() as cur:
+        cur.execute("select url from manual_seed_urls where brand_id = %s", (brand_id,))
+        return {row[0] for row in cur.fetchall()}
+
+
 def build_entries(urls: set) -> list:
     """No sitemap lastmod source yet (see module docstring) -- every
     entry gets lastmod=None."""
@@ -293,12 +322,14 @@ def handler(event, context):
     """Crawls all three brands' current-product listings (one page each,
     10s apart per robots.txt Crawl-delay) AND the shared
     sitemap_products.xml (fetched once, covers current+archived+non-ball
-    -- see module docstring), unions each brand's two URL sets, diffs
-    against discovered_urls, and publishes new URLs to
-    CommercebuildProductScrapeQueue. Non-ball URLs that slip through the
-    sitemap's brand-prefix pre-filter are skipped gracefully at scrape
-    time, not here -- see commercebuild_product_scraper.py's
-    classify_product_status().
+    -- see module docstring), unions each brand's THREE URL sets
+    (listing + sitemap + that brand's manual_seed_urls rows, migration
+    027 -- see discover_manual_seed_urls and module docstring's real
+    Storm Equinox incident), diffs against discovered_urls, and
+    publishes new URLs to CommercebuildProductScrapeQueue. Non-ball URLs
+    that slip through the sitemap's brand-prefix pre-filter are skipped
+    gracefully at scrape time, not here -- see commercebuild_product_
+    scraper.py's classify_product_status().
 
     Brand IDs come from BRAND_IDS_JSON, a JSON object mapping the same
     keys as BRAND_FILTERS ("storm", "roto_grip", "global_900") to real
@@ -347,12 +378,14 @@ def handler(event, context):
             logger.info("Discovering %s (filter=%r) current-product URLs", brand_key, filter_value)
             current_urls = discover_urls_for_brand(fetch_page, filter_value, category_url)
             sitemap_urls = sitemap_buckets.get(brand_key, set())
-            urls = current_urls | sitemap_urls
+            manual_urls = discover_manual_seed_urls(conn, brand_id)
+            urls = current_urls | sitemap_urls | manual_urls
             logger.info(
                 "%s: %d from category listing (current only), %d from sitemap "
                 "(current+archived+non-ball, filtered per-page at scrape time), "
+                "%d from manual_seed_urls (orphan-page catch, see migration 027), "
                 "%d combined",
-                brand_key, len(current_urls), len(sitemap_urls), len(urls),
+                brand_key, len(current_urls), len(sitemap_urls), len(manual_urls), len(urls),
             )
             entries = build_entries(urls)
             diff = diff_against_known(conn, brand_id, entries)

@@ -691,6 +691,60 @@ class FakeCursor:
             self._last_result = (channel_id,) if existed else None
             self.description = [("id",)]
 
+        # --- 027_manual_seed_urls.sql: orphan-page catch for url_discovery
+        # Lambdas (real Storm Equinox incident, 2026-09-04 -- see that
+        # migration's own header comment). db["manual_seed_urls"] rows
+        # carry brand_name directly (fixtures set it), same "flat dict, no
+        # real join" simplification the product_articles section just
+        # below already uses for its own products/brands join.
+
+        elif q.startswith("select m.id, m.brand_id, b.name as brand_name, m.url, m.note, m.created_at from manual_seed_urls"):
+            rows = sorted(
+                self.db.get("manual_seed_urls", {}).values(),
+                key=lambda r: r.get("created_at") or "", reverse=True,
+            )
+            self._rows = [
+                (r["id"], r["brand_id"], r.get("brand_name"), r["url"], r.get("note"), r.get("created_at"))
+                for r in rows
+            ]
+            self.description = [("id",), ("brand_id",), ("brand_name",), ("url",), ("note",), ("created_at",)]
+
+        elif q.startswith("insert into manual_seed_urls"):
+            brand_id, url, note = params
+            existing = next(
+                (r for r in self.db.get("manual_seed_urls", {}).values() if r["url"] == url),
+                None,
+            )
+            if existing is not None:
+                # on conflict (url) do nothing -- no row returned,
+                # service.create_manual_seed_url falls back to the
+                # lookup-by-url select below.
+                self._last_result = None
+            else:
+                self.db.setdefault("_manual_seed_url_id_seq", 0)
+                self.db["_manual_seed_url_id_seq"] += 1
+                new_id = f"seed-new-{self.db['_manual_seed_url_id_seq']}"
+                row = {"id": new_id, "brand_id": brand_id, "url": url, "note": note, "created_at": "now"}
+                self.db.setdefault("manual_seed_urls", {})[new_id] = row
+                self._last_result = (row["id"], row["brand_id"], row["url"], row["note"], row["created_at"])
+            self.description = [("id",), ("brand_id",), ("url",), ("note",), ("created_at",)]
+
+        elif q.startswith("select id, brand_id, url, note, created_at from manual_seed_urls where url = %s"):
+            (url,) = params
+            row = next(
+                (r for r in self.db.get("manual_seed_urls", {}).values() if r["url"] == url),
+                None,
+            )
+            self._last_result = (row["id"], row["brand_id"], row["url"], row.get("note"), row.get("created_at")) if row else None
+            self.description = [("id",), ("brand_id",), ("url",), ("note",), ("created_at",)]
+
+        elif q.startswith("delete from manual_seed_urls where id = %s"):
+            (seed_id,) = params
+            existed = seed_id in self.db.get("manual_seed_urls", {})
+            self.db.get("manual_seed_urls", {}).pop(seed_id, None)
+            self._last_result = (seed_id,) if existed else None
+            self.description = [("id",)]
+
         # --- 022_product_articles.sql: ball-review article review workflow
         # (Al: "this could be the backend that pulls together all the
         # creative and content for the frontend"). db["product_articles"]
@@ -4024,6 +4078,96 @@ def test_delete_blocked_channel_missing_raises():
     conn = FakeConnection(db)
     try:
         service.delete_blocked_channel(conn, "no-such-channel")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+# --- 027_manual_seed_urls.sql: orphan-page catch (real Storm Equinox
+# incident, 2026-09-04) -- list/create/delete_manual_seed_url ---
+
+def test_list_manual_seed_urls_returns_all_most_recent_first_with_brand_name():
+    db = {"manual_seed_urls": {
+        "s1": {
+            "id": "s1", "brand_id": "brand-storm", "brand_name": "Storm",
+            "url": "https://www.stormbowling.com/storm-equinox-bowling-ball",
+            "note": "orphaned on-site, superseded by Equinox Hybrid/Solid variants",
+            "created_at": "2026-09-04",
+        },
+        "s2": {
+            "id": "s2", "brand_id": "brand-rg", "brand_name": "Roto Grip",
+            "url": "https://www.stormbowling.com/roto-grip-something-orphaned-bowling-ball",
+            "note": None, "created_at": "2026-01-01",
+        },
+    }}
+    conn = FakeConnection(db)
+
+    result = service.list_manual_seed_urls(conn)
+
+    assert [r["id"] for r in result] == ["s1", "s2"]
+    assert result[0]["brand_name"] == "Storm"
+    assert result[0]["url"] == "https://www.stormbowling.com/storm-equinox-bowling-ball"
+
+
+def test_create_manual_seed_url_inserts_row():
+    db = {"manual_seed_urls": {}}
+    conn = FakeConnection(db)
+
+    result = service.create_manual_seed_url(
+        conn, "brand-storm", "https://www.stormbowling.com/storm-equinox-bowling-ball",
+        note="orphaned on-site",
+    )
+
+    assert result["url"] == "https://www.stormbowling.com/storm-equinox-bowling-ball"
+    assert result["brand_id"] == "brand-storm"
+    assert result["note"] == "orphaned on-site"
+    new_id = result["id"]
+    assert db["manual_seed_urls"][new_id]["url"] == "https://www.stormbowling.com/storm-equinox-bowling-ball"
+    assert conn.committed is True
+
+
+def test_create_manual_seed_url_dedupes_by_exact_url():
+    """Re-seeding an already-seeded URL is a harmless no-op that returns
+    the EXISTING row -- mirrors the plain (not case-insensitive) unique
+    constraint 027_manual_seed_urls.sql adds on url."""
+    db = {"manual_seed_urls": {
+        "s1": {
+            "id": "s1", "brand_id": "brand-storm",
+            "url": "https://www.stormbowling.com/storm-equinox-bowling-ball",
+            "note": None, "created_at": "2026-09-04",
+        },
+    }}
+    conn = FakeConnection(db)
+
+    result = service.create_manual_seed_url(
+        conn, "brand-storm", "https://www.stormbowling.com/storm-equinox-bowling-ball",
+        note="second attempt",
+    )
+
+    assert result["id"] == "s1"
+    assert len(db["manual_seed_urls"]) == 1
+    # ON CONFLICT DO NOTHING means the second call's note is simply
+    # dropped, not merged -- same as create_blocked_channel's own conflict path.
+    assert db["manual_seed_urls"]["s1"]["note"] is None
+
+
+def test_delete_manual_seed_url_removes_row():
+    db = {"manual_seed_urls": {
+        "s1": {"id": "s1", "brand_id": "brand-storm", "url": "https://www.stormbowling.com/storm-equinox-bowling-ball", "note": None, "created_at": "2026-09-04"},
+    }}
+    conn = FakeConnection(db)
+
+    result = service.delete_manual_seed_url(conn, "s1")
+
+    assert result == {"deleted": True, "id": "s1"}
+    assert "s1" not in db["manual_seed_urls"]
+
+
+def test_delete_manual_seed_url_missing_raises():
+    db = {"manual_seed_urls": {}}
+    conn = FakeConnection(db)
+    try:
+        service.delete_manual_seed_url(conn, "no-such-seed")
         assert False, "expected LookupError"
     except LookupError:
         pass

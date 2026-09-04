@@ -62,6 +62,7 @@ psql "$DATABASE_URL" -f db/migrations/023_product_article_images.sql
 psql "$DATABASE_URL" -f db/migrations/024_product_article_images_composite_pipeline.sql
 psql "$DATABASE_URL" -f db/migrations/025_product_article_images_theme_driven_pipeline.sql
 psql "$DATABASE_URL" -f db/migrations/026_product_article_image_candidates.sql
+psql "$DATABASE_URL" -f db/migrations/027_manual_seed_urls.sql
 ```
 
 (If you already ran an earlier subset in a prior deploy, just run whatever
@@ -2263,6 +2264,75 @@ redeploying, invoke it directly (see 6f.6's `aws lambda invoke` command
 above) and confirm Track's current-ball count in the admin site's
 Products tab (filter: Brand = Track, Status = current) jumps from ~1 to
 ~7.
+
+### 6f.8. Manual seed URLs -- orphan-page catch (real Storm Equinox incident)
+
+**REAL INCIDENT (2026-09-04):** Al reported "the original equinox
+bowling ball is missing from the storm site" (`storm-equinox-bowling-
+ball`). Investigated and root-caused: a genuine orphan page -- live,
+in-stock, indexable -- but present in NEITHER of commercebuild_url_
+discovery's two discovery sources (the "Bowling Balls" category listing,
+and `sitemap_products.xml`), because stormbowling.com itself stopped
+linking to it internally (superseded on-site by "Equinox Hybrid"/
+"Equinox Solid" variant pages). Not a scraper bug -- both discovery
+sources were working exactly as designed, the site just doesn't expose
+this page to a crawler anymore. A one-off manual Lambda invocation
+fixed that one product:
+
+```bash
+aws lambda invoke --cli-binary-format raw-in-base64-out \
+  --function-name bowling-scraper-commercebuild-product-scraper \
+  --payload '{"url": "https://www.stormbowling.com/storm-equinox-bowling-ball", "brand_id": "<storm-brand-uuid>"}' \
+  /tmp/out.json && cat /tmp/out.json
+```
+
+That fixed the one product but left no permanent catch for the next
+page like it. Migration 027 (`manual_seed_urls`) + a small admin-site
+panel are that permanent catch:
+
+- `manual_seed_urls` (brand_id, url, note) -- an admin-curated list of
+  URLs to always union into a url_discovery Lambda's own discovered set,
+  regardless of what that platform's normal crawlable sources find.
+- `commercebuild_url_discovery/app.py`'s `handler()` now unions THREE
+  sources per brand instead of two: category listing, sitemap, and
+  `discover_manual_seed_urls(conn, brand_id)`. A seeded URL flows
+  through the exact same `discovered_urls` diff + SQS publish path as
+  anything else, so it only gets (re-)scraped once, not on every
+  discovery run, once it's landed in `discovered_urls`.
+- `admin_api`: `GET/POST /manual-seed-urls`, `DELETE /manual-seed-urls/
+  {id}` (service.list_manual_seed_urls/create_manual_seed_url/
+  delete_manual_seed_url) -- no template.yaml changes needed, same as
+  every other admin_api route (the `{proxy+}` catch-all already covers
+  it, see 6h's own note on this for `/cores`).
+- `admin-site`: a "Manual seed URLs" panel on the Batch Jobs tab -- pick
+  a brand (via the same `GET /brands` fetch the Products/Cores tab
+  filters already use, a new `brand-picker` select class alongside the
+  existing `brand-filter` one), paste the URL, optional note, Add.
+
+**Scope, deliberately narrow for now:** only wired into
+`commercebuild_url_discovery` (Storm/Roto Grip/900 Global), since that's
+the platform this incident actually happened on. `manual_seed_urls` and
+its admin_api/admin-site surface are generic (keyed by brand_id, not
+commercebuild-specific) -- if an orphan page ever turns up on Brunswick/
+Radical/DV8, WooCommerce, NetSuite, or Shopify instead, extending to
+that platform's own url_discovery Lambda is a small, mechanical
+follow-up (one `discover_manual_seed_urls(conn, brand_id)` call unioned
+into that Lambda's own URL set, no schema change needed).
+
+To actually use this for a future orphan: find its `brand_id` (Products
+tab, filter by brand, any product's row shows it, or `select id, name
+from brands`), add it via the new Batch Jobs panel, then either wait for
+`CommercebuildUrlDiscoveryFunction`'s next scheduled run or invoke it
+directly to pick it up immediately.
+
+Full test file: `test_commercebuild_url_discovery.py` 23/23 (new:
+`test_discover_manual_seed_urls_returns_this_brands_urls_only`,
+`test_discover_manual_seed_urls_empty_for_brand_with_no_seeds`),
+`test_admin_api_service.py` 256/256 (new: list/create/create-dedupes/
+delete/delete-missing for `manual_seed_urls`, 5 tests). Full 44-file
+regression sweep: clean. `admin-site/index.html`'s extracted `<script>`
+block verified via `node --check` (no build step for this page, same
+verification this file's own tests used for prior admin-site edits).
 
 ### 6g. bowwwl.com cross-check
 

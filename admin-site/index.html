@@ -739,6 +739,32 @@
       <div id="batch-stats-htmlSkus" class="mono small muted" style="margin-top:8px;"></div>
       <pre id="batch-log-htmlSkus" class="scrollbox" style="margin-top:6px;"></pre>
     </div>
+
+    <!-- Manual seed URLs -- REAL INCIDENT (2026-09-04): Al reported
+         "the original equinox bowling ball is missing from the storm
+         site" (storm-equinox-bowling-ball). Root-caused as a genuine
+         orphan page: live, in-stock, but linked from neither Storm's own
+         category listing nor its sitemap (the site itself stopped
+         linking to it, superseded on-site by Equinox Hybrid/Solid
+         variants). A one-off manual Lambda invocation fixed that one
+         product; this panel is the permanent catch for the next page
+         like it -- see 027_manual_seed_urls.sql and commercebuild_url_
+         discovery/app.py's discover_manual_seed_urls. Currently only
+         wired into commercebuild's own discovery run (Storm/Roto
+         Grip/900 Global); a seed for a different platform's brand just
+         sits here unused until that platform's own discovery function
+         is wired up too. -->
+    <div class="panel">
+      <h3>Manual seed URLs (orphan-page catch)</h3>
+      <p class="muted small">For a real, live, in-stock product page a manufacturer's own site has stopped linking to internally -- so it never shows up in a category-listing crawl or sitemap, no matter how often discovery runs. Seeding it here gets it picked up on Storm/Roto Grip/900 Global's next scheduled discovery run, same as any normally-discovered URL, then it's just scraped once like anything else.</p>
+      <div class="filters">
+        <div class="field"><label>Brand</label><select id="seedurl-new-brand" class="brand-picker"><option value="">-- select brand --</option></select></div>
+        <div class="field" style="flex:2;"><label>Product URL</label><input id="seedurl-new-url" type="text" placeholder="https://www.stormbowling.com/storm-equinox-bowling-ball"></div>
+        <div class="field"><label>Note (optional)</label><input id="seedurl-new-note" type="text" placeholder="e.g. orphaned on-site, superseded by Hybrid/Solid variants"></div>
+        <button class="btn" type="button" onclick="createManualSeedUrl()">Add</button>
+      </div>
+      <div id="seedurl-list"><p class="muted">Set your API URL and token above, then this loads automatically.</p></div>
+    </div>
   </section>
 
 </main>
@@ -822,6 +848,13 @@ async function api(method, path, opts) {
 // no-ops rather than throwing during page init, same reasoning as
 // checkHealth() below -- the dropdowns just stay at "any brand" until
 // Settings are filled in and the page is reloaded.
+//
+// Also populates `<select class="brand-picker">` (Manual seed URLs panel,
+// 027_manual_seed_urls.sql) from the SAME fetch -- a distinct class, not
+// "brand-filter" reused, because this is a required field on a CREATE
+// form ("which brand does this URL belong to"), not an optional list
+// filter, so its placeholder reads "-- select brand --" rather than
+// "any brand".
 async function loadBrandOptions() {
   const { apiUrl, token } = getSettings();
   if (!apiUrl || !token) return;
@@ -832,6 +865,9 @@ async function loadBrandOptions() {
     }).join('');
     document.querySelectorAll('select.brand-filter').forEach(function (sel) {
       sel.innerHTML = '<option value="">any brand</option>' + options;
+    });
+    document.querySelectorAll('select.brand-picker').forEach(function (sel) {
+      sel.innerHTML = '<option value="">-- select brand --</option>' + options;
     });
   } catch (e) {
     // Non-fatal -- filters still work by re-selecting "any brand"; the
@@ -985,7 +1021,7 @@ function renderRawTableList(items, emptyLabel) {
 // --------------------------------------------------------------------
 // Tabs
 // --------------------------------------------------------------------
-const TAB_LOADERS = { dashboard: loadDashboard, review: loadReviewQueue, videos: loadVideoCandidates, articles: loadArticles, pricesources: loadPriceSources, products: loadProducts, cores: loadCores, coverstocks: loadCoverstocks, pricesites: loadPriceSites, batch: null };
+const TAB_LOADERS = { dashboard: loadDashboard, review: loadReviewQueue, videos: loadVideoCandidates, articles: loadArticles, pricesources: loadPriceSources, products: loadProducts, cores: loadCores, coverstocks: loadCoverstocks, pricesites: loadPriceSites, batch: loadManualSeedUrls };
 let activeTab = 'review';
 
 // Cached GET /price-sites result -- shared between the Price Sites tab
@@ -4423,6 +4459,64 @@ async function runBatch(kind) {
 
 function stopBatch(kind) {
   batchRunning[kind] = false;
+}
+
+// --- Manual seed URLs -- REAL INCIDENT (2026-09-04): Al reported "the
+// original equinox bowling ball is missing from the storm site"
+// (storm-equinox-bowling-ball), root-caused as a genuine orphan page --
+// see this panel's own HTML comment and 027_manual_seed_urls.sql for the
+// full writeup. service.list_manual_seed_urls/create_manual_seed_url/
+// delete_manual_seed_url back these three, same shape as the Blocked
+// Channels panel above (list/create/delete against one small table).
+
+async function loadManualSeedUrls() {
+  const listEl = document.getElementById('seedurl-list');
+  listEl.innerHTML = '<p class="muted">Loading&hellip;</p>';
+  try {
+    const data = await api('GET', '/manual-seed-urls');
+    renderManualSeedUrls(data.items || []);
+  } catch (e) {
+    listEl.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
+  }
+}
+
+function renderManualSeedUrls(items) {
+  const listEl = document.getElementById('seedurl-list');
+  if (!items.length) {
+    listEl.innerHTML = '<p class="muted">No manual seed URLs yet.</p>';
+    return;
+  }
+  const rows = items.map(function (s) {
+    return '<tr><td>' + escapeHtml(s.brand_name || s.brand_id) + '</td>' +
+      '<td><a href="' + escapeHtml(s.url) + '" target="_blank" rel="noopener">' + escapeHtml(s.url) + '</a></td>' +
+      '<td class="muted small">' + escapeHtml(s.note || '') + '</td>' +
+      '<td class="actions"><button class="btn small ghost danger" onclick="deleteManualSeedUrl(\'' + s.id + '\')">Remove</button></td></tr>';
+  }).join('');
+  listEl.innerHTML = '<table><thead><tr><th>Brand</th><th>URL</th><th>Note</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
+}
+
+async function createManualSeedUrl() {
+  const brandId = document.getElementById('seedurl-new-brand').value;
+  const url = document.getElementById('seedurl-new-url').value.trim();
+  const note = document.getElementById('seedurl-new-note').value.trim() || undefined;
+  if (!brandId) { toast('Select a brand.', true); return; }
+  if (!url) { toast('Product URL is required.', true); return; }
+  try {
+    await api('POST', '/manual-seed-urls', { body: { brand_id: brandId, url: url, note: note } });
+    document.getElementById('seedurl-new-url').value = '';
+    document.getElementById('seedurl-new-note').value = '';
+    toast('Seed URL added -- picked up on the next discovery run.');
+    loadManualSeedUrls();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function deleteManualSeedUrl(id) {
+  if (!confirm('Remove this seed URL? It stops being force-included in future discovery runs (any product already scraped from it stays in the catalog).')) return;
+  try {
+    await api('DELETE', '/manual-seed-urls/' + id);
+    toast('Removed');
+    loadManualSeedUrls();
+  } catch (e) { toast(e.message, true); }
 }
 
 // --------------------------------------------------------------------
