@@ -186,11 +186,12 @@ def test_build_article_prompt_caps_total_transcript_budget_across_videos():
 
 
 def test_build_article_prompt_asks_for_visual_theme():
-    """v3's theme-driven image prompts (build_image_prompts) depend on
-    the article-generation model itself deriving a visual_theme from the
-    product's own name/branding -- confirms the JSON-schema request text
-    actually asks for it, and marks it optional (not a hard requirement
-    like the other fields)."""
+    """Every image prompt builder in the v1-v4 history (_resolve_visual_
+    context as of v4; build_image_prompts in v3) depends on the article-
+    generation model itself deriving a visual_theme from the product's
+    own name/branding -- confirms the JSON-schema request text actually
+    asks for it, and marks it optional (not a hard requirement like the
+    other fields)."""
     prompt = app.build_article_prompt(_SAMPLE_PRODUCT, siblings=[])
     assert "visual_theme" in prompt
     assert "OPTIONAL" in prompt.split("visual_theme")[1][:50]
@@ -225,6 +226,11 @@ class _FakeCursor:
         self.description = None
         self._rows = []
         self.inserted = []  # (product_id, article dict-shaped params) from store_article
+        # v4 (026_product_article_image_candidates.sql) -- params tuples
+        # from every store_article_image_candidates insert, one per
+        # candidate row (article_id, variant, model_id, image_key,
+        # image_url, seed, is_selected).
+        self.candidate_inserts = []
 
     def __enter__(self):
         return self
@@ -264,6 +270,9 @@ class _FakeCursor:
             self.inserted.append(params)
             self.description = [("id",)]
             self._rows = [(self.store_article_id,)]
+
+        elif q.startswith("insert into product_article_image_candidates"):
+            self.candidate_inserts.append(params)
 
         elif q.startswith("select coalesce("):
             if self.reference_image_url is _UNSET:
@@ -588,11 +597,12 @@ def test_handler_on_demand_product_id_forces_single_generation():
     calls = []
 
     # handler() now always passes s3_client/bedrock_image_client/
-    # image_model_id/image_bucket through as keywords (see handler's own
-    # docstring) -- the fake must accept them (via **kwargs) even though
-    # this test doesn't care about their values, or a real TypeError
-    # (unexpected keyword argument) would mask whatever the test actually
-    # means to check.
+    # bedrock_removebg_client/gemini_api_key/image_model_id/
+    # removebg_model_id/gemini_model_id/image_bucket through as keywords
+    # (see handler's own docstring) -- the fake must accept them (via
+    # **kwargs) even though this test doesn't care about their values, or
+    # a real TypeError (unexpected keyword argument) would mask whatever
+    # the test actually means to check.
     def _fake_generate(conn_, bedrock, model_id, product_id, force=False, **kwargs):
         calls.append((product_id, force, kwargs))
         return {"product_id": product_id, "generated": True, "article_id": "a1",
@@ -611,12 +621,20 @@ def test_handler_on_demand_product_id_forces_single_generation():
     product_id, force, kwargs = calls[0]
     assert (product_id, force) == ("prod-1", True)
     # Image plumbing was actually threaded through, not silently dropped --
-    # FOUR image-related kwargs (v2's brief six-kwarg shape, which added a
-    # separate remove-background client/model id, is gone as of v3 -- see
-    # this module's own docstring for why).
+    # EIGHT image-related kwargs as of v4 (three Bedrock clients + Gemini
+    # api key/model id -- see generate_article_for_product's own
+    # docstring for the full v1-v4 shape history).
     assert kwargs["image_model_id"] == app.DEFAULT_BEDROCK_IMAGE_MODEL_ID
+    assert kwargs["removebg_model_id"] == app.DEFAULT_BEDROCK_REMOVE_BG_MODEL_ID
+    assert kwargs["gemini_model_id"] == app.DEFAULT_GEMINI_IMAGE_MODEL_ID
+    # GEMINI_API_KEY_SECRET_ARN isn't set in this test's environment, so
+    # handler() never even attempts the Secrets Manager fetch -- see
+    # test_handler_fetches_gemini_api_key_from_secrets_manager_when_
+    # configured below for the "configured" path.
+    assert kwargs["gemini_api_key"] is None
     assert set(kwargs.keys()) == {
-        "s3_client", "bedrock_image_client", "image_model_id", "image_bucket",
+        "s3_client", "bedrock_image_client", "bedrock_removebg_client", "gemini_api_key",
+        "image_model_id", "removebg_model_id", "gemini_model_id", "image_bucket",
     }
     body = json.loads(result["body"])
     assert body["results"] == [{"product_id": "prod-1", "generated": True, "article_id": "a1",
@@ -654,15 +672,18 @@ def test_handler_batch_mode_continues_after_one_product_errors():
     assert conn.closed is True
 
 
-def test_handler_constructs_image_bedrock_client_in_configured_region():
-    """handler() must construct TWO separate bedrock-runtime clients: the
-    text model's own (no region_name override) and the image-generation
-    client (region_name=BEDROCK_IMAGE_REGION, default us-west-2) -- a
-    plain boto3.client("bedrock-runtime") call (no region_name) for the
-    latter would use the Lambda's own home Region (us-west-1), where the
-    model isn't available at all (see app.py's own module docstring). v2's
-    THIRD client (remove-background, us-east-1) is gone as of v3 -- that
-    model is no longer used at all."""
+def test_handler_constructs_image_and_removebg_bedrock_clients_in_configured_regions():
+    """handler() must construct THREE separate bedrock-runtime clients:
+    the text model's own (no region_name override), the background-
+    generation client (region_name=BEDROCK_IMAGE_REGION, default
+    us-west-2), and the remove-background client (region_name=
+    BEDROCK_REMOVEBG_REGION, default us-east-1) -- a plain boto3.client(
+    "bedrock-runtime") call (no region_name) for either of the latter two
+    would use the Lambda's own home Region (us-west-1), where neither
+    model is available at all (see app.py's own module docstring). v3
+    briefly dropped the remove-background client entirely; v4 revives it
+    (see BedrockRemoveBgModelId's own template.yaml parameter description
+    for that saga)."""
     conn = _FakeConnection()
     client_calls = []
 
@@ -688,14 +709,110 @@ def test_handler_constructs_image_bedrock_client_in_configured_region():
         guard.restore()
 
     bedrock_runtime_calls = [c for c in client_calls if c[0] == "bedrock-runtime"]
-    assert len(bedrock_runtime_calls) == 2
+    assert len(bedrock_runtime_calls) == 3
     # The text model's own client -- no region_name override.
     assert bedrock_runtime_calls[0][1] == {}
-    # The image-generation model's client -- explicit region_name,
+    # The background-generation model's client -- explicit region_name,
     # defaulting to DEFAULT_BEDROCK_IMAGE_REGION when BEDROCK_IMAGE_REGION
     # isn't set.
     assert bedrock_runtime_calls[1][1] == {"region_name": app.DEFAULT_BEDROCK_IMAGE_REGION}
+    # The remove-background model's client -- a THIRD, separate Region,
+    # defaulting to DEFAULT_BEDROCK_REMOVE_BG_REGION when
+    # BEDROCK_REMOVEBG_REGION isn't set.
+    assert bedrock_runtime_calls[2][1] == {"region_name": app.DEFAULT_BEDROCK_REMOVE_BG_REGION}
     assert ("s3", {}) in client_calls
+    # GEMINI_API_KEY_SECRET_ARN isn't set in this test's environment, so
+    # no secretsmanager client is constructed at all -- see the dedicated
+    # gemini-secret tests just below for the "configured" path.
+    assert not any(c[0] == "secretsmanager" for c in client_calls)
+
+
+def test_handler_fetches_gemini_api_key_from_secrets_manager_when_configured():
+    """GEMINI_API_KEY_SECRET_ARN set -> handler() fetches the secret
+    (JSON {"api_key": "..."}, same shape as this module's own docstring
+    documents) and threads the value through to generate_article_for_
+    product as gemini_api_key -- Gemini is a real Google credential, not
+    an AWS/IAM mechanism, so this is a plain Secrets Manager GetSecretValue
+    call, same pattern get_db_connection already uses for DB credentials,
+    not anything Bedrock-specific."""
+    conn = _FakeConnection()
+    calls = []
+
+    class _FakeSecretsManagerClient:
+        def get_secret_value(self, SecretId):
+            assert SecretId == "arn:aws:secretsmanager:us-west-1:123:secret:gemini-key"
+            return {"SecretString": json.dumps({"api_key": "real-gemini-key"})}
+
+    def _fake_boto3_client(service_name, **kwargs):
+        if service_name == "secretsmanager":
+            return _FakeSecretsManagerClient()
+        return _FakeBedrockClient("{}")
+
+    def _fake_generate(conn_, bedrock, model_id, product_id, force=False, **kwargs):
+        calls.append(kwargs)
+        return {"product_id": product_id, "generated": True, "article_id": "a1",
+                "video_count": 1, "sibling_count": 0}
+
+    import types
+    fake_boto3 = types.ModuleType("boto3")
+    fake_boto3.client = _fake_boto3_client
+
+    guard = _HandlerPatchGuard()
+    try:
+        guard.set_module("boto3", fake_boto3)
+        guard.set(app, "get_db_connection", lambda: conn)
+        guard.set(app, "generate_article_for_product", _fake_generate)
+        os.environ["GEMINI_API_KEY_SECRET_ARN"] = "arn:aws:secretsmanager:us-west-1:123:secret:gemini-key"
+        app.handler({"product_id": "prod-1"}, None)
+    finally:
+        os.environ.pop("GEMINI_API_KEY_SECRET_ARN", None)
+        guard.restore()
+
+    assert calls[0]["gemini_api_key"] == "real-gemini-key"
+
+
+def test_handler_tolerates_gemini_secret_fetch_failure():
+    """A Secrets Manager error (bad ARN, denied IAM, etc.) fetching the
+    Gemini key must not crash the whole handler invocation -- same "images
+    are always best-effort" posture as every other image failure path in
+    this module. gemini_api_key just stays None, which generate_article_
+    image_candidates' own all-or-nothing gate then turns into "skip the
+    Gemini candidates this run" (see that function's own docstring), not
+    a hard failure of the whole product."""
+    conn = _FakeConnection()
+    calls = []
+
+    class _FailingSecretsManagerClient:
+        def get_secret_value(self, SecretId):
+            raise RuntimeError("AccessDenied")
+
+    def _fake_boto3_client(service_name, **kwargs):
+        if service_name == "secretsmanager":
+            return _FailingSecretsManagerClient()
+        return _FakeBedrockClient("{}")
+
+    def _fake_generate(conn_, bedrock, model_id, product_id, force=False, **kwargs):
+        calls.append(kwargs)
+        return {"product_id": product_id, "generated": True, "article_id": "a1",
+                "video_count": 1, "sibling_count": 0}
+
+    import types
+    fake_boto3 = types.ModuleType("boto3")
+    fake_boto3.client = _fake_boto3_client
+
+    guard = _HandlerPatchGuard()
+    try:
+        guard.set_module("boto3", fake_boto3)
+        guard.set(app, "get_db_connection", lambda: conn)
+        guard.set(app, "generate_article_for_product", _fake_generate)
+        os.environ["GEMINI_API_KEY_SECRET_ARN"] = "arn:aws:secretsmanager:us-west-1:123:secret:gemini-key"
+        result = app.handler({"product_id": "prod-1"}, None)
+    finally:
+        os.environ.pop("GEMINI_API_KEY_SECRET_ARN", None)
+        guard.restore()
+
+    assert calls[0]["gemini_api_key"] is None
+    assert json.loads(result["body"])["results"][0]["generated"] is True
 
 
 # --- Article images (023_product_article_images.sql) ---
@@ -795,141 +912,46 @@ def test_reference_image_to_base64_png_roundtrips_through_pillow():
     assert roundtripped.size == (8, 8)
 
 
-# --- build_reference_canvas: pure Pillow letterboxing, no Bedrock/DB ---
+# --- _resolve_visual_context: shared fallback chain, pure, no DB/network ---
 
 _SAMPLE_ARTICLE = dict(_VALID_ARTICLE_JSON, performance_summary="Reads early and hooks hard off the friction.")
 
 
-def _photo_bytes(size, color=(200, 30, 30)) -> bytes:
-    import io
-
-    from PIL import Image
-
-    buf = io.BytesIO()
-    Image.new("RGB", size, color).save(buf, format="JPEG")
-    return buf.getvalue()
-
-
-def test_build_reference_canvas_output_matches_requested_canvas_size():
-    import io
-
-    from PIL import Image
-
-    result_bytes = app.build_reference_canvas(_photo_bytes((300, 300)), (1536, 864))
-    out = Image.open(io.BytesIO(result_bytes))
-    assert out.size == (1536, 864)
-    assert out.format == "PNG"
-
-
-def test_build_reference_canvas_scales_down_large_reference_to_fit():
-    """A reference photo bigger than the canvas's own ~70%-of-shorter-
-    side budget must be scaled DOWN to fit, never cropped -- cropping
-    could cut off part of the ball, which defeats the whole point of
-    conditioning on the real photo."""
-    import io
-
-    from PIL import Image
-
-    result_bytes = app.build_reference_canvas(_photo_bytes((2000, 2000)), (1024, 1024))
-    out = Image.open(io.BytesIO(result_bytes)).convert("RGB")
-    # Fill color should appear somewhere near the center (the scaled-down
-    # photo, pasted centered) -- but the canvas itself is still exactly
-    # the requested size, not the original 2000x2000. JPEG re-encoding of
-    # the source photo introduces minor lossy color drift, so this checks
-    # "close to" the fill color rather than an exact pixel match.
-    assert out.size == (1024, 1024)
-    center_pixel = out.getpixel((512, 512))
-    assert all(abs(a - b) <= 10 for a, b in zip(center_pixel, (200, 30, 30)))
-
-
-def test_build_reference_canvas_never_upscales_a_small_reference():
-    """A reference photo already smaller than the target fraction of the
-    canvas should be pasted at its own native size (scale capped at 1.0),
-    not blown up and blurred."""
-    result_bytes = app.build_reference_canvas(_photo_bytes((50, 50)), (1024, 1024))
-    import io
-
-    from PIL import Image
-
-    out = Image.open(io.BytesIO(result_bytes))
-    assert out.size == (1024, 1024)
-
-
-def test_build_reference_canvas_centers_reference_on_neutral_fill():
-    """Corners of the canvas, well away from the centered reference
-    photo, should show the flat neutral-dark fill, not any part of the
-    reference image itself."""
-    import io
-
-    from PIL import Image
-
-    result_bytes = app.build_reference_canvas(_photo_bytes((100, 100)), (1024, 1024))
-    out = Image.open(io.BytesIO(result_bytes)).convert("RGB")
-    corner_pixel = out.getpixel((2, 2))
-    assert corner_pixel == (24, 24, 26)
-
-
-def test_build_reference_canvas_action_and_product_sizes_match_variant_constants():
-    """Confirms _VARIANT_CANVAS_SIZES' own pixel budgets (the module's
-    "specific aspect ratio" answer -- 16:9 action, 1:1 product) actually
-    round-trip through build_reference_canvas correctly."""
-    import io
-
-    from PIL import Image
-
-    action_bytes = app.build_reference_canvas(_photo_bytes((300, 300)), app._VARIANT_CANVAS_SIZES["action_shot"])
-    product_bytes = app.build_reference_canvas(_photo_bytes((300, 300)), app._VARIANT_CANVAS_SIZES["product_shot"])
-    assert Image.open(io.BytesIO(action_bytes)).size == (1536, 864)
-    assert Image.open(io.BytesIO(product_bytes)).size == (1024, 1024)
-
-
-# --- build_image_prompts: pure, no DB, no network ---
-
-def test_build_image_prompts_uses_visual_theme_when_present():
+def test_resolve_visual_context_uses_visual_theme_when_present():
     """visual_theme (the article-generation model's own name/branding-
     derived scene concept -- Al's explicit "background driven by the
     ball's name" ask) takes priority over performance_summary/hook when
     present."""
     article = dict(_SAMPLE_ARTICLE, visual_theme="A post-apocalyptic nuclear-wasteland backdrop.")
-    prompts = app.build_image_prompts({"color": "Blue/Black"}, article)
-    assert "A post-apocalyptic nuclear-wasteland backdrop." in prompts["action_shot"]
-    assert "A post-apocalyptic nuclear-wasteland backdrop." in prompts["product_shot"]
-    # performance_summary must NOT also leak in when visual_theme is present.
-    assert "Reads early and hooks hard off the friction." not in prompts["action_shot"]
+    assert app._resolve_visual_context(article) == "A post-apocalyptic nuclear-wasteland backdrop."
 
 
-def test_build_image_prompts_falls_back_to_performance_summary_when_no_visual_theme():
+def test_resolve_visual_context_falls_back_to_performance_summary_when_no_visual_theme():
     article = dict(_SAMPLE_ARTICLE, visual_theme="")
-    prompts = app.build_image_prompts({"color": "Blue/Black"}, article)
-    assert "Reads early and hooks hard off the friction." in prompts["action_shot"]
+    assert app._resolve_visual_context(article) == "Reads early and hooks hard off the friction."
 
 
-def test_build_image_prompts_falls_back_to_hook_when_no_theme_or_summary():
+def test_resolve_visual_context_falls_back_to_hook_when_no_theme_or_summary():
     article = dict(_VALID_ARTICLE_JSON, visual_theme="", performance_summary="", hook="A late-night league anecdote.")
-    prompts = app.build_image_prompts({"color": "Red"}, article)
-    assert "A late-night league anecdote." in prompts["action_shot"]
+    assert app._resolve_visual_context(article) == "A late-night league anecdote."
 
 
-def test_build_image_prompts_positively_describes_the_ball():
-    """Unlike v2's build_background_prompts, these prompts DO describe
-    the ball itself -- this is img2img conditioning on the real
-    reference photo, not a cutout composited in afterward, so the model
-    needs to be told what's already there."""
-    prompts = app.build_image_prompts({"color": "Blue/Black"}, _SAMPLE_ARTICLE)
-    assert "Blue/Black bowling ball" in prompts["action_shot"]
-    assert "Blue/Black bowling ball" in prompts["product_shot"]
+def test_resolve_visual_context_caps_at_300_chars():
+    article = dict(_VALID_ARTICLE_JSON, visual_theme="x" * 500)
+    assert len(app._resolve_visual_context(article)) == 300
 
 
-def test_build_image_prompts_two_distinct_scenes():
-    prompts = app.build_image_prompts({"color": "Purple"}, _SAMPLE_ARTICLE)
-    assert "action" in prompts["action_shot"].lower() or "lane" in prompts["action_shot"].lower()
-    assert "studio product photograph" in prompts["product_shot"]
-    assert prompts["action_shot"] != prompts["product_shot"]
+def test_resolve_visual_context_empty_when_nothing_available():
+    article = dict(_VALID_ARTICLE_JSON, visual_theme="", performance_summary="", hook="")
+    assert app._resolve_visual_context(article) == ""
 
 
-# --- call_bedrock_for_image: image-to-image request/response shape.
-# Reuses the same InvokeModel-shaped fake client / {images, finish_reasons,
-# seeds} response shape as _FakeBedrockClient's own Stability-wire-format
+# --- call_bedrock_remove_background / call_bedrock_generate_background:
+# request/response shapes for the two Bedrock-adjacent calls the ONE
+# Stability/composite candidate per shot uses (revived in v4 -- see this
+# module's own docstring for the full v1-v4 history). Both InvokeModel-
+# shaped clients below share the same {images, finish_reasons, seeds}
+# response shape as _FakeBedrockClient's own Stability-wire-format
 # precedent. ---
 
 class _FakeImageBedrockClient:
@@ -942,55 +964,347 @@ class _FakeImageBedrockClient:
         return {"body": _FakeBedrockBody(self.response_payload)}
 
 
-def test_call_bedrock_for_image_sends_image_to_image_request_shape():
+def test_call_bedrock_remove_background_sends_correct_request_shape():
     import base64
 
-    fake_png = base64.b64encode(b"fake-generated-bytes").decode("ascii")
+    fake_png = base64.b64encode(b"fake-cutout-bytes").decode("ascii")
     client = _FakeImageBedrockClient({"images": [fake_png], "finish_reasons": [None], "seeds": [1]})
 
-    result = app.call_bedrock_for_image(client, "stability.sd3-5-large-v1:0", "an action shot", "ref-b64")
+    result = app.call_bedrock_remove_background(
+        client, "us.stability.stable-image-remove-background-v1:0", "ref-b64",
+    )
 
-    assert result == b"fake-generated-bytes"
+    assert result == b"fake-cutout-bytes"
     sent_body = client.calls[0]["body"]
-    assert sent_body["mode"] == "image-to-image"
     assert sent_body["image"] == "ref-b64"
-    assert sent_body["prompt"] == "an action shot"
-    assert sent_body["strength"] == 0.65
-    assert sent_body["negative_prompt"]  # non-empty
-    # aspect_ratio is text-to-image-only on this model -- silently
-    # ignored in image-to-image mode, so it must never be sent here (the
-    # aspect ratio instead comes from the shape of `image` itself, via
-    # build_reference_canvas).
-    assert "aspect_ratio" not in sent_body
+    assert sent_body["output_format"] == "png"
+    # Remove Background takes only image (+ optional output_format) -- no
+    # prompt/mode/strength at all, unlike a diffusion call.
+    assert "prompt" not in sent_body
+    assert "mode" not in sent_body
 
 
-def test_call_bedrock_for_image_honors_custom_strength():
+def test_call_bedrock_remove_background_raises_on_non_null_finish_reason():
+    client = _FakeImageBedrockClient({"finish_reasons": ["Filter reason: input image"]})
+    try:
+        app.call_bedrock_remove_background(client, "model-id", "ref-b64")
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "Filter reason: input image" in str(exc)
+
+
+def test_call_bedrock_remove_background_raises_on_empty_images_list():
+    client = _FakeImageBedrockClient({"images": [], "finish_reasons": [None]})
+    try:
+        app.call_bedrock_remove_background(client, "model-id", "ref-b64")
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "no images" in str(exc)
+
+
+# --- build_background_prompts: pure, no DB, no network ---
+
+def test_build_background_prompts_include_no_ball_negative_instruction():
+    prompts = app.build_background_prompts({"color": "Blue/Black"}, _SAMPLE_ARTICLE)
+    assert "no bowling ball" in prompts["action_shot"]
+    assert "no bowling ball" in prompts["product_shot"]
+
+
+def test_build_background_prompts_never_positively_describe_the_ball():
+    """Al: "The ball needs to be mostly untouched." The ball is
+    composited in afterward from the real, untouched cutout (see
+    composite_ball_on_background), never generated, so describing one in
+    this prompt would risk the model painting a second, different-
+    looking ball into the scene."""
+    prompts = app.build_background_prompts({"color": "Blue/Black"}, _SAMPLE_ARTICLE)
+    assert "Blue/Black bowling ball" not in prompts["action_shot"]
+    assert "Blue/Black bowling ball" not in prompts["product_shot"]
+
+
+def test_build_background_prompts_uses_visual_theme_via_resolve_visual_context():
+    article = dict(_SAMPLE_ARTICLE, visual_theme="A post-apocalyptic nuclear-wasteland backdrop.")
+    prompts = app.build_background_prompts({"color": "Blue/Black"}, article)
+    assert "A post-apocalyptic nuclear-wasteland backdrop." in prompts["action_shot"]
+    assert "Reads early and hooks hard off the friction." not in prompts["action_shot"]
+
+
+def test_build_background_prompts_falls_back_to_hook_when_no_theme_or_summary():
+    article = dict(_VALID_ARTICLE_JSON, visual_theme="", performance_summary="", hook="A late-night league anecdote.")
+    prompts = app.build_background_prompts({"color": "Red"}, article)
+    assert "A late-night league anecdote." in prompts["action_shot"]
+
+
+def test_build_background_prompts_two_distinct_scenes():
+    prompts = app.build_background_prompts({"color": "Purple"}, _SAMPLE_ARTICLE)
+    assert "bowling alley lane" in prompts["action_shot"]
+    assert "studio product-photography backdrop" in prompts["product_shot"]
+    assert prompts["action_shot"] != prompts["product_shot"]
+
+
+def test_call_bedrock_generate_background_sends_text_to_image_request_shape():
     import base64
 
-    fake_png = base64.b64encode(b"fake-generated-bytes").decode("ascii")
+    fake_png = base64.b64encode(b"fake-background-bytes").decode("ascii")
+    client = _FakeImageBedrockClient({"images": [fake_png], "finish_reasons": [None], "seeds": [1]})
+
+    result = app.call_bedrock_generate_background(client, "stability.sd3-5-large-v1:0", "an empty lane", "16:9")
+
+    assert result == b"fake-background-bytes"
+    sent_body = client.calls[0]["body"]
+    assert sent_body["mode"] == "text-to-image"
+    assert sent_body["aspect_ratio"] == "16:9"
+    assert sent_body["prompt"] == "an empty lane"
+    assert sent_body["negative_prompt"]  # non-empty, keeps text/watermarks/the ball itself out
+    # No reference-image conditioning at all -- plain text-to-image.
+    assert "image" not in sent_body
+    assert "strength" not in sent_body
+    # No seed argument supplied -> not sent at all (Stability defaults to
+    # a random seed when omitted).
+    assert "seed" not in sent_body
+
+
+def test_call_bedrock_generate_background_sends_seed_when_supplied():
+    """v4 adds an optional seed param (recorded on the resulting
+    candidate row, see 026_product_article_image_candidates.sql's own
+    `seed` column comment) -- confirms it's actually threaded into the
+    request body when truthy, not just accepted and dropped."""
+    import base64
+
+    fake_png = base64.b64encode(b"fake-background-bytes").decode("ascii")
     client = _FakeImageBedrockClient({"images": [fake_png], "finish_reasons": [None]})
 
-    app.call_bedrock_for_image(client, "model-id", "prompt", "ref-b64", strength=0.4)
+    app.call_bedrock_generate_background(client, "model-id", "prompt", "1:1", seed=12345)
 
-    assert client.calls[0]["body"]["strength"] == 0.4
+    assert client.calls[0]["body"]["seed"] == 12345
 
 
-def test_call_bedrock_for_image_raises_on_non_null_finish_reason():
+def test_call_bedrock_generate_background_raises_on_non_null_finish_reason():
     client = _FakeImageBedrockClient({"finish_reasons": ["Filter reason: prompt"]})
     try:
-        app.call_bedrock_for_image(client, "model-id", "bad prompt", "ref-b64")
+        app.call_bedrock_generate_background(client, "model-id", "bad prompt", "1:1")
         assert False, "expected RuntimeError"
     except RuntimeError as exc:
         assert "Filter reason: prompt" in str(exc)
 
 
-def test_call_bedrock_for_image_raises_on_empty_images_list():
+def test_call_bedrock_generate_background_raises_on_empty_images_list():
     client = _FakeImageBedrockClient({"images": [], "finish_reasons": [None]})
     try:
-        app.call_bedrock_for_image(client, "model-id", "prompt", "ref-b64")
+        app.call_bedrock_generate_background(client, "model-id", "prompt", "1:1")
         assert False, "expected RuntimeError"
     except RuntimeError as exc:
         assert "no images" in str(exc)
+
+
+# --- composite_ball_on_background: pure Pillow compositing, no Bedrock/DB.
+# This is the function that actually satisfies Al's "mostly untouched"
+# ask for the Stability candidate -- these tests confirm the cutout's own
+# pixels survive compositing byte-for-byte, not just that the function
+# runs without error. ---
+
+def _png_bytes(image) -> bytes:
+    import io
+
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_composite_ball_on_background_preserves_cutout_pixels_untouched():
+    import io
+
+    from PIL import Image, ImageDraw
+
+    cutout = Image.new("RGBA", (400, 400), (0, 0, 0, 0))
+    ImageDraw.Draw(cutout).ellipse([100, 100, 300, 300], fill=(255, 0, 0, 255))
+    background = Image.new("RGBA", (1536, 864), (0, 0, 255, 255))
+
+    result_bytes = app.composite_ball_on_background(_png_bytes(cutout), _png_bytes(background))
+
+    out = Image.open(io.BytesIO(result_bytes)).convert("RGB")
+    w, h = out.size
+    center_pixel = out.getpixel((w // 2, int(h * 0.58) - 1))
+    assert center_pixel == (255, 0, 0)
+
+
+def test_composite_ball_on_background_output_matches_background_size_and_is_flattened():
+    import io
+
+    from PIL import Image, ImageDraw
+
+    cutout = Image.new("RGBA", (200, 200), (0, 0, 0, 0))
+    ImageDraw.Draw(cutout).ellipse([50, 50, 150, 150], fill=(10, 200, 30, 255))
+    background = Image.new("RGBA", (1024, 1024), (50, 50, 50, 255))
+
+    result_bytes = app.composite_ball_on_background(_png_bytes(cutout), _png_bytes(background))
+
+    out = Image.open(io.BytesIO(result_bytes))
+    assert out.size == (1024, 1024)
+    assert out.mode == "RGB"  # flattened for storage -- no alpha channel in the final stored PNG
+
+
+def test_composite_ball_on_background_leaves_background_untouched_away_from_the_ball():
+    import io
+
+    from PIL import Image, ImageDraw
+
+    cutout = Image.new("RGBA", (200, 200), (0, 0, 0, 0))
+    ImageDraw.Draw(cutout).ellipse([80, 80, 120, 120], fill=(10, 200, 30, 255))
+    background = Image.new("RGBA", (800, 800), (5, 5, 200, 255))
+
+    result_bytes = app.composite_ball_on_background(_png_bytes(cutout), _png_bytes(background))
+
+    out = Image.open(io.BytesIO(result_bytes)).convert("RGB")
+    corner_pixel = out.getpixel((2, 2))
+    assert corner_pixel == (5, 5, 200)
+
+
+# --- build_gemini_scene_prompt / call_gemini_for_image: the second
+# candidate SOURCE (Google's own API, not Bedrock -- see this module's
+# own docstring for why). ---
+
+def test_build_gemini_scene_prompt_uses_visual_theme_via_resolve_visual_context():
+    article = dict(_SAMPLE_ARTICLE, visual_theme="A Fallout-style post-apocalyptic wasteland.")
+    prompt = app.build_gemini_scene_prompt({"color": "Blue"}, article, "action_shot")
+    assert "A Fallout-style post-apocalyptic wasteland" in prompt
+
+
+def test_build_gemini_scene_prompt_falls_back_to_generic_scene_when_no_context():
+    article = dict(_VALID_ARTICLE_JSON, visual_theme="", performance_summary="", hook="")
+    prompt = app.build_gemini_scene_prompt({"color": "Blue"}, article, "product_shot")
+    assert "elevated, premium studio scene" in prompt
+
+
+def test_build_gemini_scene_prompt_instructs_keeping_the_ball_unchanged():
+    """The core "mostly untouched" requirement, satisfied a different way
+    than Stability's cutout+composite mechanism -- Gemini gets no cutout
+    at all, so the prompt itself has to carry the instruction."""
+    prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "action_shot")
+    assert "completely unchanged" in prompt
+    assert "logo/text exactly as shown in the reference image" in prompt
+
+
+def test_build_gemini_scene_prompt_distinguishes_action_from_product_framing():
+    action_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "action_shot")
+    product_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "product_shot")
+    assert "action/lifestyle photograph" in action_prompt
+    assert "not in motion" in product_prompt
+    assert action_prompt != product_prompt
+
+
+class _FakeGeminiResponse:
+    def __init__(self, payload: dict, status_ok: bool = True):
+        self._payload = payload
+        self._status_ok = status_ok
+
+    def raise_for_status(self):
+        if not self._status_ok:
+            import requests
+
+            raise requests.exceptions.HTTPError("400")
+
+    def json(self):
+        return self._payload
+
+
+def test_call_gemini_for_image_sends_correct_request_shape_and_auth_header():
+    """Confirms the request is a direct call to Google's own REST API
+    (x-goog-api-key header, NOT any AWS/Bedrock mechanism -- see this
+    module's own docstring for why) with the reference photo attached as
+    inline image data alongside the text prompt."""
+    import base64
+
+    import requests
+
+    calls = []
+    fake_image_bytes = b"fake-gemini-output-bytes"
+    payload = {
+        "candidates": [{
+            "content": {"parts": [{"inlineData": {
+                "mimeType": "image/png", "data": base64.b64encode(fake_image_bytes).decode("ascii"),
+            }}]},
+        }],
+    }
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        calls.append({"url": url, "headers": headers, "json": json, "timeout": timeout})
+        return _FakeGeminiResponse(payload)
+
+    original_post = requests.post
+    requests.post = _fake_post
+    try:
+        result = app.call_gemini_for_image("api-key-123", "gemini-2.5-flash-image", "a scene", "ref-b64", "16:9")
+    finally:
+        requests.post = original_post
+
+    assert result == fake_image_bytes
+    call = calls[0]
+    assert call["url"] == f"{app.GEMINI_API_BASE_URL}/gemini-2.5-flash-image:generateContent"
+    assert call["headers"]["x-goog-api-key"] == "api-key-123"
+    parts = call["json"]["contents"][0]["parts"]
+    assert parts[0]["text"] == "a scene"
+    assert parts[1]["inline_data"] == {"mime_type": "image/png", "data": "ref-b64"}
+    assert call["json"]["generationConfig"]["imageConfig"]["aspectRatio"] == "16:9"
+
+
+def test_call_gemini_for_image_handles_snake_case_inline_data_field():
+    """Defends against BOTH inlineData (REST JSON casing) and inline_data
+    (Python SDK object-model casing) in the response -- see call_gemini_
+    for_image's own docstring on why published examples were inconsistent
+    about which one is authoritative."""
+    import base64
+
+    import requests
+
+    fake_image_bytes = b"snake-case-bytes"
+    payload = {
+        "candidates": [{
+            "content": {"parts": [{"inline_data": {
+                "mime_type": "image/png", "data": base64.b64encode(fake_image_bytes).decode("ascii"),
+            }}]},
+        }],
+    }
+
+    original_post = requests.post
+    requests.post = lambda url, headers=None, json=None, timeout=None: _FakeGeminiResponse(payload)
+    try:
+        result = app.call_gemini_for_image("api-key", "model-id", "prompt", "ref-b64", "1:1")
+    finally:
+        requests.post = original_post
+
+    assert result == fake_image_bytes
+
+
+def test_call_gemini_for_image_raises_when_no_image_data_in_response():
+    import requests
+
+    payload = {"candidates": [{"content": {"parts": [{"text": "I can't do that."}]}, "finishReason": "SAFETY"}]}
+
+    original_post = requests.post
+    requests.post = lambda url, headers=None, json=None, timeout=None: _FakeGeminiResponse(payload)
+    try:
+        try:
+            app.call_gemini_for_image("api-key", "model-id", "prompt", "ref-b64", "1:1")
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert "SAFETY" in str(exc)
+    finally:
+        requests.post = original_post
+
+
+def test_call_gemini_for_image_raises_when_no_candidates_in_response():
+    import requests
+
+    original_post = requests.post
+    requests.post = lambda url, headers=None, json=None, timeout=None: _FakeGeminiResponse({"candidates": []})
+    try:
+        try:
+            app.call_gemini_for_image("api-key", "model-id", "prompt", "ref-b64", "1:1")
+            assert False, "expected RuntimeError"
+        except RuntimeError as exc:
+            assert "no candidates" in str(exc)
+    finally:
+        requests.post = original_post
 
 
 # --- store_article_image ---
@@ -1004,25 +1318,33 @@ class _FakeS3Client:
 
 
 def test_store_article_image_builds_article_images_prefix_key_and_url():
+    """`name` is the full per-candidate filename stem as of v4 (e.g.
+    "action_shot_gemini_1"), not the bare variant -- v4 stores multiple
+    candidates per variant (026_product_article_image_candidates.sql), so
+    the un-suffixed "{variant}.png" key v1-v3 used would collide across
+    candidates."""
     s3 = _FakeS3Client()
-    result = app.store_article_image(s3, "my-bucket", "prod-1", "action_shot", b"pngbytes")
+    result = app.store_article_image(s3, "my-bucket", "prod-1", "action_shot_gemini_1", b"pngbytes")
 
     assert result == {
-        "key": "article-images/prod-1/action_shot.png",
-        "url": "https://my-bucket.s3.amazonaws.com/article-images/prod-1/action_shot.png",
+        "key": "article-images/prod-1/action_shot_gemini_1.png",
+        "url": "https://my-bucket.s3.amazonaws.com/article-images/prod-1/action_shot_gemini_1.png",
     }
     assert s3.put_calls == [{
-        "Bucket": "my-bucket", "Key": "article-images/prod-1/action_shot.png",
+        "Bucket": "my-bucket", "Key": "article-images/prod-1/action_shot_gemini_1.png",
         "Body": b"pngbytes", "ContentType": "image/png",
     }]
 
 
-# --- generate_article_images: orchestration, best-effort/non-fatal ---
+# --- generate_article_image_candidates: orchestration, best-effort/
+# non-fatal -- v4's core new function, producing up to 3 candidates per
+# shot (2 Gemini + 1 Stability composite, see NUM_GEMINI_CANDIDATES_PER_
+# VARIANT/NUM_STABILITY_CANDIDATES_PER_VARIANT). ---
 
 def _fake_reference_photo_response():
     """A real tiny JPEG so the PIL round-trip inside generate_article_
-    images succeeds (_reference_image_to_base64_png needs PIL to actually
-    open the bytes, not arbitrary data)."""
+    image_candidates succeeds (_reference_image_to_base64_png needs PIL
+    to actually open the bytes, not arbitrary data)."""
     import io
 
     from PIL import Image
@@ -1039,9 +1361,27 @@ def _fake_reference_photo_response():
     return _FakeRealResponse()
 
 
-def _fake_generated_png_b64() -> str:
-    """A real tiny opaque PNG standing in for what call_bedrock_for_image
-    would actually return."""
+def _fake_cutout_png_b64() -> str:
+    """A real tiny RGBA PNG (opaque red circle on a transparent
+    background) standing in for what call_bedrock_remove_background
+    would actually return -- used as the fake Remove Background client's
+    response payload so composite_ball_on_background has real image
+    bytes to work with."""
+    import base64
+    import io
+
+    from PIL import Image, ImageDraw
+
+    cutout = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
+    ImageDraw.Draw(cutout).ellipse([20, 20, 80, 80], fill=(255, 0, 0, 255))
+    buf = io.BytesIO()
+    cutout.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _fake_background_png_b64() -> str:
+    """A real tiny opaque PNG standing in for what call_bedrock_generate_
+    background would actually return."""
     import base64
     import io
 
@@ -1052,30 +1392,54 @@ def _fake_generated_png_b64() -> str:
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
-def test_generate_article_images_returns_empty_when_no_reference_image():
+def _fake_gemini_post(image_bytes_by_call=None, default_bytes=b"fake-gemini-bytes"):
+    """A fake requests.post() returning a successful Gemini-shaped
+    response -- call_gemini_for_image's own request/response SHAPE is
+    tested in isolation above; this only cares about generate_article_
+    image_candidates' own orchestration (how many Gemini calls happen per
+    variant, whether failures are isolated, etc), so the returned bytes
+    don't need to be a real image (Gemini candidates are stored straight
+    to S3 via store_article_image, never opened with PIL, unlike the
+    Stability/composite path). image_bytes_by_call, if given, is indexed
+    by call count (0-based) so a test can make the SECOND call (the
+    "alternate composition" one) return different bytes than the first;
+    falls back to default_bytes past the end of that list."""
+    import base64
+
+    calls = []
+
+    def _fake_post(url, headers=None, json=None, timeout=None):
+        i = len(calls)
+        calls.append({"url": url, "headers": headers, "json": json})
+        image_bytes = (image_bytes_by_call[i] if image_bytes_by_call and i < len(image_bytes_by_call)
+                       else default_bytes)
+        data = base64.b64encode(image_bytes).decode("ascii")
+        return _FakeGeminiResponse({"candidates": [{"content": {"parts": [{"inlineData": {"data": data}}]}}]})
+
+    return _fake_post, calls
+
+
+def test_generate_article_image_candidates_returns_empty_when_no_reference_image():
     conn = _FakeConnection(reference_image_url=None)
-    result = app.generate_article_images(
-        conn, bedrock_image_client=None, s3_client=None,
-        image_model_id="model-id", image_bucket="bucket",
-        product={"id": "prod-1", "color": "Blue"}, article=_SAMPLE_ARTICLE,
+    result = app.generate_article_image_candidates(
+        conn, bedrock_image_client=None, bedrock_removebg_client=None, gemini_api_key="key", s3_client=None,
+        image_model_id="model-id", removebg_model_id="removebg-model-id", gemini_model_id="gemini-model-id",
+        image_bucket="bucket", product={"id": "prod-1", "color": "Blue"}, article=_SAMPLE_ARTICLE,
     )
     assert result == {}
 
 
-def test_generate_article_images_returns_empty_when_reference_fetch_fails():
+def test_generate_article_image_candidates_returns_empty_when_reference_fetch_fails():
     import requests
 
     conn = _FakeConnection(reference_image_url="https://example.com/ball.jpg")
     original_get = requests.get
-
-    def _raise(*args, **kwargs):
-        raise requests.exceptions.ConnectionError("network down")
-
-    requests.get = _raise
+    requests.get = lambda *a, **k: (_ for _ in ()).throw(requests.exceptions.ConnectionError("network down"))
     try:
-        result = app.generate_article_images(
-            conn, bedrock_image_client=object(), s3_client=object(),
-            image_model_id="model-id", image_bucket="bucket",
+        result = app.generate_article_image_candidates(
+            conn, bedrock_image_client=object(), bedrock_removebg_client=object(), gemini_api_key="key",
+            s3_client=object(), image_model_id="model-id", removebg_model_id="removebg-model-id",
+            gemini_model_id="gemini-model-id", image_bucket="bucket",
             product={"id": "prod-1", "color": "Blue"}, article=_SAMPLE_ARTICLE,
         )
     finally:
@@ -1084,84 +1448,205 @@ def test_generate_article_images_returns_empty_when_reference_fetch_fails():
     assert result == {}
 
 
-def test_generate_article_images_both_succeed():
+def test_generate_article_image_candidates_all_three_succeed_per_variant():
+    """The full happy path: 2 Gemini candidates + 1 Stability candidate
+    per shot, Gemini first then Stability (see this function's own
+    docstring on ordering), 3 candidates x 2 variants = 6 total."""
     import requests
 
     conn = _FakeConnection(reference_image_url="https://example.com/ball.jpg")
-    image_client = _FakeImageBedrockClient({"images": [_fake_generated_png_b64()], "finish_reasons": [None]})
+    removebg_client = _FakeImageBedrockClient({"images": [_fake_cutout_png_b64()], "finish_reasons": [None]})
+    bg_client = _FakeImageBedrockClient({"images": [_fake_background_png_b64()], "finish_reasons": [None]})
+    fake_post, gemini_calls = _fake_gemini_post()
     s3 = _FakeS3Client()
 
     original_get = requests.get
+    original_post = requests.post
     requests.get = lambda url, timeout=None: _fake_reference_photo_response()
+    requests.post = fake_post
     try:
-        result = app.generate_article_images(
-            conn, bedrock_image_client=image_client, s3_client=s3,
-            image_model_id="model-id", image_bucket="bucket",
+        result = app.generate_article_image_candidates(
+            conn, bedrock_image_client=bg_client, bedrock_removebg_client=removebg_client,
+            gemini_api_key="api-key", s3_client=s3, image_model_id="model-id",
+            removebg_model_id="removebg-model-id", gemini_model_id="gemini-model-id", image_bucket="bucket",
             product={"id": "prod-1", "color": "Blue"}, article=_SAMPLE_ARTICLE,
         )
     finally:
         requests.get = original_get
+        requests.post = original_post
 
-    assert result == {
-        "action_shot_image_key": "article-images/prod-1/action_shot.png",
-        "action_shot_image_url": "https://bucket.s3.amazonaws.com/article-images/prod-1/action_shot.png",
-        "product_shot_image_key": "article-images/prod-1/product_shot.png",
-        "product_shot_image_url": "https://bucket.s3.amazonaws.com/article-images/prod-1/product_shot.png",
-    }
-    # One image-to-image call per variant -- no separate remove-background
-    # call at all (v2's THREE Bedrock calls per product are gone as of v3).
-    assert len(image_client.calls) == 2
-    # No aspect_ratio param sent (text-to-image-only) -- the canvas shape
-    # (from build_reference_canvas) is what determines the output ratio.
-    assert all("aspect_ratio" not in c["body"] for c in image_client.calls)
-    assert len(s3.put_calls) == 2
+    assert set(result.keys()) == {"action_shot", "product_shot"}
+    for variant in ("action_shot", "product_shot"):
+        candidates = result[variant]
+        assert len(candidates) == 3
+        # Gemini candidates first, then Stability -- generate_article_for_
+        # product treats index 0 as the auto-selected default.
+        assert candidates[0]["model_id"] == "gemini-model-id"
+        assert candidates[1]["model_id"] == "gemini-model-id"
+        assert candidates[2]["model_id"] == "model-id"
+        assert candidates[0]["seed"] is None
+        assert candidates[1]["seed"] is None
+        assert isinstance(candidates[2]["seed"], int)
+        assert candidates[0]["key"] == f"article-images/prod-1/{variant}_gemini_1.png"
+        assert candidates[1]["key"] == f"article-images/prod-1/{variant}_gemini_2.png"
+        assert candidates[2]["key"] == f"article-images/prod-1/{variant}_stability.png"
+    # Remove Background is only called ONCE -- the cutout is shared across
+    # both variants (same source photo).
+    assert len(removebg_client.calls) == 1
+    # Stability background generation runs once per variant, at that
+    # variant's own aspect ratio.
+    assert len(bg_client.calls) == 2
+    aspect_ratios = {c["body"]["aspect_ratio"] for c in bg_client.calls}
+    assert aspect_ratios == {"16:9", "1:1"}
+    # 2 Gemini calls per variant x 2 variants = 4.
+    assert len(gemini_calls) == 4
+    # The SECOND Gemini call per variant gets the "alternate composition"
+    # suffix, the first doesn't.
+    first_call_prompts = [c["json"]["contents"][0]["parts"][0]["text"] for c in gemini_calls]
+    assert sum("alternate composition" in p for p in first_call_prompts) == 2
+    assert sum("alternate composition" not in p for p in first_call_prompts) == 2
+    # 4 Gemini + 2 Stability = 6 S3 writes total.
+    assert len(s3.put_calls) == 6
 
 
-def test_generate_article_images_one_variant_fails_other_still_succeeds():
-    """Each variant runs in its own try/except -- a failure generating
-    one image must not take the other, still-good image down with it."""
+def test_generate_article_image_candidates_skips_stability_when_remove_background_fails():
+    """No cutout, nothing to composite into the Stability candidate for
+    EITHER variant -- but Gemini is entirely unaffected, since it never
+    depended on the cutout in the first place (see this function's own
+    docstring)."""
     import requests
 
     conn = _FakeConnection(reference_image_url="https://example.com/ball.jpg")
 
-    class _FlakyImageClient:
+    class _FailingRemoveBgClient:
+        def invoke_model(self, **kwargs):
+            raise RuntimeError("Bedrock throttled")
+
+    bg_client = _FakeImageBedrockClient({"images": [_fake_background_png_b64()], "finish_reasons": [None]})
+    fake_post, gemini_calls = _fake_gemini_post()
+    s3 = _FakeS3Client()
+
+    original_get = requests.get
+    original_post = requests.post
+    requests.get = lambda url, timeout=None: _fake_reference_photo_response()
+    requests.post = fake_post
+    try:
+        result = app.generate_article_image_candidates(
+            conn, bedrock_image_client=bg_client, bedrock_removebg_client=_FailingRemoveBgClient(),
+            gemini_api_key="api-key", s3_client=s3, image_model_id="model-id",
+            removebg_model_id="removebg-model-id", gemini_model_id="gemini-model-id", image_bucket="bucket",
+            product={"id": "prod-1", "color": "Blue"}, article=_SAMPLE_ARTICLE,
+        )
+    finally:
+        requests.get = original_get
+        requests.post = original_post
+
+    for variant in ("action_shot", "product_shot"):
+        assert len(result[variant]) == 2
+        assert all(c["model_id"] == "gemini-model-id" for c in result[variant])
+    assert len(bg_client.calls) == 0  # never even attempted without a cutout
+    assert len(gemini_calls) == 4
+
+
+def test_generate_article_image_candidates_one_gemini_call_fails_others_still_succeed():
+    """Each Gemini call is independently try/excepted -- a failure on one
+    (e.g. the SECOND, "alternate composition" call for a given variant)
+    must not take down the first, still-good candidate for that same
+    variant, nor affect the other variant's calls at all."""
+    import requests
+
+    conn = _FakeConnection(reference_image_url="https://example.com/ball.jpg")
+
+    class _FlakyGeminiPost:
         def __init__(self):
             self.calls = []
 
-        def invoke_model(self, modelId, contentType, accept, body):
-            parsed = json.loads(body)
-            self.calls.append({"modelId": modelId, "body": parsed})
-            if len(self.calls) == 1:
-                raise RuntimeError("Bedrock throttled")
-            return {"body": _FakeBedrockBody({"images": [_fake_generated_png_b64()], "finish_reasons": [None]})}
+        def __call__(self, url, headers=None, json=None, timeout=None):
+            import base64
 
-    image_client = _FlakyImageClient()
+            self.calls.append({"json": json})
+            if len(self.calls) == 2:  # the action_shot's second ("alternate composition") call
+                raise RuntimeError("Gemini rate limited")
+            data = base64.b64encode(b"gemini-bytes").decode("ascii")
+            return _FakeGeminiResponse({"candidates": [{"content": {"parts": [{"inlineData": {"data": data}}]}}]})
+
+    flaky_post = _FlakyGeminiPost()
     s3 = _FakeS3Client()
 
     original_get = requests.get
+    original_post = requests.post
     requests.get = lambda url, timeout=None: _fake_reference_photo_response()
+    requests.post = flaky_post
     try:
-        result = app.generate_article_images(
-            conn, bedrock_image_client=image_client, s3_client=s3,
-            image_model_id="model-id", image_bucket="bucket",
+        result = app.generate_article_image_candidates(
+            conn, bedrock_image_client=object(), bedrock_removebg_client=_RaisingRemoveBgClient(),
+            gemini_api_key="api-key", s3_client=s3, image_model_id="model-id",
+            removebg_model_id="removebg-model-id", gemini_model_id="gemini-model-id", image_bucket="bucket",
             product={"id": "prod-1", "color": "Blue"}, article=_SAMPLE_ARTICLE,
         )
     finally:
         requests.get = original_get
+        requests.post = original_post
 
-    # action_shot (generated first) failed; product_shot (generated
-    # second) succeeded -- only the successful variant's keys are present.
-    assert result == {
-        "product_shot_image_key": "article-images/prod-1/product_shot.png",
-        "product_shot_image_url": "https://bucket.s3.amazonaws.com/article-images/prod-1/product_shot.png",
+    # action_shot's second Gemini call failed -- only 1 candidate for it.
+    assert len(result["action_shot"]) == 1
+    # product_shot's own two calls were unaffected.
+    assert len(result["product_shot"]) == 2
+    assert len(flaky_post.calls) == 4
+
+
+class _RaisingRemoveBgClient:
+    """Shared no-cutout stand-in for tests that don't care about the
+    Stability path at all -- always fails so bedrock_image_client never
+    actually needs to be a working fake."""
+
+    def invoke_model(self, **kwargs):
+        raise RuntimeError("no cutout for this test")
+
+
+# --- store_article_image_candidates ---
+
+def test_store_article_image_candidates_inserts_one_row_per_candidate():
+    conn = _FakeConnection()
+    candidates_by_variant = {
+        "action_shot": [
+            {"key": "article-images/p1/action_shot_gemini_1.png", "url": "https://b/action_shot_gemini_1.png",
+             "model_id": "gemini-model", "seed": None},
+            {"key": "article-images/p1/action_shot_stability.png", "url": "https://b/action_shot_stability.png",
+             "model_id": "stability-model", "seed": 42},
+        ],
+        "product_shot": [
+            {"key": "article-images/p1/product_shot_gemini_1.png", "url": "https://b/product_shot_gemini_1.png",
+             "model_id": "gemini-model", "seed": None},
+        ],
     }
-    assert len(image_client.calls) == 2
-    assert len(s3.put_calls) == 1
+
+    app.store_article_image_candidates(conn, "article-1", candidates_by_variant)
+
+    assert conn.commits == 1
+    assert len(conn._cursor.candidate_inserts) == 3
+    # Index 0 of EACH variant's own list is marked is_selected=True -- the
+    # same candidate generate_article_for_product mirrors onto product_
+    # articles' own flat image columns (see store_article_image_
+    # candidates' own docstring on why these two must stay in agreement).
+    action_rows = [p for p in conn._cursor.candidate_inserts if p[1] == "action_shot"]
+    product_rows = [p for p in conn._cursor.candidate_inserts if p[1] == "product_shot"]
+    assert sum(1 for p in action_rows if p[6] is True) == 1
+    assert sum(1 for p in product_rows if p[6] is True) == 1
+    selected_action = next(p for p in action_rows if p[6] is True)
+    assert selected_action[3] == "article-images/p1/action_shot_gemini_1.png"
+
+
+def test_store_article_image_candidates_is_a_noop_for_empty_dict():
+    conn = _FakeConnection()
+    app.store_article_image_candidates(conn, "article-1", {})
+    assert conn._cursor.candidate_inserts == []
+    assert conn.commits == 0
 
 
 # --- generate_article_for_product wired with image plumbing ---
 
-def test_generate_article_for_product_wires_images_when_all_four_image_args_supplied():
+def test_generate_article_for_product_wires_images_when_all_eight_image_args_supplied():
     product_row = (
         "prod-1", "Equinox Solid", "Blue", "reactive", "hybrid",
         "R2S Hybrid", True, "500/1000 Abralon",
@@ -1173,28 +1658,34 @@ def test_generate_article_for_product_wires_images_when_all_four_image_args_supp
                             reference_image_url=None, store_article_id="article-1")
     bedrock = _FakeBedrockClient(json.dumps(_VALID_ARTICLE_JSON))
 
-    # reference_image_url=None -> generate_article_images short-circuits to
-    # {} without ever touching bedrock_image_client/s3_client, so passing
-    # simple sentinel objects for those is enough to prove the plumbing
-    # reaches generate_article_images at all (see the "no reference
-    # image" test above for that function's own behavior in isolation).
+    # reference_image_url=None -> generate_article_image_candidates short-
+    # circuits to {} without ever touching bedrock_image_client/bedrock_
+    # removebg_client/s3_client, so passing simple sentinel objects for
+    # those is enough to prove the plumbing reaches generate_article_
+    # image_candidates at all (see that function's own "no reference
+    # image" test above for its behavior in isolation).
     result = app.generate_article_for_product(
         conn, bedrock, "model-id", "prod-1",
-        s3_client=object(), bedrock_image_client=object(),
-        image_model_id="model-id", image_bucket="bucket",
+        s3_client=object(), bedrock_image_client=object(), bedrock_removebg_client=object(),
+        gemini_api_key="api-key", image_model_id="model-id", removebg_model_id="removebg-model-id",
+        gemini_model_id="gemini-model-id", image_bucket="bucket",
     )
 
     assert result["images_generated"] is False
     insert_params = conn._cursor.inserted[0]
     assert insert_params[14:18] == (None, None, None, None)
     assert insert_params[18] is False
+    # candidates_by_variant was {} -- store_article_image_candidates ran
+    # as a no-op, no candidate rows inserted.
+    assert conn._cursor.candidate_inserts == []
 
 
 def test_generate_article_for_product_skips_images_when_any_image_arg_missing():
-    """s3_client/bedrock_image_client/image_model_id/image_bucket must
-    ALL be supplied for the image step to run (see generate_article_for_
-    product's own docstring) -- a partially-configured deployment (e.g.
-    IMAGE_BUCKET unset) should skip images entirely, not half-run."""
+    """s3_client/bedrock_image_client/bedrock_removebg_client/gemini_
+    api_key/image_model_id/removebg_model_id/gemini_model_id/image_bucket
+    must ALL be supplied for the image step to run (see generate_article_
+    for_product's own docstring) -- a partially-configured deployment
+    (e.g. IMAGE_BUCKET unset) should skip images entirely, not half-run."""
     product_row = (
         "prod-1", "Equinox", None, None, None, None, None, None,
         None, None, None, None, "brand-1", "Storm", None, None,
@@ -1205,13 +1696,41 @@ def test_generate_article_for_product_skips_images_when_any_image_arg_missing():
 
     result = app.generate_article_for_product(
         conn, bedrock, "model-id", "prod-1",
-        s3_client=object(), bedrock_image_client=object(),
-        image_model_id="model-id", image_bucket=None,  # missing
+        s3_client=object(), bedrock_image_client=object(), bedrock_removebg_client=object(),
+        gemini_api_key="api-key", image_model_id="model-id", removebg_model_id="removebg-model-id",
+        gemini_model_id="gemini-model-id", image_bucket=None,  # missing
     )
 
     assert result["images_generated"] is False
     # reference_image_url query never even fired -- confirms the whole
     # image branch was skipped, not attempted-and-quietly-swallowed.
+    assert not any(q.startswith("select coalesce(") for q, _ in conn._cursor.executed)
+
+
+def test_generate_article_for_product_skips_images_when_gemini_api_key_missing():
+    """Same as above but specifically the NEW gemini_api_key arg missing
+    -- confirms it's actually part of the all-or-nothing gate, not
+    silently optional/backward-compatible (unlike handler()'s own softer
+    "fetch failed -> None, Gemini candidates just get skipped inside
+    generate_article_image_candidates" posture -- this is the OUTER gate
+    that decides whether to call that function at all)."""
+    product_row = (
+        "prod-1", "Equinox", None, None, None, None, None, None,
+        None, None, None, None, "brand-1", "Storm", None, None,
+    )
+    video_rows = [("vid-1", "Review", "Channel", "Summary", "transcript")]
+    conn = _FakeConnection(product_row=product_row, video_rows=video_rows)
+    bedrock = _FakeBedrockClient(json.dumps(_VALID_ARTICLE_JSON))
+
+    result = app.generate_article_for_product(
+        conn, bedrock, "model-id", "prod-1",
+        s3_client=object(), bedrock_image_client=object(), bedrock_removebg_client=object(),
+        gemini_api_key=None,  # missing
+        image_model_id="model-id", removebg_model_id="removebg-model-id",
+        gemini_model_id="gemini-model-id", image_bucket="bucket",
+    )
+
+    assert result["images_generated"] is False
     assert not any(q.startswith("select coalesce(") for q, _ in conn._cursor.executed)
 
 

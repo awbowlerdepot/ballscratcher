@@ -33,7 +33,7 @@ Any Postgres 13+ instance works (RDS is the obvious choice, but this
 repo doesn't assume it). Note the connection details -- you'll need them
 for step 3's `DbSecretArn` secret and to run migrations directly.
 
-## 2. Run the twenty-four migrations, in order
+## 2. Run the twenty-six migrations, in order
 
 ```bash
 psql "$DATABASE_URL" -f db/migrations/001_init_schema.sql
@@ -60,6 +60,8 @@ psql "$DATABASE_URL" -f db/migrations/021_blocked_video_channels.sql
 psql "$DATABASE_URL" -f db/migrations/022_product_articles.sql
 psql "$DATABASE_URL" -f db/migrations/023_product_article_images.sql
 psql "$DATABASE_URL" -f db/migrations/024_product_article_images_composite_pipeline.sql
+psql "$DATABASE_URL" -f db/migrations/025_product_article_images_theme_driven_pipeline.sql
+psql "$DATABASE_URL" -f db/migrations/026_product_article_image_candidates.sql
 ```
 
 (If you already ran an earlier subset in a prior deploy, just run whatever
@@ -74,9 +76,10 @@ that matters.
 
 ## 3. Create the Secrets Manager secrets
 
-Three possible secrets. The first two are needed for a functioning
-deploy; the third only matters once you're ready to enable BowlerDepot
-reconciliation.
+Five possible secrets. The first two are needed for a functioning
+deploy; the rest only matter once you're ready to enable the specific
+feature each one gates (BowlerDepot reconciliation, video enrichment, or
+v4's Gemini article-image candidates -- see 6t below).
 
 **DB credentials (required):**
 
@@ -147,6 +150,30 @@ from unit math) at exactly 100 searches/day, not adjustable from this
 template. `MAX_SEARCHES_PER_INVOCATION` defaults to 70 (not 90) to leave
 same-day headroom for retries -- see src/video_discovery/app.py's module
 docstring, REAL INCIDENT #3, for the full story of how this was confirmed.
+
+**Gemini API key (optional, only for v4's Gemini 2.5 Flash Image
+candidates in the article-image pipeline, see 6t below -- skip this and
+the article generator still runs fine, it just produces one Stability
+candidate per shot instead of three):**
+
+This one you have to get yourself too, same as the YouTube key above --
+Google AI Studio (https://aistudio.google.com/apikey) -> Create API key.
+A DIFFERENT kind of Google credential from the YouTube Data API v3 key
+above (this is Gemini's own API, billed/quota'd separately) -- don't
+reuse that key here, it won't work.
+
+```bash
+aws secretsmanager create-secret \
+  --name bowling-scraper-gemini-api-key \
+  --secret-string '{"api_key":"<your-gemini-api-key>"}'
+```
+
+Note the returned ARN -- this is `GeminiApiKeySecretArn`. Left unset,
+`generate_article_image_candidates` simply skips the two Gemini
+candidates every run and still produces the one Stability composite
+candidate -- same "not configured -> soft no-op" posture as every other
+optional secret in this section, not a hard failure (see `product_
+article_generator.handler`'s own docstring).
 
 Separately, `video_summarizer` calls Bedrock, and this needs one real,
 confirmed fact accounted for: Claude Haiku 4.5 (the `BedrockModelId`
@@ -7384,6 +7411,240 @@ subscription for Remove Background is no longer needed by this stack at
 all (safe to leave subscribed if you don't want to touch Marketplace
 state, or unsubscribe if you'd rather clean it up -- nothing in this
 codebase calls it anymore either way).
+
+**Mechanism v4 -- multi-candidate picker: revive v2's cutout+composite
+AND add a second, non-Bedrock provider** (migration `026_product_
+article_image_candidates.sql`, a real NEW TABLE this time, not a
+comment-only migration like 024/025): v3 shipped and Al sent back real
+screenshots -- the ball's own surface graphics/logo text came out
+garbled ("Voiid"/"Bowing" instead of the real brand text), and the
+generated backgrounds were poor quality. His verbatim feedback: "looks
+like dropping the cutout was a bad idea. As for the rest it is not at
+all doing what was asked for. The ball needs to be mostly untouched.
+Some style adjustments are fine but that is it. The background couldn't
+be worse. Can we try a few models and then in the admin ui select the
+one that we want to use." That last sentence is the whole feature: not
+just "fix the mechanism," but "generate multiple options and let a human
+pick," a genuinely different shape from every version before it.
+
+Scoped via three rounds of clarifying questions plus two reference images
+Al sent mid-conversation, not guessed at:
+
+1. **Selection UX + candidate mechanism**: Al chose a **per-article
+   candidate picker** in the Articles review tab (not a system-wide
+   default model), and free-text describing exactly what he wanted
+   rather than picking from the offered options -- verbatim: "The ball
+   needs to be masked to get rid of anything that is in the image now,
+   white mostly. Then that needs to be places in a scene based on its
+   name. The fallout is a perfect example of this" -- pointing at the
+   same "Fallout" reference image from the v3 pivot as the quality bar.
+2. **Candidate count + model mix**: **3 candidates per shot, generated
+   automatically every run** (not on-demand), same model varied by seed
+   -- Al's initial answer, before the yeri.ai reveal below changed the
+   MIX of models.
+3. Al then sent a THIRD reference image mid-conversation, from a tool
+   called yeri.ai, built from the prompt "generate a scene depicting a
+   Fallout environment and then place the ball in the reference image
+   into that scene, match the color scheme of the reference image" -- a
+   visibly better result than anything Stability/Bedrock had produced
+   (real ambient lighting/shadow on the ball, no hard-pasted edge).
+   Researched (not assumed) what's actually behind that kind of result:
+   **Google's Gemini 2.5 Flash Image** ("Nano Banana") is documented by
+   Google itself as built for exactly this -- "put an object into a
+   scene, restyle a room with a color scheme, fuse images with a single
+   prompt" -- and confirmed it is **NOT available on Amazon Bedrock** as
+   of this writing (checked AWS's own current model catalog: Bedrock's
+   image models are Stability SD3.5 Large/Stable Image Core/Stable Image
+   Ultra, Nova Canvas [Legacy, EOL 2026-09-30], Titan [already past its
+   own EOL] -- no Gemini). Asked Al directly whether to add a non-Bedrock
+   provider for this: **yes, alongside the existing Bedrock/Stability
+   path, not instead of it** -- so v4 mixes TWO real candidate SOURCES,
+   not just seed variations of one model.
+
+**Final shape**: 3 candidates per shot, every run, automatically --
+**2 from Gemini 2.5 Flash Image, 1 from the revived Stability/Bedrock
+cutout+composite mechanism** (`NUM_GEMINI_CANDIDATES_PER_VARIANT`/
+`NUM_STABILITY_CANDIDATES_PER_VARIANT` in `app.py`). An admin picks the
+best one per shot in the Articles review tab; the pipeline never
+silently commits to whichever generated first.
+
+**Migration 026** (`db/migrations/026_product_article_image_candidates
+.sql`): a genuinely new table, `product_article_image_candidates`, NOT
+more columns on `product_articles`. `product_articles.action_shot_
+image_key/url`/`product_shot_image_key/url` (023) keep meaning exactly
+what they always have -- "the currently LIVE image for this variant" --
+so `public_api` and everything else that already reads those four
+columns needs zero changes. The new table holds EVERY candidate ever
+generated (including the one currently live, marked `is_selected =
+true` for its `article_id`+`variant`), from either provider, with a
+partial unique index (`product_article_image_candidates_one_selected_
+idx`) enforcing "exactly one selected per article+variant" at the DB
+level, not just in application code. No separate approve/reject workflow
+on this table -- picking a candidate is a lightweight action, like
+reordering product images (010's own precedent), not a second review
+queue; the article's own `product_articles.status` still gates public
+exposure of the whole row, images included.
+
+**Gemini is called directly, not through Bedrock**: `generate_article_
+image_candidates`'s Gemini calls go straight to Google's own REST API
+(`https://generativelanguage.googleapis.com/v1beta/models/{model}:
+generateContent`), authenticated via an `x-goog-api-key` header with the
+key from the NEW `GeminiApiKeySecretArn` secret (see step 3 above) --
+NOT the Bedrock/AWS IAM mechanism at all, a fundamentally different
+credential type from every other Bedrock call in this codebase, same
+"a real third-party credential this project can't obtain on its own"
+category as `BigCommerceSecretArn`/`YouTubeApiKeySecretArn`. Called via
+a plain `requests.post` (already a dependency), not the `google-genai`
+SDK -- consistent with this codebase's existing "hand-built JSON request
+bodies via boto3's low-level `invoke_model`" style, and avoids adding a
+heavier grpc/protobuf dependency tree to the Lambda package. Gemini's
+image model has **no reliable/reproducible seed parameter** (confirmed
+via research, not assumed) -- candidate diversity between the two Gemini
+calls instead comes from an "alternate composition" suffix appended to
+the second call's prompt, plus the model's own inherent stochasticity.
+`GeminiApiKeySecretArn` is genuinely optional (see step 3 above) --
+`generate_article_for_product`'s image branch requires ALL EIGHT
+image-related arguments (three Bedrock clients' worth plus `gemini_api_
+key`/`gemini_model_id`) to run at all, same all-or-nothing gate v3 used
+for its own four; with no Gemini key configured, `generate_article_
+image_candidates` never runs, and the article generator falls all the
+way back to text-only (no images at all) rather than a partial "Gemini
+missing, Stability still runs" state -- if you want ANY images, both
+Bedrock access AND a Gemini key have to be configured together.
+
+**`src/product_article_generator/app.py`**: `build_reference_canvas`,
+`build_image_prompts` (v3's img2img version), `_IMAGE_NEGATIVE_PROMPT`,
+and `call_bedrock_for_image` (v3's whole single-call mechanism) are
+REMOVED, not left dead. `call_bedrock_remove_background`, `build_
+background_prompts`, `_BACKGROUND_NEGATIVE_PROMPT`, `call_bedrock_
+generate_background`, and `composite_ball_on_background` are REVIVED
+from v2 (see 6t's own v2 writeup above for what each one does) --
+`call_bedrock_generate_background` gains a new optional `seed` param,
+recorded on the resulting candidate row so a specific-looking Stability
+result can be reproduced or deliberately avoided later, even though v4
+only ever requests ONE Stability candidate per shot today. A shared
+`_resolve_visual_context(article)` helper (visual_theme -> performance_
+summary -> hook, capped at 300 chars -- the same fallback chain v3's
+`build_image_prompts` used, now factored out) backs BOTH `build_
+background_prompts` (Stability) and the NEW `build_gemini_scene_prompt`
+(Gemini's single integrated prompt, combining scene-generation with an
+explicit "keep the ball unchanged" instruction, grounded in the same
+context) so the two providers' prompts don't independently drift.
+`call_gemini_for_image` is the new raw-REST Gemini caller -- **its own
+docstring flags that the request/response shape is built from Google's
+published examples, NOT verified against a live invocation from inside
+this environment** (no outbound access to `generativelanguage.
+googleapis.com` from this sandbox, no real API key to test with), same
+honest posture the Remove Background IAM fix took before its own first
+real deploy -- confirm on the first real invocation, don't assume it's
+right. `store_article_image`'s `variant` param is renamed to `name` and
+now takes the full per-candidate filename stem (e.g. `action_shot_
+gemini_1`, `product_shot_stability`), not the bare variant -- v4 stores
+multiple candidates per variant, so the old un-suffixed `{variant}.png`
+key would collide across them. The core new orchestration function is
+`generate_article_image_candidates` (replaces v3's `generate_article_
+images`): fetches the reference photo once, tries Remove Background once
+(shared across both variants -- a failure skips just the Stability
+candidate for both shots, non-fatal, Gemini unaffected), then per
+variant runs 2 independently-try/excepted Gemini calls followed by 1
+independently-try/excepted Stability call, returning `{"action_shot":
+[...], "product_shot": [...]}` (each a list of 0-3 candidate dicts).
+`store_article_image_candidates` (new) persists every candidate into the
+026 table, marking index 0 of each variant's list `is_selected = true`
+-- `generate_article_for_product` derives the SAME index-0 candidate as
+the flat `images` dict it passes to `store_article` (the "auto-selected
+default" every review starts from), so the two calls always agree on
+which candidate is initially live.
+
+**`template.yaml`**: the Remove Background IAM grant is REVIVED
+byte-for-byte from commit `d85a890` (the shape that was proven correct
+against two real `AccessDeniedException`s during v2, then fully removed
+in v3 -- see 6t's own v2 writeup above for that whole saga) -- `Bedrock
+RemoveBgModelId`/`BedrockRemoveBgRegion`/`BedrockRemoveBgBaseModelId`
+parameters, `BEDROCK_REMOVEBG_MODEL_ID`/`BEDROCK_REMOVEBG_REGION` env
+vars, and the `GrantRemoveBgInferenceProfileAccess`/`GrantRemoveBgModel
+Access` IAM statements are all back, unchanged in shape from before.
+TWO new parameters for Gemini: `GeminiApiKeySecretArn` (blank by
+default, same `HasGeminiApiKeySecret` conditional-grant pattern as
+`YouTubeApiKeySecretArn`/`BigCommerceSecretArn` -- the `secretsmanager:
+GetSecretValue` statement points at a harmless dummy ARN when left
+unset, rather than omitting the grant conditionally) and `GeminiModelId`
+(default `gemini-2.5-flash-image`). `ProductArticleGeneratorFunction`'s
+`Timeout` stays at 600s -- more total image calls per product now (up to
+2 Gemini + 1 Remove Background + 1 Stability-background = 4 calls per
+variant, 8 per product, more than v2's own 3-call pipeline had), but
+every one is independently try/excepted inside `generate_article_image_
+candidates`, so a slow/failing candidate is skipped rather than retried
+-- revisit if real invocations start timing out.
+
+**`src/admin_api/service.py` / `app.py`**: two new functions, `list_
+article_image_candidates(conn, article_id)` (every candidate for an
+article, both variants together, ordered by variant then created_at --
+returns `[]`, not a 404, for an article with none) and `select_article_
+image_candidate(conn, candidate_id, resolved_by=None)` (flips `is_
+selected` for the candidate's own article_id+variant pair, and mirrors
+the new selection onto `product_articles`' own flat image columns, in
+one transaction -- same lightweight, non-review-workflow shape as
+`reorder_product_images`). Two new routes: `GET /articles/{article_id}/
+image-candidates` and `POST /article-image-candidates/{candidate_id}/
+select` -- no `template.yaml` changes needed for either (the existing
+`{proxy+}` catch-all already covers new admin API paths, same precedent
+established for the `/cores` endpoint).
+
+**`admin-site/index.html`**: a new candidate-picker UI in `render
+ArticlePreviewHtml` (shared by both the Articles tab's own preview row
+and the product-detail Article sub-tab, so one change covers both
+places) -- when an article has 026-table candidates, they render as a
+labeled thumbnail row per variant with the currently-selected one
+highlighted (`.candidate-thumb.selected`) instead of getting a "Use this
+one" button, same "badge instead of action when already in that state"
+convention this file already uses for pending/approved/rejected status
+cells. Falls back to the old plain currently-live-image row for
+pre-v4 articles that have images but no candidate rows at all (nothing
+regresses for content generated before this table existed).
+
+**Tests**: `tests/test_product_article_generator.py`'s entire image
+section was rewritten a third time (83 tests total, up from 63) around
+the v4 candidate pipeline -- `_resolve_visual_context`'s own fallback
+chain and 300-char cap in isolation; `call_bedrock_remove_background`/
+`build_background_prompts`/`call_bedrock_generate_background` (including
+the new optional `seed` param)/`composite_ball_on_background`, all
+reused verbatim from v2's own test suite where the underlying function
+is unchanged; `build_gemini_scene_prompt`/`call_gemini_for_image` new
+(the latter confirms the `x-goog-api-key` header, the inline-image
+request shape, and defends both `inlineData`/`inline_data` response
+casings); `generate_article_image_candidates`'s own orchestration (the
+full 3-per-shot happy path, a Remove Background failure skipping only
+the Stability candidate for both variants while Gemini is unaffected,
+one Gemini call failing without taking down its sibling call or the
+other variant); `store_article_image_candidates` (one row per candidate,
+index-0-per-variant marked selected, a no-op for an empty dict); and
+`generate_article_for_product`/`handler`'s re-plumbed eight-image-arg/
+three-Bedrock-client-plus-Gemini-secret-fetch shape (including a
+dedicated test that a Secrets Manager fetch failure for the Gemini key
+degrades to `gemini_api_key=None` rather than crashing the whole
+invocation). Full non-pytest `test_*.py` sweep (42 files) ran clean
+after these changes.
+
+**Redeploy**: run migration 026 (a real schema change this time, unlike
+024/025 -- safe after 022/023/024/025 regardless of which of those were
+actually applied against a live database), create the new `GeminiApiKey
+SecretArn` secret (step 3 above -- **you have to get this key yourself
+from Google AI Studio, this project can't obtain it on your behalf**),
+then a full unscoped `sam build && sam deploy` passing both `BedrockRemove
+BgModelId`'s defaults (nothing to change there, just confirm the params
+exist again in your stack) and the new `GeminiApiKeySecretArn`/
+`GeminiModelId` params, then swap the static `admin-site/index.html`
+file. Confirm Bedrock model access for `us.stability.stable-image-
+remove-background-v1:0` in `us-east-1` again (the Stability AI Image
+Services Marketplace subscription note from 6t's v2 writeup above still
+applies -- if you unsubscribed after v3 removed the last caller, you'll
+need to resubscribe before the first real v4 invocation) alongside the
+already-confirmed `stability.sd3-5-large-v1:0` in `us-west-2`. **None of
+this Gemini integration has been verified against a live invocation from
+this environment** -- confirm `call_gemini_for_image`'s actual request/
+response shape against a real API call on first use, per its own
+docstring's own honesty caveat, before trusting the feature end to end.
 
 ## 7. Ongoing operations
 

@@ -383,35 +383,39 @@ Parameters:
     Default: stability.sd3-5-large-v1:0
     Description: >
       Bedrock modelId product_article_generator passes to InvokeModel for
-      article image generation (023/025_product_article_images*.sql) --
-      Stable Diffusion 3.5 Large image-to-image mode, conditioned on the
-      product's own real reference photo (letterboxed onto a target-
-      aspect-ratio canvas by build_reference_canvas), with a prompt
-      grounded in a visual theme the article-generation model itself
-      derived from the product's own name/branding. v2's separate
-      Remove-Background-cutout-plus-composite pipeline (024_product_
-      article_images_composite_pipeline.sql) was abandoned after Al
-      reviewed real reference examples and gave direct feedback that the
-      simpler single-model approach produces better, more cohesive
-      results, trading v2's "ball never altered" guarantee for quality --
-      see 025_product_article_images_theme_driven_pipeline.sql's own
-      header comment and src/product_article_generator/app.py's own
-      module docstring for the full v1/v2/v3 history. NOT Amazon Nova
-      Canvas or Titan Image Generator -- checked both models' own
-      "Regional availability" tables (2026-09-03) before picking this
-      one: Nova Canvas is Legacy with an EOL of 2026-09-30 (weeks away as
-      of this writing) and Titan Image Generator G1 v2 is already past
-      its own 2026-06-30 EOL. See BedrockImageRegion just below for the
-      Region caveat. If you're changing this, re-check the new model's
-      own Regional availability table first -- don't assume it matches
-      this one's shape.
+      the Stability candidate's BACKGROUND generation only (023/026_
+      product_article_images*/product_article_image_candidates.sql) --
+      plain text-to-image, no reference photo, no ball described in the
+      prompt (see BedrockRemoveBgModelId just below for how the ball
+      itself gets into that candidate's final composited image without
+      ever being regenerated). v4 pivoted back to this cutout+composite
+      mechanism (reviving v2's own approach) after v3's single-call
+      image-to-image pipeline shipped and Al reported the ball's own
+      surface graphics/logo text came out garbled ("looks like dropping
+      the cutout was a bad idea... The ball needs to be mostly
+      untouched"). v4 also adds a genuinely different SECOND provider
+      (Gemini 2.5 Flash Image, see GeminiApiKeySecretArn below) for two
+      more candidates per shot -- this Stability path now produces just
+      ONE of three candidates generated per shot, not the only image, so
+      an admin can compare and pick the best one in the Articles review
+      tab (see 026_product_article_image_candidates.sql's own header
+      comment for the full v1-v4 history). NOT Amazon Nova Canvas or
+      Titan Image Generator -- checked both models' own "Regional
+      availability" tables (2026-09-03) before picking this one: Nova
+      Canvas is Legacy with an EOL of 2026-09-30 (weeks away as of this
+      writing) and Titan Image Generator G1 v2 is already past its own
+      2026-06-30 EOL. See BedrockImageRegion just below for the Region
+      caveat. If you're changing this, re-check the new model's own
+      Regional availability table first -- don't assume it matches this
+      one's shape.
   BedrockImageRegion:
     Type: String
     Default: us-west-2
     Description: >
       The AWS Region BedrockImageModelId is actually available in --
       Stable Diffusion 3.5 Large is us-west-2 (Oregon) only as of this
-      writing, NOT this stack's own home Region (us-west-1). Unlike
+      writing, NOT this stack's own home Region (us-west-1) AND NOT the
+      same Region as BedrockRemoveBgRegion below (a THIRD Region). Unlike
       BedrockModelId above, there is no Global cross-Region inference
       profile option for image models to route through instead (checked;
       every Bedrock image model's own Regional availability table shows
@@ -425,6 +429,112 @@ Parameters:
       this stack's own Region, you can simplify back to a single-Region
       client and drop this parameter -- check the model's own current
       Regional availability table first, don't assume.
+  BedrockRemoveBgModelId:
+    Type: String
+    Default: us.stability.stable-image-remove-background-v1:0
+    Description: >
+      Bedrock modelId product_article_generator passes to InvokeModel to
+      cut the product's real reference photo out onto a transparent
+      background BEFORE the Stability candidate's background is
+      generated (026_product_article_image_candidates.sql) -- a
+      segmentation cutout, not a diffusion regeneration, so the ball's
+      own pixels are carried through untouched into that candidate's
+      final composited image. REVIVED in v4 from v2 (which this same
+      model/region/IAM shape originally shipped for, then was fully
+      removed in v3's brief single-call img2img pivot -- see this
+      parameter's own git history, commit d85a890, for the byte-for-byte
+      shape being reused here) after Al's direct feedback that v3's
+      plain image-to-image approach garbled the ball's own surface
+      graphics ("The ball needs to be mostly untouched"). Part of
+      Bedrock's Stability AI Image Services collection (GA'd September
+      2025, 13 editing primitives, a SEPARATE Marketplace listing from
+      the BedrockImageModelId model above -- subscribing to it enrolls
+      the account in all 13 at once per its own docs). See
+      BedrockRemoveBgRegion just below for the Region caveat, and
+      src/product_article_generator/app.py's own module docstring for
+      the full research trail.
+  BedrockRemoveBgRegion:
+    Type: String
+    Default: us-east-1
+    Description: >
+      The SOURCE Region product_article_generator's handler() constructs
+      its THIRD bedrock-runtime client in (region_name=this value) to
+      invoke BedrockRemoveBgModelId -- NOT this stack's own home Region
+      (us-west-1) AND NOT the same Region as BedrockImageRegion above (a
+      THIRD Region, distinct from both). Unlike BedrockImageRegion
+      (Stable Diffusion 3.5 Large, which really has no CRIS support at
+      all), BedrockRemoveBgModelId's "us." prefix IS a genuine Geographic
+      cross-Region inference profile -- confirmed the hard way (in v2,
+      before v3's brief removal and v4's revival) via a real
+      AccessDeniedException whose resource ARN showed the actual call got
+      routed to us-east-2, a different Region than this one. This
+      parameter is only the SOURCE Region the client calls from; see
+      BedrockRemoveBgBaseModelId and the IAM policy below (GrantRemoveBg
+      ModelAccess) for how the DESTINATION Regions this profile can
+      actually route to (us-east-1, us-east-2, us-west-2 -- AWS's own
+      fixed "US" geography list) are granted explicitly, not derived from
+      this parameter.
+  BedrockRemoveBgBaseModelId:
+    Type: String
+    Default: stability.stable-image-remove-background-v1:0
+    Description: >
+      BedrockRemoveBgModelId (a "us." Geographic cross-Region inference
+      profile id) with that "us." prefix stripped -- the bare underlying
+      foundation-model id, confirmed from a real AccessDeniedException's
+      own resource ARN (arn:aws:bedrock:us-east-2::foundation-model/
+      stability.stable-image-remove-background-v1:0). Needed as a
+      separate parameter for the same reason BedrockBaseModelId is above:
+      the IAM policy's GrantRemoveBgModelAccess statement has to grant
+      bedrock:InvokeModel on the foundation-model resource itself, in
+      EVERY destination Region the profile can route to (per AWS's own
+      documented Geographic-CRIS IAM pattern -- see that statement's own
+      inline comment for the full research trail, including why the
+      region-less/"unspecified" trick that works for BedrockModelId's own
+      "global." CRIS grant does NOT work here), not just the inference-
+      profile resource -- CloudFormation has no string-strip function to
+      derive this from BedrockRemoveBgModelId automatically, hence the
+      second parameter. Keep the two in sync if you ever change the model.
+  GeminiApiKeySecretArn:
+    Type: String
+    Default: ""
+    Description: >
+      ARN of a Secrets Manager secret holding a Google AI Studio API key
+      for Gemini 2.5 Flash Image -- either a bare key string or JSON
+      {"api_key": "..."}, see src/product_article_generator/app.py's
+      handler(). NEW in v4 (026_product_article_image_candidates.sql):
+      the second of three candidates generated per shot, added alongside
+      (not instead of) the existing Stability/Bedrock path after Al
+      shared a reference image (from a tool called yeri.ai) whose
+      "insert this exact ball into a newly generated scene" quality
+      visibly beat anything Stability/Bedrock had produced -- research
+      pointed at Gemini 2.5 Flash Image as the model most likely behind
+      that result (Google's own docs describe it as built for exactly
+      this: "put an object into a scene... maintain character
+      consistency"), and confirmed it is NOT available on Amazon Bedrock
+      as of this writing (checked AWS's own current model catalog), so
+      this is a real credential for Google's own API, a different kind
+      from every other secret in this template -- same "user has to get
+      this themselves" category as YouTubeApiKeySecretArn/
+      BigCommerceSecretArn above (this project can't create a Google
+      account or generate this key on your behalf). Left blank by
+      default (see HasGeminiApiKeySecret below) -- with no key
+      configured, generate_article_image_candidates simply skips the two
+      Gemini candidates for every run and still produces the one
+      Stability candidate, same "not configured -> soft no-op" posture
+      as this stack's other optional secrets, not a hard failure.
+  GeminiModelId:
+    Type: String
+    Default: gemini-2.5-flash-image
+    Description: >
+      Model id passed in the URL path of Gemini's own REST generateContent
+      endpoint (GEMINI_API_BASE_URL in app.py) -- NOT a Bedrock modelId,
+      Gemini image models are called directly against Google's own API
+      (generativelanguage.googleapis.com), authenticated via the
+      x-goog-api-key header with the key from GeminiApiKeySecretArn
+      above, not any AWS/IAM mechanism. See src/product_article_
+      generator/app.py's call_gemini_for_image and this module's own
+      docstring for the full research trail on why this is a raw
+      requests.post call rather than the google-genai SDK.
   ConsumerSiteDomainName:
     Type: String
     Default: ""
@@ -480,6 +590,7 @@ Conditions:
   HasBigCommerceSecret: !Not [!Equals [!Ref BigCommerceSecretArn, ""]]
   HasAdminApiToken: !Not [!Equals [!Ref AdminApiTokenSecretArn, ""]]
   HasYouTubeApiKeySecret: !Not [!Equals [!Ref YouTubeApiKeySecretArn, ""]]
+  HasGeminiApiKeySecret: !Not [!Equals [!Ref GeminiApiKeySecretArn, ""]]
   HasConsumerSiteDomain: !Not [!Equals [!Ref ConsumerSiteDomainName, ""]]
   HasGitHubRepo: !Not [!Equals [!Ref GitHubRepo, ""]]
   ShouldCreateGitHubOidcProvider: !And
@@ -1858,29 +1969,43 @@ Resources:
       # on the scheduled path -- generous headroom over that function's
       # own 150s, not sized against a confirmed incident. Bumped from an
       # original 280s to 600s when article images were added
-      # (023_product_article_images.sql) -- each product now also costs a
-      # reference-photo HTTP fetch plus TWO Bedrock InvokeModel calls per
-      # product (one image-to-image call per variant, cross-Region -- see
-      # BEDROCK_IMAGE_REGION below) on top of the original text
-      # generation, real added latency per product in the batch loop.
-      # (v2's brief three-call composite pipeline, which needed even more
-      # headroom, was abandoned -- see this stack's own docstring/025
-      # migration history -- so 600s is generous rather than tight as of
-      # v3, but left as-is since there's no cost to keeping the margin.)
+      # (023_product_article_images.sql), then again considered at v4
+      # (026_product_article_image_candidates.sql): each product now
+      # costs a reference-photo HTTP fetch, ONE Remove Background call,
+      # ONE Stability background-generation call, AND TWO Gemini calls
+      # (a direct HTTPS call to Google's own API, not Bedrock) per
+      # variant -- more total image calls per product than v2's own
+      # three-call composite pipeline had, since v4 generates 3
+      # candidates per shot instead of 1 final image. Left at 600s rather
+      # than bumped further for now since every one of those calls is
+      # independently try/excepted in generate_article_image_candidates
+      # (a slow/failing candidate is skipped, not retried) -- revisit if
+      # real invocations start timing out.
       Timeout: 600
       Environment:
         Variables:
           BEDROCK_MODEL_ID: !Ref BedrockModelId
-          # Article images (023/025_product_article_images*.sql) -- see
-          # src/product_article_generator/app.py's own module docstring
-          # for the full v1/v2/v3 research trail on why Stable Diffusion
-          # 3.5 Large + us-west-2 was chosen, and why it's a SEPARATE
-          # Bedrock client in a separate Region from this stack's own
-          # us-west-1 home. v2's THIRD client (Stability AI Image
-          # Services' Remove Background, us-east-1) is gone as of v3 --
-          # that model is no longer used at all.
+          # Article images (023/026_product_article_image*_candidates.sql)
+          # -- see src/product_article_generator/app.py's own module
+          # docstring for the full v1-v4 research trail. v4 revived v2's
+          # Stability/Remove-Background cutout+composite mechanism
+          # (BEDROCK_IMAGE_*/BEDROCK_REMOVEBG_* -- three separate Bedrock
+          # clients, three separate Regions, none matching this stack's
+          # own us-west-1 home) AFTER v3 briefly dropped it and Al
+          # reported the ball's own surface graphics came out garbled --
+          # see BedrockRemoveBgModelId's own parameter description for
+          # the full story. v4 ALSO adds a genuinely different, non-
+          # Bedrock provider (GEMINI_* -- Google's own API, a real
+          # outbound HTTPS call authenticated with a Secrets Manager key,
+          # not an AWS/IAM mechanism at all) for two more candidates per
+          # shot, so admins can compare across providers, not just across
+          # background variations of one model.
           BEDROCK_IMAGE_MODEL_ID: !Ref BedrockImageModelId
           BEDROCK_IMAGE_REGION: !Ref BedrockImageRegion
+          BEDROCK_REMOVEBG_MODEL_ID: !Ref BedrockRemoveBgModelId
+          BEDROCK_REMOVEBG_REGION: !Ref BedrockRemoveBgRegion
+          GEMINI_API_KEY_SECRET_ARN: !Ref GeminiApiKeySecretArn
+          GEMINI_IMAGE_MODEL_ID: !Ref GeminiModelId
           IMAGE_BUCKET: !Ref ImageBucket
       Policies:
         - VPCAccessPolicy: {}
@@ -1889,6 +2014,23 @@ Resources:
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Ref DbSecretArn
+            # Gemini API key -- same "blank default isn't a valid IAM
+            # Resource" fix as YouTubeApiKeySecretArn/BigCommerceSecretArn
+            # elsewhere in this template: only grant real access to
+            # GeminiApiKeySecretArn once HasGeminiApiKeySecret confirms a
+            # real ARN was supplied, otherwise point this statement at a
+            # harmless dummy ARN nothing actually resolves to. handler()
+            # already treats a fetch failure (including this policy
+            # denying it, if the dummy ARN is ever hit) as "skip Gemini
+            # candidates this run, not a fatal error" -- see that
+            # function's own docstring.
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !If
+                - HasGeminiApiKeySecret
+                - !Ref GeminiApiKeySecretArn
+                - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:unused-*"
             # Same three-statement Global CRIS inference-profile grant as
             # VideoSummarizerFunction -- see that function's Policies
             # block for the full reasoning.
@@ -1924,21 +2066,62 @@ Resources:
             # (this stack's actual us-west-1 home) because the model
             # itself is only available there -- app.py's own
             # bedrock_image_client is likewise constructed with an
-            # explicit region_name, a plain cross-Region API call. This
-            # single call now covers ALL article image generation (v3,
-            # image-to-image) -- v2's separate Remove Background model/
-            # client/IAM grant (which required matching AWS's documented
-            # Geographic-CRIS policy shape -- three region-specific
-            # foundation-model ARNs, confirmed the hard way via two real
-            # AccessDeniedExceptions -- see 025_product_article_images_
-            # theme_driven_pipeline.sql's own header comment for that
-            # saga's full history) is gone entirely: that model is no
-            # longer called by this function at all.
+            # explicit region_name, a plain cross-Region API call. As of
+            # v4 this covers just the Stability candidate's BACKGROUND
+            # generation (one of three candidates per shot, not the only
+            # image) -- see GrantRemoveBgInferenceProfileAccess/
+            # GrantRemoveBgModelAccess just below for how the ball itself
+            # gets into that candidate untouched, and this stack's own
+            # module docstring for why Gemini needs no Bedrock IAM grant
+            # at all (a different provider, called directly).
             - Sid: GrantImageModelAccess
               Effect: Allow
               Action:
                 - bedrock:InvokeModel
               Resource: !Sub "arn:aws:bedrock:${BedrockImageRegion}::foundation-model/${BedrockImageModelId}"
+            # Article images: Remove Background (026_product_article_
+            # image_candidates.sql) -- REVIVED in v4 from v2 (byte-for-
+            # byte the same shape that originally shipped and was proven
+            # correct via two real AccessDeniedExceptions before v3
+            # briefly removed it entirely -- see commit d85a890 and
+            # BedrockRemoveBgModelId's own parameter description for the
+            # full saga). BedrockRemoveBgModelId's "us." prefix matches
+            # Bedrock's own GEOGRAPHIC (not Global) cross-Region inference
+            # profile naming convention (compare BedrockModelId's
+            # "global." prefix above -- a DIFFERENT CRIS type with a
+            # different required IAM shape, easy to conflate since they
+            # look similar). Per AWS's own documented Geographic-CRIS IAM
+            # pattern (confirmed via a real AccessDeniedException, not
+            # assumed): the foundation-model Resource has to explicitly
+            # list EVERY destination Region the profile can route to, one
+            # ARN per Region, no wildcard/blank-Region shortcut (that
+            # region-less/"unspecified" trick is Global-CRIS-only, and
+            # does NOT work here -- confirmed the hard way the first time
+            # this shipped). A US geographic profile's destination
+            # Regions are exactly us-east-1, us-east-2, and us-west-2 per
+            # AWS's own docs, and that list "will never change" once tied
+            # to a geography -- safe to hardcode, not derive from
+            # BedrockRemoveBgRegion. BedrockRemoveBgBaseModelId is the
+            # same model id with the "us." CRIS prefix stripped -- same
+            # "profile id vs. base model id are two different parameters"
+            # split BedrockModelId/BedrockBaseModelId already established
+            # above for the text model's own Global CRIS grant.
+            - Sid: GrantRemoveBgInferenceProfileAccess
+              Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: !Sub "arn:aws:bedrock:${BedrockRemoveBgRegion}:${AWS::AccountId}:inference-profile/${BedrockRemoveBgModelId}"
+            - Sid: GrantRemoveBgModelAccess
+              Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource:
+                - !Sub "arn:aws:bedrock:us-east-1::foundation-model/${BedrockRemoveBgBaseModelId}"
+                - !Sub "arn:aws:bedrock:us-east-2::foundation-model/${BedrockRemoveBgBaseModelId}"
+                - !Sub "arn:aws:bedrock:us-west-2::foundation-model/${BedrockRemoveBgBaseModelId}"
+              Condition:
+                StringEquals:
+                  bedrock:InferenceProfileArn: !Sub "arn:aws:bedrock:${BedrockRemoveBgRegion}:${AWS::AccountId}:inference-profile/${BedrockRemoveBgModelId}"
             # Generated article image write only -- the reference photo
             # (product's real image) is fetched via a plain HTTPS GET
             # against its already-public stored_url/primary_image_url
@@ -1947,7 +2130,10 @@ Resources:
             # this function's own article-images/ prefix (narrower than
             # ProductScraperFunction's product-images/*-scoped
             # s3:DeleteObject grant below, since this function never
-            # touches product-images/ at all).
+            # touches product-images/ at all). Covers every candidate's
+            # write (Gemini and Stability alike), not just one image per
+            # variant, since store_article_image is called up to 3x per
+            # variant now.
             - Effect: Allow
               Action:
                 - s3:PutObject

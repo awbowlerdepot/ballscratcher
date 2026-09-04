@@ -158,6 +158,20 @@
   .article-image-row figure { margin: 0; width: 220px; }
   .article-image-row img { width: 100%; height: 160px; object-fit: cover; border-radius: var(--radius); border: 1px solid var(--border); display: block; }
   .article-image-row figcaption { font-size: 11px; color: var(--muted); text-align: center; margin-top: 4px; }
+  /* Image candidate picker (026_product_article_image_candidates.sql) --
+     v4's "generate 3 candidates per shot, pick the best one" UI. Each
+     variant (action_shot/product_shot) gets its own row of candidate
+     thumbnails; .selected gets a highlighted border instead of a "Use
+     this one" button, same "badge instead of action when already in
+     that state" convention as the pending/approved/rejected status cells
+     elsewhere in this file. */
+  .candidate-picker { margin: 8px 0; }
+  .candidate-variant { margin-bottom: 12px; }
+  .candidate-thumb-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 4px; }
+  .candidate-thumb { width: 180px; text-align: center; border: 2px solid transparent; border-radius: var(--radius); padding: 4px; }
+  .candidate-thumb img { width: 100%; height: 130px; object-fit: cover; border-radius: 4px; border: 1px solid var(--border); display: block; }
+  .candidate-thumb.selected { border-color: var(--accent, #2563eb); }
+  .candidate-thumb .btn { margin-top: 4px; }
 
   table { width: 100%; border-collapse: collapse; background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
   table.mini { border: none; }
@@ -2075,11 +2089,78 @@ async function toggleArticleDetail(id) {
 async function loadArticleDetailInto(id, cell) {
   cell.innerHTML = '<p class="muted">Loading&hellip;</p>';
   try {
-    const a = await api('GET', '/articles/' + id);
-    cell.innerHTML = renderArticlePreviewHtml(a);
+    // Fetched alongside the article text (not lazily on demand) -- same
+    // "fetch everything this panel needs in one pass" convention as
+    // loadProductDetailInto below. image-candidates never 404s (see
+    // service.list_article_image_candidates' own docstring: an article
+    // with no candidates just gets []), so this is safe even for
+    // pre-v4 articles or articles images were never configured for.
+    const [a, candidatesData] = await Promise.all([
+      api('GET', '/articles/' + id),
+      api('GET', '/articles/' + id + '/image-candidates'),
+    ]);
+    cell.innerHTML = renderArticlePreviewHtml(a, candidatesData.items || [], 'articles');
   } catch (e) {
     cell.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
   }
+}
+
+// Image candidate picker (026_product_article_image_candidates.sql) --
+// Al's "try a few models and then in the admin ui select the one we
+// want to use" ask, after v3's single-image pipeline shipped garbled
+// ball graphics/poor backgrounds. Renders one row of thumbnails per
+// variant (action_shot/product_shot), the currently-selected candidate
+// highlighted via .selected instead of getting a "Use this one" button
+// (same "badge instead of action when already in that state" shape as
+// the pending/approved/rejected status cells elsewhere in this file).
+// context is 'articles' (top-level Articles tab, refreshes via
+// loadArticleDetailInto) or 'product' (product-detail Article sub-tab,
+// refreshes via loadProductDetailInto) -- see selectImageCandidateIn
+// ArticlesTab/selectImageCandidateForProduct just below for why the
+// refresh path has to differ between the two call sites.
+function renderImageCandidatesHtml(candidates, articleId, context, contextId) {
+  if (!candidates || !candidates.length) return '';
+  const byVariant = {};
+  candidates.forEach(function (c) { (byVariant[c.variant] = byVariant[c.variant] || []).push(c); });
+  const variantLabel = { action_shot: 'Action shot', product_shot: 'Product shot' };
+  const sections = Object.keys(byVariant).sort().map(function (variant) {
+    const thumbs = byVariant[variant].map(function (c) {
+      const onclick = context === 'product'
+        ? "selectImageCandidateForProduct('" + c.id + "', '" + contextId + "')"
+        : "selectImageCandidateInArticlesTab('" + c.id + "', '" + articleId + "')";
+      return '<div class="candidate-thumb' + (c.is_selected ? ' selected' : '') + '">' +
+        '<img src="' + escapeHtml(c.image_url) + '" alt="" loading="lazy" />' +
+        '<div class="muted small">' + escapeHtml(c.model_id) + '</div>' +
+        (c.is_selected
+          ? '<span class="badge approved">selected</span>'
+          : '<button class="btn small ghost" onclick="' + onclick + '">Use this one</button>') +
+        '</div>';
+    }).join('');
+    return '<div class="candidate-variant"><p><strong>' + (variantLabel[variant] || escapeHtml(variant)) +
+      ' candidates:</strong></p><div class="candidate-thumb-row">' + thumbs + '</div></div>';
+  }).join('');
+  return '<div class="candidate-picker">' + sections + '</div>';
+}
+
+async function selectImageCandidateInArticlesTab(candidateId, articleId) {
+  try {
+    await api('POST', '/article-image-candidates/' + candidateId + '/select',
+      { body: { resolved_by: getSettings().resolvedBy || undefined } });
+    toast('Image updated');
+    loadArticles();
+    const row = document.getElementById('article-detail-' + articleId);
+    if (row && !row.classList.contains('hidden')) await loadArticleDetailInto(articleId, row.querySelector('td'));
+  } catch (e) { toast(e.message, true); }
+}
+
+async function selectImageCandidateForProduct(candidateId, productId) {
+  try {
+    await api('POST', '/article-image-candidates/' + candidateId + '/select',
+      { body: { resolved_by: getSettings().resolvedBy || undefined } });
+    toast('Image updated');
+    const row = document.getElementById('product-detail-' + productId);
+    if (row) await loadProductDetailInto(productId, row.querySelector('td'));
+  } catch (e) { toast(e.message, true); }
 }
 
 // Full bowling.com-shaped article render -- Al's explicit "Full article"
@@ -2088,8 +2169,10 @@ async function loadArticleDetailInto(id, cell) {
 // here (review preview) and in the product-detail Article sub-tab below.
 // Structured fields, not a stored HTML blob (see 022_product_articles.sql's
 // header comment) -- this function is what actually assembles them into
-// markup, entirely client-side.
-function renderArticlePreviewHtml(a) {
+// markup, entirely client-side. candidates/context/contextId are all
+// optional (undefined candidates behaves exactly like the pre-v4 call
+// shape) -- see renderImageCandidatesHtml just above.
+function renderArticlePreviewHtml(a, candidates, context, contextId) {
   const listBlock = function (label, items) {
     if (!items || !items.length) return '';
     return '<p><strong>' + label + ':</strong></p><ul>' + items.map(function (s) { return '<li>' + escapeHtml(s) + '</li>'; }).join('') + '</ul>';
@@ -2117,12 +2200,24 @@ function renderArticlePreviewHtml(a) {
   const imageFigure = function (url, label) {
     return url ? '<figure><img src="' + escapeHtml(url) + '" alt="' + escapeHtml(label) + '" loading="lazy" /><figcaption>' + escapeHtml(label) + '</figcaption></figure>' : '';
   };
-  const imagesBlock = (a.action_shot_image_url || a.product_shot_image_url)
-    ? '<div class="article-image-row">' + imageFigure(a.action_shot_image_url, 'Action shot') + imageFigure(a.product_shot_image_url, 'Product shot') + '</div>'
-    : (a.images_generated_at ? '<p class="muted small">Image generation ran but produced no images for this article.</p>' : '');
+  // v4 (026_product_article_image_candidates.sql): when candidates were
+  // fetched (see loadArticleDetailInto/loadProductDetailInto), show the
+  // full picker instead of the old plain currently-live-image row -- the
+  // picker's own "selected" thumbnail already shows what's live, so
+  // showing both would just duplicate the same image. Falls back to the
+  // old plain imagesBlock for pre-v4 articles that have images but no
+  // candidate rows (candidates undefined/empty but the URLs are still
+  // set), so nothing regresses for content generated before this table
+  // existed.
+  const candidatesBlock = renderImageCandidatesHtml(candidates, a.id, context, contextId);
+  const imagesBlock = candidatesBlock ? '' : (
+    (a.action_shot_image_url || a.product_shot_image_url)
+      ? '<div class="article-image-row">' + imageFigure(a.action_shot_image_url, 'Action shot') + imageFigure(a.product_shot_image_url, 'Product shot') + '</div>'
+      : (a.images_generated_at ? '<p class="muted small">Image generation ran but produced no images for this article.</p>' : '')
+  );
   return '<div class="detail-panel">' +
     '<h3>' + escapeHtml(a.title || '(untitled)') + '</h3>' +
-    imagesBlock +
+    imagesBlock + candidatesBlock +
     (a.hook ? '<p><em>' + escapeHtml(a.hook) + '</em></p>' : '') +
     (a.performance_summary ? '<p><strong>Performance summary:</strong></p><p>' + escapeHtml(a.performance_summary) + '</p>' : '') +
     listBlock('Who should buy this', a.who_should_buy) +
@@ -2533,6 +2628,14 @@ async function loadProductDetailInto(id, cell) {
     const videos = videoData.items || [];
     const priceSources = priceSourcesData.items || [];
     const article = (articleData.items || [])[0] || null;
+    // v4 image candidates (026_product_article_image_candidates.sql) --
+    // can't go in the Promise.all above since it needs the article's own
+    // id, which isn't known until articleData resolves. A second small
+    // round-trip only when an article actually exists is cheap compared
+    // to the Promise.all this already does for videos/pricing/skus.
+    const articleCandidates = article
+      ? (await api('GET', '/articles/' + article.id + '/image-candidates')).items || []
+      : [];
     const skuRows = (p.skus || []).map(function (s) {
       return '<tr><td>' + s.weight_lbs + 'lb</td><td>' + (s.rg === null || s.rg === undefined ? '—' : s.rg) +
         '</td><td>' + (s.differential === null || s.differential === undefined ? '—' : s.differential) +
@@ -2725,7 +2828,7 @@ async function loadProductDetailInto(id, cell) {
         (article ? ('<span class="badge ' + escapeHtml(article.status) + '">' + escapeHtml(article.status) + '</span>') : '<span class="muted">not generated yet</span>') +
         ' <button class="btn small ghost" onclick="generateArticleForProduct(\'' + id + '\')">' + (article ? 'Regenerate' : 'Generate') + ' article</button></p>' +
       '<p id="generate-article-result-' + id + '" class="muted small"></p>' +
-      (article ? ('<p class="actions">' + articleActionsHtml + '</p>' + renderArticlePreviewHtml(article)) : '');
+      (article ? ('<p class="actions">' + articleActionsHtml + '</p>' + renderArticlePreviewHtml(article, articleCandidates, 'product', id)) : '');
 
     cell.innerHTML =
       '<div class="detail-panel" id="detail-panel-' + id + '">' +

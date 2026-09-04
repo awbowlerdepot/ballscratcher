@@ -75,6 +75,15 @@ class ReassignRequest(BaseModel):
     resolved_by: Optional[str] = None
 
 
+class SelectImageCandidateRequest(BaseModel):
+    # Optional, same as ReassignRequest.resolved_by above -- see
+    # service.select_article_image_candidate's own docstring for why it's
+    # accepted but not currently persisted anywhere. Picking a candidate
+    # is a lightweight action (like reordering product images), not a
+    # review/approve workflow, so there's no required body at all.
+    resolved_by: Optional[str] = None
+
+
 class PriceSiteCreateRequest(BaseModel):
     name: str
     # Site-SEARCH config -- what price_checker's discovery job uses to
@@ -1105,6 +1114,42 @@ def reject_article(article_id: str, body: RejectRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.get("/articles/{article_id}/image-candidates")
+def get_article_image_candidates(article_id: str):
+    # Every candidate 026_product_article_image_candidates.sql has stored
+    # for this article (both variants, both providers together) -- the
+    # Articles review tab's candidate picker fetches this alongside
+    # get_article itself to render thumbnails for each shot. No 404 on an
+    # empty list -- an article with no image candidates (images not
+    # configured on this deployment, or every candidate failed) is a
+    # normal state, same as get_article_image_candidates never needing to
+    # check the article itself exists first (an unknown article_id just
+    # yields an empty list here, same as list_video_candidates would for
+    # an unknown product_id).
+    conn = service.get_db_connection()
+    try:
+        items = service.list_article_image_candidates(conn, article_id)
+        return {"items": items}
+    finally:
+        conn.close()
+
+
+@app.post("/article-image-candidates/{candidate_id}/select")
+def select_article_image_candidate(candidate_id: str, body: SelectImageCandidateRequest):
+    # Top-level /article-image-candidates/{id}/... (not nested under
+    # /articles/{article_id}/...) since the candidate_id alone is enough
+    # to identify the row -- same "the specific ID is the addressable
+    # resource" shape as /video-candidates/{id}/reassign, which also
+    # doesn't nest under /products/{product_id}/....
+    conn = service.get_db_connection()
+    try:
+        return service.select_article_image_candidate(conn, candidate_id, body.resolved_by)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     finally:
         conn.close()
 

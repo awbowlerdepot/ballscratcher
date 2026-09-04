@@ -3644,6 +3644,88 @@ def reject_article(conn, article_id: str, resolved_by: str, reason: str = None) 
     return {"article_id": article_id, "status": "rejected"}
 
 
+def list_article_image_candidates(conn, article_id: str) -> list:
+    """Every image candidate 026_product_article_image_candidates.sql has
+    ever stored for this article (both variants, both providers -- Gemini
+    and Stability -- together, not split by variant), for the Articles
+    review tab's candidate picker (see that migration's own header
+    comment for why this is a separate table rather than more columns on
+    product_articles: these rows persist EVERY candidate generated, not
+    just the one currently live). Ordered by variant then created_at so
+    the admin-site can group action_shot/product_shot into two rows of
+    thumbnails without re-sorting client-side. Returns [] (not an error)
+    for an article with no image candidates -- either images were never
+    configured on this deployment (see generate_article_for_product's own
+    gating condition) or generation failed for both variants that run,
+    same "images are always best-effort" posture as the rest of this
+    feature."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select id, article_id, variant, model_id, image_key, image_url, seed, is_selected, created_at
+            from product_article_image_candidates
+            where article_id = %s
+            order by variant, created_at
+            """,
+            (article_id,),
+        )
+        columns = [desc[0] for desc in cur.description]
+        return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
+def select_article_image_candidate(conn, candidate_id: str, resolved_by: str = None) -> dict:
+    """Switches which candidate is "live" for its (article_id, variant) --
+    a lightweight admin action, not a review/approve workflow of its own
+    (same precedent as reorder_product_images, see that function's own
+    docstring), which is why this takes just a candidate_id/resolved_by
+    rather than mirroring approve_article/reject_article's pending-status
+    gating. Two things happen in the same transaction: (1) the candidates
+    table's own is_selected flag flips -- every other candidate for this
+    (article_id, variant) pair is set to false, this one to true, so
+    product_article_image_candidates_one_selected_idx's partial unique
+    index (026_product_article_image_candidates.sql) never sees two
+    selected rows even momentarily; (2) product_articles' own
+    action_shot_image_key/url or product_shot_image_key/url (whichever
+    variant this candidate belongs to) is overwritten to mirror the new
+    selection, since public_api and every other part of this codebase
+    that renders article images still reads those four flat columns, not
+    this table, directly (see 026's own header comment for that design
+    rationale). resolved_by is accepted and stored nowhere (there's no
+    audit column on this table for it, and product_articles' own
+    resolved_by/reviewed_at are the ARTICLE's review status, not per-
+    image) -- kept as a parameter purely for call-site symmetry with
+    reassign_video_candidate/approve_article, which do use theirs, and in
+    case a future audit column is added here later."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "select article_id, variant, image_key, image_url from product_article_image_candidates where id = %s",
+            (candidate_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError(f"No product_article_image_candidates row with id {candidate_id}")
+        article_id, variant, image_key, image_url = row
+
+        cur.execute(
+            "update product_article_image_candidates set is_selected = false where article_id = %s and variant = %s",
+            (article_id, variant),
+        )
+        cur.execute(
+            "update product_article_image_candidates set is_selected = true where id = %s",
+            (candidate_id,),
+        )
+
+        key_column = f"{variant}_image_key"
+        url_column = f"{variant}_image_url"
+        cur.execute(
+            f"update product_articles set {key_column} = %s, {url_column} = %s where id = %s",
+            (image_key, image_url, article_id),
+        )
+    conn.commit()
+    return {"candidate_id": candidate_id, "article_id": article_id, "variant": variant,
+            "image_key": image_key, "image_url": image_url}
+
+
 def queue_article_generation(conn, product_id: str) -> dict:
     """Direct lambda:InvokeFunction, no queue in front -- same convention
     as queue_video_discovery, invoked from POST /products/{id}/generate-
