@@ -176,29 +176,35 @@ from both `us-west-1` and `us-west-2`).
     away from when this v5 work started. Shipping v5 against a model that
     dies in weeks would just trade one broken thing for another, so this
     was surfaced to Al directly before writing any code; he picked Gemini
-    3 Pro Image ("Nano Banana Pro", `gemini-3-pro-image-preview`) over the
+    3 Pro Image ("Nano Banana Pro", `gemini-3-pro-image`) over the
     cheaper/faster Gemini 3.1 Flash Image successor and over staying on
     the doomed 2.5 model -- see DEFAULT_GEMINI_IMAGE_MODEL_ID.
 
-    REAL INCIDENT (2026-09-04): the first live call against `gemini-3-
-    pro-image` (missing the `-preview` suffix) returned a Vertex AI 404
-    ("Publisher model ... was not found or your project does not have
-    access to it"). Root-caused via Google's own Model Garden listing and
-    corroborating developer-forum threads: ALL Gemini 3 models are
-    currently in preview on Vertex AI and carry a `-preview` suffix in
-    their actual publisher-model id (`gemini-3-pro-image-preview`, not
-    `gemini-3-pro-image`) -- fixed below. Separately, and NOT fixed by
-    that id correction alone: `gemini-3-pro-image-preview` is allowlist-
-    gated on Vertex AI (confirmed via numerous other developers hitting
-    this exact same 404 and filing allowlist requests on Google's AI
-    Developers Forum, https://discuss.ai.google.dev) -- a brand-new GCP
-    project has no guaranteed access even with the correct id, and
-    there's no published approval SLA. Al chose to fix the id now and
-    file that allowlist request himself rather than fall back to
-    `gemini-2.5-flash-image` (which still works and isn't retiring until
-    2026-10-02) -- so images may keep failing with this same 404 until
-    Google grants access, which is expected, not a new bug, until
-    confirmed otherwise.
+    REAL INCIDENT (2026-09-04), id claim CORRECTED same day: the first
+    live call against the bare `gemini-3-pro-image` id returned a Vertex
+    AI 404 ("Publisher model ... was not found or your project does not
+    have access to it"). This was initially (and wrongly) diagnosed as a
+    missing `-preview` suffix, based on secondary sources (an AI search
+    summary, third-party API-proxy listings, developer-forum thread
+    titles) -- the id was changed to `gemini-3-pro-image-preview` and
+    shipped. Al disputed that fix from direct knowledge; checking GCP
+    Console's own Model Garden version table directly (not inferred, not
+    a search summary) settled it:
+        gemini-3-pro-image           2026-05-27   Generally Available
+        gemini-3-pro-image-preview   2025-11-20   Preview (older snapshot)
+    The bare id is correct and current -- reverted back to it. The 404
+    was therefore NOT an id-string problem. Most likely explanation left
+    standing: allowlist/access gating on a brand-new GCP project (real
+    developer-forum threads describe this for various Gemini 3 models,
+    though not confirmed for this exact GA id), or possibly a wrong
+    `GEMINI_REGION` -- Google's own official Vertex AI sample code for
+    this model uses `location="global"`, not a specific region like this
+    module's `DEFAULT_GEMINI_REGION` (`us-central1`); NOT yet changed
+    here since it hasn't been confirmed as the actual cause -- flagged
+    for the next real invocation's error response (404 vs 403 will tell
+    us which). Until then, images may keep failing; `gemini-2.5-flash-
+    image` (still working, not retiring until 2026-10-02) remains the
+    fallback if Al wants one before this is fully resolved.
 
     Token minting deliberately does NOT pull in `google-cloud-aiplatform`
     or `google-genai` (both heavy, protobuf/grpc-backed SDKs this project
@@ -301,7 +307,17 @@ DEFAULT_BEDROCK_REMOVE_BG_REGION = "us-east-1"
 # newer/better image-editing model later, this is the one parameter to
 # change (kept as its own constant/env var rather than hardcoded in call_
 # gemini_for_image for exactly that reason).
-DEFAULT_GEMINI_IMAGE_MODEL_ID = "gemini-3-pro-image-preview"
+#
+# REAL INCIDENT (2026-09-04), id CORRECTED same day: a 404 against this
+# bare id was initially (and wrongly) diagnosed as needing a `-preview`
+# suffix -- reverted after Al pushed back and GCP Console's own Model
+# Garden version table (checked directly, not inferred) showed:
+#   gemini-3-pro-image           2026-05-27   Generally Available
+#   gemini-3-pro-image-preview   2025-11-20   Preview  (older snapshot)
+# So the bare id is correct and current; the `-preview` id is the
+# superseded pre-GA snapshot, not the "real" one. The 404 was NOT an id
+# problem -- see this module's own docstring for what's still open.
+DEFAULT_GEMINI_IMAGE_MODEL_ID = "gemini-3-pro-image"
 
 # Vertex AI's own default region for calling Gemini/Nano Banana models --
 # distinct from every Bedrock Region this module already uses (us-west-1/

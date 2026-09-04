@@ -534,7 +534,7 @@ Parameters:
       secrets, not a hard failure.
   GeminiModelId:
     Type: String
-    Default: gemini-3-pro-image-preview
+    Default: gemini-3-pro-image
     Description: >
       Model id passed in the URL path of Vertex AI's own REST
       generateContent endpoint (see call_gemini_for_image in src/
@@ -549,19 +549,17 @@ Parameters:
       retirement notice on Vertex AI (2026-10-02) in Google's own
       migration docs, discovered while researching this v5 switch; Al
       picked this (Pro) tier directly over the cheaper/faster Gemini 3.1
-      Flash Image successor when asked. The id carries a `-preview`
-      suffix (`gemini-3-pro-image-preview`, NOT `gemini-3-pro-image`) --
-      confirmed via a real Vertex AI 404 on first live invocation (2026-
-      09-04) that ALL Gemini 3 models are still preview-only on Vertex AI
-      and use that suffix in their actual publisher-model id. Separately,
-      this preview model is allowlist-gated by Google (confirmed via
-      numerous other developers hitting the identical 404 and filing
-      access requests on Google's AI Developers Forum) -- the correct id
-      alone does not guarantee this parameter's value will actually work
-      until Google grants the GCP project access. See src/product_
-      article_generator/app.py's call_gemini_for_image and this module's
-      own docstring for the full research trail on why this is a raw
-      requests.post call rather than the google-cloud-aiplatform SDK.
+      Flash Image successor when asked. REAL INCIDENT (2026-09-04),
+      CORRECTED same day: a first live 404 against this bare id was
+      initially misdiagnosed as needing a `-preview` suffix, based on
+      secondary sources -- that was wrong. Al disputed it, and GCP
+      Console's own Model Garden version table (checked directly) shows
+      gemini-3-pro-image is Generally Available (2026-05-27), while
+      gemini-3-pro-image-preview (2025-11-20) is the older, superseded
+      preview snapshot. The bare id here is correct and current. The
+      original 404's real cause is still open -- see call_gemini_for_
+      image's own docstring and GeminiRegion's description below (the
+      `global` location question) for what's left to check.
   GeminiRegion:
     Type: String
     Default: us-central1
@@ -573,7 +571,13 @@ Parameters:
       is its own parameter. us-central1 is Google's own most broadly-
       available Vertex AI Region for Gemini/Nano Banana models; only
       change this if your GCP project has a data-residency requirement
-      pointing elsewhere.
+      pointing elsewhere. FLAGGED, NOT YET CHANGED (2026-09-04): Google's
+      own official Vertex AI sample code for Gemini 3 Pro Image uses
+      `location="global"`, not a specific region -- unconfirmed whether
+      that's required (vs. just Google's own sample choice) for this
+      model specifically. Left as us-central1 until the next real
+      invocation's error response confirms or rules this out as a cause
+      of the 2026-09-04 404 incident (see GeminiModelId above).
   ConsumerSiteDomainName:
     Type: String
     Default: ""
