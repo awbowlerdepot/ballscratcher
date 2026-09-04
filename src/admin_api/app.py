@@ -1048,4 +1048,81 @@ def check_all_prices(limit: Optional[int] = Query(None, gt=0)):
     return service.queue_price_check_batch(limit)
 
 
+# --- Ball-review articles (022_product_articles.sql) -----------------------
+# Same review-queue shape as /video-candidates and /price-sources above --
+# reuses ApproveRequest/RejectRequest as-is rather than defining new request
+# models, since the fields (resolved_by, optional reason) are identical.
+
+@app.get("/articles")
+def get_articles(
+    status: str = Query("pending"),
+    product_id: Optional[str] = Query(None),
+    limit: int = Query(50, le=200),
+    offset: int = Query(0, ge=0),
+):
+    # status=all (same convention as /video-candidates?status=all) returns
+    # every status instead of filtering.
+    query_status = None if status == "all" else status
+    conn = service.get_db_connection()
+    try:
+        items = service.list_articles(conn, status=query_status, product_id=product_id, limit=limit, offset=offset)
+        return {"items": items}
+    finally:
+        conn.close()
+
+
+@app.get("/articles/{article_id}")
+def get_article(article_id: str):
+    conn = service.get_db_connection()
+    try:
+        item = service.get_article(conn, article_id)
+        if item is None:
+            raise HTTPException(status_code=404, detail="product_articles item not found")
+        return item
+    finally:
+        conn.close()
+
+
+@app.post("/articles/{article_id}/approve")
+def approve_article(article_id: str, body: ApproveRequest):
+    conn = service.get_db_connection()
+    try:
+        return service.approve_article(conn, article_id, body.resolved_by)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/articles/{article_id}/reject")
+def reject_article(article_id: str, body: RejectRequest):
+    conn = service.get_db_connection()
+    try:
+        return service.reject_article(conn, article_id, body.resolved_by, body.reason)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/products/{product_id}/generate-article")
+def generate_article(product_id: str):
+    # On-demand "generate/regenerate article" trigger, mirroring discover-
+    # videos/discover-price-sources above. No request body: always scopes
+    # to exactly this one product_id. See service.queue_article_generation's
+    # docstring for the product_id (singular)-vs-product_ids payload-shape
+    # gotcha this route depends on getting right.
+    conn = service.get_db_connection()
+    try:
+        return service.queue_article_generation(conn, product_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
 handler = Mangum(app)

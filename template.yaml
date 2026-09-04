@@ -1140,6 +1140,11 @@ Resources:
           # no queue in front of it" shape as VIDEO_DISCOVERY_FUNCTION_NAME
           # immediately above.
           PRICE_CHECKER_FUNCTION_NAME: !Ref PriceCheckerFunction
+          # Read by service.py's queue_article_generation (POST
+          # /products/{id}/generate-article) -- same "function NAME for a
+          # direct lambda:InvokeFunction call, no queue in front of it"
+          # shape as VIDEO_DISCOVERY_FUNCTION_NAME/PRICE_CHECKER_FUNCTION_NAME.
+          PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME: !Ref ProductArticleGeneratorFunction
       Policies:
         - Statement:
             - Effect: Allow
@@ -1208,6 +1213,14 @@ Resources:
               Action:
                 - lambda:InvokeFunction
               Resource: !GetAtt PriceCheckerFunction.Arn
+        # For queue_article_generation (POST /products/{id}/generate-article)
+        # -- same "narrowest permission, scoped to exactly this function's
+        # own ARN" convention as the two grants immediately above.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource: !GetAtt ProductArticleGeneratorFunction.Arn
       # Four explicit per-method routes instead of a single `Method: ANY`
       # -- found via a real live test (curl OPTIONS /health with no
       # Authorization header returned a bare 401 "Unauthorized" from API
@@ -1784,6 +1797,76 @@ Resources:
       # approval -- see above) -- also still accepts direct/manual
       # invocation with {"product_video_id": "...", "transcript": "...",
       # "transcript_note": "..."} for testing one row by hand.
+
+  ProductArticleGeneratorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-product-article-generator
+      CodeUri: src/product_article_generator/
+      Handler: app.handler
+      # Bigger structured generation than VideoSummarizerFunction's one
+      # paragraph (a whole article: title/hook/narrative/two bullet
+      # lists/pros-cons/buying tips/verdict/FAQ array/comparison table),
+      # plus this loops over every qualifying product in one invocation
+      # on the scheduled path -- generous headroom over that function's
+      # own 150s, not sized against a confirmed incident.
+      Timeout: 280
+      Environment:
+        Variables:
+          BEDROCK_MODEL_ID: !Ref BedrockModelId
+      Policies:
+        - VPCAccessPolicy: {}
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+            # Same three-statement Global CRIS inference-profile grant as
+            # VideoSummarizerFunction -- see that function's Policies
+            # block for the full reasoning.
+            - Sid: GrantGlobalCrisInferenceProfileRegionAccess
+              Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockModelId}"
+            - Sid: GrantGlobalCrisInferenceProfileInRegionModelAccess
+              Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/${BedrockBaseModelId}"
+              Condition:
+                StringEquals:
+                  bedrock:InferenceProfileArn: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockModelId}"
+            - Sid: GrantGlobalCrisInferenceProfileGlobalModelAccess
+              Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: !Sub "arn:aws:bedrock:::foundation-model/${BedrockBaseModelId}"
+              Condition:
+                StringEquals:
+                  bedrock:InferenceProfileArn: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockModelId}"
+      Events:
+        DailySchedule:
+          Type: Schedule
+          Properties:
+            # Daily, not hourly like BowlerdepotVideoSyncFunction -- a new
+            # article only becomes possible once a product crosses the
+            # "has an approved, summarized video" gate for the first time
+            # (see list_products_needing_article), which happens far less
+            # often catalog-wide than an individual video getting
+            # approved, so there's no real responsiveness reason for a
+            # tighter cadence -- and each invocation is one Bedrock call
+            # per qualifying product, real cost that shouldn't be paid
+            # more often than needed.
+            Schedule: rate(1 day)
+            Name: bowling-scraper-product-article-generator-daily
+            Description: Generates a pending review article for every product that newly qualifies (has an approved, non-blocked-channel, summarized video) and has none yet.
+            Enabled: true
+      # Also accepts direct/manual invocation with {"product_id": "..."}
+      # for an admin-triggered on-demand (re)generate -- see
+      # admin_api.queue_article_generation / POST /products/{id}/
+      # generate-article. That path bypasses the "no article yet" gate
+      # the scheduled sweep applies, since it's an explicit human request.
 
   # --- commercebuild brand family (Storm, Roto Grip, 900 Global) ---
   #
@@ -2609,6 +2692,8 @@ Outputs:
     Value: !GetAtt BowlerDepotReconciliationFunction.Arn
   BowlerdepotVideoSyncFunctionArn:
     Value: !GetAtt BowlerdepotVideoSyncFunction.Arn
+  ProductArticleGeneratorFunctionArn:
+    Value: !GetAtt ProductArticleGeneratorFunction.Arn
   VideoDiscoveryFunctionArn:
     Value: !GetAtt VideoDiscoveryFunction.Arn
   VideoTranscriptFetcherFunctionArn:

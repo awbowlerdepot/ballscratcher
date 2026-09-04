@@ -541,6 +541,141 @@ def get_video_summary_by_bigcommerce_product_id(conn, bigcommerce_product_id: st
         return {"video_reviews_summary": summary, "video_reviews_summary_video_count": video_count}
 
 
+def get_product_article(conn, product_id: str):
+    """Backs GET /products/{id}/article -- the read side of 022_product_
+    articles.sql. Al: "this could be the backend that pulls together all
+    the creative and content for the frontend" for a bowling.com-style
+    ball review article on bowlerdepot.com.
+
+    Returns None only when product_id doesn't resolve to a real,
+    published product -- app.py maps that to 404, same as get_product's
+    own "doesn't exist" vs "exists but unpublished" non-distinction (see
+    get_product's docstring for why: a public route must not let a
+    visitor distinguish the two).
+
+    Otherwise ALWAYS returns 200 with {"product_id": ..., "article": ...},
+    article being None when there's no APPROVED article yet -- same
+    always-200-null-field contract as get_video_summary_by_bigcommerce_
+    product_id above. This is the normal case for most of the catalog (an
+    article only exists once product_article_generator has run AND an
+    admin has approved it -- see 022_product_articles.sql's header
+    comment), not an error condition a frontend needs special-case
+    handling for. A 'pending'/'rejected' article is invisible here even
+    if one exists -- same review-gate reasoning admin_api's whole
+    approve/reject workflow exists for in the first place.
+
+    Spec values (core/coverstock/RG/differential/mass_bias) are
+    deliberately NOT read off product_articles -- they're joined live
+    against products/product_skus/cores here, exactly as migration 022's
+    header comment describes, so a spec correction elsewhere never
+    requires regenerating the article to stay accurate. Same reasoning
+    for comparison_table: sibling_product_ids on the article row is only
+    ever a heuristic id list (see that migration's own caveat on it not
+    being ground truth); the actual comparison_table rows returned here
+    are built fresh from each sibling's CURRENT live data, and any
+    sibling that's since been unpublished or deleted silently drops out
+    of the table rather than erroring the whole article -- a stale
+    heuristic reference shouldn't be able to break an otherwise-good,
+    already-approved article."""
+    with conn.cursor() as cur:
+        cur.execute("select id from products where id = %s and published = true", (product_id,))
+        if cur.fetchone() is None:
+            return None
+
+        cur.execute(
+            """
+            select id, title, hook, performance_summary, who_should_buy, who_should_skip,
+                   pros, cons, buying_tips, verdict, faq, sibling_product_ids,
+                   source_video_ids, generated_at
+            from product_articles
+            where product_id = %s and status = 'approved'
+            """,
+            (product_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return {"product_id": product_id, "article": None}
+
+        columns = [desc[0] for desc in cur.description]
+        article = dict(zip(columns, row))
+
+        # Live spec highlight for THIS product (name/url/image/core/
+        # coverstock/per-weight SKU specs) -- same join shape as
+        # get_product above, just the subset a spec-highlight/comparison
+        # table section actually needs, not the full detail-page payload.
+        cur.execute(
+            """
+            select p.name, p.url, c.name as core_name, c.core_type,
+                   p.coverstock_name, p.coverstock_type,
+                   coalesce(
+                       (
+                           select pi.stored_url from product_images pi
+                           where pi.product_id = p.id and pi.is_visible = true
+                           order by pi.is_thumbnail desc, pi.display_order, pi.id
+                           limit 1
+                       ),
+                       p.primary_image_url
+                   ) as primary_image_url
+            from products p
+            left join cores c on c.id = p.core_id
+            where p.id = %s
+            """,
+            (product_id,),
+        )
+        spec_row = cur.fetchone()
+        spec_columns = [desc[0] for desc in cur.description]
+        article["product"] = dict(zip(spec_columns, spec_row)) if spec_row else None
+
+        cur.execute(
+            """
+            select weight_lbs, rg, differential, mass_bias
+            from product_skus
+            where product_id = %s
+            order by weight_lbs desc
+            """,
+            (product_id,),
+        )
+        sku_columns = [desc[0] for desc in cur.description]
+        skus = [dict(zip(sku_columns, r)) for r in cur.fetchall()]
+        if article["product"] is not None:
+            article["product"]["skus"] = skus
+
+        # Comparison table -- see this function's own docstring for why
+        # this is a fresh live join, not a stored blob. ::uuid[] cast is
+        # required (sibling_product_ids comes back from jsonb as a plain
+        # Python list of strings, and psycopg2's list->ARRAY adaptation
+        # defaults to text[], which won't compare against a uuid column
+        # without an explicit cast).
+        sibling_ids = article.get("sibling_product_ids") or []
+        comparison_table = []
+        if sibling_ids:
+            cur.execute(
+                """
+                select p.id, p.name, p.url, c.name as core_name,
+                       p.coverstock_name,
+                       coalesce(
+                           (
+                               select pi.stored_url from product_images pi
+                               where pi.product_id = p.id and pi.is_visible = true
+                               order by pi.is_thumbnail desc, pi.display_order, pi.id
+                               limit 1
+                           ),
+                           p.primary_image_url
+                       ) as primary_image_url
+                from products p
+                left join cores c on c.id = p.core_id
+                where p.id = any(%s::uuid[]) and p.published = true
+                order by p.name
+                """,
+                (sibling_ids,),
+            )
+            sib_columns = [desc[0] for desc in cur.description]
+            comparison_table = [dict(zip(sib_columns, r)) for r in cur.fetchall()]
+        article["comparison_table"] = comparison_table
+
+        return {"product_id": product_id, "article": article}
+
+
 def get_products_compare(conn, ids: list) -> list:
     """Batch fetch for the comparison page -- Al's ask for "an intuitive
     way to populate a ball comparison page" needs the frontend to be able

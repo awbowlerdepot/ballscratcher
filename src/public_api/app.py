@@ -105,6 +105,22 @@ def get_similar_products(product_id: str, limit: int = Query(5, le=20)):
     return {"items": service.list_similar_products(conn, product_id, limit=limit)}
 
 
+@app.get("/products/{product_id}/article")
+def get_product_article(product_id: str):
+    # Ball-review article (022_product_articles.sql) -- see
+    # service.get_product_article's docstring. 404 only for a
+    # nonexistent/unpublished product_id (same non-distinction as
+    # GET /products/{id} above); an existing published product with no
+    # APPROVED article yet still returns 200 with article: None, same
+    # always-200 contract as the bowlerdepot video-summary embed route
+    # below.
+    conn = service.get_db_connection()
+    result = service.get_product_article(conn, product_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return result
+
+
 @app.get("/bowlerdepot/products/{bigcommerce_product_id}/video-summary")
 def get_bowlerdepot_video_summary(bigcommerce_product_id: str):
     # Backs the embed script running on live bowlerdepot.com product

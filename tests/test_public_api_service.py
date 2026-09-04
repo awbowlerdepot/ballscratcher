@@ -751,6 +751,76 @@ class _FakeCursor:
                     p.get("video_reviews_summary"), p.get("video_reviews_summary_video_count", 0),
                 )
 
+        # --- get_product_article (GET /products/{id}/article) --
+        # 022_product_articles.sql. Al: "this could be the backend that
+        # pulls together all the creative and content for the frontend."
+        # db["product_articles"] is keyed by product_id (product_articles
+        # is unique on product_id -- one row per product, see that
+        # migration's own header comment), value is the approved article
+        # dict, same "flat dict, not a real join" fixture simplification
+        # used throughout this file.
+
+        elif q == "select id from products where id = %s and published = true":
+            pid = params[0]
+            p = self.db["products"].get(pid)
+            self._description = [("id",)]
+            self._result_row = (pid,) if (p is not None and p["published"]) else None
+
+        elif q.startswith("select id, title, hook, performance_summary, who_should_buy, who_should_skip,"):
+            pid = params[0]
+            article = self.db.get("product_articles", {}).get(pid)
+            self._description = [(c,) for c in (
+                "id", "title", "hook", "performance_summary", "who_should_buy", "who_should_skip",
+                "pros", "cons", "buying_tips", "verdict", "faq", "sibling_product_ids",
+                "source_video_ids", "generated_at",
+            )]
+            if article is None or article.get("status") != "approved":
+                self._result_row = None
+            else:
+                self._result_row = (
+                    article["id"], article.get("title"), article.get("hook"),
+                    article.get("performance_summary"), article.get("who_should_buy", []),
+                    article.get("who_should_skip", []), article.get("pros", []), article.get("cons", []),
+                    article.get("buying_tips"), article.get("verdict"), article.get("faq", []),
+                    article.get("sibling_product_ids", []), article.get("source_video_ids", []),
+                    article.get("generated_at"),
+                )
+
+        elif q.startswith("select p.name, p.url, c.name as core_name, c.core_type,"):
+            pid = params[0]
+            p = self.db["products"].get(pid)
+            self._description = [(c,) for c in (
+                "name", "url", "core_name", "core_type", "coverstock_name", "coverstock_type",
+                "primary_image_url",
+            )]
+            if p is None:
+                self._result_row = None
+            else:
+                core = self.db["cores"].get(p.get("core_id"), {})
+                self._result_row = (
+                    p["name"], p["url"], core.get("name"), core.get("core_type"),
+                    p.get("coverstock_name"), p.get("coverstock_type"),
+                    _derive_primary_image_url(self.db, pid, p),
+                )
+
+        elif q.startswith("select p.id, p.name, p.url, c.name as core_name, p.coverstock_name,"):
+            wanted = set(params[0])
+            self._description = [(c,) for c in (
+                "id", "name", "url", "core_name", "coverstock_name", "primary_image_url",
+            )]
+            rows = []
+            for pid in wanted:
+                p = self.db["products"].get(pid)
+                if p is None or not p["published"]:
+                    continue  # unpublished/deleted sibling silently drops out -- see service docstring
+                core = self.db["cores"].get(p.get("core_id"), {})
+                rows.append((
+                    pid, p["name"], p["url"], core.get("name"), p.get("coverstock_name"),
+                    _derive_primary_image_url(self.db, pid, p),
+                ))
+            rows.sort(key=lambda r: r[1])  # order by p.name
+            self._result_rows = rows
+
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
 
@@ -776,7 +846,7 @@ class _FakeConnection:
 def _fresh_db():
     return {
         "brands": {}, "products": {}, "cores": {}, "coverstocks": {}, "skus": {}, "images": {},
-        "videos": {}, "bowlerdepot_products": {},
+        "videos": {}, "bowlerdepot_products": {}, "product_articles": {},
     }
 
 
@@ -1302,6 +1372,110 @@ def test_get_video_summary_by_bigcommerce_product_id_matched_but_no_summary_yet(
     result = service.get_video_summary_by_bigcommerce_product_id(_FakeConnection(db), "4390")
 
     assert result == {"video_reviews_summary": None, "video_reviews_summary_video_count": 0}
+
+
+# --- get_product_article (GET /products/{id}/article) -- 022_product_
+# articles.sql. Al: "this could be the backend that pulls together all
+# the creative and content for the frontend." Always-200 contract for an
+# existing published product with no approved article, same as the
+# bowlerdepot video-summary embed route above; None (-> app.py's 404)
+# only for a nonexistent/unpublished product_id.
+
+def _seed_approved_article(db, product_id, **overrides):
+    article = {
+        "id": "art-1", "status": "approved", "title": "The Fury: A Heavy-Oil Workhorse",
+        "hook": "Picture this...", "performance_summary": "Strong midlane read.",
+        "who_should_buy": ["Heavy oil bowlers"], "who_should_skip": ["Light oil bowlers"],
+        "pros": ["Strong backend"], "cons": ["Not for light oil"], "buying_tips": "Drill for control.",
+        "verdict": "A solid heavy-oil piece.", "faq": [{"question": "Q", "answer": "A"}],
+        "sibling_product_ids": [], "source_video_ids": ["vid-1"], "generated_at": "2026-08-01",
+    }
+    article.update(overrides)
+    db.setdefault("product_articles", {})[product_id] = article
+    return article
+
+
+def test_get_product_article_returns_none_for_nonexistent_product():
+    db = _fresh_db()
+    result = service.get_product_article(_FakeConnection(db), "does-not-exist")
+    assert result is None
+
+
+def test_get_product_article_returns_none_for_unpublished_product():
+    """Same non-distinction as get_product's own 404 -- an unpublished
+    product must look identical to a nonexistent one to a public caller."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1", published=False)
+    result = service.get_product_article(_FakeConnection(db), pid)
+    assert result is None
+
+
+def test_get_product_article_returns_null_article_when_none_approved_yet():
+    """The normal case for most of the catalog -- always 200 with
+    article: None, not a 404, mirroring get_video_summary_by_bigcommerce_
+    product_id's own always-200 contract."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result == {"product_id": pid, "article": None}
+
+
+def test_get_product_article_ignores_pending_article():
+    """A pending (or rejected) article is invisible here even though a
+    row exists -- only 'approved' is ever surfaced publicly."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid, status="pending")
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result == {"product_id": pid, "article": None}
+
+
+def test_get_product_article_returns_full_approved_article_with_live_spec_join():
+    db = _fresh_db()
+    db["cores"]["core-1"] = {"name": "Sonar", "core_type": "asymmetric"}
+    pid = _seed_published_current_product(
+        db, pid="prod-1", name="Equinox Solid", url="https://storm.com/equinox-solid",
+        core_id="core-1", coverstock_name="R2S Hybrid", coverstock_type="hybrid",
+    )
+    db["skus"][pid] = [{"weight_lbs": 15, "rg": 2.49, "differential": 0.048, "mass_bias": None}]
+    _seed_approved_article(db, pid)
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result["product_id"] == pid
+    article = result["article"]
+    assert article["title"] == "The Fury: A Heavy-Oil Workhorse"
+    assert article["faq"] == [{"question": "Q", "answer": "A"}]
+    # Live-joined spec highlight -- not stored on the article row itself.
+    assert article["product"]["name"] == "Equinox Solid"
+    assert article["product"]["core_name"] == "Sonar"
+    assert article["product"]["coverstock_name"] == "R2S Hybrid"
+    assert article["product"]["skus"] == [{"weight_lbs": 15, "rg": 2.49, "differential": 0.048, "mass_bias": None}]
+
+
+def test_get_product_article_comparison_table_drops_unpublished_siblings():
+    """sibling_product_ids on the article row is a heuristic (see
+    022_product_articles.sql's own caveat) -- a sibling that's since been
+    unpublished or deleted must silently drop out of comparison_table
+    rather than breaking the whole article response."""
+    db = _fresh_db()
+    published_sibling = _seed_published_current_product(
+        db, pid="sib-published", name="Equinox Hybrid", url="https://storm.com/equinox-hybrid",
+    )
+    unpublished_sibling = _seed_published_current_product(
+        db, pid="sib-unpublished", name="Equinox Pearl", published=False,
+    )
+    pid = _seed_published_current_product(db, pid="prod-1", name="Equinox Solid")
+    _seed_approved_article(db, pid, sibling_product_ids=[published_sibling, unpublished_sibling, "sib-deleted"])
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    comparison_ids = [row["id"] for row in result["article"]["comparison_table"]]
+    assert comparison_ids == ["sib-published"]
 
 
 if __name__ == "__main__":

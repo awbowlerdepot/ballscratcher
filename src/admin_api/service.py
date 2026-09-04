@@ -3530,3 +3530,148 @@ def delete_blocked_channel(conn, channel_id: str) -> dict:
             raise LookupError(f"No blocked_video_channels row with id {channel_id}")
     conn.commit()
     return {"deleted": True, "id": channel_id}
+
+
+# --- Ball-review-article generation (022_product_articles.sql) --------------
+#
+# Al: "Do you think we generate ball review article like the one here:
+# [bowling.com's Storm Equinox Hybrid review]... this could be the backend
+# that pulls together all the creative and content for the frontend." Scoped
+# via a follow-up AskUserQuestion exchange: full bowling.com-shaped article
+# (not just the FAQ piece), and -- same as product_videos/product_price_
+# sources -- generated content sits in product_articles.status
+# (pending/approved/rejected) and is never auto-exposed to public_api until
+# an admin approves it here. list_articles/get_article/approve_article/
+# reject_article below intentionally mirror list_price_sources/
+# get_video_candidate/approve_price_source/reject_price_source's exact
+# shapes (see those functions above) rather than inventing a new pattern.
+
+def list_articles(conn, status: str = "pending", product_id: str = None, limit: int = 50, offset: int = 0) -> list:
+    """Lists product_articles rows joined with product/brand name for
+    display, same join-for-display shape as list_price_sources. status=None
+    (the admin-site "all" option, same convention as
+    GET /video-candidates?status=all) returns every status."""
+    query = """
+        select pa.id, pa.product_id, p.name as product_name, b.name as brand_name,
+               pa.status, pa.title, pa.generated_at, pa.reviewed_at,
+               pa.resolved_by, pa.created_at
+        from product_articles pa
+        join products p on p.id = pa.product_id
+        join brands b on b.id = p.brand_id
+    """
+    params = []
+    conditions = []
+    if status is not None:
+        conditions.append("pa.status = %s")
+        params.append(status)
+    if product_id:
+        conditions.append("pa.product_id = %s")
+        params.append(product_id)
+    if conditions:
+        query += " where " + " and ".join(conditions)
+    query += " order by pa.created_at desc, pa.id asc limit %s offset %s"
+    params += [limit, offset]
+
+    with conn.cursor() as cur:
+        cur.execute(query, params)
+        columns = [desc[0] for desc in cur.description]
+        return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
+def get_article(conn, article_id: str):
+    """Full detail for one article, including all the generated content
+    fields (title/hook/performance_summary/faq/etc) -- the admin-site
+    review view renders straight off this. Returns None if not found
+    (same "let the route layer turn None into a 404" convention as
+    get_video_candidate) rather than raising."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select pa.*, p.name as product_name, b.name as brand_name
+            from product_articles pa
+            join products p on p.id = pa.product_id
+            join brands b on b.id = p.brand_id
+            where pa.id = %s
+            """,
+            (article_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        columns = [desc[0] for desc in cur.description]
+        return dict(zip(columns, row))
+
+
+def approve_article(conn, article_id: str, resolved_by: str) -> dict:
+    """Mirrors approve_price_source: only a pending article can be
+    approved (fails closed with ValueError on an already-resolved row
+    rather than silently re-stamping reviewed_at/resolved_by)."""
+    with conn.cursor() as cur:
+        cur.execute("select status from product_articles where id = %s", (article_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError(f"No product_articles row with id {article_id}")
+        if row[0] != "pending":
+            raise ValueError(f"product_articles row {article_id} is already {row[0]}, not pending")
+
+        cur.execute(
+            "update product_articles set status = 'approved', reviewed_at = now(), resolved_by = %s where id = %s",
+            (resolved_by, article_id),
+        )
+    conn.commit()
+    return {"article_id": article_id, "status": "approved"}
+
+
+def reject_article(conn, article_id: str, resolved_by: str, reason: str = None) -> dict:
+    """Mirrors reject_price_source. `reason` is accepted for call-site/
+    admin-site symmetry with the video-candidate and price-source reject
+    routes but, same as those, isn't persisted -- there's no reason
+    column on product_articles."""
+    with conn.cursor() as cur:
+        cur.execute("select status from product_articles where id = %s", (article_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError(f"No product_articles row with id {article_id}")
+        if row[0] != "pending":
+            raise ValueError(f"product_articles row {article_id} is already {row[0]}, not pending")
+
+        cur.execute(
+            "update product_articles set status = 'rejected', reviewed_at = now(), resolved_by = %s where id = %s",
+            (resolved_by, article_id),
+        )
+    conn.commit()
+    return {"article_id": article_id, "status": "rejected"}
+
+
+def queue_article_generation(conn, product_id: str) -> dict:
+    """Direct lambda:InvokeFunction, no queue in front -- same convention
+    as queue_video_discovery, invoked from POST /products/{id}/generate-
+    article (both the "Generate article" button in product detail view
+    and a "Regenerate" button on an already-reviewed article).
+
+    Payload key is deliberately `product_id` (singular), NOT `product_ids`
+    (a list) like queue_video_discovery's VideoDiscoveryFunction payload --
+    product_article_generator.app.handler's on-demand path checks
+    event.get("product_id") specifically (see app.py's `if event.get(
+    "product_id"):` branch); sending product_ids here would silently miss
+    that branch and fall through to the catalog-wide
+    list_products_needing_article scan instead of generating for just this
+    product."""
+    with conn.cursor() as cur:
+        cur.execute("select id from products where id = %s", (product_id,))
+        if cur.fetchone() is None:
+            raise LookupError(f"No product with id {product_id}")
+
+    function_name = os.environ.get("PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME")
+    if not function_name:
+        return {"queued": False, "reason": "PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME is not configured on this deployment"}
+
+    import boto3
+
+    lambda_client = boto3.client("lambda")
+    lambda_client.invoke(
+        FunctionName=function_name,
+        InvocationType="Event",
+        Payload=json.dumps({"product_id": product_id}),
+    )
+    return {"queued": True, "product_id": product_id}

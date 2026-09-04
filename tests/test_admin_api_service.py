@@ -691,6 +691,71 @@ class FakeCursor:
             self._last_result = (channel_id,) if existed else None
             self.description = [("id",)]
 
+        # --- 022_product_articles.sql: ball-review article review workflow
+        # (Al: "this could be the backend that pulls together all the
+        # creative and content for the frontend"). db["product_articles"]
+        # rows carry product_name/brand_name directly on the row -- same
+        # "flat dict, no real join" simplification blocked_video_channels'
+        # own section above uses; this fake doesn't model an actual SQL
+        # join against separate products/brands tables.
+
+        elif q.startswith("select pa.id, pa.product_id, p.name as product_name, b.name as brand_name"):
+            rows = list(self.db.get("product_articles", {}).values())
+            remaining = list(params)
+            # Params order mirrors service.list_articles' own conditions
+            # list: status (if given), then product_id (if given), then
+            # limit/offset always last -- see that function's docstring.
+            if "pa.status = %s" in q:
+                status = remaining.pop(0)
+                rows = [r for r in rows if r["status"] == status]
+            if "pa.product_id = %s" in q:
+                product_id = remaining.pop(0)
+                rows = [r for r in rows if r["product_id"] == product_id]
+            rows.sort(key=lambda r: (r.get("created_at") or "", r["id"]), reverse=True)
+            self._rows = [
+                (r["id"], r["product_id"], r["product_name"], r["brand_name"], r["status"],
+                 r.get("title"), r.get("generated_at"), r.get("reviewed_at"), r.get("resolved_by"),
+                 r.get("created_at"))
+                for r in rows
+            ]
+            self.description = [
+                ("id",), ("product_id",), ("product_name",), ("brand_name",), ("status",),
+                ("title",), ("generated_at",), ("reviewed_at",), ("resolved_by",), ("created_at",),
+            ]
+
+        elif q.startswith("select pa.*, p.name as product_name, b.name as brand_name"):
+            (article_id,) = params
+            row = self.db.get("product_articles", {}).get(article_id)
+            if row is None:
+                self._last_result = None
+                self.description = [("id",)]
+            else:
+                columns = list(row.keys())
+                self._last_result = tuple(row[c] for c in columns)
+                self.description = [(c,) for c in columns]
+
+        elif q.startswith("select status from product_articles where id = %s"):
+            (article_id,) = params
+            row = self.db.get("product_articles", {}).get(article_id)
+            self._last_result = (row["status"],) if row else None
+            self.description = [("status",)]
+
+        elif q.startswith("update product_articles set status = 'approved'"):
+            resolved_by, article_id = params
+            row = self.db["product_articles"][article_id]
+            row["status"] = "approved"
+            row["resolved_by"] = resolved_by
+            row["reviewed_at"] = "now"
+            self._last_result = None
+
+        elif q.startswith("update product_articles set status = 'rejected'"):
+            resolved_by, article_id = params
+            row = self.db["product_articles"][article_id]
+            row["status"] = "rejected"
+            row["resolved_by"] = resolved_by
+            row["reviewed_at"] = "now"
+            self._last_result = None
+
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
 
@@ -3960,6 +4025,212 @@ def test_delete_blocked_channel_missing_raises():
         assert False, "expected LookupError"
     except LookupError:
         pass
+
+
+# --- 022_product_articles.sql: ball-review article review workflow --
+# Al: "this could be the backend that pulls together all the creative and
+# content for the frontend." Same list/get/approve/reject shape as
+# video-candidates and price-sources above (list_articles/get_article/
+# approve_article/reject_article mirror list_price_sources/get_video_
+# candidate/approve_price_source/reject_price_source almost exactly --
+# see those functions' own docstrings in service.py).
+
+def _fake_article_row(**overrides):
+    row = {
+        "id": "art-1", "product_id": "prod-1", "product_name": "Equinox Solid", "brand_name": "Storm",
+        "status": "pending", "title": "The Storm Equinox Solid: A Heavy-Oil Workhorse",
+        "hook": "Picture this...", "performance_summary": "Strong midlane read.",
+        "who_should_buy": ["Heavy oil bowlers"], "who_should_skip": ["Light oil bowlers"],
+        "pros": ["Strong backend"], "cons": ["Not for light oil"], "buying_tips": "Drill for control.",
+        "verdict": "A solid heavy-oil piece.", "faq": [{"question": "Q", "answer": "A"}],
+        "comparison_table": [], "sibling_product_ids": [], "source_video_ids": ["vid-1"],
+        "generated_at": "2026-08-01", "reviewed_at": None, "resolved_by": None,
+        "created_at": "2026-08-01",
+    }
+    row.update(overrides)
+    return row
+
+
+def test_list_articles_filters_by_status_and_orders_most_recent_first():
+    db = {"product_articles": {
+        "art-1": _fake_article_row(id="art-1", status="pending", created_at="2026-08-01"),
+        "art-2": _fake_article_row(id="art-2", status="approved", created_at="2026-08-02"),
+        "art-3": _fake_article_row(id="art-3", status="pending", created_at="2026-08-03"),
+    }}
+    conn = FakeConnection(db)
+
+    result = service.list_articles(conn, status="pending")
+
+    assert [r["id"] for r in result] == ["art-3", "art-1"]  # most recent first, approved excluded
+
+
+def test_list_articles_status_none_returns_every_status():
+    db = {"product_articles": {
+        "art-1": _fake_article_row(id="art-1", status="pending"),
+        "art-2": _fake_article_row(id="art-2", status="rejected"),
+    }}
+    conn = FakeConnection(db)
+
+    result = service.list_articles(conn, status=None)
+
+    assert {r["id"] for r in result} == {"art-1", "art-2"}
+
+
+def test_list_articles_product_id_filter():
+    db = {"product_articles": {
+        "art-1": _fake_article_row(id="art-1", product_id="prod-1"),
+        "art-2": _fake_article_row(id="art-2", product_id="prod-2"),
+    }}
+    conn = FakeConnection(db)
+
+    result = service.list_articles(conn, status=None, product_id="prod-2")
+
+    assert [r["id"] for r in result] == ["art-2"]
+
+
+def test_get_article_returns_full_detail():
+    db = {"product_articles": {"art-1": _fake_article_row()}}
+    conn = FakeConnection(db)
+
+    result = service.get_article(conn, "art-1")
+
+    assert result["title"] == "The Storm Equinox Solid: A Heavy-Oil Workhorse"
+    assert result["faq"] == [{"question": "Q", "answer": "A"}]
+    assert result["product_name"] == "Equinox Solid"
+    assert result["brand_name"] == "Storm"
+
+
+def test_get_article_returns_none_for_missing_id():
+    db = {"product_articles": {}}
+    conn = FakeConnection(db)
+    assert service.get_article(conn, "does-not-exist") is None
+
+
+def test_approve_article_sets_status_and_resolved_by():
+    db = {"product_articles": {"art-1": _fake_article_row(status="pending")}}
+    conn = FakeConnection(db)
+
+    result = service.approve_article(conn, "art-1", "al@bringyourbest.co")
+
+    assert result == {"article_id": "art-1", "status": "approved"}
+    assert db["product_articles"]["art-1"]["status"] == "approved"
+    assert db["product_articles"]["art-1"]["resolved_by"] == "al@bringyourbest.co"
+    assert conn.committed is True
+
+
+def test_approve_article_missing_raises():
+    db = {"product_articles": {}}
+    conn = FakeConnection(db)
+    try:
+        service.approve_article(conn, "does-not-exist", "al@bringyourbest.co")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def test_approve_article_already_resolved_raises():
+    """Same "fails closed on a bad state transition" guard as
+    approve_price_source -- an already-approved/rejected row can't be
+    silently re-stamped."""
+    db = {"product_articles": {"art-1": _fake_article_row(status="approved")}}
+    conn = FakeConnection(db)
+    try:
+        service.approve_article(conn, "art-1", "al@bringyourbest.co")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_reject_article_sets_status_and_resolved_by():
+    db = {"product_articles": {"art-1": _fake_article_row(status="pending")}}
+    conn = FakeConnection(db)
+
+    result = service.reject_article(conn, "art-1", "al@bringyourbest.co", reason="FAQ was too generic")
+
+    assert result == {"article_id": "art-1", "status": "rejected"}
+    assert db["product_articles"]["art-1"]["status"] == "rejected"
+    assert db["product_articles"]["art-1"]["resolved_by"] == "al@bringyourbest.co"
+
+
+def test_reject_article_already_resolved_raises():
+    db = {"product_articles": {"art-1": _fake_article_row(status="rejected")}}
+    conn = FakeConnection(db)
+    try:
+        service.reject_article(conn, "art-1", "al@bringyourbest.co")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+# --- queue_article_generation (POST /products/{id}/generate-article) --
+# Same direct-lambda-invoke-no-queue shape as queue_video_discovery above,
+# but the payload key is `product_id` (singular), not `product_ids` -- see
+# service.queue_article_generation's own docstring for why that distinction
+# actually matters (product_article_generator's on-demand handler path
+# checks event.get("product_id") specifically).
+
+def test_queue_article_generation_invokes_function_with_singular_product_id():
+    db = _fake_db_with_product()
+    conn = FakeConnection(db)
+    fake_lambda = _FakeLambdaClient()
+
+    class _FakeBoto3:
+        def client(self, name):
+            assert name == "lambda"
+            return fake_lambda
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    os.environ["PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME"] = "bowling-scraper-product-article-generator"
+    try:
+        result = service.queue_article_generation(conn, "prod-1")
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+        del os.environ["PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME"]
+
+    assert result == {"queued": True, "product_id": "prod-1"}
+    assert len(fake_lambda.invocations) == 1
+    call = fake_lambda.invocations[0]
+    assert call["FunctionName"] == "bowling-scraper-product-article-generator"
+    assert call["InvocationType"] == "Event"
+    # Singular "product_id", NOT a "product_ids" list -- see this test
+    # section's own comment for why that distinction matters here.
+    assert json.loads(call["Payload"]) == {"product_id": "prod-1"}
+
+
+def test_queue_article_generation_missing_product_raises():
+    db = _fake_db_with_product()
+    conn = FakeConnection(db)
+    try:
+        service.queue_article_generation(conn, "does-not-exist")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def test_queue_article_generation_missing_function_name_returns_not_queued():
+    db = _fake_db_with_product()
+    conn = FakeConnection(db)
+    os.environ.pop("PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME", None)
+
+    class _ExplodingBoto3:
+        def client(self, name):
+            raise AssertionError("should never be called when the function name isn't configured")
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _ExplodingBoto3()
+    try:
+        result = service.queue_article_generation(conn, "prod-1")
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+
+    assert result == {"queued": False, "reason": "PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME is not configured on this deployment"}
 
 
 def _fake_db_with_price_source():

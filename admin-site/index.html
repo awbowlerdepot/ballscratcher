@@ -300,6 +300,7 @@
   <button data-tab="dashboard" onclick="showTab('dashboard')">Dashboard</button>
   <button data-tab="review" class="active" onclick="showTab('review')">Review Queue</button>
   <button data-tab="videos" onclick="showTab('videos')">Video Candidates</button>
+  <button data-tab="articles" onclick="showTab('articles')">Articles</button>
   <button data-tab="pricesources" onclick="showTab('pricesources')">Price Sources</button>
   <button data-tab="products" onclick="showTab('products')">Products</button>
   <button data-tab="cores" onclick="showTab('cores')">Cores</button>
@@ -427,6 +428,39 @@
       <button id="video-prev" onclick="videoPage(-1)" disabled>&larr; Prev</button>
       <span id="video-page-label"></span>
       <button id="video-next" onclick="videoPage(1)" disabled>Next &rarr;</button>
+    </div>
+  </section>
+
+  <!-- ============ Articles tab ============ -->
+  <!-- Al: "Do you think we generate ball review article like the one here:
+       [bowling.com's Storm Equinox Hybrid review]... this could be the
+       backend that pulls together all the creative and content for the
+       frontend." Same review-queue shape as Video Candidates above --
+       generated articles (product_article_generator Lambda) sit here as
+       pending/approved/rejected, never auto-exposed to public_api until
+       approved. -->
+  <section id="tab-articles" class="tab hidden">
+    <form class="filters" onsubmit="applyArticleFilters(); return false;">
+      <div class="field">
+        <label>Status</label>
+        <select id="article-status" onchange="applyArticleFilters()">
+          <option value="pending" selected>pending</option>
+          <option value="approved">approved</option>
+          <option value="rejected">rejected</option>
+          <option value="all">all</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Product ID (exact)</label>
+        <input id="article-product-id" type="text" placeholder="optional uuid">
+      </div>
+      <button class="btn" type="submit">Filter</button>
+    </form>
+    <div id="article-list"><p class="muted">Set your API URL and token above, then this loads automatically.</p></div>
+    <div class="pager">
+      <button id="article-prev" onclick="articlePage(-1)" disabled>&larr; Prev</button>
+      <span id="article-page-label"></span>
+      <button id="article-next" onclick="articlePage(1)" disabled>Next &rarr;</button>
     </div>
   </section>
 
@@ -928,7 +962,7 @@ function renderRawTableList(items, emptyLabel) {
 // --------------------------------------------------------------------
 // Tabs
 // --------------------------------------------------------------------
-const TAB_LOADERS = { dashboard: loadDashboard, review: loadReviewQueue, videos: loadVideoCandidates, pricesources: loadPriceSources, products: loadProducts, cores: loadCores, coverstocks: loadCoverstocks, pricesites: loadPriceSites, batch: null };
+const TAB_LOADERS = { dashboard: loadDashboard, review: loadReviewQueue, videos: loadVideoCandidates, articles: loadArticles, pricesources: loadPriceSources, products: loadProducts, cores: loadCores, coverstocks: loadCoverstocks, pricesites: loadPriceSites, batch: null };
 let activeTab = 'review';
 
 // Cached GET /price-sites result -- shared between the Price Sites tab
@@ -1898,6 +1932,175 @@ async function deleteVideo(id) {
 }
 
 // --------------------------------------------------------------------
+// Articles tab (022_product_articles.sql) -- Al: "Do you think we
+// generate ball review article like the one here: [bowling.com's Storm
+// Equinox Hybrid review]... this could be the backend that pulls
+// together all the creative and content for the frontend." Mirrors the
+// Video Candidates tab immediately above: list+status-filter+approve/
+// reject, plus an expandable per-row "Preview" (same toggleVideoDetail/
+// loadVideoDetailInto expand-row shape) since an article's full content
+// (hook/narrative/pros&cons/FAQ/comparison table) is too much to put in
+// the row itself.
+// --------------------------------------------------------------------
+const articleState = { status: 'pending', productId: '', offset: 0, limit: 50, lastCount: 0 };
+
+function applyArticleFilters() {
+  articleState.status = document.getElementById('article-status').value;
+  articleState.productId = document.getElementById('article-product-id').value.trim();
+  articleState.offset = 0;
+  loadArticles();
+}
+
+function articlePage(delta) {
+  articleState.offset = Math.max(0, articleState.offset + delta * articleState.limit);
+  loadArticles();
+}
+
+async function loadArticles() {
+  const listEl = document.getElementById('article-list');
+  listEl.innerHTML = '<p class="muted">Loading&hellip;</p>';
+  try {
+    const data = await api('GET', '/articles', { params: {
+      status: articleState.status === 'all' ? undefined : articleState.status,
+      product_id: articleState.productId, limit: articleState.limit, offset: articleState.offset,
+    }});
+    renderArticles(data.items || []);
+  } catch (e) {
+    listEl.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
+  }
+}
+
+function renderArticles(items) {
+  articleState.lastCount = items.length;
+  const listEl = document.getElementById('article-list');
+  if (!items.length) {
+    listEl.innerHTML = '<p class="muted">No items.</p>';
+  } else {
+    const rows = items.map(function (a) {
+      // Same "Approve/Reject when pending, badge+Undo-via-reject-again
+      // when resolved" shape as renderVideoCandidates -- product_articles
+      // has no restore/undo endpoint (see service.approve_article/
+      // reject_article's docstrings: only a pending row can be resolved),
+      // so a resolved article can only be moved by regenerating it, which
+      // resets status back to 'pending' (see product_article_generator's
+      // store_article).
+      const statusCell = a.status === 'pending'
+        ? '<button class="btn small" onclick="approveArticle(\'' + a.id + '\')">Approve</button>' +
+          '<button class="btn small danger" onclick="rejectArticle(\'' + a.id + '\')">Reject</button>'
+        : '<span class="badge ' + escapeHtml(a.status) + '">' + escapeHtml(a.status) + '</span>';
+      return '<tr>' +
+        '<td>' + escapeHtml(a.title || '(untitled)') + '</td>' +
+        '<td>' + escapeHtml(a.product_name) + '<div class="muted small">' + escapeHtml(a.brand_name || '') + '</div></td>' +
+        '<td>' + fmtDate(a.generated_at) + '</td>' +
+        '<td>' + (a.resolved_by ? (escapeHtml(a.resolved_by) + '<div class="muted small">' + fmtDate(a.reviewed_at) + '</div>') : '—') + '</td>' +
+        '<td class="actions">' + statusCell +
+        '<button class="btn small ghost" onclick="regenerateArticle(\'' + a.product_id + '\')">Regenerate</button>' +
+        '<button class="btn small ghost" onclick="toggleArticleDetail(\'' + a.id + '\')">Preview</button></td>' +
+        '</tr>' +
+        '<tr id="article-detail-' + a.id + '" class="detail-row hidden"><td colspan="5"></td></tr>';
+    }).join('');
+    listEl.innerHTML = '<table><thead><tr><th>Title</th><th>Product</th><th>Generated</th><th>Reviewed by</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
+  }
+  document.getElementById('article-prev').disabled = articleState.offset === 0;
+  document.getElementById('article-next').disabled = articleState.lastCount < articleState.limit;
+  document.getElementById('article-page-label').textContent = items.length ? ('showing ' + (articleState.offset + 1) + '–' + (articleState.offset + items.length)) : '';
+}
+
+async function approveArticle(id) {
+  const by = getSettings().resolvedBy;
+  if (!by) { toast('Set "Your name" in Settings first.', true); return; }
+  if (!confirm('Approve this article? It becomes visible via the public API once approved.')) return;
+  try {
+    await api('POST', '/articles/' + id + '/approve', { body: { resolved_by: by } });
+    toast('Approved');
+    loadArticles();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function rejectArticle(id) {
+  const by = getSettings().resolvedBy;
+  if (!by) { toast('Set "Your name" in Settings first.', true); return; }
+  const reason = prompt('Reason for rejecting (optional):');
+  if (reason === null) return;
+  try {
+    await api('POST', '/articles/' + id + '/reject', { body: { resolved_by: by, reason: reason || undefined } });
+    toast('Rejected');
+    loadArticles();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function regenerateArticle(productId) {
+  // Fire-and-forget, same shape as discoverVideosForProduct -- see
+  // service.queue_article_generation's docstring. A regenerate against
+  // an already-approved article overwrites it in place and resets status
+  // back to 'pending' (product_articles is one-row-per-product, not
+  // versioned -- see 022_product_articles.sql's header comment), so it
+  // goes back through review rather than silently replacing live content.
+  if (!confirm('Regenerate this article from current video/spec content? The existing article will go back to pending review.')) return;
+  try {
+    const result = await api('POST', '/products/' + productId + '/generate-article');
+    toast(result.queued ? 'Queued -- check back in a bit and reload this tab.' : ('Not queued: ' + result.reason), !result.queued);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function toggleArticleDetail(id) {
+  const row = document.getElementById('article-detail-' + id);
+  if (!row) return;
+  const opening = row.classList.contains('hidden');
+  if (!opening) { row.classList.add('hidden'); return; }
+  row.classList.remove('hidden');
+  await loadArticleDetailInto(id, row.querySelector('td'));
+}
+
+async function loadArticleDetailInto(id, cell) {
+  cell.innerHTML = '<p class="muted">Loading&hellip;</p>';
+  try {
+    const a = await api('GET', '/articles/' + id);
+    cell.innerHTML = renderArticlePreviewHtml(a);
+  } catch (e) {
+    cell.innerHTML = '<p class="error">' + escapeHtml(e.message) + '</p>';
+  }
+}
+
+// Full bowling.com-shaped article render -- Al's explicit "Full article"
+// scope choice (spec table via live join, sibling comparison, narrative,
+// pros/cons, who-should-buy/skip, buying tips, verdict, FAQ), used both
+// here (review preview) and in the product-detail Article sub-tab below.
+// Structured fields, not a stored HTML blob (see 022_product_articles.sql's
+// header comment) -- this function is what actually assembles them into
+// markup, entirely client-side.
+function renderArticlePreviewHtml(a) {
+  const listBlock = function (label, items) {
+    if (!items || !items.length) return '';
+    return '<p><strong>' + label + ':</strong></p><ul>' + items.map(function (s) { return '<li>' + escapeHtml(s) + '</li>'; }).join('') + '</ul>';
+  };
+  const faqBlock = (a.faq || []).length
+    ? '<p><strong>FAQ:</strong></p>' + a.faq.map(function (qa) {
+        return '<p class="muted small" style="margin-bottom:2px;"><strong>' + escapeHtml(qa.question || '') + '</strong></p><p style="margin-top:0;">' + escapeHtml(qa.answer || '') + '</p>';
+      }).join('')
+    : '';
+  const siblingBlock = (a.sibling_product_ids || []).length
+    ? '<p><strong>Inferred siblings</strong> (heuristic -- see migration 022 header comment; not ground truth): ' + a.sibling_product_ids.length + ' product(s)</p>'
+    : '';
+  const comparisonBlock = (a.comparison_table || []).length
+    ? '<p><strong>Comparison table</strong> (' + a.comparison_table.length + ' row(s)):</p><pre class="scrollbox">' + escapeHtml(JSON.stringify(a.comparison_table, null, 2)) + '</pre>'
+    : '';
+  return '<div class="detail-panel">' +
+    '<h3>' + escapeHtml(a.title || '(untitled)') + '</h3>' +
+    (a.hook ? '<p><em>' + escapeHtml(a.hook) + '</em></p>' : '') +
+    (a.performance_summary ? '<p><strong>Performance summary:</strong></p><p>' + escapeHtml(a.performance_summary) + '</p>' : '') +
+    listBlock('Who should buy this', a.who_should_buy) +
+    listBlock('Who should skip this', a.who_should_skip) +
+    listBlock('Pros', a.pros) +
+    listBlock('Cons', a.cons) +
+    (a.buying_tips ? '<p><strong>Buying tips:</strong></p><p>' + escapeHtml(a.buying_tips) + '</p>' : '') +
+    (a.verdict ? '<p><strong>Verdict:</strong></p><p>' + escapeHtml(a.verdict) + '</p>' : '') +
+    faqBlock + comparisonBlock + siblingBlock +
+    '<p class="muted small">Source videos: ' + (a.source_video_ids || []).length + ' &middot; generated ' + (fmtDate(a.generated_at) || '—') + '</p>' +
+    '</div>';
+}
+
+// --------------------------------------------------------------------
 // Price Sources tab -- mirrors the Video Candidates tab immediately
 // above almost exactly (see this file's tab-pricesources HTML comment
 // and service.py's "Price tracking" section header comment for the full
@@ -2253,7 +2456,7 @@ async function loadProductDetailInto(id, cell) {
     // (score_match's documented any-one-token false-positive shape, see
     // reassign_video_candidate's docstring), and wouldn't have been
     // visible from a pending-only view once already approved.
-    const [p, videoData, priceSourcesData, priceHistoryData, priceSites, skuStockHistoryData] = await Promise.all([
+    const [p, videoData, priceSourcesData, priceHistoryData, priceSites, skuStockHistoryData, articleData] = await Promise.all([
       api('GET', '/products/' + id),
       api('GET', '/video-candidates', { params: { product_id: id, status: 'all', limit: 200 } }),
       // Price tracking (migration 014/015) -- Al: "id like to start a
@@ -2283,9 +2486,17 @@ async function loadProductDetailInto(id, cell) {
       // instock." Same "fetch alongside everything else" reasoning as
       // price-history above, and same days-widening reasoning too.
       api('GET', '/products/' + id + '/sku-stock-history', { params: { days: 3650 } }),
+      // Ball-review article (022_product_articles.sql) -- status:'all'
+      // limit:1 since product_articles is unique on product_id (one row
+      // per product, see that migration's header comment), same
+      // "fetch alongside everything else" reasoning as the other
+      // per-product panels above. Al: "this could be the backend that
+      // pulls together all the creative and content for the frontend."
+      api('GET', '/articles', { params: { product_id: id, status: 'all', limit: 1 } }),
     ]);
     const videos = videoData.items || [];
     const priceSources = priceSourcesData.items || [];
+    const article = (articleData.items || [])[0] || null;
     const skuRows = (p.skus || []).map(function (s) {
       return '<tr><td>' + s.weight_lbs + 'lb</td><td>' + (s.rg === null || s.rg === undefined ? '—' : s.rg) +
         '</td><td>' + (s.differential === null || s.differential === undefined ? '—' : s.differential) +
@@ -2426,6 +2637,7 @@ async function loadProductDetailInto(id, cell) {
     const detailTabs = [
       { name: 'overview', label: 'Overview' },
       { name: 'videos', label: 'Videos (' + videos.length + ')' },
+      { name: 'article', label: 'Article' + (article ? ' (' + article.status + ')' : '') },
       { name: 'pricing', label: 'Pricing (' + priceSources.length + ')' },
       { name: 'skus', label: 'SKUs &amp; Stock (' + (p.skus || []).length + ')' },
       { name: 'raw', label: 'Raw Data' },
@@ -2460,11 +2672,31 @@ async function loadProductDetailInto(id, cell) {
       (skuRows || '<tr><td colspan="6" class="muted">none</td></tr>') + '</tbody></table>' +
       skuStockHtml;
 
+    // Article sub-tab (022_product_articles.sql) -- "Generate article"
+    // trigger button follows the same discoverVideosForProduct/
+    // rescrapeProduct fire-and-forget pattern (POST, show queued/
+    // not-queued/error text in a dedicated #generate-article-result-<id>).
+    // Approve/reject are ALSO available here (not just the top-level
+    // Articles tab) since an admin reviewing a product is often exactly
+    // when they'd want to resolve its article too -- both refresh this
+    // same panel afterward.
+    const articleActionsHtml = article && article.status === 'pending'
+      ? '<button class="btn small" onclick="approveArticleForProduct(\'' + id + '\', \'' + article.id + '\')">Approve</button>' +
+        '<button class="btn small danger" onclick="rejectArticleForProduct(\'' + id + '\', \'' + article.id + '\')">Reject</button>'
+      : (article ? '<span class="badge ' + escapeHtml(article.status) + '">' + escapeHtml(article.status) + '</span>' : '');
+    const articleHtml =
+      '<p><strong>Ball review article:</strong> ' +
+        (article ? ('<span class="badge ' + escapeHtml(article.status) + '">' + escapeHtml(article.status) + '</span>') : '<span class="muted">not generated yet</span>') +
+        ' <button class="btn small ghost" onclick="generateArticleForProduct(\'' + id + '\')">' + (article ? 'Regenerate' : 'Generate') + ' article</button></p>' +
+      '<p id="generate-article-result-' + id + '" class="muted small"></p>' +
+      (article ? ('<p class="actions">' + articleActionsHtml + '</p>' + renderArticlePreviewHtml(article)) : '');
+
     cell.innerHTML =
       '<div class="detail-panel" id="detail-panel-' + id + '">' +
       detailTabNav +
       '<div class="dtab" id="dtab-overview-' + id + '">' + overviewHtml + '</div>' +
       '<div class="dtab hidden" id="dtab-videos-' + id + '">' + videosHtml + '</div>' +
+      '<div class="dtab hidden" id="dtab-article-' + id + '">' + articleHtml + '</div>' +
       '<div class="dtab hidden" id="dtab-pricing-' + id + '">' + priceTrackingHtml + '</div>' +
       '<div class="dtab hidden" id="dtab-skus-' + id + '">' + skusHtml + '</div>' +
       '<div class="dtab hidden" id="dtab-raw-' + id + '">' + renderProductRawFields(p, id) + '</div>' +
@@ -3495,6 +3727,53 @@ async function rescrapeProduct(id) {
     toast(e.message, true);
     if (out) out.textContent = 'Error: ' + e.message;
   }
+}
+
+async function generateArticleForProduct(id) {
+  // Same fire-and-forget shape as discoverVideosForProduct/rescrapeProduct
+  // above -- see service.queue_article_generation's docstring. Works for
+  // both "no article yet" (Generate) and "already have one" (Regenerate,
+  // see the button label in loadProductDetailInto's articleHtml) since
+  // the Lambda's on-demand path always overwrites in place (product_articles
+  // is unique on product_id, not versioned -- see 022_product_articles.sql).
+  const out = document.getElementById('generate-article-result-' + id);
+  if (out) out.textContent = 'Queuing…';
+  try {
+    const result = await api('POST', '/products/' + id + '/generate-article');
+    const msg = result.queued
+      ? 'Queued -- check back in a bit and reopen this product for the generated article.'
+      : ('Not queued: ' + result.reason);
+    toast(msg, !result.queued);
+    if (out) out.textContent = msg;
+  } catch (e) {
+    toast(e.message, true);
+    if (out) out.textContent = 'Error: ' + e.message;
+  }
+}
+
+async function approveArticleForProduct(id, articleId) {
+  const by = getSettings().resolvedBy;
+  if (!by) { toast('Set "Your name" in Settings first.', true); return; }
+  if (!confirm('Approve this article? It becomes visible via the public API once approved.')) return;
+  try {
+    await api('POST', '/articles/' + articleId + '/approve', { body: { resolved_by: by } });
+    toast('Approved');
+    const row = document.getElementById('product-detail-' + id);
+    if (row) await loadProductDetailInto(id, row.querySelector('td'));
+  } catch (e) { toast(e.message, true); }
+}
+
+async function rejectArticleForProduct(id, articleId) {
+  const by = getSettings().resolvedBy;
+  if (!by) { toast('Set "Your name" in Settings first.', true); return; }
+  const reason = prompt('Reason for rejecting (optional):');
+  if (reason === null) return;
+  try {
+    await api('POST', '/articles/' + articleId + '/reject', { body: { resolved_by: by, reason: reason || undefined } });
+    toast('Rejected');
+    const row = document.getElementById('product-detail-' + id);
+    if (row) await loadProductDetailInto(id, row.querySelector('td'));
+  } catch (e) { toast(e.message, true); }
 }
 
 // --------------------------------------------------------------------

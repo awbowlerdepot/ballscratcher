@@ -33,7 +33,7 @@ Any Postgres 13+ instance works (RDS is the obvious choice, but this
 repo doesn't assume it). Note the connection details -- you'll need them
 for step 3's `DbSecretArn` secret and to run migrations directly.
 
-## 2. Run the twenty-one migrations, in order
+## 2. Run the twenty-two migrations, in order
 
 ```bash
 psql "$DATABASE_URL" -f db/migrations/001_init_schema.sql
@@ -57,6 +57,7 @@ psql "$DATABASE_URL" -f db/migrations/018_bowlerdepot_products_dedupe_by_product
 psql "$DATABASE_URL" -f db/migrations/019_products_product_type.sql
 psql "$DATABASE_URL" -f db/migrations/020_bowlerdepot_video_sync.sql
 psql "$DATABASE_URL" -f db/migrations/021_blocked_video_channels.sql
+psql "$DATABASE_URL" -f db/migrations/022_product_articles.sql
 ```
 
 (If you already ran an earlier subset in a prior deploy, just run whatever
@@ -6845,6 +6846,189 @@ a scoped build on that function alone shipping a broken zip missing
 static `admin-site/index.html` file as usual (no redeploy step -- open
 it via `file://` or wherever it's hosted). No BigCommerce-side changes
 needed for this piece.
+
+### 6s. Ball-review article generator (bowling.com-style, full article)
+
+Al: "Do you think we generate ball review article like the one here:
+[bowling.com's Storm Equinox Hybrid review]... We could use all the video
+transcripts to create a FAQ that is meaningful dynamicly based on what is
+being talked about in the videos. We also have alot of content already
+accumulated from all the sources... We would want to use this on
+bowlerdepot.com and could have another project that is the front end but
+this could be the backend that pulls together all the creative and
+content for the frontend. We could use the same video filter that we are
+using for the existing embed."
+
+**Investigation before building**: fetched the referenced bowling.com
+article live and checked this project's own schema for feasibility.
+Almost everything needed already existed -- specs, `products.description`,
+per-video summaries/transcripts, and the existing Bedrock-rollup pattern
+(`video_summarizer`) to extend. The one real gap: no product-line/family
+grouping concept anywhere in this schema (`ball_families` from migration
+001 was never wired up and was repurposed into `cores`, a physical-core-
+dedup concept, by migration 007) -- bowling.com's own article leans on a
+"Equinox / Equinox Solid / Equinox Hybrid" line grouping this project has
+no equivalent of. Scoped via a follow-up 3-question exchange with Al,
+answers below, before writing any code:
+
+1. **Review workflow**: require admin review before anything is exposed
+   publicly (Al's choice, "recommended") -- mirrors `product_videos`/
+   `product_price_sources`' own pending/approved/rejected review-queue
+   precedent exactly, never auto-publish.
+2. **V1 scope**: **full article** (Al's explicit choice, NOT the smaller
+   "narrative + FAQ only" option that was recommended) -- spec table via
+   live join, sibling comparison table, narrative, pros/cons, who-should-
+   buy/skip, buying tips, verdict, and the dynamic FAQ.
+3. **Generation gate**: require at least one approved, non-blocked-
+   channel, summarized video before a product is eligible (Al's choice,
+   "recommended") -- the exact same bar `video_reviews_summary` already
+   uses, reusing 021's blocked-channel filter per Al's explicit ask ("We
+   could use the same video filter that we are using for the existing
+   embed").
+
+Given "full article" was chosen and no real line-grouping data exists, a
+design decision was made (not asked as a 4th question, since it followed
+directly from #2): infer siblings **heuristically** via a normalized
+"line name" (strip trailing cover/finish/version qualifier words -- solid/
+pearl/hybrid/plus/pro/max/reactive/version-suffixes -- off the product
+name, e.g. "Equinox Solid" -> "Equinox") matched within the same brand.
+This is explicitly NOT ground truth -- surfaced for admin review like
+everything else in the article, expected to sometimes be wrong.
+
+**Migration 022** (`db/migrations/022_product_articles.sql`): new
+`product_articles` table, one row per product (`product_id unique`),
+`status` (pending/approved/rejected, same shape as `product_videos`/
+`product_price_sources`). Structured fields, not an HTML blob -- Al's own
+framing was "this could be the backend that pulls together all the
+creative and content for the frontend," so a separate future frontend
+project needs to style each section itself: `title`, `hook`,
+`performance_summary`, `who_should_buy`/`who_should_skip`/`pros`/`cons`
+(jsonb arrays), `buying_tips`, `verdict`, `faq` (jsonb array of
+`{question, answer}` -- the genuinely dynamic part, grounded in what that
+product's own videos actually discuss, not a fixed template of questions
+the way bowling.com's own FAQ reads), `comparison_table`/
+`sibling_product_ids` (heuristic, see above), `source_video_ids` (for
+traceability). Real spec VALUES (RG, differential, core, coverstock) are
+deliberately NOT duplicated onto this table -- they're joined live from
+`products`/`product_skus`/`cores`/`coverstocks` at READ time (see
+public_api below), so a later spec correction never requires
+regenerating the article.
+
+**`src/product_article_generator`** (new Lambda, VPC + DB secret +
+Bedrock, `rate(1 day)` schedule plus on-demand invoke): same Bedrock-via-
+boto3 wire format and Global-CRIS IAM policy shape as `video_summarizer`
+(three `Sid`-tagged Statements -- a single simple grant fails closed with
+`AccessDeniedException`, see that module's own comment). Sends the LLM
+BOTH each qualifying video's summary (cheap, already exists) AND a
+bounded transcript excerpt per video (`DEFAULT_TRANSCRIPT_EXCERPT_CHARS`
+per video, capped in total via `DEFAULT_MAX_TOTAL_TRANSCRIPT_CHARS`)
+specifically so the FAQ can be grounded in real, specific things
+reviewers said rather than reading like a template -- the rollup's own
+plain-summary-only prompt wouldn't have been enough for that. Asks for
+the whole article back as one JSON object (`parse_article_json` strips a
+```json fence if Bedrock adds one anyway, then validates every required
+key is present -- a partial article is worse than none, since there's no
+partial-field review UI). `list_products_needing_article`'s query reuses
+the exact same `blocked_video_channels` exclusion pattern as
+`bowlerdepot_video_sync`/`video_reviews_summary`. `generate_article_for_
+product(force=True)` is the on-demand path (admin-triggered regenerate);
+the batch handler only ever considers products with NO existing
+`product_articles` row (a rejected article isn't auto-retried -- an admin
+regenerating it on demand is the only path back, same as this project's
+other "AI got it wrong, a human asks again" flows).
+
+**`src/admin_api`**: `list_articles`/`get_article`/`approve_article`/
+`reject_article` in `service.py` mirror `list_price_sources`/`get_video_
+candidate`/`approve_price_source`/`reject_price_source` almost exactly
+(same fails-closed-on-already-resolved guard). `queue_article_generation`
+mirrors `queue_video_discovery`'s direct-`lambda:InvokeFunction`-no-queue
+shape, with one real gotcha: the payload key is `{"product_id": ...}`
+(singular), NOT `{"product_ids": [...]}` like `queue_video_discovery`'s
+own payload -- `product_article_generator`'s on-demand handler path
+checks `event.get("product_id")` specifically, so sending a `product_ids`
+list here would silently miss that branch and fall through to the
+catalog-wide batch scan instead. New routes: `GET/GET-by-id /articles`,
+`POST /articles/{id}/approve`, `POST /articles/{id}/reject`,
+`POST /products/{id}/generate-article` -- reuses the existing
+`ApproveRequest`/`RejectRequest` Pydantic models as-is (same
+`resolved_by`/optional `reason` fields, no new models needed).
+`template.yaml` gained the new `ProductArticleGeneratorFunction` resource,
+plus `PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME` env var and a narrowly-
+scoped `lambda:InvokeFunction` grant (on exactly that function's own ARN,
+same "narrowest permission" convention as the `VideoDiscoveryFunction`/
+`PriceCheckerFunction` grants next to it) on `AdminApiFunction`, and a new
+`ProductArticleGeneratorFunctionArn` Output -- verified via the CFN-
+tolerant YAML loader this project has used to check every prior
+template.yaml edit.
+
+**`admin-site/index.html`**: new top-level "Articles" nav tab (list +
+status filter + approve/reject + an expandable per-row "Preview" showing
+the full rendered article -- title/hook/narrative/who-should-buy-skip/
+pros-cons/buying-tips/verdict/FAQ/comparison-table/sibling-count/source-
+video-count), following the Video Candidates tab's own list-with-status-
+filter shape (a dedicated top-level tab, not folded into an existing one,
+given the size of a full article-review UI -- same "small/tightly-coupled
+things go inside an existing tab, larger reference features get their own
+tab" precedent 6r's own Blocked Channels panel decision was made against,
+just landing on the opposite side of that line this time). Also added a
+new "Article" sub-tab inside the existing per-product detail view
+(alongside Overview/Videos/Pricing/SKUs/Raw Data) with a Generate/
+Regenerate button (same fire-and-forget "queue it, show queued/not-
+queued/error text" pattern as `discoverVideosForProduct`/`rescrapeProduct`
+next to it) and inline approve/reject when a pending article exists,
+refreshing that same panel afterward.
+
+**public_api**: `GET /products/{id}/article` (`service.get_product_
+article`, no `template.yaml` change needed -- `PublicHttpApi`'s
+`/{proxy+}` GET catch-all already covers it, same as every other public_
+api route added this project). 404 only for a nonexistent/unpublished
+`product_id` (same non-distinction `GET /products/{id}` itself already
+enforces); an existing published product with no APPROVED article yet
+still returns 200 with `article: None` -- same always-200-null-field
+contract as the BowlerDepot video-summary embed route (6q), since "no
+article yet" is the normal case for most of the catalog, not an error a
+future frontend needs special-case handling for. Live-joins the spec
+highlight (core/coverstock/per-weight SKU specs) and the comparison-table
+rows for each sibling at READ time rather than reading anything
+duplicated onto `product_articles` -- and any sibling that's since been
+unpublished or deleted silently drops out of `comparison_table` rather
+than breaking the whole article response (the heuristic sibling list is
+explicitly not ground truth, see migration 022's own header comment).
+
+**Tests**: new `tests/test_product_article_generator.py` (32 tests --
+`normalize_line_name`, `parse_article_json`'s fence-stripping/missing-key
+validation, `build_article_prompt`'s spec/video-content inclusion and its
+per-video/total transcript-budget caps, `list_products_needing_article`'s
+and `fetch_product_content`'s blocked-channel exclusion, `infer_sibling_
+products`' line-name matching and `DEFAULT_MAX_SIBLINGS` cap,
+`store_article`'s upsert-resets-review-state SQL, `generate_article_for_
+product`'s full orchestration against a fake cursor + fake Bedrock
+client, and `handler`'s on-demand-vs-batch dispatch with a fake `boto3`
+module injected into `sys.modules` since this sandbox has no real boto3
+installed). `tests/test_admin_api_service.py` gained 13 tests for the
+five new service functions (249 total, up from 236). `tests/test_public_
+api_service.py` gained 6 tests for `get_product_article` (70 total, up
+from 64) -- including the unpublished-sibling-drops-out-of-comparison-
+table case. Full non-pytest `test_*.py` sweep (42 files) ran clean after
+all three additions. `template.yaml` re-verified via the CFN-tolerant
+YAML loader (57 resources, `ProductArticleGeneratorFunction` present,
+`ProductArticleGeneratorFunctionArn` output present).
+`admin-site/index.html` verified the same way as 6r (`node --check`
+against the extracted `<script>` contents, plus the same HTML tag-balance
+check -- diffs against the pre-existing baseline unchanged, confirming no
+new imbalance was introduced).
+
+**Redeploy**: run migration 022 (after 021, if not already applied),
+then a full unscoped `sam build && sam deploy` (NOT a scoped `sam build
+AdminApiFunction ...` -- this deploy touches `AdminApiFunction` again, so
+6a.5's confirmed-twice fastapi-missing-zip incident applies here exactly
+the same way it did for 6r; always use the full unscoped build/deploy
+whenever `AdminApiFunction` is one of the functions changing), then swap
+the static `admin-site/index.html` file as usual. `ProductArticleGenerator
+Function`'s own daily schedule will start generating articles for
+already-qualifying products automatically after deploy -- they land as
+`pending` and need an admin approval pass in the new Articles tab before
+they're visible via the new public_api endpoint.
 
 ## 7. Ongoing operations
 
