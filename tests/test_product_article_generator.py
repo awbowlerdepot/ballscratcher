@@ -231,6 +231,12 @@ class _FakeCursor:
         # candidate row (article_id, variant, model_id, image_key,
         # image_url, seed, is_selected).
         self.candidate_inserts = []
+        # v5 regenerate-safety fix (2026-09-04 real incident) -- params
+        # tuples (article_id, variant) from every store_article_image_
+        # candidates delete, one per variant that got NEW candidates this
+        # run (see that function's own docstring for why a variant with
+        # no new candidates is skipped entirely, delete included).
+        self.candidate_deletes = []
 
     def __enter__(self):
         return self
@@ -273,6 +279,9 @@ class _FakeCursor:
 
         elif q.startswith("insert into product_article_image_candidates"):
             self.candidate_inserts.append(params)
+
+        elif q.startswith("delete from product_article_image_candidates"):
+            self.candidate_deletes.append(params)
 
         elif q.startswith("select coalesce("):
             if self.reference_image_url is _UNSET:
@@ -1790,6 +1799,62 @@ def test_store_article_image_candidates_is_a_noop_for_empty_dict():
     app.store_article_image_candidates(conn, "article-1", {})
     assert conn._cursor.candidate_inserts == []
     assert conn.commits == 0
+
+
+def test_store_article_image_candidates_clears_prior_candidates_before_inserting_on_regenerate():
+    """REAL INCIDENT (2026-09-04): a regenerate of the same product hit
+    UniqueViolation on product_article_image_candidates_one_selected_idx
+    -- this function used to be insert-only, so a second run's own index-
+    0-selected candidate for a variant collided with the FIRST run's
+    still-is_selected=true row for that same (article_id, variant). Fixed
+    by unconditionally deleting a variant's existing rows immediately
+    before writing its new ones (a no-op delete on a fresh article, a
+    real one on a regenerate -- both cases go through the same code
+    path, no first-run/second-run branching needed). This test calls the
+    function twice for the SAME article_id (simulating a regenerate) and
+    confirms: (1) the delete is scoped to (article_id, variant) -- not a
+    blanket delete across variants or articles; (2) on each call, the
+    delete precedes that variant's own new inserts in execution order,
+    not after (a delete-after-insert would just erase what was only just
+    written)."""
+    conn = _FakeConnection()
+    candidates_by_variant = {
+        "action_shot": [
+            {"key": "article-images/p1/action_shot_gemini_1.png", "url": "https://b/action_shot_gemini_1.png",
+             "model_id": "gemini-model", "seed": None},
+        ],
+    }
+
+    app.store_article_image_candidates(conn, "article-1", candidates_by_variant)
+    app.store_article_image_candidates(conn, "article-1", candidates_by_variant)
+    assert conn._cursor.candidate_deletes == [("article-1", "action_shot"), ("article-1", "action_shot")]
+
+    # On each run, the delete precedes that run's own inserts in execution order.
+    delete_indices = [i for i, (q, _) in enumerate(conn._cursor.executed)
+                       if q.startswith("delete from product_article_image_candidates")]
+    insert_indices = [i for i, (q, _) in enumerate(conn._cursor.executed)
+                       if q.startswith("insert into product_article_image_candidates")]
+    assert delete_indices[0] < insert_indices[0]
+    assert delete_indices[1] < insert_indices[1]
+
+
+def test_store_article_image_candidates_skips_delete_for_variant_with_no_new_candidates():
+    """A variant that produced ZERO new candidates this run (every Gemini
+    AND Stability call failed) must NOT have its prior-run candidates
+    deleted -- same "best-effort, don't destroy existing good state on a
+    partial failure" posture this module uses everywhere else. Only
+    variants present with a non-empty list get cleared."""
+    conn = _FakeConnection()
+    app.store_article_image_candidates(conn, "article-1", {
+        "action_shot": [
+            {"key": "article-images/p1/action_shot_gemini_1.png", "url": "https://b/action_shot_gemini_1.png",
+             "model_id": "gemini-model", "seed": None},
+        ],
+        "product_shot": [],
+    })
+
+    assert conn._cursor.candidate_deletes == [("article-1", "action_shot")]
+    assert len(conn._cursor.candidate_inserts) == 1
 
 
 # --- generate_article_for_product wired with image plumbing ---

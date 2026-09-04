@@ -1285,11 +1285,37 @@ def store_article_image_candidates(conn, article_id: str, candidates_by_variant:
     which candidate is "first"; both simply take candidates_by_variant[
     variant][0], never re-derive it independently. candidates_by_variant
     being empty (no images generated this run, or the whole image step
-    was skipped) is a normal no-op, not an error."""
+    was skipped) is a normal no-op, not an error.
+
+    REAL INCIDENT (2026-09-04): a regenerate of the same product (article
+    row already existed, force=True path -- store_article's own upsert
+    returns the SAME article_id it did the first time) crashed with a
+    UniqueViolation on product_article_image_candidates_one_selected_idx.
+    This function used to be insert-only, with no awareness that an
+    article_id it's writing to might already have candidate rows from a
+    PRIOR run -- the new run's own index-0-selected candidate for a
+    variant collided with the old run's still-is_selected=true row for
+    that same (article_id, variant) pair, the exact thing 026's own
+    partial unique index exists to prevent. Fixed by clearing a variant's
+    existing candidate rows immediately before writing that variant's new
+    ones -- but ONLY for variants this run actually produced new
+    candidates for (an empty `candidates` list is skipped entirely, old
+    rows and all), so a variant that totally failed THIS run doesn't lose
+    whatever good candidates it already had from a previous run -- same
+    "best-effort, don't destroy existing good state on a partial failure"
+    posture this module already uses everywhere else (e.g. a Remove
+    Background failure only ever skips the Stability candidate, never
+    touches anything already stored)."""
     if not candidates_by_variant:
         return
     with conn.cursor() as cur:
         for variant, candidates in candidates_by_variant.items():
+            if not candidates:
+                continue
+            cur.execute(
+                "delete from product_article_image_candidates where article_id = %s and variant = %s",
+                (article_id, variant),
+            )
             for i, candidate in enumerate(candidates):
                 cur.execute(
                     """

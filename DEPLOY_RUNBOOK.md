@@ -7878,6 +7878,70 @@ code fix, re-run the same on-demand invocation and check `images_
 generated` in the response body, then pull the logs regardless (success
 or failure) to confirm what Vertex AI actually returned.
 
+### REAL INCIDENT (2026-09-04): regenerate crashed with UniqueViolation on product_article_image_candidates
+
+A second invocation for a product that already had an article (a
+regenerate -- likely triggered by a duplicate/retried invoke after a CLI
+`Read timeout`, not a deliberate manual retry) crashed with:
+
+```
+UniqueViolation: duplicate key value violates unique constraint
+"product_article_image_candidates_one_selected_idx"
+DETAIL: Key (article_id, variant)=(<uuid>, action_shot) already exists.
+```
+
+Traceback pointed at `store_article_image_candidates`, called from
+`generate_article_for_product`, called from `handler`. Root cause:
+`store_article_image_candidates` was insert-only -- it never cleared a
+product's prior candidate rows before writing new ones. `store_article`'s
+own upsert returns the SAME `article_id` on a regenerate (by design, so
+an admin's already-approved article row gets updated in place rather
+than duplicated), so the second run's own index-0-selected candidate for
+a variant collided with the FIRST run's still-`is_selected=true` row for
+that same `(article_id, variant)` pair -- exactly what migration 026's
+partial unique index exists to prevent, just never exercised by an
+actual second run before now.
+
+**Fixed** by having `store_article_image_candidates` unconditionally
+`DELETE FROM product_article_image_candidates WHERE article_id = %s AND
+variant = %s` immediately before inserting that variant's new candidates
+-- a no-op delete on a fresh article's first run, a real one on a
+regenerate, same code path either way, no first-run/second-run branching
+needed. Scoped per-variant (not a blanket delete for the whole
+`article_id`) so a variant that produced ZERO new candidates this run
+(e.g. every Gemini and Stability call failed) keeps whatever good
+candidates it already had from a prior run -- same "best-effort, don't
+destroy existing state on a partial failure" posture this module uses
+everywhere else (a Remove Background failure only ever skips the
+Stability candidate, never touches anything already stored).
+
+Two new regression tests added to `tests/test_product_article_generator.
+py`: one calls `store_article_image_candidates` twice for the same
+`article_id` and asserts a delete precedes each run's own inserts; the
+other confirms a variant with an empty candidates list gets neither a
+delete nor an insert. Full file: 87/87 passing. Full 41-file sweep:
+clean.
+
+**Operational notes surfaced by this same incident, unrelated to the
+code bug**:
+- The CLI's `Read timeout` on `aws lambda invoke` is a client-side
+  timeout on the AWS CLI's own HTTP connection, not a Lambda failure --
+  the function itself completed fine server-side (well under Lambda's
+  configured timeout). If you hit this, check CloudWatch logs for that
+  invocation before assuming it failed, and consider `aws lambda invoke
+  --cli-read-timeout 0` to stop the CLI from giving up early. More
+  importantly: **avoid re-invoking the same product while a prior invoke
+  might still be in flight** -- that overlap is what produced the
+  duplicate/retried call that triggered this exact bug.
+- The same batch of logs that surfaced this bug ALSO showed the Bedrock
+  Remove Background `AccessDeniedException` (see the numbered incident
+  above) still failing, repeatedly, across all invocation attempts in
+  this batch. **That Marketplace resubscription has not yet been
+  confirmed to have taken effect** -- if it's still failing after
+  confirming "Access granted" in the Bedrock console, allow a few more
+  minutes for propagation and retry, since AWS Marketplace subscription
+  changes aren't always instant.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
