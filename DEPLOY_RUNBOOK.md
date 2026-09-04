@@ -3608,6 +3608,47 @@ sam build VideoDiscoveryFunction
 sam deploy
 ```
 
+**Follow-up (2026-09-04): expose the YouTube publish date everywhere a
+video is shown.** Al: "can we also expose the youtube publish date in
+the ui everywhere a video is shown." Pure display fix, no backend or
+schema change -- both APIs already returned `published_at` for every
+video row involved (`public_api/service.py`'s `get_product` videos
+query, and `admin_api`'s `list_video_candidates`, which selects
+`pv.published_at` for every caller including the product-detail panel's
+own `status=all` fetch), and `consumer-site/src/api/types.ts`'s
+`ProductVideo` already declared `published_at?: string | null`.
+
+Audited every place a video candidate/review renders: `admin-site/
+index.html`'s Video Candidates tab list rows and its expandable Detail
+panel already showed it (`fmtDate(v.published_at)`); the one gap was
+the product-detail page's own Videos section, which only showed
+`channel_title` + duration. Added a `publishedText` var there, same
+`' &middot; published ' + fmtDate(v.published_at)` format as the other
+two spots. On the consumer side, `consumer-site/src/pages/
+ProductDetailPage.tsx`'s "Video reviews" cards showed `channel_title`
+alone -- added a human-formatted `published_at`
+(`toLocaleDateString(... {year: "numeric", month: "short", day:
+"numeric"})`) next to it, separated by " &middot; " when both are
+present. `ComparePage.tsx` and the rest of consumer-site don't render
+individual video listings, so no other files needed changes.
+
+Verified `admin-site/index.html` via `node --check` against the
+extracted `<script>` blocks (this project's standard no-build-step
+check for that file); verified `ProductDetailPage.tsx` via `npx tsc -b
+--force` (clean, no errors) -- the sandbox's `vite build` itself
+currently fails on an unrelated pre-existing issue, a missing
+`@rollup/rollup-linux-arm64-gnu` native optional dependency that npm's
+registry access refuses to reinstall in this sandbox (a known npm
+optional-deps bug, https://github.com/npm/cli/issues/4828); this is an
+environment limitation, not a regression from this change, and Al's own
+GitHub Actions build (`.github/workflows/deploy-consumer-site.yml`) is
+unaffected since it runs `npm ci` fresh on GitHub's own runners. Full
+44-file Python regression sweep: clean (no Python files touched by this
+fix). No migration, no `template.yaml` change -- redeploy is just
+pushing the two static files (`admin-site/index.html` served however
+Al currently hosts it; `consumer-site` via its existing GitHub Actions
+CI on push to main).
+
 **Follow-up, real incident: admin-site batch size + bulk actions.** Al:
 "can we have the refresh stats button do more videos at a time, also the
 same check boxes and bulk actions on the video candidates page as we

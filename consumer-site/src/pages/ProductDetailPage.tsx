@@ -219,7 +219,18 @@ export default function ProductDetailPage() {
                   />
                 </div>
                 <div className="video-card-title">{v.title}</div>
-                {v.channel_title && <div className="video-card-channel">{v.channel_title}</div>}
+                {(v.channel_title || v.published_at) && (
+                  <div className="video-card-channel">
+                    {v.channel_title}
+                    {v.channel_title && v.published_at ? " · " : ""}
+                    {v.published_at &&
+                      new Date(v.published_at).toLocaleDateString(undefined, {
+                        year: "numeric",
+                        month: "short",
+                        day: "numeric",
+                      })}
+                  </div>
+                )}
                 <p className="video-card-summary">{v.summary}</p>
               </div>
             ))}

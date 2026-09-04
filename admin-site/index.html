@@ -2763,10 +2763,19 @@ async function loadProductDetailInto(id, cell) {
         : '<span class="badge ' + escapeHtml(v.status) + '">' + escapeHtml(v.status) + '</span>' +
           '<button class="btn small ghost" onclick="restoreVideoForProduct(\'' + id + '\', \'' + v.id + '\')">Undo</button>';
       const durationText = v.duration_seconds !== null && v.duration_seconds !== undefined ? ' &middot; ' + fmtDuration(v.duration_seconds) : '';
+      // Al: "expose the youtube publish date in the ui everywhere a video
+      // is shown" -- same publishedText format the Video Candidates tab
+      // and its own Detail panel already use (see renderVideoCandidates/
+      // loadVideoDetailInto above); this row was the one place that
+      // still left it out. v.published_at is already returned here
+      // (list_video_candidates selects pv.published_at for every caller,
+      // not just the Video Candidates tab's own fetch), so this is
+      // display-only, no backend change needed.
+      const publishedText = v.published_at ? ' &middot; published ' + fmtDate(v.published_at) : '';
       return '<tr>' +
         checkboxCell +
         '<td><a href="https://www.youtube.com/watch?v=' + encodeURIComponent(v.youtube_video_id) + '" target="_blank" rel="noopener">' + escapeHtml(v.title) + '</a>' +
-        '<div class="muted small">' + escapeHtml(v.channel_title || '') + durationText + '</div></td>' +
+        '<div class="muted small">' + escapeHtml(v.channel_title || '') + durationText + publishedText + '</div></td>' +
         '<td>' + fmtCount(v.view_count) + '</td>' +
         '<td>' + (v.match_confidence !== null && v.match_confidence !== undefined ? Number(v.match_confidence).toFixed(2) : '—') + '</td>' +
         '<td>' + (v.has_summary ? '<span class="badge ok">yes</span>' : '<span class="badge muted">no</span>') + '</td>' +
