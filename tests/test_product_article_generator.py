@@ -1570,8 +1570,14 @@ def test_store_article_image_builds_article_images_prefix_key_and_url():
 
 # --- generate_article_image_candidates: orchestration, best-effort/
 # non-fatal -- v4's core new function, producing up to 3 candidates per
-# shot (2 Gemini + 1 Stability composite, see NUM_GEMINI_CANDIDATES_PER_
-# VARIANT/NUM_STABILITY_CANDIDATES_PER_VARIANT). ---
+# shot. v5 (2026-09-04): ENABLE_STABILITY_CANDIDATES defaults to False
+# (Al: "they will never be better than the gemini images"), so the
+# DEFAULT shape is now 3 Gemini candidates and 0 Stability ones (see
+# NUM_GEMINI_CANDIDATES_PER_VARIANT) -- the tests below that flip
+# app.ENABLE_STABILITY_CANDIDATES back to True for the duration of the
+# test exist specifically to keep the toggle's fallback path (kept,
+# not deleted -- see this module's own docstring) from silently
+# rotting. ---
 
 def _fake_reference_photo_response():
     """A real tiny JPEG so the PIL round-trip inside generate_article_
@@ -1680,10 +1686,13 @@ def test_generate_article_image_candidates_returns_empty_when_reference_fetch_fa
     assert result == {}
 
 
-def test_generate_article_image_candidates_all_three_succeed_per_variant():
-    """The full happy path: 2 Gemini candidates + 1 Stability candidate
-    per shot, Gemini first then Stability (see this function's own
-    docstring on ordering), 3 candidates x 2 variants = 6 total."""
+def test_generate_article_image_candidates_default_is_three_gemini_no_stability():
+    """v5 default (ENABLE_STABILITY_CANDIDATES = False, see this
+    module's own docstring): 3 Gemini candidates per shot, Gemini first
+    (only, now -- there is no Stability candidate to come "after"), and
+    Bedrock is never touched at all -- not Remove Background, not the
+    background-generation model -- since nothing here needs the cutout
+    when Stability is off."""
     import requests
 
     conn = _FakeConnection(reference_image_url="https://example.com/ball.jpg")
@@ -1711,17 +1720,68 @@ def test_generate_article_image_candidates_all_three_succeed_per_variant():
     for variant in ("action_shot", "product_shot"):
         candidates = result[variant]
         assert len(candidates) == 3
-        # Gemini candidates first, then Stability -- generate_article_for_
-        # product treats index 0 as the auto-selected default.
-        assert candidates[0]["model_id"] == "gemini-model-id"
-        assert candidates[1]["model_id"] == "gemini-model-id"
-        assert candidates[2]["model_id"] == "model-id"
-        assert candidates[0]["seed"] is None
-        assert candidates[1]["seed"] is None
-        assert isinstance(candidates[2]["seed"], int)
+        assert all(c["model_id"] == "gemini-model-id" for c in candidates)
+        assert all(c["seed"] is None for c in candidates)
         assert candidates[0]["key"] == f"article-images/prod-1/{variant}_gemini_1.png"
         assert candidates[1]["key"] == f"article-images/prod-1/{variant}_gemini_2.png"
-        assert candidates[2]["key"] == f"article-images/prod-1/{variant}_stability.png"
+        assert candidates[2]["key"] == f"article-images/prod-1/{variant}_gemini_3.png"
+    # Stability disabled -- Remove Background and background-generation
+    # are BOTH never even attempted.
+    assert len(removebg_client.calls) == 0
+    assert len(bg_client.calls) == 0
+    # 3 Gemini calls per variant x 2 variants = 6.
+    assert len(gemini_calls) == 6
+    # First call per variant gets no suffix; second gets "alternate
+    # composition"; third gets its own distinct, numbered suffix.
+    prompts = [c["json"]["contents"][0]["parts"][0]["text"] for c in gemini_calls]
+    assert sum("alternate composition" in p for p in prompts) == 2
+    assert sum("composition/angle #3" in p for p in prompts) == 2
+    assert sum("alternate composition" not in p and "composition/angle #3" not in p for p in prompts) == 2
+    # 6 Gemini S3 writes total, no Stability writes.
+    assert len(s3.put_calls) == 6
+
+
+def test_generate_article_image_candidates_stability_enabled_adds_fourth_candidate():
+    """Regression coverage for the ENABLE_STABILITY_CANDIDATES fallback
+    itself (see this module's own docstring on why it's kept, not
+    deleted): flipped back to True, the original v4 shape returns --
+    3 Gemini candidates plus 1 Stability composite per shot, Gemini
+    first then Stability (generate_article_for_product treats index 0
+    as the auto-selected default)."""
+    import requests
+
+    conn = _FakeConnection(reference_image_url="https://example.com/ball.jpg")
+    removebg_client = _FakeImageBedrockClient({"images": [_fake_cutout_png_b64()], "finish_reasons": [None]})
+    bg_client = _FakeImageBedrockClient({"images": [_fake_background_png_b64()], "finish_reasons": [None]})
+    fake_post, gemini_calls = _fake_gemini_post()
+    s3 = _FakeS3Client()
+
+    original_get = requests.get
+    original_post = requests.post
+    requests.get = lambda url, timeout=None: _fake_reference_photo_response()
+    requests.post = fake_post
+    app.ENABLE_STABILITY_CANDIDATES = True
+    try:
+        result = app.generate_article_image_candidates(
+            conn, bedrock_image_client=bg_client, bedrock_removebg_client=removebg_client,
+            gemini_auth=_FAKE_GEMINI_AUTH, s3_client=s3, image_model_id="model-id",
+            removebg_model_id="removebg-model-id", gemini_model_id="gemini-model-id", image_bucket="bucket",
+            product={"id": "prod-1", "color": "Blue"}, article=_SAMPLE_ARTICLE,
+        )
+    finally:
+        requests.get = original_get
+        requests.post = original_post
+        app.ENABLE_STABILITY_CANDIDATES = False
+
+    for variant in ("action_shot", "product_shot"):
+        candidates = result[variant]
+        assert len(candidates) == 4
+        assert candidates[0]["model_id"] == "gemini-model-id"
+        assert candidates[1]["model_id"] == "gemini-model-id"
+        assert candidates[2]["model_id"] == "gemini-model-id"
+        assert candidates[3]["model_id"] == "model-id"
+        assert isinstance(candidates[3]["seed"], int)
+        assert candidates[3]["key"] == f"article-images/prod-1/{variant}_stability.png"
     # Remove Background is only called ONCE -- the cutout is shared across
     # both variants (same source photo).
     assert len(removebg_client.calls) == 1
@@ -1730,20 +1790,16 @@ def test_generate_article_image_candidates_all_three_succeed_per_variant():
     assert len(bg_client.calls) == 2
     aspect_ratios = {c["body"]["aspect_ratio"] for c in bg_client.calls}
     assert aspect_ratios == {"16:9", "1:1"}
-    # 2 Gemini calls per variant x 2 variants = 4.
-    assert len(gemini_calls) == 4
-    # The SECOND Gemini call per variant gets the "alternate composition"
-    # suffix, the first doesn't.
-    first_call_prompts = [c["json"]["contents"][0]["parts"][0]["text"] for c in gemini_calls]
-    assert sum("alternate composition" in p for p in first_call_prompts) == 2
-    assert sum("alternate composition" not in p for p in first_call_prompts) == 2
-    # 4 Gemini + 2 Stability = 6 S3 writes total.
-    assert len(s3.put_calls) == 6
+    # 3 Gemini calls per variant x 2 variants = 6.
+    assert len(gemini_calls) == 6
+    # 6 Gemini + 2 Stability = 8 S3 writes total.
+    assert len(s3.put_calls) == 8
 
 
 def test_generate_article_image_candidates_skips_stability_when_remove_background_fails():
-    """No cutout, nothing to composite into the Stability candidate for
-    EITHER variant -- but Gemini is entirely unaffected, since it never
+    """With Stability enabled but Remove Background failing: no cutout,
+    nothing to composite into the Stability candidate for EITHER
+    variant -- but Gemini is entirely unaffected, since it never
     depended on the cutout in the first place (see this function's own
     docstring)."""
     import requests
@@ -1762,6 +1818,7 @@ def test_generate_article_image_candidates_skips_stability_when_remove_backgroun
     original_post = requests.post
     requests.get = lambda url, timeout=None: _fake_reference_photo_response()
     requests.post = fake_post
+    app.ENABLE_STABILITY_CANDIDATES = True
     try:
         result = app.generate_article_image_candidates(
             conn, bedrock_image_client=bg_client, bedrock_removebg_client=_FailingRemoveBgClient(),
@@ -1772,18 +1829,19 @@ def test_generate_article_image_candidates_skips_stability_when_remove_backgroun
     finally:
         requests.get = original_get
         requests.post = original_post
+        app.ENABLE_STABILITY_CANDIDATES = False
 
     for variant in ("action_shot", "product_shot"):
-        assert len(result[variant]) == 2
+        assert len(result[variant]) == 3
         assert all(c["model_id"] == "gemini-model-id" for c in result[variant])
     assert len(bg_client.calls) == 0  # never even attempted without a cutout
-    assert len(gemini_calls) == 4
+    assert len(gemini_calls) == 6
 
 
 def test_generate_article_image_candidates_one_gemini_call_fails_others_still_succeed():
     """Each Gemini call is independently try/excepted -- a failure on one
     (e.g. the SECOND, "alternate composition" call for a given variant)
-    must not take down the first, still-good candidate for that same
+    must not take down the other, still-good candidates for that same
     variant, nor affect the other variant's calls at all."""
     import requests
 
@@ -1820,11 +1878,12 @@ def test_generate_article_image_candidates_one_gemini_call_fails_others_still_su
         requests.get = original_get
         requests.post = original_post
 
-    # action_shot's second Gemini call failed -- only 1 candidate for it.
-    assert len(result["action_shot"]) == 1
-    # product_shot's own two calls were unaffected.
-    assert len(result["product_shot"]) == 2
-    assert len(flaky_post.calls) == 4
+    # action_shot's second (of three) Gemini calls failed -- 2 candidates
+    # for it (the first and third both succeeded).
+    assert len(result["action_shot"]) == 2
+    # product_shot's own three calls were unaffected.
+    assert len(result["product_shot"]) == 3
+    assert len(flaky_post.calls) == 6
 
 
 class _RaisingRemoveBgClient:

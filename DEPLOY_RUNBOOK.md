@@ -8238,6 +8238,46 @@ statement confirmed present).
 effect (a new IAM statement, not a parameter -- no `parameter_overrides`
 involved).
 
+### v5 (2026-09-04): Stability candidate turned off -- Al: "they will never be better than the gemini images"
+
+After enough real candidates had gone through the Articles review
+picker, Al's call was direct: turn off the Stability/composite
+candidate for good. Done as a toggle, not a rip-out --
+`src/product_article_generator/app.py` gets a new module-level
+`ENABLE_STABILITY_CANDIDATES = False`. The whole Remove Background +
+background-generation + Pillow-composite mechanism stays in the file
+exactly as-is; it's just skipped now:
+
+- `generate_article_image_candidates` no longer calls
+  `call_bedrock_remove_background` at all when the flag is off (not
+  just the composite step) -- there's nothing left that needs the
+  cutout, so this also avoids a wasted Bedrock call/cost, not only a
+  wasted candidate.
+- `NUM_GEMINI_CANDIDATES_PER_VARIANT` went from 2 to 3, so the review
+  picker still gets 3 real options per shot -- all Gemini now, three
+  independent attempts instead of two -- rather than quietly shrinking
+  down to a straight A/B. The non-first Gemini calls each get their own
+  "distinct alternate/further-distinct composition" prompt suffix (was
+  just "alternate composition" on the single second call before).
+- `NUM_STABILITY_CANDIDATES_PER_VARIANT` is left in place, unused
+  except as documentation of what re-enabling would produce.
+
+Why a toggle and not a deletion: this exact mechanism has already been
+revived once before (v4, after v3) when Gemini itself became
+unavailable/unsuitable for a stretch -- see this module's own docstring
+for the full v1-v5 history. Flipping `ENABLE_STABILITY_CANDIDATES` back
+to `True` restores the old 4-candidates-per-shot behavior (3 Gemini + 1
+Stability) with no code to rewrite, if that ever needs to happen again.
+
+No migration, no template.yaml change (57 resources unchanged) -- this
+is a pure Lambda-code change, so a plain `sam build
+ProductArticleGeneratorFunction && sam deploy` (or a full redeploy)
+picks it up. Tests: `test_product_article_generator.py` rewritten for
+the new default (3 Gemini candidates, 0 Bedrock calls when disabled)
+plus a dedicated pair of tests that flip the flag back on to prove the
+fallback path itself still works (91/91). Full 44-file regression
+sweep: clean.
+
 ### Separate issue seen in the same log, NOT a code bug (RESOLVED): `GeminiRegion` came through as `global=` with a trailing `=`
 
 The same CloudWatch tail also showed `call_gemini_for_image` trying to

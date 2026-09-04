@@ -130,6 +130,24 @@ header comment -- this is a pointer, not a repeat):
     reviews it, same "best-effort now, refined by review later" posture
     the rest of this feature already uses.
 
+  - v5 (2026-09-04, no new migration): Al, having reviewed enough real
+    candidates through the picker, concluded the Stability/composite
+    candidate "will never be better than the Gemini images" and asked to
+    turn it off. Done as a toggle (ENABLE_STABILITY_CANDIDATES = False),
+    not a rip-out -- the whole Stability/composite mechanism (Remove
+    Background + background generation + Pillow compositing) has already
+    been rewritten and revived twice in this module's own history (v2,
+    then again in v4) whenever Gemini itself became unavailable/
+    unsuitable for a stretch, so it stays in place as a one-line-flip
+    fallback rather than being deleted a third time. With Stability off,
+    generate_article_image_candidates also skips the Remove Background
+    call entirely (there is nothing left that needs the cutout), not just
+    the composite step, so disabling this doesn't leave a wasted Bedrock
+    call in place. NUM_GEMINI_CANDIDATES_PER_VARIANT went from 2 to 3 so
+    the review picker still gets 3 real options per shot -- all Gemini,
+    just three independent attempts instead of two -- rather than quietly
+    shrinking the candidate picker down to a straight A/B.
+
 Model/provider choice, researched (not assumed) before building, same
 defensive posture as the text model's own us-west-1 CRIS situation above.
 Amazon Nova Canvas is Legacy with an EOL of 2026-09-30 (weeks away) and
@@ -368,14 +386,33 @@ _VARIANT_ASPECT_RATIOS = {
 
 # The v4 "try a few models, pick in the admin UI" split (see this
 # module's own docstring, and 026_product_article_image_candidates.sql):
-# 2 Gemini candidates (no reliable seed parameter to vary by -- see
-# GEMINI candidates' own docstring in generate_article_image_candidates
-# -- so diversity comes from calling twice with a lightly varied prompt)
-# plus 1 Stability/composite candidate (kept as the one guaranteed-
-# untouched-ball baseline, per the original v2 mechanism). 3 total per
-# shot, matching Al's explicit "3 candidates, automatically" answer.
-NUM_GEMINI_CANDIDATES_PER_VARIANT = 2
+# originally 2 Gemini candidates (no reliable seed parameter to vary by --
+# see GEMINI candidates' own docstring in generate_article_image_
+# candidates -- so diversity comes from calling twice with a lightly
+# varied prompt) plus 1 Stability/composite candidate. 3 total per shot,
+# matching Al's explicit "3 candidates, automatically" answer.
+#
+# v5 (2026-09-04, see this module's own docstring): Al turned the
+# Stability candidate off ("they will never be better than the gemini
+# images") via ENABLE_STABILITY_CANDIDATES below, so NUM_GEMINI_
+# CANDIDATES_PER_VARIANT went from 2 to 3 to keep 3 real candidates per
+# shot for the review picker rather than shrinking it to 2. NUM_
+# STABILITY_CANDIDATES_PER_VARIANT is left at 1 purely as documentation
+# of what ENABLE_STABILITY_CANDIDATES would produce per shot if
+# re-enabled -- it was never actually read as a loop bound (the
+# Stability block in generate_article_image_candidates only ever ran
+# once, unconditionally); it stays for that documentation value.
+NUM_GEMINI_CANDIDATES_PER_VARIANT = 3
 NUM_STABILITY_CANDIDATES_PER_VARIANT = 1
+
+# See v5 in this module's own docstring: the Stability/composite
+# candidate consistently lost out to Gemini in real admin review, so
+# Al asked to turn it off. Kept as a toggle rather than deleted -- this
+# exact mechanism has already been revived once before (v4, after v3)
+# when Gemini itself was unavailable/unsuitable for a stretch -- so
+# flipping this back to True is a one-line fallback if that ever
+# happens again, with no code to rewrite.
+ENABLE_STABILITY_CANDIDATES = False
 
 # An article is a much bigger structured generation than the rollup's
 # one paragraph (title + hook + narrative + 2 bullet lists + pros/cons +
@@ -1204,9 +1241,10 @@ def generate_article_image_candidates(conn, bedrock_image_client, bedrock_remove
     raising. Returns {"action_shot": [...], "product_shot": [...]}, each
     a list of 0-3 candidate dicts ({"key", "url", "model_id", "seed"}),
     in the order they were generated (Gemini candidates first, then the
-    Stability one) -- generate_article_for_product treats index 0 of each
-    list as the auto-selected default (see that function's own docstring)
-    and store_article_image_candidates persists the rest alongside it.
+    Stability one, when ENABLE_STABILITY_CANDIDATES is on) --
+    generate_article_for_product treats index 0 of each list as the
+    auto-selected default (see that function's own docstring) and
+    store_article_image_candidates persists the rest alongside it.
 
     v4 (see this module's own docstring for the full v1-v4 history): the
     product's real reference photo is fetched ONCE and reused across
@@ -1214,18 +1252,26 @@ def generate_article_image_candidates(conn, bedrock_image_client, bedrock_remove
     Gemini candidates run first, each fully independent (its own
     try/except) since Gemini needs nothing but the raw reference photo --
     no cutout, no separate background generation. GEMINI candidates use
-    the SAME prompt for every call except the second one gets an
-    "alternate composition" suffix appended -- Gemini's image model does
-    not expose a reliable/reproducible seed parameter (confirmed via
-    research, not assumed), so there is no seed to vary the way Stability
-    candidates can; this suffix plus the model's own inherent generation
-    stochasticity is what produces two different-looking results instead
-    of two near-identical ones. The Stability/composite candidate runs
-    ONCE per variant afterward, and needs the shared cutout (Remove
-    Background, computed once for both variants -- a cutout failure skips
-    the Stability candidate for BOTH variants, since there's no ball to
-    composite into either one without it, but does NOT affect the Gemini
-    candidates, which never depended on the cutout in the first place)."""
+    the SAME prompt for every call except non-first calls get a
+    "distinct alternate/further-distinct composition" suffix appended --
+    Gemini's image model does not expose a reliable/reproducible seed
+    parameter (confirmed via research, not assumed), so there is no seed
+    to vary the way Stability candidates can; this suffix plus the
+    model's own inherent generation stochasticity is what produces
+    different-looking results instead of near-identical ones.
+
+    v5 (see this module's own docstring): with ENABLE_STABILITY_
+    CANDIDATES = False (the current default -- Al: "they will never be
+    better than the gemini images"), the Stability/composite step below
+    -- and the Remove Background call that feeds it -- are both skipped
+    entirely, since nothing else here needs the cutout. Flipping that
+    flag back to True restores the v4 behavior unchanged: the Stability/
+    composite candidate runs ONCE per variant afterward, needing the
+    shared cutout (Remove Background, computed once for both variants --
+    a cutout failure skips the Stability candidate for BOTH variants,
+    since there's no ball to composite into either one without it, but
+    does NOT affect the Gemini candidates, which never depended on the
+    cutout in the first place)."""
     reference_url = fetch_reference_image_url(conn, product["id"])
     if not reference_url:
         logger.info("No reference image available for product_id=%s, skipping article images", product["id"])
@@ -1239,15 +1285,21 @@ def generate_article_image_candidates(conn, bedrock_image_client, bedrock_remove
         return {}
 
     cutout_png_bytes = None
-    try:
-        cutout_png_bytes = call_bedrock_remove_background(bedrock_removebg_client, removebg_model_id, reference_b64)
-    except Exception:
-        logger.exception(
-            "Failed to remove background from reference image for product_id=%s -- the Stability/composite "
-            "candidate will be skipped for both variants (Gemini candidates are unaffected)", product["id"],
-        )
+    if ENABLE_STABILITY_CANDIDATES:
+        try:
+            cutout_png_bytes = call_bedrock_remove_background(
+                bedrock_removebg_client, removebg_model_id, reference_b64,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to remove background from reference image for product_id=%s -- the Stability/composite "
+                "candidate will be skipped for both variants (Gemini candidates are unaffected)", product["id"],
+            )
 
-    background_prompts = build_background_prompts(product, article)
+    # Only computed when the Stability path can actually use it -- pure
+    # string-building, no API call, but no reason to do even that when
+    # ENABLE_STABILITY_CANDIDATES is off.
+    background_prompts = build_background_prompts(product, article) if ENABLE_STABILITY_CANDIDATES else {}
     results = {}
     for variant in ("action_shot", "product_shot"):
         candidates = []
@@ -1256,8 +1308,13 @@ def generate_article_image_candidates(conn, bedrock_image_client, bedrock_remove
         for i in range(NUM_GEMINI_CANDIDATES_PER_VARIANT):
             try:
                 prompt = build_gemini_scene_prompt(product, article, variant)
-                if i > 0:
-                    prompt += " (Generate a distinct alternate composition/angle from any previous attempt.)"
+                if i == 1:
+                    prompt += " (Generate a distinct alternate composition/angle from the previous attempt.)"
+                elif i > 1:
+                    prompt += (
+                        f" (Generate composition/angle #{i + 1}, distinctly different from all "
+                        "previous attempts.)"
+                    )
                 png_bytes = call_gemini_for_image(gemini_auth, gemini_model_id, prompt, reference_b64, aspect_ratio)
                 stored = store_article_image(s3_client, image_bucket, product["id"], f"{variant}_gemini_{i + 1}",
                                               png_bytes)
