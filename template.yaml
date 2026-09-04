@@ -394,8 +394,8 @@ Parameters:
       surface graphics/logo text came out garbled ("looks like dropping
       the cutout was a bad idea... The ball needs to be mostly
       untouched"). v4 also adds a genuinely different SECOND provider
-      (Gemini 2.5 Flash Image, see GeminiApiKeySecretArn below) for two
-      more candidates per shot -- this Stability path now produces just
+      (Gemini image models, see GeminiServiceAccountSecretArn below) for
+      two more candidates per shot -- this Stability path now produces just
       ONE of three candidates generated per shot, not the only image, so
       an admin can compare and pick the best one in the Articles review
       tab (see 026_product_article_image_candidates.sql's own header
@@ -494,47 +494,77 @@ Parameters:
       profile resource -- CloudFormation has no string-strip function to
       derive this from BedrockRemoveBgModelId automatically, hence the
       second parameter. Keep the two in sync if you ever change the model.
-  GeminiApiKeySecretArn:
+  GeminiServiceAccountSecretArn:
     Type: String
     Default: ""
     Description: >
-      ARN of a Secrets Manager secret holding a Google AI Studio API key
-      for Gemini 2.5 Flash Image -- either a bare key string or JSON
-      {"api_key": "..."}, see src/product_article_generator/app.py's
-      handler(). NEW in v4 (026_product_article_image_candidates.sql):
-      the second of three candidates generated per shot, added alongside
-      (not instead of) the existing Stability/Bedrock path after Al
-      shared a reference image (from a tool called yeri.ai) whose
-      "insert this exact ball into a newly generated scene" quality
-      visibly beat anything Stability/Bedrock had produced -- research
-      pointed at Gemini 2.5 Flash Image as the model most likely behind
-      that result (Google's own docs describe it as built for exactly
-      this: "put an object into a scene... maintain character
-      consistency"), and confirmed it is NOT available on Amazon Bedrock
-      as of this writing (checked AWS's own current model catalog), so
-      this is a real credential for Google's own API, a different kind
-      from every other secret in this template -- same "user has to get
-      this themselves" category as YouTubeApiKeySecretArn/
-      BigCommerceSecretArn above (this project can't create a Google
-      account or generate this key on your behalf). Left blank by
-      default (see HasGeminiApiKeySecret below) -- with no key
-      configured, generate_article_image_candidates simply skips the two
-      Gemini candidates for every run and still produces the one
-      Stability candidate, same "not configured -> soft no-op" posture
-      as this stack's other optional secrets, not a hard failure.
+      ARN of a Secrets Manager secret holding a GCP service account's
+      WHOLE JSON key file verbatim (not wrapped in any extra field -- the
+      secret's own JSON IS the key file Google gives you when you create
+      the key, including its own project_id, client_email, private_key,
+      etc.), see src/product_article_generator/app.py's handler() and
+      mint_gemini_access_token(). NEW in v4 (026_product_article_image_
+      candidates.sql) as GeminiApiKeySecretArn -- a bare Developer-API key
+      -- after Al shared a reference image (from a tool called yeri.ai)
+      whose "insert this exact ball into a newly generated scene" quality
+      visibly beat anything Stability/Bedrock had produced, and research
+      pointed at Google's Gemini image models as the likely source.
+      REPLACED in v5 (this parameter) when Al's ask changed to "what if we
+      can only use Application Default Credentials instead of an API
+      key": a literal ADC/metadata-server flow doesn't exist for a Lambda
+      running on AWS, so this service-account JSON key (Al's own choice,
+      offered alongside Workload Identity Federation) is the substitute --
+      a service account authenticates via standard GCP IAM/OAuth2 (Bearer
+      token), which only Vertex AI's own generateContent endpoint accepts
+      (the Developer API GeminiApiKeySecretArn called does NOT), so this
+      is also why GeminiModelId/GeminiRegion below feed a different URL
+      shape than v4's did. This is a real credential for Google Cloud, a
+      different kind from every other secret in this template -- same
+      "user has to get this themselves" category as YouTubeApiKeySecretArn/
+      BigCommerceSecretArn above (this project can't create a GCP project,
+      service account, or key on your behalf -- see DEPLOY_RUNBOOK.md's 6t
+      section for the one-time setup steps: create the service account,
+      grant it the "Vertex AI User" role, download its JSON key, paste the
+      whole file as this secret's value). Left blank by default (see
+      HasGeminiServiceAccountSecret below) -- with no key configured, or
+      if the fetch/token-mint fails for any reason, generate_article_
+      image_candidates simply skips the two Gemini candidates for every
+      run and still produces the one Stability candidate, same "not
+      configured -> soft no-op" posture as this stack's other optional
+      secrets, not a hard failure.
   GeminiModelId:
     Type: String
-    Default: gemini-2.5-flash-image
+    Default: gemini-3-pro-image
     Description: >
-      Model id passed in the URL path of Gemini's own REST generateContent
-      endpoint (GEMINI_API_BASE_URL in app.py) -- NOT a Bedrock modelId,
-      Gemini image models are called directly against Google's own API
-      (generativelanguage.googleapis.com), authenticated via the
-      x-goog-api-key header with the key from GeminiApiKeySecretArn
-      above, not any AWS/IAM mechanism. See src/product_article_
+      Model id passed in the URL path of Vertex AI's own REST
+      generateContent endpoint (see call_gemini_for_image in src/
+      product_article_generator/app.py) -- NOT a Bedrock modelId, Gemini
+      image models are called directly against Google Cloud's Vertex AI
+      API ({GeminiRegion}-aiplatform.googleapis.com), authenticated via a
+      Bearer access token minted from GeminiServiceAccountSecretArn above
+      (see mint_gemini_access_token), not any AWS/IAM mechanism and not
+      the x-goog-api-key header v4 used against the Developer API.
+      Defaults to Gemini 3 Pro Image ("Nano Banana Pro") rather than v4's
+      original gemini-2.5-flash-image -- that model carries an explicit
+      retirement notice on Vertex AI (2026-10-02) in Google's own
+      migration docs, discovered while researching this v5 switch; Al
+      picked this (Pro) tier directly over the cheaper/faster Gemini 3.1
+      Flash Image successor when asked. See src/product_article_
       generator/app.py's call_gemini_for_image and this module's own
       docstring for the full research trail on why this is a raw
-      requests.post call rather than the google-genai SDK.
+      requests.post call rather than the google-cloud-aiplatform SDK.
+  GeminiRegion:
+    Type: String
+    Default: us-central1
+    Description: >
+      The Vertex AI location (Google Cloud's term for Region) GeminiModelId
+      is called in -- NOT derived from the service account key file (a
+      service account isn't tied to one Region the way BedrockImageRegion/
+      BedrockRemoveBgRegion are tied to specific Bedrock models), so this
+      is its own parameter. us-central1 is Google's own most broadly-
+      available Vertex AI Region for Gemini/Nano Banana models; only
+      change this if your GCP project has a data-residency requirement
+      pointing elsewhere.
   ConsumerSiteDomainName:
     Type: String
     Default: ""
@@ -590,7 +620,7 @@ Conditions:
   HasBigCommerceSecret: !Not [!Equals [!Ref BigCommerceSecretArn, ""]]
   HasAdminApiToken: !Not [!Equals [!Ref AdminApiTokenSecretArn, ""]]
   HasYouTubeApiKeySecret: !Not [!Equals [!Ref YouTubeApiKeySecretArn, ""]]
-  HasGeminiApiKeySecret: !Not [!Equals [!Ref GeminiApiKeySecretArn, ""]]
+  HasGeminiServiceAccountSecret: !Not [!Equals [!Ref GeminiServiceAccountSecretArn, ""]]
   HasConsumerSiteDomain: !Not [!Equals [!Ref ConsumerSiteDomainName, ""]]
   HasGitHubRepo: !Not [!Equals [!Ref GitHubRepo, ""]]
   ShouldCreateGitHubOidcProvider: !And
@@ -1995,17 +2025,22 @@ Resources:
           # reported the ball's own surface graphics came out garbled --
           # see BedrockRemoveBgModelId's own parameter description for
           # the full story. v4 ALSO adds a genuinely different, non-
-          # Bedrock provider (GEMINI_* -- Google's own API, a real
-          # outbound HTTPS call authenticated with a Secrets Manager key,
-          # not an AWS/IAM mechanism at all) for two more candidates per
-          # shot, so admins can compare across providers, not just across
-          # background variations of one model.
+          # Bedrock provider (GEMINI_* -- Google Cloud, a real outbound
+          # HTTPS call, not an AWS/IAM mechanism at all) for two more
+          # candidates per shot, so admins can compare across providers,
+          # not just across background variations of one model. v5
+          # switches that provider's auth from a bare Developer-API key to
+          # a service-account-minted Bearer token against Vertex AI (see
+          # GeminiServiceAccountSecretArn/GeminiModelId/GeminiRegion's own
+          # parameter descriptions for the full v4->v5 story) -- GEMINI_
+          # REGION is new in v5, everything else below kept its name.
           BEDROCK_IMAGE_MODEL_ID: !Ref BedrockImageModelId
           BEDROCK_IMAGE_REGION: !Ref BedrockImageRegion
           BEDROCK_REMOVEBG_MODEL_ID: !Ref BedrockRemoveBgModelId
           BEDROCK_REMOVEBG_REGION: !Ref BedrockRemoveBgRegion
-          GEMINI_API_KEY_SECRET_ARN: !Ref GeminiApiKeySecretArn
+          GEMINI_SERVICE_ACCOUNT_SECRET_ARN: !Ref GeminiServiceAccountSecretArn
           GEMINI_IMAGE_MODEL_ID: !Ref GeminiModelId
+          GEMINI_REGION: !Ref GeminiRegion
           IMAGE_BUCKET: !Ref ImageBucket
       Policies:
         - VPCAccessPolicy: {}
@@ -2014,22 +2049,27 @@ Resources:
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Ref DbSecretArn
-            # Gemini API key -- same "blank default isn't a valid IAM
-            # Resource" fix as YouTubeApiKeySecretArn/BigCommerceSecretArn
-            # elsewhere in this template: only grant real access to
-            # GeminiApiKeySecretArn once HasGeminiApiKeySecret confirms a
-            # real ARN was supplied, otherwise point this statement at a
-            # harmless dummy ARN nothing actually resolves to. handler()
-            # already treats a fetch failure (including this policy
-            # denying it, if the dummy ARN is ever hit) as "skip Gemini
-            # candidates this run, not a fatal error" -- see that
-            # function's own docstring.
+            # Gemini service-account key -- same "blank default isn't a
+            # valid IAM Resource" fix as YouTubeApiKeySecretArn/
+            # BigCommerceSecretArn elsewhere in this template: only grant
+            # real access to GeminiServiceAccountSecretArn once
+            # HasGeminiServiceAccountSecret confirms a real ARN was
+            # supplied, otherwise point this statement at a harmless dummy
+            # ARN nothing actually resolves to. handler() already treats a
+            # fetch/token-mint failure (including this policy denying it,
+            # if the dummy ARN is ever hit) as "skip Gemini candidates
+            # this run, not a fatal error" -- see that function's own
+            # docstring. Only secretsmanager:GetSecretValue is needed here
+            # -- the actual OAuth2 token exchange (mint_gemini_access_
+            # token) happens entirely OUTSIDE AWS, against Google's own
+            # token endpoint, so there is no corresponding AWS IAM grant
+            # for it the way there is for every Bedrock call below.
             - Effect: Allow
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !If
-                - HasGeminiApiKeySecret
-                - !Ref GeminiApiKeySecretArn
+                - HasGeminiServiceAccountSecret
+                - !Ref GeminiServiceAccountSecretArn
                 - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:unused-*"
             # Same three-statement Global CRIS inference-profile grant as
             # VideoSummarizerFunction -- see that function's Policies

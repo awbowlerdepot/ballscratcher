@@ -597,7 +597,7 @@ def test_handler_on_demand_product_id_forces_single_generation():
     calls = []
 
     # handler() now always passes s3_client/bedrock_image_client/
-    # bedrock_removebg_client/gemini_api_key/image_model_id/
+    # bedrock_removebg_client/gemini_auth/image_model_id/
     # removebg_model_id/gemini_model_id/image_bucket through as keywords
     # (see handler's own docstring) -- the fake must accept them (via
     # **kwargs) even though this test doesn't care about their values, or
@@ -621,19 +621,20 @@ def test_handler_on_demand_product_id_forces_single_generation():
     product_id, force, kwargs = calls[0]
     assert (product_id, force) == ("prod-1", True)
     # Image plumbing was actually threaded through, not silently dropped --
-    # EIGHT image-related kwargs as of v4 (three Bedrock clients + Gemini
-    # api key/model id -- see generate_article_for_product's own
-    # docstring for the full v1-v4 shape history).
+    # EIGHT image-related kwargs as of v4/v5 (three Bedrock clients +
+    # Gemini auth bundle/model id -- see generate_article_for_product's
+    # own docstring for the full v1-v5 shape history).
     assert kwargs["image_model_id"] == app.DEFAULT_BEDROCK_IMAGE_MODEL_ID
     assert kwargs["removebg_model_id"] == app.DEFAULT_BEDROCK_REMOVE_BG_MODEL_ID
     assert kwargs["gemini_model_id"] == app.DEFAULT_GEMINI_IMAGE_MODEL_ID
-    # GEMINI_API_KEY_SECRET_ARN isn't set in this test's environment, so
-    # handler() never even attempts the Secrets Manager fetch -- see
-    # test_handler_fetches_gemini_api_key_from_secrets_manager_when_
-    # configured below for the "configured" path.
-    assert kwargs["gemini_api_key"] is None
+    # GEMINI_SERVICE_ACCOUNT_SECRET_ARN isn't set in this test's
+    # environment, so handler() never even attempts the Secrets Manager
+    # fetch/token mint -- see test_handler_mints_gemini_access_token_from_
+    # service_account_secret_when_configured below for the "configured"
+    # path.
+    assert kwargs["gemini_auth"] is None
     assert set(kwargs.keys()) == {
-        "s3_client", "bedrock_image_client", "bedrock_removebg_client", "gemini_api_key",
+        "s3_client", "bedrock_image_client", "bedrock_removebg_client", "gemini_auth",
         "image_model_id", "removebg_model_id", "gemini_model_id", "image_bucket",
     }
     body = json.loads(result["body"])
@@ -721,27 +722,37 @@ def test_handler_constructs_image_and_removebg_bedrock_clients_in_configured_reg
     # BEDROCK_REMOVEBG_REGION isn't set.
     assert bedrock_runtime_calls[2][1] == {"region_name": app.DEFAULT_BEDROCK_REMOVE_BG_REGION}
     assert ("s3", {}) in client_calls
-    # GEMINI_API_KEY_SECRET_ARN isn't set in this test's environment, so
-    # no secretsmanager client is constructed at all -- see the dedicated
-    # gemini-secret tests just below for the "configured" path.
+    # GEMINI_SERVICE_ACCOUNT_SECRET_ARN isn't set in this test's
+    # environment, so no secretsmanager client is constructed at all --
+    # see the dedicated gemini-secret tests just below for the
+    # "configured" path.
     assert not any(c[0] == "secretsmanager" for c in client_calls)
 
 
-def test_handler_fetches_gemini_api_key_from_secrets_manager_when_configured():
-    """GEMINI_API_KEY_SECRET_ARN set -> handler() fetches the secret
-    (JSON {"api_key": "..."}, same shape as this module's own docstring
-    documents) and threads the value through to generate_article_for_
-    product as gemini_api_key -- Gemini is a real Google credential, not
-    an AWS/IAM mechanism, so this is a plain Secrets Manager GetSecretValue
-    call, same pattern get_db_connection already uses for DB credentials,
-    not anything Bedrock-specific."""
+def test_handler_mints_gemini_access_token_from_service_account_secret_when_configured():
+    """GEMINI_SERVICE_ACCOUNT_SECRET_ARN set -> handler() fetches the
+    secret (the service account's WHOLE JSON key file, per this module's
+    own docstring -- NOT wrapped in an extra field, unlike v4's own
+    {"api_key": "..."} shape), passes it to mint_gemini_access_token to
+    get a Bearer token, then threads {"access_token", "project_id",
+    "region"} through to generate_article_for_product as gemini_auth.
+    mint_gemini_access_token itself is patched out here -- it does a real
+    OAuth2 exchange against Google's own token endpoint via google-auth,
+    which is call_gemini_for_image's own concern to get right (tested in
+    isolation elsewhere), not handler()'s wiring."""
     conn = _FakeConnection()
     calls = []
+    mint_calls = []
+    service_account_json = {
+        "type": "service_account", "project_id": "my-gcp-project",
+        "private_key": "-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----\n",
+        "client_email": "gemini@my-gcp-project.iam.gserviceaccount.com",
+    }
 
     class _FakeSecretsManagerClient:
         def get_secret_value(self, SecretId):
-            assert SecretId == "arn:aws:secretsmanager:us-west-1:123:secret:gemini-key"
-            return {"SecretString": json.dumps({"api_key": "real-gemini-key"})}
+            assert SecretId == "arn:aws:secretsmanager:us-west-1:123:secret:gemini-sa-key"
+            return {"SecretString": json.dumps(service_account_json)}
 
     def _fake_boto3_client(service_name, **kwargs):
         if service_name == "secretsmanager":
@@ -753,6 +764,10 @@ def test_handler_fetches_gemini_api_key_from_secrets_manager_when_configured():
         return {"product_id": product_id, "generated": True, "article_id": "a1",
                 "video_count": 1, "sibling_count": 0}
 
+    def _fake_mint(service_account_info):
+        mint_calls.append(service_account_info)
+        return "real-access-token"
+
     import types
     fake_boto3 = types.ModuleType("boto3")
     fake_boto3.client = _fake_boto3_client
@@ -762,23 +777,28 @@ def test_handler_fetches_gemini_api_key_from_secrets_manager_when_configured():
         guard.set_module("boto3", fake_boto3)
         guard.set(app, "get_db_connection", lambda: conn)
         guard.set(app, "generate_article_for_product", _fake_generate)
-        os.environ["GEMINI_API_KEY_SECRET_ARN"] = "arn:aws:secretsmanager:us-west-1:123:secret:gemini-key"
+        guard.set(app, "mint_gemini_access_token", _fake_mint)
+        os.environ["GEMINI_SERVICE_ACCOUNT_SECRET_ARN"] = "arn:aws:secretsmanager:us-west-1:123:secret:gemini-sa-key"
         app.handler({"product_id": "prod-1"}, None)
     finally:
-        os.environ.pop("GEMINI_API_KEY_SECRET_ARN", None)
+        os.environ.pop("GEMINI_SERVICE_ACCOUNT_SECRET_ARN", None)
         guard.restore()
 
-    assert calls[0]["gemini_api_key"] == "real-gemini-key"
+    assert mint_calls == [service_account_json]
+    assert calls[0]["gemini_auth"] == {
+        "access_token": "real-access-token", "project_id": "my-gcp-project",
+        "region": app.DEFAULT_GEMINI_REGION,
+    }
 
 
 def test_handler_tolerates_gemini_secret_fetch_failure():
     """A Secrets Manager error (bad ARN, denied IAM, etc.) fetching the
-    Gemini key must not crash the whole handler invocation -- same "images
-    are always best-effort" posture as every other image failure path in
-    this module. gemini_api_key just stays None, which generate_article_
-    image_candidates' own all-or-nothing gate then turns into "skip the
-    Gemini candidates this run" (see that function's own docstring), not
-    a hard failure of the whole product."""
+    Gemini service-account key must not crash the whole handler invocation
+    -- same "images are always best-effort" posture as every other image
+    failure path in this module. gemini_auth just stays None, which
+    generate_article_image_candidates' own all-or-nothing gate then turns
+    into "skip the Gemini candidates this run" (see that function's own
+    docstring), not a hard failure of the whole product."""
     conn = _FakeConnection()
     calls = []
 
@@ -805,13 +825,59 @@ def test_handler_tolerates_gemini_secret_fetch_failure():
         guard.set_module("boto3", fake_boto3)
         guard.set(app, "get_db_connection", lambda: conn)
         guard.set(app, "generate_article_for_product", _fake_generate)
-        os.environ["GEMINI_API_KEY_SECRET_ARN"] = "arn:aws:secretsmanager:us-west-1:123:secret:gemini-key"
+        os.environ["GEMINI_SERVICE_ACCOUNT_SECRET_ARN"] = "arn:aws:secretsmanager:us-west-1:123:secret:gemini-sa-key"
         result = app.handler({"product_id": "prod-1"}, None)
     finally:
-        os.environ.pop("GEMINI_API_KEY_SECRET_ARN", None)
+        os.environ.pop("GEMINI_SERVICE_ACCOUNT_SECRET_ARN", None)
         guard.restore()
 
-    assert calls[0]["gemini_api_key"] is None
+    assert calls[0]["gemini_auth"] is None
+    assert json.loads(result["body"])["results"][0]["generated"] is True
+
+
+def test_handler_tolerates_gemini_token_mint_failure():
+    """Distinct from the Secrets Manager fetch failure above: the secret
+    fetches fine but mint_gemini_access_token itself raises (e.g. a bad
+    key, or Google's token endpoint rejecting the JWT) -- handler()'s own
+    try/except wraps BOTH the fetch and the mint in one block (see
+    handler's own docstring), so this must be equally non-fatal."""
+    conn = _FakeConnection()
+    calls = []
+
+    class _FakeSecretsManagerClient:
+        def get_secret_value(self, SecretId):
+            return {"SecretString": json.dumps({"project_id": "my-gcp-project"})}
+
+    def _fake_boto3_client(service_name, **kwargs):
+        if service_name == "secretsmanager":
+            return _FakeSecretsManagerClient()
+        return _FakeBedrockClient("{}")
+
+    def _fake_generate(conn_, bedrock, model_id, product_id, force=False, **kwargs):
+        calls.append(kwargs)
+        return {"product_id": product_id, "generated": True, "article_id": "a1",
+                "video_count": 1, "sibling_count": 0}
+
+    def _failing_mint(service_account_info):
+        raise RuntimeError("invalid_grant: JWT signature verification failed")
+
+    import types
+    fake_boto3 = types.ModuleType("boto3")
+    fake_boto3.client = _fake_boto3_client
+
+    guard = _HandlerPatchGuard()
+    try:
+        guard.set_module("boto3", fake_boto3)
+        guard.set(app, "get_db_connection", lambda: conn)
+        guard.set(app, "generate_article_for_product", _fake_generate)
+        guard.set(app, "mint_gemini_access_token", _failing_mint)
+        os.environ["GEMINI_SERVICE_ACCOUNT_SECRET_ARN"] = "arn:aws:secretsmanager:us-west-1:123:secret:gemini-sa-key"
+        result = app.handler({"product_id": "prod-1"}, None)
+    finally:
+        os.environ.pop("GEMINI_SERVICE_ACCOUNT_SECRET_ARN", None)
+        guard.restore()
+
+    assert calls[0]["gemini_auth"] is None
     assert json.loads(result["body"])["results"][0]["generated"] is True
 
 
@@ -1159,9 +1225,69 @@ def test_composite_ball_on_background_leaves_background_untouched_away_from_the_
     assert corner_pixel == (5, 5, 200)
 
 
-# --- build_gemini_scene_prompt / call_gemini_for_image: the second
-# candidate SOURCE (Google's own API, not Bedrock -- see this module's
-# own docstring for why). ---
+# --- mint_gemini_access_token / build_gemini_scene_prompt /
+# call_gemini_for_image: the second candidate SOURCE (Google Cloud, not
+# Bedrock -- see this module's own docstring for why). ---
+
+def test_mint_gemini_access_token_builds_credentials_with_cloud_platform_scope_and_returns_token():
+    """google-auth itself can't be installed in this sandbox (same pip-
+    proxy-403 caveat noted elsewhere in this project's test files -- see
+    _HandlerPatchGuard's own docstring), so this fakes the handful of
+    google.* module/class names mint_gemini_access_token actually touches
+    -- google.oauth2.service_account.Credentials.from_service_account_
+    info(...) and google.auth.transport.requests.Request -- via
+    sys.modules injection, the same pattern _fake_boto3_module already
+    uses for boto3 elsewhere in this file. Confirms mint_gemini_access_
+    token's OWN logic (the right service-account info and scope get
+    passed through, refresh() is actually called, and the resulting
+    .token is what gets returned) without needing the real library or a
+    real service-account key."""
+    import types
+
+    calls = {}
+
+    class _FakeCredentials:
+        def __init__(self, info, scopes):
+            calls["info"] = info
+            calls["scopes"] = scopes
+            self.token = None
+
+        def refresh(self, request):
+            calls["refresh_request"] = request
+            self.token = "minted-access-token"
+
+    class _FakeCredentialsClass:
+        @staticmethod
+        def from_service_account_info(info, scopes):
+            return _FakeCredentials(info, scopes)
+
+    class _FakeRequest:
+        pass
+
+    fake_google_auth_transport_requests = types.ModuleType("google.auth.transport.requests")
+    fake_google_auth_transport_requests.Request = _FakeRequest
+    fake_google_oauth2_service_account = types.ModuleType("google.oauth2.service_account")
+    fake_google_oauth2_service_account.Credentials = _FakeCredentialsClass
+
+    guard = _HandlerPatchGuard()
+    try:
+        guard.set_module("google", types.ModuleType("google"))
+        guard.set_module("google.auth", types.ModuleType("google.auth"))
+        guard.set_module("google.auth.transport", types.ModuleType("google.auth.transport"))
+        guard.set_module("google.auth.transport.requests", fake_google_auth_transport_requests)
+        guard.set_module("google.oauth2", types.ModuleType("google.oauth2"))
+        guard.set_module("google.oauth2.service_account", fake_google_oauth2_service_account)
+
+        service_account_info = {"project_id": "my-gcp-project", "client_email": "x@y.iam.gserviceaccount.com"}
+        result = app.mint_gemini_access_token(service_account_info)
+    finally:
+        guard.restore()
+
+    assert result == "minted-access-token"
+    assert calls["info"] == service_account_info
+    assert calls["scopes"] == [app.GEMINI_OAUTH_SCOPE]
+    assert isinstance(calls["refresh_request"], _FakeRequest)
+
 
 def test_build_gemini_scene_prompt_uses_visual_theme_via_resolve_visual_context():
     article = dict(_SAMPLE_ARTICLE, visual_theme="A Fallout-style post-apocalyptic wasteland.")
@@ -1207,11 +1333,22 @@ class _FakeGeminiResponse:
         return self._payload
 
 
+# A stand-in gemini_auth bundle (see call_gemini_for_image's own
+# docstring) for tests that don't care about its exact contents, just
+# that SOME auth dict flows through -- same "any string will do" spirit
+# the old "api-key" literal had, updated for the v5 dict shape.
+_FAKE_GEMINI_AUTH = {"access_token": "fake-token", "project_id": "fake-project", "region": "us-central1"}
+
+
 def test_call_gemini_for_image_sends_correct_request_shape_and_auth_header():
-    """Confirms the request is a direct call to Google's own REST API
-    (x-goog-api-key header, NOT any AWS/Bedrock mechanism -- see this
-    module's own docstring for why) with the reference photo attached as
-    inline image data alongside the text prompt."""
+    """Confirms the request is a direct call to Vertex AI's own REST API
+    (Authorization: Bearer <token>, NOT the x-goog-api-key header v4 used
+    against the Developer API, and NOT any AWS/Bedrock mechanism -- see
+    this module's own docstring for the full v4->v5 story) with the
+    reference photo attached as inline image data alongside the text
+    prompt, and the URL built from gemini_auth's project_id/region rather
+    than a fixed base URL (Vertex AI's endpoint is per-project/per-Region,
+    unlike the Developer API's single global host)."""
     import base64
 
     import requests
@@ -1230,17 +1367,22 @@ def test_call_gemini_for_image_sends_correct_request_shape_and_auth_header():
         calls.append({"url": url, "headers": headers, "json": json, "timeout": timeout})
         return _FakeGeminiResponse(payload)
 
+    gemini_auth = {"access_token": "token-abc-123", "project_id": "my-gcp-project", "region": "us-central1"}
+
     original_post = requests.post
     requests.post = _fake_post
     try:
-        result = app.call_gemini_for_image("api-key-123", "gemini-2.5-flash-image", "a scene", "ref-b64", "16:9")
+        result = app.call_gemini_for_image(gemini_auth, "gemini-3-pro-image", "a scene", "ref-b64", "16:9")
     finally:
         requests.post = original_post
 
     assert result == fake_image_bytes
     call = calls[0]
-    assert call["url"] == f"{app.GEMINI_API_BASE_URL}/gemini-2.5-flash-image:generateContent"
-    assert call["headers"]["x-goog-api-key"] == "api-key-123"
+    assert call["url"] == (
+        "https://us-central1-aiplatform.googleapis.com/v1/projects/my-gcp-project/"
+        "locations/us-central1/publishers/google/models/gemini-3-pro-image:generateContent"
+    )
+    assert call["headers"]["Authorization"] == "Bearer token-abc-123"
     parts = call["json"]["contents"][0]["parts"]
     assert parts[0]["text"] == "a scene"
     assert parts[1]["inline_data"] == {"mime_type": "image/png", "data": "ref-b64"}
@@ -1268,7 +1410,7 @@ def test_call_gemini_for_image_handles_snake_case_inline_data_field():
     original_post = requests.post
     requests.post = lambda url, headers=None, json=None, timeout=None: _FakeGeminiResponse(payload)
     try:
-        result = app.call_gemini_for_image("api-key", "model-id", "prompt", "ref-b64", "1:1")
+        result = app.call_gemini_for_image(_FAKE_GEMINI_AUTH, "model-id", "prompt", "ref-b64", "1:1")
     finally:
         requests.post = original_post
 
@@ -1284,7 +1426,7 @@ def test_call_gemini_for_image_raises_when_no_image_data_in_response():
     requests.post = lambda url, headers=None, json=None, timeout=None: _FakeGeminiResponse(payload)
     try:
         try:
-            app.call_gemini_for_image("api-key", "model-id", "prompt", "ref-b64", "1:1")
+            app.call_gemini_for_image(_FAKE_GEMINI_AUTH, "model-id", "prompt", "ref-b64", "1:1")
             assert False, "expected RuntimeError"
         except RuntimeError as exc:
             assert "SAFETY" in str(exc)
@@ -1299,7 +1441,7 @@ def test_call_gemini_for_image_raises_when_no_candidates_in_response():
     requests.post = lambda url, headers=None, json=None, timeout=None: _FakeGeminiResponse({"candidates": []})
     try:
         try:
-            app.call_gemini_for_image("api-key", "model-id", "prompt", "ref-b64", "1:1")
+            app.call_gemini_for_image(_FAKE_GEMINI_AUTH, "model-id", "prompt", "ref-b64", "1:1")
             assert False, "expected RuntimeError"
         except RuntimeError as exc:
             assert "no candidates" in str(exc)
@@ -1422,7 +1564,7 @@ def _fake_gemini_post(image_bytes_by_call=None, default_bytes=b"fake-gemini-byte
 def test_generate_article_image_candidates_returns_empty_when_no_reference_image():
     conn = _FakeConnection(reference_image_url=None)
     result = app.generate_article_image_candidates(
-        conn, bedrock_image_client=None, bedrock_removebg_client=None, gemini_api_key="key", s3_client=None,
+        conn, bedrock_image_client=None, bedrock_removebg_client=None, gemini_auth=_FAKE_GEMINI_AUTH, s3_client=None,
         image_model_id="model-id", removebg_model_id="removebg-model-id", gemini_model_id="gemini-model-id",
         image_bucket="bucket", product={"id": "prod-1", "color": "Blue"}, article=_SAMPLE_ARTICLE,
     )
@@ -1437,7 +1579,7 @@ def test_generate_article_image_candidates_returns_empty_when_reference_fetch_fa
     requests.get = lambda *a, **k: (_ for _ in ()).throw(requests.exceptions.ConnectionError("network down"))
     try:
         result = app.generate_article_image_candidates(
-            conn, bedrock_image_client=object(), bedrock_removebg_client=object(), gemini_api_key="key",
+            conn, bedrock_image_client=object(), bedrock_removebg_client=object(), gemini_auth=_FAKE_GEMINI_AUTH,
             s3_client=object(), image_model_id="model-id", removebg_model_id="removebg-model-id",
             gemini_model_id="gemini-model-id", image_bucket="bucket",
             product={"id": "prod-1", "color": "Blue"}, article=_SAMPLE_ARTICLE,
@@ -1467,7 +1609,7 @@ def test_generate_article_image_candidates_all_three_succeed_per_variant():
     try:
         result = app.generate_article_image_candidates(
             conn, bedrock_image_client=bg_client, bedrock_removebg_client=removebg_client,
-            gemini_api_key="api-key", s3_client=s3, image_model_id="model-id",
+            gemini_auth=_FAKE_GEMINI_AUTH, s3_client=s3, image_model_id="model-id",
             removebg_model_id="removebg-model-id", gemini_model_id="gemini-model-id", image_bucket="bucket",
             product={"id": "prod-1", "color": "Blue"}, article=_SAMPLE_ARTICLE,
         )
@@ -1533,7 +1675,7 @@ def test_generate_article_image_candidates_skips_stability_when_remove_backgroun
     try:
         result = app.generate_article_image_candidates(
             conn, bedrock_image_client=bg_client, bedrock_removebg_client=_FailingRemoveBgClient(),
-            gemini_api_key="api-key", s3_client=s3, image_model_id="model-id",
+            gemini_auth=_FAKE_GEMINI_AUTH, s3_client=s3, image_model_id="model-id",
             removebg_model_id="removebg-model-id", gemini_model_id="gemini-model-id", image_bucket="bucket",
             product={"id": "prod-1", "color": "Blue"}, article=_SAMPLE_ARTICLE,
         )
@@ -1580,7 +1722,7 @@ def test_generate_article_image_candidates_one_gemini_call_fails_others_still_su
     try:
         result = app.generate_article_image_candidates(
             conn, bedrock_image_client=object(), bedrock_removebg_client=_RaisingRemoveBgClient(),
-            gemini_api_key="api-key", s3_client=s3, image_model_id="model-id",
+            gemini_auth=_FAKE_GEMINI_AUTH, s3_client=s3, image_model_id="model-id",
             removebg_model_id="removebg-model-id", gemini_model_id="gemini-model-id", image_bucket="bucket",
             product={"id": "prod-1", "color": "Blue"}, article=_SAMPLE_ARTICLE,
         )
@@ -1667,7 +1809,7 @@ def test_generate_article_for_product_wires_images_when_all_eight_image_args_sup
     result = app.generate_article_for_product(
         conn, bedrock, "model-id", "prod-1",
         s3_client=object(), bedrock_image_client=object(), bedrock_removebg_client=object(),
-        gemini_api_key="api-key", image_model_id="model-id", removebg_model_id="removebg-model-id",
+        gemini_auth=_FAKE_GEMINI_AUTH, image_model_id="model-id", removebg_model_id="removebg-model-id",
         gemini_model_id="gemini-model-id", image_bucket="bucket",
     )
 
@@ -1682,7 +1824,7 @@ def test_generate_article_for_product_wires_images_when_all_eight_image_args_sup
 
 def test_generate_article_for_product_skips_images_when_any_image_arg_missing():
     """s3_client/bedrock_image_client/bedrock_removebg_client/gemini_
-    api_key/image_model_id/removebg_model_id/gemini_model_id/image_bucket
+    auth/image_model_id/removebg_model_id/gemini_model_id/image_bucket
     must ALL be supplied for the image step to run (see generate_article_
     for_product's own docstring) -- a partially-configured deployment
     (e.g. IMAGE_BUCKET unset) should skip images entirely, not half-run."""
@@ -1697,7 +1839,7 @@ def test_generate_article_for_product_skips_images_when_any_image_arg_missing():
     result = app.generate_article_for_product(
         conn, bedrock, "model-id", "prod-1",
         s3_client=object(), bedrock_image_client=object(), bedrock_removebg_client=object(),
-        gemini_api_key="api-key", image_model_id="model-id", removebg_model_id="removebg-model-id",
+        gemini_auth=_FAKE_GEMINI_AUTH, image_model_id="model-id", removebg_model_id="removebg-model-id",
         gemini_model_id="gemini-model-id", image_bucket=None,  # missing
     )
 
@@ -1707,11 +1849,11 @@ def test_generate_article_for_product_skips_images_when_any_image_arg_missing():
     assert not any(q.startswith("select coalesce(") for q, _ in conn._cursor.executed)
 
 
-def test_generate_article_for_product_skips_images_when_gemini_api_key_missing():
-    """Same as above but specifically the NEW gemini_api_key arg missing
-    -- confirms it's actually part of the all-or-nothing gate, not
-    silently optional/backward-compatible (unlike handler()'s own softer
-    "fetch failed -> None, Gemini candidates just get skipped inside
+def test_generate_article_for_product_skips_images_when_gemini_auth_missing():
+    """Same as above but specifically the NEW gemini_auth arg missing --
+    confirms it's actually part of the all-or-nothing gate, not silently
+    optional/backward-compatible (unlike handler()'s own softer "fetch/
+    mint failed -> None, Gemini candidates just get skipped inside
     generate_article_image_candidates" posture -- this is the OUTER gate
     that decides whether to call that function at all)."""
     product_row = (
@@ -1725,7 +1867,7 @@ def test_generate_article_for_product_skips_images_when_gemini_api_key_missing()
     result = app.generate_article_for_product(
         conn, bedrock, "model-id", "prod-1",
         s3_client=object(), bedrock_image_client=object(), bedrock_removebg_client=object(),
-        gemini_api_key=None,  # missing
+        gemini_auth=None,  # missing
         image_model_id="model-id", removebg_model_id="removebg-model-id",
         gemini_model_id="gemini-model-id", image_bucket="bucket",
     )

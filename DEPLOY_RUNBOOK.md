@@ -151,29 +151,60 @@ template. `MAX_SEARCHES_PER_INVOCATION` defaults to 70 (not 90) to leave
 same-day headroom for retries -- see src/video_discovery/app.py's module
 docstring, REAL INCIDENT #3, for the full story of how this was confirmed.
 
-**Gemini API key (optional, only for v4's Gemini 2.5 Flash Image
+**Gemini service-account key (optional, only for v5's Gemini image
 candidates in the article-image pipeline, see 6t below -- skip this and
 the article generator still runs fine, it just produces one Stability
 candidate per shot instead of three):**
 
-This one you have to get yourself too, same as the YouTube key above --
-Google AI Studio (https://aistudio.google.com/apikey) -> Create API key.
-A DIFFERENT kind of Google credential from the YouTube Data API v3 key
-above (this is Gemini's own API, billed/quota'd separately) -- don't
-reuse that key here, it won't work.
+This one you have to set up yourself, in Google Cloud Console (NOT
+Google AI Studio -- see below for why that changed):
+
+1. Create (or pick) a GCP project, and enable the **Vertex AI API** on it
+   (console.cloud.google.com -> APIs & Services -> Enable APIs -> search
+   "Vertex AI API" -> Enable).
+2. Create a service account (IAM & Admin -> Service Accounts -> Create
+   Service Account) and grant it the **Vertex AI User** role
+   (`roles/aiplatform.user`) -- that's the only role this needs.
+3. Create a JSON key for that service account (the service account's own
+   page -> Keys -> Add Key -> Create new key -> JSON) and download it.
+   This file is a real credential -- treat it like a password, don't
+   commit it anywhere.
 
 ```bash
 aws secretsmanager create-secret \
-  --name bowling-scraper-gemini-api-key \
-  --secret-string '{"api_key":"<your-gemini-api-key>"}'
+  --name bowling-scraper-gemini-service-account \
+  --secret-string file://path/to/downloaded-service-account-key.json
 ```
 
-Note the returned ARN -- this is `GeminiApiKeySecretArn`. Left unset,
-`generate_article_image_candidates` simply skips the two Gemini
+Note the returned ARN -- this is `GeminiServiceAccountSecretArn`. Left
+unset, `generate_article_image_candidates` simply skips the two Gemini
 candidates every run and still produces the one Stability composite
 candidate -- same "not configured -> soft no-op" posture as every other
 optional secret in this section, not a hard failure (see `product_
 article_generator.handler`'s own docstring).
+
+**Why this changed from a bare API key (v4) to a service-account JSON key
+(v5)**: Al's ask changed to "what if we can only use Application Default
+Credentials instead of an API key". A literal ADC/metadata-server flow
+doesn't exist for a Lambda running on AWS (there's no GCP metadata server
+to discover), so a service-account JSON key is the practical substitute
+Al chose (over the alternative, GCP Workload Identity Federation from
+AWS). A service account authenticates via standard GCP IAM/OAuth2
+(Bearer token), which only Vertex AI's own `generateContent` endpoint
+accepts -- NOT the Gemini Developer API / Google AI Studio's
+`x-goog-api-key` mechanism v4 used -- so this is a real provider-surface
+switch, not just a header swap. Also note: v5 defaults `GeminiModelId` to
+**Gemini 3 Pro Image** ("Nano Banana Pro"), not v4's original
+`gemini-2.5-flash-image` -- that model carries an explicit retirement
+notice on Vertex AI (2026-10-02) in Google's own migration docs,
+discovered while researching this switch; Al picked the Pro tier directly
+over the cheaper/faster Gemini 3.1 Flash Image successor when asked. See
+`src/product_article_generator/app.py`'s own module docstring for the
+full v4->v5 research trail, including the explicit caveat that this
+module's Vertex AI request/response handling has NOT been verified
+against a live invocation from inside this environment (no outbound
+access to `*.googleapis.com` from this sandbox, no real service-account
+key to test with) -- confirm on the first real invocation.
 
 Separately, `video_summarizer` calls Bedrock, and this needs one real,
 confirmed fact accounted for: Claude Haiku 4.5 (the `BedrockModelId`
@@ -7645,6 +7676,133 @@ this Gemini integration has been verified against a live invocation from
 this environment** -- confirm `call_gemini_for_image`'s actual request/
 response shape against a real API call on first use, per its own
 docstring's own honesty caveat, before trusting the feature end to end.
+
+### v5: Application Default Credentials -> Vertex AI + service-account auth
+
+After v4 shipped, Al asked directly: "what if we can only use Application
+Default Credentials instead of an API key". Researched (not assumed) what
+that actually requires from a Lambda running on AWS: **ADC as a literal
+concept doesn't exist here** -- ADC's automatic-discovery mechanisms are a
+GCP metadata server (only present on real GCP compute), a `GOOGLE_
+APPLICATION_CREDENTIALS` env var pointing at a service-account JSON key
+file, or `gcloud` user credentials -- none of which apply to an AWS
+Lambda. Presented Al with the two real substitutes (a service-account
+JSON key stored in Secrets Manager, or GCP Workload Identity Federation
+from AWS) plus the option to not build this at all; **he picked the
+service-account JSON key.**
+
+A service account authenticates via standard GCP IAM/OAuth2 (a Bearer
+access token), which the Gemini **Developer API** v4 called
+(`generativelanguage.googleapis.com`, `x-goog-api-key` header) does **not
+accept at all** -- only Google Cloud's **Vertex AI** `generateContent`
+endpoint does. So v5 is a genuine provider-surface switch, not just an
+auth-header swap: `call_gemini_for_image` now hits `https://{region}-
+aiplatform.googleapis.com/v1/projects/{project}/locations/{region}/
+publishers/google/models/{model}:generateContent` with `Authorization:
+Bearer {token}`, confirmed against Google's own Vertex AI Gemini 3 Pro
+Image sample notebook and REST docs (not assumed) -- the request/response
+body shape itself (contents/parts/inlineData) is essentially unchanged
+from v4's Developer-API version, only the URL, model-id path shape, and
+auth header differ.
+
+**Second research finding, load-bearing enough to change the plan before
+any code was written**: gemini-2.5-flash-image, the model v4 shipped
+against, carries an explicit notice in Google's own migration
+documentation that it **"will be retired" on Vertex AI on 2026-10-02** --
+weeks away at the time this was discovered. Shipping v5 against a model
+that dies in weeks would just trade one broken integration for another,
+so this was surfaced to Al directly before any implementation: he chose
+**Gemini 3 Pro Image** ("Nano Banana Pro", `gemini-3-pro-image`) over
+both the cheaper/faster Gemini 3.1 Flash Image ("Nano Banana 2")
+successor and staying on the soon-dead 2.5 model. See `Gemini
+ModelId`'s own `template.yaml` parameter description for the same
+history.
+
+**Token minting** (`mint_gemini_access_token` in `app.py`) uses
+`google-auth` ONLY (`google.oauth2.service_account.Credentials` +
+`google.auth.transport.requests.Request`) -- deliberately NOT `google-
+cloud-aiplatform` or `google-genai`, both heavy protobuf/grpc-backed SDKs
+this project has consistently avoided (v4's own docstring made the same
+call against `google-genai` for the same reason). `google-auth` itself is
+pure Python plus `cryptography`, used purely for its JWT-bearer OAuth2
+token-exchange logic; `credentials.refresh()` does the whole exchange in
+one call, and the actual `generateContent` call remains a plain
+`requests.post`, same "raw JSON body, no heavy SDK" style this module
+already uses everywhere else. **New pip dependency**: `google-auth>=2.28`
+added to `src/product_article_generator/requirements.txt`.
+
+**Secret shape changed**: `GeminiApiKeySecretArn` (a bare API key, or
+`{"api_key": "..."}`) is REPLACED by `GeminiServiceAccountSecretArn` --
+the secret's JSON *is* the service account's whole downloaded key file
+verbatim (it already carries its own `project_id`, so there's no separate
+`GeminiProjectId` template parameter). A new `GeminiRegion` parameter
+(default `us-central1`) supplies the Vertex AI location, since a service
+account isn't tied to one Region the way a Bedrock model is. See step 3
+above for the exact GCP-side setup (create project, enable Vertex AI API,
+create service account, grant `roles/aiplatform.user`, download JSON
+key).
+
+**`app.py` plumbing renamed throughout**: `gemini_api_key` (a bare
+string) is now `gemini_auth` (a dict: `{"access_token", "project_id",
+"region"}`) -- threaded through `generate_article_image_candidates`,
+`generate_article_for_product` (still one of the same EIGHT required
+image-related arguments for the all-or-nothing image-generation gate),
+and `handler()`. `handler()` now does secret-fetch-then-mint as one
+step: fetch the service-account JSON from Secrets Manager, call `mint_
+gemini_access_token`, then bundle the resulting token with the key's own
+`project_id` and `GEMINI_REGION` into the `gemini_auth` dict -- wrapped
+in the same single try/except as before, so either a fetch failure OR a
+mint failure degrades to `gemini_auth=None` (Gemini candidates skipped
+this run) rather than crashing the whole invocation, unchanged "images
+are always best-effort" posture from v4.
+
+**`template.yaml`**: `GeminiApiKeySecretArn` -> `GeminiServiceAccountSecretArn`
+(same blank-default/conditional-grant pattern, now `HasGeminiService
+AccountSecret`), `GeminiModelId` default changed to `gemini-3-pro-image`,
+new `GeminiRegion` parameter (default `us-central1`), new `GEMINI_REGION`
+env var on `ProductArticleGeneratorFunction`. No new IAM grant needed
+beyond the existing conditional `secretsmanager:GetSecretValue` statement
+(now pointed at `GeminiServiceAccountSecretArn`) -- the actual OAuth2
+token exchange happens entirely outside AWS, against Google's own token
+endpoint, so there's no AWS-side IAM concept for it the way there is for
+every Bedrock grant elsewhere in this function's policy. Confirmed the
+template still parses (57 resources, unchanged count) via the CFN-
+tolerant YAML loader after these changes.
+
+**Tests**: `tests/test_product_article_generator.py` grew to 85 tests (up
+from 83) -- every `gemini_api_key="..."` call site became `gemini_auth=
+_FAKE_GEMINI_AUTH` (a module-level stand-in dict); `call_gemini_for_
+image`'s own tests now assert the Vertex AI URL shape and `Authorization:
+Bearer` header instead of the Developer API URL and `x-goog-api-key`; a
+NEW `mint_gemini_access_token` test fakes the handful of `google.*`
+module/class names it touches via `sys.modules` injection (the same
+pattern `_fake_boto3_module` already uses for `boto3`) since `google-
+auth` itself can't be installed in this sandbox (pip's proxy returns 403
+here, same caveat noted elsewhere in this project) -- confirms the right
+scope/service-account-info get passed through and `.token` gets returned,
+without needing the real library; `handler()`'s Gemini tests split into
+THREE cases (secret configured and mint succeeds, Secrets Manager fetch
+fails, and NEW -- fetch succeeds but `mint_gemini_access_token` itself
+raises), both failure cases confirming `gemini_auth` stays `None` rather
+than crashing the invocation. Full non-pytest `test_*.py` sweep (41
+files, `test_product_scraper.py`/`test_url_discovery.py` excluded per
+this sweep's own long-standing convention) ran clean after these changes.
+
+**Redeploy**: create the new `GeminiServiceAccountSecretArn` secret per
+step 3's v5 instructions above (**you have to set this up yourself in
+Google Cloud Console -- create the project/service account/key, this
+project can't do that on your behalf**), then a full unscoped `sam build
+&& sam deploy` passing `GeminiServiceAccountSecretArn` (replaces the old
+`GeminiApiKeySecretArn` parameter -- passing the old parameter name will
+just fail as an unknown parameter) and, if you need a non-default GCP
+Region, `GeminiRegion`. **None of this Vertex AI integration has been
+verified against a live invocation from this environment** -- same
+honest caveat v4's own Developer-API integration carried, now doubled
+(new endpoint AND new auth mechanism, neither exercised against a real
+GCP project from this sandbox) -- confirm `call_gemini_for_image`'s
+actual request/response shape AND `mint_gemini_access_token`'s real
+token-exchange behavior against a live invocation on first use, before
+trusting the feature end to end.
 
 ## 7. Ongoing operations
 

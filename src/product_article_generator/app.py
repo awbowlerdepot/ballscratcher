@@ -149,22 +149,69 @@ candidate -- see the Geographic-CRIS IAM shape this needs (already solved
 once, see DEPLOY_RUNBOOK's 6t section for that saga's full history; v4
 reuses that exact, already-correct policy shape rather than re-deriving
 it) and BEDROCK_REMOVEBG_REGION (`us-east-1`, a THIRD Region, distinct
-from both `us-west-1` and `us-west-2`). Gemini 2.5 Flash Image
-(`gemini-2.5-flash-image`) is called directly against Google's own REST
-API (`https://generativelanguage.googleapis.com`, see GEMINI_API_BASE_URL
-and call_gemini_for_image) using a plain `requests.post` -- no new SDK
-dependency (this module already depends on `requests`), authenticated via
-an `x-goog-api-key` header whose value comes from a NEW Secrets Manager
-secret (GEMINI_API_KEY_SECRET_ARN), same "structured JSON secret, fetched
-once via boto3 secretsmanager, never hardcoded" convention get_db_
-connection already uses for DB credentials. IMPORTANT: this module's own
-parsing of Gemini's response shape (candidates[].content.parts[].
-inlineData.data) is built from Google's published REST examples, NOT
-verified against a live invocation from inside this environment (no
-outbound access to generativelanguage.googleapis.com from this sandbox,
-and no real API key to test with) -- same honest posture the Remove
-Background IAM fix took before its first real deploy; confirm this on
-the first real invocation, don't assume it's correct.
+from both `us-west-1` and `us-west-2`).
+
+    v5 (current): Al's constraint changed after v4 shipped -- "what if we
+    can only use Application Default Credentials instead of an API key".
+    ADC as a literal concept (automatic credential discovery via a GCP
+    metadata server) doesn't exist for a Lambda running on AWS -- there is
+    no GCP metadata server to discover. Asked Al directly which ADC-style
+    approach to use instead (a GCP service-account JSON key vs Workload
+    Identity Federation from AWS vs not building this at all); he picked
+    the service-account JSON key. A service account authenticates via
+    standard GCP IAM/OAuth2 (Bearer token), which the Gemini DEVELOPER API
+    (generativelanguage.googleapis.com, what v4 called) does not accept at
+    all -- only Vertex AI's own generateContent endpoint does. So v5 is a
+    provider-surface switch, not just an auth-header swap: Gemini is now
+    called via Vertex AI (`{region}-aiplatform.googleapis.com`, see
+    call_gemini_for_image), authenticated with a Bearer access token
+    minted from a service account's JSON key (see mint_gemini_access_
+    token) rather than an `x-goog-api-key` header.
+
+    v5 ALSO had to change which Gemini model gets called: researched (not
+    assumed) whether gemini-2.5-flash-image -- the model v4 shipped
+    against -- is even available on Vertex AI, and found Google's own
+    migration notebook carries an explicit notice that gemini-2.5-flash-
+    image "will be retired" on this exact platform on 2026-10-02, weeks
+    away from when this v5 work started. Shipping v5 against a model that
+    dies in weeks would just trade one broken thing for another, so this
+    was surfaced to Al directly before writing any code; he picked Gemini
+    3 Pro Image ("Nano Banana Pro", `gemini-3-pro-image`) over the
+    cheaper/faster Gemini 3.1 Flash Image successor and over staying on
+    the doomed 2.5 model -- see DEFAULT_GEMINI_IMAGE_MODEL_ID.
+
+    Token minting deliberately does NOT pull in `google-cloud-aiplatform`
+    or `google-genai` (both heavy, protobuf/grpc-backed SDKs this project
+    has consistently avoided -- v4's own docstring made that same call for
+    the exact same reason). It uses `google-auth` alone (pure Python +
+    `cryptography`, no protobuf/grpc) purely for its JWT-bearer OAuth2
+    token-exchange logic (`google.oauth2.service_account.Credentials` +
+    `google.auth.transport.requests.Request`), then makes the actual
+    generateContent call as a plain `requests.post` against Vertex AI's
+    REST endpoint -- same "raw JSON body, no heavy SDK" style this module
+    already uses for every Bedrock InvokeModel call, and the same style
+    v4's own call_gemini_for_image already used against the Developer API
+    (only the URL, model id, and auth header actually change; the request
+    body shape and response parsing are unchanged from v4, since Vertex
+    AI's generateContent mirrors the Developer API's own request/response
+    shape almost exactly -- confirmed via Google's own Vertex AI Gemini
+    3 Pro Image sample notebook, not assumed).
+
+    The service account's JSON key is stored whole as a Secrets Manager
+    secret (GEMINI_SERVICE_ACCOUNT_SECRET_ARN, replacing v4's GEMINI_
+    API_KEY_SECRET_ARN) -- same "structured JSON secret, fetched once via
+    boto3 secretsmanager, never hardcoded" convention get_db_connection
+    already uses for DB credentials, except here the secret's JSON *is*
+    the service-account key file verbatim (it already carries its own
+    project_id field, so there's no separate GeminiProjectId parameter to
+    configure -- only a GEMINI_REGION env var for the Vertex AI location,
+    since the key file has no opinion on that). IMPORTANT: as with v4's
+    own Developer-API integration, this module's Vertex AI request/
+    response handling is built from Google's own published REST examples
+    and sample notebook, NOT verified against a live invocation from
+    inside this environment (no outbound access to *.googleapis.com from
+    this sandbox, no real service-account key to test with) -- confirm on
+    the first real invocation, don't assume it's exactly right.
 """
 import json
 import logging
@@ -220,22 +267,36 @@ DEFAULT_BEDROCK_REMOVE_BG_MODEL_ID = "us.stability.stable-image-remove-backgroun
 # this module's own docstring for the full research trail.
 DEFAULT_BEDROCK_REMOVE_BG_REGION = "us-east-1"
 
-# Google's Gemini 2.5 Flash Image ("Nano Banana") -- the model actually
-# behind the yeri.ai reference result Al sent (see this module's own
-# docstring for the research trail). NOT a Bedrock model id -- this is
-# Google's own model id, passed to call_gemini_for_image which builds a
-# URL against GEMINI_API_BASE_URL. If Google ships a newer/better image-
-# editing model later, this is the one parameter to change (kept as its
-# own constant/env var rather than hardcoded in call_gemini_for_image for
-# exactly that reason).
-DEFAULT_GEMINI_IMAGE_MODEL_ID = "gemini-2.5-flash-image"
+# Google's Gemini 3 Pro Image ("Nano Banana Pro") -- the model actually
+# behind the yeri.ai reference result Al sent was gemini-2.5-flash-image
+# (see this module's own docstring for that original research trail), but
+# v5's own research found Google's migration notebook explicitly warns
+# gemini-2.5-flash-image "will be retired" on Vertex AI 2026-10-02 -- so
+# v5 switches to its successor rather than shipping against a model that
+# was weeks from breaking. Asked Al directly: he chose this (Pro) tier
+# over the cheaper/faster Gemini 3.1 Flash Image ("Nano Banana 2")
+# successor. NOT a Bedrock model id -- this is Google's own model id,
+# passed to call_gemini_for_image which builds a URL against Vertex AI's
+# generateContent endpoint (see call_gemini_for_image). If Google ships a
+# newer/better image-editing model later, this is the one parameter to
+# change (kept as its own constant/env var rather than hardcoded in call_
+# gemini_for_image for exactly that reason).
+DEFAULT_GEMINI_IMAGE_MODEL_ID = "gemini-3-pro-image"
 
-# Gemini's REST API -- v1beta as of this writing (Google's own docs use
-# this version for the image-generation endpoint; there is no GA/v1
-# equivalent for image output as of this writing, only for text). The
-# model id is appended as a path segment (":generateContent") by call_
-# gemini_for_image, same pattern Google's own curl examples use.
-GEMINI_API_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models"
+# Vertex AI's own default region for calling Gemini/Nano Banana models --
+# distinct from every Bedrock Region this module already uses (us-west-1/
+# us-west-2/us-east-1), since this is a wholly separate cloud (GCP, not
+# AWS). us-central1 is Google's own most broadly-available Vertex AI
+# Region for Gemini models; overridable via GEMINI_REGION if Al's GCP
+# project needs a different one (e.g. data-residency requirements).
+DEFAULT_GEMINI_REGION = "us-central1"
+
+# The single OAuth2 scope this module's service-account Bearer token
+# needs -- "cloud-platform" is Google's own broad scope covering Vertex
+# AI's generateContent call (there is no Vertex-AI-only narrower scope in
+# Google's own documented scope list); mint_gemini_access_token requests
+# exactly this one scope, nothing broader than what's actually used.
+GEMINI_OAUTH_SCOPE = "https://www.googleapis.com/auth/cloud-platform"
 
 # aspect_ratio is a TEXT-to-image-only parameter on Stable Diffusion 3.5
 # Large (this module only ever calls it in text-to-image mode now, for
@@ -909,29 +970,77 @@ def build_gemini_scene_prompt(product: dict, article: dict, variant: str) -> str
     )
 
 
-def call_gemini_for_image(api_key: str, model_id: str, prompt: str,
+def mint_gemini_access_token(service_account_info: dict) -> str:
+    """Mints a short-lived OAuth2 Bearer access token from a GCP service
+    account's JSON key -- the actual mechanism behind Al's "Application
+    Default Credentials" constraint on this AWS-hosted Lambda (see this
+    module's own docstring's v5 section for why a literal ADC/metadata-
+    server flow isn't reachable here, and why a service-account key is
+    the substitute). Uses `google-auth` ONLY (google.oauth2.service_
+    account + google.auth.transport.requests) -- deliberately NOT
+    `google-cloud-aiplatform` or `google-genai`, both heavy protobuf/grpc-
+    backed SDKs this project has consistently avoided (see this module's
+    docstring). `google-auth` itself is pure Python plus `cryptography`,
+    used here purely for its JWT-bearer OAuth2 token-exchange logic
+    (build+sign a JWT with the service account's private key, exchange it
+    at Google's token endpoint) -- `Credentials.refresh()` does that whole
+    exchange in one call and leaves the resulting access token on
+    `credentials.token`.
+
+    Minted once per Lambda invocation (see handler()) and reused across
+    every candidate that invocation generates -- Vertex AI access tokens
+    are valid for ~1 hour, comfortably longer than one invocation's own
+    runtime, so there's no need to mint a fresh token per call."""
+    from google.auth.transport.requests import Request
+    from google.oauth2 import service_account
+
+    credentials = service_account.Credentials.from_service_account_info(
+        service_account_info, scopes=[GEMINI_OAUTH_SCOPE],
+    )
+    credentials.refresh(Request())
+    return credentials.token
+
+
+def call_gemini_for_image(gemini_auth: dict, model_id: str, prompt: str,
                            reference_image_b64: str, aspect_ratio: str) -> bytes:
-    """Google's Gemini 2.5 Flash Image, called directly via its own REST
-    API (NOT Bedrock -- see this module's own docstring for why). A plain
+    """Google's Gemini 3 Pro Image, called via Vertex AI's own
+    generateContent REST endpoint (NOT Bedrock, and NOT the Gemini
+    Developer API v4 originally called -- see this module's own docstring
+    for why v5 had to switch surfaces, not just auth headers). A plain
     requests.post, same "raw JSON body, no heavy SDK" style this module
-    already uses for every Bedrock InvokeModel call -- avoids adding
-    google-genai (and its own dependency tree) to this Lambda's package
-    just for one call shape.
+    already uses for every Bedrock InvokeModel call, and the same style
+    v4's own version of this function used against the Developer API --
+    only the URL, model-id path shape, and auth header actually change
+    here; the request body and response parsing are unchanged from v4,
+    since Vertex AI's generateContent mirrors the Developer API's own
+    shape almost exactly.
+
+    gemini_auth is a dict with "access_token" (from mint_gemini_access_
+    token), "project_id", and "region" (both from handler() -- see that
+    function's own docstring) -- bundled into one dict rather than three
+    separate parameters so this function's signature, and every caller
+    threading it through, stays a single "auth bundle" argument, same
+    shape v4's own single api_key argument had.
 
     IMPORTANT: this function's request/response shape is built from
-    Google's own published REST examples, NOT verified against a live
-    invocation from inside this environment (no outbound access to
-    generativelanguage.googleapis.com from this sandbox, no real API key
-    to test with) -- confirm on the first real invocation, don't assume
-    this is exactly right. In particular, the response field casing
-    (`inlineData` in REST JSON vs. `inline_data` in the Python SDK's own
-    object model) is defended against both ways below since published
-    examples were inconsistent about which one is authoritative."""
+    Google's own published REST examples and Vertex AI Gemini 3 Pro Image
+    sample notebook, NOT verified against a live invocation from inside
+    this environment (no outbound access to *.googleapis.com from this
+    sandbox, no real service-account key to test with) -- confirm on the
+    first real invocation, don't assume this is exactly right. In
+    particular, the response field casing (`inlineData` in REST JSON vs.
+    `inline_data` in the Python SDK's own object model) is defended
+    against both ways below since published examples were inconsistent
+    about which one is authoritative."""
     import base64
 
     import requests
 
-    url = f"{GEMINI_API_BASE_URL}/{model_id}:generateContent"
+    url = (
+        f"https://{gemini_auth['region']}-aiplatform.googleapis.com/v1/projects/"
+        f"{gemini_auth['project_id']}/locations/{gemini_auth['region']}/publishers/google/"
+        f"models/{model_id}:generateContent"
+    )
     body = {
         "contents": [{
             "parts": [
@@ -945,7 +1054,8 @@ def call_gemini_for_image(api_key: str, model_id: str, prompt: str,
         },
     }
     response = requests.post(
-        url, headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
+        url, headers={"Authorization": f"Bearer {gemini_auth['access_token']}",
+                      "Content-Type": "application/json"},
         json=body, timeout=60,
     )
     response.raise_for_status()
@@ -983,7 +1093,7 @@ def store_article_image(s3_client, bucket: str, product_id: str, name: str, png_
     return {"key": key, "url": f"https://{bucket}.s3.amazonaws.com/{key}"}
 
 
-def generate_article_image_candidates(conn, bedrock_image_client, bedrock_removebg_client, gemini_api_key,
+def generate_article_image_candidates(conn, bedrock_image_client, bedrock_removebg_client, gemini_auth: dict,
                                        s3_client, image_model_id: str, removebg_model_id: str,
                                        gemini_model_id: str, image_bucket: str,
                                        product: dict, article: dict) -> dict:
@@ -1048,7 +1158,7 @@ def generate_article_image_candidates(conn, bedrock_image_client, bedrock_remove
                 prompt = build_gemini_scene_prompt(product, article, variant)
                 if i > 0:
                     prompt += " (Generate a distinct alternate composition/angle from any previous attempt.)"
-                png_bytes = call_gemini_for_image(gemini_api_key, gemini_model_id, prompt, reference_b64, aspect_ratio)
+                png_bytes = call_gemini_for_image(gemini_auth, gemini_model_id, prompt, reference_b64, aspect_ratio)
                 stored = store_article_image(s3_client, image_bucket, product["id"], f"{variant}_gemini_{i + 1}",
                                               png_bytes)
                 candidates.append({"key": stored["key"], "url": stored["url"],
@@ -1175,7 +1285,7 @@ def store_article_image_candidates(conn, article_id: str, candidates_by_variant:
 
 def generate_article_for_product(conn, bedrock_client, model_id: str, product_id: str,
                                   s3_client=None, bedrock_image_client=None, bedrock_removebg_client=None,
-                                  gemini_api_key: str = None, image_model_id: str = None,
+                                  gemini_auth: dict = None, image_model_id: str = None,
                                   removebg_model_id: str = None, gemini_model_id: str = None,
                                   image_bucket: str = None, force: bool = False) -> dict:
     """Orchestrates one product's full generation. force=True (the
@@ -1184,7 +1294,7 @@ def generate_article_for_product(conn, bedrock_client, model_id: str, product_id
     handler's own list_products_needing_article query applies; a human
     explicitly asking for a regenerate should always get one.
 
-    s3_client/bedrock_image_client/bedrock_removebg_client/gemini_api_key/
+    s3_client/bedrock_image_client/bedrock_removebg_client/gemini_auth/
     image_model_id/removebg_model_id/gemini_model_id/image_bucket are all
     optional (default None) so existing/simpler callers -- and every
     test that only cares about the article TEXT -- don't need to thread
@@ -1202,8 +1312,11 @@ def generate_article_for_product(conn, bedrock_client, model_id: str, product_id
     removebg_client are separate clients from bedrock_client (not
     reused) -- each scoped to its own Region (see DEFAULT_BEDROCK_IMAGE_
     REGION/DEFAULT_BEDROCK_REMOVE_BG_REGION/this module's docstring).
-    gemini_api_key is not a Bedrock client at all -- see call_gemini_for_
-    image's own docstring for why Gemini is called directly instead."""
+    gemini_auth is not a Bedrock client at all -- it's the {"access_
+    token", "project_id", "region"} bundle handler() builds from a minted
+    service-account Bearer token (see mint_gemini_access_token and call_
+    gemini_for_image's own docstrings for why Gemini/Vertex AI is called
+    directly instead, as of v5)."""
     product = fetch_product_content(conn, product_id)
     if product is None:
         return {"product_id": product_id, "generated": False, "reason": "product_not_found"}
@@ -1218,9 +1331,9 @@ def generate_article_for_product(conn, bedrock_client, model_id: str, product_id
 
     candidates_by_variant = {}
     if (s3_client is not None and bedrock_image_client is not None and bedrock_removebg_client is not None
-            and gemini_api_key and image_model_id and removebg_model_id and gemini_model_id and image_bucket):
+            and gemini_auth and image_model_id and removebg_model_id and gemini_model_id and image_bucket):
         candidates_by_variant = generate_article_image_candidates(
-            conn, bedrock_image_client, bedrock_removebg_client, gemini_api_key, s3_client,
+            conn, bedrock_image_client, bedrock_removebg_client, gemini_auth, s3_client,
             image_model_id, removebg_model_id, gemini_model_id, image_bucket, product, article,
         )
 
@@ -1252,7 +1365,7 @@ def handler(event, context):
     "batch job also accepts a direct manual/admin invoke" shape this
     project already uses for VideoDiscoveryFunction and Video
     TranscriptFetcherFunction. Both paths pass s3_client/bedrock_image_
-    client/bedrock_removebg_client/gemini_api_key/image_model_id/
+    client/bedrock_removebg_client/gemini_auth/image_model_id/
     removebg_model_id/gemini_model_id/image_bucket through to generate_
     article_for_product so images generate automatically alongside the
     text in every run (Al's "Both image types, automatically with the
@@ -1261,17 +1374,29 @@ def handler(event, context):
     constructed with their own explicit region_name (BEDROCK_IMAGE_
     REGION, BEDROCK_REMOVEBG_REGION respectively), separate from
     bedrock_client's own default-Region construction AND from each
-    other -- see this module's docstring for why. gemini_api_key comes
-    from a Secrets Manager secret (GEMINI_API_KEY_SECRET_ARN), same
-    "fetch once via boto3 secretsmanager, never hardcoded" convention
-    get_db_connection already uses for DB credentials -- the secret's
-    own JSON shape is {"api_key": "..."}. If IMAGE_BUCKET or GEMINI_
-    API_KEY_SECRET_ARN isn't configured on a given deployment, the
-    corresponding value is falsy/None and generate_article_for_
-    product's own image branch is skipped entirely (it requires ALL
-    eight image-related arguments), same defensive "not configured ->
-    soft no-op" posture admin_api.queue_article_generation already uses
-    for the text function name."""
+    other -- see this module's docstring for why.
+
+    gemini_auth (v5, see this module's own docstring for the full v4->v5
+    ADC/Vertex-AI switch) is built here, not passed straight from a
+    secret the way the rest of this function's config is: the service
+    account's whole JSON key is fetched once from Secrets Manager
+    (GEMINI_SERVICE_ACCOUNT_SECRET_ARN, replacing v4's GEMINI_API_KEY_
+    SECRET_ARN -- same "fetch once via boto3 secretsmanager, never
+    hardcoded" convention get_db_connection already uses for DB
+    credentials, except this secret's JSON *is* the service-account key
+    file verbatim, not a wrapper around one field), then mint_gemini_
+    access_token exchanges it for a short-lived Bearer token, and that
+    token plus the key's own project_id field plus GEMINI_REGION (the
+    Vertex AI location -- NOT in the key file, since a service account
+    isn't tied to one Region) are bundled into the gemini_auth dict
+    threaded through to generate_article_for_product. If IMAGE_BUCKET or
+    GEMINI_SERVICE_ACCOUNT_SECRET_ARN isn't configured on a given
+    deployment, or the secret fetch/token mint fails for any reason, the
+    corresponding value is falsy/None and generate_article_for_product's
+    own image branch is skipped entirely (it requires ALL eight image-
+    related arguments), same defensive "not configured -> soft no-op"
+    posture admin_api.queue_article_generation already uses for the text
+    function name."""
     import boto3
 
     bedrock_client = boto3.client("bedrock-runtime")
@@ -1284,18 +1409,27 @@ def handler(event, context):
     image_model_id = os.environ.get("BEDROCK_IMAGE_MODEL_ID", DEFAULT_BEDROCK_IMAGE_MODEL_ID)
     removebg_model_id = os.environ.get("BEDROCK_REMOVEBG_MODEL_ID", DEFAULT_BEDROCK_REMOVE_BG_MODEL_ID)
     gemini_model_id = os.environ.get("GEMINI_IMAGE_MODEL_ID", DEFAULT_GEMINI_IMAGE_MODEL_ID)
+    gemini_region = os.environ.get("GEMINI_REGION", DEFAULT_GEMINI_REGION)
     image_bucket = os.environ.get("IMAGE_BUCKET")
 
-    gemini_api_key = None
-    gemini_secret_arn = os.environ.get("GEMINI_API_KEY_SECRET_ARN")
+    gemini_auth = None
+    gemini_secret_arn = os.environ.get("GEMINI_SERVICE_ACCOUNT_SECRET_ARN")
     if gemini_secret_arn:
         try:
             secretsmanager_client = boto3.client("secretsmanager")
-            secret = json.loads(secretsmanager_client.get_secret_value(SecretId=gemini_secret_arn)["SecretString"])
-            gemini_api_key = secret["api_key"]
+            service_account_info = json.loads(
+                secretsmanager_client.get_secret_value(SecretId=gemini_secret_arn)["SecretString"]
+            )
+            access_token = mint_gemini_access_token(service_account_info)
+            gemini_auth = {
+                "access_token": access_token,
+                "project_id": service_account_info["project_id"],
+                "region": gemini_region,
+            }
         except Exception:
-            logger.exception("Failed to fetch Gemini API key from Secrets Manager (arn=%s) -- Gemini image "
-                              "candidates will be skipped this run", gemini_secret_arn)
+            logger.exception("Failed to fetch/mint a Vertex AI access token from the Gemini service-account "
+                              "secret (arn=%s) -- Gemini image candidates will be skipped this run",
+                              gemini_secret_arn)
 
     conn = get_db_connection()
     try:
@@ -1303,7 +1437,7 @@ def handler(event, context):
             result = generate_article_for_product(
                 conn, bedrock_client, model_id, event["product_id"],
                 s3_client=s3_client, bedrock_image_client=bedrock_image_client,
-                bedrock_removebg_client=bedrock_removebg_client, gemini_api_key=gemini_api_key,
+                bedrock_removebg_client=bedrock_removebg_client, gemini_auth=gemini_auth,
                 image_model_id=image_model_id, removebg_model_id=removebg_model_id,
                 gemini_model_id=gemini_model_id, image_bucket=image_bucket, force=True,
             )
@@ -1316,7 +1450,7 @@ def handler(event, context):
                 results.append(generate_article_for_product(
                     conn, bedrock_client, model_id, product_id,
                     s3_client=s3_client, bedrock_image_client=bedrock_image_client,
-                    bedrock_removebg_client=bedrock_removebg_client, gemini_api_key=gemini_api_key,
+                    bedrock_removebg_client=bedrock_removebg_client, gemini_auth=gemini_auth,
                     image_model_id=image_model_id, removebg_model_id=removebg_model_id,
                     gemini_model_id=gemini_model_id, image_bucket=image_bucket,
                 ))
