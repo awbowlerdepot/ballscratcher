@@ -2176,6 +2176,40 @@ Resources:
               Condition:
                 StringEquals:
                   bedrock:InferenceProfileArn: !Sub "arn:aws:bedrock:${BedrockRemoveBgRegion}:${AWS::AccountId}:inference-profile/${BedrockRemoveBgModelId}"
+            # REAL INCIDENT (2026-09-04): the two bedrock:InvokeModel grants
+            # above are necessary but, as of this writing, NOT sufficient
+            # for a Marketplace-delivered model like Stability's Remove
+            # Background -- every real invoke still failed with
+            # AccessDeniedException: "IAM user or service role is not
+            # authorized to perform the required AWS Marketplace actions
+            # (aws-marketplace:ViewSubscriptions, aws-marketplace:Subscribe)
+            # to enable access to this model." Root cause, confirmed via
+            # AWS's own docs (docs.aws.amazon.com/bedrock/latest/userguide/
+            # model-access-permissions.html), not guessed: AWS retired
+            # Bedrock's old console "Model access" page entirely (see
+            # aws.amazon.com/blogs/security/simplified-amazon-bedrock-
+            # model-access/) -- there's no longer a console click that
+            # fixes this. Serverless models WITHOUT a Marketplace product
+            # ID now get automatic access with no action needed, but models
+            # WITH a product ID (Marketplace-delivered, like every Stability
+            # model here) instead auto-subscribe in the background on an
+            # account's first live invoke -- which requires the CALLING
+            # identity itself (this Lambda's own execution role, not a
+            # human console user) to hold aws-marketplace:Subscribe/
+            # Unsubscribe/ViewSubscriptions. Without this grant, that
+            # background subscription attempt is what was failing. These
+            # three actions don't support resource-level scoping (AWS's own
+            # policy examples all use Resource: "*"; the one exception is
+            # an optional aws-marketplace:ProductId condition key on
+            # Subscribe specifically, only useful for narrowing which
+            # models can be subscribed to, not required to grant access).
+            - Sid: GrantMarketplaceModelSubscriptionAccess
+              Effect: Allow
+              Action:
+                - aws-marketplace:Subscribe
+                - aws-marketplace:Unsubscribe
+                - aws-marketplace:ViewSubscriptions
+              Resource: "*"
             # Generated article image write only -- the reference photo
             # (product's real image) is fetched via a plain HTTPS GET
             # against its already-public stored_url/primary_image_url

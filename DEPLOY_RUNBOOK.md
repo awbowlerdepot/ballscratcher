@@ -8114,6 +8114,74 @@ Full test file: 90/90. Full 41-file regression sweep: clean. Template
 verified via the CFN-tolerant YAML loader (57 resources, unchanged
 count, `GeminiRegion` default confirmed as `global`).
 
+### REAL INCIDENT (2026-09-04), part three: Bedrock Remove Background AccessDeniedException -- "Model access" console fix doesn't exist anymore
+
+The same CloudWatch logs also carried the Remove Background
+`AccessDeniedException` (`us.stability.stable-image-remove-background-
+v1:0`, `AWS Marketplace actions (aws-marketplace:ViewSubscriptions,
+aws-marketplace:Subscribe) ... not authorized`) that this incident's
+part one flagged as "known, fix in the console, not code." That
+instruction was wrong -- Al checked and reported "model access page has
+been retired."
+
+Confirmed via AWS's own docs (docs.aws.amazon.com/bedrock/latest/
+userguide/model-access-permissions.html) and their security blog
+(aws.amazon.com/blogs/security/simplified-amazon-bedrock-model-access/):
+Bedrock's old console "Model access" page (and the underlying
+`PutFoundationModelEntitlement` API) has genuinely been retired as part
+of an access-simplification change. Serverless models WITHOUT an AWS
+Marketplace product ID now get automatic access with zero setup. Models
+WITH a product ID -- every Stability model this stack uses, background-
+generation and Remove Background alike -- instead auto-subscribe in the
+background on an account's first live `InvokeModel` call. That
+background subscription attempt is made using the CALLING identity's own
+permissions -- in this case, `ProductArticleGeneratorFunction`'s own
+Lambda execution role, not a human console user -- and that role never
+had `aws-marketplace:Subscribe`/`Unsubscribe`/`ViewSubscriptions`. There
+was no longer a console click to fix this at all; the fix has to be an
+IAM grant on the Lambda's own role.
+
+Added a new `GrantMarketplaceModelSubscriptionAccess` statement to
+`ProductArticleGeneratorFunction`'s policy in template.yaml, granting
+`aws-marketplace:Subscribe`, `aws-marketplace:Unsubscribe`, and
+`aws-marketplace:ViewSubscriptions` on `Resource: "*"` -- these three
+actions don't support resource-level ARN scoping (AWS's own policy
+examples all use `"*"`; the only narrowing option is an
+`aws-marketplace:ProductId` condition key on `Subscribe` specifically,
+which isn't needed here since this Lambda only ever calls the one
+Stability model family).
+
+**Note**: `BedrockImageModelId` (Stable Diffusion 3.5 Large, the
+background-generation candidate) shares this same Lambda and the same
+new grant, so if that candidate was ALSO silently failing with the same
+AccessDeniedException (not confirmed either way from the logs seen so
+far -- only Remove Background's failure has shown up), this same fix
+should resolve it too, once redeployed.
+
+Not yet confirmed against a live invoke. Full test file: unaffected (no
+Python changed, template.yaml only) -- 90/90. Full 41-file regression
+sweep: clean. Template verified via the CFN-tolerant YAML loader (57
+resources, unchanged count, new `GrantMarketplaceModelSubscriptionAccess`
+statement confirmed present).
+
+**Redeploy note**: this needs a real `sam deploy`/stack update to take
+effect (a new IAM statement, not a parameter -- no `parameter_overrides`
+involved).
+
+### Separate issue seen in the same log, NOT a code bug: `GeminiRegion` came through as `global=` with a trailing `=`
+
+The same CloudWatch tail also showed `call_gemini_for_image` trying to
+resolve host `global=-aiplatform.googleapis.com` and path
+`locations/global=` -- a literal trailing `=` character inside the
+region value itself. `call_gemini_for_image`'s own code only ever
+produces a clean `"global"` string when given one (see this incident's
+part two and its regression test) -- this has to be how the
+`GeminiRegion` parameter override actually got applied on the AWS side
+(a typo in samconfig.toml's `parameter_overrides` line, or in the exact
+`sam deploy`/`aws cloudformation deploy` command used), not a bug in
+this repo's code. Flagged for Al to check his own samconfig.toml/deploy
+command for how `GeminiRegion` was actually set before this run.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
