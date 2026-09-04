@@ -595,9 +595,15 @@ def test_handler_on_demand_product_id_forces_single_generation():
     assert len(calls) == 1
     product_id, force, kwargs = calls[0]
     assert (product_id, force) == ("prod-1", True)
-    # Image plumbing was actually threaded through, not silently dropped.
+    # Image plumbing was actually threaded through, not silently dropped --
+    # now SIX image-related kwargs (was four) since the remove-background
+    # client/model id were added alongside the background-generation ones.
     assert kwargs["image_model_id"] == app.DEFAULT_BEDROCK_IMAGE_MODEL_ID
-    assert set(kwargs.keys()) == {"s3_client", "bedrock_image_client", "image_model_id", "image_bucket"}
+    assert kwargs["removebg_model_id"] == app.DEFAULT_BEDROCK_REMOVE_BG_MODEL_ID
+    assert set(kwargs.keys()) == {
+        "s3_client", "bedrock_image_client", "bedrock_removebg_client",
+        "image_model_id", "removebg_model_id", "image_bucket",
+    }
     body = json.loads(result["body"])
     assert body["results"] == [{"product_id": "prod-1", "generated": True, "article_id": "a1",
                                  "video_count": 1, "sibling_count": 0}]
@@ -634,12 +640,16 @@ def test_handler_batch_mode_continues_after_one_product_errors():
     assert conn.closed is True
 
 
-def test_handler_constructs_image_bedrock_client_in_configured_region():
-    """handler() must construct bedrock_image_client with an explicit
-    region_name (BEDROCK_IMAGE_REGION, default us-west-2) -- a plain
-    boto3.client("bedrock-runtime") call (no region_name) would use the
-    Lambda's own home Region (us-west-1), where Stable Diffusion 3.5
-    Large isn't available at all (see app.py's own module docstring)."""
+def test_handler_constructs_image_and_removebg_bedrock_clients_in_configured_regions():
+    """handler() must construct THREE separate bedrock-runtime clients:
+    the text model's own (no region_name override), the background-
+    generation client (region_name=BEDROCK_IMAGE_REGION, default
+    us-west-2), and the remove-background client (region_name=
+    BEDROCK_REMOVEBG_REGION, default us-east-1) -- a plain
+    boto3.client("bedrock-runtime") call (no region_name) for either of
+    the latter two would use the Lambda's own home Region (us-west-1),
+    where neither model is available at all (see app.py's own module
+    docstring)."""
     conn = _FakeConnection()
     client_calls = []
 
@@ -665,12 +675,17 @@ def test_handler_constructs_image_bedrock_client_in_configured_region():
         guard.restore()
 
     bedrock_runtime_calls = [c for c in client_calls if c[0] == "bedrock-runtime"]
-    assert len(bedrock_runtime_calls) == 2
+    assert len(bedrock_runtime_calls) == 3
     # The text model's own client -- no region_name override.
     assert bedrock_runtime_calls[0][1] == {}
-    # The image model's client -- explicit region_name, defaulting to
-    # DEFAULT_BEDROCK_IMAGE_REGION when BEDROCK_IMAGE_REGION isn't set.
+    # The background-generation model's client -- explicit region_name,
+    # defaulting to DEFAULT_BEDROCK_IMAGE_REGION when BEDROCK_IMAGE_REGION
+    # isn't set.
     assert bedrock_runtime_calls[1][1] == {"region_name": app.DEFAULT_BEDROCK_IMAGE_REGION}
+    # The remove-background model's client -- a THIRD, separate Region,
+    # defaulting to DEFAULT_BEDROCK_REMOVE_BG_REGION when
+    # BEDROCK_REMOVEBG_REGION isn't set.
+    assert bedrock_runtime_calls[2][1] == {"region_name": app.DEFAULT_BEDROCK_REMOVE_BG_REGION}
     assert ("s3", {}) in client_calls
 
 
@@ -771,34 +786,54 @@ def test_reference_image_to_base64_png_roundtrips_through_pillow():
     assert roundtripped.size == (8, 8)
 
 
-# --- build_image_prompts: pure, no DB, no network ---
+# --- build_background_prompts: pure, no DB, no network ---
 
 _SAMPLE_ARTICLE = dict(_VALID_ARTICLE_JSON, performance_summary="Reads early and hooks hard off the friction.")
 
 
-def test_build_image_prompts_includes_ball_color_and_article_context():
-    product = {"color": "Blue/Black"}
-    prompts = app.build_image_prompts(product, _SAMPLE_ARTICLE)
-    assert "Blue/Black bowling ball" in prompts["action_shot"]
-    assert "Blue/Black bowling ball" in prompts["product_shot"]
+def test_build_background_prompts_include_no_ball_negative_instruction():
+    prompts = app.build_background_prompts({"color": "Blue/Black"}, _SAMPLE_ARTICLE)
+    assert "no bowling ball" in prompts["action_shot"]
+    assert "no bowling ball" in prompts["product_shot"]
+
+
+def test_build_background_prompts_never_positively_describe_the_ball():
+    """Al: "we can not alter the ball in any way" -- unlike the old
+    build_image_prompts, the product's color must never appear as a
+    positive "a {color} bowling ball" description here. The ball is
+    composited in afterward from the real, untouched cutout (see
+    composite_ball_on_background), never generated, so describing one in
+    this prompt would risk the model painting a second, different-
+    looking ball into the scene."""
+    prompts = app.build_background_prompts({"color": "Blue/Black"}, _SAMPLE_ARTICLE)
+    assert "Blue/Black bowling ball" not in prompts["action_shot"]
+    assert "Blue/Black bowling ball" not in prompts["product_shot"]
+
+
+def test_build_background_prompts_includes_article_context():
+    prompts = app.build_background_prompts({"color": "Blue/Black"}, _SAMPLE_ARTICLE)
     assert "Reads early and hooks hard off the friction." in prompts["action_shot"]
     assert "Reads early and hooks hard off the friction." in prompts["product_shot"]
 
 
-def test_build_image_prompts_falls_back_to_hook_when_no_performance_summary():
+def test_build_background_prompts_falls_back_to_hook_when_no_performance_summary():
     article = dict(_VALID_ARTICLE_JSON, performance_summary="", hook="A late-night league anecdote.")
-    prompts = app.build_image_prompts({"color": "Red"}, article)
+    prompts = app.build_background_prompts({"color": "Red"}, article)
     assert "A late-night league anecdote." in prompts["action_shot"]
 
 
-def test_build_image_prompts_two_distinct_scenes():
-    prompts = app.build_image_prompts({"color": "Purple"}, _SAMPLE_ARTICLE)
-    assert "rolling down a bowling lane" in prompts["action_shot"]
-    assert "studio product photograph" in prompts["product_shot"]
+def test_build_background_prompts_two_distinct_scenes():
+    prompts = app.build_background_prompts({"color": "Purple"}, _SAMPLE_ARTICLE)
+    assert "bowling alley lane" in prompts["action_shot"]
+    assert "studio product-photography backdrop" in prompts["product_shot"]
     assert prompts["action_shot"] != prompts["product_shot"]
 
 
-# --- call_bedrock_for_image: Stable Diffusion 3.5 Large request/response shape ---
+# --- call_bedrock_remove_background / call_bedrock_generate_background:
+# request/response shapes for the two Bedrock-adjacent calls that replaced
+# the old single image-to-image call. Both InvokeModel-shaped clients
+# below share the same {images, finish_reasons, seeds} response shape as
+# _FakeBedrockClient's own Stability-wire-format precedent. ---
 
 class _FakeImageBedrockClient:
     def __init__(self, response_payload: dict):
@@ -810,43 +845,143 @@ class _FakeImageBedrockClient:
         return {"body": _FakeBedrockBody(self.response_payload)}
 
 
-def test_call_bedrock_for_image_sends_image_to_image_request_shape():
+def test_call_bedrock_remove_background_sends_correct_request_shape():
     import base64
 
-    fake_png = base64.b64encode(b"fake-png-bytes").decode("ascii")
+    fake_png = base64.b64encode(b"fake-cutout-bytes").decode("ascii")
     client = _FakeImageBedrockClient({"images": [fake_png], "finish_reasons": [None], "seeds": [1]})
 
-    result = app.call_bedrock_for_image(client, "stability.sd3-5-large-v1:0", "a blue ball", "ref-b64")
+    result = app.call_bedrock_remove_background(
+        client, "us.stability.stable-image-remove-background-v1:0", "ref-b64",
+    )
 
-    assert result == b"fake-png-bytes"
+    assert result == b"fake-cutout-bytes"
     sent_body = client.calls[0]["body"]
-    assert sent_body["mode"] == "image-to-image"
     assert sent_body["image"] == "ref-b64"
-    assert sent_body["prompt"] == "a blue ball"
-    assert 0 < sent_body["strength"] < 1
-    assert sent_body["negative_prompt"]  # non-empty, keeps text/watermarks out
+    assert sent_body["output_format"] == "png"
+    # Remove Background takes only image (+ optional output_format) -- no
+    # prompt/mode/strength at all, unlike the old image-to-image call.
+    assert "prompt" not in sent_body
+    assert "mode" not in sent_body
 
 
-def test_call_bedrock_for_image_raises_on_non_null_finish_reason():
-    """A filtered prompt/output comes back as a non-null finish_reasons
-    entry with NO images key at all (see Stable Diffusion 3.5 Large's own
-    documented response shape) -- must raise, not silently return empty
-    bytes or crash on a missing "images" key."""
+def test_call_bedrock_remove_background_raises_on_non_null_finish_reason():
+    client = _FakeImageBedrockClient({"finish_reasons": ["Filter reason: input image"]})
+    try:
+        app.call_bedrock_remove_background(client, "model-id", "ref-b64")
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "Filter reason: input image" in str(exc)
+
+
+def test_call_bedrock_remove_background_raises_on_empty_images_list():
+    client = _FakeImageBedrockClient({"images": [], "finish_reasons": [None]})
+    try:
+        app.call_bedrock_remove_background(client, "model-id", "ref-b64")
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "no images" in str(exc)
+
+
+def test_call_bedrock_generate_background_sends_text_to_image_request_shape():
+    import base64
+
+    fake_png = base64.b64encode(b"fake-background-bytes").decode("ascii")
+    client = _FakeImageBedrockClient({"images": [fake_png], "finish_reasons": [None], "seeds": [1]})
+
+    result = app.call_bedrock_generate_background(client, "stability.sd3-5-large-v1:0", "an empty lane", "16:9")
+
+    assert result == b"fake-background-bytes"
+    sent_body = client.calls[0]["body"]
+    assert sent_body["mode"] == "text-to-image"
+    assert sent_body["aspect_ratio"] == "16:9"
+    assert sent_body["prompt"] == "an empty lane"
+    assert sent_body["negative_prompt"]  # non-empty, keeps text/watermarks/the ball itself out
+    # No reference-image conditioning at all -- plain text-to-image,
+    # unlike the old img2img call.
+    assert "image" not in sent_body
+    assert "strength" not in sent_body
+
+
+def test_call_bedrock_generate_background_raises_on_non_null_finish_reason():
     client = _FakeImageBedrockClient({"finish_reasons": ["Filter reason: prompt"]})
     try:
-        app.call_bedrock_for_image(client, "stability.sd3-5-large-v1:0", "bad prompt", "ref-b64")
+        app.call_bedrock_generate_background(client, "model-id", "bad prompt", "1:1")
         assert False, "expected RuntimeError"
     except RuntimeError as exc:
         assert "Filter reason: prompt" in str(exc)
 
 
-def test_call_bedrock_for_image_raises_on_empty_images_list():
+def test_call_bedrock_generate_background_raises_on_empty_images_list():
     client = _FakeImageBedrockClient({"images": [], "finish_reasons": [None]})
     try:
-        app.call_bedrock_for_image(client, "stability.sd3-5-large-v1:0", "prompt", "ref-b64")
+        app.call_bedrock_generate_background(client, "model-id", "prompt", "1:1")
         assert False, "expected RuntimeError"
     except RuntimeError as exc:
         assert "no images" in str(exc)
+
+
+# --- composite_ball_on_background: pure Pillow compositing, no Bedrock/DB.
+# This is the function that actually satisfies Al's "we can not alter the
+# ball in any way" -- these tests confirm the cutout's own pixels survive
+# compositing byte-for-byte, not just that the function runs without
+# error. ---
+
+def _png_bytes(image) -> bytes:
+    import io
+
+    buf = io.BytesIO()
+    image.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_composite_ball_on_background_preserves_cutout_pixels_untouched():
+    import io
+
+    from PIL import Image, ImageDraw
+
+    cutout = Image.new("RGBA", (400, 400), (0, 0, 0, 0))
+    ImageDraw.Draw(cutout).ellipse([100, 100, 300, 300], fill=(255, 0, 0, 255))
+    background = Image.new("RGBA", (1536, 864), (0, 0, 255, 255))
+
+    result_bytes = app.composite_ball_on_background(_png_bytes(cutout), _png_bytes(background))
+
+    out = Image.open(io.BytesIO(result_bytes)).convert("RGB")
+    w, h = out.size
+    center_pixel = out.getpixel((w // 2, int(h * 0.58) - 1))
+    assert center_pixel == (255, 0, 0)
+
+
+def test_composite_ball_on_background_output_matches_background_size_and_is_flattened():
+    import io
+
+    from PIL import Image, ImageDraw
+
+    cutout = Image.new("RGBA", (200, 200), (0, 0, 0, 0))
+    ImageDraw.Draw(cutout).ellipse([50, 50, 150, 150], fill=(10, 200, 30, 255))
+    background = Image.new("RGBA", (1024, 1024), (50, 50, 50, 255))
+
+    result_bytes = app.composite_ball_on_background(_png_bytes(cutout), _png_bytes(background))
+
+    out = Image.open(io.BytesIO(result_bytes))
+    assert out.size == (1024, 1024)
+    assert out.mode == "RGB"  # flattened for storage -- no alpha channel in the final stored PNG
+
+
+def test_composite_ball_on_background_leaves_background_untouched_away_from_the_ball():
+    import io
+
+    from PIL import Image, ImageDraw
+
+    cutout = Image.new("RGBA", (200, 200), (0, 0, 0, 0))
+    ImageDraw.Draw(cutout).ellipse([80, 80, 120, 120], fill=(10, 200, 30, 255))
+    background = Image.new("RGBA", (800, 800), (5, 5, 200, 255))
+
+    result_bytes = app.composite_ball_on_background(_png_bytes(cutout), _png_bytes(background))
+
+    out = Image.open(io.BytesIO(result_bytes)).convert("RGB")
+    corner_pixel = out.getpixel((2, 2))
+    assert corner_pixel == (5, 5, 200)
 
 
 # --- store_article_image ---
@@ -875,11 +1010,63 @@ def test_store_article_image_builds_article_images_prefix_key_and_url():
 
 # --- generate_article_images: orchestration, best-effort/non-fatal ---
 
+def _fake_reference_photo_response():
+    """A real tiny JPEG so the PIL round-trip inside generate_article_
+    images succeeds (_reference_image_to_base64_png needs PIL to actually
+    open the bytes, not arbitrary data)."""
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (4, 4)).save(buf, format="JPEG")
+
+    class _FakeRealResponse:
+        content = buf.getvalue()
+
+        def raise_for_status(self):
+            pass
+
+    return _FakeRealResponse()
+
+
+def _fake_cutout_png_b64() -> str:
+    """A real tiny RGBA PNG (opaque red circle on a transparent
+    background) standing in for what call_bedrock_remove_background
+    would actually return -- used as the fake Remove Background client's
+    response payload so composite_ball_on_background has real image
+    bytes to work with."""
+    import base64
+    import io
+
+    from PIL import Image, ImageDraw
+
+    cutout = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
+    ImageDraw.Draw(cutout).ellipse([20, 20, 80, 80], fill=(255, 0, 0, 255))
+    buf = io.BytesIO()
+    cutout.save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
+def _fake_background_png_b64() -> str:
+    """A real tiny opaque PNG standing in for what call_bedrock_generate_
+    background would actually return."""
+    import base64
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGBA", (400, 400), (0, 0, 255, 255)).save(buf, format="PNG")
+    return base64.b64encode(buf.getvalue()).decode("ascii")
+
+
 def test_generate_article_images_returns_empty_when_no_reference_image():
     conn = _FakeConnection(reference_image_url=None)
     result = app.generate_article_images(
-        conn, bedrock_image_client=None, s3_client=None, image_model_id="model-id",
-        image_bucket="bucket", product={"id": "prod-1", "color": "Blue"}, article=_SAMPLE_ARTICLE,
+        conn, bedrock_image_client=None, bedrock_removebg_client=None, s3_client=None,
+        image_model_id="model-id", removebg_model_id="removebg-model-id", image_bucket="bucket",
+        product={"id": "prod-1", "color": "Blue"}, article=_SAMPLE_ARTICLE,
     )
     assert result == {}
 
@@ -896,7 +1083,35 @@ def test_generate_article_images_returns_empty_when_reference_fetch_fails():
     requests.get = _raise
     try:
         result = app.generate_article_images(
-            conn, bedrock_image_client=object(), s3_client=object(), image_model_id="model-id",
+            conn, bedrock_image_client=object(), bedrock_removebg_client=object(), s3_client=object(),
+            image_model_id="model-id", removebg_model_id="removebg-model-id", image_bucket="bucket",
+            product={"id": "prod-1", "color": "Blue"}, article=_SAMPLE_ARTICLE,
+        )
+    finally:
+        requests.get = original_get
+
+    assert result == {}
+
+
+def test_generate_article_images_returns_empty_when_remove_background_fails():
+    """No cutout, nothing to composite into either variant -- BOTH images
+    are skipped, not just one (see generate_article_images' own docstring
+    on why this differs from a per-variant background-generation
+    failure, tested separately below)."""
+    import requests
+
+    conn = _FakeConnection(reference_image_url="https://example.com/ball.jpg")
+
+    class _FailingRemoveBgClient:
+        def invoke_model(self, **kwargs):
+            raise RuntimeError("Bedrock throttled")
+
+    original_get = requests.get
+    requests.get = lambda url, timeout=None: _fake_reference_photo_response()
+    try:
+        result = app.generate_article_images(
+            conn, bedrock_image_client=object(), bedrock_removebg_client=_FailingRemoveBgClient(),
+            s3_client=object(), image_model_id="model-id", removebg_model_id="removebg-model-id",
             image_bucket="bucket", product={"id": "prod-1", "color": "Blue"}, article=_SAMPLE_ARTICLE,
         )
     finally:
@@ -906,33 +1121,20 @@ def test_generate_article_images_returns_empty_when_reference_fetch_fails():
 
 
 def test_generate_article_images_both_succeed():
-    import base64
     import requests
 
     conn = _FakeConnection(reference_image_url="https://example.com/ball.jpg")
-    fake_png_b64 = base64.b64encode(b"generated-bytes").decode("ascii")
-    bedrock = _FakeImageBedrockClient({"images": [fake_png_b64], "finish_reasons": [None]})
+    removebg_client = _FakeImageBedrockClient({"images": [_fake_cutout_png_b64()], "finish_reasons": [None]})
+    bg_client = _FakeImageBedrockClient({"images": [_fake_background_png_b64()], "finish_reasons": [None]})
     s3 = _FakeS3Client()
 
-    # Use a real tiny JPEG so the PIL round-trip inside generate_article_images succeeds
-    # (_reference_image_to_base64_png needs PIL to actually open the bytes, not arbitrary data).
-    from PIL import Image
-    import io
-    buf = io.BytesIO()
-    Image.new("RGB", (4, 4)).save(buf, format="JPEG")
-
-    class _FakeRealResponse:
-        content = buf.getvalue()
-
-        def raise_for_status(self):
-            pass
-
     original_get = requests.get
-    requests.get = lambda url, timeout=None: _FakeRealResponse()
+    requests.get = lambda url, timeout=None: _fake_reference_photo_response()
     try:
         result = app.generate_article_images(
-            conn, bedrock_image_client=bedrock, s3_client=s3, image_model_id="model-id",
-            image_bucket="bucket", product={"id": "prod-1", "color": "Blue"}, article=_SAMPLE_ARTICLE,
+            conn, bedrock_image_client=bg_client, bedrock_removebg_client=removebg_client, s3_client=s3,
+            image_model_id="model-id", removebg_model_id="removebg-model-id", image_bucket="bucket",
+            product={"id": "prod-1", "color": "Blue"}, article=_SAMPLE_ARTICLE,
         )
     finally:
         requests.get = original_get
@@ -943,51 +1145,49 @@ def test_generate_article_images_both_succeed():
         "product_shot_image_key": "article-images/prod-1/product_shot.png",
         "product_shot_image_url": "https://bucket.s3.amazonaws.com/article-images/prod-1/product_shot.png",
     }
-    # Both variants actually hit Bedrock, independently.
-    assert len(bedrock.calls) == 2
+    # Remove Background is only called ONCE -- the cutout is shared across
+    # both variants (same source photo), NOT called once per variant the
+    # way the old img2img call was.
+    assert len(removebg_client.calls) == 1
+    # Background generation runs once per variant, at that variant's own
+    # aspect ratio (Al's "specific aspect ratio" ask).
+    assert len(bg_client.calls) == 2
+    aspect_ratios = {c["body"]["aspect_ratio"] for c in bg_client.calls}
+    assert aspect_ratios == {"16:9", "1:1"}
     assert len(s3.put_calls) == 2
 
 
 def test_generate_article_images_one_variant_fails_other_still_succeeds():
-    """Each variant is generated in its own try/except -- see generate_
-    article_images' own docstring on why one Bedrock failure must not take
-    the other, still-good image down with it."""
-    import base64
-    import io
+    """Each variant's BACKGROUND GENERATION runs in its own try/except --
+    a failure generating one background must not take the other, still-
+    good image down with it. Remove Background itself still only runs
+    once regardless, since it's computed before the per-variant loop."""
     import requests
-    from PIL import Image
 
     conn = _FakeConnection(reference_image_url="https://example.com/ball.jpg")
+    removebg_client = _FakeImageBedrockClient({"images": [_fake_cutout_png_b64()], "finish_reasons": [None]})
 
-    class _FlakyBedrockClient:
+    class _FlakyBgClient:
         def __init__(self):
-            self.calls = 0
+            self.calls = []
 
         def invoke_model(self, modelId, contentType, accept, body):
-            self.calls += 1
-            if self.calls == 1:
+            parsed = json.loads(body)
+            self.calls.append({"modelId": modelId, "body": parsed})
+            if len(self.calls) == 1:
                 raise RuntimeError("Bedrock throttled")
-            fake_png_b64 = base64.b64encode(b"second-image-bytes").decode("ascii")
-            return {"body": _FakeBedrockBody({"images": [fake_png_b64], "finish_reasons": [None]})}
+            return {"body": _FakeBedrockBody({"images": [_fake_background_png_b64()], "finish_reasons": [None]})}
 
-    bedrock = _FlakyBedrockClient()
+    bg_client = _FlakyBgClient()
     s3 = _FakeS3Client()
 
-    buf = io.BytesIO()
-    Image.new("RGB", (4, 4)).save(buf, format="JPEG")
-
-    class _FakeRealResponse:
-        content = buf.getvalue()
-
-        def raise_for_status(self):
-            pass
-
     original_get = requests.get
-    requests.get = lambda url, timeout=None: _FakeRealResponse()
+    requests.get = lambda url, timeout=None: _fake_reference_photo_response()
     try:
         result = app.generate_article_images(
-            conn, bedrock_image_client=bedrock, s3_client=s3, image_model_id="model-id",
-            image_bucket="bucket", product={"id": "prod-1", "color": "Blue"}, article=_SAMPLE_ARTICLE,
+            conn, bedrock_image_client=bg_client, bedrock_removebg_client=removebg_client, s3_client=s3,
+            image_model_id="model-id", removebg_model_id="removebg-model-id", image_bucket="bucket",
+            product={"id": "prod-1", "color": "Blue"}, article=_SAMPLE_ARTICLE,
         )
     finally:
         requests.get = original_get
@@ -998,13 +1198,14 @@ def test_generate_article_images_one_variant_fails_other_still_succeeds():
         "product_shot_image_key": "article-images/prod-1/product_shot.png",
         "product_shot_image_url": "https://bucket.s3.amazonaws.com/article-images/prod-1/product_shot.png",
     }
-    assert bedrock.calls == 2
+    assert len(removebg_client.calls) == 1
+    assert len(bg_client.calls) == 2
     assert len(s3.put_calls) == 1
 
 
 # --- generate_article_for_product wired with image plumbing ---
 
-def test_generate_article_for_product_wires_images_when_all_four_image_args_supplied():
+def test_generate_article_for_product_wires_images_when_all_six_image_args_supplied():
     product_row = (
         "prod-1", "Equinox Solid", "Blue", "reactive", "hybrid",
         "R2S Hybrid", True, "500/1000 Abralon",
@@ -1017,14 +1218,15 @@ def test_generate_article_for_product_wires_images_when_all_four_image_args_supp
     bedrock = _FakeBedrockClient(json.dumps(_VALID_ARTICLE_JSON))
 
     # reference_image_url=None -> generate_article_images short-circuits to
-    # {} without ever touching bedrock_image_client/s3_client, so passing
-    # simple sentinel objects for those is enough to prove the plumbing
-    # reaches generate_article_images at all (see the "no reference image"
-    # test above for that function's own behavior in isolation).
+    # {} without ever touching bedrock_image_client/bedrock_removebg_client/
+    # s3_client, so passing simple sentinel objects for those is enough to
+    # prove the plumbing reaches generate_article_images at all (see the
+    # "no reference image" test above for that function's own behavior in
+    # isolation).
     result = app.generate_article_for_product(
         conn, bedrock, "model-id", "prod-1",
-        s3_client=object(), bedrock_image_client=object(),
-        image_model_id="model-id", image_bucket="bucket",
+        s3_client=object(), bedrock_image_client=object(), bedrock_removebg_client=object(),
+        image_model_id="model-id", removebg_model_id="removebg-model-id", image_bucket="bucket",
     )
 
     assert result["images_generated"] is False
@@ -1034,10 +1236,11 @@ def test_generate_article_for_product_wires_images_when_all_four_image_args_supp
 
 
 def test_generate_article_for_product_skips_images_when_any_image_arg_missing():
-    """s3_client/bedrock_image_client/image_model_id/image_bucket must ALL
-    be supplied for the image step to run (see generate_article_for_
-    product's own docstring) -- a partially-configured deployment (e.g.
-    IMAGE_BUCKET unset) should skip images entirely, not half-run."""
+    """s3_client/bedrock_image_client/bedrock_removebg_client/
+    image_model_id/removebg_model_id/image_bucket must ALL be supplied
+    for the image step to run (see generate_article_for_product's own
+    docstring) -- a partially-configured deployment (e.g. IMAGE_BUCKET
+    unset) should skip images entirely, not half-run."""
     product_row = (
         "prod-1", "Equinox", None, None, None, None, None, None,
         None, None, None, None, "brand-1", "Storm", None, None,
@@ -1048,13 +1251,35 @@ def test_generate_article_for_product_skips_images_when_any_image_arg_missing():
 
     result = app.generate_article_for_product(
         conn, bedrock, "model-id", "prod-1",
-        s3_client=object(), bedrock_image_client=object(),
-        image_model_id="model-id", image_bucket=None,  # missing
+        s3_client=object(), bedrock_image_client=object(), bedrock_removebg_client=object(),
+        image_model_id="model-id", removebg_model_id="removebg-model-id", image_bucket=None,  # missing
     )
 
     assert result["images_generated"] is False
     # reference_image_url query never even fired -- confirms the whole
     # image branch was skipped, not attempted-and-quietly-swallowed.
+    assert not any(q.startswith("select coalesce(") for q, _ in conn._cursor.executed)
+
+
+def test_generate_article_for_product_skips_images_when_removebg_client_missing():
+    """Same as above but specifically the NEW bedrock_removebg_client arg
+    missing -- confirms it's actually part of the all-or-nothing gate,
+    not silently optional/backward-compatible."""
+    product_row = (
+        "prod-1", "Equinox", None, None, None, None, None, None,
+        None, None, None, None, "brand-1", "Storm", None, None,
+    )
+    video_rows = [("vid-1", "Review", "Channel", "Summary", "transcript")]
+    conn = _FakeConnection(product_row=product_row, video_rows=video_rows)
+    bedrock = _FakeBedrockClient(json.dumps(_VALID_ARTICLE_JSON))
+
+    result = app.generate_article_for_product(
+        conn, bedrock, "model-id", "prod-1",
+        s3_client=object(), bedrock_image_client=object(), bedrock_removebg_client=None,  # missing
+        image_model_id="model-id", removebg_model_id="removebg-model-id", image_bucket="bucket",
+    )
+
+    assert result["images_generated"] is False
     assert not any(q.startswith("select coalesce(") for q, _ in conn._cursor.executed)
 
 

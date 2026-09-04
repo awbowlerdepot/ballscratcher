@@ -33,7 +33,7 @@ Any Postgres 13+ instance works (RDS is the obvious choice, but this
 repo doesn't assume it). Note the connection details -- you'll need them
 for step 3's `DbSecretArn` secret and to run migrations directly.
 
-## 2. Run the twenty-three migrations, in order
+## 2. Run the twenty-four migrations, in order
 
 ```bash
 psql "$DATABASE_URL" -f db/migrations/001_init_schema.sql
@@ -59,6 +59,7 @@ psql "$DATABASE_URL" -f db/migrations/020_bowlerdepot_video_sync.sql
 psql "$DATABASE_URL" -f db/migrations/021_blocked_video_channels.sql
 psql "$DATABASE_URL" -f db/migrations/022_product_articles.sql
 psql "$DATABASE_URL" -f db/migrations/023_product_article_images.sql
+psql "$DATABASE_URL" -f db/migrations/024_product_article_images_composite_pipeline.sql
 ```
 
 (If you already ran an earlier subset in a prior deploy, just run whatever
@@ -7065,18 +7066,15 @@ Geo/Global cross-Region inference profiles at all (unlike the text model
 this project already uses), so there's no CRIS workaround for either --
 AWS's own current guidance is to migrate to Stability AI's models
 instead. Landed on **Stability AI Stable Diffusion 3.5 Large**
-(`stability.sd3-5-large-v1:0`, not Legacy), which supports image-to-image
-generation (conditioning on a reference photo, not just a bare text
-prompt) via a `mode`/`image`/`strength` request shape -- but it's only
-available in **`us-west-2`** (Oregon) on Bedrock, not this stack's own
-home Region (`us-west-1`). Rather than block the feature on that gap,
+(`stability.sd3-5-large-v1:0`, not Legacy) for BACKGROUND generation
+(see "Mechanism v2" below for why it's text-to-image only now, not
+image-to-image) -- but it's only available in **`us-west-2`** (Oregon)
+on Bedrock, not this stack's own home Region (`us-west-1`).
 `product_article_generator.handler()` constructs a SECOND bedrock-runtime
 client with an explicit `region_name=BEDROCK_IMAGE_REGION` (default
 `us-west-2`), separate from the text model's own default-Region client --
-a plain cross-Region API call, not Bedrock's own CRIS mechanism (which
-image models don't support at all). The IAM policy's `GrantImageModelAccess`
-statement is likewise hardcoded to `${BedrockImageRegion}`, not
-`${AWS::Region}`. New `template.yaml` parameters `BedrockImageModelId`
+a plain cross-Region API call, not Bedrock's own CRIS mechanism. New
+`template.yaml` parameters `BedrockImageModelId`
 (default `stability.sd3-5-large-v1:0`) and `BedrockImageRegion` (default
 `us-west-2`) carry both settings, each with a long inline comment
 documenting this whole research trail so a future change doesn't have to
@@ -7092,163 +7090,170 @@ additive columns on the existing `product_articles` table (not a new
 table) -- `action_shot_image_key`/`action_shot_image_url`,
 `product_shot_image_key`/`product_shot_image_url`, and
 `images_generated_at`. Images are AI-generated content proper to the
-article itself (grounded in the article's own generated text plus the
-product's real photo as visual reference), not live product data with a
-separate source of truth to stay in sync with -- unlike specs/
-comparison_table (022's own header comment), there's nothing to join
-live, so the URLs are stored directly on the row. `images_generated_at`
-is tracked separately from the existing `generated_at` (text) column
-because image generation is a SECOND, independently-fallible step in the
-same run -- article text can succeed and store even if the image step
-errors entirely, and a non-null `generated_at` with a null
-`images_generated_at` is how that partial-failure case is told apart from
-"not attempted this run" without digging through logs. Per that column's
+article itself, not live product data with a separate source of truth to
+stay in sync with -- unlike specs/comparison_table (022's own header
+comment), there's nothing to join live, so the URLs are stored directly
+on the row. `images_generated_at` is tracked separately from the
+existing `generated_at` (text) column because image generation is a
+SECOND, independently-fallible step in the same run. Per that column's
 own comment, `images_generated_at` is set once EITHER image succeeds, not
-gated on both -- the two Bedrock calls fail independently, so check the
-two `_image_key` columns individually to see which one(s) actually
-landed. Same "whole row is one reviewed unit" convention 022 already
-established: a regenerate resets the WHOLE row -- including these image
-columns -- back through `status = 'pending'` alongside the text, not just
-the text; there's no separate per-image review UI.
+gated on both. Same "whole row is one reviewed unit" convention 022
+already established: a regenerate resets the WHOLE row -- including
+these image columns -- back through `status = 'pending'` alongside the
+text.
 
-**`src/product_article_generator/app.py`** (same file, extended, not a
-new Lambda): `fetch_reference_image_url` reuses the exact same "pick the
-one best image" `coalesce(...)` pattern `public_api.service.py` already
-uses five times (`is_visible`, `is_thumbnail desc`, `display_order`,
-`id`, falling back to `products.primary_image_url`) to find the
-product's own real photo. `fetch_reference_image_bytes` is a plain HTTPS
-GET against that already-public URL (works identically whether it's our
-own S3 `stored_url` or a manufacturer CDN URL) -- checked first whether
-any existing Lambda in this codebase reads an image object back out of
-S3 directly; none do (only `s3:ListBucket`-for-orphan-cleanup precedent
-exists), so this deliberately doesn't add a new S3-read code path either.
-`_reference_image_to_base64_png` re-encodes through Pillow (added to
-`requirements.txt`, same version pin as `image_processor`'s own) to
-normalize whatever format the source photo actually is into PNG.
-`build_image_prompts` grounds each image's text prompt in the
-JUST-GENERATED article's own `performance_summary` (or `hook`, if empty)
-plus the product's color -- Al's explicit "using the article to give it
-some context" ask, not just the bare spec sheet. `call_bedrock_for_image`
-sends Stable Diffusion's `image-to-image` mode with `strength=0.6`
-(leaves room for the scene -- lane, lighting, background -- to change
-while still anchoring the ball's actual color/coverstock pattern to the
-reference photo) plus a short `negative_prompt` to keep the model from
-adding invented text/logos/watermarks. `store_article_image` mirrors
-`image_processor.upload_variants`' exact key/URL convention (raw
-`https://{bucket}.s3.amazonaws.com/{key}` PNG URLs on the same
-public-read `IMAGE_BUCKET`) but under an `article-images/` prefix rather
-than `image_processor`'s own `product-images/` prefix, specifically so
-these generated images stay OUT of `product_scraper`'s
-`product-images/*` orphan-cleanup listing (they aren't a product's real
-photos). `generate_article_images` orchestrates all of the above as
-**best-effort and non-fatal**: by the time it runs, the article TEXT has
-already generated successfully, so any image failure (bad/missing
-reference photo, a Bedrock error, a filtered prompt) is logged and
-swallowed -- the article's own text still stores and goes to review
-either way. The two images are generated in separate `try`/`except`
-blocks so one variant failing doesn't take the other, still-good image
-down with it. `generate_article_for_product` and `handler` both thread
-`s3_client`/`bedrock_image_client`/`image_model_id`/`image_bucket`
-through end to end; all four must be supplied for the image step to run
-at all (a partially-configured deployment, e.g. `IMAGE_BUCKET` unset,
-skips images entirely rather than half-running) -- same defensive
-"not configured -> soft no-op" posture `admin_api.queue_article_
-generation` already uses for the text function name.
+**Mechanism v2 -- cutout + generated background + composite** (migration
+`024_product_article_images_composite_pipeline.sql`, NO schema change,
+comment-only): shortly after 6t shipped, Al's direct feedback was "those
+images are not very good at all, they need to be specific aspect ratio
+and add backgrounds to them and just leave the ball as is. We can not
+alter the ball in any way just add some contextual background and maybe
+other balls with same name in background or similar balls etc." The
+original mechanism above (Stable Diffusion image-to-image, `strength=
+0.6`) regenerates the WHOLE image through diffusion, ball included -- it
+can bias toward the reference photo but can never guarantee the ball
+comes out pixel-identical, which is exactly what broke. Asked Al two
+follow-up questions before rebuilding: **aspect ratio** -- Al chose
+**16:9 for the action shot, 1:1 for the product shot** (not the same
+ratio for both); **sibling balls in the background** -- Al's answer was
+to **skip it for v1**, with a specific future shape in mind ("It should
+not 100% of the time but when there are 2 or more balls in the system
+with very similar names then we should use those. Or if reviewers are
+mentioning other balls with the one we are generating for include
+those.") -- not implemented, see `024`'s own header comment for the full
+quote and the intended future mechanism (reusing `infer_sibling_
+products` and the same cutout+composite approach for each additional
+ball, never an AI-imagined one).
 
-**`template.yaml`**: `ProductArticleGeneratorFunction`'s `Timeout` bumped
-280s -> 600s (each product now also costs a reference-photo HTTP fetch
-plus two Stable Diffusion `InvokeModel` calls on top of the original text
-generation -- real added per-product latency in the batch loop). New env
-vars `BEDROCK_IMAGE_MODEL_ID`/`BEDROCK_IMAGE_REGION`/`IMAGE_BUCKET`. New
-`GrantImageModelAccess` IAM statement (plain `bedrock:InvokeModel` on the
-Region-hardcoded foundation-model ARN -- no inference-profile/Condition,
-since image models don't support CRIS at all, unlike the three-statement
-grant just above it for the text model). New `s3:PutObject` statement
-scoped to `${ImageBucket}/article-images/*` only -- deliberately no
-`s3:GetObject` grant, since the reference photo is fetched via plain
-HTTPS (see `fetch_reference_image_bytes` above), not the S3 API. Two new
-parameters, `BedrockImageModelId` and `BedrockImageRegion` (see "Model
-choice + Region" above for their own long `Description` blocks). Verified
-via the CFN-tolerant YAML loader (57 resources, unchanged count since
-this only extends the existing `ProductArticleGeneratorFunction`
-resource rather than adding a new one; both new parameters present; new
-env vars and the new IAM statement all present on that function).
+The new pipeline is three separate steps instead of one Bedrock call:
 
-**`src/admin_api/service.py`**: `list_articles`' own select gained
-`pa.action_shot_image_url, pa.product_shot_image_url,
-pa.images_generated_at` so the Articles tab's list view can show a
-thumbnail/badge without opening each row. `get_article`'s existing
-`select pa.*` already picks up the new migration 023 columns with zero
-code change (same reasoning `get_video_candidate` and friends already
-lean on for "whatever's on the row" detail fetches).
+1. **`call_bedrock_remove_background`** -- the product's real reference
+   photo goes through Bedrock's **Stability AI Image Services "Remove
+   Background"** model (`us.stability.stable-image-remove-background-
+   v1:0`). This is a segmentation cutout, not a diffusion regeneration --
+   the ball's own pixels are carried straight through untouched, only the
+   background around it is stripped to transparent. This is the step
+   that actually GUARANTEES "leave the ball as is" (rather than hoping a
+   low `strength` value preserves it). Computed ONCE per product (the
+   cutout is identical for both variants), not once per image -- a
+   failure here skips BOTH images for the run, since there's no ball to
+   composite into either one without it.
+2. **`call_bedrock_generate_background`** -- a plain TEXT-to-image call
+   on Stable Diffusion 3.5 Large, no reference image, and the ball is
+   deliberately never described in the prompt at all (see `build_
+   background_prompts` -- describing one risks the model painting a
+   second, different-looking ball into the scene). `aspect_ratio` is set
+   explicitly per variant (`16:9`/`1:1`) -- this is a text-to-image-ONLY
+   parameter on this model (silently ignored in image-to-image mode),
+   which is exactly why the cutout above has to be a genuinely separate
+   call rather than folded into this one.
+3. **`composite_ball_on_background`** -- plain Pillow alpha compositing
+   (crop the cutout to its opaque bounding box, scale to ~62% of the
+   background's shorter side, paste slightly below center, plus a soft
+   blurred shadow ellipse underneath purely for grounding), NOT a second
+   diffusion pass, so the ball's own pixels are pasted through byte-for-
+   byte and never regenerated.
 
-**`admin-site/index.html`**: the Articles tab's list row now shows a
-small 32x32 thumbnail of the action shot next to the title (or a "no
-images" note if `images_generated_at` is set but neither image
-succeeded) -- a quick "did images generate at all" scan without opening
-every row. `renderArticlePreviewHtml` (the ONE shared render function
-used by both the top-level Articles tab's expand-row preview AND the
-per-product Article sub-tab -- see 6s) gained an `.article-image-row`
-block showing both full-size images side by side (or the same "ran but
-produced neither image" note) right under the title, before the hook --
-images aren't given separate approve/reject controls, since they're
-reviewed as part of the same whole-row unit as the text (see migration
-023's own header comment).
+`generate_article_images` now takes both `bedrock_image_client`
+(background generation, `us-west-2`) and a NEW `bedrock_removebg_client`
+(cutout, **`us-east-1`** -- Stability AI Image Services' own docs/
+examples consistently invoke these `us.`-prefixed model ids there, a
+THIRD Region distinct from both `us-west-1` and `us-west-2`). Both
+`generate_article_for_product` and `handler` now thread SIX image
+params end to end (`s3_client`/`bedrock_image_client`/`bedrock_
+removebg_client`/`image_model_id`/`removebg_model_id`/`image_bucket`,
+up from four) -- all six must be supplied for the image step to run at
+all, same "not configured -> soft no-op" posture as before.
 
-**`src/public_api/service.py`**: `get_product_article`'s own article
-select gained `action_shot_image_url, product_shot_image_url` -- read
-straight off the row (not live-joined, unlike the spec fields just below
-them in that same function), consistent with 023's "AI-generated content
-proper to the article, nothing to keep in sync" reasoning. Either or both
-may be null; a frontend should treat that as "no image" (the normal case
-right after text generation, before/if image generation runs or
-succeeds), not an error. No `template.yaml` change needed -- same
-`/{proxy+}` GET catch-all as every other public_api route.
+**Stability AI Image Services Marketplace subscription -- separate from
+SD3.5 Large's own**: per its own docs, "Subscribing to any edit or
+control Stability AI Image Service automatically enrolls you in all
+thirteen available Stability AI Image Services" -- this is a SEPARATE
+AWS Marketplace listing from the one already subscribed for `stability.
+sd3-5-large-v1:0` (see this section's original Marketplace-gating
+writeup below), so a fresh one-time subscribe + invoke-once is likely
+needed in `us-east-1` specifically before Remove Background will work,
+even though the SD3.5 Large subscription in `us-west-2` already exists.
+Confirm via the Bedrock Model catalog in `us-east-1` before the first
+real invocation.
 
-**Tests**: `tests/test_product_article_generator.py` gained 22 new tests
-(54 total, up from 32) covering `fetch_reference_image_url`/`fetch_
-reference_image_bytes`/`_reference_image_to_base64_png` (the last two
-against the REAL `requests`/`PIL` packages, both of which -- unlike
-boto3 -- are actually importable in this sandbox; `requests.get` is
-monkeypatched directly rather than needing boto3's `sys.modules`-
-injection trick), `build_image_prompts`, `call_bedrock_for_image`'s
-Stable-Diffusion-specific request/response shape (including the
-non-null-`finish_reasons`-means-filtered case), `store_article_image`'s
-key/URL convention, `generate_article_images`' best-effort orchestration
-(no reference image / reference fetch fails / one variant fails, other
-still succeeds / both succeed), and `generate_article_for_product`/
-`handler` actually threading the new image plumbing through end to end
-(including a dedicated test confirming `handler()` constructs the image
-Bedrock client with the correct cross-Region `region_name`, not the
-Lambda's own home Region). Three PRE-EXISTING tests needed updates for
-the new `store_article`/`generate_article_for_product` param-count and
-return-shape changes (fixed positional indices instead of `[-2]`/`[-1]`
-negative indexing into the insert-params tuple, an added `images_
-generated: False` key in the orchestration result dict, and the two
-`handler` tests' fake `generate_article_for_product` stand-ins updated to
-accept the new keyword args via `**kwargs`) -- all caught by simply
-running the file and reading the failures, not missed. `tests/test_
-admin_api_service.py` gained 2 new tests for `list_articles`/`get_
-article`'s image fields (253 total, up from 251) plus default-null image
-columns added to the shared `_fake_article_row` helper. `tests/test_
-public_api_service.py` gained 2 new tests for `get_product_article`'s
-image fields (74 total, up from 72). Full non-pytest `test_*.py` sweep
-(42 files) ran clean after all three files' changes.
+**`src/product_article_generator/app.py`**: `build_image_prompts`/
+`call_bedrock_for_image`/`_IMAGE_NEGATIVE_PROMPT` (the old img2img
+functions) were REMOVED, not left dead alongside the new ones --
+replaced by `call_bedrock_remove_background`, `build_background_prompts`
+(background-only, no ball description), `call_bedrock_generate_
+background` (text-to-image, `aspect_ratio` param), and `composite_ball_
+on_background` (the new Pillow compositing step). `generate_article_
+images`'s orchestration shape (best-effort, non-fatal, independent
+try/except per variant) is preserved from v1, just re-plumbed around the
+new three-step mechanism -- see that function's own docstring for exactly
+which step's failure skips which image(s). `fetch_reference_image_url`'s
+own docstring had a leftover "Nova Canvas" reference from before the
+original Stable-Diffusion pivot, corrected while in there.
 
-**Redeploy**: run migration 023 (after 022, if not already applied), then
-a full unscoped `sam build && sam deploy` (touches `AdminApiFunction`
-again via the `list_articles`/`get_article` changes -- same 6a.5
-fastapi-missing-zip caution as every prior section that touches that
-function), then swap the static `admin-site/index.html` file as usual. No
-new IAM identity/secret is needed for Stable Diffusion beyond what's
-already in this section's own `template.yaml` changes -- but DO confirm
-the deploying AWS account actually has Bedrock model access enabled for
-`stability.sd3-5-large-v1:0` in `us-west-2` specifically (Bedrock model
-access is granted per-Region, per-model, in the Bedrock console, same
-one-time setup step this project's own 6i section already documents for
-the text model) before the first real invocation, or every image call
-will fail with an access-denied error despite the IAM policy being
-correct.
+**`template.yaml`**: `ProductArticleGeneratorFunction`'s `Timeout` stays
+600s (now THREE Bedrock `InvokeModel` calls per product instead of two --
+one Remove Background call plus two background-generation calls). New
+env vars `BEDROCK_REMOVEBG_MODEL_ID`/`BEDROCK_REMOVEBG_REGION` alongside
+the existing `BEDROCK_IMAGE_MODEL_ID`/`BEDROCK_IMAGE_REGION`/
+`IMAGE_BUCKET`. Two new parameters, `BedrockRemoveBgModelId` (default
+`us.stability.stable-image-remove-background-v1:0`) and
+`BedrockRemoveBgRegion` (default `us-east-1`). New IAM statements
+`GrantRemoveBgInferenceProfileAccess`/`GrantRemoveBgInRegionModelAccess`
+-- the `us.`-prefixed model id matches Bedrock's own regional
+cross-Region inference profile naming convention (compare `BedrockModelId`'s
+`global.` prefix), so both an inference-profile-resource grant AND a
+foundation-model-resource grant (with the same `InferenceProfileArn`
+Condition pattern the text model's own CRIS grant uses) are included
+defensively -- this was NOT independently confirmed against Bedrock's own
+IAM docs for this specific model family (new enough, GA'd Sept 2025, that
+its IAM requirements weren't separately documented at research time). If
+the first real invocation fails with an `AccessDeniedException` naming a
+Region other than `BedrockRemoveBgRegion`, that means this CRIS profile
+routes through more Regions than just its own -- see the IAM statement's
+own inline comment in `template.yaml` for what to add. Verified via the
+CFN-tolerant YAML loader (57 resources, unchanged count; both new
+parameters present; new env vars and both new IAM statements present on
+`ProductArticleGeneratorFunction`).
+
+**`src/admin_api/service.py` / `admin-site/index.html` / `src/public_
+api/service.py`**: unchanged from the original 6t writeup below -- the
+mechanism change is entirely internal to `product_article_generator`;
+the stored columns, admin review UI, and public API response shape are
+identical (still one URL per variant, still reviewed as part of the same
+whole-row unit as the text).
+
+**Tests**: `tests/test_product_article_generator.py`'s entire image
+section was rewritten around the new pipeline (64 tests total, up from
+54) -- `build_background_prompts` (confirms the ball is never positively
+described, only the "no bowling ball" negative instruction), `call_
+bedrock_remove_background`/`call_bedrock_generate_background`'s own
+request/response shapes (including that `aspect_ratio` is sent and
+`image`/`strength` are NOT, unlike the old img2img call),
+`composite_ball_on_background` as a pure Pillow function with no Bedrock/
+DB at all (confirms the cutout's own pixel values survive compositing
+byte-for-byte at the paste location, and that the background is
+untouched away from it -- this is the test that actually proves "leave
+the ball as is" rather than just proving the function runs), and `
+generate_article_images`'s re-plumbed orchestration (remove-background
+called exactly once per product, background-generation called once per
+variant at the correct aspect ratio, a remove-background failure skips
+both images, a background-generation failure for one variant doesn't
+take the other down). Full non-pytest `test_*.py` sweep ran clean after
+these changes.
+
+**Redeploy**: run migrations 023 AND 024 (in order, after 022, if not
+already applied -- 024 is comment-only, safe to run even against a
+database that's already served real traffic under 023's original
+comments), then a full unscoped `sam build && sam deploy`, then swap the
+static `admin-site/index.html` file as usual (unchanged by this
+mechanism change, but redeploy it anyway if it's not already current from
+6t's original ship). Confirm Bedrock model access for BOTH `stability.
+sd3-5-large-v1:0` in `us-west-2` (already done for 6t's original ship)
+AND `us.stability.stable-image-remove-background-v1:0` in `us-east-1`
+(new -- see the Marketplace-subscription note above) before the first
+real invocation, or the image step will fail with an access-denied error
+despite the IAM policy being correct.
 
 ## 7. Ongoing operations
 
