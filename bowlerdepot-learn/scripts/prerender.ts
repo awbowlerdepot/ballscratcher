@@ -119,6 +119,12 @@ interface ArticleDetail {
     primary_image_url?: string | null;
     skus: { weight_lbs: number; rg?: number | null; differential?: number | null; mass_bias?: number | null }[];
   } | null;
+  // Task #444, Al: "add cross linking at the bottom to 'related' ball
+  // reviews" -- rendered as real <a href> links below (renderRelatedReviews),
+  // not just left for the client bundle, specifically so a crawler
+  // discovers/follows the internal link graph between review pages from
+  // this build-time HTML, same reasoning this whole script exists for.
+  related_reviews?: { product_id: string; product_name: string; title: string }[] | null;
 }
 
 function escapeHtml(value: string): string {
@@ -173,6 +179,22 @@ function renderSpecTable(product: ArticleDetail["product"]): string {
       <thead><tr><th>Weight</th><th>RG</th><th>Differential</th><th>Mass Bias</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>`;
+}
+
+// Real <a href="/articles/<id>/"> links to sibling review pages -- see
+// this field's own interface comment on why this matters for crawlability
+// specifically (not just a nice-to-have for JS-enabled visitors, who
+// already get this from ArticleDetailPage.tsx's own Related Reviews
+// section).
+function renderRelatedReviews(related: ArticleDetail["related_reviews"]): string {
+  if (!related?.length) return "";
+  const cards = related
+    .map(
+      (r) =>
+        `<a class="article-card" href="/articles/${escapeHtml(r.product_id)}/"><div class="article-card-body"><div class="article-card-title">${escapeHtml(r.title)}</div><div class="article-card-meta">${escapeHtml(r.product_name)}</div></div></a>`,
+    )
+    .join("");
+  return `<h2>Related Reviews</h2><div class="article-grid">${cards}</div>`;
 }
 
 function renderFaq(faq: ArticleDetail["faq"]): string {
@@ -236,6 +258,7 @@ function renderArticlePage(baseHtml: string, card: ArticleCard, article: Article
       ${article.verdict ? `<h2>Verdict</h2><p>${escapeHtml(article.verdict)}</p>` : ""}
       ${renderSpecTable(article.product)}
       ${renderFaq(article.faq)}
+      ${renderRelatedReviews(article.related_reviews)}
     </div>`;
 
   let html = baseHtml;

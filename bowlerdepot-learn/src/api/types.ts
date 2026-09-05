@@ -32,6 +32,12 @@ export interface ArticleProductSpec {
   coverstock_name?: string | null;
   coverstock_type?: string | null;
   primary_image_url?: string | null;
+  // Real BowlerDepot storefront product-page URL, resolved from
+  // price_checker's own BigCommerce price-tracking data (014/016
+  // migrations) -- null until that product has an approved+active
+  // BowlerDepot price source. See client.ts's bowlerDepotSearchUrl()
+  // for the fallback a frontend should use when this is null.
+  ecommerce_url?: string | null;
   skus: ProductSku[];
 }
 
@@ -41,6 +47,17 @@ export interface ComparisonRow {
   url: string;
   core_name?: string | null;
   coverstock_name?: string | null;
+  primary_image_url?: string | null;
+  ecommerce_url?: string | null;
+}
+
+export interface RelatedReview {
+  product_id: string;
+  product_name: string;
+  article_id: string;
+  title: string;
+  hook?: string | null;
+  reviewed_at?: string | null;
   primary_image_url?: string | null;
 }
 
@@ -66,6 +83,7 @@ export interface ArticleDetail {
   product_shot_image_url?: string | null;
   product: ArticleProductSpec | null;
   comparison_table: ComparisonRow[];
+  related_reviews: RelatedReview[];
 }
 
 export interface ProductArticleResponse {

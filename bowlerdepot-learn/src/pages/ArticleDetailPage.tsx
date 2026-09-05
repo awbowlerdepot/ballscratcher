@@ -36,6 +36,13 @@ export default function ArticleDetailPage() {
 
   const product = article.product;
   const heroImage = article.action_shot_image_url || product?.primary_image_url;
+  // Al: "would it be possible to link to the ecommerce product page for
+  // some balls inline too" -- ecommerce_url (from public_api, resolved
+  // out of price_checker's own BigCommerce price-tracking data) is a
+  // REAL storefront product page when price_checker has matched and
+  // approved a BowlerDepot source for this product; otherwise fall back
+  // to the search-results link every ball has always had.
+  const shopUrl = product?.ecommerce_url || (product ? bowlerDepotSearchUrl(product.name) : null);
 
   return (
     <div className="page">
@@ -52,8 +59,8 @@ export default function ArticleDetailPage() {
           <h1>{article.title}</h1>
           <p className="article-detail-hook">{article.hook}</p>
           <div className="article-detail-actions">
-            {product ? (
-              <a className="btn btn-primary" href={bowlerDepotSearchUrl(product.name)} target="_blank" rel="noreferrer">
+            {shopUrl ? (
+              <a className="btn btn-primary" href={shopUrl} target="_blank" rel="noreferrer">
                 Shop this ball at BowlerDepot
               </a>
             ) : null}
@@ -164,7 +171,7 @@ export default function ArticleDetailPage() {
               <a
                 key={c.id}
                 className="article-card"
-                href={bowlerDepotSearchUrl(c.name)}
+                href={c.ecommerce_url || bowlerDepotSearchUrl(c.name)}
                 target="_blank"
                 rel="noreferrer"
               >
@@ -196,6 +203,29 @@ export default function ArticleDetailPage() {
               <p className="faq-answer">{item.answer}</p>
             </div>
           ))}
+        </div>
+      ) : null}
+
+      {article.related_reviews?.length ? (
+        <div className="article-section">
+          <h2>Related Reviews</h2>
+          <div className="article-grid">
+            {article.related_reviews.map((r) => (
+              <Link key={r.product_id} className="article-card" to={`/articles/${r.product_id}`}>
+                <div className="article-card-media">
+                  {r.primary_image_url ? (
+                    <img src={r.primary_image_url} alt={r.product_name} loading="lazy" />
+                  ) : (
+                    <div className="article-card-media-placeholder" aria-hidden="true" />
+                  )}
+                </div>
+                <div className="article-card-body">
+                  <div className="article-card-title">{r.title}</div>
+                  <div className="article-card-meta">{r.product_name}</div>
+                </div>
+              </Link>
+            ))}
+          </div>
         </div>
       ) : null}
     </div>

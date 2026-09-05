@@ -639,6 +639,26 @@ def _derive_primary_image_url(db, pid, p):
     return p.get("primary_image_url")
 
 
+def _derive_bigcommerce_ecommerce_url(db, pid):
+    """Mirrors get_product_article's ecommerce_url subquery: the most
+    recently checked approved+active BigCommerce ('api'/'bigcommerce')
+    product_price_sources row for this product, or None when price_
+    checker hasn't matched/approved one yet (014/016_price_tracking*.sql
+    -- see get_product_article's own docstring on reusing this existing
+    data instead of a new migration). db["price_sources"] is a flat
+    per-product list of dicts (api_provider/status/is_active/product_url/
+    last_checked_at) -- same "flat dict, not a real join" simplification
+    the rest of this fixture already uses for cores/coverstocks/images."""
+    candidates = [
+        s for s in db.get("price_sources", {}).get(pid, [])
+        if s.get("api_provider") == "bigcommerce" and s.get("status") == "approved" and s.get("is_active", True)
+    ]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda s: s.get("last_checked_at") or "", reverse=True)
+    return candidates[0]["product_url"]
+
+
 class _FakeCursor:
     def __init__(self, db):
         self.db = db
@@ -897,7 +917,7 @@ class _FakeCursor:
             p = self.db["products"].get(pid)
             self._description = [(c,) for c in (
                 "name", "url", "core_name", "core_type", "coverstock_name", "coverstock_type",
-                "primary_image_url",
+                "primary_image_url", "ecommerce_url",
             )]
             if p is None:
                 self._result_row = None
@@ -907,12 +927,13 @@ class _FakeCursor:
                     p["name"], p["url"], core.get("name"), core.get("core_type"),
                     p.get("coverstock_name"), p.get("coverstock_type"),
                     _derive_primary_image_url(self.db, pid, p),
+                    _derive_bigcommerce_ecommerce_url(self.db, pid),
                 )
 
         elif q.startswith("select p.id, p.name, p.url, c.name as core_name, p.coverstock_name,"):
             wanted = set(params[0])
             self._description = [(c,) for c in (
-                "id", "name", "url", "core_name", "coverstock_name", "primary_image_url",
+                "id", "name", "url", "core_name", "coverstock_name", "primary_image_url", "ecommerce_url",
             )]
             rows = []
             for pid in wanted:
@@ -923,8 +944,40 @@ class _FakeCursor:
                 rows.append((
                     pid, p["name"], p["url"], core.get("name"), p.get("coverstock_name"),
                     _derive_primary_image_url(self.db, pid, p),
+                    _derive_bigcommerce_ecommerce_url(self.db, pid),
                 ))
             rows.sort(key=lambda r: r[1])  # order by p.name
+            self._result_rows = rows
+
+        elif q.startswith("select p.id as product_id, p.name as product_name,"):
+            # related_reviews -- same sibling_product_ids source as
+            # comparison_table above, but narrowed (via the fixture's own
+            # db["product_articles"] lookup) to siblings with their OWN
+            # approved article, same "only 022 rows with status='approved'
+            # count" rule get_product_article's main article lookup uses.
+            wanted = set(params[0])
+            self._description = [(c,) for c in (
+                "product_id", "product_name", "article_id", "title", "hook", "reviewed_at",
+                "primary_image_url",
+            )]
+            rows = []
+            for pid in wanted:
+                p = self.db["products"].get(pid)
+                if p is None or not p["published"]:
+                    continue
+                sib_article = self.db.get("product_articles", {}).get(pid)
+                if sib_article is None or sib_article.get("status") != "approved":
+                    continue
+                rows.append((
+                    pid, p["name"], sib_article["id"], sib_article.get("title"), sib_article.get("hook"),
+                    sib_article.get("reviewed_at"),
+                    _derive_primary_image_url(self.db, pid, p),
+                ))
+            # order by pa.reviewed_at desc nulls last, p.name -- name-asc
+            # first (stable sort keeps it as the tie-break), then group/
+            # order by reviewed_at descending with None pushed last.
+            rows.sort(key=lambda r: r[1])
+            rows.sort(key=lambda r: (r[5] is not None, r[5] or ""), reverse=True)
             self._result_rows = rows
 
         else:
@@ -952,7 +1005,7 @@ class _FakeConnection:
 def _fresh_db():
     return {
         "brands": {}, "products": {}, "cores": {}, "coverstocks": {}, "skus": {}, "images": {},
-        "videos": {}, "bowlerdepot_products": {}, "product_articles": {},
+        "videos": {}, "bowlerdepot_products": {}, "product_articles": {}, "price_sources": {},
     }
 
 
@@ -979,6 +1032,17 @@ def _seed_bowlerdepot_match(db, product_id, bigcommerce_product_id, match_status
     db["bowlerdepot_products"][bigcommerce_product_id] = {
         "product_id": product_id, "match_status": match_status,
     }
+
+
+def _seed_bigcommerce_price_source(db, product_id, product_url, status="approved", is_active=True, last_checked_at=None):
+    """014/016_price_tracking*.sql -- an approved+active BigCommerce
+    ('api'/'bigcommerce') product_price_sources row, the exact data
+    get_product_article's ecommerce_url subquery reads (see that
+    function's own docstring)."""
+    db["price_sources"].setdefault(product_id, []).append({
+        "api_provider": "bigcommerce", "status": status, "is_active": is_active,
+        "product_url": product_url, "last_checked_at": last_checked_at,
+    })
 
 
 # get_product
@@ -1618,6 +1682,133 @@ def test_get_product_article_image_urls_null_when_not_yet_generated():
     article = result["article"]
     assert article["action_shot_image_url"] is None
     assert article["product_shot_image_url"] is None
+
+
+# --- get_product_article: ecommerce_url + related_reviews (Al: "add
+# cross linking at the bottom to 'related' ball reviews. would it be
+# possible to link to the ecommerce product page for some balls inline
+# too") -- see get_product_article's own docstring for why both reuse
+# existing 014/016 price-tracking data and 022 article-approval data
+# rather than new migrations.
+
+def test_get_product_article_ecommerce_url_present_when_bigcommerce_source_approved():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid)
+    _seed_bigcommerce_price_source(db, pid, "https://bowlerdepot.com/fury-solid")
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result["article"]["product"]["ecommerce_url"] == "https://bowlerdepot.com/fury-solid"
+
+
+def test_get_product_article_ecommerce_url_null_when_no_bigcommerce_source():
+    """The normal case for most of the catalog today -- price_checker
+    hasn't matched/approved a BowlerDepot source for this product yet, so
+    the frontend is expected to fall back to bowlerDepotSearchUrl()."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid)
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result["article"]["product"]["ecommerce_url"] is None
+
+
+def test_get_product_article_ecommerce_url_ignores_pending_or_inactive_sources():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid)
+    _seed_bigcommerce_price_source(db, pid, "https://bowlerdepot.com/pending-candidate", status="pending")
+    _seed_bigcommerce_price_source(db, pid, "https://bowlerdepot.com/deactivated", is_active=False)
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result["article"]["product"]["ecommerce_url"] is None
+
+
+def test_get_product_article_ecommerce_url_picks_most_recently_checked_source():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid)
+    _seed_bigcommerce_price_source(db, pid, "https://bowlerdepot.com/older", last_checked_at="2026-08-01")
+    _seed_bigcommerce_price_source(db, pid, "https://bowlerdepot.com/newer", last_checked_at="2026-09-01")
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result["article"]["product"]["ecommerce_url"] == "https://bowlerdepot.com/newer"
+
+
+def test_get_product_article_comparison_table_includes_ecommerce_url():
+    db = _fresh_db()
+    sibling = _seed_published_current_product(db, pid="sib-1", name="Equinox Hybrid")
+    _seed_bigcommerce_price_source(db, sibling, "https://bowlerdepot.com/equinox-hybrid")
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid, sibling_product_ids=[sibling])
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result["article"]["comparison_table"][0]["ecommerce_url"] == "https://bowlerdepot.com/equinox-hybrid"
+
+
+def test_get_product_article_related_reviews_only_includes_siblings_with_approved_article():
+    """Unlike comparison_table (every published sibling), related_reviews
+    is narrowed to siblings that have their OWN approved article -- a
+    sibling with no article at all, or only a pending one, has nothing to
+    link to and must silently drop out."""
+    db = _fresh_db()
+    reviewed_sibling = _seed_published_current_product(db, pid="sib-reviewed", name="Equinox Hybrid")
+    _seed_approved_article(db, reviewed_sibling, **{"id": "art-sib", "title": "Equinox Hybrid Review", "hook": "..."})
+    pending_sibling = _seed_published_current_product(db, pid="sib-pending", name="Equinox Pearl")
+    _seed_approved_article(db, pending_sibling, status="pending")
+    no_article_sibling = _seed_published_current_product(db, pid="sib-none", name="Equinox Solid")
+    pid = _seed_published_current_product(db, pid="prod-1", name="Fury")
+    _seed_approved_article(
+        db, pid, sibling_product_ids=[reviewed_sibling, pending_sibling, no_article_sibling],
+    )
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    related_ids = [r["product_id"] for r in result["article"]["related_reviews"]]
+    assert related_ids == ["sib-reviewed"]
+    assert result["article"]["related_reviews"][0]["title"] == "Equinox Hybrid Review"
+
+
+def test_get_product_article_related_reviews_drops_unpublished_siblings():
+    db = _fresh_db()
+    unpublished = _seed_published_current_product(db, pid="sib-1", name="Equinox Pearl", published=False)
+    _seed_approved_article(db, unpublished, **{"id": "art-sib"})
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid, sibling_product_ids=[unpublished])
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result["article"]["related_reviews"] == []
+
+
+def test_get_product_article_related_reviews_orders_newest_reviewed_first():
+    db = _fresh_db()
+    older = _seed_published_current_product(db, pid="sib-older", name="B Ball")
+    _seed_approved_article(db, older, **{"id": "art-older", "reviewed_at": "2026-07-01"})
+    newer = _seed_published_current_product(db, pid="sib-newer", name="A Ball")
+    _seed_approved_article(db, newer, **{"id": "art-newer", "reviewed_at": "2026-09-01"})
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid, sibling_product_ids=[older, newer])
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    related_ids = [r["product_id"] for r in result["article"]["related_reviews"]]
+    assert related_ids == ["sib-newer", "sib-older"]
+
+
+def test_get_product_article_related_reviews_empty_when_no_siblings():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid)  # sibling_product_ids defaults to []
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result["article"]["related_reviews"] == []
 
 
 if __name__ == "__main__":

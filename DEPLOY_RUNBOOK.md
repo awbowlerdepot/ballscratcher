@@ -9178,6 +9178,73 @@ correct (see above). Full regression sweep across every existing Python
 test file: clean, unaffected by this frontend/infra-only change outside
 `public_api`.
 
+### 6w. Related-review cross-linking + real ecommerce product links (Learn section)
+
+Al, on the Learn article detail page: "can we add cross linking at the
+bottom to 'related' ball reviews. would it be possible to link to the
+ecommerce product page for some balls inline too." Two asks, both landed
+in `public_api.get_product_article` with NO new migration for either --
+see that function's own docstring for the full reasoning:
+
+- **Related reviews.** `comparison_table` (existing) is every published
+  sibling from the article's `sibling_product_ids`, regardless of whether
+  that sibling has its own review. The new `related_reviews` field is the
+  same sibling set narrowed to ones that DO have their own approved
+  `product_articles` row (inner join), since only those resolve to a real
+  Learn article page to link to. Rendered as a "Related Reviews" section
+  at the bottom of `ArticleDetailPage.tsx`, linking to `/articles/
+  <product_id>` (this site's own route, not an external link) -- ordered
+  newest-reviewed-first.
+
+- **Real ecommerce links.** Every "Shop this ball" link on this site has
+  used `bowlerDepotSearchUrl()` (client.ts) -- a BowlerDepot search-
+  results page, not a real product page, because `bowlerdepot_products`
+  never stored a resolvable storefront URL. Turns out this project
+  already HAS that data: `price_checker`'s BigCommerce
+  (`fetch_method='api'`) price source (014/016_price_tracking*.sql)
+  resolves and stores exactly this in `product_price_sources.product_url`
+  (via `custom_url.url` + `price_sites.base_url` -- see
+  `price_checker.extract_bigcommerce_price_fields`'s own docstring),
+  every time it checks a product's price. The new `ecommerce_url` field
+  on `product` and each `comparison_table` row is a live subquery against
+  that existing table (most recently checked approved+active BigCommerce
+  source), null when price_checker hasn't matched/approved one for that
+  product yet. `ArticleDetailPage.tsx`'s hero CTA and "Similar Balls"
+  cards now use `ecommerce_url` when present, falling back to
+  `bowlerDepotSearchUrl()` otherwise -- exactly Al's own framing, "for
+  SOME balls," since coverage depends entirely on price_checker's
+  existing match/approval state, which is already growing on its own
+  daily schedule with no new work needed here.
+
+`scripts/prerender.ts` also renders `related_reviews` as real `<a href="/
+articles/<id>/">` links in the static HTML (not just left to the client
+bundle) -- this is the one place inline ecommerce links were deliberately
+NOT added to the prerendered output, since the "Shop this ball" CTAs were
+never part of the static markup to begin with (an external, non-SEO-
+relevant action) and internal review-to-review links are what actually
+matter for crawl discovery.
+
+**Tests**: `tests/test_public_api_service.py` gained 9 new tests (83 ->
+92) covering `ecommerce_url` (present/null/ignores-pending-or-inactive/
+picks-most-recent, both on `product` and on a `comparison_table` row) and
+`related_reviews` (only-approved-article siblings, drops unpublished,
+orders newest-first, empty-when-no-siblings). Fixture gained a
+`db["price_sources"]` table + `_seed_bigcommerce_price_source()` helper
+mirroring the real `product_price_sources`/`price_sites` join. Full
+regression sweep: clean. `bowlerdepot-learn`'s `tsc -b` type-check ran
+clean in this sandbox for the first time against a real, complete
+`node_modules` (present here now, unlike earlier in this project -- see
+6v's own note on this sandbox previously having zero npm registry
+access); `npx vite build` itself still can't run in this sandbox
+(`@rollup/rollup-linux-arm64-gnu` missing -- `node_modules` here was
+synced from Al's own local macOS `npm install`, which only fetched the
+darwin-arm64 native binary, not linux; irrelevant to the real GitHub
+Actions build, which runs a fresh `npm ci` on `ubuntu-latest` and fetches
+its own correct binary). `scripts/prerender.ts`'s new
+`renderRelatedReviews` was verified by actually running the script (via
+`--experimental-strip-types`, same approach as 6v) against a local mock
+`public_api` -- output inspected by hand and confirmed correct.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

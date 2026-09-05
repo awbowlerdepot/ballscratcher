@@ -701,7 +701,29 @@ def get_product_article(conn, product_id: str):
     in sync with), so there's nothing to join live. Either or both may be
     null if image generation hasn't run yet or didn't succeed for this
     article -- a frontend should treat a null image URL as "no image",
-    not an error."""
+    not an error.
+
+    ecommerce_url (Al: "would it be possible to link to the ecommerce
+    product page for some balls inline too") -- on `product` and on each
+    `comparison_table` row, resolves to a REAL BowlerDepot storefront
+    product-page URL when one is known, else null. Deliberately reuses
+    014/016's existing price-tracking data instead of adding any new
+    migration/column: price_checker's BigCommerce ('api'/'bigcommerce')
+    source already resolves and stores exactly this (see price_checker.
+    extract_bigcommerce_price_fields's own docstring on custom_url.url +
+    base_url), once that product has an approved+active BowlerDepot price
+    source. "For some balls" in Al's own phrasing is exactly right: this
+    is null for any product price_checker hasn't matched/approved yet, and
+    the frontend is expected to fall back to bowlerDepotSearchUrl() in
+    that case, same as it already does for every ball today.
+
+    related_reviews (Al: "add cross linking at the bottom to 'related'
+    ball reviews") -- unlike comparison_table (every published sibling,
+    regardless of whether it has its own article), this is filtered down
+    to siblings that have their OWN approved product_articles row, since
+    only those actually resolve to a real Learn article page to link to.
+    Same "silently drop, don't error" posture as comparison_table for a
+    sibling that's since been unpublished."""
     with conn.cursor() as cur:
         cur.execute("select id from products where id = %s and published = true", (product_id,))
         if cur.fetchone() is None:
@@ -741,7 +763,18 @@ def get_product_article(conn, product_id: str):
                            limit 1
                        ),
                        p.primary_image_url
-                   ) as primary_image_url
+                   ) as primary_image_url,
+                   (
+                       select pps.product_url
+                       from product_price_sources pps
+                       join price_sites ps on ps.id = pps.price_site_id
+                       where pps.product_id = p.id
+                         and ps.api_provider = 'bigcommerce'
+                         and pps.status = 'approved'
+                         and pps.is_active = true
+                       order by pps.last_checked_at desc nulls last, pps.id
+                       limit 1
+                   ) as ecommerce_url
             from products p
             left join cores c on c.id = p.core_id
             where p.id = %s
@@ -787,7 +820,18 @@ def get_product_article(conn, product_id: str):
                                limit 1
                            ),
                            p.primary_image_url
-                       ) as primary_image_url
+                       ) as primary_image_url,
+                       (
+                           select pps.product_url
+                           from product_price_sources pps
+                           join price_sites ps on ps.id = pps.price_site_id
+                           where pps.product_id = p.id
+                             and ps.api_provider = 'bigcommerce'
+                             and pps.status = 'approved'
+                             and pps.is_active = true
+                           order by pps.last_checked_at desc nulls last, pps.id
+                           limit 1
+                       ) as ecommerce_url
                 from products p
                 left join cores c on c.id = p.core_id
                 where p.id = any(%s::uuid[]) and p.published = true
@@ -798,6 +842,39 @@ def get_product_article(conn, product_id: str):
             sib_columns = [desc[0] for desc in cur.description]
             comparison_table = [dict(zip(sib_columns, r)) for r in cur.fetchall()]
         article["comparison_table"] = comparison_table
+
+        # Related reviews (Al: "cross linking at the bottom to 'related'
+        # ball reviews") -- same sibling_product_ids source as
+        # comparison_table above, but narrowed to siblings that have their
+        # OWN approved article to actually link to (an inner join on
+        # product_articles does this narrowing for free). Ordered
+        # newest-reviewed-first, same convention list_articles' default
+        # sort uses, so the freshest related content surfaces first.
+        related_reviews = []
+        if sibling_ids:
+            cur.execute(
+                """
+                select p.id as product_id, p.name as product_name,
+                       pa.id as article_id, pa.title, pa.hook, pa.reviewed_at,
+                       coalesce(
+                           (
+                               select pi.stored_url from product_images pi
+                               where pi.product_id = p.id and pi.is_visible = true
+                               order by pi.is_thumbnail desc, pi.display_order, pi.id
+                               limit 1
+                           ),
+                           p.primary_image_url
+                       ) as primary_image_url
+                from products p
+                join product_articles pa on pa.product_id = p.id and pa.status = 'approved'
+                where p.id = any(%s::uuid[]) and p.published = true
+                order by pa.reviewed_at desc nulls last, p.name
+                """,
+                (sibling_ids,),
+            )
+            rel_columns = [desc[0] for desc in cur.description]
+            related_reviews = [dict(zip(rel_columns, r)) for r in cur.fetchall()]
+        article["related_reviews"] = related_reviews
 
         return {"product_id": product_id, "article": article}
 
