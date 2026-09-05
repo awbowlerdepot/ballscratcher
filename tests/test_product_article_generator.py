@@ -1383,6 +1383,28 @@ class _FakeGeminiResponse:
         return self._payload
 
 
+class _FakeGeminiSession:
+    """Stand-in for the retry-with-backoff requests.Session call_gemini_
+    for_image now takes as its optional `session` argument (see that
+    function's own "REAL INCIDENT, part three" docstring section --
+    get_gemini_requests_session mounts a real urllib3 Retry adapter that
+    would otherwise try a real HTTP connection in tests). Tests pass one
+    of these directly via `session=` instead of the old "monkeypatch the
+    module-level requests.post, restore it in finally" pattern -- module-
+    level requests.post was never actually what call_gemini_for_image hit
+    once it moved to session.post(...), so that old pattern would now
+    silently NOT intercept anything and tests would attempt a real
+    network call. A plain wrapper around whatever fake post function the
+    test already wants to use, so every existing test's own `_fake_post`/
+    lambda signature (url, headers=None, json=None, timeout=None) keeps
+    working unchanged."""
+    def __init__(self, post_fn):
+        self._post_fn = post_fn
+
+    def post(self, url, headers=None, json=None, timeout=None):
+        return self._post_fn(url, headers=headers, json=json, timeout=timeout)
+
+
 # A stand-in gemini_auth bundle (see call_gemini_for_image's own
 # docstring) for tests that don't care about its exact contents, just
 # that SOME auth dict flows through -- same "any string will do" spirit
@@ -1401,8 +1423,6 @@ def test_call_gemini_for_image_sends_correct_request_shape_and_auth_header():
     unlike the Developer API's single global host)."""
     import base64
 
-    import requests
-
     calls = []
     fake_image_bytes = b"fake-gemini-output-bytes"
     payload = {
@@ -1419,12 +1439,8 @@ def test_call_gemini_for_image_sends_correct_request_shape_and_auth_header():
 
     gemini_auth = {"access_token": "token-abc-123", "project_id": "my-gcp-project", "region": "us-central1"}
 
-    original_post = requests.post
-    requests.post = _fake_post
-    try:
-        result = app.call_gemini_for_image(gemini_auth, "gemini-3-pro-image", "a scene", "ref-b64", "16:9")
-    finally:
-        requests.post = original_post
+    result = app.call_gemini_for_image(gemini_auth, "gemini-3-pro-image", "a scene", "ref-b64", "16:9",
+                                        session=_FakeGeminiSession(_fake_post))
 
     assert result == fake_image_bytes
     call = calls[0]
@@ -1453,8 +1469,6 @@ def test_call_gemini_for_image_uses_global_host_shape_for_global_region():
     com` -- that wrong prefixed-host guess is exactly what caused a real
     404 even after the model id itself was confirmed correct. Only the
     `locations/` path segment says "global"; the host does not carry it."""
-    import requests
-
     calls = []
     payload = {"candidates": [{"content": {"parts": [{"inlineData": {
         "mimeType": "image/png", "data": "ZmFrZQ==",
@@ -1466,12 +1480,8 @@ def test_call_gemini_for_image_uses_global_host_shape_for_global_region():
 
     gemini_auth = {"access_token": "tok", "project_id": "my-gcp-project", "region": "global"}
 
-    original_post = requests.post
-    requests.post = _fake_post
-    try:
-        app.call_gemini_for_image(gemini_auth, "gemini-3-pro-image", "a scene", "ref-b64", "16:9")
-    finally:
-        requests.post = original_post
+    app.call_gemini_for_image(gemini_auth, "gemini-3-pro-image", "a scene", "ref-b64", "16:9",
+                               session=_FakeGeminiSession(_fake_post))
 
     assert calls[0] == (
         "https://aiplatform.googleapis.com/v1/projects/my-gcp-project/"
@@ -1486,8 +1496,6 @@ def test_call_gemini_for_image_handles_snake_case_inline_data_field():
     about which one is authoritative."""
     import base64
 
-    import requests
-
     fake_image_bytes = b"snake-case-bytes"
     payload = {
         "candidates": [{
@@ -1497,46 +1505,81 @@ def test_call_gemini_for_image_handles_snake_case_inline_data_field():
         }],
     }
 
-    original_post = requests.post
-    requests.post = lambda url, headers=None, json=None, timeout=None: _FakeGeminiResponse(payload)
-    try:
-        result = app.call_gemini_for_image(_FAKE_GEMINI_AUTH, "model-id", "prompt", "ref-b64", "1:1")
-    finally:
-        requests.post = original_post
+    fake_post = lambda url, headers=None, json=None, timeout=None: _FakeGeminiResponse(payload)
+    result = app.call_gemini_for_image(_FAKE_GEMINI_AUTH, "model-id", "prompt", "ref-b64", "1:1",
+                                        session=_FakeGeminiSession(fake_post))
 
     assert result == fake_image_bytes
 
 
 def test_call_gemini_for_image_raises_when_no_image_data_in_response():
-    import requests
-
     payload = {"candidates": [{"content": {"parts": [{"text": "I can't do that."}]}, "finishReason": "SAFETY"}]}
 
-    original_post = requests.post
-    requests.post = lambda url, headers=None, json=None, timeout=None: _FakeGeminiResponse(payload)
+    fake_post = lambda url, headers=None, json=None, timeout=None: _FakeGeminiResponse(payload)
     try:
-        try:
-            app.call_gemini_for_image(_FAKE_GEMINI_AUTH, "model-id", "prompt", "ref-b64", "1:1")
-            assert False, "expected RuntimeError"
-        except RuntimeError as exc:
-            assert "SAFETY" in str(exc)
-    finally:
-        requests.post = original_post
+        app.call_gemini_for_image(_FAKE_GEMINI_AUTH, "model-id", "prompt", "ref-b64", "1:1",
+                                   session=_FakeGeminiSession(fake_post))
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "SAFETY" in str(exc)
 
 
 def test_call_gemini_for_image_raises_when_no_candidates_in_response():
-    import requests
-
-    original_post = requests.post
-    requests.post = lambda url, headers=None, json=None, timeout=None: _FakeGeminiResponse({"candidates": []})
+    fake_post = lambda url, headers=None, json=None, timeout=None: _FakeGeminiResponse({"candidates": []})
     try:
-        try:
-            app.call_gemini_for_image(_FAKE_GEMINI_AUTH, "model-id", "prompt", "ref-b64", "1:1")
-            assert False, "expected RuntimeError"
-        except RuntimeError as exc:
-            assert "no candidates" in str(exc)
+        app.call_gemini_for_image(_FAKE_GEMINI_AUTH, "model-id", "prompt", "ref-b64", "1:1",
+                                   session=_FakeGeminiSession(fake_post))
+        assert False, "expected RuntimeError"
+    except RuntimeError as exc:
+        assert "no candidates" in str(exc)
+
+
+def test_call_gemini_for_image_defaults_to_retry_session_when_none_given():
+    """When the caller doesn't pass session= at all (the real handler()
+    path never does -- see generate_article_image_candidates, which
+    builds and threads through its own shared session), call_gemini_for_
+    image must build one itself via get_gemini_requests_session rather
+    than silently having no retry behavior. Confirms the wiring, not
+    get_gemini_requests_session's own retry mechanics (that's urllib3's
+    own, well-tested Retry class -- see that function's docstring)."""
+    fake_image_bytes = b"built-a-session-myself"
+    import base64
+    payload = {"candidates": [{"content": {"parts": [{"inlineData": {
+        "mimeType": "image/png", "data": base64.b64encode(fake_image_bytes).decode("ascii"),
+    }}]}}]}
+
+    built_sessions = []
+
+    class _RecordingSession(_FakeGeminiSession):
+        def __init__(self, post_fn):
+            super().__init__(post_fn)
+            built_sessions.append(self)
+
+    original_get_session = app.get_gemini_requests_session
+    app.get_gemini_requests_session = lambda: _RecordingSession(
+        lambda url, headers=None, json=None, timeout=None: _FakeGeminiResponse(payload)
+    )
+    try:
+        result = app.call_gemini_for_image(_FAKE_GEMINI_AUTH, "model-id", "prompt", "ref-b64", "1:1")
     finally:
-        requests.post = original_post
+        app.get_gemini_requests_session = original_get_session
+
+    assert result == fake_image_bytes
+    assert len(built_sessions) == 1
+
+
+def test_get_gemini_requests_session_retries_429_and_5xx():
+    """Confirms the actual retry configuration -- status_forcelist
+    includes 429 (the real incident's own status code, see this module's
+    "REAL INCIDENT, part three" comment) and the 500/502/503/504 quintet
+    already established by scripts/backfill_core_ids.py's own get_
+    requests_session for the same class of transient error."""
+    session = app.get_gemini_requests_session()
+    adapter = session.get_adapter("https://aiplatform.googleapis.com/")
+    retry = adapter.max_retries
+    assert retry.total == app.GEMINI_RETRY_TOTAL
+    assert set(retry.status_forcelist) == set(app.GEMINI_RETRY_STATUS_FORCELIST)
+    assert 429 in retry.status_forcelist
 
 
 # --- store_article_image ---
@@ -1702,9 +1745,9 @@ def test_generate_article_image_candidates_default_is_three_gemini_no_stability(
     s3 = _FakeS3Client()
 
     original_get = requests.get
-    original_post = requests.post
+    original_get_session = app.get_gemini_requests_session
     requests.get = lambda url, timeout=None: _fake_reference_photo_response()
-    requests.post = fake_post
+    app.get_gemini_requests_session = lambda: _FakeGeminiSession(fake_post)
     try:
         result = app.generate_article_image_candidates(
             conn, bedrock_image_client=bg_client, bedrock_removebg_client=removebg_client,
@@ -1714,7 +1757,7 @@ def test_generate_article_image_candidates_default_is_three_gemini_no_stability(
         )
     finally:
         requests.get = original_get
-        requests.post = original_post
+        app.get_gemini_requests_session = original_get_session
 
     assert set(result.keys()) == {"action_shot", "product_shot"}
     for variant in ("action_shot", "product_shot"):
@@ -1732,7 +1775,10 @@ def test_generate_article_image_candidates_default_is_three_gemini_no_stability(
     # 3 Gemini calls per variant x 2 variants = 6.
     assert len(gemini_calls) == 6
     # First call per variant gets no suffix; second gets "alternate
-    # composition"; third gets its own distinct, numbered suffix.
+    # composition"; third gets its own distinct, numbered suffix -- true
+    # regardless of interleaving (see v6 in this module's own docstring),
+    # since the suffix is keyed on each variant's OWN candidate index i,
+    # not the call's position in the shared, interleaved call order.
     prompts = [c["json"]["contents"][0]["parts"][0]["text"] for c in gemini_calls]
     assert sum("alternate composition" in p for p in prompts) == 2
     assert sum("composition/angle #3" in p for p in prompts) == 2
@@ -1757,9 +1803,9 @@ def test_generate_article_image_candidates_stability_enabled_adds_fourth_candida
     s3 = _FakeS3Client()
 
     original_get = requests.get
-    original_post = requests.post
+    original_get_session = app.get_gemini_requests_session
     requests.get = lambda url, timeout=None: _fake_reference_photo_response()
-    requests.post = fake_post
+    app.get_gemini_requests_session = lambda: _FakeGeminiSession(fake_post)
     app.ENABLE_STABILITY_CANDIDATES = True
     try:
         result = app.generate_article_image_candidates(
@@ -1770,7 +1816,7 @@ def test_generate_article_image_candidates_stability_enabled_adds_fourth_candida
         )
     finally:
         requests.get = original_get
-        requests.post = original_post
+        app.get_gemini_requests_session = original_get_session
         app.ENABLE_STABILITY_CANDIDATES = False
 
     for variant in ("action_shot", "product_shot"):
@@ -1815,9 +1861,9 @@ def test_generate_article_image_candidates_skips_stability_when_remove_backgroun
     s3 = _FakeS3Client()
 
     original_get = requests.get
-    original_post = requests.post
+    original_get_session = app.get_gemini_requests_session
     requests.get = lambda url, timeout=None: _fake_reference_photo_response()
-    requests.post = fake_post
+    app.get_gemini_requests_session = lambda: _FakeGeminiSession(fake_post)
     app.ENABLE_STABILITY_CANDIDATES = True
     try:
         result = app.generate_article_image_candidates(
@@ -1828,7 +1874,7 @@ def test_generate_article_image_candidates_skips_stability_when_remove_backgroun
         )
     finally:
         requests.get = original_get
-        requests.post = original_post
+        app.get_gemini_requests_session = original_get_session
         app.ENABLE_STABILITY_CANDIDATES = False
 
     for variant in ("action_shot", "product_shot"):
@@ -1840,9 +1886,13 @@ def test_generate_article_image_candidates_skips_stability_when_remove_backgroun
 
 def test_generate_article_image_candidates_one_gemini_call_fails_others_still_succeed():
     """Each Gemini call is independently try/excepted -- a failure on one
-    (e.g. the SECOND, "alternate composition" call for a given variant)
     must not take down the other, still-good candidates for that same
-    variant, nor affect the other variant's calls at all."""
+    variant, nor affect the other variant's calls at all. v6 (see this
+    module's own docstring): calls now go out INTERLEAVED -- action_shot
+    #1, product_shot #1, action_shot #2, product_shot #2, action_shot #3,
+    product_shot #3 -- so the 3rd call overall (global index 2, 0-based)
+    is action_shot's OWN second ("alternate composition") attempt, not
+    the 2nd call overall the way it was pre-v6."""
     import requests
 
     conn = _FakeConnection(reference_image_url="https://example.com/ball.jpg")
@@ -1855,7 +1905,7 @@ def test_generate_article_image_candidates_one_gemini_call_fails_others_still_su
             import base64
 
             self.calls.append({"json": json})
-            if len(self.calls) == 2:  # the action_shot's second ("alternate composition") call
+            if len(self.calls) == 3:  # action_shot's own 2nd ("alternate composition") call, 3rd overall post-v6
                 raise RuntimeError("Gemini rate limited")
             data = base64.b64encode(b"gemini-bytes").decode("ascii")
             return _FakeGeminiResponse({"candidates": [{"content": {"parts": [{"inlineData": {"data": data}}]}}]})
@@ -1864,9 +1914,9 @@ def test_generate_article_image_candidates_one_gemini_call_fails_others_still_su
     s3 = _FakeS3Client()
 
     original_get = requests.get
-    original_post = requests.post
+    original_get_session = app.get_gemini_requests_session
     requests.get = lambda url, timeout=None: _fake_reference_photo_response()
-    requests.post = flaky_post
+    app.get_gemini_requests_session = lambda: _FakeGeminiSession(flaky_post)
     try:
         result = app.generate_article_image_candidates(
             conn, bedrock_image_client=object(), bedrock_removebg_client=_RaisingRemoveBgClient(),
@@ -1876,7 +1926,7 @@ def test_generate_article_image_candidates_one_gemini_call_fails_others_still_su
         )
     finally:
         requests.get = original_get
-        requests.post = original_post
+        app.get_gemini_requests_session = original_get_session
 
     # action_shot's second (of three) Gemini calls failed -- 2 candidates
     # for it (the first and third both succeeded).

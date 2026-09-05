@@ -261,6 +261,47 @@ from both `us-west-1` and `us-west-2`).
     inside this environment (no outbound access to *.googleapis.com from
     this sandbox, no real service-account key to test with) -- confirm on
     the first real invocation, don't assume it's exactly right.
+
+    v6 (2026-09-04), REAL INCIDENT: Al reported "the square product
+    images are not coming through anymore" -- clarified through follow-up
+    to mean specifically the product_shot (1:1) article-image candidates
+    in the Articles review picker, which he confirmed were showing ZERO
+    candidates while action_shot kept working. Diagnosed from CloudWatch
+    logs (Al ran `aws logs tail` against this function's log group):
+    every product_shot Gemini call was failing with a plain Vertex AI
+    `429 RESOURCE_EXHAUSTED`, not a 400/404 and not anything aspect-ratio
+    specific. The two variants make an otherwise-identical call (same
+    model, same reference image, same auth), so there's no per-value
+    reason Vertex AI would single out "1:1" -- the real cause was
+    ORDERING: generate_article_image_candidates ran all of action_shot's
+    NUM_GEMINI_CANDIDATES_PER_VARIANT Gemini attempts before starting any
+    of product_shot's, so action_shot (always first) consumed whatever
+    burst/per-minute quota Vertex AI enforces for this model, and
+    product_shot (always second, moments later, in the same invocation)
+    reliably found nothing left. This was a LATENT problem, not a new
+    one -- it was invisible before v5 because product_shot always had a
+    guaranteed non-Gemini fallback (the Stability/composite candidate).
+    v5 removed that fallback (ENABLE_STABILITY_CANDIDATES = False) at the
+    same time it raised NUM_GEMINI_CANDIDATES_PER_VARIANT from 2 to 3 --
+    50% more Gemini load per product with no safety net left -- which is
+    what turned an invisible quota-ordering issue into a total,
+    deterministic "product_shot never works" outage.
+
+    Fixed two ways, together (see call_gemini_for_image's own "REAL
+    INCIDENT, part three" comment and generate_article_image_candidates'
+    own "v6" docstring section for the mechanics): (1) get_gemini_
+    requests_session() gives call_gemini_for_image a retry-with-backoff
+    session for 429/5xx, reusing the exact urllib3 Retry convention
+    scripts/backfill_core_ids.py already established for this same class
+    of "probably transient" error; (2) generate_article_image_candidates
+    now interleaves the two variants' Gemini attempts (action/product/
+    action/product/...) instead of finishing one before starting the
+    other, so if a hard quota ceiling still isn't cleared by the retries,
+    it's shared between both variants rather than always landing entirely
+    on whichever one happens to run second. Neither NUM_GEMINI_
+    CANDIDATES_PER_VARIANT nor ENABLE_STABILITY_CANDIDATES changed --
+    this is purely about not starving one variant of the same shared
+    quota the other variant already used up.
 """
 import json
 import logging
@@ -1100,8 +1141,77 @@ def mint_gemini_access_token(service_account_info: dict) -> str:
     return credentials.token
 
 
+
+# REAL INCIDENT (2026-09-04), part three: Al reported the product_shot
+# (square, 1:1) article images "not coming through anymore" -- turned out
+# to have nothing to do with the aspect ratio itself. CloudWatch showed
+# every product_shot Gemini call failing with a plain `429 RESOURCE_
+# EXHAUSTED` from Vertex AI, while action_shot calls for the same product
+# succeeded. The two variants make IDENTICAL calls (same model, same
+# reference image, same auth) except for aspect_ratio and one line of
+# prompt text -- there is no per-value reason Vertex AI would treat "1:1"
+# differently from "16:9". The real cause is ORDERING, not aspect ratio:
+# generate_article_image_candidates used to run all NUM_GEMINI_CANDIDATES_
+# PER_VARIANT action_shot calls, THEN all of product_shot's, back-to-back
+# in one invocation -- 6 total Gemini calls per product as of v5 (up from
+# 4 pre-v5, since NUM_GEMINI_CANDIDATES_PER_VARIANT went 2->3 the same
+# time ENABLE_STABILITY_CANDIDATES went off). Whatever burst/per-minute
+# quota Vertex AI enforces for this model, action_shot's 3 calls -- always
+# going FIRST -- consume it, and product_shot's 3 calls -- always going
+# SECOND, moments later -- reliably hit RESOURCE_EXHAUSTED with nothing
+# left. Pre-v5 this was invisible because product_shot always had a
+# guaranteed non-Gemini fallback (the Stability/composite candidate); v5
+# removed that safety net at the same time it added more Gemini load,
+# so a pre-existing quota-ordering problem became a total, deterministic
+# "product_shot never works" outage.
+#
+# Fixed two ways, together: (1) call_gemini_for_image now goes through a
+# retry-with-backoff session (get_gemini_requests_session) instead of a
+# bare requests.post, so a transient 429 retries within the same call
+# instead of failing outright -- same urllib3 Retry convention already
+# used by scripts/backfill_core_ids.py's get_requests_session for the
+# exact same "probably transient, safe to retry" class of error; (2)
+# generate_article_image_candidates now INTERLEAVES the two variants'
+# Gemini attempts (action_shot candidate #1, product_shot candidate #1,
+# action_shot candidate #2, ...) instead of finishing one variant before
+# starting the other, so if a hard quota ceiling still gets hit despite
+# the retries, both variants share the shortfall instead of action_shot
+# always winning and product_shot always losing.
+GEMINI_RETRY_STATUS_FORCELIST = (429, 500, 502, 503, 504)
+GEMINI_RETRY_TOTAL = 4
+GEMINI_RETRY_BACKOFF_FACTOR = 2
+
+
+def get_gemini_requests_session():
+    """Builds a requests.Session with urllib3 Retry mounted for the
+    "probably transient, safe to retry" status codes above -- backoff_
+    factor=2 with urllib3's default formula (backoff_factor * 2^(retry_
+    number - 1)) waits 2s/4s/8s/16s between the 4 attempts, long enough
+    for a per-minute Vertex AI quota window to roll over on its own.
+    Separate constants/function from scripts/backfill_core_ids.py's own
+    get_requests_session (different module, different call site) but the
+    same convention deliberately reused rather than invented fresh -- see
+    the REAL INCIDENT comment above this function for why. A plain
+    function (not cached/module-global) so tests can construct their own
+    without needing to reset shared state between cases."""
+    import requests
+    from urllib3.util.retry import Retry
+
+    session = requests.Session()
+    retry = Retry(
+        total=GEMINI_RETRY_TOTAL,
+        backoff_factor=GEMINI_RETRY_BACKOFF_FACTOR,
+        status_forcelist=GEMINI_RETRY_STATUS_FORCELIST,
+        allowed_methods=("POST",),
+        raise_on_status=False,  # let raise_for_status() below report the final failure, not urllib3's own exception shape
+    )
+    adapter = requests.adapters.HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    return session
+
+
 def call_gemini_for_image(gemini_auth: dict, model_id: str, prompt: str,
-                           reference_image_b64: str, aspect_ratio: str) -> bytes:
+                           reference_image_b64: str, aspect_ratio: str, session=None) -> bytes:
     """Google's Gemini 3 Pro Image, called via Vertex AI's own
     generateContent REST endpoint (NOT Bedrock, and NOT the Gemini
     Developer API v4 originally called -- see this module's own docstring
@@ -1141,10 +1251,24 @@ def call_gemini_for_image(gemini_auth: dict, model_id: str, prompt: str,
     shape has been corrected. This fix has ALSO not yet been confirmed
     against a live call -- if you hit another 400, the response body is
     now logged (see except block below) so the actual Google-side error
-    message is visible in CloudWatch instead of a bare HTTPError."""
+    message is visible in CloudWatch instead of a bare HTTPError.
+
+    session (optional, default None -> a fresh get_gemini_requests_
+    session()) is a requests.Session with retry-with-backoff mounted for
+    429/5xx -- see the REAL INCIDENT comment above get_gemini_requests_
+    session for why this exists (product_shot candidates were being
+    starved of Vertex AI's burst quota by action_shot's calls going
+    first). Accepted as a parameter, not built unconditionally inside
+    this function, so a caller generating many candidates in a loop (see
+    generate_article_image_candidates) can share one session/connection
+    pool across calls rather than building a fresh one each time, and so
+    tests can inject a fake session instead of hitting the network."""
     import base64
 
     import requests
+
+    if session is None:
+        session = get_gemini_requests_session()
 
     region = gemini_auth["region"]
     # REAL INCIDENT (2026-09-04), part two: fixing the model id (see
@@ -1180,7 +1304,7 @@ def call_gemini_for_image(gemini_auth: dict, model_id: str, prompt: str,
             "imageConfig": {"aspectRatio": aspect_ratio},
         },
     }
-    response = requests.post(
+    response = session.post(
         url, headers={"Authorization": f"Bearer {gemini_auth['access_token']}",
                       "Content-Type": "application/json"},
         json=body, timeout=60,
@@ -1271,7 +1395,27 @@ def generate_article_image_candidates(conn, bedrock_image_client, bedrock_remove
     a cutout failure skips the Stability candidate for BOTH variants,
     since there's no ball to composite into either one without it, but
     does NOT affect the Gemini candidates, which never depended on the
-    cutout in the first place)."""
+    cutout in the first place).
+
+    v6 (2026-09-04) REAL INCIDENT: Al reported product_shot images "not
+    coming through anymore" -- CloudWatch confirmed every product_shot
+    Gemini call was failing with a plain Vertex AI `429 RESOURCE_
+    EXHAUSTED`, while action_shot succeeded every time. The bug was never
+    the aspect ratio -- it was that this function used to finish ALL of
+    action_shot's NUM_GEMINI_CANDIDATES_PER_VARIANT attempts before
+    starting product_shot's, so action_shot (always first) consumed
+    whatever burst quota Vertex AI enforces and product_shot (always
+    second, moments later) reliably found none left. See call_gemini_
+    for_image's own "REAL INCIDENT, part three" comment for the full
+    writeup. Fixed by (1) threading one shared, retry-with-backoff
+    session (get_gemini_requests_session) through every Gemini call in
+    this function instead of a bare requests.post per call, so a
+    transient 429 retries in place; and (2) INTERLEAVING the two
+    variants' Gemini attempts below (action_shot #1, product_shot #1,
+    action_shot #2, ...) instead of finishing one variant before
+    starting the other, so a hard quota ceiling -- if the retries still
+    don't clear it -- gets shared instead of always falling entirely on
+    whichever variant happens to run second."""
     reference_url = fetch_reference_image_url(conn, product["id"])
     if not reference_url:
         logger.info("No reference image available for product_id=%s, skipping article images", product["id"])
@@ -1300,12 +1444,24 @@ def generate_article_image_candidates(conn, bedrock_image_client, bedrock_remove
     # string-building, no API call, but no reason to do even that when
     # ENABLE_STABILITY_CANDIDATES is off.
     background_prompts = build_background_prompts(product, article) if ENABLE_STABILITY_CANDIDATES else {}
-    results = {}
-    for variant in ("action_shot", "product_shot"):
-        candidates = []
-        aspect_ratio = _VARIANT_ASPECT_RATIOS[variant]
 
-        for i in range(NUM_GEMINI_CANDIDATES_PER_VARIANT):
+    # v6: one shared session (retry-with-backoff mounted, see get_gemini_
+    # requests_session) reused across every Gemini call this invocation
+    # makes for this product, both for connection-pooling and so a 429
+    # retry's own backoff wait is the ONLY extra delay -- no reason to
+    # build a fresh Session (and a fresh urllib3 Retry/adapter) per call.
+    gemini_session = get_gemini_requests_session()
+
+    results = {"action_shot": [], "product_shot": []}
+
+    # v6: interleaved (action_shot #1, product_shot #1, action_shot #2,
+    # ...) rather than looping each variant to completion before starting
+    # the other -- see this function's own "v6 REAL INCIDENT" docstring
+    # section for why. i is the same 0-based "candidate index" used for
+    # both the S3 key suffix and the prompt-variation suffix below.
+    for i in range(NUM_GEMINI_CANDIDATES_PER_VARIANT):
+        for variant in ("action_shot", "product_shot"):
+            aspect_ratio = _VARIANT_ASPECT_RATIOS[variant]
             try:
                 prompt = build_gemini_scene_prompt(product, article, variant)
                 if i == 1:
@@ -1315,15 +1471,18 @@ def generate_article_image_candidates(conn, bedrock_image_client, bedrock_remove
                         f" (Generate composition/angle #{i + 1}, distinctly different from all "
                         "previous attempts.)"
                     )
-                png_bytes = call_gemini_for_image(gemini_auth, gemini_model_id, prompt, reference_b64, aspect_ratio)
+                png_bytes = call_gemini_for_image(gemini_auth, gemini_model_id, prompt, reference_b64, aspect_ratio,
+                                                   session=gemini_session)
                 stored = store_article_image(s3_client, image_bucket, product["id"], f"{variant}_gemini_{i + 1}",
                                               png_bytes)
-                candidates.append({"key": stored["key"], "url": stored["url"],
-                                    "model_id": gemini_model_id, "seed": None})
+                results[variant].append({"key": stored["key"], "url": stored["url"],
+                                          "model_id": gemini_model_id, "seed": None})
             except Exception:
                 logger.exception("Failed to generate Gemini %s candidate #%d for product_id=%s",
                                   variant, i + 1, product["id"])
 
+    for variant in ("action_shot", "product_shot"):
+        aspect_ratio = _VARIANT_ASPECT_RATIOS[variant]
         if cutout_png_bytes is not None:
             import random
 
@@ -1335,13 +1494,11 @@ def generate_article_image_candidates(conn, bedrock_image_client, bedrock_remove
                 composited_png_bytes = composite_ball_on_background(cutout_png_bytes, background_png_bytes)
                 stored = store_article_image(s3_client, image_bucket, product["id"], f"{variant}_stability",
                                               composited_png_bytes)
-                candidates.append({"key": stored["key"], "url": stored["url"],
-                                    "model_id": image_model_id, "seed": seed})
+                results[variant].append({"key": stored["key"], "url": stored["url"],
+                                          "model_id": image_model_id, "seed": seed})
             except Exception:
                 logger.exception("Failed to generate Stability %s candidate for product_id=%s",
                                   variant, product["id"])
-
-        results[variant] = candidates
 
     return results
 

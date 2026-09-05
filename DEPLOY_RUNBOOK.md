@@ -8401,6 +8401,109 @@ this repo's code.
 typo, fixed on his end (no repo change needed). All-clear confirmed on
 a live run.
 
+### v6 (2026-09-04): REAL INCIDENT -- product_shot article images "not coming through anymore"
+
+Al: "the square product images are not coming through anymore" ->
+clarified through follow-up to mean specifically the product_shot (1:1)
+article-image candidates in the Articles review picker, and specifically
+that the picker showed ZERO candidates for product_shot on every
+product, while action_shot kept working fine.
+
+**Diagnosis.** Al ran the CloudWatch pull himself:
+```bash
+aws logs tail /aws/lambda/bowling-scraper-product-article-generator \
+  --region us-west-1 --since 3d \
+  --filter-pattern "?\"product_shot\" ?\"generateContent returned\" ?\"finishReason\""
+```
+The log showed a mix of older, already-fixed incidents (400s from before
+the request-shape fix, 404s from before the region/host fix) followed by
+a consistent, current pattern: every `product_shot` Gemini call failing
+with a plain `429 RESOURCE_EXHAUSTED` against the CORRECT endpoint
+(`.../locations/global/.../gemini-3-pro-image:generateContent`) -- so
+the model id and endpoint fixes from the earlier incidents were working;
+this was a new, different problem. Nothing about aspect ratio itself was
+wrong -- action_shot (16:9) and product_shot (1:1) make an otherwise
+identical call (same model, same reference image, same auth), so
+there's no per-value reason Vertex AI would single out "1:1".
+
+The real cause was ORDERING: `generate_article_image_candidates` used to
+run all of `action_shot`'s `NUM_GEMINI_CANDIDATES_PER_VARIANT` (3) Gemini
+attempts before starting any of `product_shot`'s -- 6 total Gemini calls
+per product, fired within a couple seconds of each other in one Lambda
+invocation. Whatever burst/per-minute quota Vertex AI enforces for this
+model, `action_shot` (always first) consumed it, and `product_shot`
+(always second, moments later) reliably found nothing left. This was a
+LATENT problem, not a new one introduced by this incident's own fix --
+it was invisible before v5 because `product_shot` always had a
+guaranteed non-Gemini fallback candidate (the Stability/composite one).
+v5 removed that fallback (`ENABLE_STABILITY_CANDIDATES = False`) at the
+same time it raised `NUM_GEMINI_CANDIDATES_PER_VARIANT` from 2 to 3 --
+50% more Gemini load per product with no safety net left -- which is
+what turned an invisible quota-ordering issue into a total, deterministic
+"product_shot never works" outage.
+
+**Fix**, two parts, both in `src/product_article_generator/app.py`:
+
+1. `get_gemini_requests_session()` -- a new function building a
+   `requests.Session` with a urllib3 `Retry` mounted for
+   `GEMINI_RETRY_STATUS_FORCELIST = (429, 500, 502, 503, 504)`,
+   `total=GEMINI_RETRY_TOTAL` (4), `backoff_factor=GEMINI_RETRY_BACKOFF_
+   FACTOR` (2) -- waits 2s/4s/8s/16s between attempts, long enough for a
+   per-minute quota window to roll over on its own. Deliberately reuses
+   the exact convention `scripts/backfill_core_ids.py`'s own
+   `get_requests_session` already established for this same "probably
+   transient, safe to retry" class of error, rather than inventing a
+   different pattern. `call_gemini_for_image` now takes an optional
+   `session` argument (defaults to a fresh `get_gemini_requests_session()`
+   if not given) and calls `session.post(...)` instead of a bare
+   `requests.post(...)`.
+2. `generate_article_image_candidates` now builds ONE shared session
+   (`gemini_session = get_gemini_requests_session()`) and threads it
+   through every Gemini call for that product, AND interleaves the two
+   variants' attempts -- `action_shot #1, product_shot #1, action_shot
+   #2, product_shot #2, action_shot #3, product_shot #3` -- instead of
+   finishing one variant before starting the other. This means if a hard
+   quota ceiling still isn't cleared by the retries, it's shared between
+   both variants rather than always landing entirely on whichever one
+   happens to run second. The per-candidate S3 key naming
+   (`{variant}_gemini_{i+1}`) and prompt-suffix logic (no suffix / "alternate
+   composition" / "composition/angle #N") are unchanged -- both are keyed
+   on each variant's own candidate index `i`, not on the call's position
+   in the shared, interleaved call order, so candidate numbering and
+   prompt variation are identical to before.
+
+Neither `NUM_GEMINI_CANDIDATES_PER_VARIANT` nor
+`ENABLE_STABILITY_CANDIDATES` changed -- this is purely about not
+starving one variant of the same shared quota the other variant already
+used up.
+
+No migration, no `template.yaml` change (57 resources unchanged) -- pure
+Lambda-code change: `sam build ProductArticleGeneratorFunction && sam
+deploy` (or a full redeploy) picks it up.
+
+**Tests** (`tests/test_product_article_generator.py`, 93/93 passing, 2
+new): every existing `call_gemini_for_image` test switched from
+monkeypatching module-level `requests.post` (which `session.post(...)`
+no longer routes through -- a test still patching only `requests.post`
+would now silently miss the call and attempt a real network connection)
+to passing a small `_FakeGeminiSession` wrapper via the new `session=`
+argument; the `generate_article_image_candidates` orchestration tests
+switched from monkeypatching `requests.post` to monkeypatching
+`app.get_gemini_requests_session` itself, since that function is what
+builds the real session internally. New:
+`test_call_gemini_for_image_defaults_to_retry_session_when_none_given`
+(confirms the no-session-given path actually builds one via
+`get_gemini_requests_session` rather than silently having no retry
+behavior) and `test_get_gemini_requests_session_retries_429_and_5xx`
+(confirms the actual `Retry` configuration -- `status_forcelist`
+includes 429, `total` matches `GEMINI_RETRY_TOTAL`). The interleaving-
+order change required updating
+`test_generate_article_image_candidates_one_gemini_call_fails_others_
+still_succeed`'s failure-injection index (the 3rd call overall is now
+`action_shot`'s own 2nd attempt, not the 2nd call overall) -- same
+end-state assertions (`action_shot` 2 candidates, `product_shot` 3), just
+retargeted to the new call order. Full 44-file regression sweep: clean.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
