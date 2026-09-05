@@ -899,6 +899,36 @@ function toast(msg, isError) {
   toast._t = setTimeout(function () { el.classList.remove('show'); }, 4000);
 }
 
+// Al: "where can i get the article ID" -- the id was only ever embedded
+// in button onclick handlers, never shown as text anywhere, so the only
+// way to get one was a raw GET /articles API call. Generic copy-to-
+// clipboard helper (not article-specific -- any future "show me the raw
+// id for X" need can reuse this) with a document.execCommand('copy')
+// fallback for browsers/contexts where navigator.clipboard.writeText
+// isn't available (e.g. non-HTTPS admin-site hosting).
+function copyToClipboard(text) {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(
+      function () { toast('Copied to clipboard'); },
+      function () { toast('Copy failed', true); },
+    );
+    return;
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand('copy');
+    toast('Copied to clipboard');
+  } catch (e) {
+    toast('Copy failed', true);
+  }
+  document.body.removeChild(ta);
+}
+
 function escapeHtml(s) {
   return String(s === undefined || s === null ? '' : s).replace(/[&<>"']/g, function (c) {
     return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
@@ -2071,8 +2101,16 @@ function renderArticles(items) {
         'onclick="toggleArticleBigcommerceSync(\'' + a.id + '\', ' + (!a.sync_to_bigcommerce) + ')">' +
         (a.sync_to_bigcommerce ? 'Sync on' : 'Sync off') + '</button>' +
         (a.bowlerdepot_synced_at ? '<div class="muted small">synced ' + fmtDate(a.bowlerdepot_synced_at) + '</div>' : '');
+      // Al: "where can i get the article ID" -- needed to PATCH /articles/
+      // {id}/bigcommerce-sync (or any other by-id endpoint) directly
+      // without going through a raw GET /articles call first. Shown
+      // truncated (first 8 chars, same "enough to recognize, not enough
+      // to clutter the row" convention product ids get elsewhere in this
+      // admin site) with a click-to-copy button that copies the FULL id.
+      const idCell = '<div class="muted small mono">' + escapeHtml(a.id.slice(0, 8)) + '&hellip; ' +
+        '<button class="btn small ghost" onclick="copyToClipboard(\'' + a.id + '\')" title="Copy full article ID">Copy ID</button></div>';
       return '<tr>' +
-        '<td>' + thumbHtml + escapeHtml(a.title || '(untitled)') + '</td>' +
+        '<td>' + thumbHtml + escapeHtml(a.title || '(untitled)') + idCell + '</td>' +
         '<td>' + escapeHtml(a.product_name) + '<div class="muted small">' + escapeHtml(a.brand_name || '') + '</div></td>' +
         '<td>' + fmtDate(a.generated_at) + '</td>' +
         '<td>' + (a.resolved_by ? (escapeHtml(a.resolved_by) + '<div class="muted small">' + fmtDate(a.reviewed_at) + '</div>') : '—') + '</td>' +
@@ -2279,6 +2317,8 @@ function renderArticlePreviewHtml(a, candidates, context, contextId) {
   );
   return '<div class="detail-panel">' +
     '<h3>' + escapeHtml(a.title || '(untitled)') + '</h3>' +
+    '<p class="muted small mono">id: ' + escapeHtml(a.id) + ' ' +
+    '<button class="btn small ghost" onclick="copyToClipboard(\'' + escapeHtml(a.id) + '\')" title="Copy full article ID">Copy ID</button></p>' +
     imagesBlock + candidatesBlock +
     (a.hook ? '<p><em>' + escapeHtml(a.hook) + '</em></p>' : '') +
     (a.performance_summary ? '<p><strong>Performance summary:</strong></p><p>' + escapeHtml(a.performance_summary) + '</p>' : '') +

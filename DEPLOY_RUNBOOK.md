@@ -8638,6 +8638,19 @@ flag (migration 028 + the two endpoints above) is the only part live
 today -- turning it on for an article currently does nothing but set a
 column, by design, until the job above gets built.
 
+**Follow-up: "where can i get the article ID"** -- the id was only ever
+embedded in admin-site button `onclick` handlers, never shown as text,
+so the only way to get one (e.g. to hand-run the `PATCH
+/articles/{id}/bigcommerce-sync` toggle via `curl`) was a raw `GET
+/articles` call. Added a generic `copyToClipboard` helper
+(`navigator.clipboard.writeText`, falling back to a hidden-textarea +
+`document.execCommand('copy')` for contexts without Clipboard API
+access) and a truncated id + "Copy ID" button in both the Articles tab's
+list row and `renderArticlePreviewHtml`'s detail panel (shared by both
+the standalone Articles tab and the product-detail Articles section, so
+it shows in both places automatically). Admin-site only -- no
+service.py/app.py/migration change.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
