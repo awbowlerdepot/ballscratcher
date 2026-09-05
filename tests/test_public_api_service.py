@@ -515,6 +515,110 @@ def test_list_brands_only_brands_with_published_products():
     assert "join products p on p.brand_id = b.id" in query
 
 
+# --- list_articles: filter-SQL shape, same query-capturing fake
+# connection as list_products above (Learn section browse/index page) ---
+
+def test_list_articles_requires_approved_status_and_published_product():
+    conn = _QueryCapturingConnection()
+    service.list_articles(conn)
+
+    query = conn.cursor().queries[0]
+    assert "pa.status = 'approved'" in query
+    assert "p.published = true" in query
+
+
+def test_list_articles_no_published_override_param():
+    """Same non-negotiable posture as list_products -- published/approved
+    are baked into the SQL text, not bind params a caller could relax."""
+    conn = _QueryCapturingConnection()
+    service.list_articles(conn, brand_id="brand-1", coverstock_id="cs-1", search="hook")
+
+    query = conn.cursor().queries[0]
+    params = conn.cursor().params[0]
+    assert "and p.brand_id = %s" in query
+    assert "and p.coverstock_id = %s" in query
+    assert "and (pa.title ilike %s or pa.hook ilike %s)" in query
+    assert params == ["brand-1", "cs-1", "%hook%", "%hook%", 24, 0]
+
+
+def test_list_articles_defaults_have_no_extra_filters():
+    conn = _QueryCapturingConnection()
+    service.list_articles(conn)
+
+    query = conn.cursor().queries[0]
+    params = conn.cursor().params[0]
+    assert "and p.brand_id = %s" not in query
+    assert "and p.coverstock_id = %s" not in query
+    assert "ilike" not in query
+    assert params == [24, 0]
+
+
+def test_list_articles_joins_products_and_brands():
+    conn = _QueryCapturingConnection()
+    service.list_articles(conn)
+
+    query = conn.cursor().queries[0]
+    assert "join products p on p.id = pa.product_id" in query
+    assert "join brands b on b.id = p.brand_id" in query
+
+
+def test_list_articles_default_sort_is_reviewed_at_desc():
+    conn = _QueryCapturingConnection()
+    service.list_articles(conn)
+
+    query = conn.cursor().queries[0]
+    assert "order by pa.reviewed_at desc nulls last, pa.id asc" in query
+
+
+def test_list_articles_sort_oldest_orders_reviewed_at_asc():
+    conn = _QueryCapturingConnection()
+    service.list_articles(conn, sort="oldest")
+
+    query = conn.cursor().queries[0]
+    assert "order by pa.reviewed_at asc nulls last, pa.id asc" in query
+
+
+def test_list_articles_sort_title_asc_orders_alphabetically():
+    conn = _QueryCapturingConnection()
+    service.list_articles(conn, sort="title_asc")
+
+    query = conn.cursor().queries[0]
+    assert "order by pa.title asc, pa.id asc" in query
+
+
+def test_list_articles_sort_title_desc_orders_reverse_alphabetically():
+    conn = _QueryCapturingConnection()
+    service.list_articles(conn, sort="title_desc")
+
+    query = conn.cursor().queries[0]
+    assert "order by pa.title desc, pa.id asc" in query
+
+
+def test_list_articles_unrecognized_sort_falls_back_to_default():
+    conn = _QueryCapturingConnection()
+    service.list_articles(conn, sort="not_a_real_sort")
+
+    query = conn.cursor().queries[0]
+    assert "order by pa.reviewed_at desc nulls last, pa.id asc" in query
+
+
+def test_list_articles_every_sort_option_keeps_id_tiebreaker():
+    conn = _QueryCapturingConnection()
+    for sort_value in service._ARTICLE_SORT_ORDER_BY:
+        conn.cursor().queries.clear()
+        service.list_articles(conn, sort=sort_value)
+        query = conn.cursor().queries[0]
+        assert ", pa.id asc limit %s offset %s" in query, f"sort={sort_value!r} missing id tiebreaker"
+
+
+def test_list_articles_passes_through_limit_and_offset():
+    conn = _QueryCapturingConnection()
+    service.list_articles(conn, limit=10, offset=20)
+
+    params = conn.cursor().params[0]
+    assert params[-2:] == [10, 20]
+
+
 # --- get_product / get_products_compare / list_similar_products:
 # multi-query assembly against a hand-built fake cursor ---
 

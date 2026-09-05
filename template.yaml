@@ -613,7 +613,31 @@ Parameters:
       wiring up .github/workflows/deploy-consumer-site.yml (see
       DEPLOY_RUNBOOK.md's CI section for the full one-time setup -- this
       param alone isn't enough, the workflow also needs a few repo-level
-      GitHub Variables set from this stack's own outputs).
+      GitHub Variables set from this stack's own outputs). ALSO gates
+      LearnSiteDeployRole below (task #441/#442) -- one repo, one OIDC
+      trust setup, reused for both sites' deploy roles rather than a
+      second GitHubRepo-shaped param.
+  LearnSiteDomainName:
+    Type: String
+    Default: ""
+    Description: >
+      Custom domain for the Learn section's CloudFront distribution --
+      expected to be learn.bowlerdepot.com (Al's explicit choice, "Branded
+      subdomain", when this section was proposed: a real bowlerdepot.com
+      subdomain rather than a path under the main storefront domain, so
+      BigCommerce's own routing/cart/session cookies are never at risk of
+      colliding with this separately-hosted site). Same blank-param-means-
+      CloudFront-default-domain-only convention as ConsumerSiteDomainName
+      above -- both this AND LearnSiteCertificateArn have to be set
+      together for CloudFront to accept the alias.
+  LearnSiteCertificateArn:
+    Type: String
+    Default: ""
+    Description: >
+      ACM certificate ARN covering LearnSiteDomainName. Same us-east-1-
+      regardless-of-stack-region requirement as ConsumerSiteCertificateArn
+      above (a hard CloudFront requirement) -- request/validate it
+      yourself first, then pass the ARN here.
   CreateGitHubOidcProvider:
     Type: String
     Default: "true"
@@ -636,6 +660,7 @@ Conditions:
   HasYouTubeApiKeySecret: !Not [!Equals [!Ref YouTubeApiKeySecretArn, ""]]
   HasGeminiServiceAccountSecret: !Not [!Equals [!Ref GeminiServiceAccountSecretArn, ""]]
   HasConsumerSiteDomain: !Not [!Equals [!Ref ConsumerSiteDomainName, ""]]
+  HasLearnSiteDomain: !Not [!Equals [!Ref LearnSiteDomainName, ""]]
   HasGitHubRepo: !Not [!Equals [!Ref GitHubRepo, ""]]
   ShouldCreateGitHubOidcProvider: !And
     - !Condition HasGitHubRepo
@@ -2963,6 +2988,183 @@ Resources:
               StringEquals:
                 AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${ConsumerSiteDistribution}
 
+  # --- Learn section hosting (learn.bowlerdepot.com) ---------------------
+  #
+  # Al's Learn-section pivot: "bigcommerce is just not the place [for
+  # articles]... how do we best create a user experience that is not
+  # disjointed" -- resolved via AskUserQuestion to a branded subdomain
+  # ("Branded subdomain (Recommended)", not a path under the main
+  # bowlerdepot.com domain, to avoid any risk to the live storefront's own
+  # cart/checkout/session cookies) with the existing BigCommerce blog sync
+  # (bowlerdepot_article_sync) kept running in parallel, unchanged ("Keep
+  # both in parallel as-is"). Same S3 + CloudFront + OAC shape as
+  # ConsumerSiteBucket/Distribution above -- deliberately a SEPARATE
+  # bucket/distribution/deploy role, not a second path on the same one,
+  # so the two sites (different domains, different repos' worth of static
+  # assets, different deploy cadence) stay fully independent.
+  LearnSiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub bowling-scraper-learn-site-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  LearnSiteOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub bowling-scraper-learn-site-oac-${AWS::AccountId}
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # Viewer-request URL rewrite for bowlerdepot-learn/scripts/prerender.ts's
+  # (task #440) prerendered article pages -- see that script's own header
+  # comment for the full "why" (SEO: a crawler needs real HTML at the
+  # SAME url a visitor navigates to, /articles/<id>, not just at /articles/
+  # <id>/index.html). CloudFront's S3-via-OAC origin (unlike the separate
+  # "S3 static website hosting" mode) does NOT auto-append index.html to a
+  # directory-shaped request -- this function is what makes that work:
+  # a request whose last path segment has no "." (i.e. isn't already a
+  # real asset like main.js/logo.png/sitemap.xml) gets index.html appended
+  # before the origin fetch. A path with no prerendered page at that
+  # location 403/404s from S3 exactly like today, which
+  # CustomErrorResponses below still catches and rewrites to the SPA
+  # shell -- this function only ever ADDS a suffix, it can't hide a page
+  # that doesn't otherwise 404.
+  LearnSitePrettyUrlFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub bowling-scraper-learn-pretty-url-${AWS::AccountId}
+      FunctionConfig:
+        Comment: Append /index.html to directory-shaped requests (prerendered article pages + SPA root)
+        Runtime: cloudfront-js-2.0
+      AutoPublish: true
+      FunctionCode: |
+        function handler(event) {
+            var request = event.request;
+            var uri = request.uri;
+
+            // Already a real asset request (hashed JS/CSS, images,
+            // /robots.txt, /sitemap.xml, ...) -- leave it alone.
+            if (!uri.endsWith('/') && uri.includes('.')) {
+                return request;
+            }
+
+            request.uri = uri.endsWith('/') ? uri + 'index.html' : uri + '/index.html';
+            return request;
+        }
+
+  LearnSiteDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        PriceClass: PriceClass_100
+        HttpVersion: http2
+        Aliases: !If
+          - HasLearnSiteDomain
+          - - !Ref LearnSiteDomainName
+          - !Ref AWS::NoValue
+        ViewerCertificate: !If
+          - HasLearnSiteDomain
+          - AcmCertificateArn: !Ref LearnSiteCertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        Origins:
+          - Id: LearnSiteBucketOrigin
+            DomainName: !GetAtt LearnSiteBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt LearnSiteOAC.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: LearnSiteBucketOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt LearnSitePrettyUrlFunction.FunctionARN
+        # SPA client-side routing fallback for any route with no
+        # prerendered page at that path (see LearnSitePrettyUrlFunction's
+        # own comment) -- same rewrite-to-200 shape as
+        # ConsumerSiteDistribution above.
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+
+  LearnSiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref LearnSiteBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub arn:aws:s3:::${LearnSiteBucket}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${LearnSiteDistribution}
+
+  # Same OIDC-federation deploy role shape as ConsumerSiteDeployRole below
+  # (see that resource's own extensive comments for the full "why OIDC
+  # over long-lived keys" + the real GitHub-immutable-ID-suffix incident
+  # that shaped the StringLike condition) -- reuses the SAME GitHubRepo
+  # param and the account's one GitHubOidcProvider (defined further down,
+  # conditionally, alongside ConsumerSiteDeployRole) rather than standing
+  # up a second provider, since an AWS account can only have one OIDC
+  # provider per URL.
+  LearnSiteDeployRole:
+    Type: AWS::IAM::Role
+    Condition: HasGitHubRepo
+    Properties:
+      RoleName: !Sub bowling-scraper-learn-site-deploy-${AWS::AccountId}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub:
+                  !Sub
+                  - "repo:${Owner}*/${Repo}*:ref:refs/heads/main"
+                  - Owner: !Select [0, !Split ["/", !Ref GitHubRepo]]
+                    Repo: !Select [1, !Split ["/", !Ref GitHubRepo]]
+      Policies:
+        - PolicyName: learn-site-deploy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: !GetAtt LearnSiteBucket.Arn
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: !Sub arn:aws:s3:::${LearnSiteBucket}/*
+              - Effect: Allow
+                Action:
+                  - cloudfront:CreateInvalidation
+                Resource: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${LearnSiteDistribution}
+
   # --- GitHub Actions CI/CD for the consumer site -----------------------
   #
   # Al: "lets get back to the CI for the consumer-site" -- push-to-deploy
@@ -2973,7 +3175,9 @@ Resources:
   # there's nothing to rotate if a secret ever leaked (there isn't one).
   # See DEPLOY_RUNBOOK.md's CI section for the full one-time setup this
   # pairs with (the actual .github/workflows/deploy-consumer-site.yml, and
-  # the GitHub repo Variables it needs).
+  # the GitHub repo Variables it needs). NOTE: this same GitHubOidcProvider
+  # is also what LearnSiteDeployRole above trusts -- only ONE provider
+  # resource for the whole account, shared by both sites' deploy roles.
   GitHubOidcProvider:
     Type: AWS::IAM::OIDCProvider
     Condition: ShouldCreateGitHubOidcProvider
@@ -3099,6 +3303,15 @@ Outputs:
   ConsumerSiteDeployRoleArn:
     Condition: HasGitHubRepo
     Value: !GetAtt ConsumerSiteDeployRole.Arn
+  LearnSiteBucketName:
+    Value: !Ref LearnSiteBucket
+  LearnSiteDistributionId:
+    Value: !Ref LearnSiteDistribution
+  LearnSiteUrl:
+    Value: !Sub "https://${LearnSiteDistribution.DomainName}"
+  LearnSiteDeployRoleArn:
+    Condition: HasGitHubRepo
+    Value: !GetAtt LearnSiteDeployRole.Arn
   AdminApiAuthorizerFunctionArn:
     Value: !GetAtt AdminApiAuthorizerFunction.Arn
   ProductScrapeDLQUrl:

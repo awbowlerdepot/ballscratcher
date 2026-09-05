@@ -368,6 +368,122 @@ def list_products(conn, status: str = "current", brand_id: str = None, core_id: 
 
 
 # --------------------------------------------------------------------
+# Articles (Learn section index -- see bowlerdepot-learn/ for the site
+# that consumes this. Al: "i would like this to be a sophisticated learn
+# section with articles that are displayed in a way that is best from a
+# UI/UX perspective and bigcommerce is just not the place" -- this is the
+# new list/browse endpoint that request needed; GET /products/{id}/
+# article above already covered a single article, but there was no way
+# to browse the catalog of articles at all until now.)
+# --------------------------------------------------------------------
+
+# Sort options for the Learn index -- deliberately a SMALLER set than
+# list_products'/_SORT_ORDER_BY above (no 'popularity': articles have no
+# view-count/video data of their own to rank by, and reusing a product's
+# popularity_score here would rank articles by how popular the BALL is,
+# not the article, which isn't the same thing and would need its own
+# separate join for no clear benefit yet). 'newest'/'oldest' sort by
+# reviewed_at (when an admin actually approved/published the article),
+# NOT generated_at (when product_article_generator first drafted it) --
+# a visitor's "newest articles" should mean "most recently made public",
+# same distinction as list_products' own newest/oldest using release_date
+# rather than created_at/updated_at. nulls last on both directions for
+# the same reason list_products documents: every row selected here
+# already has status='approved' (see list_articles' own where clause),
+# so reviewed_at should always be set in practice, but nulls last is a
+# harmless defensive default rather than assuming that invariant holds
+# forever. Kept as its own dict (not merged into _SORT_ORDER_BY above)
+# since the column being sorted on lives on product_articles, not
+# products -- the alias prefix genuinely differs.
+_ARTICLE_SORT_ORDER_BY = {
+    "newest": "pa.reviewed_at desc nulls last, pa.id asc",
+    "oldest": "pa.reviewed_at asc nulls last, pa.id asc",
+    "title_asc": "pa.title asc, pa.id asc",
+    "title_desc": "pa.title desc, pa.id asc",
+}
+_ARTICLE_DEFAULT_ORDER_BY = "pa.reviewed_at desc nulls last, pa.id asc"
+
+
+def list_articles(conn, brand_id: str = None, coverstock_id: str = None, search: str = None,
+                   sort: str = None, limit: int = 24, offset: int = 0) -> list:
+    """Card-shaped results for the Learn section's browse/index page --
+    one row per APPROVED article whose product is still published, same
+    published-is-non-negotiable posture as every other route in this
+    module (see this module's own header docstring) plus the extra
+    status = 'approved' gate get_product_article already applies to a
+    single article (a 'pending'/'rejected' row has no business being
+    listed any more than it has being served individually).
+
+    brand_id/coverstock_id filter through to the underlying PRODUCT the
+    article is about (an article has no brand/coverstock of its own --
+    it's a review of a specific ball), same filter names as
+    list_products' own brand_id/coverstock_id so the Learn site's filter
+    UI can reuse the exact same /brands-sourced dropdown the Browse page
+    already has. search matches article title OR hook (not the product
+    name -- list_products' search already covers "find this ball by
+    name"; this is "find this article by what it's actually about/says"),
+    same `ilike` substring-match convention as list_products' search.
+
+    Card fields are deliberately narrow, same reasoning as list_products'
+    own docstring: title/hook (not performance_summary/verdict/pros/cons/
+    etc -- those are detail-page content, a card just needs a headline
+    and teaser), generated_at/reviewed_at, plus enough of the underlying
+    product (id, name, url, brand_name, coverstock_name,
+    primary_image_url -- same thumbnail-flag-then-fallback coalesce as
+    every other card query in this module) for a Learn card to link to
+    and preview the ball itself without a second round-trip.
+
+    sort: None (default, see _ARTICLE_DEFAULT_ORDER_BY) is "most
+    recently approved/published first" -- the sensible default landing
+    order for a Learn index, mirroring list_products' own
+    most-recently-touched default. See _ARTICLE_SORT_ORDER_BY above for
+    the full accepted set; any other value (including None) falls back
+    to the default, same unrecognized-value-is-harmless convention
+    list_products already follows."""
+    query = f"""
+        select pa.id as article_id, pa.title, pa.hook, pa.generated_at, pa.reviewed_at,
+               p.id as product_id, p.name as product_name, p.url as product_url,
+               b.name as brand_name,
+               p.coverstock_name, p.coverstock_type,
+               coalesce(
+                   (
+                       select pi.stored_url from product_images pi
+                       where pi.product_id = p.id and pi.is_visible = true
+                       order by pi.is_thumbnail desc, pi.display_order, pi.id
+                       limit 1
+                   ),
+                   p.primary_image_url
+               ) as primary_image_url
+        from product_articles pa
+        join products p on p.id = pa.product_id
+        join brands b on b.id = p.brand_id
+        where pa.status = 'approved' and p.published = true
+    """
+    params = []
+    if brand_id:
+        query += " and p.brand_id = %s"
+        params.append(brand_id)
+    if coverstock_id:
+        query += " and p.coverstock_id = %s"
+        params.append(coverstock_id)
+    if search:
+        query += " and (pa.title ilike %s or pa.hook ilike %s)"
+        params.append(f"%{search}%")
+        params.append(f"%{search}%")
+    # id as a tiebreaker -- same reason list_products needs one (see its
+    # own comment): rows sharing a reviewed_at value (e.g. a batch of
+    # articles all approved in the same admin session) make plain
+    # OFFSET/LIMIT pagination unstable otherwise.
+    query += " order by " + _ARTICLE_SORT_ORDER_BY.get(sort, _ARTICLE_DEFAULT_ORDER_BY) + " limit %s offset %s"
+    params += [limit, offset]
+
+    with conn.cursor() as cur:
+        cur.execute(query, params)
+        columns = [desc[0] for desc in cur.description]
+        return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
+# --------------------------------------------------------------------
 # Detail
 # --------------------------------------------------------------------
 

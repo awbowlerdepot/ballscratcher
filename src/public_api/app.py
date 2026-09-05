@@ -87,6 +87,28 @@ def get_products_compare(ids: str = Query(..., description="Comma-separated prod
     return {"items": service.get_products_compare(conn, product_ids)}
 
 
+@app.get("/articles")
+def get_articles(
+    brand_id: Optional[str] = Query(None),
+    coverstock_id: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    sort: Optional[str] = Query(None, description="'newest', 'oldest', 'title_asc', or 'title_desc' (see service._ARTICLE_SORT_ORDER_BY's docstring); omitted/anything else keeps the default most-recently-approved-first order"),
+    limit: int = Query(24, le=100),
+    offset: int = Query(0, ge=0),
+):
+    # Backs the Learn section's browse/index page (learn.bowlerdepot.com)
+    # -- see service.list_articles' own docstring. Declared before
+    # /products/{product_id} isn't actually necessary here (this is its
+    # own top-level "/articles" path, not "/products/..."), but grouped
+    # right after /products/plotter and /products/compare above so every
+    # literal-path route in this file stays visually together.
+    conn = service.get_db_connection()
+    return {"items": service.list_articles(
+        conn, brand_id=brand_id, coverstock_id=coverstock_id, search=search,
+        sort=sort, limit=limit, offset=offset,
+    )}
+
+
 @app.get("/products/{product_id}")
 def get_product(product_id: str):
     conn = service.get_db_connection()

@@ -1,0 +1,72 @@
+# Push-to-deploy for bowlerdepot-learn/ -- mirrors deploy-consumer-
+# site.yml's exact shape (same OIDC-federation reasoning, same no-AWS-
+# credentials-in-this-repo posture) for the separate Learn section site
+# (learn.bowlerdepot.com, template.yaml's LearnSiteBucket/Distribution/
+# DeployRole -- task #441). Kept as its OWN workflow file, not folded
+# into deploy-consumer-site.yml, so a push touching only one site's
+# directory doesn't trigger a deploy of the other.
+name: Deploy Learn site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "bowlerdepot-learn/**"
+      - ".github/workflows/deploy-learn-site.yml"
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write # required to request the OIDC token
+  contents: read # required for actions/checkout
+
+concurrency:
+  group: deploy-learn-site
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: bowlerdepot-learn
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: bowlerdepot-learn/package-lock.json
+
+      - run: npm ci
+
+      # VITE_PUBLIC_API_URL has to be present for BOTH steps `npm run
+      # build` chains (see package.json): `vite build` inlines it into
+      # the client bundle at build time same as consumer-site, and the
+      # `prerender` step that runs right after it (same shell, same env)
+      # needs it live to actually fetch every published article from
+      # public_api -- see scripts/prerender.ts's own header comment for
+      # why prerendering exists at all (SEO).
+      - name: Build (+ prerender)
+        env:
+          VITE_PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+          SITE_URL: ${{ vars.LEARN_SITE_URL }}
+        run: npm run build
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.LEARN_SITE_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          # Same real incident this repo already hit once on
+          # ConsumerSiteDeployRole (see deploy-consumer-site.yml's own
+          # comment) -- LearnSiteDeployRole's trust policy only grants
+          # sts:AssumeRoleWithWebIdentity, not sts:TagSession, so default
+          # session tagging has to stay off here too.
+          role-skip-session-tagging: true
+
+      - name: Sync to S3
+        run: aws s3 sync dist/ "s3://${{ vars.LEARN_SITE_BUCKET }}/" --delete
+
+      - name: Invalidate CloudFront cache
+        run: aws cloudfront create-invalidation --distribution-id "${{ vars.LEARN_SITE_DISTRIBUTION_ID }}" --paths "/*"

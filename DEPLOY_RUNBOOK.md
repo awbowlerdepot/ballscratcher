@@ -8968,6 +8968,216 @@ update's `headers`/`json`) since both real callers now share it.
 265 → 268. Full regression sweep across every test file: clean. No
 `template.yaml` change (same function, same env var, same IAM grant).
 
+### 6v. Learn section (learn.bowlerdepot.com) -- moving ball reviews off the BigCommerce blog
+
+Al, once the BigCommerce blog sync (6u/6q) was actually working: "now
+that we are going down the path of blog post syncing it is exposing the
+lack of features in bigcommerce as it pertains to a blog. i would like
+this to be a sophisticated learn section with articles that are
+displayed in a way that is best from a UI/UX perspective and bigcommerce
+is just not the place." Two real architecture decisions, both resolved
+via `AskUserQuestion` before any build started:
+
+1. **Hosting**: "Branded subdomain (Recommended)" -- a real
+   `learn.bowlerdepot.com` subdomain, own S3 bucket/CloudFront
+   distribution/deploy role, rather than a path (`bowlerdepot.com/learn`)
+   reverse-proxied in front of the live BigCommerce storefront. The path
+   option was real but riskier: BigCommerce's own routing/cart/checkout/
+   session cookies would sit behind the same reverse proxy as this new
+   site, with a real chance of a subtle collision; a subdomain keeps the
+   two completely independent at the infrastructure level.
+2. **The existing BigCommerce sync (6q/6u)**: "Keep both in parallel as-
+   is" -- `bowlerdepot_article_sync` keeps pushing to BigCommerce's
+   native blog completely unchanged. Nothing in this section touches
+   that pipeline; the two are independent publishing destinations for
+   the same underlying `product_articles` content.
+
+**Brand research (before any code):** live bowlerdepot.com pulled via
+the in-app browser's `javascript_tool` (computed CSS off the real
+rendered page, not guessed) to keep the new site from looking
+disjointed from the storefront it lives under -- confirmed: black
+header/nav bar (`#000000`), body font **Cabin** (Google Font, falls back
+to Arial/Helvetica/sans-serif), primary text/heading color `#0f0f2d` (a
+near-black navy, not pure black), primary link/accent `#1f439e` (blue),
+a secondary deep-indigo `#212152` used sparingly on the live site, and
+`#d14343` (red) for sale/alert-style callouts. Logo asset pulled
+straight from the live page's own `<img>`:
+`https://cdn11.bigcommerce.com/s-83dch55a9c/images/stencil/201x75/bowlerdepot_logo_website_logo_website_logo_1566417769__86141.original.png`
+(dark-on-transparent -- `bowlerdepot-learn/src/index.css` inverts it via
+CSS `filter` to read against this site's own black header, same asset,
+no separate light-mode export needed).
+
+**`public_api` gained a real list/browse endpoint (`GET /articles`)** --
+previously only `GET /products/{id}/article` existed (single article, by
+product), no way to browse the catalog of articles at all.
+`service.list_articles(conn, brand_id=, coverstock_id=, search=, sort=,
+limit=, offset=)` in `src/public_api/service.py`: same
+published-is-non-negotiable posture as every other route in this module
+(`pa.status = 'approved' and p.published = true`, baked into the SQL
+text, not a param a caller could relax), joins `product_articles` ->
+`products` -> `brands` for card-shaped rows (title/hook/generated_at/
+reviewed_at plus the underlying product's id/name/url/brand_name/
+coverstock_name/coverstock_type/thumbnail-flagged image). `sort` mirrors
+`list_products`'s own `_SORT_ORDER_BY` convention but as its own
+`_ARTICLE_SORT_ORDER_BY` dict (`newest`/`oldest` by `reviewed_at` --
+when an admin actually approved/published, not `generated_at` when it
+was first drafted -- plus `title_asc`/`title_desc`), every branch ending
+in the same `pa.id asc` tiebreaker for stable pagination. No
+`template.yaml` change -- rides the existing `PublicHttpApi`
+`{proxy+}` catch-all integration, same as every other `public_api`
+route added since the very first one. **Tests**:
+`tests/test_public_api_service.py` gained 11 new tests (query-capturing-
+fake-connection style, same as `list_products`'s own tests) -- 72 → 83,
+full regression sweep clean.
+
+**`bowlerdepot-learn/`** -- new Vite + React + TypeScript SPA, structured
+identically to `consumer-site/` (same `package.json`/`tsconfig`/
+`vite.config.ts` shape, same plain-hand-written-CSS-with-custom-
+properties approach, same unauthenticated `PublicApiFunction` client
+pattern) but branded to bowlerdepot.com per the research above rather
+than generic. Two routes: Learn index (`/` -- brand filter, search,
+sort, card grid) and article detail (`/articles/:productId` -- hook,
+performance summary, pros/cons, who-should-buy/skip, buying tips,
+verdict, live spec table, FAQ, comparison-to-similar-balls). A "Shop
+this ball at BowlerDepot" link on every article uses bowlerdepot.com's
+own Stencil search (`search.php?search_query=<name>`, confirmed live to
+land a visitor on the right product) rather than inventing a storefront
+URL scheme -- `bowlerdepot_products` (001_init_schema.sql) only ever
+stored the numeric BigCommerce product id/SKU, never a resolvable
+slug/permalink, and BigCommerce's Stencil storefronts don't expose a
+generic "view by id" route. See `bowlerdepot-learn/README.md` for the
+full local-dev/build instructions and this same reasoning in more
+detail.
+
+**Build-time static prerendering (SEO)** -- the real problem a plain
+client-rendered SPA has that BigCommerce's native blog didn't: a
+crawler's very first response for `/articles/<id>` would otherwise be an
+empty `<div id="root">` and a `<script>` tag, not the actual review
+text. `bowlerdepot-learn/scripts/prerender.ts` runs as the last step of
+`npm run build` (after `vite build` has already produced `dist/`):
+fetches every approved article from `GET /articles` (paginated), fetches
+each one's full detail from `GET /products/{id}/article`, and writes
+`dist/articles/<product_id>/index.html` -- a copy of the built
+`index.html` with the empty root div replaced by hand-built (NOT React-
+rendered -- no `react-dom/server`, no hydration to keep in sync) HTML
+mirroring `ArticleDetailPage.tsx`'s visible content, plus real
+`<title>`/meta description/Open Graph tags/canonical link/schema.org
+`Review` JSON-LD. `src/main.tsx` uses `createRoot(...).render(...)`, NOT
+`hydrateRoot` -- the prerendered markup is fully replaced by the real
+interactive app once JS loads for a normal visitor, no hydration-
+mismatch warnings possible since nothing is being hydrated. Also writes
+`dist/sitemap.xml` (Learn index + every prerendered article URL) --
+`public/robots.txt` (copied verbatim by Vite) points crawlers at it.
+Verified end-to-end in this sandbox against a small local mock HTTP
+server standing in for `public_api` (`node --experimental-strip-types
+scripts/prerender.ts` -- this sandbox has no npm registry access, so
+`tsx` itself couldn't be installed; Node 22's built-in TypeScript-
+stripping flag ran the real script unmodified instead) -- confirmed
+correct HTML-escaping (a verdict string containing `<`/`>` came out
+properly escaped, not injected raw), correct meta/OG/JSON-LD content,
+and a correct `sitemap.xml`.
+
+**KNOWN DEPENDENCY, wired into `template.yaml` below**: a bare
+`/articles/<id>` request (no trailing slash) does NOT automatically
+resolve to `dist/articles/<id>/index.html` on this project's S3-via-
+CloudFront-OAC hosting (unlike the separate "S3 static website hosting"
+mode, OAC-fronted S3 has no automatic index-document-per-folder
+behavior). This requires the CloudFront Function described next --
+without it, prerendering's whole point (a crawler seeing real HTML at
+the same URL a visitor actually navigates to) doesn't hold.
+
+**`template.yaml`**: `LearnSiteBucket`/`LearnSiteOAC`/
+`LearnSiteDistribution`/`LearnSiteBucketPolicy` mirror `ConsumerSite*`
+exactly (same private-bucket-behind-OAC shape, same
+`CachePolicyId: 658327ea-...` managed-CachingOptimized policy, same
+403/404 -> `/index.html` `CustomErrorResponses` SPA fallback), gated
+behind new `LearnSiteDomainName`/`LearnSiteCertificateArn` params (same
+blank-means-CloudFront-default-domain convention as
+`ConsumerSiteDomainName`/`ConsumerSiteCertificateArn`) via a new
+`HasLearnSiteDomain` condition. One genuinely new piece:
+**`LearnSitePrettyUrlFunction`** (`AWS::CloudFront::Function`,
+`cloudfront-js-2.0`, attached to `LearnSiteDistribution`'s
+`DefaultCacheBehavior` as a `viewer-request` `FunctionAssociations`
+entry) -- rewrites any request whose path doesn't end in `/` and whose
+last segment has no `.` (i.e. isn't already a real asset like a hashed
+JS bundle, `robots.txt`, `sitemap.xml`) to append `/index.html` before
+the origin fetch. This is what makes `scripts/prerender.ts`'s output
+reachable at the exact URL a visitor/crawler actually requests -- a path
+with no prerendered page at that location still falls through to
+`CustomErrorResponses`'s existing 403/404 -> SPA-shell rewrite exactly
+as before, this function only ever ADDS a suffix, never hides a genuine
+404. `LearnSiteDeployRole` mirrors `ConsumerSiteDeployRole` exactly
+(same OIDC trust policy shape, same real-incident-informed
+`StringLike` wildcard on the GitHub-immutable-ID suffix -- see 6n's own
+writeup of that incident) and reuses the SAME `GitHubRepo` param and
+the account's one `GitHubOidcProvider` rather than standing up a second
+OIDC provider (an AWS-account-level singleton, only one per URL).
+New stack outputs: `LearnSiteBucketName`, `LearnSiteDistributionId`,
+`LearnSiteUrl`, `LearnSiteDeployRoleArn` (the last one only when
+`GitHubRepo` is set). Verified via the CFN-tolerant YAML loader: 58 ->
+64 resources, 46 -> 48 params, 6 -> 8 conditions.
+
+**`.github/workflows/deploy-learn-site.yml`** -- its own workflow file
+(not folded into `deploy-consumer-site.yml`, so a push touching only one
+site doesn't trigger the other's deploy), same OIDC-federation shape:
+`npm ci`, `npm run build` (which chains `tsc -b && vite build && npm run
+prerender` -- see `bowlerdepot-learn/package.json` -- so
+`VITE_PUBLIC_API_URL`/`SITE_URL` need to be set for this ONE step, not
+split across two), `aws s3 sync dist/ ... --delete`, CloudFront
+invalidation. Triggers on push to `main` touching `bowlerdepot-learn/**`
+or the workflow file itself, plus manual `workflow_dispatch`.
+
+**One-time setup** (same shape as 6n's consumer-site CI setup, repeated
+here for the Learn site specifically):
+1. Redeploy with `LearnSiteDomainName`/`LearnSiteCertificateArn` set (if
+   you want `learn.bowlerdepot.com` live immediately rather than the
+   default `*.cloudfront.net` domain -- same ACM-in-us-east-1
+   requirement as `ConsumerSiteCertificateArn`) and `GitHubRepo` already
+   set from 6n (no change needed there -- both sites' deploy roles trust
+   the same repo/OIDC provider).
+2. Grab the new outputs:
+   ```bash
+   aws cloudformation describe-stacks --stack-name <your-stack-name> \
+     --query "Stacks[0].Outputs[?OutputKey=='LearnSiteDeployRoleArn' || OutputKey=='LearnSiteBucketName' || OutputKey=='LearnSiteDistributionId'].{Key:OutputKey,Value:OutputValue}" --output table
+   ```
+3. Add these repo Variables (Settings -> Secrets and variables -> Actions
+   -> Variables) alongside the ones 6n already had you set --
+   `AWS_REGION` and `PUBLIC_API_URL` are REUSED as-is, no new value
+   needed:
+   - `LEARN_SITE_DEPLOY_ROLE_ARN` -- from step 2.
+   - `LEARN_SITE_BUCKET` -- the `LearnSiteBucketName` stack output.
+   - `LEARN_SITE_DISTRIBUTION_ID` -- the `LearnSiteDistributionId` stack
+     output.
+   - `LEARN_SITE_URL` -- `https://learn.bowlerdepot.com` (or whatever
+     `LearnSiteDomainName` you set, or the `LearnSiteUrl` stack output's
+     `*.cloudfront.net` value if you skipped the custom domain for now)
+     -- feeds `scripts/prerender.ts`'s `sitemap.xml`/canonical-link
+     generation, kept separate from `PUBLIC_API_URL` since they're
+     different domains entirely.
+4. **Before the first push**: `cd bowlerdepot-learn && npm install`
+   locally (this sandbox has no npm registry access at all -- confirmed,
+   every `npm install`/`npm view` attempt here 403's -- so
+   `package-lock.json` was never generated and isn't committed yet).
+   **Commit the generated `package-lock.json`** -- this is the EXACT
+   same real incident 6n's consumer-site CI already hit once (missing
+   lockfile -> `npm ci` fails outright in the workflow); flagging it here
+   proactively instead of waiting to rediscover it via a failed run.
+5. Push anything under `bowlerdepot-learn/` to `main` (or run the
+   workflow manually) -- it deploys itself from there on, same as
+   consumer-site.
+
+**Tests**: `tests/test_public_api_service.py` (11 new `list_articles`
+tests, 72 -> 83 -- see above). No new Python test surface for
+`bowlerdepot-learn/` itself (a pure frontend project, same "logic-
+verified via the plain-function layer, not actually executed" honesty
+note as `consumer-site/`'s own README) -- `scripts/prerender.ts` WAS
+actually executed in this sandbox (via Node's `--experimental-strip-
+types`, since `tsx` couldn't be installed) against a local mock server
+standing in for `public_api`, output inspected by hand and confirmed
+correct (see above). Full regression sweep across every existing Python
+test file: clean, unaffected by this frontend/infra-only change outside
+`public_api`.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
