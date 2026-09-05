@@ -723,7 +723,33 @@ def get_product_article(conn, product_id: str):
     to siblings that have their OWN approved product_articles row, since
     only those actually resolve to a real Learn article page to link to.
     Same "silently drop, don't error" posture as comparison_table for a
-    sibling that's since been unpublished."""
+    sibling that's since been unpublished.
+
+    reviewed_at (Al: "add all the proper google structured data to the
+    markup" for the Learn article pages) -- newly selected here (was
+    already used by list_articles' own sort, just never returned from
+    THIS function) specifically to back Article structured data's
+    datePublished/dateModified in scripts/prerender.ts: the actual admin-
+    approval timestamp is the honest "this review was published" moment,
+    not `generated_at` (when the AI draft was first produced, which can
+    sit for a while in 'pending' before an admin ever approves it).
+
+    ecommerce_price/ecommerce_price_currency/ecommerce_in_stock (same
+    structured-data ask) -- real `Offer` data for `product`'s nested
+    schema.org `Product`, pulled from the SAME price_checker BigCommerce
+    source `ecommerce_url` already resolves (see that field's own
+    docstring above), specifically the most recent successful (non-null
+    price) `product_price_history` row for that source. All three are
+    null together whenever `ecommerce_url` is null (no approved+active
+    BowlerDepot price source yet) or price_checker's checks for that
+    source have never yet produced a real price -- Google's Product
+    structured data guidance is explicit that `offers`/`review`/
+    `aggregateRating` must each be genuine, so this is never fabricated
+    or defaulted; the JSON-LD in prerender.ts omits the whole `offers`
+    block rather than guess. NOT selected for `comparison_table` rows --
+    Al's ask there was inline LINKS, not full price data, and every
+    sibling growing its own live price-history join would be needless
+    query cost for fields no caller reads."""
     with conn.cursor() as cur:
         cur.execute("select id from products where id = %s and published = true", (product_id,))
         if cur.fetchone() is None:
@@ -733,7 +759,7 @@ def get_product_article(conn, product_id: str):
             """
             select id, title, hook, performance_summary, who_should_buy, who_should_skip,
                    pros, cons, buying_tips, verdict, faq, sibling_product_ids,
-                   source_video_ids, generated_at,
+                   source_video_ids, generated_at, reviewed_at,
                    action_shot_image_url, product_shot_image_url
             from product_articles
             where product_id = %s and status = 'approved'
@@ -754,7 +780,7 @@ def get_product_article(conn, product_id: str):
         cur.execute(
             """
             select p.name, p.url, c.name as core_name, c.core_type,
-                   p.coverstock_name, p.coverstock_type,
+                   p.coverstock_name, p.coverstock_type, b.name as brand_name,
                    coalesce(
                        (
                            select pi.stored_url from product_images pi
@@ -764,19 +790,37 @@ def get_product_article(conn, product_id: str):
                        ),
                        p.primary_image_url
                    ) as primary_image_url,
-                   (
-                       select pps.product_url
-                       from product_price_sources pps
-                       join price_sites ps on ps.id = pps.price_site_id
-                       where pps.product_id = p.id
-                         and ps.api_provider = 'bigcommerce'
-                         and pps.status = 'approved'
-                         and pps.is_active = true
-                       order by pps.last_checked_at desc nulls last, pps.id
-                       limit 1
-                   ) as ecommerce_url
+                   ecom_source.product_url as ecommerce_url,
+                   ecom_price.price as ecommerce_price,
+                   ecom_price.currency as ecommerce_price_currency,
+                   ecom_price.in_stock as ecommerce_in_stock
             from products p
             left join cores c on c.id = p.core_id
+            left join brands b on b.id = p.brand_id
+            -- Two LATERALs, not one scalar subquery per field: ecom_price
+            -- must read the price_history row for the SAME price_source
+            -- ecom_source picked, not just "whichever bigcommerce source
+            -- happens to have the newest price check" -- see this
+            -- function's own docstring on ecommerce_price/_currency/
+            -- _in_stock for why that consistency matters here.
+            left join lateral (
+                select pps.id, pps.product_url
+                from product_price_sources pps
+                join price_sites ps on ps.id = pps.price_site_id
+                where pps.product_id = p.id
+                  and ps.api_provider = 'bigcommerce'
+                  and pps.status = 'approved'
+                  and pps.is_active = true
+                order by pps.last_checked_at desc nulls last, pps.id
+                limit 1
+            ) ecom_source on true
+            left join lateral (
+                select price, currency, in_stock
+                from product_price_history
+                where price_source_id = ecom_source.id and price is not null
+                order by checked_at desc
+                limit 1
+            ) ecom_price on true
             where p.id = %s
             """,
             (product_id,),

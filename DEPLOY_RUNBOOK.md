@@ -9245,6 +9245,87 @@ its own correct binary). `scripts/prerender.ts`'s new
 `--experimental-strip-types`, same approach as 6v) against a local mock
 `public_api` -- output inspected by hand and confirmed correct.
 
+### 6x. Google structured data (JSON-LD) for Learn article pages
+
+Al: "can we add all the proper google structured data to the markup" --
+"for the articles on learn site", then pointed directly at Google's
+Article structured-data doc
+(developers.google.com/search/docs/appearance/structured-data/article#microdata).
+
+**What was there before**: `scripts/prerender.ts`'s `renderJsonLd`
+emitted a single ad-hoc `@type: "Review"` block with no `reviewRating`.
+Checked against Google's own current Review-snippet documentation:
+`reviewRating`/`reviewRating.ratingValue` is REQUIRED on every `Review`.
+This project has never had a genuine numeric rating to put there --
+`product_articles` (022) has no rating/score column at all, these are
+AI-generated prose reviews, not user star ratings -- so the old block
+was quietly non-compliant/ineligible the whole time. Not something Al
+flagged; found while researching this request.
+
+**What replaced it** (`renderStructuredData` in `prerender.ts`, four
+independent `<script type="application/ld+json">` blocks per page, each
+one dropped entirely when there's no real data to back it, never a
+fabricated field):
+
+- **Article**: headline/image/`datePublished`+`dateModified` (from the
+  new `reviewed_at`, see below)/author+publisher `Organization` (publisher
+  includes a `logo` pointing at the same real BowlerDepot logo asset
+  `Nav.tsx` already uses). No required properties per Google's Article
+  guide, so this one is compliant on real data alone.
+- **Product**: name/image/`brand`, plus whichever of `review`/`offers`
+  actually has real data (Google's Product-snippet docs require at least
+  one of `review`/`aggregateRating`/`offers` -- `aggregateRating` is
+  skipped entirely, no genuine aggregate exists). `review` uses ONLY
+  `positiveNotes`/`negativeNotes` (built from the article's real
+  `pros`/`cons`, schema.org's own lighter-weight sub-feature requiring
+  "at least two statements in any combination," not a `reviewRating`) --
+  this is how real pros/cons content ends up in Product structured data
+  honestly, without a star rating. `offers` is included only when
+  `price_checker` has an actual, checked price for this product
+  (`ecommerce_price` non-null) -- most of the catalog won't have this yet,
+  same "for some balls" reality as 6w's ecommerce links. The whole
+  Product block is omitted if neither `review` nor `offers` exists.
+- **BreadcrumbList**: Home -> this article, 2 `ListItem`s.
+- **FAQPage**: straight from the article's real `faq` (already rendered
+  visibly on the page), omitted when there's no FAQ. Code comment notes
+  Google deprecated the FAQ rich-result feature in 2026 -- this markup is
+  kept as still-valid, harmless schema.org data for other consumers
+  (e.g. AI answer engines), not as a live Google rich-result bet.
+
+**Backend groundwork** (`public_api.get_product_article`, no new
+migration): added `reviewed_at` (top-level, for Article's dates --
+distinct from `generated_at`, the draft-generation timestamp) and, on
+`product`, `brand_name` plus real Offer data --
+`ecommerce_price`/`ecommerce_price_currency`/`ecommerce_in_stock`, all
+read from the SAME `product_price_sources` row as the existing
+`ecommerce_url` via chained `LEFT JOIN LATERAL`s (first pick the
+most-recently-checked approved+active BigCommerce price source, then its
+most recent `product_price_history` row) -- guarantees the URL and its
+price/availability never come from two different sources. Deliberately
+NOT applied to `comparison_table`'s own `ecommerce_url` (that stayed
+URL-only; out of scope, no JSON-LD need there).
+
+**Tests**: `tests/test_public_api_service.py` gained 7 new tests (92 ->
+99): `reviewed_at` present/null, `brand_name` on `product`, and the Offer
+fields present/null-when-never-checked/null-when-no-bigcommerce-source/
+matches-most-recently-checked-source. Fixture's
+`_seed_bigcommerce_price_source()` helper extended to accept
+price/currency/in_stock. Full regression sweep: clean (43 test files).
+
+**Verification**: `bowlerdepot-learn`'s `tsc -b` type-check clean (both
+`prerender.ts`'s new builder functions and `src/api/types.ts`'s matching
+new optional fields -- `reviewed_at`, `brand_name`,
+`ecommerce_price`/`ecommerce_price_currency`/`ecommerce_in_stock` on
+`ArticleDetail`/`ArticleProductSpec`; not yet consumed by any live React
+component, purely additive for JSON-LD). `renderStructuredData` verified
+by actually running `prerender.ts` (`--experimental-strip-types`, same
+approach as 6w) against a local mock `public_api` with two fixtures --
+one with a real offer + FAQ + 3 pros/1 con (produced all four blocks,
+inspected by hand, matched the design above exactly) and one with no
+offer, one pro/zero cons (below the 2-note minimum), and no FAQ (produced
+only Article + BreadcrumbList, confirming Product/FAQPage really do get
+omitted rather than emitting empty/fabricated fields).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

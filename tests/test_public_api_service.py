@@ -639,24 +639,47 @@ def _derive_primary_image_url(db, pid, p):
     return p.get("primary_image_url")
 
 
-def _derive_bigcommerce_ecommerce_url(db, pid):
-    """Mirrors get_product_article's ecommerce_url subquery: the most
-    recently checked approved+active BigCommerce ('api'/'bigcommerce')
-    product_price_sources row for this product, or None when price_
-    checker hasn't matched/approved one yet (014/016_price_tracking*.sql
-    -- see get_product_article's own docstring on reusing this existing
-    data instead of a new migration). db["price_sources"] is a flat
-    per-product list of dicts (api_provider/status/is_active/product_url/
-    last_checked_at) -- same "flat dict, not a real join" simplification
-    the rest of this fixture already uses for cores/coverstocks/images."""
+def _derive_bigcommerce_offer(db, pid):
+    """Mirrors get_product_article's ecom_source/ecom_price LATERAL joins:
+    picks the most recently checked approved+active BigCommerce
+    ('api'/'bigcommerce') product_price_sources row for this product, then
+    returns ITS OWN price/currency/in_stock (014/016_price_tracking*.sql --
+    see get_product_article's own docstring on reusing this existing data
+    instead of a new migration/fabricated rating). Returns an all-None
+    dict when price_checker hasn't matched/approved a source yet.
+    db["price_sources"] is a flat per-product list of dicts (api_provider/
+    status/is_active/product_url/last_checked_at/price/currency/in_stock)
+    -- same "flat dict, not a real join" simplification the rest of this
+    fixture already uses for cores/coverstocks/images; last_checked_at
+    does double duty here for both "which source is chosen" (real
+    product_price_sources.last_checked_at) and "that source's latest
+    price snapshot" (real product_price_history.checked_at) since this
+    project has only ever had one BigCommerce source per product in
+    practice -- see test_..._picks_most_recently_checked_source, the one
+    test that actually exercises this field."""
     candidates = [
         s for s in db.get("price_sources", {}).get(pid, [])
         if s.get("api_provider") == "bigcommerce" and s.get("status") == "approved" and s.get("is_active", True)
     ]
     if not candidates:
-        return None
+        return {"product_url": None, "price": None, "currency": None, "in_stock": None}
     candidates.sort(key=lambda s: s.get("last_checked_at") or "", reverse=True)
-    return candidates[0]["product_url"]
+    chosen = candidates[0]
+    return {
+        "product_url": chosen["product_url"],
+        "price": chosen.get("price"),
+        "currency": chosen.get("currency"),
+        "in_stock": chosen.get("in_stock"),
+    }
+
+
+def _derive_bigcommerce_ecommerce_url(db, pid):
+    """comparison_table's own ecommerce_url subquery only ever selects the
+    URL (see that query's own comment on why -- Al's ask there was inline
+    LINKS, not full price data) -- thin wrapper over _derive_bigcommerce_
+    offer so both query sites share one source of truth for "which price
+    source counts."""
+    return _derive_bigcommerce_offer(db, pid)["product_url"]
 
 
 class _FakeCursor:
@@ -896,7 +919,7 @@ class _FakeCursor:
             self._description = [(c,) for c in (
                 "id", "title", "hook", "performance_summary", "who_should_buy", "who_should_skip",
                 "pros", "cons", "buying_tips", "verdict", "faq", "sibling_product_ids",
-                "source_video_ids", "generated_at",
+                "source_video_ids", "generated_at", "reviewed_at",
                 "action_shot_image_url", "product_shot_image_url",
             )]
             if article is None or article.get("status") != "approved":
@@ -908,7 +931,7 @@ class _FakeCursor:
                     article.get("who_should_skip", []), article.get("pros", []), article.get("cons", []),
                     article.get("buying_tips"), article.get("verdict"), article.get("faq", []),
                     article.get("sibling_product_ids", []), article.get("source_video_ids", []),
-                    article.get("generated_at"),
+                    article.get("generated_at"), article.get("reviewed_at"),
                     article.get("action_shot_image_url"), article.get("product_shot_image_url"),
                 )
 
@@ -917,17 +940,20 @@ class _FakeCursor:
             p = self.db["products"].get(pid)
             self._description = [(c,) for c in (
                 "name", "url", "core_name", "core_type", "coverstock_name", "coverstock_type",
-                "primary_image_url", "ecommerce_url",
+                "brand_name", "primary_image_url", "ecommerce_url",
+                "ecommerce_price", "ecommerce_price_currency", "ecommerce_in_stock",
             )]
             if p is None:
                 self._result_row = None
             else:
                 core = self.db["cores"].get(p.get("core_id"), {})
+                offer = _derive_bigcommerce_offer(self.db, pid)
                 self._result_row = (
                     p["name"], p["url"], core.get("name"), core.get("core_type"),
                     p.get("coverstock_name"), p.get("coverstock_type"),
+                    self.db["brands"].get(p.get("brand_id"), {}).get("name"),
                     _derive_primary_image_url(self.db, pid, p),
-                    _derive_bigcommerce_ecommerce_url(self.db, pid),
+                    offer["product_url"], offer["price"], offer["currency"], offer["in_stock"],
                 )
 
         elif q.startswith("select p.id, p.name, p.url, c.name as core_name, p.coverstock_name,"):
@@ -1034,14 +1060,23 @@ def _seed_bowlerdepot_match(db, product_id, bigcommerce_product_id, match_status
     }
 
 
-def _seed_bigcommerce_price_source(db, product_id, product_url, status="approved", is_active=True, last_checked_at=None):
+def _seed_bigcommerce_price_source(
+    db, product_id, product_url, status="approved", is_active=True, last_checked_at=None,
+    price=None, currency=None, in_stock=None,
+):
     """014/016_price_tracking*.sql -- an approved+active BigCommerce
     ('api'/'bigcommerce') product_price_sources row, the exact data
-    get_product_article's ecommerce_url subquery reads (see that
-    function's own docstring)."""
+    get_product_article's ecommerce_url/ecommerce_price/
+    ecommerce_price_currency/ecommerce_in_stock fields read (see
+    _derive_bigcommerce_offer's own docstring). price/currency/in_stock
+    default to None -- a real approved price SOURCE existing (this
+    function always creates one) doesn't imply price_checker has ever
+    successfully CHECKED it yet; tests for ecommerce_url alone don't need
+    to pass these."""
     db["price_sources"].setdefault(product_id, []).append({
         "api_provider": "bigcommerce", "status": status, "is_active": is_active,
         "product_url": product_url, "last_checked_at": last_checked_at,
+        "price": price, "currency": currency, "in_stock": in_stock,
     })
 
 
@@ -1809,6 +1844,123 @@ def test_get_product_article_related_reviews_empty_when_no_siblings():
     result = service.get_product_article(_FakeConnection(db), pid)
 
     assert result["article"]["related_reviews"] == []
+
+
+# --- get_product_article: reviewed_at, brand_name, and real Offer data
+# (ecommerce_price/ecommerce_price_currency/ecommerce_in_stock) -- Al:
+# "can we add all the proper google structured data to the markup" for
+# the Learn article pages. See get_product_article's own docstring for
+# why reviewed_at (not generated_at) backs Article's datePublished, and
+# why the Offer fields are read from the SAME chosen price_source row
+# ecommerce_url already resolves, never fabricated.
+
+def test_get_product_article_returns_reviewed_at():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid, reviewed_at="2026-08-15")
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result["article"]["reviewed_at"] == "2026-08-15"
+
+
+def test_get_product_article_reviewed_at_null_when_never_reviewed():
+    """Shouldn't happen in practice (status='approved' implies an admin
+    reviewed it -- see admin_api's approve workflow), but this function's
+    own always-shaped-response contract means a null reviewed_at must
+    still come back as None, not a missing key or an error."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid, reviewed_at=None)
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result["article"]["reviewed_at"] is None
+
+
+def test_get_product_article_product_includes_brand_name():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1", brand_id="brand-1")
+    db["brands"]["brand-1"]["name"] = "Storm"
+    _seed_approved_article(db, pid)
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result["article"]["product"]["brand_name"] == "Storm"
+
+
+def test_get_product_article_offer_fields_present_when_price_checked():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid)
+    _seed_bigcommerce_price_source(
+        db, pid, "https://bowlerdepot.com/fury-solid",
+        price=189.99, currency="USD", in_stock=True,
+    )
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    product = result["article"]["product"]
+    assert product["ecommerce_price"] == 189.99
+    assert product["ecommerce_price_currency"] == "USD"
+    assert product["ecommerce_in_stock"] is True
+
+
+def test_get_product_article_offer_fields_null_when_source_never_checked():
+    """A real, approved+active price source can exist before price_checker
+    has ever successfully checked it (fresh admin approval, next daily run
+    hasn't happened yet) -- Offer data must be null, not zero/False, so a
+    frontend/JSON-LD generator can tell 'unknown' apart from 'checked and
+    it's actually free' or 'checked and it's actually out of stock'."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid)
+    _seed_bigcommerce_price_source(db, pid, "https://bowlerdepot.com/fury-solid")
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    product = result["article"]["product"]
+    assert product["ecommerce_price"] is None
+    assert product["ecommerce_price_currency"] is None
+    assert product["ecommerce_in_stock"] is None
+
+
+def test_get_product_article_offer_fields_null_when_no_bigcommerce_source():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid)
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    product = result["article"]["product"]
+    assert product["ecommerce_price"] is None
+    assert product["ecommerce_price_currency"] is None
+    assert product["ecommerce_in_stock"] is None
+
+
+def test_get_product_article_offer_fields_match_most_recently_checked_source():
+    """Same 'most recently checked source wins' rule ecommerce_url already
+    follows (test_..._picks_most_recently_checked_source) -- price/
+    currency/in_stock must come from that SAME row, not any other
+    approved+active bigcommerce source's data."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid)
+    _seed_bigcommerce_price_source(
+        db, pid, "https://bowlerdepot.com/older",
+        last_checked_at="2026-08-01", price=199.99, currency="USD", in_stock=False,
+    )
+    _seed_bigcommerce_price_source(
+        db, pid, "https://bowlerdepot.com/newer",
+        last_checked_at="2026-09-01", price=179.99, currency="USD", in_stock=True,
+    )
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    product = result["article"]["product"]
+    assert product["ecommerce_url"] == "https://bowlerdepot.com/newer"
+    assert product["ecommerce_price"] == 179.99
+    assert product["ecommerce_in_stock"] is True
 
 
 if __name__ == "__main__":

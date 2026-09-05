@@ -31,6 +31,7 @@ export interface ArticleProductSpec {
   core_type?: string | null;
   coverstock_name?: string | null;
   coverstock_type?: string | null;
+  brand_name?: string | null;
   primary_image_url?: string | null;
   // Real BowlerDepot storefront product-page URL, resolved from
   // price_checker's own BigCommerce price-tracking data (014/016
@@ -38,6 +39,15 @@ export interface ArticleProductSpec {
   // BowlerDepot price source. See client.ts's bowlerDepotSearchUrl()
   // for the fallback a frontend should use when this is null.
   ecommerce_url?: string | null;
+  // Real, last-checked price/currency/availability from that same
+  // BowlerDepot price source (product_price_history) -- all null
+  // together until price_checker has actually checked this product at
+  // least once. Never fabricated/estimated; used for Product JSON-LD's
+  // Offer block (Task #448/#450), which is omitted entirely when these
+  // are null rather than guessed.
+  ecommerce_price?: number | null;
+  ecommerce_price_currency?: string | null;
+  ecommerce_in_stock?: boolean | null;
   skus: ProductSku[];
 }
 
@@ -79,6 +89,12 @@ export interface ArticleDetail {
   verdict?: string | null;
   faq?: FaqItem[] | null;
   generated_at?: string | null;
+  // Date the review was actually written/finalized (distinct from
+  // generated_at, the draft-generation timestamp) -- used as Article
+  // JSON-LD's datePublished/dateModified (Task #448/#450) since it's
+  // the closer real-world analogue of "when this review went live."
+  // Null for articles never yet reviewed.
+  reviewed_at?: string | null;
   action_shot_image_url?: string | null;
   product_shot_image_url?: string | null;
   product: ArticleProductSpec | null;

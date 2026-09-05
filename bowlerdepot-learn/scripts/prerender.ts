@@ -84,6 +84,13 @@ const SITE_URL = (process.env.SITE_URL ?? "https://learn.bowlerdepot.com").repla
 
 const ARTICLE_PAGE_SIZE = 100;
 
+// Same real BowlerDepot logo asset src/components/Nav.tsx already pulls
+// live off bowlerdepot.com -- reused here (not re-fetched) for
+// Article's publisher.logo (Task #448, Al: "add all the proper google
+// structured data to the markup").
+const PUBLISHER_LOGO_URL =
+  "https://cdn11.bigcommerce.com/s-83dch55a9c/images/stencil/201x75/bowlerdepot_logo_website_logo_website_logo_1566417769__86141.original.png";
+
 interface ArticleCard {
   article_id: string;
   title: string;
@@ -108,6 +115,11 @@ interface ArticleDetail {
   buying_tips?: string | null;
   verdict?: string | null;
   faq?: { question: string; answer: string }[] | null;
+  // Task #448, Al: "add all the proper google structured data to the
+  // markup" -- the real admin-approval timestamp, used for Article's
+  // datePublished/dateModified below (see get_product_article's own
+  // docstring in the main repo on why this, not generated_at).
+  reviewed_at?: string | null;
   action_shot_image_url?: string | null;
   product_shot_image_url?: string | null;
   product: {
@@ -116,7 +128,17 @@ interface ArticleDetail {
     core_type?: string | null;
     coverstock_name?: string | null;
     coverstock_type?: string | null;
+    brand_name?: string | null;
     primary_image_url?: string | null;
+    // Real BowlerDepot storefront data (014/016 price-tracking, reused
+    // -- see get_product_article's own docstring), all three null
+    // together whenever price_checker hasn't matched/approved/checked a
+    // source for this product yet. NEVER fabricated -- renderProductLd
+    // below omits the whole `offers` block rather than guess a price.
+    ecommerce_url?: string | null;
+    ecommerce_price?: number | null;
+    ecommerce_price_currency?: string | null;
+    ecommerce_in_stock?: boolean | null;
     skus: { weight_lbs: number; rg?: number | null; differential?: number | null; mass_bias?: number | null }[];
   } | null;
   // Task #444, Al: "add cross linking at the bottom to 'related' ball
@@ -209,26 +231,155 @@ function renderFaq(faq: ArticleDetail["faq"]): string {
       .join("")}`;
 }
 
-// schema.org Review structured data -- a real, additional SEO/rich-
-// result signal beyond plain crawlable HTML (Google's own Review
-// snippet support reads this), cheap to emit here since this script
-// already has every field it needs in hand.
-function renderJsonLd(card: ArticleCard, article: ArticleDetail): string {
-  const data = {
+// Task #448, Al: "add all the proper google structured data to the
+// markup." Four separate JSON-LD blocks, one per schema.org type --
+// Google explicitly supports multiple structured-data blocks on one
+// page, and keeping each type in its own <script> tag (rather than one
+// @graph) keeps each builder function below independently readable/
+// testable and lets any one type be dropped without touching the others.
+//
+// REPLACES the earlier single ad-hoc "Review" block this function used
+// to emit: that block's top-level @type was Review, and Google's Review
+// snippet documentation requires `reviewRating`/`reviewRating.ratingValue`
+// on every Review (see developers.google.com/search/docs/appearance/
+// structured-data/review-snippet's own "Structured data type
+// definitions" table) -- a genuine numeric star rating this project's
+// data model has never captured (product_articles has no rating column;
+// these are AI-generated prose reviews, not user star ratings). Emitting
+// reviewRating with a made-up number would violate Google's own
+// guidelines ("Don't include fake or undisclosed incentivized reviews");
+// leaving it out made the old block non-compliant/ineligible for the
+// Review rich result it was nominally claiming. The fix isn't a bigger
+// Review block -- it's using the schema.org types this content actually
+// qualifies for honestly, below.
+
+// Article/BlogPosting -- headline/image/dates/author/publisher. No
+// required properties per Google's own Article guide (unlike Review),
+// so this is straightforwardly compliant with real data alone.
+function buildArticleLd(card: ArticleCard, article: ArticleDetail, heroImage: string | null | undefined, canonicalUrl: string) {
+  const publishedAt = article.reviewed_at || undefined;
+  return {
     "@context": "https://schema.org",
-    "@type": "Review",
-    itemReviewed: {
-      "@type": "Product",
-      name: article.product?.name ?? card.product_name,
-      brand: card.brand_name,
-      image: article.product_shot_image_url || card.primary_image_url || undefined,
-    },
+    "@type": "Article",
     headline: article.title,
-    reviewBody: article.performance_summary || article.hook,
-    author: { "@type": "Organization", name: "The Bowler Depot" },
-    publisher: { "@type": "Organization", name: "The Bowler Depot" },
+    image: heroImage ? [heroImage] : undefined,
+    datePublished: publishedAt,
+    dateModified: publishedAt,
+    mainEntityOfPage: { "@type": "WebPage", "@id": canonicalUrl },
+    author: { "@type": "Organization", name: "The Bowler Depot", url: SITE_URL },
+    publisher: {
+      "@type": "Organization",
+      name: "The Bowler Depot",
+      logo: { "@type": "ImageObject", url: PUBLISHER_LOGO_URL },
+    },
   };
-  return `<script type="application/ld+json">${JSON.stringify(data)}</script>`;
+}
+
+// Product -- name/image/brand plus whichever of `review`/`offers` this
+// article actually has real data for (Google's Product snippet
+// documentation requires at least one of review/aggregateRating/offers;
+// aggregateRating is skipped entirely -- no genuine aggregate exists).
+// `review` here uses ONLY positiveNotes/negativeNotes (the pros/cons
+// summary sub-feature), which Google's own docs describe as needing "at
+// least two statements in any combination," NOT a reviewRating -- this
+// is a real, honest way to carry this project's actual pros/cons content
+// into Product structured data without a star rating. `offers` is
+// included only when price_checker has a real, checked price for this
+// product (article.product.ecommerce_price non-null) -- never
+// fabricated; most of the catalog will have no `offers` block yet, same
+// "for some balls" reality ArticleDetailPage.tsx's own ecommerce-link
+// fallback already accounts for.
+function buildProductLd(card: ArticleCard, article: ArticleDetail, heroImage: string | null | undefined) {
+  const product = article.product;
+  const name = product?.name ?? card.product_name;
+  const images = [...new Set([heroImage, product?.primary_image_url, card.primary_image_url].filter(Boolean))] as string[];
+
+  const positiveNotes = article.pros?.length
+    ? { "@type": "ItemList", itemListElement: article.pros.map((p, i) => ({ "@type": "ListItem", position: i + 1, name: p })) }
+    : undefined;
+  const negativeNotes = article.cons?.length
+    ? { "@type": "ItemList", itemListElement: article.cons.map((c, i) => ({ "@type": "ListItem", position: i + 1, name: c })) }
+    : undefined;
+  const noteCount = (article.pros?.length ?? 0) + (article.cons?.length ?? 0);
+  const review =
+    noteCount >= 2
+      ? { "@type": "Review", author: { "@type": "Organization", name: "The Bowler Depot" }, positiveNotes, negativeNotes }
+      : undefined;
+
+  const offers =
+    product?.ecommerce_price != null
+      ? {
+          "@type": "Offer",
+          url: product.ecommerce_url || undefined,
+          price: product.ecommerce_price,
+          priceCurrency: product.ecommerce_price_currency || "USD",
+          availability:
+            product.ecommerce_in_stock == null
+              ? undefined
+              : product.ecommerce_in_stock
+                ? "https://schema.org/InStock"
+                : "https://schema.org/OutOfStock",
+        }
+      : undefined;
+
+  if (!review && !offers) return undefined; // nothing genuine to satisfy Product's own eligibility requirement
+
+  return {
+    "@context": "https://schema.org",
+    "@type": "Product",
+    name,
+    image: images.length ? images : undefined,
+    brand: product?.brand_name ? { "@type": "Brand", name: product.brand_name } : undefined,
+    review,
+    offers,
+  };
+}
+
+// BreadcrumbList -- Home > this article. Two ListItems is the minimum
+// Google's breadcrumb documentation requires; real content either way
+// (the Learn index really is this page's parent in the site's own nav).
+function buildBreadcrumbLd(article: ArticleDetail, canonicalUrl: string) {
+  return {
+    "@context": "https://schema.org",
+    "@type": "BreadcrumbList",
+    itemListElement: [
+      { "@type": "ListItem", position: 1, name: "Learn", item: `${SITE_URL}/` },
+      { "@type": "ListItem", position: 2, name: article.title, item: canonicalUrl },
+    ],
+  };
+}
+
+// FAQPage -- straight from article.faq, real content already rendered
+// visibly on the page by renderFaq above (Google's own general
+// guideline: marked-up content must be visible to users, which this is).
+// NOTE: Google deprecated the FAQ rich-result feature in 2026 (FAQPage
+// no longer produces a visible Search result, and Rich Results Test/
+// Search Console dropped FAQ-specific support) -- this markup is kept as
+// still-valid, harmless schema.org data (other consumers, e.g. AI
+// answer engines, may still read it), not as a live Google rich-result
+// bet. Cheap to leave in; nothing here regresses if Google never
+// reinstates it.
+function buildFaqLd(article: ArticleDetail) {
+  if (!article.faq?.length) return undefined;
+  return {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: article.faq.map((f) => ({
+      "@type": "Question",
+      name: f.question,
+      acceptedAnswer: { "@type": "Answer", text: f.answer },
+    })),
+  };
+}
+
+function renderStructuredData(card: ArticleCard, article: ArticleDetail, heroImage: string | null | undefined, canonicalUrl: string): string {
+  const blocks = [
+    buildArticleLd(card, article, heroImage, canonicalUrl),
+    buildProductLd(card, article, heroImage),
+    buildBreadcrumbLd(article, canonicalUrl),
+    buildFaqLd(article),
+  ].filter(Boolean);
+  return blocks.map((b) => `<script type="application/ld+json">${JSON.stringify(b)}</script>`).join("\n    ");
 }
 
 function renderArticlePage(baseHtml: string, card: ArticleCard, article: ArticleDetail): string {
@@ -271,7 +422,7 @@ function renderArticlePage(baseHtml: string, card: ArticleCard, article: Article
     <meta property="og:description" content="${metaDescription}" />
     <meta property="og:url" content="${canonicalUrl}" />
     ${heroImage ? `<meta property="og:image" content="${escapeHtml(heroImage)}" />` : ""}
-    ${renderJsonLd(card, article)}
+    ${renderStructuredData(card, article, heroImage, canonicalUrl)}
   </head>`;
   html = html.replace("</head>", headExtras);
   html = html.replace('<div id="root"></div>', `<div id="root">${content}</div>`);
