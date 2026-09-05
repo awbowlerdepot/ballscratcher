@@ -433,6 +433,20 @@ def list_articles(conn, brand_id: str = None, coverstock_id: str = None, search:
     every other card query in this module) for a Learn card to link to
     and preview the ball itself without a second round-trip.
 
+    product_shot_image_url is the article's own AI-generated stylized
+    product hero shot (023_product_article_images.sql), NOT the ball's
+    real scraped photo -- Al: "can we use the product shot for the card
+    in the list of review articles" -- so the card's <img> can prefer a
+    consistent, premium-looking editorial shot over the raw catalog
+    photo. Nullable: image generation is a second, independently-fallible
+    step (see that migration's own comment), so some articles will only
+    ever have primary_image_url. The frontend is responsible for the
+    product_shot_image_url-then-primary_image_url fallback (same pattern
+    ArticleDetailPage.tsx/prerender.ts already use for the detail page's
+    hero image) -- this function returns both real fields rather than
+    picking one in SQL, so a caller that genuinely wants the raw photo
+    (e.g. a future admin view) still can.
+
     sort: None (default, see _ARTICLE_DEFAULT_ORDER_BY) is "most
     recently approved/published first" -- the sensible default landing
     order for a Learn index, mirroring list_products' own
@@ -442,6 +456,7 @@ def list_articles(conn, brand_id: str = None, coverstock_id: str = None, search:
     list_products already follows."""
     query = f"""
         select pa.id as article_id, pa.title, pa.hook, pa.generated_at, pa.reviewed_at,
+               pa.product_shot_image_url,
                p.id as product_id, p.name as product_name, p.url as product_url,
                b.name as brand_name,
                p.coverstock_name, p.coverstock_type,

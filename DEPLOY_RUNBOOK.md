@@ -9326,6 +9326,37 @@ offer, one pro/zero cons (below the 2-note minimum), and no FAQ (produced
 only Article + BreadcrumbList, confirming Product/FAQPage really do get
 omitted rather than emitting empty/fabricated fields).
 
+### 6y. Learn index cards use the AI product shot, not the raw catalog photo
+
+Al: "can we use the product shot for the card in the list of review
+articles."
+
+`public_api.list_articles` (backs the Learn index/browse page) now also
+selects `pa.product_shot_image_url` -- the article's own AI-generated
+stylized product hero shot (023_product_article_images.sql), the same
+image already used as part of the detail page's hero-image fallback
+chain, not the ball's raw scraped photo. Returned as a genuinely separate
+field alongside the existing `primary_image_url` rather than resolved in
+SQL, since `product_shot_image_url` is nullable (image generation is an
+independently-fallible second step -- see that migration's own comment)
+and a caller that wants the raw photo specifically still can.
+
+`ArticleCard.tsx` (the actual card component on the Learn index page)
+picks `article.product_shot_image_url || article.primary_image_url` for
+its `<img>` -- same fallback-when-missing pattern used everywhere else
+this project surfaces these two image sources together. `types.ts` and
+`prerender.ts`'s own `ArticleCard` interface both gained the matching
+field for type accuracy (prerender.ts doesn't render the index page's
+cards itself -- that page is client-rendered -- so this is documentation-
+only there, not a behavior change).
+
+**Tests**: `tests/test_public_api_service.py` gained 1 new shape test (99
+-> 100) confirming `pa.product_shot_image_url` is in `list_articles`'
+SELECT list, same query-capturing-connection pattern as this function's
+existing filter/sort/join tests (no fixture-driven row-mapping harness
+exists for `list_articles`, unlike `get_product_article`). Full
+regression sweep: clean (43 test files). `tsc -b`: clean.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

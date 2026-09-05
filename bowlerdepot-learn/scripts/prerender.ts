@@ -102,6 +102,12 @@ interface ArticleCard {
   coverstock_name?: string | null;
   coverstock_type?: string | null;
   primary_image_url?: string | null;
+  // AI-generated stylized product hero shot (023 migration) -- Task
+  // #452, Al: "can we use the product shot for the card in the list of
+  // review articles." This interface just mirrors the real GET /articles
+  // shape; the client-rendered Learn index page (ArticleCard.tsx) is
+  // what actually picks it over primary_image_url.
+  product_shot_image_url?: string | null;
 }
 
 interface ArticleDetail {

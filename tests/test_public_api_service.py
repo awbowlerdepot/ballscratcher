@@ -562,6 +562,18 @@ def test_list_articles_joins_products_and_brands():
     assert "join brands b on b.id = p.brand_id" in query
 
 
+def test_list_articles_selects_product_shot_image_url():
+    """Al: 'can we use the product shot for the card in the list of
+    review articles' -- the Learn index card's <img> needs the article's
+    own AI-generated product_shot_image_url alongside the existing
+    primary_image_url fallback, not just the raw scraped photo."""
+    conn = _QueryCapturingConnection()
+    service.list_articles(conn)
+
+    query = conn.cursor().queries[0]
+    assert "pa.product_shot_image_url" in query
+
+
 def test_list_articles_default_sort_is_reviewed_at_desc():
     conn = _QueryCapturingConnection()
     service.list_articles(conn)

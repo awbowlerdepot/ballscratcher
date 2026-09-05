@@ -15,6 +15,14 @@ export interface ArticleCard {
   coverstock_name?: string | null;
   coverstock_type?: string | null;
   primary_image_url?: string | null;
+  // The article's own AI-generated stylized product hero shot (023
+  // migration), not the ball's raw scraped photo -- preferred for the
+  // Learn index card's image when present (Al: "can we use the product
+  // shot for the card in the list of review articles"). Null until
+  // image generation has succeeded for this article; fall back to
+  // primary_image_url in that case, same pattern the detail page's hero
+  // image already uses.
+  product_shot_image_url?: string | null;
 }
 
 export interface ProductSku {
