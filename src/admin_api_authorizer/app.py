@@ -1,10 +1,39 @@
 """
-Lambda authorizer for AdminApiFunction, per the decision to put a
-shared-secret bearer token in front of the admin API rather than standing
-up Cognito or IAM/SigV4 auth. Every real request to the admin API now
-has to include `Authorization: Bearer <token>`, where `<token>` matches
-the value stored in the Secrets Manager secret referenced by
-`ADMIN_API_TOKEN_SECRET_ARN`.
+Lambda authorizer for AdminApiFunction. v2 (task #465-473, Al: "can we
+build a more sophisticated admin spa that is hosted on aws and has
+users"): DUAL-MODE now, not shared-secret-only. Every request still has
+to include `Authorization: Bearer <token>`, but `<token>` can now be
+EITHER:
+  1. A real Cognito ID token issued by AdminUserPool (a human, signed in
+     through the new admin-spa/ SPA) -- verified via decode_cognito_jwt
+     (signature/issuer/audience/expiry/token_use, against the pool's own
+     public JWKS) then mapped to a role via resolve_role_from_groups/
+     build_user_context (Cognito's "cognito:groups" claim -> "Admins"/
+     "Editors" -> "admin"/"editor"); or
+  2. The pre-existing shared-secret bearer token, unchanged from v1 --
+     kept specifically because 17 scripts under scripts/ (backfills,
+     rescrapes, etc.) already authenticate this way, and this feature
+     request was about ADDING real user accounts for the new SPA, not
+     breaking existing automation that has no "user" to sign in as.
+
+handler() tries the Cognito path first (only when COGNITO_USER_POOL_ID is
+actually configured AND the token has a JWT's three-dot-separated shape --
+see _looks_like_jwt -- so a bare opaque automation token never even
+attempts a JWKS fetch); ANY failure there (not a JWT, bad signature,
+expired, wrong pool, or a real Cognito account with no group assigned
+yet) falls through to the original shared-secret comparison, not straight
+to a 401 -- this is what makes the two modes coexist rather than the
+newer one silently taking over. A successful match either way now
+returns a `context` object (`{"caller_type", "resolved_by", "role"}`) that
+API Gateway forwards to admin_api under `requestContext.authorizer.lambda`
+-- see admin_api/app.py's get_caller() for the FastAPI side that reads it
+(task #468), letting `resolved_by` be derived automatically from a real
+signed-in user instead of always requiring a client-supplied field.
+
+The original shared-secret bearer token doc below is otherwise unchanged
+-- that whole mechanism (Secrets Manager storage, comparison logic,
+caching) is byte-for-byte the same as before this file had a Cognito
+path at all.
 
 **Shape**: this is an API Gateway HTTP API (v2) REQUEST authorizer using
 the "simple responses" format (`AuthorizerPayloadFormatVersion: "2.0"`,
@@ -64,6 +93,7 @@ import json
 import os
 
 _TOKEN_CACHE = {}
+_JWKS_CLIENT_CACHE = {}
 
 
 def extract_bearer_token(header_value):
@@ -136,6 +166,114 @@ def _get_header(headers, name):
     return None
 
 
+def _looks_like_jwt(token):
+    """Cheap shape check -- a JWT is always exactly three dot-separated,
+    non-empty segments (header.payload.signature). This exists purely so
+    the shared-secret automation path never pays for a JWKS-fetch attempt
+    on a bare opaque token: an automation token obviously isn't a JWT and
+    shouldn't even try, both for speed and so a coincidentally-JWT-shaped
+    secret string (unlikely, but not impossible) doesn't get treated as
+    an auth mode it was never meant to be."""
+    if not token:
+        return False
+    parts = token.split(".")
+    return len(parts) == 3 and all(parts)
+
+
+def resolve_role_from_groups(groups):
+    """Maps a Cognito ID token's "cognito:groups" claim (a list, possibly
+    absent/None for an account that exists but was never added to either
+    group) to this project's two-role model. "Admins" wins if a user is
+    (unusually) in both groups. Returns None -- deliberately not a
+    default role like "editor" -- for a user in neither group: a real
+    Cognito account with no group assigned must get NO access, the same
+    fail-closed posture as everywhere else in this module, not silently
+    downgraded to the least-privileged role."""
+    groups = groups or []
+    if "Admins" in groups:
+        return "admin"
+    if "Editors" in groups:
+        return "editor"
+    return None
+
+
+def build_user_context(claims):
+    """Builds the `context` object handler() returns for a successfully
+    verified Cognito ID token. Returns None (not a context with some
+    placeholder role) when resolve_role_from_groups finds no recognized
+    group -- handler() treats that exactly like a failed JWT verification
+    and falls through to the shared-secret check, rather than granting an
+    ungrouped-but-otherwise-valid account any access at all. `resolved_by`
+    prefers the token's own "email" claim (present because AdminUserPool's
+    UsernameAttributes is ["email"] and AutoVerifiedAttributes includes
+    it) over the opaque "cognito:username" sub-like value, since email is
+    what's actually useful to show elsewhere in the admin UI (e.g. as the
+    default resolved_by on approve/reject actions -- see admin_api/app.py's
+    get_caller())."""
+    role = resolve_role_from_groups(claims.get("cognito:groups"))
+    if role is None:
+        return None
+    resolved_by = claims.get("email") or claims.get("cognito:username") or "unknown"
+    return {"caller_type": "user", "resolved_by": resolved_by, "role": role}
+
+
+def _get_jwks_client(user_pool_id, region):
+    """Caches one PyJWKClient per (user_pool_id, region) pair for the life
+    of the Lambda container -- PyJWKClient itself already caches the
+    fetched JWKS in memory, but constructing a fresh client (and losing
+    that cache) on every invocation would defeat the point. Same "hand-
+    rolled per-container cache, not relying on unverified platform
+    behavior" posture as _TOKEN_CACHE above."""
+    cache_key = (user_pool_id, region)
+    if cache_key not in _JWKS_CLIENT_CACHE:
+        from jwt import PyJWKClient
+
+        jwks_url = f"https://cognito-idp.{region}.amazonaws.com/{user_pool_id}/.well-known/jwks.json"
+        _JWKS_CLIENT_CACHE[cache_key] = PyJWKClient(jwks_url)
+    return _JWKS_CLIENT_CACHE[cache_key]
+
+
+def decode_cognito_jwt(token, user_pool_id, client_id, region):
+    """Verifies signature + issuer + audience + expiry against
+    AdminUserPool's own public JWKS, then additionally requires
+    token_use == "id" (rejecting a Cognito ACCESS token even though it's
+    otherwise a validly-signed token from the same pool -- this project
+    standardizes on the SPA sending the ID token specifically, since only
+    the ID token carries the "email" claim build_user_context wants for
+    resolved_by). Returns the decoded claims dict on success, or None on
+    ANY failure: malformed token, bad signature, expired, wrong issuer/
+    audience, wrong token_use, or a JWKS-fetch network error. Deliberately
+    a single broad except -- this function's job is "is this specific
+    token good", not "diagnose exactly why it's bad"; every failure mode
+    means the same thing to handler() (try the shared-secret path next),
+    so there's no reason to distinguish them here.
+
+    NOT exercised against a real Cognito user pool, a real JWKS endpoint,
+    or even the real PyJWT library in this session -- this sandbox has
+    neither AWS access nor pip registry access to install PyJWT (see
+    src/admin_api_authorizer/requirements.txt's own comment). Same
+    disclosed-but-untested status as get_expected_token's boto3 call
+    below. resolve_role_from_groups/build_user_context, which consume
+    this function's OUTPUT, are fully unit-tested against a hand-built
+    fake claims dict -- only the actual jwt.decode/JWKS-fetch call itself
+    is unverified."""
+    import jwt
+
+    try:
+        jwks_client = _get_jwks_client(user_pool_id, region)
+        signing_key = jwks_client.get_signing_key_from_jwt(token)
+        issuer = f"https://cognito-idp.{region}.amazonaws.com/{user_pool_id}"
+        claims = jwt.decode(
+            token, signing_key.key, algorithms=["RS256"],
+            audience=client_id, issuer=issuer,
+        )
+        if claims.get("token_use") != "id":
+            return None
+        return claims
+    except Exception:
+        return None
+
+
 def get_expected_token(secret_arn):
     """Fetches and parses the expected token from Secrets Manager,
     caching the result per secret_arn for the life of the Lambda
@@ -160,10 +298,30 @@ def get_expected_token(secret_arn):
 
 
 def handler(event, context):
-    """HTTP API v2 REQUEST authorizer, simple-response format. See the
-    module docstring for the two fail-closed checkpoints this goes
-    through before ever returning `isAuthorized: True`.
+    """HTTP API v2 REQUEST authorizer, simple-response format. Tries the
+    Cognito JWT path FIRST (only when COGNITO_USER_POOL_ID/COGNITO_
+    CLIENT_ID/COGNITO_REGION are all configured AND the token has a JWT's
+    shape -- see _looks_like_jwt), then falls through to the original
+    shared-secret path on any failure there. See the module docstring for
+    the full dual-mode reasoning and why both paths still fail closed.
     """
+    headers = event.get("headers", {})
+    provided_token = extract_bearer_token(_get_header(headers, "authorization"))
+
+    user_pool_id = os.environ.get("COGNITO_USER_POOL_ID", "")
+    client_id = os.environ.get("COGNITO_CLIENT_ID", "")
+    region = os.environ.get("COGNITO_REGION", "")
+    if user_pool_id and client_id and region and _looks_like_jwt(provided_token):
+        claims = decode_cognito_jwt(provided_token, user_pool_id, client_id, region)
+        if claims is not None:
+            user_context = build_user_context(claims)
+            if user_context is not None:
+                return {"isAuthorized": True, "context": user_context}
+        # ANY failure above (not a real/valid JWT, wrong pool, or a real
+        # account with no group assigned yet) falls through to the
+        # shared-secret check below rather than denying outright -- this
+        # is what lets both auth modes coexist on the same header.
+
     secret_arn = os.environ.get("ADMIN_API_TOKEN_SECRET_ARN", "")
     if not secret_arn:
         # Not configured yet (template.yaml's AdminApiTokenSecretArn
@@ -171,7 +329,8 @@ def handler(event, context):
         # treating "no secret set up" as "no auth required".
         return {"isAuthorized": False}
 
-    headers = event.get("headers", {})
-    provided_token = extract_bearer_token(_get_header(headers, "authorization"))
     expected_token = get_expected_token(secret_arn)
-    return {"isAuthorized": is_valid_token(provided_token, expected_token)}
+    if is_valid_token(provided_token, expected_token):
+        return {"isAuthorized": True,
+                 "context": {"caller_type": "automation", "resolved_by": "automation", "role": "admin"}}
+    return {"isAuthorized": False}

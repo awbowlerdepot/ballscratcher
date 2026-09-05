@@ -140,6 +140,48 @@ def get_db_connection():
     )
 
 
+def resolve_caller_from_event(event: dict) -> dict:
+    """Pulls the `context` object admin_api_authorizer's dual-mode
+    handler() attaches to an authorized request (task #465-473, Al: "a
+    more sophisticated admin spa... has users") back out of the raw
+    Lambda event Mangum stores at `request.scope["aws.event"]` -- see
+    app.py's get_caller() for the thin FastAPI-dependency wrapper around
+    this. Kept here (not in app.py) rather than as inline dict-digging,
+    same "app.py is a thin routing layer, service.py holds the actual
+    logic" split this whole module's own header comment already commits
+    to -- and it's what makes this pure event-shape logic unit-testable
+    at all, since app.py's own routes can't be exercised in this sandbox
+    (no fastapi install -- see that file's header comment).
+
+    For an HTTP API v2 request with a Lambda REQUEST authorizer using the
+    simple-response format, API Gateway places whatever `context` dict the
+    authorizer returned at `event["requestContext"]["authorizer"]
+    ["lambda"]` -- both authorizer modes (Cognito JWT and shared-secret,
+    see admin_api_authorizer/app.py's own docstring) always return one on
+    success, so in a real deployed request this path is never actually
+    missing. Still defensive here (returns a safe fallback rather than
+    raising) for two real cases: a request that somehow reached this code
+    without going through the authorizer at all (shouldn't happen given
+    AdminHttpApi's DefaultAuthorizer, but a KeyError here shouldn't be
+    what surfaces to a caller if it ever did), and this module's own
+    functions being called directly from a script/test with no event at
+    all (`resolve_caller_from_event({})`). The fallback role is "admin",
+    not "editor" -- nothing in this codebase yet actually GATES an action
+    on role (see this function's own task's docstring: wiring identity
+    through is task #468, per-route role enforcement is explicitly
+    deferred future work), so defaulting to the more permissive role here
+    doesn't newly restrict anything that worked before this function
+    existed; it only affects what `resolved_by` defaults to."""
+    authorizer_context = (
+        (event or {}).get("requestContext", {}).get("authorizer", {}).get("lambda", {}) or {}
+    )
+    return {
+        "resolved_by": authorizer_context.get("resolved_by", "unknown"),
+        "role": authorizer_context.get("role", "admin"),
+        "caller_type": authorizer_context.get("caller_type", "unknown"),
+    }
+
+
 def list_review_queue(conn, status: str = "pending", product_id: str = None, limit: int = 50, offset: int = 0) -> list:
     query = """
         select rq.id, rq.product_id, p.name as product_name, p.url as product_url,

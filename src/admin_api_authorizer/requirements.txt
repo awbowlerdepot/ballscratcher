@@ -1,0 +1,6 @@
+# v2 (task #467) -- dual-mode auth needs to verify Cognito-issued JWTs.
+# PyJWT's own PyJWKClient handles JWKS fetching/caching and RS256
+# signature verification directly; no python-jose dependency needed.
+# [crypto] extra pulls in `cryptography` for the RSA verification PyJWT
+# itself doesn't implement.
+PyJWT[crypto]>=2.8

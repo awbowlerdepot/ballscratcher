@@ -1,0 +1,15 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  @apply bg-slate-50 text-slate-900 font-sans;
+}
+
+/* Chart.js draws onto a <canvas> sized by its parent -- without an
+   explicit height the parent div can collapse to 0px on first paint
+   before the chart's own responsive resize observer kicks in. */
+.chart-wrap {
+  position: relative;
+  height: 280px;
+}

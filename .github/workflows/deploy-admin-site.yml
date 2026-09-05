@@ -1,0 +1,103 @@
+# Push-to-deploy for admin-spa/ -- see DEPLOY_RUNBOOK.md's admin-SPA section
+# for the one-time AWS + GitHub setup this pairs with (template.yaml's
+# AdminUserPool/AdminUserPoolClient/AdminSiteDeployRole/GitHubOidcProvider,
+# and the repo Variables this workflow reads below). No AWS credentials
+# live in this repo at all -- aws-actions/configure-aws-credentials
+# exchanges GitHub's own short-lived OIDC token for temporary AWS
+# credentials scoped to exactly that one role. Mirrors
+# deploy-consumer-site.yml's shape; see that file's comments for the
+# rationale behind the OIDC/tagging/Variables choices repeated here.
+name: Deploy admin site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "admin-spa/**"
+      - ".github/workflows/deploy-admin-site.yml"
+  # Manual re-run without needing a throwaway commit -- e.g. after
+  # rotating a VITE_* build variable or just to force a fresh CloudFront
+  # invalidation.
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write # required to request the OIDC token
+  contents: read # required for actions/checkout
+
+# Two pushes to main in quick succession shouldn't run two concurrent
+# deploys against the same S3 bucket/CloudFront distribution -- queue
+# behind whichever is already running rather than cancel-in-progress
+# (a cancelled mid-sync deploy could leave dist/ and the live bucket in a
+# half-updated, mismatched state).
+concurrency:
+  group: deploy-admin-site
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: admin-spa
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: admin-spa/package-lock.json
+
+      - run: npm ci
+
+      # All four VITE_* values have to be present at BUILD time, not just
+      # at deploy time -- Vite inlines import.meta.env.VITE_* values into
+      # the bundled JS during `vite build`, there's no runtime env lookup
+      # in the browser afterward (same mechanism deploy-consumer-site.yml
+      # relies on for VITE_PUBLIC_API_URL). None of these four are
+      # secrets: a Cognito user pool id/client id and an API Gateway URL
+      # are all meant to be embedded in a public browser bundle -- the
+      # public app client has no client secret (GenerateSecret: false in
+      # template.yaml) precisely because a SPA can't keep one
+      # confidential, and Cognito enforces auth via the user's own
+      # credentials against the pool/client ids, not via secrecy of those
+      # ids themselves.
+      - name: Build
+        env:
+          VITE_ADMIN_API_URL: ${{ vars.ADMIN_API_URL }}
+          VITE_COGNITO_USER_POOL_ID: ${{ vars.ADMIN_COGNITO_USER_POOL_ID }}
+          VITE_COGNITO_CLIENT_ID: ${{ vars.ADMIN_COGNITO_CLIENT_ID }}
+          VITE_COGNITO_REGION: ${{ vars.AWS_REGION }}
+        run: npm run build
+
+      # role-to-assume/aws-region/bucket/distribution-id are all plain
+      # repo Variables (Settings -> Secrets and variables -> Actions ->
+      # Variables), not Secrets -- none of them are sensitive (an IAM role
+      # ARN grants nothing on its own without the OIDC trust conditions
+      # already enforced server-side by AWS; the bucket name and
+      # distribution id are both freely discoverable from the deployed
+      # stack's own Outputs). Nothing this workflow touches needs GitHub
+      # Secrets at all, which is the whole point of OIDC over long-lived
+      # access keys.
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.ADMIN_SITE_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          # configure-aws-credentials tags the assumed session (repo, ref,
+          # actor, etc.) by default. Tagging during AssumeRoleWithWebIdentity
+          # is a separate permission from the assume itself -- IAM requires
+          # the trust policy to allow sts:TagSession too, or the whole call
+          # gets rejected with "Not authorized to perform
+          # sts:AssumeRoleWithWebIdentity". AdminSiteDeployRole's trust
+          # policy only grants sts:AssumeRoleWithWebIdentity on purpose
+          # (see template.yaml) -- nothing this workflow does needs
+          # session tags, so skip them here instead of widening the trust
+          # policy for no benefit.
+          role-skip-session-tagging: true
+
+      - name: Sync to S3
+        run: aws s3 sync dist/ "s3://${{ vars.ADMIN_SITE_BUCKET }}/" --delete
+
+      - name: Invalidate CloudFront cache
+        run: aws cloudfront create-invalidation --distribution-id "${{ vars.ADMIN_SITE_DISTRIBUTION_ID }}" --paths "/*"

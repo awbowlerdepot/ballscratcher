@@ -9487,6 +9487,132 @@ param (271 total); the existing "singular product_id" test was updated
 to expect the new `"mode": "both"` key in its result. Full regression
 sweep: clean (all test files).
 
+### 6ab. Admin SPA phase 1: Cognito user accounts + a new React admin app
+
+Al's ask, verbatim: "can we build a more sophisticated admin spa that
+is hosted on aws and has users and an improved UI." Scoped into a
+phased build after three clarifying questions: Cognito for real
+per-user accounts (not the existing shared-secret token), a phased
+rollout (design + auth + 1-2 tabs first, not a full rewrite in one
+shot), and an "improved UI" meaning a real component/design system,
+better data tables with bulk actions, dashboards front-and-center, and
+general visual polish.
+
+**Why Cognito, and why dual-mode auth instead of a clean replacement.**
+The obvious design is "replace the shared-secret bearer token with
+Cognito entirely." That would have broken all 17 existing automation
+scripts in `scripts/*.py`, which authenticate to `AdminApiFunction`
+with that same shared secret today. Rather than migrate 17 scripts in
+lockstep with this UI work, `admin_api_authorizer` (the Lambda REQUEST
+authorizer in front of `AdminHttpApi`) now accepts **either** a valid
+Cognito-issued ID token **or** the pre-existing shared secret -- Cognito
+is tried first (only when the token looks JWT-shaped, i.e. three
+non-empty dot-separated segments, and `COGNITO_USER_POOL_ID`/
+`COGNITO_CLIENT_ID`/`COGNITO_REGION` are all configured), and falls
+through to the unchanged shared-secret check on **any** failure
+(malformed token, bad signature, wrong audience/issuer, non-`id`
+token_use, or an authenticated account with no recognized group). The
+shared-secret comparison logic itself is byte-for-byte unchanged --
+every automation script keeps working with zero changes.
+
+**Cognito setup (`template.yaml`)**: a new `AdminUserPool` with
+`AllowAdminCreateUserOnly: true` (no public sign-up -- accounts are
+created via the AWS CLI/console only, see `admin-spa/README.md`),
+email as the username, two groups (`AdminUserPoolAdminsGroup`
+precedence 0, `AdminUserPoolEditorsGroup` precedence 10), and a public
+app client (`AdminUserPoolClient`, `GenerateSecret: false` -- a browser
+SPA can't keep a client secret confidential) supporting
+`ALLOW_USER_PASSWORD_AUTH`/`ALLOW_USER_SRP_AUTH`/
+`ALLOW_REFRESH_TOKEN_AUTH` with 1-hour access/ID tokens and a 30-day
+refresh token.
+
+**Role model, and what it does NOT do yet**: the ID token's
+`cognito:groups` claim maps `Admins` -> `role: "admin"` and `Editors`
+-> `role: "editor"` (`resolve_role_from_groups` in
+`admin_api_authorizer/app.py`). An authenticated account in neither
+group gets `role: null` and is **fail-closed** -- not a default
+"editor" -- so admin_api_authorizer's own on-success context never
+grants blanket access to an ungrouped account. **Phase 1 does not
+enforce role-based restrictions on individual routes** -- both `admin`
+and `editor` can currently call every `AdminApiFunction` endpoint. The
+`caller` object (see below) makes the role available to every route,
+which is what a phase-2 pass at real RBAC would build on; it's
+deliberately deferred rather than half-built here.
+
+**Caller identity flows into `admin_api` too**: API Gateway forwards
+the authorizer's `context` object (`caller_type`/`resolved_by`/`role`)
+to the backend at `event["requestContext"]["authorizer"]["lambda"]`,
+which Mangum exposes to FastAPI via `request.scope["aws.event"]`. A new
+`service.resolve_caller_from_event()` extracts it (defaulting safely
+when the shape is missing/partial -- this path is currently only
+exercised by real API Gateway traffic, not directly testable in this
+sandbox), and a new `get_caller` FastAPI dependency wires it into all
+10 approve/reject routes (review queue, video candidates, price
+sources, articles): each route's `resolved_by` request field is now
+`Optional`, falling back to the authenticated caller's identity
+(`body.resolved_by or caller["resolved_by"]`) when the client doesn't
+supply one explicitly. A signed-in human clicking Approve in the new
+SPA no longer needs to type their own name/email into a field.
+
+**Hosting**: `admin-spa/` gets the same S3 + CloudFront + OAC pattern
+already used for `consumer-site`/`bowlerdepot-learn` -- private bucket
+(`AdminSiteBucket`), Origin Access Control (not the legacy OAI),
+`AdminSiteDistribution` with `CustomErrorResponses` rewriting 403/404
+to `/index.html` (client-side routing via react-router), and
+`AdminSiteDeployRole` (GitHub OIDC, no long-lived AWS keys, trusted
+only for this repo's `main` branch) driving
+`.github/workflows/deploy-admin-site.yml` on every push to
+`admin-spa/**`. `AdminSiteDomainName`/`AdminSiteCertificateArn` follow
+the same blank-means-off convention as the other two sites' domain
+params. New stack outputs: `AdminUserPoolId`, `AdminUserPoolClientId`,
+`AdminSiteBucketName`, `AdminSiteDistributionId`, `AdminSiteUrl`,
+`AdminSiteDeployRoleArn`.
+
+**The SPA itself (`admin-spa/`)**: Vite + React + TypeScript +
+Tailwind, same "pure client-side SPA, dist/ synced to S3" shape as
+`consumer-site`. Sign-in is Cognito SRP auth via
+`amazon-cognito-identity-js` (deliberately not the heavier
+`aws-amplify`) -- see `src/auth/cognito.ts`/`AuthContext.tsx`. A small
+hand-rolled component library (`Button`, `Badge`, `Card`, `StatCard`,
+`Modal`, `Toast`, `DataTable`, `Pagination`, `Layout`) gives later tabs
+a consistent look without re-solving sort/select/bulk-action each time
+-- `DataTable` in particular supports client-side column sort,
+checkbox multi-select, and a bulk-action bar in one generic component.
+Phase 1 ships two pages: **Dashboard** (`/`, the landing page --
+per Al's "dashboards more prominent" priority -- KPI tiles, an
+ADU-by-brand bar chart via `react-chartjs-2`, and four Top-10 tables,
+all from the existing `GET /admin/dashboard`) and **Products**
+(`/products` -- the full existing filter set, sortable table, and a
+bulk "Rescrape selected" action against `POST /products/{id}/
+rescrape`). Every other admin-site tab (Review Queue, Video Candidates,
+Articles, Price Sites, Cores, Coverstocks, Blocked Channels, Batch
+Jobs) stays on the existing `admin-site/index.html` for now -- see
+`admin-spa/README.md`'s "what's not here yet" for the full list and the
+reasoning (this is a foundation to build on, not a full port).
+
+**Sandbox limitation, disclosed**: this sandbox has no npm registry
+access (confirmed via `npm ping` returning a proxy 403 this session,
+matching earlier sessions' pip/npm findings) -- every file under
+`admin-spa/` was written from React/TypeScript/Cognito's documented
+APIs, never actually compiled, bundled, or run. No `package-lock.json`
+exists yet for the same reason (consumer-site needed the identical
+bootstrapping step -- see its own git history). Before trusting this in
+production: run `npm install` locally in `admin-spa/`, commit the
+resulting lockfile, do a real `npm run dev` smoke test (sign-in
+especially -- the exact shape of the `amazon-cognito-identity-js` calls
+in `cognito.ts` was written from memory of its public API, not a real
+import), then `npm run build` to confirm `tsc -b` is clean before the
+first real deploy.
+
+**What's next (not yet started)**: role-based route enforcement,
+migrating the remaining admin-site tabs, a "set new password" form for
+Cognito's first-sign-in challenge (until then, set a permanent password
+via `admin-set-user-password` at account-creation time -- see
+`admin-spa/README.md`), and a real brand-name dropdown on the Products
+filters (currently a raw brand-id text field -- there's no `GET
+/brands` on the admin side the way `consumer-site` has on the public
+API).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

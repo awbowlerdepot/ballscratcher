@@ -18,7 +18,7 @@ and BowlerDepot sync will read.
 """
 from typing import Literal, Optional
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from mangum import Mangum
 from pydantic import BaseModel
 
@@ -27,12 +27,39 @@ import service
 app = FastAPI(title="Bowling Ball Scraper Admin API")
 
 
+def get_caller(request: Request) -> dict:
+    """FastAPI dependency exposing WHO is calling this API (task #465-473,
+    Al: "a more sophisticated admin spa... has users"). Mangum stores the
+    original Lambda event at `request.scope["aws.event"]`; the actual
+    identity-extraction logic lives in service.resolve_caller_from_event
+    (unit-tested there -- this function itself can't be, since fastapi/
+    Request aren't exercisable in this sandbox, see this file's own header
+    comment) so this stays a thin one-line wrapper, same "app.py routes,
+    service.py decides" split as every other endpoint here.
+
+    Used below to let resolved_by default to the authenticated caller
+    instead of always requiring a client-supplied value -- see
+    ApproveRequest/RejectRequest's own updated docstrings. NOT yet used to
+    hard-gate any route on caller["role"] -- see resolve_caller_from_event's
+    own docstring for why that's deliberately still future work, not part
+    of this initial wiring."""
+    event = request.scope.get("aws.event", {})
+    return service.resolve_caller_from_event(event)
+
+
 class ApproveRequest(BaseModel):
-    resolved_by: str
+    # Optional as of task #468 -- when omitted, the route falls back to
+    # the authenticated caller's own identity (via get_caller() above)
+    # rather than requiring every client to know/supply it. Still
+    # accepted explicitly for backward compatibility with existing
+    # scripts/admin-site/index.html calls that already send it, and for
+    # any case where a caller wants to attribute an action to someone
+    # other than themselves (e.g. reassigning credit).
+    resolved_by: Optional[str] = None
 
 
 class RejectRequest(BaseModel):
-    resolved_by: str
+    resolved_by: Optional[str] = None
     reason: Optional[str] = None
 
 
@@ -275,10 +302,10 @@ def get_review_item(review_id: str):
 
 
 @app.post("/review-queue/{review_id}/approve")
-def approve_review_item(review_id: str, body: ApproveRequest):
+def approve_review_item(review_id: str, body: ApproveRequest, caller: dict = Depends(get_caller)):
     conn = service.get_db_connection()
     try:
-        return service.approve_review_item(conn, review_id, body.resolved_by)
+        return service.approve_review_item(conn, review_id, body.resolved_by or caller["resolved_by"])
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
@@ -292,10 +319,10 @@ def approve_review_item(review_id: str, body: ApproveRequest):
 
 
 @app.post("/review-queue/{review_id}/reject")
-def reject_review_item(review_id: str, body: RejectRequest):
+def reject_review_item(review_id: str, body: RejectRequest, caller: dict = Depends(get_caller)):
     conn = service.get_db_connection()
     try:
-        return service.reject_review_item(conn, review_id, body.resolved_by, body.reason)
+        return service.reject_review_item(conn, review_id, body.resolved_by or caller["resolved_by"], body.reason)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
@@ -702,10 +729,10 @@ def get_video_candidate(video_id: str):
 
 
 @app.post("/video-candidates/{video_id}/approve")
-def approve_video_candidate(video_id: str, body: ApproveRequest):
+def approve_video_candidate(video_id: str, body: ApproveRequest, caller: dict = Depends(get_caller)):
     conn = service.get_db_connection()
     try:
-        return service.approve_video_candidate(conn, video_id, body.resolved_by)
+        return service.approve_video_candidate(conn, video_id, body.resolved_by or caller["resolved_by"])
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
@@ -715,10 +742,10 @@ def approve_video_candidate(video_id: str, body: ApproveRequest):
 
 
 @app.post("/video-candidates/{video_id}/reject")
-def reject_video_candidate(video_id: str, body: RejectRequest):
+def reject_video_candidate(video_id: str, body: RejectRequest, caller: dict = Depends(get_caller)):
     conn = service.get_db_connection()
     try:
-        return service.reject_video_candidate(conn, video_id, body.resolved_by, body.reason)
+        return service.reject_video_candidate(conn, video_id, body.resolved_by or caller["resolved_by"], body.reason)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
@@ -937,10 +964,10 @@ def get_price_sources(
 
 
 @app.post("/price-sources/{source_id}/approve")
-def approve_price_source(source_id: str, body: ApproveRequest):
+def approve_price_source(source_id: str, body: ApproveRequest, caller: dict = Depends(get_caller)):
     conn = service.get_db_connection()
     try:
-        return service.approve_price_source(conn, source_id, body.resolved_by)
+        return service.approve_price_source(conn, source_id, body.resolved_by or caller["resolved_by"])
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
@@ -950,10 +977,10 @@ def approve_price_source(source_id: str, body: ApproveRequest):
 
 
 @app.post("/price-sources/{source_id}/reject")
-def reject_price_source(source_id: str, body: RejectRequest):
+def reject_price_source(source_id: str, body: RejectRequest, caller: dict = Depends(get_caller)):
     conn = service.get_db_connection()
     try:
-        return service.reject_price_source(conn, source_id, body.resolved_by, body.reason)
+        return service.reject_price_source(conn, source_id, body.resolved_by or caller["resolved_by"], body.reason)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
@@ -1146,10 +1173,10 @@ def get_article(article_id: str):
 
 
 @app.post("/articles/{article_id}/approve")
-def approve_article(article_id: str, body: ApproveRequest):
+def approve_article(article_id: str, body: ApproveRequest, caller: dict = Depends(get_caller)):
     conn = service.get_db_connection()
     try:
-        return service.approve_article(conn, article_id, body.resolved_by)
+        return service.approve_article(conn, article_id, body.resolved_by or caller["resolved_by"])
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
@@ -1159,10 +1186,10 @@ def approve_article(article_id: str, body: ApproveRequest):
 
 
 @app.post("/articles/{article_id}/reject")
-def reject_article(article_id: str, body: RejectRequest):
+def reject_article(article_id: str, body: RejectRequest, caller: dict = Depends(get_caller)):
     conn = service.get_db_connection()
     try:
-        return service.reject_article(conn, article_id, body.resolved_by, body.reason)
+        return service.reject_article(conn, article_id, body.resolved_by or caller["resolved_by"], body.reason)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:

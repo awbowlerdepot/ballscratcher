@@ -21,6 +21,49 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src", "admin_a
 import service  # noqa: E402
 
 
+# --- resolve_caller_from_event (task #468, admin SPA users) ---
+
+def test_resolve_caller_from_event_extracts_cognito_user_context():
+    event = {"requestContext": {"authorizer": {"lambda": {
+        "caller_type": "user", "resolved_by": "al@bowlerdepot.com", "role": "admin",
+    }}}}
+    assert service.resolve_caller_from_event(event) == {
+        "caller_type": "user", "resolved_by": "al@bowlerdepot.com", "role": "admin",
+    }
+
+
+def test_resolve_caller_from_event_extracts_automation_context():
+    event = {"requestContext": {"authorizer": {"lambda": {
+        "caller_type": "automation", "resolved_by": "automation", "role": "admin",
+    }}}}
+    assert service.resolve_caller_from_event(event) == {
+        "caller_type": "automation", "resolved_by": "automation", "role": "admin",
+    }
+
+
+def test_resolve_caller_from_event_defaults_when_context_missing():
+    # Shouldn't happen for a real deployed request (AdminHttpApi's
+    # DefaultAuthorizer always runs first and always returns a context on
+    # success), but must degrade to a safe, non-crashing default rather
+    # than KeyError -- see the function's own docstring for why "admin"
+    # (not "editor") is the safe fallback role given nothing is gated on
+    # role yet.
+    assert service.resolve_caller_from_event({}) == {
+        "caller_type": "unknown", "resolved_by": "unknown", "role": "admin",
+    }
+    assert service.resolve_caller_from_event(None) == {
+        "caller_type": "unknown", "resolved_by": "unknown", "role": "admin",
+    }
+
+
+def test_resolve_caller_from_event_defaults_when_authorizer_shape_partial():
+    # requestContext present but no authorizer/lambda nesting -- same
+    # defensive default, not a crash.
+    assert service.resolve_caller_from_event({"requestContext": {}}) == {
+        "caller_type": "unknown", "resolved_by": "unknown", "role": "admin",
+    }
+
+
 # --- parse_review_field_name / build_update_plan: pure, no DB ---
 
 def test_parse_sku_scoped_field_name():

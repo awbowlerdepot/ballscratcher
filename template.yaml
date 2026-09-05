@@ -653,6 +653,26 @@ Parameters:
       the provider's ARN directly from AWS::AccountId either way, so it
       doesn't matter which stack actually created the provider resource
       itself). Only takes effect when GitHubRepo above is also set.
+  AdminSiteDomainName:
+    Type: String
+    Default: ""
+    Description: >
+      Custom domain for the new admin SPA's CloudFront distribution (task
+      #465-473, "a more sophisticated admin SPA... hosted on AWS and has
+      users"), e.g. admin.bowlerdepot.com. Same blank-means-*.cloudfront.
+      net-only convention as ConsumerSiteDomainName/LearnSiteDomainName
+      above -- both this AND AdminSiteCertificateArn must be set together.
+      This is a genuinely internal tool (not indexed, not linked from the
+      storefront), so a bare CloudFront domain behind Cognito login is a
+      perfectly reasonable permanent choice too -- a custom domain here is
+      a convenience, not a requirement, unlike the consumer-facing sites.
+  AdminSiteCertificateArn:
+    Type: String
+    Default: ""
+    Description: >
+      ACM certificate ARN covering AdminSiteDomainName. Same us-east-1-
+      regardless-of-stack-region CloudFront requirement as the other two
+      sites' certificate params.
 
 Conditions:
   HasBigCommerceSecret: !Not [!Equals [!Ref BigCommerceSecretArn, ""]]
@@ -661,6 +681,7 @@ Conditions:
   HasGeminiServiceAccountSecret: !Not [!Equals [!Ref GeminiServiceAccountSecretArn, ""]]
   HasConsumerSiteDomain: !Not [!Equals [!Ref ConsumerSiteDomainName, ""]]
   HasLearnSiteDomain: !Not [!Equals [!Ref LearnSiteDomainName, ""]]
+  HasAdminSiteDomain: !Not [!Equals [!Ref AdminSiteDomainName, ""]]
   HasGitHubRepo: !Not [!Equals [!Ref GitHubRepo, ""]]
   ShouldCreateGitHubOidcProvider: !And
     - !Condition HasGitHubRepo
@@ -1158,6 +1179,101 @@ Resources:
       # stored_url) -- also still accepts direct/manual invocation with
       # {"product_image_id": "...", "source_url": "..."}.
 
+  # --- Admin SPA users (task #465-473) ------------------------------------
+  #
+  # Al: "can we build a more sophisticated admin spa that is hosted on aws
+  # and has users and an improved UI." Cognito user pool for REAL per-
+  # person admin accounts, alongside (not replacing) the existing shared-
+  # secret bearer token above -- 17 scripts under scripts/ already
+  # authenticate against AdminHttpApi with that token (backfill jobs,
+  # rescrape scripts, etc.), and breaking those wasn't part of this ask.
+  # AdminApiAuthorizerFunction below is extended (not replaced) to accept
+  # EITHER a valid Cognito JWT (a human, via the new admin-spa/ SPA) OR the
+  # existing shared secret (automation) -- see that function's own updated
+  # docstring for the dual-mode logic. No self-signup
+  # (AdminCreateUserConfig.AllowAdminCreateUserOnly) -- this is an internal
+  # tool with a small, known set of admins, not a public product; new
+  # accounts are provisioned by hand via `aws cognito-idp admin-create-
+  # user` (see DEPLOY_RUNBOOK.md's admin-SPA section for the exact
+  # command). No Identity Pool -- the SPA only ever calls THIS project's
+  # own API Gateway (with the Cognito ID token as a bearer credential), it
+  # never calls AWS services directly from the browser, so there's nothing
+  # an Identity Pool's temporary AWS credentials would be for.
+  AdminUserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub bowling-scraper-admin-users-${AWS::AccountId}
+      AdminCreateUserConfig:
+        AllowAdminCreateUserOnly: true
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireUppercase: true
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Required: true
+          Mutable: true
+
+  # Two groups, checked via the JWT's own "cognito:groups" claim (no
+  # per-route IAM/scope config on the API Gateway side -- this project's
+  # existing convention is business-logic checks inside admin_api itself,
+  # e.g. product_id existence checks in service.py, not access-control
+  # logic pushed into the gateway layer). Admins can do anything the old
+  # shared token could; Editors are meant for routine day-to-day review
+  # work (approve/reject, regenerate) without the more destructive actions
+  # (dedupe, delete, blocked-channel management, etc.) -- role ENFORCEMENT
+  # for specific routes is deliberately being rolled out incrementally as
+  # admin_api routes get real caller-identity plumbing (task #468 is the
+  # first slice: reading the role through, not yet gating every route on
+  # it), not all at once as part of this initial Cognito setup.
+  AdminUserPoolAdminsGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      UserPoolId: !Ref AdminUserPool
+      GroupName: Admins
+      Precedence: 0
+
+  AdminUserPoolEditorsGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      UserPoolId: !Ref AdminUserPool
+      GroupName: Editors
+      Precedence: 10
+
+  # Public client (no client secret) -- a browser SPA can't keep a secret
+  # confidential, so this follows Cognito's own documented guidance for
+  # SPA/mobile clients. ALLOW_USER_PASSWORD_AUTH (not just the more
+  # commonly recommended ALLOW_USER_SRP_AUTH) is enabled too specifically
+  # so admin-spa/'s login form can use amazon-cognito-identity-js's
+  # simpler password flow without also implementing SRP client-side;
+  # acceptable here because this is TLS-only, internal-tool traffic, not a
+  # public-internet consumer login surface.
+  AdminUserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: admin-spa
+      UserPoolId: !Ref AdminUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_USER_PASSWORD_AUTH
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+      RefreshTokenValidity: 30
+      TokenValidityUnits:
+        AccessToken: hours
+        IdToken: hours
+        RefreshToken: days
+
   AdminHttpApi:
     Type: AWS::Serverless::HttpApi
     Properties:
@@ -1243,6 +1359,19 @@ Resources:
       Environment:
         Variables:
           ADMIN_API_TOKEN_SECRET_ARN: !Ref AdminApiTokenSecretArn
+          # v2 (task #467) -- dual-mode auth. COGNITO_USER_POOL_ID/
+          # COGNITO_CLIENT_ID/COGNITO_REGION are what the JWT-verification
+          # path (tried FIRST, falling back to the shared-secret comparison
+          # below on any failure -- see app.py's own updated docstring)
+          # needs to fetch the pool's JWKS and validate issuer/audience.
+          # No IAM permission needed for any of this -- the JWKS endpoint
+          # is a public, unauthenticated HTTPS endpoint by design (that's
+          # the whole point of JWKS: verifiers never need a shared secret
+          # or an AWS credential to validate a token, just the pool's
+          # public signing keys).
+          COGNITO_USER_POOL_ID: !Ref AdminUserPool
+          COGNITO_CLIENT_ID: !Ref AdminUserPoolClient
+          COGNITO_REGION: !Ref AWS::Region
       Policies:
         - Statement:
             - Effect: Allow
@@ -1259,18 +1388,17 @@ Resources:
                 - HasAdminApiToken
                 - !Ref AdminApiTokenSecretArn
                 - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:unused-*"
-      # Shared-secret Lambda REQUEST authorizer for AdminHttpApi above.
-      # Fails closed if AdminApiTokenSecretArn is left at its blank
-      # default -- see the module docstring in
-      # src/admin_api_authorizer/app.py for the full reasoning. The
-      # Policies block above grants read access to whatever
-      # AdminApiTokenSecretArn actually resolves to; when it's blank, the
-      # policy instead points at a harmless placeholder ARN pattern that
-      # matches nothing real (an empty Resource ARN isn't valid CFN/IAM,
-      # so it can't just be left blank the way the env var can) -- the
-      # function's own blank-env-var check is what actually matters here,
-      # this is only to keep the policy itself well-formed. Set a real
-      # secret ARN before the admin API is genuinely useful.
+      # Dual-mode Lambda REQUEST authorizer for AdminHttpApi above: a real
+      # Cognito-issued JWT (a human, via admin-spa/) OR the pre-existing
+      # shared-secret bearer token (automation scripts) -- see the module
+      # docstring in src/admin_api_authorizer/app.py for the full
+      # reasoning and which check runs first. Both paths still fail closed
+      # exactly as before (see that docstring); the shared-secret path is
+      # completely unchanged from before task #465-473, so
+      # AdminApiTokenSecretArn stays required for automation to keep
+      # working, same as always. Set a real secret ARN AND run the Cognito
+      # admin-create-user command (DEPLOY_RUNBOOK.md) before the admin API
+      # is genuinely useful to either kind of caller.
 
   AdminApiFunction:
     Type: AWS::Serverless::Function
@@ -3165,6 +3293,136 @@ Resources:
                   - cloudfront:CreateInvalidation
                 Resource: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${LearnSiteDistribution}
 
+  # --- Admin SPA hosting (task #465-473) ----------------------------------
+  #
+  # Al: "can we build a more sophisticated admin spa that is hosted on aws
+  # and has users and an improved UI" -- same S3 + OAC + CloudFront shape
+  # as ConsumerSiteBucket/LearnSiteBucket above, again a fully separate
+  # bucket/distribution/deploy role rather than a second path on an
+  # existing one (different repo directory, different deploy cadence,
+  # and critically a DIFFERENT AUDIENCE -- this one sits behind Cognito
+  # login, unlike the two public-facing sites). No pretty-url CloudFront
+  # Function like LearnSitePrettyUrlFunction -- admin-spa/ has no
+  # prerendered pages to route around, it's a plain client-rendered SPA,
+  # so the same CustomErrorResponses 403/404->200 rewrite ConsumerSite
+  # already uses is sufficient on its own.
+  AdminSiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub bowling-scraper-admin-site-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  AdminSiteOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub bowling-scraper-admin-site-oac-${AWS::AccountId}
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  AdminSiteDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        PriceClass: PriceClass_100
+        HttpVersion: http2
+        Aliases: !If
+          - HasAdminSiteDomain
+          - - !Ref AdminSiteDomainName
+          - !Ref AWS::NoValue
+        ViewerCertificate: !If
+          - HasAdminSiteDomain
+          - AcmCertificateArn: !Ref AdminSiteCertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        Origins:
+          - Id: AdminSiteBucketOrigin
+            DomainName: !GetAtt AdminSiteBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt AdminSiteOAC.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: AdminSiteBucketOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+        # SPA client-side routing fallback -- react-router's routes (e.g.
+        # /products, /dashboard) have no matching S3 object, same
+        # reasoning as ConsumerSiteDistribution's own identical block.
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+
+  AdminSiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AdminSiteBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub arn:aws:s3:::${AdminSiteBucket}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${AdminSiteDistribution}
+
+  # Same OIDC-federation deploy role shape as ConsumerSiteDeployRole/
+  # LearnSiteDeployRole -- reuses the same GitHubRepo param and the
+  # account's one GitHubOidcProvider (defined below).
+  AdminSiteDeployRole:
+    Type: AWS::IAM::Role
+    Condition: HasGitHubRepo
+    Properties:
+      RoleName: !Sub bowling-scraper-admin-site-deploy-${AWS::AccountId}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub:
+                  !Sub
+                  - "repo:${Owner}*/${Repo}*:ref:refs/heads/main"
+                  - Owner: !Select [0, !Split ["/", !Ref GitHubRepo]]
+                    Repo: !Select [1, !Split ["/", !Ref GitHubRepo]]
+      Policies:
+        - PolicyName: admin-site-deploy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: !GetAtt AdminSiteBucket.Arn
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: !Sub arn:aws:s3:::${AdminSiteBucket}/*
+              - Effect: Allow
+                Action:
+                  - cloudfront:CreateInvalidation
+                Resource: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${AdminSiteDistribution}
+
   # --- GitHub Actions CI/CD for the consumer site -----------------------
   #
   # Al: "lets get back to the CI for the consumer-site" -- push-to-deploy
@@ -3312,6 +3570,24 @@ Outputs:
   LearnSiteDeployRoleArn:
     Condition: HasGitHubRepo
     Value: !GetAtt LearnSiteDeployRole.Arn
+  AdminSiteBucketName:
+    Value: !Ref AdminSiteBucket
+  AdminSiteDistributionId:
+    Value: !Ref AdminSiteDistribution
+  AdminSiteUrl:
+    Value: !Sub "https://${AdminSiteDistribution.DomainName}"
+  AdminSiteDeployRoleArn:
+    Condition: HasGitHubRepo
+    Value: !GetAtt AdminSiteDeployRole.Arn
+  # admin-spa/'s build needs these baked in at build time (VITE_* env vars,
+  # same "Vite inlines import.meta.env.VITE_* at build time" mechanism
+  # ConsumerSiteUrl/PublicApiUrl already rely on for those two sites) --
+  # see .github/workflows/deploy-admin-site.yml and DEPLOY_RUNBOOK.md's
+  # admin-SPA section for the exact repo Variables these map to.
+  AdminUserPoolId:
+    Value: !Ref AdminUserPool
+  AdminUserPoolClientId:
+    Value: !Ref AdminUserPoolClient
   AdminApiAuthorizerFunctionArn:
     Value: !GetAtt AdminApiAuthorizerFunction.Arn
   ProductScrapeDLQUrl:
