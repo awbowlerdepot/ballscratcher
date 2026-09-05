@@ -3800,6 +3800,49 @@ def queue_article_sync(conn, article_id: str) -> dict:
     return {"queued": True, "article_id": article_id}
 
 
+def queue_article_resync(conn, article_id: str) -> dict:
+    """On-demand "re-push this ALREADY-synced article's current content
+    onto BigCommerce" trigger (POST /articles/{id}/resync-to-bigcommerce,
+    the Articles tab's "Resync" button) -- added right after the WebDAV
+    Digest-auth fix made thumbnail_path actually start working: articles
+    synced before that fix have no thumbnail, and simply re-flagging them
+    does nothing since they're already synced (queue_article_sync's own
+    invokee-side query -- list_articles_needing_sync -- explicitly
+    excludes anything with bowlerdepot_synced_at already set). This is
+    the fix: same direct lambda:InvokeFunction convention, but the
+    payload also carries `"resync": true`, which routes bowlerdepot_
+    article_sync/app.py's handler to list_articles_needing_resync and
+    _process_one_article's update (PUT) branch instead of create (POST)
+    -- overwrites the SAME existing BigCommerce post rather than creating
+    a duplicate. See that module's own docstring for the full invocation-
+    shape reasoning.
+
+    Same existence-only check as queue_article_sync -- does NOT
+    re-check sync_to_bigcommerce/bowlerdepot_synced_at/match_status here;
+    those are list_articles_needing_resync's own job. Invoking this for
+    an article that was never actually synced (no bigcommerce_post_id
+    yet) is harmless -- the resync query just won't select it, so it
+    silently no-ops rather than erroring or creating a duplicate."""
+    with conn.cursor() as cur:
+        cur.execute("select id from product_articles where id = %s", (article_id,))
+        if cur.fetchone() is None:
+            raise LookupError(f"No product_articles row with id {article_id}")
+
+    function_name = os.environ.get("ARTICLE_SYNC_FUNCTION_NAME")
+    if not function_name:
+        return {"queued": False, "reason": "ARTICLE_SYNC_FUNCTION_NAME is not configured on this deployment"}
+
+    import boto3
+
+    lambda_client = boto3.client("lambda")
+    lambda_client.invoke(
+        FunctionName=function_name,
+        InvocationType="Event",
+        Payload=json.dumps({"article_id": article_id, "resync": True}),
+    )
+    return {"queued": True, "article_id": article_id, "resync": True}
+
+
 def list_article_image_candidates(conn, article_id: str) -> list:
     """Every image candidate 026_product_article_image_candidates.sql has
     ever stored for this article (both variants, both providers -- Gemini

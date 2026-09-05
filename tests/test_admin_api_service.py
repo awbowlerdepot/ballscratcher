@@ -4549,6 +4549,79 @@ def test_queue_article_sync_missing_function_name_returns_not_queued():
     assert result == {"queued": False, "reason": "ARTICLE_SYNC_FUNCTION_NAME is not configured on this deployment"}
 
 
+# --- queue_article_resync (POST /articles/{id}/resync-to-bigcommerce) --
+# Added right after the WebDAV Digest-auth fix made thumbnail_path
+# actually work: an article synced before that fix has no thumbnail, and
+# queue_article_sync's own invokee-side query (list_articles_needing_
+# sync) explicitly excludes anything already synced, so re-flagging does
+# nothing. This invokes the SAME BowlerdepotArticleSyncFunction (same
+# ARTICLE_SYNC_FUNCTION_NAME env var, no new IAM/template wiring needed)
+# but with resync: true in the payload, which routes bowlerdepot_
+# article_sync/app.py's handler to its update (PUT), not create (POST),
+# branch -- see service.queue_article_resync's own docstring.
+
+def test_queue_article_resync_invokes_function_with_resync_flag():
+    db = {"product_articles": {"art-1": _fake_article_row(id="art-1")}}
+    conn = FakeConnection(db)
+    fake_lambda = _FakeLambdaClient()
+
+    class _FakeBoto3:
+        def client(self, name):
+            assert name == "lambda"
+            return fake_lambda
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    os.environ["ARTICLE_SYNC_FUNCTION_NAME"] = "bowling-scraper-bowlerdepot-article-sync"
+    try:
+        result = service.queue_article_resync(conn, "art-1")
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+        del os.environ["ARTICLE_SYNC_FUNCTION_NAME"]
+
+    assert result == {"queued": True, "article_id": "art-1", "resync": True}
+    assert len(fake_lambda.invocations) == 1
+    call = fake_lambda.invocations[0]
+    assert call["FunctionName"] == "bowling-scraper-bowlerdepot-article-sync"
+    assert call["InvocationType"] == "Event"
+    assert json.loads(call["Payload"]) == {"article_id": "art-1", "resync": True}
+
+
+def test_queue_article_resync_missing_article_raises():
+    db = {"product_articles": {}}
+    conn = FakeConnection(db)
+    try:
+        service.queue_article_resync(conn, "does-not-exist")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def test_queue_article_resync_missing_function_name_returns_not_queued():
+    db = {"product_articles": {"art-1": _fake_article_row(id="art-1")}}
+    conn = FakeConnection(db)
+    os.environ.pop("ARTICLE_SYNC_FUNCTION_NAME", None)
+
+    class _ExplodingBoto3:
+        def client(self, name):
+            raise AssertionError("should never be called when the function name isn't configured")
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _ExplodingBoto3()
+    try:
+        result = service.queue_article_resync(conn, "art-1")
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+
+    assert result == {"queued": False, "reason": "ARTICLE_SYNC_FUNCTION_NAME is not configured on this deployment"}
+
+
 # --- queue_article_generation (POST /products/{id}/generate-article) --
 # Same direct-lambda-invoke-no-queue shape as queue_video_discovery above,
 # but the payload key is `product_id` (singular), not `product_ids` -- see

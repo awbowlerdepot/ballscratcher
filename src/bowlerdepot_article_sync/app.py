@@ -122,8 +122,8 @@ already-published BigCommerce post either -- updating/deleting a
 previously-synced post on regenerate is still future scope, same as the
 original spec flagged.
 
-**Two invocation shapes, one handler** -- same "scheduled batch, plus an
-on-demand single-item path checked first" convention product_article_
+**Three invocation shapes, one handler** -- same "scheduled batch, plus
+an on-demand single-item path checked first" convention product_article_
 generator.app.handler already uses for `event.get("product_id")`:
 - No `article_id` in the event (the hourly Schedule trigger, see
   template.yaml): processes every currently-due article in one
@@ -138,6 +138,17 @@ generator.app.handler already uses for `event.get("product_id")`:
   sync regardless of state." An article that doesn't qualify (e.g. the
   flag is off, or it's already synced) simply yields zero pushes, same
   as it would on the next scheduled run -- not an error.
+- `{"article_id": "...", "resync": true}` (admin_api's queue_article_
+  resync, the Articles tab's "Resync" button -- added right after the
+  WebDAV thumbnail fix, so Al could push a working thumbnail onto a post
+  that had already gone out without one): scopes list_articles_needing_
+  resync to that one row, and REQUIRES it to already have a bigcommerce_
+  post_id/bowlerdepot_synced_at -- an article that was never synced has
+  nothing to resync onto, so it goes through the normal Sync path
+  instead. _process_one_article's resync branch PUTs the fresh body/
+  thumbnail onto that SAME post id (push_article_update_to_bigcommerce)
+  rather than POSTing a new one, so this overwrites the live post in
+  place instead of creating a duplicate.
 """
 import json
 import logging
@@ -245,6 +256,48 @@ def list_articles_needing_sync(conn, article_id: str = None) -> list:
         return [dict(zip(columns, row)) for row in cur.fetchall()]
 
 
+def list_articles_needing_resync(conn, article_id: str) -> list:
+    """Same row shape as list_articles_needing_sync, PLUS pa.bigcommerce_
+    post_id (needed to target the update at the right existing post) --
+    backs the "Resync" button (Al's follow-up ask right after the WebDAV
+    thumbnail fix went live: an article synced BEFORE that fix has no
+    thumbnail, and there was no way to push the fix onto an already-
+    published post).
+
+    Deliberately requires an explicit article_id -- unlike list_
+    articles_needing_sync, there is no batch/scheduled resync mode.
+    Resyncing overwrites a LIVE, already-published BigCommerce post, so
+    this only ever runs as a deliberate one-at-a-time admin action, never
+    unattended on a schedule.
+
+    Conditions mirror list_articles_needing_sync (sync_to_bigcommerce =
+    true, match_status = 'matched') but flipped on sync status: requires
+    bowlerdepot_synced_at IS NOT NULL and bigcommerce_post_id IS NOT NULL
+    -- an article that was never synced has nothing to resync onto, so
+    it should go through the normal Sync path instead."""
+    query = """
+        select pa.id as article_id, pa.product_id, bp.bigcommerce_product_id,
+               pa.bigcommerce_post_id,
+               pa.title, pa.hook, pa.performance_summary, pa.who_should_buy,
+               pa.who_should_skip, pa.pros, pa.cons, pa.buying_tips, pa.verdict,
+               pa.faq, pa.action_shot_image_url, pa.product_shot_image_url,
+               b.name as brand_name
+        from product_articles pa
+        join bowlerdepot_products bp on bp.product_id = pa.product_id
+        join products p on p.id = pa.product_id
+        join brands b on b.id = p.brand_id
+        where pa.id = %s
+          and pa.sync_to_bigcommerce = true
+          and pa.bowlerdepot_synced_at is not null
+          and pa.bigcommerce_post_id is not null
+          and bp.match_status = 'matched'
+    """
+    with conn.cursor() as cur:
+        cur.execute(query, [article_id])
+        columns = [desc[0] for desc in cur.description]
+        return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
 def fetch_bigcommerce_product_url(session, store_hash: str, auth_token: str, bigcommerce_product_id: str):
     """Best-effort lookup of the product's own storefront URL via
     BigCommerce's Catalog v3 API (GET /v3/catalog/products/{id}), so the
@@ -271,11 +324,23 @@ def fetch_bigcommerce_product_url(session, store_hash: str, auth_token: str, big
         return None
 
 
-def build_article_body_html(article: dict, product_url: str = None) -> str:
+def build_article_body_html(article: dict, product_url: str = None, thumbnail_path: str = None) -> str:
     """Pure function -- assembles product_articles' structured fields into
     one HTML string for the Blog Post's `body` field. See this module's
-    own docstring for why images are inlined by URL rather than uploaded
-    via thumbnail_path."""
+    own docstring for why the hero image is inlined by URL rather than
+    uploaded via thumbnail_path.
+
+    thumbnail_path, when given (the WebDAV upload succeeded -- see
+    upload_thumbnail_via_webdav), means BigCommerce's own theme already
+    renders that same action-shot image as the post's featured/thumbnail
+    image at the top of the page -- **REAL INCIDENT (2026-09-05)**: once
+    the WebDAV Digest-auth fix (see this module's own docstring) made
+    thumbnail_path actually start working, Al immediately noticed the
+    same image now showed up TWICE on a real published post, once as the
+    theme's thumbnail and once again inline here. So the body only
+    inlines the image itself as a FALLBACK, when there's no
+    thumbnail_path (WebDAV not configured yet, or the upload failed) --
+    otherwise the post would have no hero image at all in that case."""
     def esc(s):
         return (
             (s or "")
@@ -289,7 +354,7 @@ def build_article_body_html(article: dict, product_url: str = None) -> str:
         return f"<p><strong>{label}:</strong></p><ul>{lis}</ul>"
 
     parts = []
-    if article.get("action_shot_image_url"):
+    if article.get("action_shot_image_url") and not thumbnail_path:
         parts.append(f'<img src="{esc(article["action_shot_image_url"])}" alt="{esc(article.get("title"))}" />')
     if article.get("hook"):
         parts.append(f"<p><em>{esc(article['hook'])}</em></p>")
@@ -390,7 +455,7 @@ def build_bigcommerce_blog_post_payload(article: dict, product_url: str = None, 
     still yields a perfectly valid, publishable post."""
     payload = {
         "title": article.get("title") or "",
-        "body": build_article_body_html(article, product_url),
+        "body": build_article_body_html(article, product_url, thumbnail_path),
         "is_published": True,
         "author": "BowlerDepot",
         "tags": [article["brand_name"]] if article.get("brand_name") else [],
@@ -424,6 +489,31 @@ def push_article_to_bigcommerce(session, store_hash: str, auth_token: str, paylo
     return resp.json()
 
 
+def push_article_update_to_bigcommerce(session, store_hash: str, auth_token: str, bigcommerce_post_id, payload: dict) -> dict:
+    """Resync path counterpart to push_article_to_bigcommerce: PUTs an
+    update onto an ALREADY-published post instead of POSTing a new one,
+    so a resync overwrites the live post (fresh body, fresh thumbnail_
+    path attempt) rather than creating a duplicate. Same v2 API, same
+    unwrapped-response shape (no "data" key) as the create path --
+    confirmed against BigCommerce's own docs, which document PUT
+    /stores/{store_hash}/v2/blog/posts/{id} as the update operation for
+    this same v2 Blog Posts resource. Raises on a non-2xx response, same
+    as push_article_to_bigcommerce -- caught per-article by
+    _process_one_article."""
+    resp = session.put(
+        f"{BIGCOMMERCE_API_BASE}/stores/{store_hash}/v2/blog/posts/{bigcommerce_post_id}",
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "X-Auth-Token": auth_token,
+        },
+        json=payload,
+        timeout=DEFAULT_FETCH_TIMEOUT_SECONDS,
+    )
+    resp.raise_for_status()
+    return resp.json()
+
+
 def mark_article_synced(conn, article_id: str, bigcommerce_post_id) -> None:
     with conn.cursor() as cur:
         cur.execute(
@@ -437,7 +527,8 @@ def mark_article_synced(conn, article_id: str, bigcommerce_post_id) -> None:
     conn.commit()
 
 
-def _process_one_article(session, conn, store_hash: str, auth_token: str, article: dict, webdav: dict = None) -> dict:
+def _process_one_article(session, conn, store_hash: str, auth_token: str, article: dict, webdav: dict = None,
+                          resync: bool = False) -> dict:
     """Pushes one article and records the result -- exceptions are caught
     HERE (not left to propagate) so handler's loop can keep going through
     the rest of a scheduled batch after one article's push fails (e.g. a
@@ -445,7 +536,16 @@ def _process_one_article(session, conn, store_hash: str, auth_token: str, articl
     bigcommerce_product_id). webdav is None when no WebDAV credentials
     are configured yet -- upload_thumbnail_via_webdav handles that (and
     every other failure mode) by just returning None, so this still
-    posts a perfectly valid article without a thumbnail_path."""
+    posts a perfectly valid article without a thumbnail_path.
+
+    resync=True (the "Resync" button, article came from list_articles_
+    needing_resync so it's guaranteed to already have a bigcommerce_
+    post_id) PUTs the freshly-rebuilt body/thumbnail_path onto that SAME
+    existing post via push_article_update_to_bigcommerce, instead of
+    POSTing a brand new one -- this is what actually lets an
+    already-published post pick up a thumbnail that failed (or didn't
+    exist yet) the first time around, without creating a duplicate post
+    on the blog."""
     try:
         product_url = fetch_bigcommerce_product_url(
             session, store_hash, auth_token, article["bigcommerce_product_id"],
@@ -454,41 +554,57 @@ def _process_one_article(session, conn, store_hash: str, auth_token: str, articl
             session, webdav, article["article_id"], article.get("action_shot_image_url"),
         )
         payload = build_bigcommerce_blog_post_payload(article, product_url, thumbnail_path)
-        created = push_article_to_bigcommerce(session, store_hash, auth_token, payload)
-        mark_article_synced(conn, article["article_id"], created["id"])
-        return {"article_id": str(article["article_id"]), "success": True, "bigcommerce_post_id": created["id"]}
+        if resync:
+            push_article_update_to_bigcommerce(session, store_hash, auth_token, article["bigcommerce_post_id"], payload)
+            bigcommerce_post_id = article["bigcommerce_post_id"]
+        else:
+            created = push_article_to_bigcommerce(session, store_hash, auth_token, payload)
+            bigcommerce_post_id = created["id"]
+        mark_article_synced(conn, article["article_id"], bigcommerce_post_id)
+        return {"article_id": str(article["article_id"]), "success": True, "bigcommerce_post_id": bigcommerce_post_id}
     except Exception as exc:
         logger.exception(
-            "Failed to push article %s (product %s, bigcommerce_product_id %s) to BigCommerce",
-            article.get("article_id"), article.get("product_id"), article.get("bigcommerce_product_id"),
+            "Failed to %s article %s (product %s, bigcommerce_product_id %s) to BigCommerce",
+            "resync" if resync else "push", article.get("article_id"), article.get("product_id"),
+            article.get("bigcommerce_product_id"),
         )
         return {"article_id": str(article.get("article_id")), "success": False, "error": str(exc)}
 
 
 def handler(event, context):
-    """See this module's own docstring for the two invocation shapes
-    (scheduled batch vs. on-demand single article_id)."""
+    """See this module's own docstring for the invocation shapes:
+    scheduled batch (no article_id), on-demand single sync
+    ({"article_id": "..."}), and on-demand resync
+    ({"article_id": "...", "resync": true})."""
     import requests
 
     article_id = (event or {}).get("article_id")
+    resync = bool((event or {}).get("resync"))
     conn = get_db_connection()
     try:
-        articles = list_articles_needing_sync(conn, article_id=article_id)
+        if resync:
+            if not article_id:
+                logger.warning("resync=true requires an article_id -- nothing to do")
+                return {"statusCode": 400, "body": json.dumps({"error": "resync requires an article_id"})}
+            articles = list_articles_needing_resync(conn, article_id)
+        else:
+            articles = list_articles_needing_sync(conn, article_id=article_id)
+
         if not articles:
-            logger.info("No articles need syncing to BigCommerce (article_id=%s)", article_id)
+            logger.info("No articles need %s (article_id=%s)", "resyncing" if resync else "syncing", article_id)
             return {"statusCode": 200, "body": json.dumps({"pushed": 0, "failed": 0, "results": []})}
 
         store_hash, auth_token, webdav = get_bigcommerce_credentials()
         session = requests.Session()
 
         results = [
-            _process_one_article(session, conn, store_hash, auth_token, article, webdav)
+            _process_one_article(session, conn, store_hash, auth_token, article, webdav, resync=resync)
             for article in articles
         ]
 
         pushed = sum(1 for r in results if r["success"])
         failed = len(results) - pushed
-        logger.info("BigCommerce article sync: %d pushed, %d failed", pushed, failed)
+        logger.info("BigCommerce article %s: %d pushed, %d failed", "resync" if resync else "sync", pushed, failed)
         return {"statusCode": 200, "body": json.dumps({"pushed": pushed, "failed": failed, "results": results})}
     finally:
         conn.close()

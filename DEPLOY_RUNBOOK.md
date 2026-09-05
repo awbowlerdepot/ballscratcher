@@ -8891,6 +8891,83 @@ its `.username`/`.password` attributes, since it has no `__eq__`) rather
 than a tuple -- 23 → 40 tests. Full regression sweep: clean. No
 `template.yaml` change.
 
+**Follow-up: dedupe body image against the thumbnail, add a "Resync"
+button** -- two changes, both from Al's very next real-world test once
+the Digest-auth fix actually got a thumbnail onto a live post:
+
+1. **"including the image in the body duplicates because the thumbnail
+   now works"**: once `thumbnail_path` actually renders (the theme shows
+   it at the top of the post), the SAME action-shot image was ALSO still
+   inlined in the body underneath it. `build_article_body_html` now
+   takes an optional `thumbnail_path` param and only inlines the image
+   as a FALLBACK when there's no thumbnail (WebDAV not configured, or
+   the upload failed) -- otherwise the post would have no hero image at
+   all in that case. `build_bigcommerce_blog_post_payload` passes its own
+   `thumbnail_path` argument through into this call so the two always
+   stay in sync.
+
+2. **"can we add a resync button"**: the Zero Mercy Solid article (and
+   anything else) synced BEFORE the Digest-auth fix has no thumbnail --
+   and there was no way to push that fix onto an already-published post.
+   `list_articles_needing_sync`'s own query permanently excludes anything
+   with `bowlerdepot_synced_at` already set, by design (no re-sync-on-
+   rerun), so simply re-flagging or re-triggering "Sync now" on an
+   already-synced article is a guaranteed no-op.
+
+   Built as a genuinely separate path rather than reusing the create
+   flow, since blindly re-running `push_article_to_bigcommerce` (a POST)
+   against an already-synced article would create a SECOND, duplicate
+   blog post rather than fixing the first one:
+   - `list_articles_needing_resync(conn, article_id)` -- same shape as
+     `list_articles_needing_sync` but FLIPPED (`bowlerdepot_synced_at IS
+     NOT NULL`, `bigcommerce_post_id IS NOT NULL`), plus it selects
+     `bigcommerce_post_id` so the update knows which post to target.
+     Deliberately requires an explicit `article_id` always -- there is
+     no batch/scheduled resync mode, since this overwrites a LIVE post
+     and should only ever be a deliberate one-at-a-time admin action.
+   - `push_article_update_to_bigcommerce(session, store_hash, auth_token,
+     bigcommerce_post_id, payload)` -- PUTs onto
+     `/stores/{store_hash}/v2/blog/posts/{id}` (BigCommerce's documented
+     update operation for this same v2 resource), same unwrapped-response
+     shape as the create path.
+   - `_process_one_article` gained a `resync: bool = False` param: when
+     true, it calls the update path instead of create, and keeps the
+     article's EXISTING `bigcommerce_post_id` rather than taking a new id
+     from the response.
+   - `handler` gained a third invocation shape:
+     `{"article_id": "...", "resync": true}` -- requires `article_id`
+     (returns a 400 otherwise, since resync with no target doesn't mean
+     anything), dispatches to `list_articles_needing_resync` instead of
+     `list_articles_needing_sync`.
+   - `admin_api`: `service.queue_article_resync` (mirrors
+     `queue_article_sync`'s existence-only check + direct
+     `lambda:InvokeFunction`, but the payload also carries
+     `"resync": true`) + `POST /articles/{id}/resync-to-bigcommerce`.
+     Reuses the SAME `ARTICLE_SYNC_FUNCTION_NAME` env var and IAM grant
+     `queue_article_sync` already has -- no `template.yaml` change.
+   - `admin-site`: a "Resync" button next to the existing sync controls,
+     shown only once `bowlerdepot_synced_at` is set (the opposite
+     condition from "Sync now"), with its own confirm dialog explicitly
+     warning it overwrites the live post rather than creating a new one.
+
+**Tests**: `tests/test_bowlerdepot_article_sync.py` grew from 40 to 50 --
+`list_articles_needing_resync` (row shape, empty-when-ineligible, exact
+filter conditions incl. the flipped sync-status check and the
+`bigcommerce_post_id is not null` requirement), `push_article_update_
+to_bigcommerce` (PUTs to the right URL with the existing post id,
+raises on error same as the create path), `_process_one_article`'s
+resync branch (updates the SAME post id and never calls `.post()` at
+all, and a failed resync never touches `bowlerdepot_synced_at`), and
+three `handler` tests (400 with no `article_id`, dispatches to the
+resync query not the sync query, threads `resync=True` through to
+`_process_one_article`). `_FakeSession.put()` extended to accept both
+real call shapes (the WebDAV upload's `data`/`auth` and the BigCommerce
+update's `headers`/`json`) since both real callers now share it.
+`tests/test_admin_api_service.py` gained 3 tests for
+`queue_article_resync`, mirroring `queue_article_sync`'s own shape --
+265 → 268. Full regression sweep across every test file: clean. No
+`template.yaml` change (same function, same env var, same IAM grant).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

@@ -2106,9 +2106,21 @@ function renderArticles(items) {
       const syncNowBtn = (a.sync_to_bigcommerce && !a.bowlerdepot_synced_at)
         ? '<button class="btn small ghost" onclick="syncArticleNow(\'' + a.id + '\')">Sync now</button>'
         : '';
+      // "Resync" -- the opposite condition from "Sync now": only useful
+      // once an article HAS already been pushed (bowlerdepot_synced_at
+      // set). Added right after the WebDAV Digest-auth fix made
+      // thumbnail_path actually work: articles synced before that fix
+      // have no thumbnail, and there was no way to push the fix onto an
+      // already-published post until this button/endpoint existed. See
+      // service.queue_article_resync's docstring -- this PUTs an update
+      // onto the SAME existing bigcommerce_post_id, it does not create a
+      // duplicate post.
+      const resyncBtn = a.bowlerdepot_synced_at
+        ? '<button class="btn small ghost" onclick="resyncArticleNow(\'' + a.id + '\')">Resync</button>'
+        : '';
       const bcSyncCell = '<button class="btn small ' + (a.sync_to_bigcommerce ? 'ok' : 'ghost') + '" ' +
         'onclick="toggleArticleBigcommerceSync(\'' + a.id + '\', ' + (!a.sync_to_bigcommerce) + ')">' +
-        (a.sync_to_bigcommerce ? 'Sync on' : 'Sync off') + '</button>' + syncNowBtn +
+        (a.sync_to_bigcommerce ? 'Sync on' : 'Sync off') + '</button>' + syncNowBtn + resyncBtn +
         (a.bowlerdepot_synced_at ? '<div class="muted small">synced ' + fmtDate(a.bowlerdepot_synced_at) + '</div>' : '');
       // Al: "where can i get the article ID" -- needed to PATCH /articles/
       // {id}/bigcommerce-sync (or any other by-id endpoint) directly
@@ -2185,6 +2197,20 @@ async function syncArticleNow(id) {
   try {
     await api('POST', '/articles/' + id + '/sync-to-bigcommerce');
     toast('Sync queued -- refresh in a few seconds to see the result');
+  } catch (e) { toast(e.message, true); }
+}
+
+async function resyncArticleNow(id) {
+  // Overwrites the article's ALREADY-published BigCommerce post with
+  // its current content (fresh body, fresh thumbnail_path attempt) --
+  // an update (PUT) onto the same post, not a new one. Use this to pick
+  // up a fix (like a thumbnail that failed the first time) on a post
+  // that already went out. Fire-and-forget, same shape as syncArticleNow
+  // -- see service.queue_article_resync's docstring.
+  if (!confirm('Resync this article? This overwrites the already-published BigCommerce post with the current content (including a fresh thumbnail attempt) -- it will NOT create a new post.')) return;
+  try {
+    await api('POST', '/articles/' + id + '/resync-to-bigcommerce');
+    toast('Resync queued -- refresh in a few seconds to see the result');
   } catch (e) { toast(e.message, true); }
 }
 

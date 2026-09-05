@@ -119,8 +119,9 @@ def test_build_bigcommerce_blog_post_payload_omits_thumbnail_path_when_not_given
 # --- list_articles_needing_sync: fake psycopg2-shaped cursor/connection ---
 
 class _FakeCursor:
-    def __init__(self, articles_needing_sync=None):
+    def __init__(self, articles_needing_sync=None, articles_needing_resync=None):
         self.articles_needing_sync = articles_needing_sync or []
+        self.articles_needing_resync = articles_needing_resync or []
         self.executed = []
         self.description = None
         self._rows = []
@@ -137,7 +138,30 @@ class _FakeCursor:
         q = " ".join(query.split())
         self.executed.append((q, params))
 
-        if q.startswith("select pa.id as article_id, pa.product_id, bp.bigcommerce_product_id"):
+        # Both list_articles_needing_sync and list_articles_needing_resync
+        # share this SELECT prefix -- the resync query inserts
+        # `pa.bigcommerce_post_id,` right after bigcommerce_product_id, so
+        # that's the one distinguishing token checked first.
+        if q.startswith("select pa.id as article_id, pa.product_id, bp.bigcommerce_product_id, pa.bigcommerce_post_id"):
+            self.description = [
+                ("article_id",), ("product_id",), ("bigcommerce_product_id",), ("bigcommerce_post_id",),
+                ("title",), ("hook",), ("performance_summary",), ("who_should_buy",), ("who_should_skip",),
+                ("pros",), ("cons",), ("buying_tips",), ("verdict",), ("faq",), ("action_shot_image_url",),
+                ("product_shot_image_url",), ("brand_name",),
+            ]
+            (only_id,) = params
+            rows = [a for a in self.articles_needing_resync if a["article_id"] == only_id]
+            self._rows = [
+                (
+                    a["article_id"], a["product_id"], a["bigcommerce_product_id"], a.get("bigcommerce_post_id"),
+                    a.get("title"), a.get("hook"), a.get("performance_summary"), a.get("who_should_buy"),
+                    a.get("who_should_skip"), a.get("pros"), a.get("cons"), a.get("buying_tips"), a.get("verdict"),
+                    a.get("faq"), a.get("action_shot_image_url"), a.get("product_shot_image_url"), a.get("brand_name"),
+                )
+                for a in rows
+            ]
+
+        elif q.startswith("select pa.id as article_id, pa.product_id, bp.bigcommerce_product_id"):
             self.description = [
                 ("article_id",), ("product_id",), ("bigcommerce_product_id",), ("title",), ("hook",),
                 ("performance_summary",), ("who_should_buy",), ("who_should_skip",), ("pros",), ("cons",),
@@ -169,8 +193,8 @@ class _FakeCursor:
 
 
 class _FakeConnection:
-    def __init__(self, articles_needing_sync=None):
-        self._cursor = _FakeCursor(articles_needing_sync)
+    def __init__(self, articles_needing_sync=None, articles_needing_resync=None):
+        self._cursor = _FakeCursor(articles_needing_sync, articles_needing_resync)
         self.commits = 0
         self.closed = False
 
@@ -228,6 +252,44 @@ def test_list_articles_needing_sync_scopes_to_one_article_id():
     assert "and pa.id = %s" in executed_query
 
 
+# --- list_articles_needing_resync: same fake cursor/connection, flipped conditions ---
+
+def test_list_articles_needing_resync_returns_row_with_bigcommerce_post_id():
+    conn = _FakeConnection(articles_needing_resync=[
+        {"article_id": "art-1", "product_id": "prod-1", "bigcommerce_product_id": "4390",
+         "bigcommerce_post_id": "777", "title": "T", "brand_name": "Storm"},
+    ])
+    results = app.list_articles_needing_resync(conn, "art-1")
+    assert len(results) == 1
+    assert results[0]["bigcommerce_post_id"] == "777"
+
+
+def test_list_articles_needing_resync_empty_when_article_not_eligible():
+    """FakeCursor doesn't simulate real SQL filtering -- this only proves
+    the query dispatch itself works and an unmatched id yields nothing;
+    test_list_articles_needing_resync_query_requires_synced_and_matched
+    below is what pins the actual filter conditions in the query text."""
+    conn = _FakeConnection(articles_needing_resync=[])
+    assert app.list_articles_needing_resync(conn, "art-1") == []
+
+
+def test_list_articles_needing_resync_query_requires_synced_and_matched():
+    """Mirrors test_list_articles_needing_sync_query_requires_approved_
+    flagged_matched -- pins that the resync query's conditions are the
+    FLIPPED sync-status check (already synced, not not-yet-synced) plus
+    an explicit bigcommerce_post_id is not null check, since the update
+    (PUT) path needs a real existing post id to target."""
+    conn = _FakeConnection(articles_needing_resync=[])
+    app.list_articles_needing_resync(conn, "art-1")
+
+    executed_query = conn._cursor.executed[0][0]
+    assert "pa.sync_to_bigcommerce = true" in executed_query
+    assert "pa.bowlerdepot_synced_at is not null" in executed_query
+    assert "pa.bigcommerce_post_id is not null" in executed_query
+    assert "bp.match_status = 'matched'" in executed_query
+    assert "pa.id = %s" in executed_query
+
+
 # --- fetch_bigcommerce_product_url: fake requests-Session-shaped object ---
 
 class _FakeResponse:
@@ -276,8 +338,16 @@ class _FakeSession:
             raise self.post_exc
         return self.post_response
 
-    def put(self, url, data=None, auth=None, timeout=None):
-        self.put_calls.append({"url": url, "data": data, "auth": auth, "timeout": timeout})
+    def put(self, url, data=None, auth=None, headers=None, json=None, timeout=None):
+        # Shared by two different real callers with two different call
+        # shapes: upload_thumbnail_via_webdav (data=<bytes>, auth=<Digest
+        # auth object>) and push_article_update_to_bigcommerce
+        # (headers=..., json=<payload>, same shape as .post()). Recording
+        # both sets of kwargs lets tests for either caller inspect just
+        # the fields that caller actually passed.
+        self.put_calls.append({
+            "url": url, "data": data, "auth": auth, "headers": headers, "json": json, "timeout": timeout,
+        })
         if self.put_exc is not None:
             raise self.put_exc
         return self.put_response
@@ -497,6 +567,30 @@ def test_push_article_to_bigcommerce_raises_on_error_response():
         assert "403" in str(exc)
 
 
+# --- push_article_update_to_bigcommerce: Resync path, PUT to an existing post ---
+
+def test_push_article_update_to_bigcommerce_puts_to_existing_post_id():
+    session = _FakeSession(put_response=_FakeResponse(200, {"id": 777, "title": "T"}))
+    payload = {"title": "T", "body": "<p>B</p>", "is_published": True, "author": "BowlerDepot", "tags": []}
+
+    result = app.push_article_update_to_bigcommerce(session, "store-hash-1", "token-123", 777, payload)
+
+    assert result == {"id": 777, "title": "T"}
+    call = session.put_calls[0]
+    assert call["url"] == "https://api.bigcommerce.com/stores/store-hash-1/v2/blog/posts/777"
+    assert call["headers"]["X-Auth-Token"] == "token-123"
+    assert call["json"] == payload
+
+
+def test_push_article_update_to_bigcommerce_raises_on_error_response():
+    session = _FakeSession(put_response=_FakeResponse(403, {}))
+    try:
+        app.push_article_update_to_bigcommerce(session, "store-hash-1", "token-123", 777, {"title": "T", "body": "B"})
+        assert False, "expected an exception"
+    except Exception as exc:
+        assert "403" in str(exc)
+
+
 # --- mark_article_synced: fake cursor/connection ---
 
 def test_mark_article_synced_writes_id_and_commits():
@@ -595,6 +689,49 @@ def test_process_one_article_uploads_thumbnail_and_sets_thumbnail_path_when_webd
     assert session.post_calls[0]["json"]["thumbnail_path"] == "uploaded_images/article-art-1.png"
 
 
+def test_process_one_article_resync_updates_existing_post_instead_of_creating_new():
+    """resync=True must PUT onto the article's EXISTING bigcommerce_post_
+    id (push_article_update_to_bigcommerce) rather than POST a new post --
+    the entire point of Resync (Al's ask right after the WebDAV fix
+    landed) is overwriting the live post in place, not creating a
+    duplicate."""
+    conn = _FakeConnection()
+    session = _FakeSession(
+        get_responses=[
+            _FakeResponse(200, {"data": {"custom_url": {"url": "/x/"}}}),  # product URL lookup
+            _FakeResponse(200, content=b"fake-png-bytes"),  # thumbnail image download
+        ],
+    )
+    article = {
+        "article_id": "art-1", "product_id": "prod-1", "bigcommerce_product_id": "4390",
+        "bigcommerce_post_id": "777", "title": "T",
+        "action_shot_image_url": "https://bucket.s3.amazonaws.com/action.png",
+    }
+
+    result = app._process_one_article(session, conn, "store-hash-1", "token-123", article, webdav=_WEBDAV, resync=True)
+
+    assert result == {"article_id": "art-1", "success": True, "bigcommerce_post_id": "777"}
+    assert session.post_calls == []  # never creates a new post on resync
+    bc_update_call = session.put_calls[1]  # put_calls[0] is the WebDAV thumbnail upload
+    assert bc_update_call["url"] == "https://api.bigcommerce.com/stores/store-hash-1/v2/blog/posts/777"
+    assert bc_update_call["json"]["thumbnail_path"] == "uploaded_images/article-art-1.png"
+    assert conn._cursor.updates == [("777", "art-1")]
+
+
+def test_process_one_article_resync_failure_does_not_mark_synced():
+    conn = _FakeConnection()
+    session = _FakeSession(get_response=_FakeResponse(200, {"data": {}}), put_exc=RuntimeError("boom"))
+    article = {
+        "article_id": "art-1", "product_id": "prod-1", "bigcommerce_product_id": "4390",
+        "bigcommerce_post_id": "777", "title": "T",
+    }
+
+    result = app._process_one_article(session, conn, "store-hash-1", "token-123", article, resync=True)
+
+    assert result == {"article_id": "art-1", "success": False, "error": "boom"}
+    assert conn._cursor.updates == []
+
+
 # --- handler: orchestration only -- DB/credentials/per-article push all monkeypatched ---
 
 def test_handler_returns_early_with_zero_counts_when_nothing_needs_sync(monkeypatch):
@@ -636,7 +773,7 @@ def test_handler_processes_every_article_and_tallies_results(monkeypatch):
     monkeypatch.setattr(app, "list_articles_needing_sync", lambda c, article_id=None: articles)
     monkeypatch.setattr(app, "get_bigcommerce_credentials", lambda: ("store-hash-1", "token-123", None))
 
-    def _fake_process(session, conn_, store_hash, auth_token, article, webdav=None):
+    def _fake_process(session, conn_, store_hash, auth_token, article, webdav=None, resync=False):
         if article["article_id"] == "art-1":
             return {"article_id": "art-1", "success": False, "error": "boom"}
         return {"article_id": "art-2", "success": True, "bigcommerce_post_id": 1}
@@ -649,6 +786,58 @@ def test_handler_processes_every_article_and_tallies_results(monkeypatch):
     assert body["pushed"] == 1
     assert body["failed"] == 1
     assert conn.closed is True
+
+
+def test_handler_resync_without_article_id_returns_400(monkeypatch):
+    """Resync only ever makes sense against one specific, already-
+    published post -- there is no batch/scheduled resync mode, so a
+    resync=true event with no article_id is a caller bug, not something
+    to silently no-op on."""
+    conn = _FakeConnection()
+    monkeypatch.setattr(app, "get_db_connection", lambda: conn)
+
+    result = app.handler({"resync": True}, None)
+
+    assert result["statusCode"] == 400
+    assert conn.closed is True
+
+
+def test_handler_resync_dispatches_to_needing_resync_query_not_needing_sync(monkeypatch):
+    """resync=true must route through list_articles_needing_resync (the
+    already-synced/has-a-post-id query), never list_articles_needing_
+    sync (the not-yet-synced query) -- calling the wrong one would
+    either resync nothing (an unsynced article never matches) or, worse,
+    treat a resync as a normal create and duplicate the post."""
+    conn = _FakeConnection()
+    calls = {"sync": 0, "resync": 0}
+
+    monkeypatch.setattr(app, "get_db_connection", lambda: conn)
+    monkeypatch.setattr(app, "list_articles_needing_sync", lambda c, article_id=None: (calls.__setitem__("sync", calls["sync"] + 1), [])[1])
+    monkeypatch.setattr(app, "list_articles_needing_resync", lambda c, article_id: (calls.__setitem__("resync", calls["resync"] + 1), [])[1])
+
+    app.handler({"article_id": "art-1", "resync": True}, None)
+
+    assert calls == {"sync": 0, "resync": 1}
+
+
+def test_handler_resync_passes_resync_flag_through_to_process_one_article(monkeypatch):
+    conn = _FakeConnection()
+    article = {"article_id": "art-1", "product_id": "prod-1", "bigcommerce_product_id": "4390",
+               "bigcommerce_post_id": "777", "title": "T"}
+    seen = {}
+
+    def _fake_process(session, conn_, store_hash, auth_token, article_, webdav=None, resync=False):
+        seen["resync"] = resync
+        return {"article_id": "art-1", "success": True, "bigcommerce_post_id": "777"}
+
+    monkeypatch.setattr(app, "get_db_connection", lambda: conn)
+    monkeypatch.setattr(app, "list_articles_needing_resync", lambda c, article_id: [article])
+    monkeypatch.setattr(app, "get_bigcommerce_credentials", lambda: ("store-hash-1", "token-123", None))
+    monkeypatch.setattr(app, "_process_one_article", _fake_process)
+
+    app.handler({"article_id": "art-1", "resync": True}, None)
+
+    assert seen["resync"] is True
 
 
 if __name__ == "__main__":
