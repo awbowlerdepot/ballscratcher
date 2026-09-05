@@ -2058,18 +2058,32 @@ function renderArticles(items) {
       const thumbHtml = a.action_shot_image_url
         ? '<img src="' + escapeHtml(a.action_shot_image_url) + '" alt="" class="article-thumb" title="Action shot" />'
         : (a.images_generated_at ? '<span class="muted small" title="Image generation ran but produced no images">no images</span>' : '');
+      // BigCommerce sync toggle (028_product_articles_bigcommerce_sync.sql,
+      // Al: "lets add a flag to each article that would sync them to
+      // bigcommerce if on") -- same button-as-toggle shape as Products
+      // tab's togglePublish, independent of the approve/reject status
+      // above (an article can be pending or approved and still have this
+      // flipped on/off; the eventual sync job is what actually gates on
+      // BOTH status='approved' and this flag together). synced_at, once
+      // set, stays shown even if the flag is later turned off -- see the
+      // migration's own header comment for why that's deliberate.
+      const bcSyncCell = '<button class="btn small ' + (a.sync_to_bigcommerce ? 'ok' : 'ghost') + '" ' +
+        'onclick="toggleArticleBigcommerceSync(\'' + a.id + '\', ' + (!a.sync_to_bigcommerce) + ')">' +
+        (a.sync_to_bigcommerce ? 'Sync on' : 'Sync off') + '</button>' +
+        (a.bowlerdepot_synced_at ? '<div class="muted small">synced ' + fmtDate(a.bowlerdepot_synced_at) + '</div>' : '');
       return '<tr>' +
         '<td>' + thumbHtml + escapeHtml(a.title || '(untitled)') + '</td>' +
         '<td>' + escapeHtml(a.product_name) + '<div class="muted small">' + escapeHtml(a.brand_name || '') + '</div></td>' +
         '<td>' + fmtDate(a.generated_at) + '</td>' +
         '<td>' + (a.resolved_by ? (escapeHtml(a.resolved_by) + '<div class="muted small">' + fmtDate(a.reviewed_at) + '</div>') : '—') + '</td>' +
+        '<td>' + bcSyncCell + '</td>' +
         '<td class="actions">' + statusCell +
         '<button class="btn small ghost" onclick="regenerateArticle(\'' + a.product_id + '\')">Regenerate</button>' +
         '<button class="btn small ghost" onclick="toggleArticleDetail(\'' + a.id + '\')">Preview</button></td>' +
         '</tr>' +
-        '<tr id="article-detail-' + a.id + '" class="detail-row hidden"><td colspan="5"></td></tr>';
+        '<tr id="article-detail-' + a.id + '" class="detail-row hidden"><td colspan="6"></td></tr>';
     }).join('');
-    listEl.innerHTML = '<table><thead><tr><th>Title</th><th>Product</th><th>Generated</th><th>Reviewed by</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    listEl.innerHTML = '<table><thead><tr><th>Title</th><th>Product</th><th>Generated</th><th>Reviewed by</th><th>BigCommerce</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
   document.getElementById('article-prev').disabled = articleState.offset === 0;
   document.getElementById('article-next').disabled = articleState.lastCount < articleState.limit;
@@ -2095,6 +2109,18 @@ async function rejectArticle(id) {
   try {
     await api('POST', '/articles/' + id + '/reject', { body: { resolved_by: by, reason: reason || undefined } });
     toast('Rejected');
+    loadArticles();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function toggleArticleBigcommerceSync(id, newValue) {
+  // No confirm() dialog, unlike togglePublish -- this doesn't itself
+  // publish/unpublish anything on bowlerdepot.com; it only sets what the
+  // (not-yet-built) sync job will pick up on its next run. See service.
+  // set_article_bigcommerce_sync's docstring.
+  try {
+    await api('PATCH', '/articles/' + id + '/bigcommerce-sync', { body: { sync_to_bigcommerce: newValue } });
+    toast(newValue ? 'Will sync to BigCommerce' : 'Sync turned off');
     loadArticles();
   } catch (e) { toast(e.message, true); }
 }

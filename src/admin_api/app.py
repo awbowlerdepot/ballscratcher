@@ -75,6 +75,15 @@ class ReassignRequest(BaseModel):
     resolved_by: Optional[str] = None
 
 
+class ArticleBigcommerceSyncRequest(BaseModel):
+    # 028_product_articles_bigcommerce_sync.sql -- same single-field
+    # boolean-toggle shape as PublishRequest above, not ApproveRequest/
+    # RejectRequest's review-workflow shape (no resolved_by: this isn't a
+    # review resolution, see service.set_article_bigcommerce_sync's own
+    # docstring for why).
+    sync_to_bigcommerce: bool
+
+
 class SelectImageCandidateRequest(BaseModel):
     # Optional, same as ReassignRequest.resolved_by above -- see
     # service.select_article_image_candidate's own docstring for why it's
@@ -1158,6 +1167,21 @@ def reject_article(article_id: str, body: RejectRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.patch("/articles/{article_id}/bigcommerce-sync")
+def set_article_bigcommerce_sync(article_id: str, body: ArticleBigcommerceSyncRequest):
+    # Same PATCH-a-single-boolean shape as PATCH /products/{id}/published
+    # above -- see service.set_article_bigcommerce_sync's docstring for
+    # why this is its own lightweight toggle route rather than folded
+    # into approve/reject.
+    conn = service.get_db_connection()
+    try:
+        return service.set_article_bigcommerce_sync(conn, article_id, body.sync_to_bigcommerce)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     finally:
         conn.close()
 

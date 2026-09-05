@@ -33,7 +33,7 @@ Any Postgres 13+ instance works (RDS is the obvious choice, but this
 repo doesn't assume it). Note the connection details -- you'll need them
 for step 3's `DbSecretArn` secret and to run migrations directly.
 
-## 2. Run the twenty-six migrations, in order
+## 2. Run the migrations, in order
 
 ```bash
 psql "$DATABASE_URL" -f db/migrations/001_init_schema.sql
@@ -63,6 +63,7 @@ psql "$DATABASE_URL" -f db/migrations/024_product_article_images_composite_pipel
 psql "$DATABASE_URL" -f db/migrations/025_product_article_images_theme_driven_pipeline.sql
 psql "$DATABASE_URL" -f db/migrations/026_product_article_image_candidates.sql
 psql "$DATABASE_URL" -f db/migrations/027_manual_seed_urls.sql
+psql "$DATABASE_URL" -f db/migrations/028_product_articles_bigcommerce_sync.sql
 ```
 
 (If you already ran an earlier subset in a prior deploy, just run whatever
@@ -8503,6 +8504,139 @@ still_succeed`'s failure-injection index (the 3rd call overall is now
 `action_shot`'s own 2nd attempt, not the 2nd call overall) -- same
 end-state assertions (`action_shot` 2 candidates, `product_shot` 3), just
 retargeted to the new call order. Full 44-file regression sweep: clean.
+
+### 6u. Article → BigCommerce sync: admin toggle (migration 028) + sync job design spec (job not yet built)
+
+Follow-up to 6s/6t (the ball-review article generator): Al asked how to get
+these generated articles onto bowlerdepot.com itself as a knowledge-base
+section, then, once two architectures were discussed (push into
+BigCommerce as native content vs. a decoupled microsite reading
+`public_api` directly), asked specifically: "lets add a flag to each
+article that would sync them to bigcommerce if on" and to spec out the
+sync job. **Only the flag is built in this pass** -- the sync job itself
+(`src/bowlerdepot_article_sync`) does not exist yet; this section is a
+design spec for it, same "spec first, build later" split Al asked for.
+
+**What's actually built (migration 028):**
+
+- `db/migrations/028_product_articles_bigcommerce_sync.sql` adds
+  `product_articles.sync_to_bigcommerce` (boolean, default `false`),
+  `bigcommerce_post_id` (text), and `bowlerdepot_synced_at` (timestamptz)
+  -- the exact same three-column shape `020_bowlerdepot_video_sync.sql`
+  already established for `product_videos` (an admin-controlled gate
+  plus the eventual sync job's own idempotency bookkeeping), applied here
+  to articles instead. Deliberately a SEPARATE gate from
+  `status = 'approved'`: an article being safe to show on
+  data.bowleriq.com (via `public_api`) doesn't by itself mean Al wants it
+  posted under bowlerdepot.com's own name -- different audience, and he
+  may want to review the storefront framing separately. Defaults `false`
+  -- nothing is eligible to sync until an admin opts a specific article
+  in.
+- `service.set_article_bigcommerce_sync` (new) + `PATCH
+  /articles/{article_id}/bigcommerce-sync` (`{"sync_to_bigcommerce":
+  bool}`) -- mirrors `set_product_published`'s exact shape (single-column
+  update, `LookupError` if the row doesn't exist) rather than
+  `approve_article`/`reject_article`'s review-workflow shape: this is a
+  freely-reversible admin preference an admin can flip on an article of
+  ANY status, not a one-way resolution of a queue item. No
+  `template.yaml` change needed -- `PATCH /{proxy+}` already covers it,
+  same as every other admin_api route added since 6h.
+- `list_articles`/`get_article` now include the three new columns so the
+  Articles tab list row can show/toggle the flag without a second
+  round-trip.
+- admin-site: a "Sync on"/"Sync off" toggle button per article row
+  (`toggleArticleBigcommerceSync`, same button-as-toggle shape as the
+  Products tab's `togglePublish`), showing `synced ‹date›` underneath
+  once `bowlerdepot_synced_at` is set. That timestamp is deliberately
+  left visible even after the flag is turned back off -- see the
+  migration's own header comment: turning the flag off does NOT delete
+  or unpublish anything that was already pushed, that's a separate,
+  not-yet-decided question (see below).
+- Tests: `test_admin_api_service.py` -- `set_article_bigcommerce_sync`
+  works on a pending article (no status gate), turning it off leaves
+  `status`/`bigcommerce_post_id`/`bowlerdepot_synced_at` untouched,
+  missing-row raises `LookupError`, plus `list_articles`/`get_article`
+  round-trip the three new columns. Full 44-file regression sweep clean;
+  `template.yaml` unchanged (still 57 resources).
+
+**Design spec for `src/bowlerdepot_article_sync` (NOT built -- no Lambda,
+no schedule, no IAM exists yet):**
+
+Chosen direction, from the earlier architecture discussion: push
+approved+flagged articles into BigCommerce as native Blog posts (better
+SEO -- the content lands on the bowlerdepot.com domain as a real indexed
+page, and the KB "section" is just BigCommerce's own blog index) rather
+than a decoupled microsite reading `public_api` live. This mirrors
+`bowlerdepot_video_sync`'s own "push into BigCommerce's native feature,
+don't reinvent a widget" reasoning (6q), just against a different
+BigCommerce API.
+
+- **Confirmed live against BigCommerce's own docs this session** (not
+  guessed): unlike `bowlerdepot_video_sync`'s v3 Catalog Product Videos
+  endpoint, Blog Posts are a **v2** API --
+  `POST /stores/{store_hash}/v2/blog/posts`. Required fields: `title`,
+  `body`. Relevant optional fields: `tags`, `is_published` (defaults
+  `false` -- draft until explicitly set `true`), `meta_description`,
+  `meta_keywords`, `author`, `published_date`, `thumbnail_path`. Response
+  includes BigCommerce's own new `id` (what gets stored as
+  `bigcommerce_post_id`).
+- **OAuth scope needed is `store_v2_content` (Content: modify) --
+  CONFIRMED a different scope than `bowlerdepot_video_sync`'s Products-
+  modify (`store_v2_products`) need.** Same "unverifiable from this
+  sandbox, real prerequisite Al must check himself" situation 6q already
+  flagged for that scope: whatever token sits behind
+  `BIGCOMMERCE_SECRET_ARN` today (built for `price_checker`'s read-only
+  lookups, then `bowlerdepot_video_sync`'s Products-modify need) almost
+  certainly does NOT have Content-modify yet -- check BigCommerce's API
+  Accounts settings and add the scope (or mint a separate token) before
+  this job's first real run, or every push will 403.
+- **Needs-sync query** (mirrors `list_videos_needing_sync`'s shape):
+  `product_articles.status = 'approved' AND sync_to_bigcommerce = true
+  AND bowlerdepot_synced_at is null`, joined through `bowlerdepot_products`
+  scoped to `match_status = 'matched'` -- same reasoning 6q's own query
+  already applies (an `'ambiguous'`/`'unmatched'` row is a known-
+  unreliable match; this job should never post content that claims to be
+  about the wrong ball).
+- **Body construction**: assemble the article's structured fields (hook,
+  performance_summary, pros/cons, who_should_buy/skip, buying_tips,
+  verdict, faq) into one HTML string for the `body` field. Images
+  (`action_shot_image_url`/`product_shot_image_url`) can be inlined as
+  plain `<img src="...">` tags pointing straight at their existing public
+  S3 URLs -- these are already served directly to the consumer site via
+  `public_api`, so there's no new hosting problem to solve. Recommend
+  **skipping `thumbnail_path` entirely for a v1** -- it's the one field
+  that requires a separate WebDAV upload to `/product_images/` first
+  (per BigCommerce's own docs), real added complexity for a cosmetic
+  thumbnail that isn't required to publish the post at all.
+- **Open design question, deliberately NOT decided here**: a blog post
+  needs to link back to its product page, but `bowlerdepot_products`
+  (migration 001) only stores `bigcommerce_product_id`/`bigcommerce_sku`/
+  `match_status` -- no product-page URL. Two options, neither built:
+  (a) an extra `GET /v3/catalog/products/{id}` call per article to read
+  that product's own `custom_url.url` at sync time, or (b) a new stored
+  column on `bowlerdepot_products` that `bowlerdepot_reconciliation`
+  populates once, which this sync then just reads. Left open rather than
+  guessed at -- Al's call once this gets built.
+- **Idempotency**: `bigcommerce_post_id`/`bowlerdepot_synced_at`
+  (migration 028) mirror `product_videos.bowlerdepot_video_id`/
+  `bowlerdepot_synced_at` exactly -- a re-run only pushes a
+  not-yet-synced row. **Also not decided**: what a regenerate (which
+  resets `product_articles.status` back to `'pending'` -- see 022's
+  header comment on the no-versioning design) should do to an
+  already-synced BigCommerce post. This spec only covers pushing NEW
+  posts; updating or deleting a previously-synced one on regenerate/
+  flag-off is future scope.
+- **Schedule**: simplest is the same `rate(1 hour)` polling shape as
+  `bowlerdepot_video_sync`, for consistency. A direct-invoke-on-toggle
+  alternative (mirroring `queue_video_discovery`'s admin_api-invokes-
+  Lambda-directly pattern) would sync faster but adds a new invoke path
+  -- Al's call, not assumed here.
+
+Nothing in this subsection has been built: no `src/bowlerdepot_article_
+sync/` directory, no `template.yaml` resource, no schedule, no IAM. The
+flag (migration 028 + the two endpoints above) is the only part live
+today -- turning it on for an article currently does nothing but set a
+column, by design, until the job above gets built.
 
 ## 7. Ongoing operations
 

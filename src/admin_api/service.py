@@ -3625,12 +3625,20 @@ def list_articles(conn, status: str = "pending", product_id: str = None, limit: 
     """Lists product_articles rows joined with product/brand name for
     display, same join-for-display shape as list_price_sources. status=None
     (the admin-site "all" option, same convention as
-    GET /video-candidates?status=all) returns every status."""
+    GET /video-candidates?status=all) returns every status.
+
+    sync_to_bigcommerce/bigcommerce_post_id/bowlerdepot_synced_at
+    (028_product_articles_bigcommerce_sync.sql) are included so the
+    Articles tab list row can show/toggle the sync flag without a second
+    round-trip per row -- same "columns the list view needs come along in
+    this same select" reasoning the action_shot_image_url/
+    images_generated_at columns above already follow."""
     query = """
         select pa.id, pa.product_id, p.name as product_name, b.name as brand_name,
                pa.status, pa.title, pa.generated_at, pa.reviewed_at,
                pa.resolved_by, pa.created_at,
-               pa.action_shot_image_url, pa.product_shot_image_url, pa.images_generated_at
+               pa.action_shot_image_url, pa.product_shot_image_url, pa.images_generated_at,
+               pa.sync_to_bigcommerce, pa.bigcommerce_post_id, pa.bowlerdepot_synced_at
         from product_articles pa
         join products p on p.id = pa.product_id
         join brands b on b.id = p.brand_id
@@ -3717,6 +3725,34 @@ def reject_article(conn, article_id: str, resolved_by: str, reason: str = None) 
         )
     conn.commit()
     return {"article_id": article_id, "status": "rejected"}
+
+
+def set_article_bigcommerce_sync(conn, article_id: str, sync_to_bigcommerce: bool) -> dict:
+    """Toggles product_articles.sync_to_bigcommerce (028_product_articles_
+    bigcommerce_sync.sql) -- Al: "lets add a flag to each article that
+    would sync them to bigcommerce if on." Mirrors set_product_published's
+    exact shape (single-column update, LookupError if the row doesn't
+    exist, no pending/approved status gate) rather than approve_article/
+    reject_article's review-workflow shape: this is a lightweight,
+    freely-reversible admin preference, not a one-way resolution of a
+    review-queue item -- an admin can flip it on and off as many times as
+    they want, on an article of any status.
+
+    Deliberately does NOT touch bigcommerce_post_id/bowlerdepot_synced_at
+    -- those are the sync job's own bookkeeping (set only when it
+    actually pushes something), never written by this toggle itself. See
+    that migration's header comment for what turning this off after a
+    successful sync does and doesn't mean."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "update product_articles set sync_to_bigcommerce = %s where id = %s returning id",
+            (sync_to_bigcommerce, article_id),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError(f"No product_articles row with id {article_id}")
+    conn.commit()
+    return {"article_id": article_id, "sync_to_bigcommerce": sync_to_bigcommerce}
 
 
 def list_article_image_candidates(conn, article_id: str) -> list:

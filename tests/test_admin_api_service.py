@@ -770,13 +770,15 @@ class FakeCursor:
                 (r["id"], r["product_id"], r["product_name"], r["brand_name"], r["status"],
                  r.get("title"), r.get("generated_at"), r.get("reviewed_at"), r.get("resolved_by"),
                  r.get("created_at"), r.get("action_shot_image_url"), r.get("product_shot_image_url"),
-                 r.get("images_generated_at"))
+                 r.get("images_generated_at"), r.get("sync_to_bigcommerce"), r.get("bigcommerce_post_id"),
+                 r.get("bowlerdepot_synced_at"))
                 for r in rows
             ]
             self.description = [
                 ("id",), ("product_id",), ("product_name",), ("brand_name",), ("status",),
                 ("title",), ("generated_at",), ("reviewed_at",), ("resolved_by",), ("created_at",),
                 ("action_shot_image_url",), ("product_shot_image_url",), ("images_generated_at",),
+                ("sync_to_bigcommerce",), ("bigcommerce_post_id",), ("bowlerdepot_synced_at",),
             ]
 
         elif q.startswith("select pa.*, p.name as product_name, b.name as brand_name"):
@@ -811,6 +813,20 @@ class FakeCursor:
             row["resolved_by"] = resolved_by
             row["reviewed_at"] = "now"
             self._last_result = None
+
+        elif q.startswith("update product_articles set sync_to_bigcommerce"):
+            # set_article_bigcommerce_sync (028_product_articles_
+            # bigcommerce_sync.sql) -- returning id, so a missing row
+            # yields None here, same "let fetchone() come back empty"
+            # shape as set_product_published's own generic "update
+            # products set" branch above.
+            sync_to_bigcommerce, article_id = params
+            row = self.db["product_articles"].get(article_id)
+            self._last_result = None
+            if row is not None:
+                row["sync_to_bigcommerce"] = sync_to_bigcommerce
+                self._last_result = (article_id,)
+            self.description = [("id",)]
 
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
@@ -4198,6 +4214,10 @@ def _fake_article_row(**overrides):
         "action_shot_image_key": None, "action_shot_image_url": None,
         "product_shot_image_key": None, "product_shot_image_url": None,
         "images_generated_at": None,
+        # 028_product_articles_bigcommerce_sync.sql -- default to "not
+        # opted in, never synced" so existing tests that don't care about
+        # BigCommerce sync don't need to know these columns exist.
+        "sync_to_bigcommerce": False, "bigcommerce_post_id": None, "bowlerdepot_synced_at": None,
     }
     row.update(overrides)
     return row
@@ -4353,6 +4373,97 @@ def test_reject_article_already_resolved_raises():
         service.reject_article(conn, "art-1", "al@bringyourbest.co")
         assert False, "expected ValueError"
     except ValueError:
+        pass
+
+
+# --- set_article_bigcommerce_sync (PATCH /articles/{id}/bigcommerce-sync,
+# 028_product_articles_bigcommerce_sync.sql) -- Al: "lets add a flag to
+# each article that would sync them to bigcommerce if on." Mirrors
+# set_product_published's own test shape (no status-gate tests needed --
+# this toggle works on an article of any status, unlike approve/reject).
+
+def test_list_articles_includes_bigcommerce_sync_fields():
+    db = {"product_articles": {
+        "art-1": _fake_article_row(
+            sync_to_bigcommerce=True,
+            bigcommerce_post_id="789",
+            bowlerdepot_synced_at="2026-09-04",
+        ),
+    }}
+    conn = FakeConnection(db)
+
+    result = service.list_articles(conn, status="pending")
+
+    assert result[0]["sync_to_bigcommerce"] is True
+    assert result[0]["bigcommerce_post_id"] == "789"
+    assert result[0]["bowlerdepot_synced_at"] == "2026-09-04"
+
+
+def test_get_article_includes_bigcommerce_sync_columns():
+    """Same `select pa.*` round-trip guarantee as the image-column test
+    above -- confirms migration 028's columns come through get_article
+    with no code change needed there."""
+    db = {"product_articles": {"art-1": _fake_article_row(sync_to_bigcommerce=True)}}
+    conn = FakeConnection(db)
+
+    result = service.get_article(conn, "art-1")
+
+    assert result["sync_to_bigcommerce"] is True
+    assert result["bigcommerce_post_id"] is None
+    assert result["bowlerdepot_synced_at"] is None
+
+
+def test_set_article_bigcommerce_sync_turns_flag_on():
+    db = {"product_articles": {"art-1": _fake_article_row(sync_to_bigcommerce=False)}}
+    conn = FakeConnection(db)
+
+    result = service.set_article_bigcommerce_sync(conn, "art-1", True)
+
+    assert result == {"article_id": "art-1", "sync_to_bigcommerce": True}
+    assert db["product_articles"]["art-1"]["sync_to_bigcommerce"] is True
+    assert conn.committed is True
+
+
+def test_set_article_bigcommerce_sync_turns_flag_off():
+    """Turning it off must NOT touch status, bigcommerce_post_id, or
+    bowlerdepot_synced_at -- see the migration's own header comment for
+    why a previously-synced post isn't implicitly taken down by this."""
+    db = {"product_articles": {"art-1": _fake_article_row(
+        status="approved", sync_to_bigcommerce=True,
+        bigcommerce_post_id="789", bowlerdepot_synced_at="2026-09-04",
+    )}}
+    conn = FakeConnection(db)
+
+    result = service.set_article_bigcommerce_sync(conn, "art-1", False)
+
+    assert result == {"article_id": "art-1", "sync_to_bigcommerce": False}
+    row = db["product_articles"]["art-1"]
+    assert row["sync_to_bigcommerce"] is False
+    assert row["status"] == "approved"
+    assert row["bigcommerce_post_id"] == "789"
+    assert row["bowlerdepot_synced_at"] == "2026-09-04"
+
+
+def test_set_article_bigcommerce_sync_works_on_pending_article():
+    """Unlike approve_article/reject_article, this toggle has no status
+    gate at all -- an admin can opt a still-pending article in before it's
+    even reviewed."""
+    db = {"product_articles": {"art-1": _fake_article_row(status="pending", sync_to_bigcommerce=False)}}
+    conn = FakeConnection(db)
+
+    result = service.set_article_bigcommerce_sync(conn, "art-1", True)
+
+    assert result == {"article_id": "art-1", "sync_to_bigcommerce": True}
+    assert db["product_articles"]["art-1"]["status"] == "pending"
+
+
+def test_set_article_bigcommerce_sync_missing_raises():
+    db = {"product_articles": {}}
+    conn = FakeConnection(db)
+    try:
+        service.set_article_bigcommerce_sync(conn, "does-not-exist", True)
+        assert False, "expected LookupError"
+    except LookupError:
         pass
 
 
