@@ -341,7 +341,29 @@ def test_upload_thumbnail_via_webdav_uploads_and_returns_relative_path():
     put_call = session.put_calls[0]
     assert put_call["url"] == "https://store-abc.mybigcommerce.com/dav/product_images/uploaded_images/article-art-1.png"
     assert put_call["data"] == b"fake-png-bytes"
-    assert put_call["auth"] == ("wd@example.com", "wd-secret")
+
+
+def test_upload_thumbnail_via_webdav_uses_digest_auth_not_basic():
+    """REAL INCIDENT (2026-09-05, Al's first live test): BigCommerce's
+    WebDAV is backed by SabreDAV, which rejects plain HTTP Basic Auth --
+    a live curl -v reproduction with correct, Cyberduck-verified-working
+    credentials got back 401 with `WWW-Authenticate: Digest
+    realm="SabreDAV"...` and SabreDAV's own "No 'Authorization: Digest'
+    header found" error body. Cyberduck performs that handshake
+    transparently, which is why "Cyberduck connects fine" and "the
+    Lambda gets 401" were both true -- never a credentials problem.
+    Pins that the fix (requests.auth.HTTPDigestAuth, not a plain
+    (user, pass) tuple which requests treats as Basic Auth) stays in
+    place."""
+    import requests
+
+    session = _FakeSession(get_response=_FakeResponse(200, content=b"fake-png-bytes"))
+    app.upload_thumbnail_via_webdav(session, _WEBDAV, "art-1", "https://bucket.s3.amazonaws.com/action.png")
+
+    auth = session.put_calls[0]["auth"]
+    assert isinstance(auth, requests.auth.HTTPDigestAuth)
+    assert auth.username == "wd@example.com"
+    assert auth.password == "wd-secret"
 
 
 def test_upload_thumbnail_via_webdav_strips_trailing_slash_from_webdav_url():

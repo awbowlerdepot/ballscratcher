@@ -329,10 +329,28 @@ def upload_thumbnail_via_webdav(session, webdav: dict, article_id: str, image_ur
     lowercase-hex-and-dashes UUID -- satisfies BigCommerce's documented
     a-z/0-9/-/_ filename restriction) plus the source image's own file
     extension (defaulting to .png if the URL's extension isn't a
-    BigCommerce-recognized image type)."""
+    BigCommerce-recognized image type).
+
+    **REAL INCIDENT (confirmed 2026-09-05, Al's first live test)**:
+    BigCommerce's WebDAV is backed by SabreDAV, which flatly rejects
+    plain HTTP Basic Auth -- a live `curl -v` reproduction with correct,
+    Cyberduck-verified-working credentials got back 401 with
+    `WWW-Authenticate: Digest realm="SabreDAV",qop="auth",...` and the
+    literal SabreDAV error body "No 'Authorization: Digest' header
+    found. Either the client didn't send one, or the server is
+    misconfigured." Cyberduck (and every other real WebDAV client)
+    performs the Digest challenge/response handshake transparently,
+    which is exactly why "I just connected with Cyberduck, the
+    credentials are fine" and "the Lambda gets 401" were BOTH true at
+    the same time -- this was never a credentials problem. Fixed by
+    using requests.auth.HTTPDigestAuth instead of a plain (user, pass)
+    tuple (which requests treats as Basic Auth) -- HTTPDigestAuth
+    performs the same two-round-trip handshake real WebDAV clients do."""
     if not webdav or not image_url:
         return None
     try:
+        import requests
+
         image_resp = session.get(image_url, timeout=DEFAULT_FETCH_TIMEOUT_SECONDS)
         image_resp.raise_for_status()
 
@@ -344,7 +362,7 @@ def upload_thumbnail_via_webdav(session, webdav: dict, article_id: str, image_ur
         upload_resp = session.put(
             f"{webdav['url'].rstrip('/')}/product_images/uploaded_images/{filename}",
             data=image_resp.content,
-            auth=(webdav["username"], webdav["password"]),
+            auth=requests.auth.HTTPDigestAuth(webdav["username"], webdav["password"]),
             timeout=DEFAULT_FETCH_TIMEOUT_SECONDS,
         )
         upload_resp.raise_for_status()

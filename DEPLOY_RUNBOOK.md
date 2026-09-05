@@ -8838,6 +8838,59 @@ and cleanly absent when it isn't. Full regression sweep across every
 test file: clean. No `template.yaml` change, so no new resource-count
 check needed.
 
+**REAL INCIDENT (2026-09-05): WebDAV upload 401'd on Al's very first
+live test -- root cause was Basic vs. Digest auth, not credentials.**
+Al deployed the code above, updated the secret with real WebDAV
+credentials, and got a `401 Unauthorized` on the very next sync (visible
+in CloudWatch as `Could not upload WebDAV thumbnail ... 401 Client
+Error`). The obvious suspects were all ruled out one at a time: the
+WebDAV username matched exactly what BigCommerce's own Settings › File
+access (WebDAV) page showed, and -- the decisive test -- **Al
+successfully connected with Cyberduck using the exact same URL/
+username/password**, proving the credentials and account setup were
+fine. That ruled out everything about the BigCommerce account and left
+only "something about the plain HTTP request itself."
+
+A direct `curl -v -u "user:pass" -T file.png <url>` reproduction (same
+shape as `requests`' plain `auth=(user, pass)` tuple, i.e. Basic Auth)
+made the real cause unambiguous:
+
+```
+< HTTP/2 401
+< www-authenticate: Digest realm="SabreDAV",qop="auth",nonce="...",opaque="..."
+<?xml version="1.0" encoding="utf-8"?>
+<d:error xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns">
+  <s:exception>Sabre\DAV\Exception\NotAuthenticated</s:exception>
+  <s:message>No 'Authorization: Digest' header found. Either the client
+  didn't send one, or the server is misconfigured</s:message>
+</d:error>
+```
+
+BigCommerce's WebDAV is backed by **SabreDAV**, which flatly rejects
+Basic Auth and requires **Digest Auth** -- a real HTTP-level fact about
+their server that isn't mentioned anywhere in BigCommerce's own WebDAV
+documentation (which only walks through Cyberduck setup). Cyberduck (and
+every other real WebDAV client) performs the Digest challenge/response
+handshake transparently, which is exactly why "Cyberduck connects fine"
+and "the Lambda gets 401" were both true at the same time -- it was
+never a credentials problem.
+
+**Fix**: `upload_thumbnail_via_webdav` now passes
+`requests.auth.HTTPDigestAuth(webdav["username"], webdav["password"])`
+instead of a plain `(username, password)` tuple (which `requests`
+treats as Basic Auth by default) -- `HTTPDigestAuth` performs the same
+two-round-trip challenge/response handshake a real WebDAV client does.
+No credential, URL, or template change needed at all; this was purely
+an auth-scheme bug in the upload code itself.
+
+**Tests**: added
+`test_upload_thumbnail_via_webdav_uses_digest_auth_not_basic`, which
+pins that the `auth` object passed to `session.put()` is an actual
+`requests.auth.HTTPDigestAuth` instance (checked via `isinstance` plus
+its `.username`/`.password` attributes, since it has no `__eq__`) rather
+than a tuple -- 23 → 40 tests. Full regression sweep: clean. No
+`template.yaml` change.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
