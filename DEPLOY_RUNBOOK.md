@@ -8740,6 +8740,104 @@ the standalone Articles tab and the product-detail Articles section, so
 it shows in both places automatically). Admin-site only -- no
 service.py/app.py/migration change.
 
+**Follow-up: single body image + WebDAV thumbnail_path** -- Al, after
+the sync job's first real push went out, asked "can you set the
+thumbnail image too, also only the 16:9 image is needed in the blog post
+itself." Two changes:
+
+- `build_article_body_html` now embeds ONLY `action_shot_image_url` (the
+  16:9 hero shot) -- `product_shot_image_url` (the 1:1 square shot) is no
+  longer inlined in the post body. Al's own call: one hero image is
+  enough in the body itself; the square shot's real job is now the
+  thumbnail below.
+- **`thumbnail_path` (real WebDAV upload, built this session, Al's
+  choice via `AskUserQuestion` -- "set up WebDAV properly" over the
+  "skip it" fallback)**: confirmed via BigCommerce's own docs +
+  community reports that `thumbnail_path` can only point at a file
+  BigCommerce is already serving under `/product_images/` -- never an
+  arbitrary external URL -- so setting it needs a real upload via WebDAV,
+  a COMPLETELY DIFFERENT credential type (a WebDAV username [an email
+  address] + password from **Settings -> File access (WebDAV)** in
+  BigCommerce's control panel) than the OAuth bearer token
+  (`X-Auth-Token`) used everywhere else in this project.
+  - New `upload_thumbnail_via_webdav(session, webdav, article_id,
+    image_url)`: downloads the article's own `action_shot_image_url` and
+    `PUT`s it to `{webdav_url}/product_images/uploaded_images/
+    {filename}` (the `uploaded_images/` convention is confirmed via a
+    real BigCommerce CDN URL seen during research:
+    `.../product_images/uploaded_images/props.jpg`); `filename` is
+    `article-{article_id}.{ext}` (the article's own UUID is already safe
+    lowercase-hex-and-dashes, satisfying BigCommerce's documented
+    a-z/0-9/-/_ filename rule). Returns the path relative to
+    `/product_images/` (`"uploaded_images/{filename}"`) for
+    `thumbnail_path`, or `None` on ANY failure -- unconfigured WebDAV, a
+    download error, or an upload error all just mean "post without a
+    thumbnail," same "degrade, don't block" pattern as
+    `fetch_bigcommerce_product_url`. Never blocks the article.
+  - `build_bigcommerce_blog_post_payload` gained an optional
+    `thumbnail_path` param -- included in the payload only when the
+    upload actually succeeded (omitted entirely otherwise, not sent as
+    `None`/empty).
+  - `get_bigcommerce_credentials` now also reads three OPTIONAL keys off
+    the SAME shared `BIGCOMMERCE_SECRET_ARN` secret every other
+    BigCommerce-touching function here already reads --
+    `webdav_url`/`webdav_username`/`webdav_password`. Deliberately not a
+    new secret, parameter, or IAM grant: this ARN is already wired into
+    `BowlerdepotArticleSyncFunction`, and a WebDAV username/password is
+    just a different credential shape carried on the same object.
+    `webdav` comes back `None` unless all three keys are present, so an
+    as-yet-unconfigured account just means "no thumbnail" rather than a
+    `KeyError` -- **no `template.yaml` change was needed for this
+    feature at all.**
+
+**Al still needs to do, before thumbnails will actually show up:**
+
+1. In BigCommerce's control panel: **Settings -> File access (WebDAV)**
+   -> create/view a WebDAV account. Note the WebDAV URL (e.g. something
+   like `https://store-{hash}.mybigcommerce.com/dav`), username (an
+   email address), and password it gives you.
+2. Add those three values into the SAME secret the OAuth token already
+   lives in (whatever `BIGCOMMERCE_SECRET_ARN` resolves to for this
+   stack) -- merge them in rather than overwriting the existing
+   `store_hash`/`auth_token` keys:
+
+   ```bash
+   ARN="<your BigCommerce secret's ARN>"
+   CURRENT=$(aws secretsmanager get-secret-value --secret-id "$ARN" --query SecretString --output text)
+   UPDATED=$(echo "$CURRENT" | jq \
+     --arg url "https://store-XXXXXXX.mybigcommerce.com/dav" \
+     --arg user "your-webdav-username@example.com" \
+     --arg pass "your-webdav-password" \
+     '. + {webdav_url: $url, webdav_username: $user, webdav_password: $pass}')
+   aws secretsmanager put-secret-value --secret-id "$ARN" --secret-string "$UPDATED"
+   ```
+
+   (No `jq`? Same fallback as the earlier OAuth-token update: fetch
+   `CURRENT`, hand-edit the JSON to add the three keys, then
+   `put-secret-value` with the edited string.)
+3. No redeploy needed -- `bowlerdepot_article_sync` re-reads the secret
+   on every invocation, so the very next scheduled run (or "Sync now")
+   after the secret is updated will attempt the WebDAV upload.
+
+**Tests**: `tests/test_bowlerdepot_article_sync.py` grew from 23 to 39 --
+a dedicated body-html test pinning "exactly one `<img>`, and it's the
+action shot, not the product shot"; a full suite for
+`upload_thumbnail_via_webdav` (success, not-configured, no-image-url,
+trailing-slash URL normalization, unrecognized-extension defaulting to
+`.png`, download failure, upload exception, upload HTTP error -- all via
+a `_FakeSession` extended with `.put()` and a `get_responses` queue for
+tests needing the product-URL lookup and the thumbnail download to
+return two different things); `get_bigcommerce_credentials`'s new
+webdav-extraction logic (all-keys-present, some-keys-present,
+no-keys-present) via a `sys.modules`-injected fake `boto3` module (same
+pattern `test_product_article_generator.py`'s `_HandlerPatchGuard`
+already established, since boto3 isn't actually installed in this
+sandbox); and `_process_one_article`/payload tests confirming
+`thumbnail_path` is wired through end-to-end when WebDAV is configured,
+and cleanly absent when it isn't. Full regression sweep across every
+test file: clean. No `template.yaml` change, so no new resource-count
+check needed.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

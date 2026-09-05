@@ -70,15 +70,45 @@ never post an article under the wrong BigCommerce product.
 
 **Body construction** (build_article_body_html) assembles the article's
 structured fields (hook, performance_summary, who_should_buy/skip,
-pros/cons, buying_tips, verdict, faq) into one HTML string. Images
-(action_shot_image_url/product_shot_image_url) are inlined as plain
-<img src="..."> tags pointing straight at their existing public S3 URLs
--- these are already served directly to the consumer site via
-public_api, so there's no new hosting problem to solve.
-thumbnail_path is deliberately NOT set -- per BigCommerce's own docs it
-requires a separate WebDAV upload to /product_images/ first, real added
-complexity for a cosmetic thumbnail that isn't required to publish the
-post at all (see the original spec's own reasoning).
+pros/cons, buying_tips, verdict, faq) into one HTML string. Only
+action_shot_image_url (the 16:9 hero shot) is inlined as a plain
+<img src="..."> tag pointing straight at its existing public S3 URL --
+these are already served directly to the consumer site via public_api,
+so there's no new hosting problem to solve. product_shot_image_url (the
+1:1 square shot) is deliberately NOT embedded in the body -- Al's own
+call: one hero image is enough in the post itself, and the square shot's
+real job is now the WebDAV-uploaded thumbnail below.
+
+**Thumbnail (thumbnail_path) -- built this session, Al's choice via
+AskUserQuestion ("set up WebDAV properly" over the "skip it, rely on the
+body image" fallback)**: BigCommerce's thumbnail_path can only point at
+a file BigCommerce itself is already serving under /product_images/ --
+never an arbitrary external URL -- so setting it requires a separate
+upload via WebDAV, a COMPLETELY DIFFERENT credential type (a WebDAV
+username [an email address] + password from Settings -> File access
+(WebDAV) in BigCommerce's control panel) than the OAuth bearer token
+(X-Auth-Token) used everywhere else in this module. upload_thumbnail_
+via_webdav downloads the article's own action_shot_image_url and PUTs it
+to {webdav_url}/product_images/uploaded_images/{filename} (that
+uploaded_images/ convention is confirmed via a real BigCommerce CDN URL
+seen during research:
+.../product_images/uploaded_images/props.jpg), then thumbnail_path is
+set to the path relative to /product_images/, i.e.
+"uploaded_images/{filename}". Deliberately best-effort, same "degrade,
+don't block" pattern as fetch_bigcommerce_product_url -- no WebDAV
+credentials configured, or any failure during the download/upload, just
+means the post goes out with no thumbnail_path key at all rather than
+failing the whole article. get_bigcommerce_credentials reads the WebDAV
+username/password/URL as three OPTIONAL extra keys (webdav_url/
+webdav_username/webdav_password) on the SAME shared BIGCOMMERCE_SECRET_
+ARN secret every other BigCommerce-touching Lambda here already reads --
+deliberately not a new secret/parameter/IAM grant, since the ARN is
+already wired everywhere it's needed. All three keys must be present or
+webdav support is treated as "not configured yet" and skipped entirely.
+Al adds them himself via `aws secretsmanager put-secret-value` (see
+DEPLOY_RUNBOOK.md 6u) -- this sandbox never sees the actual WebDAV
+password, same "Al supplies real credentials himself" pattern already
+used for the OAuth token.
 
 **Idempotency**: bigcommerce_post_id/bowlerdepot_synced_at (migration
 028) mirror product_videos.bowlerdepot_video_id/bowlerdepot_synced_at
@@ -133,13 +163,30 @@ def get_bigcommerce_credentials():
     has that scope isn't something this function (or anything in this
     sandbox) can verify -- Al needs to confirm/upgrade it in BigCommerce's
     own API Accounts settings before this function's pushes will succeed;
-    a 403 from push_article_to_bigcommerce is the symptom if it doesn't."""
+    a 403 from push_article_to_bigcommerce is the symptom if it doesn't.
+
+    Also reads three OPTIONAL extra keys off the SAME secret --
+    webdav_url/webdav_username/webdav_password -- for the thumbnail_path
+    WebDAV upload (see this module's own docstring). Deliberately not a
+    new secret/parameter: this ARN is already granted to this function,
+    and a WebDAV username/password is a wholly different credential type
+    than X-Auth-Token so it can't just be reused. Returns webdav=None
+    unless all three keys are present, so an as-yet-unconfigured account
+    degrades to "no thumbnail" rather than a KeyError."""
     import boto3
 
     secret_arn = os.environ["BIGCOMMERCE_SECRET_ARN"]
     client = boto3.client("secretsmanager")
     secret = json.loads(client.get_secret_value(SecretId=secret_arn)["SecretString"])
-    return secret["store_hash"], secret["auth_token"]
+
+    webdav = None
+    if secret.get("webdav_url") and secret.get("webdav_username") and secret.get("webdav_password"):
+        webdav = {
+            "url": secret["webdav_url"].rstrip("/"),
+            "username": secret["webdav_username"],
+            "password": secret["webdav_password"],
+        }
+    return secret["store_hash"], secret["auth_token"], webdav
 
 
 def get_db_connection():
@@ -244,8 +291,6 @@ def build_article_body_html(article: dict, product_url: str = None) -> str:
     parts = []
     if article.get("action_shot_image_url"):
         parts.append(f'<img src="{esc(article["action_shot_image_url"])}" alt="{esc(article.get("title"))}" />')
-    if article.get("product_shot_image_url"):
-        parts.append(f'<img src="{esc(article["product_shot_image_url"])}" alt="{esc(article.get("title"))}" />')
     if article.get("hook"):
         parts.append(f"<p><em>{esc(article['hook'])}</em></p>")
     if article.get("performance_summary"):
@@ -265,21 +310,76 @@ def build_article_body_html(article: dict, product_url: str = None) -> str:
     return "".join(p for p in parts if p)
 
 
-def build_bigcommerce_blog_post_payload(article: dict, product_url: str = None) -> dict:
+def upload_thumbnail_via_webdav(session, webdav: dict, article_id: str, image_url: str):
+    """Best-effort: downloads the article's own action_shot_image_url
+    (already public via S3/public_api) and re-uploads it to BigCommerce's
+    WebDAV file store so it can be referenced as the Blog Post's
+    thumbnail_path -- see this module's own docstring for why this
+    separate upload is required at all. Returns None (never raises) on
+    ANY failure -- missing/unconfigured webdav, a download error, or an
+    upload error should all just mean "post without a thumbnail," not
+    block the article, same "degrade, don't block" pattern as
+    fetch_bigcommerce_product_url.
+
+    Upload target is {webdav_url}/product_images/uploaded_images/
+    {filename} (the uploaded_images/ convention is confirmed via a real
+    BigCommerce CDN URL seen during research); the returned thumbnail_
+    path is relative to /product_images/, i.e. "uploaded_images/
+    {filename}". filename is derived from article_id (already a safe
+    lowercase-hex-and-dashes UUID -- satisfies BigCommerce's documented
+    a-z/0-9/-/_ filename restriction) plus the source image's own file
+    extension (defaulting to .png if the URL's extension isn't a
+    BigCommerce-recognized image type)."""
+    if not webdav or not image_url:
+        return None
+    try:
+        image_resp = session.get(image_url, timeout=DEFAULT_FETCH_TIMEOUT_SECONDS)
+        image_resp.raise_for_status()
+
+        ext = image_url.rsplit(".", 1)[-1].lower().split("?")[0]
+        if ext not in ("png", "jpg", "jpeg", "gif"):
+            ext = "png"
+        filename = f"article-{article_id}.{ext}"
+
+        upload_resp = session.put(
+            f"{webdav['url'].rstrip('/')}/product_images/uploaded_images/{filename}",
+            data=image_resp.content,
+            auth=(webdav["username"], webdav["password"]),
+            timeout=DEFAULT_FETCH_TIMEOUT_SECONDS,
+        )
+        upload_resp.raise_for_status()
+        return f"uploaded_images/{filename}"
+    except Exception:
+        logger.warning(
+            "Could not upload WebDAV thumbnail for article_id=%s -- posting without a thumbnail_path",
+            article_id, exc_info=True,
+        )
+        return None
+
+
+def build_bigcommerce_blog_post_payload(article: dict, product_url: str = None, thumbnail_path: str = None) -> dict:
     """Maps one product_articles row to BigCommerce's documented Create
     Blog Post request body (confirmed live via their own docs this
     session): required title/body, plus is_published=true (posts default
     to draft otherwise) and tags=[brand_name] when known. author is set
     to "BowlerDepot" -- there's no per-article author concept in this
     schema, and leaving it blank is also a valid choice BigCommerce
-    supports, but a named author reads better on a real blog."""
-    return {
+    supports, but a named author reads better on a real blog.
+
+    thumbnail_path is included only when the WebDAV upload actually
+    succeeded (see upload_thumbnail_via_webdav) -- omitted entirely
+    rather than sent as None/empty, so an unconfigured or failed upload
+    still yields a perfectly valid, publishable post."""
+    payload = {
         "title": article.get("title") or "",
         "body": build_article_body_html(article, product_url),
         "is_published": True,
         "author": "BowlerDepot",
         "tags": [article["brand_name"]] if article.get("brand_name") else [],
     }
+    if thumbnail_path:
+        payload["thumbnail_path"] = thumbnail_path
+    return payload
 
 
 def push_article_to_bigcommerce(session, store_hash: str, auth_token: str, payload: dict) -> dict:
@@ -319,17 +419,23 @@ def mark_article_synced(conn, article_id: str, bigcommerce_post_id) -> None:
     conn.commit()
 
 
-def _process_one_article(session, conn, store_hash: str, auth_token: str, article: dict) -> dict:
+def _process_one_article(session, conn, store_hash: str, auth_token: str, article: dict, webdav: dict = None) -> dict:
     """Pushes one article and records the result -- exceptions are caught
     HERE (not left to propagate) so handler's loop can keep going through
     the rest of a scheduled batch after one article's push fails (e.g. a
     403 from a not-yet-upgraded OAuth scope, or a stale
-    bigcommerce_product_id)."""
+    bigcommerce_product_id). webdav is None when no WebDAV credentials
+    are configured yet -- upload_thumbnail_via_webdav handles that (and
+    every other failure mode) by just returning None, so this still
+    posts a perfectly valid article without a thumbnail_path."""
     try:
         product_url = fetch_bigcommerce_product_url(
             session, store_hash, auth_token, article["bigcommerce_product_id"],
         )
-        payload = build_bigcommerce_blog_post_payload(article, product_url)
+        thumbnail_path = upload_thumbnail_via_webdav(
+            session, webdav, article["article_id"], article.get("action_shot_image_url"),
+        )
+        payload = build_bigcommerce_blog_post_payload(article, product_url, thumbnail_path)
         created = push_article_to_bigcommerce(session, store_hash, auth_token, payload)
         mark_article_synced(conn, article["article_id"], created["id"])
         return {"article_id": str(article["article_id"]), "success": True, "bigcommerce_post_id": created["id"]}
@@ -354,10 +460,13 @@ def handler(event, context):
             logger.info("No articles need syncing to BigCommerce (article_id=%s)", article_id)
             return {"statusCode": 200, "body": json.dumps({"pushed": 0, "failed": 0, "results": []})}
 
-        store_hash, auth_token = get_bigcommerce_credentials()
+        store_hash, auth_token, webdav = get_bigcommerce_credentials()
         session = requests.Session()
 
-        results = [_process_one_article(session, conn, store_hash, auth_token, article) for article in articles]
+        results = [
+            _process_one_article(session, conn, store_hash, auth_token, article, webdav)
+            for article in articles
+        ]
 
         pushed = sum(1 for r in results if r["success"])
         failed = len(results) - pushed
