@@ -9357,6 +9357,49 @@ existing filter/sort/join tests (no fixture-driven row-mapping harness
 exists for `list_articles`, unlike `get_product_article`). Full
 regression sweep: clean (43 test files). `tsc -b`: clean.
 
+### 6z. Similar Balls list gets real BowlerDepot pricing (not just links)
+
+Al: "can we includ a list of balls similar [to the] ball the article is
+for towards the bottom of the article and inlcude links and pricing for
+it using the bowlerdepot.com pricing data." The "Similar Balls" list at
+the bottom of each article already existed (`comparison_table`, task
+#444/6w) with links to each sibling's real BowlerDepot storefront page
+when known -- this ask adds real pricing to those same cards, which 6w
+had deliberately scoped OUT at the time ("Al's ask there was inline
+LINKS, not full price data").
+
+`public_api.get_product_article`'s `comparison_table` query now also
+selects `ecommerce_price`/`ecommerce_price_currency`/`ecommerce_in_stock`
+per sibling, via the same two-LATERAL-join shape (`ecom_source` then
+`ecom_price`) already used for `product`'s own Offer fields (task #448)
+-- guarantees a sibling's price/currency/stock come from the SAME chosen
+price source as its own `ecommerce_url`, not an independent lookup that
+could disagree. Same never-fabricated posture throughout: all three are
+null together whenever price_checker hasn't matched or successfully
+priced that sibling yet, exactly like `product`'s fields already work.
+
+`ArticleDetailPage.tsx`'s Similar Balls cards now show a formatted price
+(`Intl.NumberFormat` currency formatting) below the core/coverstock meta
+line when present, plus an "Out of stock" badge when `ecommerce_in_stock
+=== false` (not shown when stock status is unknown, i.e. null). No price
+line at all when null -- same silent-omission convention as everywhere
+else this project surfaces optional pricing. `types.ts`'s `ComparisonRow`
+gained the matching three fields. Not rendered into `scripts/
+prerender.ts`'s static HTML -- comparison_table's links are external
+BowlerDepot/search links, not internal review-to-review links, so they
+were never part of the prerendered crawl-relevant markup to begin with
+(same reasoning related_reviews' links ARE prerendered and these never
+were -- see that field's own docstring).
+
+**Tests**: `tests/test_public_api_service.py` gained 3 new tests (100 ->
+103): pricing present when a sibling has been checked, null when a
+source exists but was never successfully priced, and null when no
+BigCommerce source exists at all. Removed the now-redundant
+`_derive_bigcommerce_ecommerce_url` fixture helper (comparison_table's
+FakeCursor branch now calls `_derive_bigcommerce_offer` directly, same
+as the `product` spec_row branch already did). Full regression sweep:
+clean (43 test files). `tsc -b`: clean.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

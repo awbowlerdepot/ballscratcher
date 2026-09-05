@@ -264,6 +264,15 @@ h2 {
   font-size: 0.8rem;
   color: var(--color-muted);
 }
+.article-card-price {
+  font-size: 0.9rem;
+  font-weight: 700;
+  color: var(--color-accent);
+}
+.article-card-stock-badge {
+  font-weight: 400;
+  color: var(--color-alert);
+}
 
 .empty-state,
 .error-message {

@@ -3,6 +3,20 @@ import { Link, useParams } from "react-router-dom";
 import { ApiError, bowlerDepotSearchUrl, getProductArticle } from "../api/client";
 import type { ProductArticleResponse } from "../api/types";
 
+// Real BowlerDepot price for a Similar Balls card (Al: "include links
+// and pricing for it using the bowlerdepot.com pricing data") -- null
+// in, null out (no "$0.00"/"Call for price" placeholder); a sibling
+// price_checker hasn't priced yet just shows no price, same as every
+// other null-means-omit convention this page already follows.
+function formatPrice(price: number | null | undefined, currency: string | null | undefined): string | null {
+  if (price == null) return null;
+  try {
+    return new Intl.NumberFormat("en-US", { style: "currency", currency: currency || "USD" }).format(price);
+  } catch {
+    return `$${price.toFixed(2)}`;
+  }
+}
+
 export default function ArticleDetailPage() {
   const { productId } = useParams<{ productId: string }>();
   const [data, setData] = useState<ProductArticleResponse | null>(null);
@@ -167,29 +181,40 @@ export default function ArticleDetailPage() {
         <div className="article-section">
           <h2>Similar Balls</h2>
           <div className="article-grid">
-            {article.comparison_table.map((c) => (
-              <a
-                key={c.id}
-                className="article-card"
-                href={c.ecommerce_url || bowlerDepotSearchUrl(c.name)}
-                target="_blank"
-                rel="noreferrer"
-              >
-                <div className="article-card-media">
-                  {c.primary_image_url ? (
-                    <img src={c.primary_image_url} alt={c.name} loading="lazy" />
-                  ) : (
-                    <div className="article-card-media-placeholder" aria-hidden="true" />
-                  )}
-                </div>
-                <div className="article-card-body">
-                  <div className="article-card-title">{c.name}</div>
-                  <div className="article-card-meta">
-                    {[c.core_name, c.coverstock_name].filter(Boolean).join(" · ")}
+            {article.comparison_table.map((c) => {
+              const price = formatPrice(c.ecommerce_price, c.ecommerce_price_currency);
+              return (
+                <a
+                  key={c.id}
+                  className="article-card"
+                  href={c.ecommerce_url || bowlerDepotSearchUrl(c.name)}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <div className="article-card-media">
+                    {c.primary_image_url ? (
+                      <img src={c.primary_image_url} alt={c.name} loading="lazy" />
+                    ) : (
+                      <div className="article-card-media-placeholder" aria-hidden="true" />
+                    )}
                   </div>
-                </div>
-              </a>
-            ))}
+                  <div className="article-card-body">
+                    <div className="article-card-title">{c.name}</div>
+                    <div className="article-card-meta">
+                      {[c.core_name, c.coverstock_name].filter(Boolean).join(" · ")}
+                    </div>
+                    {price ? (
+                      <div className="article-card-price">
+                        {price}
+                        {c.ecommerce_in_stock === false ? (
+                          <span className="article-card-stock-badge"> · Out of stock</span>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                </a>
+              );
+            })}
           </div>
         </div>
       ) : null}

@@ -67,6 +67,15 @@ export interface ComparisonRow {
   coverstock_name?: string | null;
   primary_image_url?: string | null;
   ecommerce_url?: string | null;
+  // Real, last-checked BowlerDepot price/currency/availability for this
+  // sibling (same product_price_sources row ecommerce_url resolves from)
+  // -- Al: "include links and pricing for it using the bowlerdepot.com
+  // pricing data" on the Similar Balls list. All three null together
+  // until price_checker has actually priced this sibling at least once;
+  // never fabricated/estimated.
+  ecommerce_price?: number | null;
+  ecommerce_price_currency?: string | null;
+  ecommerce_in_stock?: boolean | null;
 }
 
 export interface RelatedReview {

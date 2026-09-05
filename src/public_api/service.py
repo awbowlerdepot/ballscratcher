@@ -761,10 +761,25 @@ def get_product_article(conn, product_id: str):
     structured data guidance is explicit that `offers`/`review`/
     `aggregateRating` must each be genuine, so this is never fabricated
     or defaulted; the JSON-LD in prerender.ts omits the whole `offers`
-    block rather than guess. NOT selected for `comparison_table` rows --
-    Al's ask there was inline LINKS, not full price data, and every
-    sibling growing its own live price-history join would be needless
-    query cost for fields no caller reads."""
+    block rather than guess.
+
+    `comparison_table` rows now carry the SAME three fields (Al: "include
+    links and pricing for [similar balls] using the bowlerdepot.com
+    pricing data") -- originally scoped out of comparison_table (Al's
+    first ask there was just inline links), but the follow-up ask is
+    explicitly for real BowlerDepot pricing on that list too, not just a
+    link. Same LATERAL-join shape as `product`'s own price fields above
+    (a sibling's ecommerce_url and its price/currency/in_stock must come
+    from the SAME chosen price source, not two independent lookups that
+    could disagree), and the same all-null-together/never-fabricated
+    posture: a sibling price_checker hasn't matched or has never
+    successfully checked simply shows no price, same as `product` already
+    does. Still not rendered into scripts/prerender.ts's static HTML --
+    comparison_table's links are external BowlerDepot storefront links
+    (or search-page fallbacks), not internal review-to-review links, so
+    they stay out of the prerendered crawl-relevant markup for the same
+    reason related_reviews' own links ARE prerendered and these never
+    were (see that field's docstring)."""
     with conn.cursor() as cur:
         cur.execute("select id from products where id = %s and published = true", (product_id,))
         if cur.fetchone() is None:
@@ -880,19 +895,33 @@ def get_product_article(conn, product_id: str):
                            ),
                            p.primary_image_url
                        ) as primary_image_url,
-                       (
-                           select pps.product_url
-                           from product_price_sources pps
-                           join price_sites ps on ps.id = pps.price_site_id
-                           where pps.product_id = p.id
-                             and ps.api_provider = 'bigcommerce'
-                             and pps.status = 'approved'
-                             and pps.is_active = true
-                           order by pps.last_checked_at desc nulls last, pps.id
-                           limit 1
-                       ) as ecommerce_url
+                       ecom_source.product_url as ecommerce_url,
+                       ecom_price.price as ecommerce_price,
+                       ecom_price.currency as ecommerce_price_currency,
+                       ecom_price.in_stock as ecommerce_in_stock
                 from products p
                 left join cores c on c.id = p.core_id
+                -- Same two-LATERAL shape as the `product` spec_row query
+                -- above (and same reasoning: ecom_price must read the
+                -- SAME price_source ecom_source picked for THIS sibling).
+                left join lateral (
+                    select pps.id, pps.product_url
+                    from product_price_sources pps
+                    join price_sites ps on ps.id = pps.price_site_id
+                    where pps.product_id = p.id
+                      and ps.api_provider = 'bigcommerce'
+                      and pps.status = 'approved'
+                      and pps.is_active = true
+                    order by pps.last_checked_at desc nulls last, pps.id
+                    limit 1
+                ) ecom_source on true
+                left join lateral (
+                    select price, currency, in_stock
+                    from product_price_history
+                    where price_source_id = ecom_source.id and price is not null
+                    order by checked_at desc
+                    limit 1
+                ) ecom_price on true
                 where p.id = any(%s::uuid[]) and p.published = true
                 order by p.name
                 """,

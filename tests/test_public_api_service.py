@@ -685,15 +685,6 @@ def _derive_bigcommerce_offer(db, pid):
     }
 
 
-def _derive_bigcommerce_ecommerce_url(db, pid):
-    """comparison_table's own ecommerce_url subquery only ever selects the
-    URL (see that query's own comment on why -- Al's ask there was inline
-    LINKS, not full price data) -- thin wrapper over _derive_bigcommerce_
-    offer so both query sites share one source of truth for "which price
-    source counts."""
-    return _derive_bigcommerce_offer(db, pid)["product_url"]
-
-
 class _FakeCursor:
     def __init__(self, db):
         self.db = db
@@ -972,6 +963,7 @@ class _FakeCursor:
             wanted = set(params[0])
             self._description = [(c,) for c in (
                 "id", "name", "url", "core_name", "coverstock_name", "primary_image_url", "ecommerce_url",
+                "ecommerce_price", "ecommerce_price_currency", "ecommerce_in_stock",
             )]
             rows = []
             for pid in wanted:
@@ -979,10 +971,11 @@ class _FakeCursor:
                 if p is None or not p["published"]:
                     continue  # unpublished/deleted sibling silently drops out -- see service docstring
                 core = self.db["cores"].get(p.get("core_id"), {})
+                offer = _derive_bigcommerce_offer(self.db, pid)
                 rows.append((
                     pid, p["name"], p["url"], core.get("name"), p.get("coverstock_name"),
                     _derive_primary_image_url(self.db, pid, p),
-                    _derive_bigcommerce_ecommerce_url(self.db, pid),
+                    offer["product_url"], offer["price"], offer["currency"], offer["in_stock"],
                 ))
             rows.sort(key=lambda r: r[1])  # order by p.name
             self._result_rows = rows
@@ -1796,6 +1789,64 @@ def test_get_product_article_comparison_table_includes_ecommerce_url():
     result = service.get_product_article(_FakeConnection(db), pid)
 
     assert result["article"]["comparison_table"][0]["ecommerce_url"] == "https://bowlerdepot.com/equinox-hybrid"
+
+
+def test_get_product_article_comparison_table_includes_pricing_when_checked():
+    """Al, on the Similar Balls list specifically: 'include links and
+    pricing for it using the bowlerdepot.com pricing data' -- comparison_
+    table rows now carry the same real Offer fields `product` already
+    does, sourced from the SAME chosen price source as that row's own
+    ecommerce_url (see this function's own docstring)."""
+    db = _fresh_db()
+    sibling = _seed_published_current_product(db, pid="sib-1", name="Equinox Hybrid")
+    _seed_bigcommerce_price_source(
+        db, sibling, "https://bowlerdepot.com/equinox-hybrid",
+        price=169.99, currency="USD", in_stock=True,
+    )
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid, sibling_product_ids=[sibling])
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    row = result["article"]["comparison_table"][0]
+    assert row["ecommerce_price"] == 169.99
+    assert row["ecommerce_price_currency"] == "USD"
+    assert row["ecommerce_in_stock"] is True
+
+
+def test_get_product_article_comparison_table_pricing_null_when_never_checked():
+    """A real approved+active BigCommerce source existing doesn't imply
+    price_checker has ever successfully priced it -- same all-null-
+    together posture `product`'s own offer fields already have."""
+    db = _fresh_db()
+    sibling = _seed_published_current_product(db, pid="sib-1", name="Equinox Hybrid")
+    _seed_bigcommerce_price_source(db, sibling, "https://bowlerdepot.com/equinox-hybrid")
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid, sibling_product_ids=[sibling])
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    row = result["article"]["comparison_table"][0]
+    assert row["ecommerce_price"] is None
+    assert row["ecommerce_price_currency"] is None
+    assert row["ecommerce_in_stock"] is None
+
+
+def test_get_product_article_comparison_table_pricing_null_when_no_bigcommerce_source():
+    """The normal case for most siblings today -- no price source at all,
+    not just an unchecked one."""
+    db = _fresh_db()
+    sibling = _seed_published_current_product(db, pid="sib-1", name="Equinox Hybrid")
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid, sibling_product_ids=[sibling])
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    row = result["article"]["comparison_table"][0]
+    assert row["ecommerce_url"] is None
+    assert row["ecommerce_price"] is None
+    assert row["ecommerce_price_currency"] is None
+    assert row["ecommerce_in_stock"] is None
 
 
 def test_get_product_article_related_reviews_only_includes_siblings_with_approved_article():
