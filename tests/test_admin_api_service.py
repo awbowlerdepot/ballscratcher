@@ -798,6 +798,16 @@ class FakeCursor:
             self._last_result = (row["status"],) if row else None
             self.description = [("status",)]
 
+        elif q.startswith("select id from product_articles where id = %s"):
+            # queue_article_sync's existence check -- deliberately just
+            # "does this row exist," no status/flag gate (see that
+            # function's own docstring for why it doesn't duplicate
+            # bowlerdepot_article_sync's own needs-sync gating).
+            (article_id,) = params
+            row = self.db.get("product_articles", {}).get(article_id)
+            self._last_result = (article_id,) if row else None
+            self.description = [("id",)]
+
         elif q.startswith("update product_articles set status = 'approved'"):
             resolved_by, article_id = params
             row = self.db["product_articles"][article_id]
@@ -4465,6 +4475,78 @@ def test_set_article_bigcommerce_sync_missing_raises():
         assert False, "expected LookupError"
     except LookupError:
         pass
+
+
+# --- queue_article_sync (POST /articles/{id}/sync-to-bigcommerce) -- Al
+# flipped sync_to_bigcommerce on for a real article via curl, got a clean
+# 200, and reported "i don't see it in bigcommerce": correct, since the
+# flag alone does nothing but set a column. This on-demand trigger invokes
+# BowlerdepotArticleSyncFunction directly instead of making Al wait for
+# its hourly schedule. Same direct-lambda-invoke-no-queue shape as
+# queue_article_generation immediately below, but scoped to an article_id
+# (not a product_id) and with no status/flag gate of its own -- see
+# service.queue_article_sync's own docstring.
+
+def test_queue_article_sync_invokes_function_with_article_id():
+    db = {"product_articles": {"art-1": _fake_article_row(id="art-1")}}
+    conn = FakeConnection(db)
+    fake_lambda = _FakeLambdaClient()
+
+    class _FakeBoto3:
+        def client(self, name):
+            assert name == "lambda"
+            return fake_lambda
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    os.environ["ARTICLE_SYNC_FUNCTION_NAME"] = "bowling-scraper-bowlerdepot-article-sync"
+    try:
+        result = service.queue_article_sync(conn, "art-1")
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+        del os.environ["ARTICLE_SYNC_FUNCTION_NAME"]
+
+    assert result == {"queued": True, "article_id": "art-1"}
+    assert len(fake_lambda.invocations) == 1
+    call = fake_lambda.invocations[0]
+    assert call["FunctionName"] == "bowling-scraper-bowlerdepot-article-sync"
+    assert call["InvocationType"] == "Event"
+    assert json.loads(call["Payload"]) == {"article_id": "art-1"}
+
+
+def test_queue_article_sync_missing_article_raises():
+    db = {"product_articles": {}}
+    conn = FakeConnection(db)
+    try:
+        service.queue_article_sync(conn, "does-not-exist")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def test_queue_article_sync_missing_function_name_returns_not_queued():
+    db = {"product_articles": {"art-1": _fake_article_row(id="art-1")}}
+    conn = FakeConnection(db)
+    os.environ.pop("ARTICLE_SYNC_FUNCTION_NAME", None)
+
+    class _ExplodingBoto3:
+        def client(self, name):
+            raise AssertionError("should never be called when the function name isn't configured")
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _ExplodingBoto3()
+    try:
+        result = service.queue_article_sync(conn, "art-1")
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+
+    assert result == {"queued": False, "reason": "ARTICLE_SYNC_FUNCTION_NAME is not configured on this deployment"}
 
 
 # --- queue_article_generation (POST /products/{id}/generate-article) --

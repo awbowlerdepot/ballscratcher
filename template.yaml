@@ -1347,6 +1347,14 @@ Resources:
           # direct lambda:InvokeFunction call, no queue in front of it"
           # shape as VIDEO_DISCOVERY_FUNCTION_NAME/PRICE_CHECKER_FUNCTION_NAME.
           PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME: !Ref ProductArticleGeneratorFunction
+          # Read by service.py's queue_article_sync (POST /articles/{id}/
+          # sync-to-bigcommerce, the Articles tab's "Sync now" button) --
+          # same "function NAME for a direct lambda:InvokeFunction call,
+          # no queue in front of it" shape as the three env vars above.
+          # BowlerdepotArticleSyncFunction's own HourlySync schedule
+          # covers the unattended case; this is the "sync THIS one right
+          # now" on-demand path.
+          ARTICLE_SYNC_FUNCTION_NAME: !Ref BowlerdepotArticleSyncFunction
       Policies:
         - Statement:
             - Effect: Allow
@@ -1423,6 +1431,14 @@ Resources:
               Action:
                 - lambda:InvokeFunction
               Resource: !GetAtt ProductArticleGeneratorFunction.Arn
+        # For queue_article_sync (POST /articles/{id}/sync-to-bigcommerce)
+        # -- same "narrowest permission, scoped to exactly this function's
+        # own ARN" convention as the three grants immediately above.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource: !GetAtt BowlerdepotArticleSyncFunction.Arn
       # Four explicit per-method routes instead of a single `Method: ANY`
       # -- found via a real live test (curl OPTIONS /health with no
       # Authorization header returned a bare 401 "Unauthorized" from API
@@ -2791,6 +2807,58 @@ Resources:
             Description: Pushes newly-approved, summarized videos for matched BowlerDepot products into BigCommerce's native Product Videos feature.
             Enabled: true
 
+  BowlerdepotArticleSyncFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-bowlerdepot-article-sync
+      CodeUri: src/bowlerdepot_article_sync/
+      Handler: app.handler
+      # Same reasoning as BowlerdepotVideoSyncFunction's own Timeout
+      # comment: one extra BigCommerce GET (product URL lookup) plus one
+      # POST (create blog post) per outstanding article, expected batch
+      # volume is small (newly-flagged articles catalog-wide since the
+      # last run) -- 120s is generous headroom, not sized against a
+      # confirmed incident.
+      Timeout: 120
+      # BIGCOMMERCE_SECRET_ARN -- same secret every other BowlerDepot-
+      # facing function reads. This function's Blog Post writes need the
+      # token to carry the Content "modify" scope (store_v2_content) --
+      # a DIFFERENT scope than BowlerdepotVideoSyncFunction's Products-
+      # modify need -- see get_bigcommerce_credentials' docstring in
+      # app.py. If the existing token doesn't have it, every push will
+      # 403 until Al adds it in BigCommerce's own API Accounts settings;
+      # nothing in this template can detect or fix that for him.
+      Environment:
+        Variables:
+          BIGCOMMERCE_SECRET_ARN: !Ref BigCommerceSecretArn
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              # Same HasBigCommerceSecret conditional as
+              # BowlerdepotVideoSyncFunction's own grant above.
+              Resource: !If
+                - HasBigCommerceSecret
+                - - !Ref DbSecretArn
+                  - !Ref BigCommerceSecretArn
+                - - !Ref DbSecretArn
+      # Hourly, same cadence as BowlerdepotVideoSyncFunction -- an admin
+      # flipping the sync_to_bigcommerce flag on shouldn't have to wait a
+      # full day to see it land. The Articles tab's "Sync now" button
+      # (admin_api's queue_article_sync, see AdminApiFunction's
+      # ARTICLE_SYNC_FUNCTION_NAME env var below) covers the "I want this
+      # one NOW, not on the next hourly tick" case without needing a
+      # tighter schedule here.
+      Events:
+        HourlySync:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 hour)
+            Name: bowling-scraper-bowlerdepot-article-sync-hourly
+            Description: Pushes approved, admin-flagged ball-review articles for matched BowlerDepot products into BigCommerce's native Blog as new posts.
+            Enabled: true
+
   # --- Consumer site static hosting (consumer-site/, the React SPA) ---
   #
   # Private S3 bucket + CloudFront in front of it via Origin Access
@@ -3073,6 +3141,8 @@ Outputs:
     Value: !GetAtt BowlerDepotReconciliationFunction.Arn
   BowlerdepotVideoSyncFunctionArn:
     Value: !GetAtt BowlerdepotVideoSyncFunction.Arn
+  BowlerdepotArticleSyncFunctionArn:
+    Value: !GetAtt BowlerdepotArticleSyncFunction.Arn
   ProductArticleGeneratorFunctionArn:
     Value: !GetAtt ProductArticleGeneratorFunction.Arn
   VideoDiscoveryFunctionArn:

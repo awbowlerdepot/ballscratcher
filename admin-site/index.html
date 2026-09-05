@@ -2097,9 +2097,18 @@ function renderArticles(items) {
       // BOTH status='approved' and this flag together). synced_at, once
       // set, stays shown even if the flag is later turned off -- see the
       // migration's own header comment for why that's deliberate.
+      // "Sync now" only shown once the flag is on and it hasn't already
+      // gone out -- invoking BowlerdepotArticleSyncFunction for an
+      // article its own needs-sync query wouldn't select is harmless
+      // (see service.queue_article_sync's docstring) but the button
+      // would just be confusing/no-op-looking in those states, so it's
+      // hidden rather than shown-but-inert.
+      const syncNowBtn = (a.sync_to_bigcommerce && !a.bowlerdepot_synced_at)
+        ? '<button class="btn small ghost" onclick="syncArticleNow(\'' + a.id + '\')">Sync now</button>'
+        : '';
       const bcSyncCell = '<button class="btn small ' + (a.sync_to_bigcommerce ? 'ok' : 'ghost') + '" ' +
         'onclick="toggleArticleBigcommerceSync(\'' + a.id + '\', ' + (!a.sync_to_bigcommerce) + ')">' +
-        (a.sync_to_bigcommerce ? 'Sync on' : 'Sync off') + '</button>' +
+        (a.sync_to_bigcommerce ? 'Sync on' : 'Sync off') + '</button>' + syncNowBtn +
         (a.bowlerdepot_synced_at ? '<div class="muted small">synced ' + fmtDate(a.bowlerdepot_synced_at) + '</div>' : '');
       // Al: "where can i get the article ID" -- needed to PATCH /articles/
       // {id}/bigcommerce-sync (or any other by-id endpoint) directly
@@ -2153,13 +2162,29 @@ async function rejectArticle(id) {
 
 async function toggleArticleBigcommerceSync(id, newValue) {
   // No confirm() dialog, unlike togglePublish -- this doesn't itself
-  // publish/unpublish anything on bowlerdepot.com; it only sets what the
-  // (not-yet-built) sync job will pick up on its next run. See service.
-  // set_article_bigcommerce_sync's docstring.
+  // publish/unpublish anything on bowlerdepot.com; it only sets what
+  // BowlerdepotArticleSyncFunction's hourly schedule (or the "Sync now"
+  // button below) will pick up. See service.set_article_bigcommerce_
+  // sync's docstring.
   try {
     await api('PATCH', '/articles/' + id + '/bigcommerce-sync', { body: { sync_to_bigcommerce: newValue } });
     toast(newValue ? 'Will sync to BigCommerce' : 'Sync turned off');
     loadArticles();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function syncArticleNow(id) {
+  // Invokes BowlerdepotArticleSyncFunction directly for this one article
+  // instead of waiting for its hourly schedule -- Al's real ask after
+  // toggling the flag and not seeing anything land in BigCommerce.
+  // Fire-and-forget (InvocationType='Event', see service.
+  // queue_article_sync) -- this confirms the invoke was QUEUED, not that
+  // the push itself succeeded; check BigCommerce's blog (or this row's
+  // "synced" timestamp after a refresh) to confirm the actual result.
+  if (!confirm('Push this article to BigCommerce now instead of waiting for the hourly sync?')) return;
+  try {
+    await api('POST', '/articles/' + id + '/sync-to-bigcommerce');
+    toast('Sync queued -- refresh in a few seconds to see the result');
   } catch (e) { toast(e.message, true); }
 }
 

@@ -1186,6 +1186,21 @@ def set_article_bigcommerce_sync(article_id: str, body: ArticleBigcommerceSyncRe
         conn.close()
 
 
+@app.post("/articles/{article_id}/sync-to-bigcommerce")
+def sync_article_to_bigcommerce(article_id: str):
+    # On-demand trigger, no request body -- mirrors POST /products/{id}/
+    # discover-videos and POST /products/{id}/generate-article's shape.
+    # See service.queue_article_sync's docstring for why this doesn't
+    # re-check sync_to_bigcommerce/status/match_status itself.
+    conn = service.get_db_connection()
+    try:
+        return service.queue_article_sync(conn, article_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
 @app.get("/articles/{article_id}/image-candidates")
 def get_article_image_candidates(article_id: str):
     # Every candidate 026_product_article_image_candidates.sql has stored

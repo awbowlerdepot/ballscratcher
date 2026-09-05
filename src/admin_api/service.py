@@ -3755,6 +3755,51 @@ def set_article_bigcommerce_sync(conn, article_id: str, sync_to_bigcommerce: boo
     return {"article_id": article_id, "sync_to_bigcommerce": sync_to_bigcommerce}
 
 
+def queue_article_sync(conn, article_id: str) -> dict:
+    """On-demand "sync this article to BigCommerce now" trigger (POST
+    /articles/{id}/sync-to-bigcommerce, the Articles tab's "Sync now"
+    button) -- Al flipped sync_to_bigcommerce on for a real article via
+    curl, got a clean 200, and reported "i don't see it in bigcommerce":
+    correct, since at that point the flag was the only thing built and
+    nothing actually pushes on its own except BowlerdepotArticleSyncFunc-
+    tion's hourly schedule. This gives an immediate path instead of
+    making an admin wait for the next tick.
+
+    Direct lambda:InvokeFunction, no queue in front -- same convention as
+    queue_video_discovery/queue_article_generation above. Payload is
+    {"article_id": article_id}; bowlerdepot_article_sync/app.py's handler
+    checks event.get("article_id") to scope to exactly this one row
+    instead of scanning every outstanding article (see that module's own
+    docstring for the two invocation shapes).
+
+    Deliberately does NOT re-check sync_to_bigcommerce/status/match_status
+    here -- those are BowlerdepotArticleSyncFunction's own needs-sync
+    query's job (list_articles_needing_sync), same "the invoker doesn't
+    duplicate the invokee's own gating logic" reasoning queue_video_
+    discovery/queue_article_generation already follow. Invoking this for
+    an article that isn't actually eligible (flag off, not approved,
+    already synced) is harmless -- the sync job's own query just won't
+    select it, so it silently no-ops rather than erroring."""
+    with conn.cursor() as cur:
+        cur.execute("select id from product_articles where id = %s", (article_id,))
+        if cur.fetchone() is None:
+            raise LookupError(f"No product_articles row with id {article_id}")
+
+    function_name = os.environ.get("ARTICLE_SYNC_FUNCTION_NAME")
+    if not function_name:
+        return {"queued": False, "reason": "ARTICLE_SYNC_FUNCTION_NAME is not configured on this deployment"}
+
+    import boto3
+
+    lambda_client = boto3.client("lambda")
+    lambda_client.invoke(
+        FunctionName=function_name,
+        InvocationType="Event",
+        Payload=json.dumps({"article_id": article_id}),
+    )
+    return {"queued": True, "article_id": article_id}
+
+
 def list_article_image_candidates(conn, article_id: str) -> list:
     """Every image candidate 026_product_article_image_candidates.sql has
     ever stored for this article (both variants, both providers -- Gemini

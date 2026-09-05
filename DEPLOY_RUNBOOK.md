@@ -8632,11 +8632,100 @@ BigCommerce API.
   Lambda-directly pattern) would sync faster but adds a new invoke path
   -- Al's call, not assumed here.
 
-Nothing in this subsection has been built: no `src/bowlerdepot_article_
-sync/` directory, no `template.yaml` resource, no schedule, no IAM. The
-flag (migration 028 + the two endpoints above) is the only part live
-today -- turning it on for an article currently does nothing but set a
-column, by design, until the job above gets built.
+Nothing in this subsection had been built as of the first pass above: no
+`src/bowlerdepot_article_sync/` directory, no `template.yaml` resource,
+no schedule, no IAM. The flag (migration 028 + the two endpoints above)
+was the only part live at that point.
+
+**Follow-up, real incident: "i don't see it in bigcommerce"** -- Al
+tested exactly that gap: flipped `sync_to_bigcommerce` on for a real
+article via `curl`, got back a clean `{"article_id": "...",
+"sync_to_bigcommerce": true}`, and correctly noticed nothing showed up in
+BigCommerce. Expected, since at that point the flag was the only thing
+built -- confirmed the spec's own framing was right, and prompted
+actually building the job. Two open questions from the original spec
+were resolved via a follow-up AskUserQuestion exchange with Al: fetch the
+product-page link live from BigCommerce rather than storing a new
+column, and Al will add the `store_v2_content` scope himself before the
+first real run rather than minting a separate token.
+
+**`src/bowlerdepot_article_sync/app.py` (new Lambda, `rate(1 hour)`
+schedule, same as `BowlerdepotVideoSyncFunction`) -- now built:**
+
+- `list_articles_needing_sync` mirrors `list_videos_needing_sync`'s exact
+  shape: `status = 'approved' AND sync_to_bigcommerce = true AND
+  bowlerdepot_synced_at is null`, joined through `bowlerdepot_products`
+  scoped to `match_status = 'matched'`. Takes an optional `article_id` to
+  scope to exactly one row -- see the on-demand path below.
+- `fetch_bigcommerce_product_url` resolves the earlier open question:
+  calls BigCommerce's Catalog v3 API (`GET /v3/catalog/products/{id}`) at
+  sync time to read that product's own `custom_url.url`, rather than
+  adding a stored column. Best-effort -- any failure (network, wrong
+  scope on this particular call, deleted product) logs a warning and the
+  post still goes out, just without a "View this ball" link.
+- `build_article_body_html`/`build_bigcommerce_blog_post_payload` map a
+  `product_articles` row to one HTML `body` string (all the structured
+  fields, images inlined by their existing public S3 URL, no
+  `thumbnail_path`/WebDAV involved) plus the Blog Post payload
+  (`title`, `body`, `is_published: true`, `author: "BowlerDepot"`,
+  `tags: [brand_name]`).
+- `push_article_to_bigcommerce` -- **confirmed live against
+  BigCommerce's own docs this session**: Blog Posts are a **v2** API
+  (`POST /stores/{store_hash}/v2/blog/posts`, required `title`/`body`),
+  and -- the one real shape gotcha here -- the response is the created
+  object **directly**, not wrapped in a `"data"` key the way the v3
+  Catalog Product Videos endpoint `bowlerdepot_video_sync` uses is.
+  Getting this backwards would have broken `bigcommerce_post_id` storage
+  silently; a dedicated test
+  (`test_push_article_to_bigcommerce_posts_to_v2_endpoint_and_returns_
+  raw_object`) pins the unwrapped shape.
+- OAuth scope needed is `store_v2_content` (Content: modify) --
+  **confirmed a different scope** than `bowlerdepot_video_sync`'s
+  Products-modify (`store_v2_products`) need. Same "unverifiable from
+  this sandbox" situation as that function's own scope -- Al needs to
+  add it in BigCommerce's API Accounts settings before the first real
+  run, or every push 403s (logged per-article, doesn't abort the batch).
+- **Two invocation shapes, one `handler`**: no `article_id` in the event
+  (the hourly schedule) processes every outstanding article; `{"article_
+  id": "..."}` (admin_api's `queue_article_sync`, the Articles tab's new
+  "Sync now" button) scopes to just that one row, still subject to every
+  needs-sync condition -- an article that isn't actually eligible (flag
+  off, already synced) just yields zero pushes, not an error.
+- Idempotency (`bigcommerce_post_id`/`bowlerdepot_synced_at`, migration
+  028) and the no-delete-on-flag-off/no-update-on-regenerate scope
+  limits are unchanged from the original spec.
+
+**admin_api + admin-site: "Sync now" on-demand trigger** -- same direct
+`lambda:InvokeFunction`, no-queue-in-front convention as `queue_video_
+discovery`/`queue_article_generation`. `service.queue_article_sync` +
+`POST /articles/{id}/sync-to-bigcommerce`; `ARTICLE_SYNC_FUNCTION_NAME`
+env var + a narrowly-scoped `lambda:InvokeFunction` grant on
+`AdminApiFunction`. The Articles tab shows a "Sync now" button next to
+the existing toggle, but only once `sync_to_bigcommerce` is on and
+`bowlerdepot_synced_at` is still null -- invoking the function for an
+article its own query wouldn't select is harmless, but the button would
+just look like a confusing no-op in those states, so it's hidden rather
+than shown-but-inert.
+
+**`template.yaml`**: new `BowlerdepotArticleSyncFunction` (58th
+resource, confirmed via the CFN-tolerant YAML loader), `Environment.
+BIGCOMMERCE_SECRET_ARN`, the same `HasBigCommerceSecret`-gated secret
+read policy `BowlerdepotVideoSyncFunction` uses, and an hourly
+`Schedule` event. `AdminApiFunction` gained `ARTICLE_SYNC_FUNCTION_NAME`
+and a matching narrowly-scoped invoke grant.
+
+**Tests**: `tests/test_bowlerdepot_article_sync.py` (new, 23/23) --
+pure-function tests for body/payload construction (including HTML-
+escaping and the omitted-link-when-`product_url`-is-`None` case), the
+needs-sync query's exact filter conditions, the v2-unwrapped-response
+shape, a failed product-URL lookup not blocking a successful post, and
+`_process_one_article`/`handler` orchestration via fake DB/session
+objects, same manual-runner convention as `test_bowlerdepot_video_
+sync.py`. `tests/test_admin_api_service.py` gained 3 tests for
+`queue_article_sync` (invokes with the right payload, missing-article
+raises, missing-function-name soft-fails), mirroring `queue_article_
+generation`'s own test shape. Full regression sweep across every test
+file: clean.
 
 **Follow-up: "where can i get the article ID"** -- the id was only ever
 embedded in admin-site button `onclick` handlers, never shown as text,
