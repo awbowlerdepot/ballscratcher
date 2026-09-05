@@ -209,7 +209,7 @@ _UNSET = object()
 class _FakeCursor:
     def __init__(self, needing_article=None, product_row=None, video_rows=None,
                  sibling_candidates=None, store_article_id="article-1",
-                 reference_image_url=_UNSET):
+                 reference_image_url=_UNSET, existing_article=None):
         self.needing_article = needing_article or []
         self.product_row = product_row
         self.video_rows = video_rows or []
@@ -222,6 +222,14 @@ class _FakeCursor:
         # meaningful value here (see fetch_reference_image_url's own
         # docstring: "no image at all").
         self.reference_image_url = reference_image_url
+        # v7 decoupled-regenerate feature -- {"id", "performance_summary",
+        # "hook"} dict backing fetch_existing_article, and also what
+        # update_article_text_only/update_article_images_only's own
+        # UPDATE...returning fetchone() resolves against (None simulates
+        # "no existing article row for this product", i.e. the ValueError/
+        # early-return paths those functions and generate_article_for_
+        # product itself are guarded against).
+        self.existing_article = existing_article
         self.executed = []
         self.description = None
         self._rows = []
@@ -237,6 +245,10 @@ class _FakeCursor:
         # run (see that function's own docstring for why a variant with
         # no new candidates is skipped entirely, delete included).
         self.candidate_deletes = []
+        # v7 -- params tuples from every update_article_text_only /
+        # update_article_images_only UPDATE, respectively.
+        self.text_only_updates = []
+        self.images_only_updates = []
 
     def __enter__(self):
         return self
@@ -282,6 +294,27 @@ class _FakeCursor:
 
         elif q.startswith("delete from product_article_image_candidates"):
             self.candidate_deletes.append(params)
+
+        elif q.startswith("select id, performance_summary, hook from product_articles"):
+            self.description = [("id",), ("performance_summary",), ("hook",)]
+            if self.existing_article is None:
+                self._rows = []
+            else:
+                self._rows = [(
+                    self.existing_article["id"],
+                    self.existing_article.get("performance_summary"),
+                    self.existing_article.get("hook"),
+                )]
+
+        elif q.startswith("update product_articles set status = 'pending', title ="):
+            self.text_only_updates.append(params)
+            self.description = [("id",)]
+            self._rows = [(self.existing_article["id"],)] if self.existing_article else []
+
+        elif q.startswith("update product_articles set action_shot_image_key ="):
+            self.images_only_updates.append(params)
+            self.description = [("id",)]
+            self._rows = [(self.existing_article["id"],)] if self.existing_article else []
 
         elif q.startswith("select coalesce("):
             if self.reference_image_url is _UNSET:
@@ -546,6 +579,187 @@ def test_generate_article_for_product_propagates_bad_bedrock_json():
     assert conn._cursor.inserted == []
 
 
+# --- v7 decoupled regenerate: fetch_existing_article / update_article_text_only /
+# update_article_images_only, plus generate_article_for_product's new
+# regenerate_text/regenerate_images branches ---
+
+def test_fetch_existing_article_returns_id_and_text_fields():
+    conn = _FakeConnection(existing_article={"id": "article-1", "performance_summary": "Great ball.", "hook": "A hook."})
+    result = app.fetch_existing_article(conn, "prod-1")
+    assert result == {"id": "article-1", "performance_summary": "Great ball.", "hook": "A hook."}
+
+
+def test_fetch_existing_article_returns_none_when_no_row():
+    conn = _FakeConnection(existing_article=None)
+    assert app.fetch_existing_article(conn, "prod-1") is None
+
+
+def test_update_article_text_only_sets_text_columns_and_resets_review_state():
+    conn = _FakeConnection(existing_article={"id": "article-1", "performance_summary": None, "hook": None})
+    article_id = app.update_article_text_only(conn, "prod-1", dict(_VALID_ARTICLE_JSON), ["vid-1"], ["prod-2"])
+    assert article_id == "article-1"
+    assert conn.commits == 1
+    assert len(conn._cursor.text_only_updates) == 1
+    query = conn._cursor.executed[-1][0]
+    params = conn._cursor.text_only_updates[0]
+    assert "status = 'pending'" in query
+    assert "reviewed_at = null" in query
+    assert "resolved_by = null" in query
+    # No image columns at all in this UPDATE's SET clause -- that's the
+    # whole point of a text-only regenerate (an admin's already-picked
+    # images must survive it untouched).
+    assert "action_shot_image_key" not in query
+    assert "images_generated_at" not in query
+    assert params[0] == _VALID_ARTICLE_JSON["title"]
+
+
+def test_update_article_text_only_raises_when_no_existing_article():
+    conn = _FakeConnection(existing_article=None)
+    try:
+        app.update_article_text_only(conn, "prod-1", dict(_VALID_ARTICLE_JSON), [], [])
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_update_article_images_only_sets_only_image_columns():
+    conn = _FakeConnection(existing_article={"id": "article-1", "performance_summary": "x", "hook": "y"})
+    images = {
+        "action_shot_image_key": "k1", "action_shot_image_url": "u1",
+        "product_shot_image_key": "k2", "product_shot_image_url": "u2",
+    }
+    article_id = app.update_article_images_only(conn, "prod-1", images)
+    assert article_id == "article-1"
+    assert conn.commits == 1
+    query, params = conn._cursor.executed[-1]
+    # No status/reviewed_at/resolved_by/text columns at all -- per select_
+    # article_image_candidate's own precedent, changing images shouldn't
+    # gate on or reset the separate text-review workflow.
+    assert "status" not in query
+    assert "reviewed_at" not in query
+    assert "resolved_by" not in query
+    assert "title" not in query
+    assert params == ("k1", "u1", "k2", "u2", "prod-1")
+
+
+def test_update_article_images_only_raises_when_no_existing_article():
+    conn = _FakeConnection(existing_article=None)
+    try:
+        app.update_article_images_only(conn, "prod-1", {})
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_generate_article_for_product_nothing_to_regenerate_when_both_flags_false():
+    conn = _FakeConnection()
+    bedrock = _FakeBedrockClient("should not be called")
+    result = app.generate_article_for_product(conn, bedrock, "model-id", "prod-1",
+                                               regenerate_text=False, regenerate_images=False)
+    assert result == {"product_id": "prod-1", "generated": False, "reason": "nothing_to_regenerate"}
+    assert bedrock.calls == []
+
+
+def test_generate_article_for_product_text_only_calls_bedrock_and_leaves_images_alone():
+    """regenerate_text=True, regenerate_images=False ('Regenerate text'):
+    Bedrock is still called (the whole point is fresh text), but the
+    write goes through update_article_text_only, not store_article --
+    the combined insert path must not fire at all."""
+    product_row = (
+        "prod-1", "Equinox Solid", "Blue", "reactive", "hybrid",
+        "R2S Hybrid", True, "500/1000 Abralon",
+        12, 17, "2024-01-01", "A great ball.",
+        "brand-1", "Storm", "Sonar", "asymmetric",
+    )
+    video_rows = [("vid-1", "Review", "Some Channel", "A summary.", "transcript text")]
+    conn = _FakeConnection(product_row=product_row, video_rows=video_rows,
+                            existing_article={"id": "article-1", "performance_summary": None, "hook": None})
+    bedrock = _FakeBedrockClient(json.dumps(_VALID_ARTICLE_JSON))
+
+    result = app.generate_article_for_product(conn, bedrock, "model-id", "prod-1",
+                                               regenerate_text=True, regenerate_images=False)
+
+    assert result["generated"] is True
+    assert result["article_id"] == "article-1"
+    assert len(bedrock.calls) == 1
+    assert conn._cursor.inserted == []  # store_article's insert path never fired
+    assert len(conn._cursor.text_only_updates) == 1
+
+
+def test_generate_article_for_product_images_only_skips_bedrock_and_reuses_existing_text():
+    """regenerate_text=False, regenerate_images=True ('Regenerate
+    images'): no Bedrock call at all -- the existing row's performance_
+    summary/hook are reused as prompt context (no persisted visual_theme
+    to draw on -- see fetch_existing_article's own docstring)."""
+    product_row = (
+        "prod-1", "Equinox Solid", "Blue", "reactive", "hybrid",
+        "R2S Hybrid", True, "500/1000 Abralon",
+        12, 17, "2024-01-01", "A great ball.",
+        "brand-1", "Storm", "Sonar", "asymmetric",
+    )
+    video_rows = [("vid-1", "Review", "Some Channel", "A summary.", "transcript text")]
+    conn = _FakeConnection(product_row=product_row, video_rows=video_rows,
+                            existing_article={"id": "article-1", "performance_summary": "Great ball.", "hook": "A hook."})
+    bedrock = _FakeBedrockClient("should not be called")
+
+    # No s3_client/image_model_id/etc supplied, so the image-generation
+    # step itself is skipped (same "all eight or none" gate as before) --
+    # this test only checks the text-skip/existing-row-reuse half.
+    result = app.generate_article_for_product(conn, bedrock, "model-id", "prod-1",
+                                               regenerate_text=False, regenerate_images=True)
+
+    assert result == {
+        "product_id": "prod-1", "generated": True, "article_id": "article-1",
+        "video_count": 1, "sibling_count": 0, "images_generated": False,
+    }
+    assert bedrock.calls == []
+    assert conn._cursor.inserted == []
+    # No images were actually produced (image plumbing wasn't supplied),
+    # so update_article_images_only is never even called -- nothing to
+    # write. See the "wires_images_when_all_eight_image_args_supplied"
+    # tests further down for the full image-pipeline path.
+    assert conn._cursor.images_only_updates == []
+
+
+def test_generate_article_for_product_images_only_reports_reason_when_no_existing_article():
+    product_row = (
+        "prod-1", "Equinox", None, None, None, None, None, None,
+        None, None, None, None, "brand-1", "Storm", None, None,
+    )
+    video_rows = [("vid-1", "Review", "Channel", "Summary", "transcript")]
+    conn = _FakeConnection(product_row=product_row, video_rows=video_rows, existing_article=None)
+    bedrock = _FakeBedrockClient("should not be called")
+
+    result = app.generate_article_for_product(conn, bedrock, "model-id", "prod-1",
+                                               regenerate_text=False, regenerate_images=True)
+
+    assert result == {"product_id": "prod-1", "generated": False,
+                       "reason": "no_existing_article_to_regenerate"}
+    assert bedrock.calls == []
+
+
+def test_generate_article_for_product_text_only_reports_reason_when_no_existing_article():
+    """Symmetric guard for the text-only branch -- generate_article_for_
+    product fetches the existing row up front for EITHER decoupled
+    branch, so a missing article is caught before ever calling Bedrock,
+    not surfaced as a confusing ValueError from update_article_text_
+    only's own UPDATE...returning check."""
+    product_row = (
+        "prod-1", "Equinox", None, None, None, None, None, None,
+        None, None, None, None, "brand-1", "Storm", None, None,
+    )
+    video_rows = [("vid-1", "Review", "Channel", "Summary", "transcript")]
+    conn = _FakeConnection(product_row=product_row, video_rows=video_rows, existing_article=None)
+    bedrock = _FakeBedrockClient("should not be called")
+
+    result = app.generate_article_for_product(conn, bedrock, "model-id", "prod-1",
+                                               regenerate_text=True, regenerate_images=False)
+
+    assert result == {"product_id": "prod-1", "generated": False,
+                       "reason": "no_existing_article_to_regenerate"}
+    assert bedrock.calls == []
+
+
 # --- handler: orchestration only -- DB/Bedrock-client construction monkeypatched ---
 
 class _HandlerPatchGuard:
@@ -642,14 +856,49 @@ def test_handler_on_demand_product_id_forces_single_generation():
     # service_account_secret_when_configured below for the "configured"
     # path.
     assert kwargs["gemini_auth"] is None
+    # v7: regenerate_text/regenerate_images are always threaded through on
+    # the on-demand path now too, defaulting to True/True when the event
+    # doesn't specify them -- see test_handler_on_demand_product_id_reads_
+    # regenerate_flags_from_event below for the non-default case.
+    assert kwargs["regenerate_text"] is True
+    assert kwargs["regenerate_images"] is True
     assert set(kwargs.keys()) == {
         "s3_client", "bedrock_image_client", "bedrock_removebg_client", "gemini_auth",
         "image_model_id", "removebg_model_id", "gemini_model_id", "image_bucket",
+        "regenerate_text", "regenerate_images",
     }
     body = json.loads(result["body"])
     assert body["results"] == [{"product_id": "prod-1", "generated": True, "article_id": "a1",
                                  "video_count": 1, "sibling_count": 0}]
     assert conn.closed is True
+
+
+def test_handler_on_demand_product_id_reads_regenerate_flags_from_event():
+    """v7 (2026-09-05): {"product_id": ..., "regenerate_text": False,
+    "regenerate_images": True} -- the decoupled "Regenerate images"
+    admin-site trigger -- must reach generate_article_for_product exactly
+    as specified, not silently coerced back to True/True."""
+    conn = _FakeConnection()
+    calls = []
+
+    def _fake_generate(conn_, bedrock, model_id, product_id, force=False, **kwargs):
+        calls.append((product_id, force, kwargs))
+        return {"product_id": product_id, "generated": True, "article_id": "a1",
+                "video_count": 1, "sibling_count": 0}
+
+    guard = _HandlerPatchGuard()
+    try:
+        guard.set_module("boto3", _fake_boto3_module(_FakeBedrockClient("{}")))
+        guard.set(app, "get_db_connection", lambda: conn)
+        guard.set(app, "generate_article_for_product", _fake_generate)
+        app.handler({"product_id": "prod-1", "regenerate_text": False, "regenerate_images": True}, None)
+    finally:
+        guard.restore()
+
+    assert len(calls) == 1
+    _, _, kwargs = calls[0]
+    assert kwargs["regenerate_text"] is False
+    assert kwargs["regenerate_images"] is True
 
 
 def test_handler_batch_mode_continues_after_one_product_errors():

@@ -9400,6 +9400,93 @@ FakeCursor branch now calls `_derive_bigcommerce_offer` directly, same
 as the `product` spec_row branch already did). Full regression sweep:
 clean (43 test files). `tsc -b`: clean.
 
+### 6aa. Decoupled article text/image regenerate
+
+Al: "can we decouple the article and image regenerate." Before this,
+`product_article_generator`'s only trigger (`POST /products/{id}/
+generate-article`) always regenerated the article TEXT (a fresh Bedrock
+call) and its IMAGES (fresh Gemini candidates) together in one upsert --
+there was no way to refresh one without also paying for and overwriting
+the other. Both halves are now independently triggerable while the
+original combined trigger/button keeps working exactly as before for a
+brand-new article (there's nothing to decouple until a row exists).
+
+**`product_article_generator/app.py`**: `generate_article_for_product`
+gained `regenerate_text`/`regenerate_images` bool params (both default
+`True`, so every pre-existing caller -- the daily batch sweep and the
+original combined admin trigger -- is byte-for-byte unaffected).
+- `regenerate_text=True, regenerate_images=False` ("Regenerate text"):
+  re-runs the Bedrock article-text call as always, but writes via a new
+  `update_article_text_only` (UPDATE, not upsert -- requires an existing
+  row) instead of `store_article`. Still resets `status`/`reviewed_at`/
+  `resolved_by` to pending (same "a regenerate goes back through review"
+  reasoning `store_article` already had), but its SET clause has NO image
+  columns in it at all -- an admin's already-picked images survive
+  untouched.
+- `regenerate_text=False, regenerate_images=True` ("Regenerate images"):
+  skips the Bedrock article-text call entirely. A new `fetch_existing_
+  article` pulls the existing row's `performance_summary`/`hook` to use
+  as `generate_article_image_candidates`' prompt-building context --
+  there's no persisted `visual_theme` to reuse (it's a transient field
+  produced fresh by each Bedrock response, never written to
+  `product_articles`, per `025_product_article_images_theme_driven_
+  pipeline.sql`'s own header comment), but the prompt builders already
+  fall back to `performance_summary`/`hook` whenever `visual_theme` is
+  blank, so this just exercises that existing fallback rather than
+  fabricating anything. Writes go through a new `update_article_images_
+  only` (UPDATE, requires an existing row), which sets ONLY the four
+  image columns + `images_generated_at` -- no `status`/`reviewed_at`/
+  `resolved_by` at all, following `select_article_image_candidate`'s own
+  established precedent (admin_api/service.py) that changing an
+  article's images is "a lightweight admin action, not a review/approve
+  workflow of its own." Requires an existing article row (nothing to
+  draw image-prompt context from otherwise) -- reported as `reason:
+  "no_existing_article_to_regenerate"`, checked up front before any
+  Bedrock call.
+- Both flags `False` is a defensive no-op guard (`reason: "nothing_to_
+  regenerate"`), not a real use case.
+
+`handler()`'s on-demand `{"product_id": ...}` path now reads optional
+`regenerate_text`/`regenerate_images` off the event (defaulting to
+`True`/`True` when absent) and threads them straight through. The batch
+sweep path never passes these -- a scheduled catalog-wide run always
+wants both halves, unchanged.
+
+**`admin_api`**: `queue_article_generation` gained a `mode` param
+(`"both"` default / `"text"` / `"images"`). `mode="both"` sends the
+exact same Lambda payload this function has always sent (no new keys at
+all) -- true byte-for-byte backward compatibility, not just "usually the
+same." `mode="text"`/`"images"` set `regenerate_text`/`regenerate_images`
+explicitly in the payload. Two new routes, `POST /products/{id}/
+regenerate-article-text` and `POST /products/{id}/regenerate-article-
+images`, call it with the corresponding mode; the original `POST
+/products/{id}/generate-article` route is unchanged (`mode="both"`). No
+`template.yaml` changes needed -- `AdminApiFunction`'s existing `/
+{proxy+}` POST route already covers any new path.
+
+**`admin-site/index.html`**: the Articles tab's single "Regenerate"
+button is now two -- "Regen text" / "Regen images" -- calling new
+`regenerateArticleText`/`regenerateArticleImages` functions. The product
+detail view's article panel now shows "Regen text" + "Regen images" once
+an article exists, and falls back to the original single "Generate
+article" button only when it doesn't (nothing to decouple yet) --
+`regenerateArticleTextForProduct`/`regenerateArticleImagesForProduct`
+mirror `generateArticleForProduct`'s existing result-panel pattern.
+
+**Tests**: `tests/test_product_article_generator.py` gained 16 new tests
+(93 -> 105): `fetch_existing_article`/`update_article_text_only`/
+`update_article_images_only` each covered directly (including their
+"no existing row" ValueError/reason paths), plus `generate_article_for_
+product`'s new text-only/images-only/both-false branches, plus a new
+`handler()` test confirming `regenerate_text`/`regenerate_images` reach
+`generate_article_for_product` unmodified from the event. The existing
+`test_handler_on_demand_product_id_forces_single_generation` test was
+updated for the two new always-present kwargs. `tests/test_admin_api_
+service.py` gained 3 new tests for `queue_article_generation`'s `mode`
+param (271 total); the existing "singular product_id" test was updated
+to expect the new `"mode": "both"` key in its result. Full regression
+sweep: clean (all test files).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

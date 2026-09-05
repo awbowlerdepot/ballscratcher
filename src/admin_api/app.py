@@ -1264,10 +1264,54 @@ def generate_article(product_id: str):
     # videos/discover-price-sources above. No request body: always scopes
     # to exactly this one product_id. See service.queue_article_generation's
     # docstring for the product_id (singular)-vs-product_ids payload-shape
-    # gotcha this route depends on getting right.
+    # gotcha this route depends on getting right. mode defaults to "both"
+    # here -- this route is unchanged from before the decoupled-regenerate
+    # feature (see the two routes below) existed.
     conn = service.get_db_connection()
     try:
         return service.queue_article_generation(conn, product_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/products/{product_id}/regenerate-article-text")
+def regenerate_article_text(product_id: str):
+    # Decoupled text-only half of generate_article (Al: "can we decouple
+    # the article and image regenerate") -- re-runs the Bedrock article-
+    # text call but leaves whatever images/candidates already exist
+    # completely untouched. See product_article_generator.app.
+    # generate_article_for_product's own v7 docstring for exactly what
+    # this does and doesn't touch; a LookupError here means either the
+    # product itself doesn't exist (queue_article_generation's own
+    # existence check) or -- surfaced as a 200 with generated=false,
+    # reason="no_existing_article_to_regenerate", not a LookupError --
+    # there's no existing article row for this product yet (the original
+    # combined "Generate article" trigger above is the only path for a
+    # brand-new article).
+    conn = service.get_db_connection()
+    try:
+        return service.queue_article_generation(conn, product_id, mode="text")
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/products/{product_id}/regenerate-article-images")
+def regenerate_article_images(product_id: str):
+    # Decoupled images-only half of generate_article -- skips the
+    # Bedrock article-text call entirely and generates new image
+    # candidates using the EXISTING article's text as prompt context
+    # (see generate_article_for_product's own v7 docstring). Does not
+    # reset the article's review status, following select_article_image_
+    # candidate's own established precedent that changing an article's
+    # images is a lightweight admin action, not a review/approve
+    # workflow of its own.
+    conn = service.get_db_connection()
+    try:
+        return service.queue_article_generation(conn, product_id, mode="images")
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
     finally:

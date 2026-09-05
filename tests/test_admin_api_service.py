@@ -4651,7 +4651,11 @@ def test_queue_article_generation_invokes_function_with_singular_product_id():
             del sys.modules["boto3"]
         del os.environ["PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME"]
 
-    assert result == {"queued": True, "product_id": "prod-1"}
+    # v7: mode defaults to "both" and is echoed back in the result, but the
+    # Lambda payload itself is unchanged from before v7 existed -- no
+    # regenerate_text/regenerate_images keys at all for the default mode
+    # (see queue_article_generation's own v7 docstring).
+    assert result == {"queued": True, "product_id": "prod-1", "mode": "both"}
     assert len(fake_lambda.invocations) == 1
     call = fake_lambda.invocations[0]
     assert call["FunctionName"] == "bowling-scraper-product-article-generator"
@@ -4659,6 +4663,72 @@ def test_queue_article_generation_invokes_function_with_singular_product_id():
     # Singular "product_id", NOT a "product_ids" list -- see this test
     # section's own comment for why that distinction matters here.
     assert json.loads(call["Payload"]) == {"product_id": "prod-1"}
+
+
+def test_queue_article_generation_mode_text_sets_regenerate_flags_in_payload():
+    db = _fake_db_with_product()
+    conn = FakeConnection(db)
+    fake_lambda = _FakeLambdaClient()
+
+    class _FakeBoto3:
+        def client(self, name):
+            return fake_lambda
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    os.environ["PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME"] = "bowling-scraper-product-article-generator"
+    try:
+        result = service.queue_article_generation(conn, "prod-1", mode="text")
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+        del os.environ["PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME"]
+
+    assert result == {"queued": True, "product_id": "prod-1", "mode": "text"}
+    call = fake_lambda.invocations[0]
+    assert json.loads(call["Payload"]) == {
+        "product_id": "prod-1", "regenerate_text": True, "regenerate_images": False,
+    }
+
+
+def test_queue_article_generation_mode_images_sets_regenerate_flags_in_payload():
+    db = _fake_db_with_product()
+    conn = FakeConnection(db)
+    fake_lambda = _FakeLambdaClient()
+
+    class _FakeBoto3:
+        def client(self, name):
+            return fake_lambda
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    os.environ["PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME"] = "bowling-scraper-product-article-generator"
+    try:
+        result = service.queue_article_generation(conn, "prod-1", mode="images")
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+        del os.environ["PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME"]
+
+    assert result == {"queued": True, "product_id": "prod-1", "mode": "images"}
+    call = fake_lambda.invocations[0]
+    assert json.loads(call["Payload"]) == {
+        "product_id": "prod-1", "regenerate_text": False, "regenerate_images": True,
+    }
+
+
+def test_queue_article_generation_rejects_unknown_mode():
+    db = _fake_db_with_product()
+    conn = FakeConnection(db)
+    try:
+        service.queue_article_generation(conn, "prod-1", mode="bogus")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
 
 
 def test_queue_article_generation_missing_product_raises():

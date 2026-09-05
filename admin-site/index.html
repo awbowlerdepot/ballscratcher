@@ -2137,7 +2137,8 @@ function renderArticles(items) {
         '<td>' + (a.resolved_by ? (escapeHtml(a.resolved_by) + '<div class="muted small">' + fmtDate(a.reviewed_at) + '</div>') : '—') + '</td>' +
         '<td>' + bcSyncCell + '</td>' +
         '<td class="actions">' + statusCell +
-        '<button class="btn small ghost" onclick="regenerateArticle(\'' + a.product_id + '\')">Regenerate</button>' +
+        '<button class="btn small ghost" onclick="regenerateArticleText(\'' + a.product_id + '\')">Regen text</button>' +
+        '<button class="btn small ghost" onclick="regenerateArticleImages(\'' + a.product_id + '\')">Regen images</button>' +
         '<button class="btn small ghost" onclick="toggleArticleDetail(\'' + a.id + '\')">Preview</button></td>' +
         '</tr>' +
         '<tr id="article-detail-' + a.id + '" class="detail-row hidden"><td colspan="6"></td></tr>';
@@ -2214,16 +2215,30 @@ async function resyncArticleNow(id) {
   } catch (e) { toast(e.message, true); }
 }
 
-async function regenerateArticle(productId) {
-  // Fire-and-forget, same shape as discoverVideosForProduct -- see
-  // service.queue_article_generation's docstring. A regenerate against
-  // an already-approved article overwrites it in place and resets status
-  // back to 'pending' (product_articles is one-row-per-product, not
-  // versioned -- see 022_product_articles.sql's header comment), so it
-  // goes back through review rather than silently replacing live content.
-  if (!confirm('Regenerate this article from current video/spec content? The existing article will go back to pending review.')) return;
+async function regenerateArticleText(productId) {
+  // Decoupled text-only half (Al: "can we decouple the article and
+  // image regenerate") of what used to be the single regenerateArticle
+  // fire-and-forget trigger -- see service.queue_article_generation's
+  // mode="text" docstring. Still resets status back to 'pending' (same
+  // "goes back through review rather than silently replacing live
+  // content" reasoning as before), but leaves the article's already-
+  // generated images completely untouched.
+  if (!confirm('Regenerate this article\'s TEXT from current video/spec content? The existing article will go back to pending review. Images are left as-is.')) return;
   try {
-    const result = await api('POST', '/products/' + productId + '/generate-article');
+    const result = await api('POST', '/products/' + productId + '/regenerate-article-text');
+    toast(result.queued ? 'Queued -- check back in a bit and reload this tab.' : ('Not queued: ' + result.reason), !result.queued);
+  } catch (e) { toast(e.message, true); }
+}
+
+async function regenerateArticleImages(productId) {
+  // Decoupled images-only half -- see service.queue_article_generation's
+  // mode="images" docstring. Does NOT reset review status (changing an
+  // article's images is a lightweight admin action, not a review workflow
+  // of its own -- same precedent select_article_image_candidate already
+  // established), and does not touch the article's text at all.
+  if (!confirm('Regenerate this article\'s IMAGES only? The article text and review status are left as-is.')) return;
+  try {
+    const result = await api('POST', '/products/' + productId + '/regenerate-article-images');
     toast(result.queued ? 'Queued -- check back in a bit and reload this tab.' : ('Not queued: ' + result.reason), !result.queued);
   } catch (e) { toast(e.message, true); }
 }
@@ -2985,10 +3000,20 @@ async function loadProductDetailInto(id, cell) {
       ? '<button class="btn small" onclick="approveArticleForProduct(\'' + id + '\', \'' + article.id + '\')">Approve</button>' +
         '<button class="btn small danger" onclick="rejectArticleForProduct(\'' + id + '\', \'' + article.id + '\')">Reject</button>'
       : (article ? '<span class="badge ' + escapeHtml(article.status) + '">' + escapeHtml(article.status) + '</span>' : '');
+    // Once an article exists there's something to decouple (Al: "can we
+    // decouple the article and image regenerate"), so the single combined
+    // "Regenerate article" button is replaced with two independent ones.
+    // A brand-new article (no existing row) has no text/images to keep
+    // separate yet, so it keeps the single combined "Generate article"
+    // trigger -- that's the only path that can create the row at all.
+    const articleRegenerateHtml = article
+      ? '<button class="btn small ghost" onclick="regenerateArticleTextForProduct(\'' + id + '\')">Regen text</button>' +
+        '<button class="btn small ghost" onclick="regenerateArticleImagesForProduct(\'' + id + '\')">Regen images</button>'
+      : '<button class="btn small ghost" onclick="generateArticleForProduct(\'' + id + '\')">Generate article</button>';
     const articleHtml =
       '<p><strong>Ball review article:</strong> ' +
         (article ? ('<span class="badge ' + escapeHtml(article.status) + '">' + escapeHtml(article.status) + '</span>') : '<span class="muted">not generated yet</span>') +
-        ' <button class="btn small ghost" onclick="generateArticleForProduct(\'' + id + '\')">' + (article ? 'Regenerate' : 'Generate') + ' article</button></p>' +
+        ' ' + articleRegenerateHtml + '</p>' +
       '<p id="generate-article-result-' + id + '" class="muted small"></p>' +
       (article ? ('<p class="actions">' + articleActionsHtml + '</p>' + renderArticlePreviewHtml(article, articleCandidates, 'product', id)) : '');
 
@@ -4032,17 +4057,58 @@ async function rescrapeProduct(id) {
 
 async function generateArticleForProduct(id) {
   // Same fire-and-forget shape as discoverVideosForProduct/rescrapeProduct
-  // above -- see service.queue_article_generation's docstring. Works for
-  // both "no article yet" (Generate) and "already have one" (Regenerate,
-  // see the button label in loadProductDetailInto's articleHtml) since
-  // the Lambda's on-demand path always overwrites in place (product_articles
-  // is unique on product_id, not versioned -- see 022_product_articles.sql).
+  // above -- see service.queue_article_generation's docstring. As of the
+  // decoupled-regenerate feature (Al: "can we decouple the article and
+  // image regenerate"), loadProductDetailInto's articleHtml only shows
+  // this button for the "no article yet" case -- once an article exists,
+  // regenerateArticleTextForProduct/regenerateArticleImagesForProduct
+  // below take over, since there's then something to keep independent.
   const out = document.getElementById('generate-article-result-' + id);
   if (out) out.textContent = 'Queuing…';
   try {
     const result = await api('POST', '/products/' + id + '/generate-article');
     const msg = result.queued
       ? 'Queued -- check back in a bit and reopen this product for the generated article.'
+      : ('Not queued: ' + result.reason);
+    toast(msg, !result.queued);
+    if (out) out.textContent = msg;
+  } catch (e) {
+    toast(e.message, true);
+    if (out) out.textContent = 'Error: ' + e.message;
+  }
+}
+
+async function regenerateArticleTextForProduct(id) {
+  // Decoupled text-only half, product-detail-view sibling of
+  // regenerateArticleText above -- same result-panel pattern as
+  // generateArticleForProduct. See service.queue_article_generation's
+  // mode="text" docstring: existing images are left untouched.
+  const out = document.getElementById('generate-article-result-' + id);
+  if (out) out.textContent = 'Queuing…';
+  try {
+    const result = await api('POST', '/products/' + id + '/regenerate-article-text');
+    const msg = result.queued
+      ? 'Queued -- check back in a bit and reopen this product for the regenerated text.'
+      : ('Not queued: ' + result.reason);
+    toast(msg, !result.queued);
+    if (out) out.textContent = msg;
+  } catch (e) {
+    toast(e.message, true);
+    if (out) out.textContent = 'Error: ' + e.message;
+  }
+}
+
+async function regenerateArticleImagesForProduct(id) {
+  // Decoupled images-only half, product-detail-view sibling of
+  // regenerateArticleImages above. See service.queue_article_generation's
+  // mode="images" docstring: existing text/review status are left
+  // untouched.
+  const out = document.getElementById('generate-article-result-' + id);
+  if (out) out.textContent = 'Queuing…';
+  try {
+    const result = await api('POST', '/products/' + id + '/regenerate-article-images');
+    const msg = result.queued
+      ? 'Queued -- check back in a bit and reopen this product for the regenerated images.'
       : ('Not queued: ' + result.reason);
     toast(msg, !result.queued);
     if (out) out.textContent = msg;

@@ -3925,11 +3925,15 @@ def select_article_image_candidate(conn, candidate_id: str, resolved_by: str = N
             "image_key": image_key, "image_url": image_url}
 
 
-def queue_article_generation(conn, product_id: str) -> dict:
+def queue_article_generation(conn, product_id: str, mode: str = "both") -> dict:
     """Direct lambda:InvokeFunction, no queue in front -- same convention
     as queue_video_discovery, invoked from POST /products/{id}/generate-
-    article (both the "Generate article" button in product detail view
-    and a "Regenerate" button on an already-reviewed article).
+    article (both the original "Generate article" button in product
+    detail view and the original combined "Regenerate" button on an
+    already-reviewed article) and, as of v7, also from the two decoupled
+    routes POST /products/{id}/regenerate-article-text and .../
+    regenerate-article-images (Al: "can we decouple the article and
+    image regenerate").
 
     Payload key is deliberately `product_id` (singular), NOT `product_ids`
     (a list) like queue_video_discovery's VideoDiscoveryFunction payload --
@@ -3938,7 +3942,22 @@ def queue_article_generation(conn, product_id: str) -> dict:
     "product_id"):` branch); sending product_ids here would silently miss
     that branch and fall through to the catalog-wide
     list_products_needing_article scan instead of generating for just this
-    product."""
+    product.
+
+    v7 (2026-09-05): mode is "both" (default), "text", or "images".
+    mode="both" is byte-for-byte the original behavior -- the payload
+    doesn't even include the two new keys, so it's identical to every
+    invocation this function sent before this change existed (handler()'s
+    own regenerate_text/regenerate_images each default to True when
+    absent from the event, so this is not just "usually the same", it's
+    literally the same payload). mode="text"/"images" set regenerate_
+    text/regenerate_images explicitly so handler() threads the right
+    combination through to generate_article_for_product (see that
+    function's own v7 docstring for what each combination actually does,
+    e.g. why "images" requires an article to already exist)."""
+    if mode not in ("both", "text", "images"):
+        raise ValueError(f"Unknown mode {mode!r} -- expected 'both', 'text', or 'images'")
+
     with conn.cursor() as cur:
         cur.execute("select id from products where id = %s", (product_id,))
         if cur.fetchone() is None:
@@ -3948,12 +3967,20 @@ def queue_article_generation(conn, product_id: str) -> dict:
     if not function_name:
         return {"queued": False, "reason": "PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME is not configured on this deployment"}
 
+    payload = {"product_id": product_id}
+    if mode == "text":
+        payload["regenerate_text"] = True
+        payload["regenerate_images"] = False
+    elif mode == "images":
+        payload["regenerate_text"] = False
+        payload["regenerate_images"] = True
+
     import boto3
 
     lambda_client = boto3.client("lambda")
     lambda_client.invoke(
         FunctionName=function_name,
         InvocationType="Event",
-        Payload=json.dumps({"product_id": product_id}),
+        Payload=json.dumps(payload),
     )
-    return {"queued": True, "product_id": product_id}
+    return {"queued": True, "product_id": product_id, "mode": mode}

@@ -613,6 +613,28 @@ def fetch_product_content(conn, product_id: str) -> dict:
     return product
 
 
+def fetch_existing_article(conn, product_id: str) -> dict:
+    """Fetches the minimal existing product_articles row a decoupled
+    regenerate (see generate_article_for_product's v7 docstring) needs:
+    the row's id (to update in place) plus performance_summary/hook,
+    which generate_article_image_candidates' own prompt-building already
+    falls back to whenever visual_theme is blank -- exactly the
+    situation an images-only regenerate is in, since visual_theme itself
+    is a transient field produced fresh by each Bedrock article-text
+    response and never persisted to this table (see 025_product_
+    article_images_theme_driven_pipeline.sql's own header comment).
+    Returns None if this product has no article row yet."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "select id, performance_summary, hook from product_articles where product_id = %s",
+            (product_id,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return {"id": row[0], "performance_summary": row[1], "hook": row[2]}
+
+
 def infer_sibling_products(conn, product: dict) -> list:
     """Heuristic-only sibling lookup -- see this module's own docstring
     and 022_product_articles.sql's header comment for why there's no
@@ -1564,6 +1586,102 @@ def store_article(conn, product_id: str, article: dict, source_video_ids: list,
     return article_id
 
 
+def update_article_text_only(conn, product_id: str, article: dict, source_video_ids: list,
+                              sibling_product_ids: list) -> str:
+    """Text-half of a decoupled regenerate (generate_article_for_
+    product's v7 docstring, added for Al's "decouple the article and
+    image regenerate" ask). An UPDATE, not an upsert -- the row must
+    already exist (raises ValueError otherwise; generate_article_for_
+    product itself guards this earlier via fetch_existing_article, so
+    hitting the raise here would mean that guard was skipped, i.e. a
+    real bug upstream, not a normal path). Sets every text column store_
+    article's own combined upsert sets, and resets status/reviewed_at/
+    resolved_by the same way and for the same reason (022's own header
+    comment: a regenerate should re-enter review rather than silently
+    replace live content) -- but deliberately has NO action_shot_image_*/
+    product_shot_image_*/images_generated_at columns in its SET clause
+    at all, unlike store_article's upsert which always sets all of them
+    together. That omission (not a null/False value -- the columns are
+    simply absent from SET) is what lets a text-only regenerate run
+    without ever touching an admin's already-selected images."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            update product_articles set
+                status = 'pending',
+                title = %s,
+                hook = %s,
+                performance_summary = %s,
+                who_should_buy = %s,
+                who_should_skip = %s,
+                pros = %s,
+                cons = %s,
+                buying_tips = %s,
+                verdict = %s,
+                faq = %s,
+                comparison_table = %s,
+                sibling_product_ids = %s,
+                source_video_ids = %s,
+                generated_at = now(),
+                reviewed_at = null,
+                resolved_by = null
+            where product_id = %s
+            returning id
+            """,
+            (
+                article["title"], article["hook"], article["performance_summary"],
+                json.dumps(article["who_should_buy"]), json.dumps(article["who_should_skip"]),
+                json.dumps(article["pros"]), json.dumps(article["cons"]), article["buying_tips"],
+                article["verdict"], json.dumps(article["faq"]), json.dumps(article["comparison_table"]),
+                json.dumps(sibling_product_ids), json.dumps(source_video_ids),
+                product_id,
+            ),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise ValueError(f"No existing article for product_id={product_id} to text-regenerate")
+        article_id = row[0]
+    conn.commit()
+    return article_id
+
+
+def update_article_images_only(conn, product_id: str, images: dict) -> str:
+    """Images-half of a decoupled regenerate (generate_article_for_
+    product's v7 docstring). An UPDATE, not an upsert -- the row must
+    already exist (raises ValueError otherwise, same posture as update_
+    article_text_only). Sets ONLY the four image columns + images_
+    generated_at; deliberately has no status/reviewed_at/resolved_by/text
+    columns in its SET clause at all, per select_article_image_
+    candidate's own established precedent (admin_api/service.py) that
+    changing an article's images is "a lightweight admin action, not a
+    review/approve workflow of its own" and shouldn't gate on or reset
+    the separate text-review workflow."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            update product_articles set
+                action_shot_image_key = %s,
+                action_shot_image_url = %s,
+                product_shot_image_key = %s,
+                product_shot_image_url = %s,
+                images_generated_at = now()
+            where product_id = %s
+            returning id
+            """,
+            (
+                images.get("action_shot_image_key"), images.get("action_shot_image_url"),
+                images.get("product_shot_image_key"), images.get("product_shot_image_url"),
+                product_id,
+            ),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise ValueError(f"No existing article for product_id={product_id} to images-regenerate")
+        article_id = row[0]
+    conn.commit()
+    return article_id
+
+
 def store_article_image_candidates(conn, article_id: str, candidates_by_variant: dict) -> None:
     """Persists EVERY candidate generate_article_image_candidates
     produced (not just the auto-selected one that landed in
@@ -1627,7 +1745,8 @@ def generate_article_for_product(conn, bedrock_client, model_id: str, product_id
                                   s3_client=None, bedrock_image_client=None, bedrock_removebg_client=None,
                                   gemini_auth: dict = None, image_model_id: str = None,
                                   removebg_model_id: str = None, gemini_model_id: str = None,
-                                  image_bucket: str = None, force: bool = False) -> dict:
+                                  image_bucket: str = None, force: bool = False,
+                                  regenerate_text: bool = True, regenerate_images: bool = True) -> dict:
     """Orchestrates one product's full generation. force=True (the
     admin-triggered on-demand path -- see admin_api.queue_article_
     generation) skips the "already has an article" check the batch
@@ -1639,24 +1758,60 @@ def generate_article_for_product(conn, bedrock_client, model_id: str, product_id
     optional (default None) so existing/simpler callers -- and every
     test that only cares about the article TEXT -- don't need to thread
     image plumbing through just to call this. When ALL EIGHT are supplied
-    (the real handler() always supplies them, per Al's "automatically
-    with the article" answer), image generation runs as an extra best-
-    effort step after the article text is parsed but before it's stored:
-    generate_article_image_candidates produces up to 3 candidates per
-    shot (see that function's own docstring), index 0 of each variant's
-    list becomes the auto-selected default passed to store_article (so
-    both text and a starting image land in the same row/commit), and
-    every candidate -- not just the auto-selected one -- is then persisted
-    via store_article_image_candidates so an admin can pick a different
-    one later without regenerating. bedrock_image_client/bedrock_
-    removebg_client are separate clients from bedrock_client (not
-    reused) -- each scoped to its own Region (see DEFAULT_BEDROCK_IMAGE_
-    REGION/DEFAULT_BEDROCK_REMOVE_BG_REGION/this module's docstring).
-    gemini_auth is not a Bedrock client at all -- it's the {"access_
-    token", "project_id", "region"} bundle handler() builds from a minted
-    service-account Bearer token (see mint_gemini_access_token and call_
-    gemini_for_image's own docstrings for why Gemini/Vertex AI is called
-    directly instead, as of v5)."""
+    AND regenerate_images is True (the real handler() always supplies
+    the eight, per Al's "automatically with the article" answer), image
+    generation runs as an extra best-effort step after the article text
+    is available but before it's stored: generate_article_image_
+    candidates produces up to 3 candidates per shot (see that function's
+    own docstring), index 0 of each variant's list becomes the auto-
+    selected default, and every candidate -- not just the auto-selected
+    one -- is then persisted via store_article_image_candidates so an
+    admin can pick a different one later without regenerating. bedrock_
+    image_client/bedrock_removebg_client are separate clients from
+    bedrock_client (not reused) -- each scoped to its own Region (see
+    DEFAULT_BEDROCK_IMAGE_REGION/DEFAULT_BEDROCK_REMOVE_BG_REGION/this
+    module's docstring). gemini_auth is not a Bedrock client at all --
+    it's the {"access_token", "project_id", "region"} bundle handler()
+    builds from a minted service-account Bearer token (see mint_gemini_
+    access_token and call_gemini_for_image's own docstrings for why
+    Gemini/Vertex AI is called directly instead, as of v5).
+
+    v7 (2026-09-05): regenerate_text/regenerate_images (both default
+    True, so every existing caller -- the daily batch and the original
+    combined admin "Generate/Regenerate" trigger -- behaves exactly as
+    before this change, one store_article upsert, text+images together,
+    status always reset) let Al's "decouple the article and image
+    regenerate" request run either half independently:
+      - regenerate_text=True, regenerate_images=False ("Regenerate
+        text"): re-runs the Bedrock article-text call as always, but
+        writes via update_article_text_only instead of store_article --
+        same status/reviewed_at/resolved_by reset, but the four image
+        columns and images_generated_at are never touched, so an admin's
+        already-picked images survive untouched.
+      - regenerate_text=False, regenerate_images=True ("Regenerate
+        images"): skips the Bedrock article-text call entirely and
+        reuses the EXISTING row's own performance_summary/hook (via
+        fetch_existing_article) as the `article` dict passed into
+        generate_article_image_candidates. There's no visual_theme to
+        reuse -- it's a transient Bedrock-response field, never
+        persisted to product_articles (025's own header comment) -- but
+        build_gemini_scene_prompt/build_background_prompts already fall
+        back to performance_summary/hook whenever visual_theme is blank,
+        so this simply exercises that same existing fallback rather than
+        fabricating anything. Writes go through update_article_images_
+        only, which -- per select_article_image_candidate's own
+        established precedent that changing an article's images is "a
+        lightweight admin action, not a review/approve workflow of its
+        own" -- does NOT reset status/reviewed_at/resolved_by. Requires
+        an existing article row (there's no text to draw image-prompt
+        context from otherwise); the reason "no_existing_article_to_
+        regenerate" covers this.
+      - regenerate_text=False, regenerate_images=False is a no-op caller
+        error, not a real use case; guarded defensively rather than
+        silently doing nothing expensive."""
+    if not regenerate_text and not regenerate_images:
+        return {"product_id": product_id, "generated": False, "reason": "nothing_to_regenerate"}
+
     product = fetch_product_content(conn, product_id)
     if product is None:
         return {"product_id": product_id, "generated": False, "reason": "product_not_found"}
@@ -1665,13 +1820,30 @@ def generate_article_for_product(conn, bedrock_client, model_id: str, product_id
         return {"product_id": product_id, "generated": False, "reason": "no_qualifying_videos"}
 
     siblings = infer_sibling_products(conn, product)
-    prompt = build_article_prompt(product, siblings)
-    raw = call_bedrock_for_article(bedrock_client, model_id, prompt)
-    article = parse_article_json(raw)
+
+    existing = None
+    if not regenerate_text or not regenerate_images:
+        # Either decoupled branch needs the existing row: text-only needs
+        # nothing from it directly (update_article_text_only just needs
+        # the row to exist, which its own UPDATE...returning already
+        # checks), but images-only needs its id plus performance_summary/
+        # hook as prompt-building context, so fetch it once up front and
+        # fail clean here rather than partway through either write path.
+        existing = fetch_existing_article(conn, product_id)
+        if existing is None:
+            return {"product_id": product_id, "generated": False, "reason": "no_existing_article_to_regenerate"}
+
+    if regenerate_text:
+        prompt = build_article_prompt(product, siblings)
+        raw = call_bedrock_for_article(bedrock_client, model_id, prompt)
+        article = parse_article_json(raw)
+    else:
+        article = existing
 
     candidates_by_variant = {}
-    if (s3_client is not None and bedrock_image_client is not None and bedrock_removebg_client is not None
-            and gemini_auth and image_model_id and removebg_model_id and gemini_model_id and image_bucket):
+    if (regenerate_images and s3_client is not None and bedrock_image_client is not None
+            and bedrock_removebg_client is not None and gemini_auth and image_model_id
+            and removebg_model_id and gemini_model_id and image_bucket):
         candidates_by_variant = generate_article_image_candidates(
             conn, bedrock_image_client, bedrock_removebg_client, gemini_auth, s3_client,
             image_model_id, removebg_model_id, gemini_model_id, image_bucket, product, article,
@@ -1686,7 +1858,16 @@ def generate_article_for_product(conn, bedrock_client, model_id: str, product_id
 
     source_video_ids = [v["id"] for v in product["videos"]]
     sibling_product_ids = [s["id"] for s in siblings]
-    article_id = store_article(conn, product_id, article, source_video_ids, sibling_product_ids, images=images)
+
+    if regenerate_text and regenerate_images:
+        article_id = store_article(conn, product_id, article, source_video_ids, sibling_product_ids, images=images)
+    elif regenerate_text:
+        article_id = update_article_text_only(conn, product_id, article, source_video_ids, sibling_product_ids)
+    else:
+        article_id = existing["id"]
+        if images:
+            update_article_images_only(conn, product_id, images)
+
     store_article_image_candidates(conn, article_id, candidates_by_variant)
 
     return {
@@ -1708,13 +1889,23 @@ def handler(event, context):
     client/bedrock_removebg_client/gemini_auth/image_model_id/
     removebg_model_id/gemini_model_id/image_bucket through to generate_
     article_for_product so images generate automatically alongside the
-    text in every run (Al's "Both image types, automatically with the
-    article" answer) -- there is no separate on-demand-only image
-    trigger. bedrock_image_client/bedrock_removebg_client are each
-    constructed with their own explicit region_name (BEDROCK_IMAGE_
-    REGION, BEDROCK_REMOVEBG_REGION respectively), separate from
+    text by default (Al's original "Both image types, automatically with
+    the article" answer). bedrock_image_client/bedrock_removebg_client
+    are each constructed with their own explicit region_name (BEDROCK_
+    IMAGE_REGION, BEDROCK_REMOVEBG_REGION respectively), separate from
     bedrock_client's own default-Region construction AND from each
     other -- see this module's docstring for why.
+
+    v7 (2026-09-05): the on-demand {"product_id": ...} path also reads
+    optional "regenerate_text"/"regenerate_images" booleans off the
+    event (both default True when absent, so admin_api.queue_article_
+    generation's original combined trigger -- and any caller that
+    predates this change -- is byte-for-byte unaffected) and threads
+    them straight through to generate_article_for_product, which is
+    where the actual decoupled-write behavior lives (see its own v7
+    docstring for what each flag combination does). The batch sweep path
+    below never reads/passes these -- a scheduled catalog-wide run
+    always wants both halves, same as before this change.
 
     gemini_auth (v5, see this module's own docstring for the full v4->v5
     ADC/Vertex-AI switch) is built here, not passed straight from a
@@ -1780,6 +1971,8 @@ def handler(event, context):
                 bedrock_removebg_client=bedrock_removebg_client, gemini_auth=gemini_auth,
                 image_model_id=image_model_id, removebg_model_id=removebg_model_id,
                 gemini_model_id=gemini_model_id, image_bucket=image_bucket, force=True,
+                regenerate_text=event.get("regenerate_text", True),
+                regenerate_images=event.get("regenerate_images", True),
             )
             return {"statusCode": 200, "body": json.dumps({"results": [result]})}
 
