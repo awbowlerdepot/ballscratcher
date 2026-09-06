@@ -9687,6 +9687,21 @@ README.md`'s "what's not here yet".
 mount) -- clean, zero errors. Not yet smoke-tested against real data in
 the browser the way Dashboard/Products/Review Queue have been.
 
+**Update -- a real bug, found on first browser load**: `match_confidence`
+was wrongly typed as `number | null` and rendered with `.toFixed(2)`.
+It's actually a text enum (`'high' | 'low'`, see `video_discovery.
+score_match` / `db/migrations/004_product_videos.sql:35`), not a
+numeric score -- `tsc` had no way to catch this since the type
+annotation itself was the mistake. Threw `TypeError: r.match_confidence.
+toFixed is not a function` the moment a pending video candidate
+rendered, taking down the whole page (no error boundary is in place
+yet -- see `admin-spa/README.md` for that as a known gap). Fixed:
+`match_confidence` retyped as `"high" | "low" | null`, rendered as a
+`Badge` instead of a formatted number. This is exactly the class of
+mistake `tsc -b` passing clean can't catch -- it verifies internal
+consistency, not that a type annotation matches the real database
+column, which only exercising the code against live data reveals.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

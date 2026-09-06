@@ -213,7 +213,10 @@ export default function VideoCandidatesPage() {
     {
       key: "match_confidence",
       header: "Match",
-      render: (r) => (r.match_confidence !== null ? r.match_confidence.toFixed(2) : "—"),
+      // A text enum ('high'/'low'), not a numeric score -- see the
+      // comment on VideoCandidate.match_confidence in api/types.ts.
+      render: (r) =>
+        r.match_confidence ? <Badge tone={r.match_confidence === "high" ? "ok" : "pending"}>{r.match_confidence}</Badge> : "—",
     },
     {
       key: "has_summary",

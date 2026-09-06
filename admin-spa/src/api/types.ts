@@ -172,7 +172,14 @@ export interface VideoCandidate {
   published_at: string | null;
   thumbnail_url: string | null;
   match_query: string | null;
-  match_confidence: number | null;
+  // NOT a numeric score -- a text enum, 'high' | 'low' (see
+  // video_discovery.score_match / db/migrations/004_product_videos.sql).
+  // Real incident: this was originally typed as `number | null` and
+  // rendered with `.toFixed(2)`, which threw at runtime the first time
+  // this page actually ran against live data ("r.match_confidence.
+  // toFixed is not a function") -- fixed here, kept as a comment so the
+  // mistake doesn't get repeated.
+  match_confidence: "high" | "low" | null;
   transcript_note: string | null;
   status: VideoCandidateStatus;
   source: string | null;

@@ -44,9 +44,14 @@ account instead of a shared bearer-token secret.
   features until Products gets a detail sub-view.
 - A small hand-rolled component library in `src/components/` (`Button`,
   `Badge`, `Card`, `StatCard`, `Modal`, `Toast`, `DataTable`,
-  `Pagination`, `Layout`) that later tabs (Articles, Price Sites,
-  Cores/Coverstocks...) can build on without re-solving
+  `Pagination`, `Layout`, `ErrorBoundary`) that later tabs (Articles,
+  Price Sites, Cores/Coverstocks...) can build on without re-solving
   sort/select/bulk-action each time.
+- A React error boundary (`ErrorBoundary.tsx`) wrapped around `<Outlet/>`
+  in `Layout.tsx`, keyed by route pathname so navigating away resets it.
+  A bug in one page now shows an inline error card instead of blanking
+  sign-in/navigation for the whole app -- see "Verified so far" below
+  for the incident that prompted this.
 
 ## Auth model
 
@@ -175,3 +180,16 @@ from the same dependency chain, that needs `vite-plugin-node-polyfills`
 
 Review Queue (approve/reject/bulk) has since been smoke-tested against
 real data too -- confirmed working.
+
+A second real gotcha, this time on Video Candidates' first browser
+load: `match_confidence` was typed as `number | null` and rendered
+with `.toFixed(2)`, but the actual column
+(`db/migrations/004_product_videos.sql`) is a `'high'|'low'` text
+enum -- threw `TypeError: r.match_confidence.toFixed is not a
+function` and, because nothing in the tree caught the render error,
+blanked the entire app rather than just that page. Fixed by retyping
+the field and rendering it as a `Badge` instead, and by adding the
+`ErrorBoundary` described above so a future mistake like this is
+contained to one page instead of taking down sign-in and navigation
+too. `tsc -b` passing clean does not catch this class of bug -- it's a
+wrong assumption about a runtime value's shape, not a type error.

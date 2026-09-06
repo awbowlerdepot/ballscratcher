@@ -1,7 +1,8 @@
-import { NavLink, Outlet } from "react-router-dom";
+import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import Badge from "./Badge";
 import Button from "./Button";
+import ErrorBoundary from "./ErrorBoundary";
 
 const NAV_ITEMS = [
   { to: "/", label: "Dashboard", end: true },
@@ -17,6 +18,7 @@ const NAV_ITEMS = [
 // ported.
 export default function Layout() {
   const { user, signOut } = useAuth();
+  const location = useLocation();
 
   return (
     <div className="flex min-h-screen">
@@ -56,7 +58,12 @@ export default function Layout() {
           </div>
         </header>
         <main className="flex-1 bg-slate-50 p-6">
-          <Outlet />
+          {/* Keyed by pathname so navigating to a different page resets a
+              caught error -- the class component itself won't naturally
+              remount just because the route changed. */}
+          <ErrorBoundary key={location.pathname}>
+            <Outlet />
+          </ErrorBoundary>
         </main>
       </div>
     </div>
