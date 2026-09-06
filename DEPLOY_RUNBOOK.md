@@ -9663,6 +9663,30 @@ has since been smoke-tested against real data too and confirmed
 working -- all three phase-1+ tabs (Dashboard, Products, Review Queue)
 are now verified end to end against the live stack.
 
+### 6ab.2. Video Candidates tab
+
+Fourth tab ported into `admin-spa/` (`src/pages/VideoCandidatesPage.tsx`):
+YouTube review videos matched to products, the same feature
+`admin-site/index.html`'s Video Candidates tab and its product-detail
+Videos sub-panel cover. Routes: `GET /video-candidates` (status --
+pending/approved/rejected, "all" exists server-side but isn't exposed
+here either, matching the old tab's own dropdown -- plus product_id/
+limit/offset), `POST .../approve`, `.../reject`, `.../restore` (undo,
+no body/confirm), and `.../reassign` (`{product_id}` -- moves a
+candidate to a different product, tombstoning the origin row as
+rejected; works from any status). Same sequential-with-300ms-delay
+bulk pattern as Review Queue. Deliberately does NOT include the
+product-detail sub-panel's richer feature set (all-statuses-at-once
+view, "search again" rescan trigger via `POST /products/{id}/
+discover-videos`, bulk reassign/delete) -- those need a Products detail
+view that doesn't exist in admin-spa yet, tracked in `admin-spa/
+README.md`'s "what's not here yet".
+
+`npx tsc -b` run for real against the now-present `node_modules`
+(installed on Al's machine, visible in this sandbox via the shared
+mount) -- clean, zero errors. Not yet smoke-tested against real data in
+the browser the way Dashboard/Products/Review Queue have been.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

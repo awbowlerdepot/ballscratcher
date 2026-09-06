@@ -32,10 +32,20 @@ account instead of a shared bearer-token secret.
   reason modal for rejects. There's no inline-edit of the proposed
   value on either this or the old UI -- approve always applies the
   scraped value exactly as-is.
+- **Video Candidates** (`/video-candidates`) -- YouTube review videos
+  matched to products. Status (pending/approved/rejected -- "all"
+  exists server-side but isn't exposed here, matching the old tab's own
+  dropdown)/product-id filters, pending-count badge, per-row and bulk
+  approve/reject (same 300ms-paced sequential bulk pattern), an Undo
+  button on non-pending rows (`POST .../restore`, no confirm needed --
+  matches the old UI), and a per-row Reassign action (move a video to a
+  different product; the origin candidate is tombstoned as rejected).
+  No bulk-reassign or delete here -- those stay product-detail-only
+  features until Products gets a detail sub-view.
 - A small hand-rolled component library in `src/components/` (`Button`,
   `Badge`, `Card`, `StatCard`, `Modal`, `Toast`, `DataTable`,
-  `Pagination`, `Layout`) that later tabs (Video Candidates, Articles,
-  Price Sites, Cores/Coverstocks...) can build on without re-solving
+  `Pagination`, `Layout`) that later tabs (Articles, Price Sites,
+  Cores/Coverstocks...) can build on without re-solving
   sort/select/bulk-action each time.
 
 ## Auth model
@@ -127,9 +137,13 @@ its own git history for precedent).
 - A "set new password" form for the Cognito `newPasswordRequired`
   challenge -- first-time accounts need a permanent password set via
   the CLI (see above) rather than through the app itself.
-- Every other admin-site tab: Video Candidates, Articles, Price Sites,
-  Cores, Coverstocks, Blocked Channels, Batch Jobs. These still live on
+- Every other admin-site tab: Articles, Price Sites, Cores,
+  Coverstocks, Blocked Channels, Batch Jobs. These still live on
   `admin-site/index.html` for now; migrating them is follow-up work.
+- A Products detail sub-view (the old admin-site has a tabbed per-
+  product panel with its own Videos section, "search again" rescan
+  button, and bulk reassign/delete -- admin-spa's Video Candidates tab
+  only covers the standalone list, not that richer per-product view).
 - A real brand-name dropdown on the Products filter bar (currently a
   raw brand-id text field -- there's no `GET /brands` on the admin API
   the way `consumer-site` has on the public one).

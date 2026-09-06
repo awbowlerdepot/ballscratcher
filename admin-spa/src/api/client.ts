@@ -4,10 +4,13 @@ import type {
   DashboardSummary,
   ListProductsParams,
   ListReviewQueueParams,
+  ListVideoCandidatesParams,
   Product,
+  ReassignVideoResult,
   RejectReviewResult,
   RescrapeResult,
   ReviewQueueListResult,
+  VideoCandidateListResult,
 } from "./types";
 
 // Unlike consumer-site's PublicApiFunction client, every request here
@@ -109,4 +112,31 @@ export function approveReviewItem(id: string): Promise<ApproveReviewResult> {
 
 export function rejectReviewItem(id: string, reason?: string): Promise<RejectReviewResult> {
   return apiPost<RejectReviewResult>(`/review-queue/${encodeURIComponent(id)}/reject`, { reason });
+}
+
+export function listVideoCandidates(params: ListVideoCandidatesParams = {}): Promise<VideoCandidateListResult> {
+  return apiGet<VideoCandidateListResult>("/video-candidates", { ...params });
+}
+
+export function approveVideoCandidate(id: string): Promise<{ video_id: string; status: "approved" }> {
+  return apiPost(`/video-candidates/${encodeURIComponent(id)}/approve`, {});
+}
+
+export function rejectVideoCandidate(id: string, reason?: string): Promise<{ video_id: string; status: "rejected" }> {
+  return apiPost(`/video-candidates/${encodeURIComponent(id)}/reject`, { reason });
+}
+
+// No resolved_by/reason param at all -- restore just clears back to
+// pending (see POST /video-candidates/{id}/restore in admin_api/app.py).
+export function restoreVideoCandidate(id: string): Promise<{ video_id: string; status: "pending" }> {
+  return apiPost(`/video-candidates/${encodeURIComponent(id)}/restore`);
+}
+
+// Works from any status -- tombstones the origin row as rejected and
+// copies/merges onto the target product (see reassign_video_candidate
+// in admin_api/service.py).
+export function reassignVideoCandidate(id: string, targetProductId: string): Promise<ReassignVideoResult> {
+  return apiPost<ReassignVideoResult>(`/video-candidates/${encodeURIComponent(id)}/reassign`, {
+    product_id: targetProductId,
+  });
 }

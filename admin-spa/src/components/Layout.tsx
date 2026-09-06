@@ -7,13 +7,14 @@ const NAV_ITEMS = [
   { to: "/", label: "Dashboard", end: true },
   { to: "/products", label: "Products", end: false },
   { to: "/review-queue", label: "Review Queue", end: false },
+  { to: "/video-candidates", label: "Video Candidates", end: false },
 ];
 
-// Shell: sidebar + top bar + <Outlet/>. Video Candidates, Articles,
-// Price Sites, Cores, Coverstocks, Blocked Channels, and Batch Jobs
-// still live on the existing admin-site/index.html for now (see
-// README.md's "not here yet" section) -- tabs move over here one at a
-// time as they're ported.
+// Shell: sidebar + top bar + <Outlet/>. Articles, Price Sites, Cores,
+// Coverstocks, Blocked Channels, and Batch Jobs still live on the
+// existing admin-site/index.html for now (see README.md's "not here
+// yet" section) -- tabs move over here one at a time as they're
+// ported.
 export default function Layout() {
   const { user, signOut } = useAuth();
 

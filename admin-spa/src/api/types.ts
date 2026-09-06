@@ -153,3 +153,59 @@ export interface RejectReviewResult {
   review_id: string;
   status: "rejected";
 }
+
+export type VideoCandidateStatus = "pending" | "approved" | "rejected";
+
+// Matches list_video_candidates' SELECT in admin_api/service.py.
+// Ordering is match_confidence asc, created_at asc, id asc (id is a
+// deliberate pagination tiebreaker, see that function's own history).
+// No rejection-reason column is persisted -- a reject's `reason` is
+// transient (used only in the request), not stored/returned here.
+export interface VideoCandidate {
+  id: string;
+  product_id: string;
+  product_name: string;
+  brand_name: string;
+  youtube_video_id: string;
+  title: string;
+  channel_title: string;
+  published_at: string | null;
+  thumbnail_url: string | null;
+  match_query: string | null;
+  match_confidence: number | null;
+  transcript_note: string | null;
+  status: VideoCandidateStatus;
+  source: string | null;
+  created_at: string;
+  resolved_at: string | null;
+  resolved_by: string | null;
+  view_count: number | null;
+  like_count: number | null;
+  comment_count: number | null;
+  duration_seconds: number | null;
+  stats_fetched_at: string | null;
+  has_summary: boolean;
+}
+
+export interface ListVideoCandidatesParams {
+  // "all" omits the status filter server-side (mapped to NULL) -- see
+  // GET /video-candidates. The admin-site tab's own dropdown never
+  // actually exposes "all" as a choice (only product-detail's fetch
+  // does), so admin-spa mirrors that: pending/approved/rejected only.
+  status?: VideoCandidateStatus | "all";
+  product_id?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface VideoCandidateListResult {
+  items: VideoCandidate[];
+  pending_count: number | null;
+}
+
+export interface ReassignVideoResult {
+  video_id: string;
+  product_id: string;
+  origin_video_id: string;
+  merged_with_existing: boolean;
+}
