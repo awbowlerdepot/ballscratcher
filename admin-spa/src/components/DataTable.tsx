@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import Button from "./Button";
 
 export interface Column<T> {
@@ -20,6 +20,12 @@ export interface Column<T> {
   // card's full width. No effect at `md:`+ either way. See
   // ArticlesPage.tsx's "sync"/"actions" columns for the motivating case.
   stackOnMobile?: boolean;
+  // Collapsible-card mode (`mobileCollapsible` below, see that prop's
+  // own comment): marks a column as always visible in a card's
+  // collapsed state. Ignored unless the table opts into
+  // `mobileCollapsible`, and has no effect at `md:`+ either way (every
+  // column always renders there, same as always).
+  primary?: boolean;
 }
 
 export interface BulkAction<T> {
@@ -43,6 +49,17 @@ interface DataTableProps<T> {
   sortDir?: "asc" | "desc";
   onSortChange?: (key: string) => void;
   emptyMessage?: string;
+  // Al: "having them collapse and then toggle open is a good approach
+  // to make it fit better" -- for a table with more columns than fit
+  // comfortably in an always-fully-expanded mobile card (Products,
+  // eventually every other tab), this collapses each card below `md` to
+  // just its `primary`-flagged columns plus a tap-to-expand toggle
+  // revealing the rest. Opt-in per table (rather than the default) so
+  // existing pages migrate one at a time rather than all at once; a
+  // table with no `primary` columns marked falls back to the old
+  // "every column always shown" behavior even with this on. No effect
+  // at `md:`+ either way -- desktop is a real table there regardless.
+  mobileCollapsible?: boolean;
 }
 
 export default function DataTable<T>({
@@ -57,10 +74,33 @@ export default function DataTable<T>({
   sortDir,
   onSortChange,
   emptyMessage = "No results.",
+  mobileCollapsible = false,
 }: DataTableProps<T>) {
   const allIds = rows.map(getRowId);
   const allSelected = selectable && allIds.length > 0 && allIds.every((id) => selectedIds?.has(id));
   const selectedRows = rows.filter((row) => selectedIds?.has(getRowId(row)));
+  // Which rows currently have their secondary columns expanded on
+  // mobile -- keyed by getRowId, not array index, so expand state
+  // survives a re-sort/re-filter that reorders `rows`.
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
+  // A table opted into mobileCollapsible but with no column actually
+  // marked primary would otherwise render nothing (every column would
+  // land in "secondary" with nothing to anchor the collapsed card) --
+  // fall back to "every column always shown" in that case rather than
+  // silently dropping content.
+  const hasPrimaryColumn = mobileCollapsible && columns.some((c) => c.primary);
+  const primaryColumns = hasPrimaryColumn ? columns.filter((c) => c.primary) : columns;
+  const secondaryColumns = hasPrimaryColumn ? columns.filter((c) => !c.primary) : [];
+  const canCollapse = secondaryColumns.length > 0;
+
+  function toggleExpanded(id: string) {
+    setExpandedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   function toggleAll() {
     if (!onSelectionChange) return;
@@ -119,6 +159,18 @@ export default function DataTable<T>({
         column can opt into `stackOnMobile` (see the `Column` type
         above) to put its label on its own line above the content
         instead, with the content given the full card width.
+
+        Collapsible-card pass (2026-09-06, starting with Products): even
+        with the above, a wide table (Products' 8 columns) still makes
+        for a very tall card once every column stacks vertically -- Al:
+        "having them collapse and then toggle open is a good approach to
+        make it fit better." Opt-in via `mobileCollapsible` + marking a
+        few columns `primary`: the card shows just the primary columns
+        plus a "More/Less" toggle by default, expanding to the rest on
+        tap. Being rolled out one tab at a time rather than everywhere at
+        once. See DataTableProps/Column's own comments for the mechanics
+        (the toggle `<td>` is `md:hidden` so it doesn't affect desktop's
+        real table at all).
       */}
       <div className="overflow-x-auto rounded-lg border border-ink-200 bg-ink-100">
         <table className="w-full text-left text-sm">
@@ -182,7 +234,7 @@ export default function DataTable<T>({
                       />
                     </td>
                   )}
-                  {columns.map((col) => (
+                  {primaryColumns.map((col) => (
                     <td
                       key={col.key}
                       data-label={col.header}
@@ -190,6 +242,37 @@ export default function DataTable<T>({
                         col.stackOnMobile
                           ? "flex flex-col gap-1"
                           : "flex items-start justify-between gap-3 before:shrink-0 before:pt-0.5"
+                      } ${col.className ?? ""}`}
+                    >
+                      {col.render(row)}
+                    </td>
+                  ))}
+                  {/* Mobile-only expand/collapse toggle -- md:hidden means
+                      it never participates in the real desktop table at
+                      all (not even as an empty cell). See
+                      mobileCollapsible's own comment on DataTableProps. */}
+                  {canCollapse && (
+                    <td className="flex items-center justify-center gap-1 border-t border-ink-200 py-1.5 text-xs font-medium text-ink-500 md:hidden">
+                      <button
+                        type="button"
+                        onClick={() => toggleExpanded(id)}
+                        className="flex items-center gap-1 hover:text-ink-800"
+                      >
+                        <span>{expandedIds.has(id) ? "Less" : "More"}</span>
+                        <span aria-hidden="true">{expandedIds.has(id) ? "▴" : "▾"}</span>
+                      </button>
+                    </td>
+                  )}
+                  {secondaryColumns.map((col) => (
+                    <td
+                      key={col.key}
+                      data-label={col.header}
+                      className={`px-2.5 py-1.5 before:text-xs before:font-medium before:uppercase before:tracking-wide before:text-ink-500 before:content-[attr(data-label)] md:table-cell md:before:content-none ${
+                        expandedIds.has(id)
+                          ? col.stackOnMobile
+                            ? "flex flex-col gap-1"
+                            : "flex items-start justify-between gap-3 before:shrink-0 before:pt-0.5"
+                          : "hidden"
                       } ${col.className ?? ""}`}
                     >
                       {col.render(row)}

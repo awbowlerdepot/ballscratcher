@@ -107,6 +107,9 @@ export default function ProductsPage() {
       // than disappearing -- it's still useful (jumping straight to the
       // manufacturer's own page), just no longer the only thing a click
       // here does.
+      // Kept visible in a collapsed mobile card (see `primary` below) --
+      // it's the one thing you need to identify which row this even is.
+      primary: true,
       render: (p) => (
         <span className="font-medium text-ink-800">
           <Link to={`/products/${p.id}`} className="hover:text-primary hover:underline">
@@ -121,6 +124,9 @@ export default function ProductsPage() {
     {
       key: "status",
       header: "Status",
+      // Also kept visible collapsed -- current-vs-retired is worth
+      // seeing at a glance without expanding, same reasoning as Product.
+      primary: true,
       render: (p) => <Badge tone={p.status === "current" ? "ok" : "muted"}>{p.status}</Badge>,
     },
     { key: "core_name", header: "Core", render: (p) => p.core_name ?? <span className="text-warn">missing</span> },
@@ -243,6 +249,7 @@ export default function ProductsPage() {
         onSelectionChange={setSelectedIds}
         bulkActions={bulkActions}
         emptyMessage={loading ? "Loading…" : "No products match these filters."}
+        mobileCollapsible
       />
 
       <Pagination offset={offset} limit={LIMIT} itemCount={products.length} onOffsetChange={setOffset} />

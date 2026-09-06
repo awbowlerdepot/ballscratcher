@@ -11136,6 +11136,45 @@ new), `admin-spa/src/pages/ProductDetailPage.tsx`, `admin-spa/src/pages/
 DashboardPage.tsx`, `admin-spa/src/api/types.ts`, `admin-spa/src/api/
 client.ts`.
 
+### 6ab.21. Collapsible mobile cards, starting with Products
+
+Al: "can we work on the row cards on mobile. i feel like having them
+collapse and then toggle open is a good approach to make it fit
+better. we can work through each tab one at a time." The mobile pass
+(6ab.11) turned every table row below `md` into a card showing EVERY
+column stacked vertically -- fine for a 3-4 column table, but Products'
+8 columns (Product/Status/Core/Coverstock/Popularity/Avg Daily
+Movement/Demand Score/Updated) made for a very tall card per row.
+
+`DataTable.tsx` gained a new opt-in mode rather than changing the
+default for every existing table at once (per Al's own "one tab at a
+time" framing): a `primary?: boolean` flag on `Column`, and a
+`mobileCollapsible?: boolean` prop on `DataTable` itself. When both are
+used together, a card below `md` shows only its `primary`-flagged
+columns plus a "More ▾" / "Less ▴" toggle button; tapping it reveals
+the rest. The toggle is its own `<td>` styled `md:hidden` so it never
+touches desktop's real table layout, and a table that turns on
+`mobileCollapsible` without marking any column `primary` falls back to
+the old "show everything" behavior rather than silently rendering an
+empty card. Expand state is tracked per row (keyed by `getRowId`, not
+array index) so it survives a re-sort or re-filter.
+
+**Products** (first pass): `name` (the ball itself) and `status`
+(current/retired) marked `primary` -- enough to identify and triage a
+row at a glance; Core/Coverstock/Popularity/Avg Daily Movement/Demand
+Score/Updated collapse behind the toggle. Every other tab still uses
+the old always-expanded card for now -- follow-up passes will work
+through them one at a time as Al asked.
+
+Verified: real `tsc -b` (recharts is now actually installed in
+admin-spa/node_modules as of this session, so this was checked against
+its real types, not the earlier stub) compiles clean. `vite build`
+still can't run in this sandbox (pre-existing `@rollup/rollup-linux-
+arm64-gnu` optional-dependency bug, unrelated to this change).
+
+Files touched: `admin-spa/src/components/DataTable.tsx`,
+`admin-spa/src/pages/ProductsPage.tsx`.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
