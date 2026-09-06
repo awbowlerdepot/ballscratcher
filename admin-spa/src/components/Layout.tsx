@@ -11,12 +11,13 @@ const NAV_ITEMS = [
   { to: "/video-candidates", label: "Video Candidates", end: false },
   { to: "/articles", label: "Articles", end: false },
   { to: "/price-sites", label: "Price Sites", end: false },
+  { to: "/cores", label: "Cores", end: false },
 ];
 
-// Shell: sidebar + top bar + <Outlet/>. Cores, Coverstocks, Blocked
-// Channels, and Batch Jobs still live on the existing admin-site/
-// index.html for now (see README.md's "not here yet" section) -- tabs
-// move over here one at a time as they're ported.
+// Shell: sidebar + top bar + <Outlet/>. Coverstocks, Blocked Channels,
+// and Batch Jobs still live on the existing admin-site/index.html for
+// now (see README.md's "not here yet" section) -- tabs move over here
+// one at a time as they're ported.
 export default function Layout() {
   const { user, signOut } = useAuth();
   const location = useLocation();

@@ -5,8 +5,11 @@ import type {
   ArticleImageCandidate,
   ArticleRegenerateMode,
   ApproveReviewResult,
+  Core,
+  CoreDetail,
   DashboardSummary,
   ListArticlesParams,
+  ListCoresParams,
   ListPriceSourcesParams,
   ListProductsParams,
   ListReviewQueueParams,
@@ -318,4 +321,14 @@ export function updatePriceSite(id: string, input: PriceSiteUpdateInput): Promis
 // price_sites row on its own).
 export function deletePriceSite(id: string): Promise<{ id: string }> {
   return apiDelete(`/price-sites/${encodeURIComponent(id)}`);
+}
+
+// Cores -- read-only in admin_api (see Core's own comment in types.ts
+// for why there's no create/update/delete here).
+export function listCores(params: ListCoresParams = {}): Promise<Core[]> {
+  return apiGet<{ items: Core[] }>("/cores", { ...params }).then((r) => r.items);
+}
+
+export function getCore(id: string): Promise<CoreDetail> {
+  return apiGet<CoreDetail>(`/cores/${encodeURIComponent(id)}`);
 }

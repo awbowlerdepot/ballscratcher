@@ -9812,6 +9812,36 @@ and the registry's scrape-vs-api conditional form) against a live
 stack, plus the two out-of-scope boundaries above if a Products detail
 view gets built later.
 
+### 6ab.5. Cores tab
+
+Seventh tab ported into `admin-spa/` (`src/pages/CoresPage.tsx`) -- the
+simplest one so far. Cores is the "other direction" view of
+`products.core_id` (007_cores_table.sql): one row per physical core,
+with a `product_count` (left-join + group-by in `list_cores`) so a
+many-products-to-one-core case is visible without spotting the same
+core name repeated across several Products rows by hand. Entirely
+read-only: `GET /cores` (search/brand_id/limit/offset) and `GET
+/cores/{id}` (detail -- the core row plus every product currently
+pointing at it) are the only two routes; admin_api has no create/
+update/delete for cores at all, since rows are only ever created or
+attached by the scrapers' own `get_or_create_core_id`, never by hand.
+
+Search-by-name and a raw brand-id text field (same as Products' own
+filter bar -- no `GET /brands` on the admin API yet for a real
+dropdown), plus a `product_count` badge (`ok` tone when >0, `muted`
+when 0 -- a zero-product core is a real signal worth surfacing, not
+noise: it means every product that used to reference it got reassigned
+or rescraped under a different core, per `list_cores`' own docstring on
+the Hammer "E "-prefix incident this exact feature was born out of
+debugging). A "Products" button per row opens a `Modal` with the
+product list (name/status/published/updated, linking back out to each
+product's own page) -- admin-spa's Modal-based pattern here instead of
+admin-site's inline expand-row, since DataTable doesn't support a
+row-toggle shape.
+
+`npx tsc -b` passes clean. Not yet smoke-tested against real deployed
+data.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

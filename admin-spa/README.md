@@ -75,6 +75,17 @@ account instead of a shared bearer-token secret.
   tab, so they stay out of scope until Products gets a detail sub-view
   (same boundary Video Candidates' reassign-only-from-standalone-tab
   already established).
+- **Cores** (`/cores`) -- the "other direction" view of
+  `products.core_id`: one row per physical core (Al's example: DV8's
+  Collision core, shared by six differently-named balls), with a
+  product-count badge so a many-products-to-one-core case is visible at
+  a glance. Search-by-name/brand-id filters, a "Products" button per row
+  opening a `Modal` listing every product pointing at that core (a
+  zero-product core is a real, useful signal -- a likely-orphaned row --
+  shown as such rather than hidden). Read-only, matching admin_api --
+  there's no create/update/delete endpoint for cores at all; rows come
+  from the scrapers' own `get_or_create_core_id`, never by hand through
+  this API.
 - A small hand-rolled component library in `src/components/` (`Button`,
   `Badge`, `Card`, `StatCard`, `Modal`, `Toast`, `DataTable`,
   `Pagination`, `Layout`, `ErrorBoundary`) that later tabs (Articles,
@@ -175,9 +186,9 @@ its own git history for precedent).
 - A "set new password" form for the Cognito `newPasswordRequired`
   challenge -- first-time accounts need a permanent password set via
   the CLI (see above) rather than through the app itself.
-- Every other admin-site tab: Cores, Coverstocks, Blocked Channels,
-  Batch Jobs. These still live on `admin-site/index.html` for now;
-  migrating them is follow-up work.
+- Every other admin-site tab: Coverstocks, Blocked Channels, Batch
+  Jobs. These still live on `admin-site/index.html` for now; migrating
+  them is follow-up work.
 - A Products detail sub-view (the old admin-site has a tabbed per-
   product panel with its own Videos section, "search again" rescan
   button, and bulk reassign/delete -- admin-spa's Video Candidates tab
@@ -233,6 +244,10 @@ either -- `tsc -b` passes clean but that's it. `match_confidence` on
 `db/migrations/014_price_tracking.sql` directly first, specifically
 because of the match_confidence incident above -- worth confirming that
 holds up against a real row regardless.
+
+Cores is the simplest tab so far (read-only, no review workflow) and
+also NOT yet smoke-tested against real data -- `tsc -b` passes clean
+only.
 
 Articles has NOT been smoke-tested against real deployed data yet --
 `tsc -b` passes clean, but given the match_confidence incident above,

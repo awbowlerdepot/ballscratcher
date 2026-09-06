@@ -455,3 +455,54 @@ export interface PriceSiteUpdateInput {
   notes?: string;
   is_active?: boolean;
 }
+
+// Cores (007_cores_table.sql) -- the "other direction" view of
+// products.core_id: one row per physical core (e.g. DV8's Collision
+// core), with a product_count rolling up every differently-named
+// product that shares it. Read-only in admin_api -- no create/update/
+// delete endpoints exist for cores at all, only GET /cores and GET
+// /cores/{id} (rows are created/attached by the scrapers themselves via
+// get_or_create_core_id, never by hand through this API).
+export interface Core {
+  id: string;
+  brand_id: string;
+  brand_name: string;
+  name: string;
+  core_type: string | null;
+  release_era: string | null;
+  created_at: string;
+  // Only present on list rows (GET /cores), not on CoreDetail (GET
+  // /cores/{id} returns `products` instead -- see that type below).
+  product_count: number;
+}
+
+// The Products tab's own list-row fields, reused here since get_core's
+// per-product rows are "enough for the admin UI to link straight back
+// into the Products tab" (see that function's own docstring) -- not
+// the full Product type, a smaller projection.
+export interface CoreProductSummary {
+  id: string;
+  name: string;
+  url: string;
+  status: ProductStatus;
+  published: boolean;
+  updated_at: string;
+}
+
+export interface CoreDetail {
+  id: string;
+  brand_id: string;
+  brand_name: string;
+  name: string;
+  core_type: string | null;
+  release_era: string | null;
+  created_at: string;
+  products: CoreProductSummary[];
+}
+
+export interface ListCoresParams {
+  brand_id?: string;
+  search?: string;
+  limit?: number;
+  offset?: number;
+}
