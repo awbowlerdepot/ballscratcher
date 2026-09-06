@@ -7,9 +7,12 @@ import type {
   ApproveReviewResult,
   Core,
   CoreDetail,
+  Coverstock,
+  CoverstockDetail,
   DashboardSummary,
   ListArticlesParams,
   ListCoresParams,
+  ListCoverstocksParams,
   ListPriceSourcesParams,
   ListProductsParams,
   ListReviewQueueParams,
@@ -331,4 +334,13 @@ export function listCores(params: ListCoresParams = {}): Promise<Core[]> {
 
 export function getCore(id: string): Promise<CoreDetail> {
   return apiGet<CoreDetail>(`/cores/${encodeURIComponent(id)}`);
+}
+
+// Coverstocks -- read-only in admin_api, same reasoning as Cores.
+export function listCoverstocks(params: ListCoverstocksParams = {}): Promise<Coverstock[]> {
+  return apiGet<{ items: Coverstock[] }>("/coverstocks", { ...params }).then((r) => r.items);
+}
+
+export function getCoverstock(id: string): Promise<CoverstockDetail> {
+  return apiGet<CoverstockDetail>(`/coverstocks/${encodeURIComponent(id)}`);
 }

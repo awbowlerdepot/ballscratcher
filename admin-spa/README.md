@@ -86,6 +86,14 @@ account instead of a shared bearer-token secret.
   there's no create/update/delete endpoint for cores at all; rows come
   from the scrapers' own `get_or_create_core_id`, never by hand through
   this API.
+- **Coverstocks** (`/coverstocks`) -- the exact same "other direction"
+  view as Cores, one migration later (008): one row per named
+  coverstock formulation, scoped to a brand, with a product_count.
+  Read-only, matching admin_api -- no create/update/delete endpoints
+  for coverstocks either. Structurally CoresPage.tsx with
+  core_type/release_era swapped for material/type; kept as its own file
+  rather than a shared generic component, same call CoresPage itself
+  made.
 - A small hand-rolled component library in `src/components/` (`Button`,
   `Badge`, `Card`, `StatCard`, `Modal`, `Toast`, `DataTable`,
   `Pagination`, `Layout`, `ErrorBoundary`) that later tabs (Articles,
@@ -202,9 +210,9 @@ its own git history for precedent).
 - A "set new password" form for the Cognito `newPasswordRequired`
   challenge -- first-time accounts need a permanent password set via
   the CLI (see above) rather than through the app itself.
-- Every other admin-site tab: Coverstocks, Blocked Channels, Batch
-  Jobs. These still live on `admin-site/index.html` for now; migrating
-  them is follow-up work.
+- Every other admin-site tab: Blocked Channels, Batch Jobs. These still
+  live on `admin-site/index.html` for now; migrating them is follow-up
+  work.
 - A Products detail sub-view (the old admin-site has a tabbed per-
   product panel with its own Videos section, "search again" rescan
   button, and bulk reassign/delete -- admin-spa's Video Candidates tab
@@ -264,6 +272,13 @@ holds up against a real row regardless.
 Cores is the simplest tab so far (read-only, no review workflow) and
 also NOT yet smoke-tested against real data -- `tsc -b` passes clean
 only.
+
+Coverstocks is structurally identical to Cores (same read-only shape,
+one migration later) and also NOT yet smoke-tested against real data --
+`tsc -b` passes clean only. material/type are Postgres enum columns
+(coverstock_material/coverstock_type) but admin_api returns them as
+plain strings, confirmed by reading service.py's list_coverstocks
+directly rather than assuming.
 
 Articles has NOT been smoke-tested against real deployed data yet --
 `tsc -b` passes clean, but given the match_confidence incident above,

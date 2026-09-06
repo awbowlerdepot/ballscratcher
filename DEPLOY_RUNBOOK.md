@@ -9982,6 +9982,43 @@ row of its own, and the chevron icons were swapped for a new
 third -- the standard "toggle a side panel" glyph, distinct from
 "go back") in `icons.tsx`. `<nav>` is back to just `NAV_ITEMS`.
 
+### 6ab.8. Coverstocks tab
+
+Eighth tab ported into `admin-spa/` (`src/pages/CoverstocksPage.tsx`) --
+the exact same "other direction" view as Cores (`008_coverstocks_table.sql`,
+one migration after cores' 007): one row per named coverstock
+formulation, scoped to a brand, with a `product_count` so a
+many-products-to-one-coverstock case is visible at a glance. Entirely
+read-only: `GET /coverstocks` (search/brand_id/limit/offset) and `GET
+/coverstocks/{id}` (detail) are the only two routes -- same "no
+create/update/delete, rows come from the scrapers' own
+get_or_create_coverstock_id" shape as Cores.
+
+Confirmed `material`/`type` come off Postgres enum columns
+(`coverstock_material`/`coverstock_type`) by reading
+`008_coverstocks_table.sql` directly, but `list_coverstocks`/
+`get_coverstock` in `service.py` select them as ordinary dict values --
+admin_api returns them as plain strings over the wire, so typed as
+`string | null` in `types.ts`, same looseness as Core's
+`core_type`/`release_era`.
+
+The page itself is CoresPage.tsx's structure with `core_type`/
+`release_era` swapped for `material`/`type` -- close enough to the same
+component that a shared generic was considered, but there's still only
+two of these "lookup rollup" tabs, not enough to justify the
+abstraction yet (same call CoresPage's own commit made). New
+`IconCoverstock` (a droplet -- coverstock is the ball's outer coating)
+added to `icons.tsx` for the nav entry.
+
+Also confirmed via the same admin-site grep discipline as prior tabs:
+Batch Jobs has its own "Backfill missing coverstock info" trigger
+(`runBatch('coverstock')`, equivalent to
+`scripts/backfill_coverstock_ids.py`) -- that stays out of scope here,
+picked up when the Batch Jobs tab itself is ported (6ab.10 below).
+
+`npx tsc -b --force` passes clean. Not yet smoke-tested against real
+deployed data.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

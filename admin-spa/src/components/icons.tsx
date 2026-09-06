@@ -89,6 +89,14 @@ export function IconCore(props: IconProps) {
   );
 }
 
+export function IconCoverstock(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M10 2.6c2.4 3 5.4 6.8 5.4 9.9a5.4 5.4 0 1 1-10.8 0c0-3.1 3-6.9 5.4-9.9z" />
+    </svg>
+  );
+}
+
 export function IconChevronsLeft(props: IconProps) {
   return (
     <svg {...base} {...props}>

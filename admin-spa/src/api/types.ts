@@ -506,3 +506,44 @@ export interface ListCoresParams {
   limit?: number;
   offset?: number;
 }
+
+// Coverstocks (008_coverstocks_table.sql): the exact same "other
+// direction" view as Cores above, one migration later -- a
+// coverstock_name is a shared, brand-scoped marketing name multiple
+// differently-named products can reuse. Also read-only in admin_api
+// (GET /coverstocks, GET /coverstocks/{id} only) -- rows are created/
+// attached by get_or_create_coverstock_id in each scraper, never by
+// hand. material/type come off Postgres enum columns
+// (coverstock_material/coverstock_type) but admin_api returns them as
+// plain strings, so typed loosely as string | null here, same as
+// Core's core_type/release_era.
+export interface Coverstock {
+  id: string;
+  brand_id: string;
+  brand_name: string;
+  name: string;
+  material: string | null;
+  type: string | null;
+  created_at: string;
+  // Only present on list rows (GET /coverstocks) -- CoverstockDetail
+  // returns `products` instead, same split as Core/CoreDetail.
+  product_count: number;
+}
+
+export interface CoverstockDetail {
+  id: string;
+  brand_id: string;
+  brand_name: string;
+  name: string;
+  material: string | null;
+  type: string | null;
+  created_at: string;
+  products: CoreProductSummary[];
+}
+
+export interface ListCoverstocksParams {
+  brand_id?: string;
+  search?: string;
+  limit?: number;
+  offset?: number;
+}

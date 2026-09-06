@@ -4,6 +4,7 @@ import Layout from "./components/Layout";
 import { ToastProvider } from "./components/Toast";
 import ArticlesPage from "./pages/ArticlesPage";
 import CoresPage from "./pages/CoresPage";
+import CoverstocksPage from "./pages/CoverstocksPage";
 import DashboardPage from "./pages/DashboardPage";
 import LoginPage from "./pages/LoginPage";
 import PriceSitesPage from "./pages/PriceSitesPage";
@@ -32,6 +33,7 @@ export default function App() {
               <Route path="/articles" element={<ArticlesPage />} />
               <Route path="/price-sites" element={<PriceSitesPage />} />
               <Route path="/cores" element={<CoresPage />} />
+              <Route path="/coverstocks" element={<CoverstocksPage />} />
             </Route>
           </Routes>
         </ToastProvider>
