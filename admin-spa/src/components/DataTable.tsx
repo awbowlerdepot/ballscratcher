@@ -10,6 +10,16 @@ export interface Column<T> {
   sortable?: boolean;
   render: (row: T) => ReactNode;
   className?: string;
+  // Card mode (below `md`, see the mobile-pass comment further down):
+  // the default puts the label on the left and `render`'s content
+  // pinned to the right (fine for a short value like a date or a
+  // single badge). A column whose content is itself multi-line or
+  // multi-button (a button group, a stacked toggle+timestamp) looks
+  // squeezed against the right edge that way -- set this to have the
+  // label sit above the content instead, with the content given the
+  // card's full width. No effect at `md:`+ either way. See
+  // ArticlesPage.tsx's "sync"/"actions" columns for the motivating case.
+  stackOnMobile?: boolean;
 }
 
 export interface BulkAction<T> {
@@ -101,6 +111,14 @@ export default function DataTable<T>({
         is pixel-identical to before. A column with an empty header
         (the actions column on nearly every page) gets `data-label=""`,
         which renders no label -- exactly what's wanted there.
+
+        Card-dial-in pass (2026-09-05, ArticlesPage): each cell defaults
+        to label-left/content-right (`justify-between`), which is fine
+        for a short value but pins a button group or a multi-line block
+        against the card's right edge with less room than it needs. A
+        column can opt into `stackOnMobile` (see the `Column` type
+        above) to put its label on its own line above the content
+        instead, with the content given the full card width.
       */}
       <div className="overflow-x-auto rounded-lg border border-ink-200 bg-ink-100">
         <table className="w-full text-left text-sm">
@@ -168,7 +186,11 @@ export default function DataTable<T>({
                     <td
                       key={col.key}
                       data-label={col.header}
-                      className={`flex items-start justify-between gap-3 px-2.5 py-1.5 before:shrink-0 before:pt-0.5 before:text-xs before:font-medium before:uppercase before:tracking-wide before:text-ink-500 before:content-[attr(data-label)] md:table-cell md:before:content-none ${col.className ?? ""}`}
+                      className={`px-2.5 py-1.5 before:text-xs before:font-medium before:uppercase before:tracking-wide before:text-ink-500 before:content-[attr(data-label)] md:table-cell md:before:content-none ${
+                        col.stackOnMobile
+                          ? "flex flex-col gap-1"
+                          : "flex items-start justify-between gap-3 before:shrink-0 before:pt-0.5"
+                      } ${col.className ?? ""}`}
                     >
                       {col.render(row)}
                     </td>

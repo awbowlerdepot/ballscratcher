@@ -171,6 +171,22 @@ account instead of a shared bearer-token secret.
   full writeup, including the one real bug this pass found and fixed
   (ArticlesPage's action/product-shot image row lacked `flex-wrap` and
   would have forced its own Modal to scroll sideways on a narrow phone).
+- **Card dial-in pass** (2026-09-05, ArticlesPage) -- a follow-up to the
+  mobile-responsive pass above, on the one page with the busiest card
+  content. `DataTable.tsx` gained an opt-in `stackOnMobile` column flag
+  (label above content, full card width) for columns whose content is
+  a button group or a multi-line block rather than a short value --
+  ArticlesPage's Title/BigCommerce/actions columns all use it now. The
+  Title cell's leading thumbnail switched from an inline-block/
+  align-middle trick to a `flex items-start` row so it stays pinned to
+  the top-left regardless of whether the title wraps to one or two
+  lines. The actions column's five buttons (Approve/Reject, Regen
+  text, Regen images, Preview) are now two visual tiers -- the review
+  decision on top, maintenance actions below -- instead of one flat
+  row. The image-candidate picker cards in the article preview modal
+  got `flex-col` + `mt-auto` on their trailing badge/button so it sits
+  flush at the bottom of every card regardless of the row's stretched
+  height, instead of floating wherever the text above happened to end.
 
 ## Auth model
 

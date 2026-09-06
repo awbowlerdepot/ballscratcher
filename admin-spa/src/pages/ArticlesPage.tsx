@@ -195,32 +195,45 @@ export default function ArticlesPage() {
     {
       key: "title",
       header: "Title",
+      stackOnMobile: true,
       render: (a) => (
-        <div>
+        // items-start, not inline-block/align-middle -- with a two-line
+        // title (common for full ball names) the old inline image drifted
+        // to whichever line it happened to sit next to instead of staying
+        // pinned to the top of the block. shrink-0 on the image keeps a
+        // long title from squeezing the thumbnail down as it wraps.
+        <div className="flex items-start gap-2">
           {a.action_shot_image_url ? (
             <img
               src={a.action_shot_image_url}
               alt=""
               title="Action shot"
-              className="mr-1.5 inline-block h-8 w-8 rounded object-cover align-middle"
+              className="h-8 w-8 shrink-0 rounded object-cover"
             />
           ) : a.images_generated_at ? (
-            <span className="mr-1.5 text-xs text-ink-400" title="Image generation ran but produced no images">
+            <span
+              className="mt-1.5 h-8 w-8 shrink-0 text-center text-[10px] leading-tight text-ink-400"
+              title="Image generation ran but produced no images"
+            >
               no images
             </span>
-          ) : null}
-          <button className="font-medium text-ink-800 hover:text-primary" onClick={() => openPreview(a.id)}>
-            {a.title || "(untitled)"}
-          </button>
-          <div className="text-xs text-ink-400">
-            {a.id.slice(0, 8)}&hellip;{" "}
-            <button
-              className="text-primary hover:underline"
-              onClick={() => navigator.clipboard.writeText(a.id)}
-              title="Copy full article ID"
-            >
-              Copy ID
+          ) : (
+            <span className="h-8 w-8 shrink-0" aria-hidden="true" />
+          )}
+          <div className="min-w-0">
+            <button className="text-left font-medium text-ink-800 hover:text-primary" onClick={() => openPreview(a.id)}>
+              {a.title || "(untitled)"}
             </button>
+            <div className="text-xs text-ink-400">
+              {a.id.slice(0, 8)}&hellip;{" "}
+              <button
+                className="text-primary hover:underline"
+                onClick={() => navigator.clipboard.writeText(a.id)}
+                title="Copy full article ID"
+              >
+                Copy ID
+              </button>
+            </div>
           </div>
         </div>
       ),
@@ -252,8 +265,9 @@ export default function ArticlesPage() {
     {
       key: "sync",
       header: "BigCommerce",
+      stackOnMobile: true,
       render: (a) => (
-        <div className="flex flex-col items-start gap-1">
+        <div className="flex flex-col items-start gap-1.5">
           <Button size="sm" variant={a.sync_to_bigcommerce ? "primary" : "secondary"} onClick={() => handleToggleSync(a)}>
             {a.sync_to_bigcommerce ? "Sync on" : "Sync off"}
           </Button>
@@ -266,12 +280,12 @@ export default function ArticlesPage() {
             </Button>
           )}
           {a.bowlerdepot_synced_at && (
-            <>
+            <div className="flex items-center gap-2">
               <Button size="sm" variant="ghost" onClick={() => handleResyncNow(a.id)}>
                 Resync
               </Button>
               <span className="text-xs text-ink-400">synced {fmtDate(a.bowlerdepot_synced_at)}</span>
-            </>
+            </div>
           )}
         </div>
       ),
@@ -279,29 +293,42 @@ export default function ArticlesPage() {
     {
       key: "actions",
       header: "",
+      stackOnMobile: true,
+      // Two tiers, not one flat row -- the review decision (Approve/
+      // Reject, or the resolved-status badge) is the action someone
+      // actually came to this row to take; Regen text/images and
+      // Preview are secondary maintenance actions that were previously
+      // sitting at the same visual weight and blurring together into a
+      // five-button wall. Preview duplicates the title's own
+      // click-to-open affordance but stays here too since a bare title
+      // link isn't always obviously clickable.
       render: (a) => (
-        <div className="flex flex-wrap gap-1.5">
-          {a.status === "pending" ? (
-            <>
-              <Button size="sm" variant="primary" onClick={() => handleApprove(a)}>
-                Approve
-              </Button>
-              <Button size="sm" variant="danger" onClick={() => openRejectModal(a)}>
-                Reject
-              </Button>
-            </>
-          ) : (
-            <Badge tone={a.status === "approved" ? "ok" : "danger"}>{a.status}</Badge>
-          )}
-          <Button size="sm" variant="secondary" onClick={() => handleRegenerateText(a.product_id)}>
-            Regen text
-          </Button>
-          <Button size="sm" variant="secondary" onClick={() => handleRegenerateImages(a.product_id)}>
-            Regen images
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => openPreview(a.id)}>
-            Preview
-          </Button>
+        <div className="flex flex-col gap-1.5">
+          <div className="flex flex-wrap gap-1.5">
+            {a.status === "pending" ? (
+              <>
+                <Button size="sm" variant="primary" onClick={() => handleApprove(a)}>
+                  Approve
+                </Button>
+                <Button size="sm" variant="danger" onClick={() => openRejectModal(a)}>
+                  Reject
+                </Button>
+              </>
+            ) : (
+              <Badge tone={a.status === "approved" ? "ok" : "danger"}>{a.status}</Badge>
+            )}
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            <Button size="sm" variant="secondary" onClick={() => handleRegenerateText(a.product_id)}>
+              Regen text
+            </Button>
+            <Button size="sm" variant="secondary" onClick={() => handleRegenerateImages(a.product_id)}>
+              Regen images
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => openPreview(a.id)}>
+              Preview
+            </Button>
+          </div>
         </div>
       ),
     },
@@ -432,23 +459,36 @@ function ArticlePreview({
           .map((variant) => (
             <div key={variant}>
               <p className="mb-1 font-semibold text-ink-800">{VARIANT_LABELS[variant] ?? variant} candidates:</p>
+              {/* flex-col + mt-auto on the trailing badge/button: the
+                  outer flex-wrap row already stretches every card in it
+                  to the tallest one's height (flex's default
+                  align-items: stretch), but without flex-col that extra
+                  height just sat below the model_id text -- the
+                  button/badge floated at whatever height the image+text
+                  happened to add up to, so it didn't line up card to
+                  card. mt-auto pins it to the bottom of every card
+                  instead, and w-full on the button matches the badge's
+                  own full-bleed feel so selected/unselected cards read
+                  the same shape. */}
               <div className="flex flex-wrap gap-3">
                 {byVariant[variant].map((c) => (
                   <div
                     key={c.id}
-                    className={`w-40 rounded-md border p-2 ${c.is_selected ? "border-primary" : "border-ink-200"}`}
+                    className={`flex w-40 flex-col rounded-md border p-2 ${c.is_selected ? "border-primary" : "border-ink-200"}`}
                   >
-                    <img src={c.image_url} alt="" loading="lazy" className="mb-1 h-28 w-full rounded object-cover" />
-                    <div className="mb-1 truncate text-xs text-ink-500" title={c.model_id}>
+                    <img src={c.image_url} alt="" loading="lazy" className="mb-1.5 h-28 w-full rounded object-cover" />
+                    <div className="mb-1.5 truncate text-xs text-ink-500" title={c.model_id}>
                       {c.model_id}
                     </div>
-                    {c.is_selected ? (
-                      <Badge tone="ok">selected</Badge>
-                    ) : (
-                      <Button size="sm" variant="ghost" onClick={() => onSelectCandidate(c.id)}>
-                        Use this one
-                      </Button>
-                    )}
+                    <div className="mt-auto flex justify-center">
+                      {c.is_selected ? (
+                        <Badge tone="ok">selected</Badge>
+                      ) : (
+                        <Button size="sm" variant="ghost" className="w-full" onClick={() => onSelectCandidate(c.id)}>
+                          Use this one
+                        </Button>
+                      )}
+                    </div>
                   </div>
                 ))}
               </div>
