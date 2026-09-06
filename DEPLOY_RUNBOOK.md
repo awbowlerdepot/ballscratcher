@@ -8505,6 +8505,81 @@ still_succeed`'s failure-injection index (the 3rd call overall is now
 end-state assertions (`action_shot` 2 candidates, `product_shot` 3), just
 retargeted to the new call order. Full 44-file regression sweep: clean.
 
+**2026-09-06 fix -- lock a selected image against a later regenerate (Al's
+report: "I am seeing article images get re generated after I have already
+selected on that I like. Can we lock that down once we have selected one.
+Maybe bring in new images but never remove the existing ones.")**
+
+Root cause: the 2026-09-04 UniqueViolation fix (see above, "REAL INCIDENT
+#1" in `store_article_image_candidates`'s own docstring) made every
+regenerate unconditionally delete a variant's existing candidate rows and
+re-select index 0 of the new run's own candidates as the live pick --
+which meant ANY regenerate (a scheduled batch re-run, a text-only
+regenerate that also happened to have `regenerate_images=True`, or an
+admin explicitly clicking "Regenerate images") silently overwrote an
+admin's already-chosen image with a fresh, unreviewed one. That fix
+correctly solved the crash it was written for, but had no concept of
+"this variant already has a live pick that should stay put."
+
+Fix, entirely in `src/product_article_generator/app.py`, no migration, no
+`template.yaml` change:
+
+1. `fetch_existing_article` now also selects the four flat image columns
+   (`action_shot_image_key/url`, `product_shot_image_key/url`) alongside
+   `id`/`performance_summary`/`hook`, so a regenerate has the CURRENT
+   value in hand to write back unchanged for a locked or partially-failed
+   variant (both `store_article`'s upsert and `update_article_images_
+   only`'s UPDATE SET all four image columns unconditionally whenever
+   they run at all, so simply omitting a variant from the `images` dict
+   would NULL it out, not leave it alone).
+2. `generate_article_for_product` now queries `product_article_image_
+   candidates` for `is_selected=true` rows on the existing article
+   (`locked_variants`) BEFORE writing this run's own new candidates --
+   gated on `regenerate_images` being True and an existing article
+   actually being present, so a text-only regenerate or a brand-new
+   article never even asks the question. For each variant: a fresh new
+   candidate becomes the live pick only if that variant is NOT locked;
+   otherwise (locked, OR simply zero new candidates this run -- a
+   partial generation failure) the existing value is written back
+   unchanged.
+3. `store_article_image_candidates` takes a new `locked_variants: set`
+   param. For a locked variant, the old unconditional delete is skipped
+   entirely (existing rows -- including the live pick -- are left
+   completely untouched) and every new candidate is inserted with
+   `is_selected=false`, purely as extra options an admin can switch to
+   later via the existing `select_article_image_candidate` admin
+   endpoint. An unlocked variant keeps the exact 2026-09-04 behavior
+   (clear then insert with index 0 selected).
+
+Net effect: once an admin has picked an image for a variant (or a prior
+run auto-selected one and nobody's touched it since), no future
+regenerate -- scheduled or manual -- can dislodge it. New candidates
+still flow in and get appended for review; nothing is ever deleted.
+
+**Tests** (`tests/test_product_article_generator.py`, 111/111 passing, 10
+new/updated): `_FakeCursor` widened to match `fetch_existing_article`'s
+new query text and to answer the new `is_selected` lookup query (new
+`selected_variants` constructor kwarg). New:
+`test_fetch_existing_article_returns_image_fields_when_present`,
+`test_store_article_image_candidates_locked_variant_skips_delete_and_
+inserts_unselected`,
+`test_store_article_image_candidates_locked_variant_leaves_prior_rows_
+untouched_while_unlocked_variant_behaves_as_before`,
+`test_generate_article_for_product_preserves_locked_image_and_appends_
+new_candidate_unselected` (the core regression test for Al's report),
+`test_generate_article_for_product_preserves_existing_image_on_partial_
+failure_for_unlocked_variant`, and
+`test_generate_article_for_product_skips_locked_variants_lookup_when_
+regenerate_images_false` (confirms the gate). Full regression sweep
+against `tests/test_admin_api_service.py` (275/275, unaffected --
+`select_article_image_candidate` itself wasn't touched) confirms no
+cross-module breakage.
+
+Deploy: pure Lambda-code change -- `sam build
+ProductArticleGeneratorFunction && sam deploy` (or a full redeploy)
+picks it up. No admin-site/admin_api changes needed; the existing
+candidate-picker UI already reflects whatever `is_selected` says.
+
 ### 6u. Article → BigCommerce sync: admin toggle (migration 028) + sync job design spec (job not yet built)
 
 Follow-up to 6s/6t (the ball-review article generator): Al asked how to get

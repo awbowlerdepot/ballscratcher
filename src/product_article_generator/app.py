@@ -614,25 +614,43 @@ def fetch_product_content(conn, product_id: str) -> dict:
 
 
 def fetch_existing_article(conn, product_id: str) -> dict:
-    """Fetches the minimal existing product_articles row a decoupled
-    regenerate (see generate_article_for_product's v7 docstring) needs:
-    the row's id (to update in place) plus performance_summary/hook,
-    which generate_article_image_candidates' own prompt-building already
-    falls back to whenever visual_theme is blank -- exactly the
-    situation an images-only regenerate is in, since visual_theme itself
-    is a transient field produced fresh by each Bedrock article-text
-    response and never persisted to this table (see 025_product_
-    article_images_theme_driven_pipeline.sql's own header comment).
-    Returns None if this product has no article row yet."""
+    """Fetches the existing product_articles row a regenerate needs: the
+    row's id (to update in place) plus performance_summary/hook, which
+    generate_article_image_candidates' own prompt-building already falls
+    back to whenever visual_theme is blank -- exactly the situation an
+    images-only regenerate is in, since visual_theme itself is a
+    transient field produced fresh by each Bedrock article-text response
+    and never persisted to this table (see 025_product_article_images_
+    theme_driven_pipeline.sql's own header comment). Also fetches the
+    four flat image columns -- added for Al's "lock down an already-
+    selected image" fix (generate_article_for_product's own docstring):
+    when a variant is locked (already has a live pick), the code that
+    builds the `images` dict passed into store_article/update_article_
+    images_only needs the CURRENT value to write back unchanged, not
+    just "leave it out of the dict" -- both of those functions' SQL
+    always SETs all four image columns unconditionally (unlike update_
+    article_text_only, which structurally omits them from its SET
+    clause), so omitting a locked variant's key from the dict would NULL
+    it out rather than leave it alone. Returns None if this product has
+    no article row yet."""
     with conn.cursor() as cur:
         cur.execute(
-            "select id, performance_summary, hook from product_articles where product_id = %s",
+            """
+            select id, performance_summary, hook,
+                   action_shot_image_key, action_shot_image_url,
+                   product_shot_image_key, product_shot_image_url
+            from product_articles where product_id = %s
+            """,
             (product_id,),
         )
         row = cur.fetchone()
     if row is None:
         return None
-    return {"id": row[0], "performance_summary": row[1], "hook": row[2]}
+    return {
+        "id": row[0], "performance_summary": row[1], "hook": row[2],
+        "action_shot_image_key": row[3], "action_shot_image_url": row[4],
+        "product_shot_image_key": row[5], "product_shot_image_url": row[6],
+    }
 
 
 def infer_sibling_products(conn, product: dict) -> list:
@@ -1682,50 +1700,77 @@ def update_article_images_only(conn, product_id: str, images: dict) -> str:
     return article_id
 
 
-def store_article_image_candidates(conn, article_id: str, candidates_by_variant: dict) -> None:
+def store_article_image_candidates(conn, article_id: str, candidates_by_variant: dict,
+                                    locked_variants: set = None) -> None:
     """Persists EVERY candidate generate_article_image_candidates
     produced (not just the auto-selected one that landed in
     product_articles' own image columns via store_article) into
     026_product_article_image_candidates.sql's table, so an admin can
     later switch their pick via admin_api.select_article_image_candidate
-    without re-running generation. Index 0 of each variant's candidate
-    list is marked is_selected=true -- it's the same one store_article
-    was called with as the live image (see generate_article_for_
-    product), so this call and that one MUST stay in agreement about
-    which candidate is "first"; both simply take candidates_by_variant[
-    variant][0], never re-derive it independently. candidates_by_variant
-    being empty (no images generated this run, or the whole image step
-    was skipped) is a normal no-op, not an error.
+    without re-running generation. candidates_by_variant being empty (no
+    images generated this run, or the whole image step was skipped) is a
+    normal no-op, not an error.
 
-    REAL INCIDENT (2026-09-04): a regenerate of the same product (article
-    row already existed, force=True path -- store_article's own upsert
-    returns the SAME article_id it did the first time) crashed with a
-    UniqueViolation on product_article_image_candidates_one_selected_idx.
-    This function used to be insert-only, with no awareness that an
-    article_id it's writing to might already have candidate rows from a
-    PRIOR run -- the new run's own index-0-selected candidate for a
-    variant collided with the old run's still-is_selected=true row for
+    locked_variants (default None/empty set) is the set of variants that
+    ALREADY have a live candidate for this article -- computed by the
+    caller (generate_article_for_product) by querying this same table
+    for is_selected=true rows BEFORE this run's own new candidates are
+    written, so it reflects an admin's pick (or a prior run's own
+    auto-selection) from before this call, never this call's own output.
+    For a variant in locked_variants: existing rows are left completely
+    untouched (no delete) and every new candidate is inserted with
+    is_selected=false -- appended as extra options for an admin to
+    review, never replacing whichever one is currently live. For a
+    variant NOT in locked_variants (this article has never had a
+    selection for it -- a brand-new article, or the empty-candidates-
+    list case below): behavior is unchanged from before this parameter
+    existed -- existing rows are cleared and the new run's index-0
+    candidate becomes is_selected=true, the same one generate_article_
+    for_product mirrors onto product_articles' own flat image columns
+    (both simply take candidates_by_variant[variant][0], never re-derive
+    it independently).
+
+    REAL INCIDENT #1 (2026-09-04): a regenerate of the same product
+    (article row already existed, force=True path -- store_article's own
+    upsert returns the SAME article_id it did the first time) crashed
+    with a UniqueViolation on product_article_image_candidates_one_
+    selected_idx. This function used to be insert-only, with no awareness
+    that an article_id it's writing to might already have candidate rows
+    from a PRIOR run -- the new run's own index-0-selected candidate for
+    a variant collided with the old run's still-is_selected=true row for
     that same (article_id, variant) pair, the exact thing 026's own
-    partial unique index exists to prevent. Fixed by clearing a variant's
-    existing candidate rows immediately before writing that variant's new
-    ones -- but ONLY for variants this run actually produced new
-    candidates for (an empty `candidates` list is skipped entirely, old
-    rows and all), so a variant that totally failed THIS run doesn't lose
-    whatever good candidates it already had from a previous run -- same
-    "best-effort, don't destroy existing good state on a partial failure"
-    posture this module already uses everywhere else (e.g. a Remove
-    Background failure only ever skips the Stability candidate, never
-    touches anything already stored)."""
+    partial unique index exists to prevent. Fixed (at the time) by
+    clearing a variant's existing candidate rows immediately before
+    writing that variant's new ones -- but ONLY for variants this run
+    actually produced new candidates for (an empty `candidates` list is
+    skipped entirely, old rows and all), so a variant that totally failed
+    THIS run doesn't lose whatever good candidates it already had from a
+    previous run.
+
+    REAL INCIDENT #2 (2026-09-06, Al): that unconditional-clear fix above
+    was itself the bug Al then hit in practice -- "I am seeing article
+    images get regenerated after I have already selected one that I
+    like." Every regenerate (even a text-only one that also happens to
+    touch images, or the daily batch re-running on an article that
+    already has a picked image) was wiping out and re-rolling the dice on
+    an admin's already-chosen image, because this function had no concept
+    of "already selected" at all -- it always treated candidates_by_
+    variant[variant][0] as the new live pick. Al's ask: "lock that down
+    once we have selected one. Maybe bring in new images but never remove
+    the existing ones." locked_variants is that lock -- see above."""
     if not candidates_by_variant:
         return
+    locked_variants = locked_variants or set()
     with conn.cursor() as cur:
         for variant, candidates in candidates_by_variant.items():
             if not candidates:
                 continue
-            cur.execute(
-                "delete from product_article_image_candidates where article_id = %s and variant = %s",
-                (article_id, variant),
-            )
+            is_locked = variant in locked_variants
+            if not is_locked:
+                cur.execute(
+                    "delete from product_article_image_candidates where article_id = %s and variant = %s",
+                    (article_id, variant),
+                )
             for i, candidate in enumerate(candidates):
                 cur.execute(
                     """
@@ -1735,7 +1780,7 @@ def store_article_image_candidates(conn, article_id: str, candidates_by_variant:
                     """,
                     (
                         article_id, variant, candidate["model_id"], candidate["key"], candidate["url"],
-                        candidate.get("seed"), i == 0,
+                        candidate.get("seed"), (not is_locked) and i == 0,
                     ),
                 )
     conn.commit()
@@ -1821,17 +1866,14 @@ def generate_article_for_product(conn, bedrock_client, model_id: str, product_id
 
     siblings = infer_sibling_products(conn, product)
 
-    existing = None
-    if not regenerate_text or not regenerate_images:
-        # Either decoupled branch needs the existing row: text-only needs
-        # nothing from it directly (update_article_text_only just needs
-        # the row to exist, which its own UPDATE...returning already
-        # checks), but images-only needs its id plus performance_summary/
-        # hook as prompt-building context, so fetch it once up front and
-        # fail clean here rather than partway through either write path.
-        existing = fetch_existing_article(conn, product_id)
-        if existing is None:
-            return {"product_id": product_id, "generated": False, "reason": "no_existing_article_to_regenerate"}
+    # Fetched unconditionally, not just for the decoupled branches, as of
+    # Al's "lock down an already-selected image" fix (2026-09-06): the
+    # combined regenerate_text+regenerate_images path also needs to know
+    # which variants (if any) already have a live pick, so it can leave
+    # that pick alone. None for a genuinely new product/article.
+    existing = fetch_existing_article(conn, product_id)
+    if existing is None and (not regenerate_text or not regenerate_images):
+        return {"product_id": product_id, "generated": False, "reason": "no_existing_article_to_regenerate"}
 
     if regenerate_text:
         prompt = build_article_prompt(product, siblings)
@@ -1849,12 +1891,60 @@ def generate_article_for_product(conn, bedrock_client, model_id: str, product_id
             image_model_id, removebg_model_id, gemini_model_id, image_bucket, product, article,
         )
 
+    # Which variants already have a live pick -- an admin's explicit
+    # select_article_image_candidate call, or just a prior run's own
+    # auto-selection, either way. Queried BEFORE this run's own new
+    # candidates get stored below, so it reflects the OLD state, never
+    # this run's output. Gated on regenerate_images (not just
+    # candidates_by_variant): a text-only regenerate must leave `images`
+    # completely empty either way (update_article_text_only doesn't take
+    # images at all, and the returned images_generated flag below should
+    # stay accurate to "did an image step actually run"), so there's no
+    # reason to even ask the question there.
+    locked_variants = set()
+    if existing is not None and regenerate_images:
+        with conn.cursor() as cur:
+            cur.execute(
+                "select variant from product_article_image_candidates where article_id = %s and is_selected",
+                (existing["id"],),
+            )
+            locked_variants = {row[0] for row in cur.fetchall()}
+
     images = {}
-    for variant in ("action_shot", "product_shot"):
-        variant_candidates = candidates_by_variant.get(variant) or []
-        if variant_candidates:
-            images[f"{variant}_image_key"] = variant_candidates[0]["key"]
-            images[f"{variant}_image_url"] = variant_candidates[0]["url"]
+    if regenerate_images:
+        for variant in ("action_shot", "product_shot"):
+            variant_candidates = candidates_by_variant.get(variant) or []
+            existing_key = existing.get(f"{variant}_image_key") if existing else None
+            if variant_candidates and variant not in locked_variants:
+                # A fresh pick from this run's own new candidates -- the
+                # normal case for a never-yet-selected variant.
+                images[f"{variant}_image_key"] = variant_candidates[0]["key"]
+                images[f"{variant}_image_url"] = variant_candidates[0]["url"]
+            elif existing_key:
+                # Either (a) this variant is locked -- already has a live
+                # pick that a regenerate must never dislodge (Al's ask,
+                # 2026-09-06: "lock that down once we have selected one
+                # ... bring in new images but never remove the existing
+                # ones") -- or (b) it simply produced NO new candidates
+                # this run (every Gemini/Stability call failed) and there
+                # IS an existing image to fall back to, the same "don't
+                # destroy existing good state on a partial failure"
+                # posture this module already applies to the candidates
+                # table itself. Either way, write back the SAME value
+                # rather than omitting it: store_article's upsert and
+                # update_article_images_only's UPDATE both SET all four
+                # image columns unconditionally whenever they run at all
+                # (unlike update_article_text_only, which structurally
+                # omits them), so leaving a variant out of `images` here
+                # would NULL it out instead of leaving it alone. New
+                # candidates (if any) for a locked variant still get
+                # appended to the candidates table below for an admin to
+                # review -- they just don't become the live image
+                # automatically.
+                images[f"{variant}_image_key"] = existing_key
+                images[f"{variant}_image_url"] = existing[f"{variant}_image_url"]
+            # else: no new candidates AND no existing image for this
+            # variant -- genuinely nothing to write, same original no-op.
 
     source_video_ids = [v["id"] for v in product["videos"]]
     sibling_product_ids = [s["id"] for s in siblings]
@@ -1868,7 +1958,7 @@ def generate_article_for_product(conn, bedrock_client, model_id: str, product_id
         if images:
             update_article_images_only(conn, product_id, images)
 
-    store_article_image_candidates(conn, article_id, candidates_by_variant)
+    store_article_image_candidates(conn, article_id, candidates_by_variant, locked_variants)
 
     return {
         "product_id": product_id, "generated": True, "article_id": article_id,

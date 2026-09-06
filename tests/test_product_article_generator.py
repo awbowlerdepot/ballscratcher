@@ -209,7 +209,8 @@ _UNSET = object()
 class _FakeCursor:
     def __init__(self, needing_article=None, product_row=None, video_rows=None,
                  sibling_candidates=None, store_article_id="article-1",
-                 reference_image_url=_UNSET, existing_article=None):
+                 reference_image_url=_UNSET, existing_article=None,
+                 selected_variants=None):
         self.needing_article = needing_article or []
         self.product_row = product_row
         self.video_rows = video_rows or []
@@ -223,13 +224,21 @@ class _FakeCursor:
         # docstring: "no image at all").
         self.reference_image_url = reference_image_url
         # v7 decoupled-regenerate feature -- {"id", "performance_summary",
-        # "hook"} dict backing fetch_existing_article, and also what
-        # update_article_text_only/update_article_images_only's own
-        # UPDATE...returning fetchone() resolves against (None simulates
-        # "no existing article row for this product", i.e. the ValueError/
-        # early-return paths those functions and generate_article_for_
-        # product itself are guarded against).
+        # "hook", and (as of the 2026-09-06 image-lock fix) the four flat
+        # image key/url fields too} dict backing fetch_existing_article,
+        # and also what update_article_text_only/update_article_images_
+        # only's own UPDATE...returning fetchone() resolves against (None
+        # simulates "no existing article row for this product", i.e. the
+        # ValueError/early-return paths those functions and generate_
+        # article_for_product itself are guarded against).
         self.existing_article = existing_article
+        # 2026-09-06 image-lock fix -- which variants (a list/set of
+        # "action_shot"/"product_shot" strings) already have an is_
+        # selected=true candidate row for `existing_article`'s id, backing
+        # the "select variant ... where is_selected" query generate_
+        # article_for_product runs to compute locked_variants. Only
+        # meaningful together with existing_article being set.
+        self.selected_variants = selected_variants or []
         self.executed = []
         self.description = None
         self._rows = []
@@ -295,8 +304,12 @@ class _FakeCursor:
         elif q.startswith("delete from product_article_image_candidates"):
             self.candidate_deletes.append(params)
 
-        elif q.startswith("select id, performance_summary, hook from product_articles"):
-            self.description = [("id",), ("performance_summary",), ("hook",)]
+        elif q.startswith("select id, performance_summary, hook,"):
+            self.description = [
+                ("id",), ("performance_summary",), ("hook",),
+                ("action_shot_image_key",), ("action_shot_image_url",),
+                ("product_shot_image_key",), ("product_shot_image_url",),
+            ]
             if self.existing_article is None:
                 self._rows = []
             else:
@@ -304,7 +317,15 @@ class _FakeCursor:
                     self.existing_article["id"],
                     self.existing_article.get("performance_summary"),
                     self.existing_article.get("hook"),
+                    self.existing_article.get("action_shot_image_key"),
+                    self.existing_article.get("action_shot_image_url"),
+                    self.existing_article.get("product_shot_image_key"),
+                    self.existing_article.get("product_shot_image_url"),
                 )]
+
+        elif q.startswith("select variant from product_article_image_candidates where article_id"):
+            self.description = [("variant",)]
+            self._rows = [(v,) for v in self.selected_variants]
 
         elif q.startswith("update product_articles set status = 'pending', title ="):
             self.text_only_updates.append(params)
@@ -586,7 +607,28 @@ def test_generate_article_for_product_propagates_bad_bedrock_json():
 def test_fetch_existing_article_returns_id_and_text_fields():
     conn = _FakeConnection(existing_article={"id": "article-1", "performance_summary": "Great ball.", "hook": "A hook."})
     result = app.fetch_existing_article(conn, "prod-1")
-    assert result == {"id": "article-1", "performance_summary": "Great ball.", "hook": "A hook."}
+    # 2026-09-06 image-lock fix widened this query/return shape to include
+    # the four flat image columns too (see fetch_existing_article's own
+    # docstring) -- a fixture that never set them comes back None, same as
+    # a real row with no images generated yet.
+    assert result == {
+        "id": "article-1", "performance_summary": "Great ball.", "hook": "A hook.",
+        "action_shot_image_key": None, "action_shot_image_url": None,
+        "product_shot_image_key": None, "product_shot_image_url": None,
+    }
+
+
+def test_fetch_existing_article_returns_image_fields_when_present():
+    conn = _FakeConnection(existing_article={
+        "id": "article-1", "performance_summary": "Great ball.", "hook": "A hook.",
+        "action_shot_image_key": "article-images/prod-1/action_shot_gemini_1.png",
+        "action_shot_image_url": "https://b/action_shot_gemini_1.png",
+        "product_shot_image_key": "article-images/prod-1/product_shot_gemini_1.png",
+        "product_shot_image_url": "https://b/product_shot_gemini_1.png",
+    })
+    result = app.fetch_existing_article(conn, "prod-1")
+    assert result["action_shot_image_key"] == "article-images/prod-1/action_shot_gemini_1.png"
+    assert result["product_shot_image_url"] == "https://b/product_shot_gemini_1.png"
 
 
 def test_fetch_existing_article_returns_none_when_no_row():
@@ -2271,6 +2313,54 @@ def test_store_article_image_candidates_clears_prior_candidates_before_inserting
     assert delete_indices[1] < insert_indices[1]
 
 
+def test_store_article_image_candidates_locked_variant_skips_delete_and_inserts_unselected():
+    """2026-09-06 image-lock fix, Al: "lock that down once we have
+    selected one ... bring in new images but never remove the existing
+    ones." A variant passed in locked_variants must get NEITHER its prior
+    rows deleted NOR any of this run's new candidates marked is_selected
+    -- they're appended purely as extra options for an admin to review
+    later via select_article_image_candidate, the live pick stays
+    whatever it already was."""
+    conn = _FakeConnection()
+    candidates_by_variant = {
+        "action_shot": [
+            {"key": "article-images/p1/action_shot_gemini_2.png", "url": "https://b/action_shot_gemini_2.png",
+             "model_id": "gemini-model", "seed": None},
+            {"key": "article-images/p1/action_shot_gemini_3.png", "url": "https://b/action_shot_gemini_3.png",
+             "model_id": "gemini-model", "seed": None},
+        ],
+    }
+
+    app.store_article_image_candidates(conn, "article-1", candidates_by_variant, locked_variants={"action_shot"})
+
+    assert conn._cursor.candidate_deletes == []
+    assert len(conn._cursor.candidate_inserts) == 2
+    assert all(p[6] is False for p in conn._cursor.candidate_inserts)
+
+
+def test_store_article_image_candidates_locked_variant_leaves_prior_rows_untouched_while_unlocked_variant_behaves_as_before():
+    """A single call touching both a locked and an unlocked variant --
+    confirms locked_variants is applied per-variant, not as an all-or-
+    nothing switch for the whole call."""
+    conn = _FakeConnection()
+    candidates_by_variant = {
+        "action_shot": [
+            {"key": "new-action-key", "url": "new-action-url", "model_id": "gemini-model", "seed": None},
+        ],
+        "product_shot": [
+            {"key": "new-product-key", "url": "new-product-url", "model_id": "gemini-model", "seed": None},
+        ],
+    }
+
+    app.store_article_image_candidates(conn, "article-1", candidates_by_variant, locked_variants={"action_shot"})
+
+    assert conn._cursor.candidate_deletes == [("article-1", "product_shot")]
+    action_rows = [p for p in conn._cursor.candidate_inserts if p[1] == "action_shot"]
+    product_rows = [p for p in conn._cursor.candidate_inserts if p[1] == "product_shot"]
+    assert action_rows[0][6] is False  # locked -- new candidate never auto-selected
+    assert product_rows[0][6] is True  # unlocked -- unchanged index-0-selected behavior
+
+
 def test_store_article_image_candidates_skips_delete_for_variant_with_no_new_candidates():
     """A variant that produced ZERO new candidates this run (every Gemini
     AND Stability call failed) must NOT have its prior-run candidates
@@ -2378,6 +2468,170 @@ def test_generate_article_for_product_skips_images_when_gemini_auth_missing():
 
     assert result["images_generated"] is False
     assert not any(q.startswith("select coalesce(") for q, _ in conn._cursor.executed)
+
+
+# --- generate_article_for_product: image-lock-down (2026-09-06, Al's ask)
+# -- these patch app.generate_article_image_candidates directly (same
+# _HandlerPatchGuard save/restore pattern used for the handler tests
+# above) rather than threading a real reference-image-url + fake Gemini/
+# Stability calls all the way through, since the thing under test here
+# is what generate_article_for_product DOES with whatever candidates_by_
+# variant it gets back, not the image-generation call itself (already
+# covered by the generate_article_image_candidates tests elsewhere in
+# this file). ---
+
+def _install_fake_image_candidates(guard, candidates_by_variant):
+    guard.set(app, "generate_article_image_candidates",
+               lambda *args, **kwargs: candidates_by_variant)
+
+
+_ALL_EIGHT_IMAGE_KWARGS = dict(
+    s3_client=object(), bedrock_image_client=object(), bedrock_removebg_client=object(),
+    gemini_auth=_FAKE_GEMINI_AUTH, image_model_id="model-id", removebg_model_id="removebg-model-id",
+    gemini_model_id="gemini-model-id", image_bucket="bucket",
+)
+
+
+def test_generate_article_for_product_preserves_locked_image_and_appends_new_candidate_unselected():
+    """The core regression test for Al's report: "I am seeing article
+    images get regenerated after I have already selected one that I
+    like." action_shot is already locked (has an is_selected=true row);
+    this run produces a NEW action_shot candidate too -- it must be
+    appended to the candidates table (not lost) but must NOT become the
+    live image. product_shot has no existing selection, so its own new
+    candidate becomes the live pick as usual."""
+    product_row = (
+        "prod-1", "Equinox Solid", "Blue", "reactive", "hybrid",
+        "R2S Hybrid", True, "500/1000 Abralon",
+        12, 17, "2024-01-01", "A great ball.",
+        "brand-1", "Storm", "Sonar", "asymmetric",
+    )
+    video_rows = [("vid-1", "Review", "Some Channel", "A summary.", "transcript text")]
+    conn = _FakeConnection(
+        product_row=product_row, video_rows=video_rows,
+        existing_article={
+            "id": "article-1", "performance_summary": "Old summary.", "hook": "Old hook.",
+            "action_shot_image_key": "article-images/prod-1/action_shot_gemini_1.png",
+            "action_shot_image_url": "https://b/action_shot_gemini_1.png",
+            "product_shot_image_key": None, "product_shot_image_url": None,
+        },
+        selected_variants=["action_shot"],
+    )
+    bedrock = _FakeBedrockClient(json.dumps(_VALID_ARTICLE_JSON))
+    fake_candidates = {
+        "action_shot": [{"key": "article-images/prod-1/action_shot_gemini_2.png",
+                          "url": "https://b/action_shot_gemini_2.png", "model_id": "gemini-model", "seed": None}],
+        "product_shot": [{"key": "article-images/prod-1/product_shot_gemini_1.png",
+                           "url": "https://b/product_shot_gemini_1.png", "model_id": "gemini-model", "seed": None}],
+    }
+
+    guard = _HandlerPatchGuard()
+    try:
+        _install_fake_image_candidates(guard, fake_candidates)
+        result = app.generate_article_for_product(conn, bedrock, "model-id", "prod-1", **_ALL_EIGHT_IMAGE_KWARGS)
+    finally:
+        guard.restore()
+
+    assert result["images_generated"] is True
+    insert_params = conn._cursor.inserted[0]
+    # action_shot stayed the OLD, already-selected value -- not the new
+    # candidate this run produced.
+    assert insert_params[14] == "article-images/prod-1/action_shot_gemini_1.png"
+    assert insert_params[15] == "https://b/action_shot_gemini_1.png"
+    # product_shot had no prior selection, so its new candidate DID become
+    # the live pick.
+    assert insert_params[16] == "article-images/prod-1/product_shot_gemini_1.png"
+    assert insert_params[17] == "https://b/product_shot_gemini_1.png"
+
+    # The new action_shot candidate was still appended to the candidates
+    # table (never lost, per Al's "bring in new images" half of the ask)
+    # -- just not selected, and its prior row was never deleted.
+    action_inserts = [p for p in conn._cursor.candidate_inserts if p[1] == "action_shot"]
+    assert len(action_inserts) == 1
+    assert action_inserts[0][3] == "article-images/prod-1/action_shot_gemini_2.png"
+    assert action_inserts[0][6] is False
+    assert ("article-1", "action_shot") not in conn._cursor.candidate_deletes
+
+    # product_shot, never locked, kept its normal clear-then-select-index-0
+    # behavior.
+    assert ("article-1", "product_shot") in conn._cursor.candidate_deletes
+    product_inserts = [p for p in conn._cursor.candidate_inserts if p[1] == "product_shot"]
+    assert product_inserts[0][6] is True
+
+
+def test_generate_article_for_product_preserves_existing_image_on_partial_failure_for_unlocked_variant():
+    """A variant with NO existing selection (never locked) but that also
+    produced zero new candidates this run (a partial generation failure,
+    e.g. every Gemini call for that shot failed) must still keep its
+    existing live image rather than having it nulled out -- same "don't
+    destroy existing good state on a partial failure" posture this module
+    already applies to the candidates table itself."""
+    product_row = (
+        "prod-1", "Equinox Solid", "Blue", "reactive", "hybrid",
+        "R2S Hybrid", True, "500/1000 Abralon",
+        12, 17, "2024-01-01", "A great ball.",
+        "brand-1", "Storm", "Sonar", "asymmetric",
+    )
+    video_rows = [("vid-1", "Review", "Some Channel", "A summary.", "transcript text")]
+    conn = _FakeConnection(
+        product_row=product_row, video_rows=video_rows,
+        existing_article={
+            "id": "article-1", "performance_summary": "Old summary.", "hook": "Old hook.",
+            "action_shot_image_key": None, "action_shot_image_url": None,
+            "product_shot_image_key": "article-images/prod-1/product_shot_gemini_1.png",
+            "product_shot_image_url": "https://b/product_shot_gemini_1.png",
+        },
+        selected_variants=[],  # nothing actually locked -- pure partial-failure case
+    )
+    bedrock = _FakeBedrockClient(json.dumps(_VALID_ARTICLE_JSON))
+    fake_candidates = {
+        "action_shot": [{"key": "article-images/prod-1/action_shot_gemini_1.png",
+                          "url": "https://b/action_shot_gemini_1.png", "model_id": "gemini-model", "seed": None}],
+        "product_shot": [],  # every candidate call for this shot failed this run
+    }
+
+    guard = _HandlerPatchGuard()
+    try:
+        _install_fake_image_candidates(guard, fake_candidates)
+        app.generate_article_for_product(conn, bedrock, "model-id", "prod-1", **_ALL_EIGHT_IMAGE_KWARGS)
+    finally:
+        guard.restore()
+
+    insert_params = conn._cursor.inserted[0]
+    assert insert_params[14] == "article-images/prod-1/action_shot_gemini_1.png"  # fresh pick
+    assert insert_params[16] == "article-images/prod-1/product_shot_gemini_1.png"  # preserved, not nulled
+    assert insert_params[17] == "https://b/product_shot_gemini_1.png"
+
+
+def test_generate_article_for_product_skips_locked_variants_lookup_when_regenerate_images_false():
+    """A text-only regenerate must never even query for locked variants --
+    it can't touch images either way (update_article_text_only's own
+    UPDATE structurally omits all image columns), so there's no reason to
+    ask. Confirms the gate is on regenerate_images, not just on whether an
+    existing article/selections exist."""
+    product_row = (
+        "prod-1", "Equinox Solid", "Blue", "reactive", "hybrid",
+        "R2S Hybrid", True, "500/1000 Abralon",
+        12, 17, "2024-01-01", "A great ball.",
+        "brand-1", "Storm", "Sonar", "asymmetric",
+    )
+    video_rows = [("vid-1", "Review", "Some Channel", "A summary.", "transcript text")]
+    conn = _FakeConnection(
+        product_row=product_row, video_rows=video_rows,
+        existing_article={"id": "article-1", "performance_summary": "Old.", "hook": "Old hook."},
+        selected_variants=["action_shot"],  # would be locked IF this ever got queried
+    )
+    bedrock = _FakeBedrockClient(json.dumps(_VALID_ARTICLE_JSON))
+
+    result = app.generate_article_for_product(conn, bedrock, "model-id", "prod-1",
+                                                regenerate_text=True, regenerate_images=False)
+
+    assert result["images_generated"] is False
+    assert not any(
+        q.startswith("select variant from product_article_image_candidates")
+        for q, _ in conn._cursor.executed
+    )
+    assert len(conn._cursor.text_only_updates) == 1
 
 
 # --- store_article: images param wiring ---
