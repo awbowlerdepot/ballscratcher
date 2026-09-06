@@ -10864,6 +10864,84 @@ sum-to-one sanity check) -- full suite 282/282 passing. `npx tsc -b` in
 re-checked with `node --check` -- valid syntax. Not yet smoke-tested
 against real data in a browser.
 
+### 6ab.17. Real gap found: admin-spa's GitHub Actions deploy was never actually configured
+
+Al, while getting Demand Score out to production: "one problem we never
+fully configured the git workflow for the admin SPA."
+
+Confirmed by re-reading this doc's own 6ab section against
+`.github/workflows/deploy-admin-site.yml` and `template.yaml`: the
+**AWS-side** half genuinely is done -- `AdminSiteBucket`/
+`AdminSiteDistribution`/`AdminSiteDeployRole`/`AdminUserPool`/
+`AdminUserPoolClient` all already exist in `template.yaml`, gated behind
+the same `GitHubRepo`/`HasGitHubRepo` condition and reusing the same
+`GitHubOidcProvider` singleton that 6ab's consumer-site setup (5389
+above) already created -- so no new `sam deploy` is needed just to
+create these resources; they came up alongside consumer-site's own
+deploy once `GitHubRepo` was set. What's missing is the **GitHub-side**
+half: unlike consumer-site (5413's "One-time setup", 4 steps, exact
+Variable names) and learn-site (their own equivalent), 6ab's writeup
+above only *describes* the resources -- it never gives the actual repo
+Variables checklist, and the stack Outputs' own comment
+(`template.yaml`, right above `AdminUserPoolId`) admits as much:
+"...see DEPLOY_RUNBOOK.md's admin-SPA section for the exact repo
+Variables these map to" -- a forward reference to a checklist that was
+never actually written. Net effect: `.github/workflows/
+deploy-admin-site.yml` has been sitting in the repo, watching for
+pushes to `admin-spa/**`, but every one of the 7 `vars.*` reads inside
+it (`ADMIN_API_URL`, `ADMIN_COGNITO_USER_POOL_ID`,
+`ADMIN_COGNITO_CLIENT_ID`, `AWS_REGION`, `ADMIN_SITE_DEPLOY_ROLE_ARN`,
+`ADMIN_SITE_BUCKET`, `ADMIN_SITE_DISTRIBUTION_ID`) would have resolved
+to an empty string on a real run -- the build would bake empty Cognito/
+API values into the bundle, and the "Configure AWS credentials" step
+would fail outright on a blank `role-to-assume`. This is presumably why
+admin-spa's real deploys so far (6ab.1's "Al deployed the stack and ran
+`npm install` locally for real") have been manual, not via this
+workflow.
+
+**One-time setup** (same shape as consumer-site's own, 5413 above --
+`AWS_REGION` is the one value already set from that earlier setup and
+does not need to be re-added):
+
+1. No redeploy needed *if* this stack was already deployed with
+   `GitHubRepo` set (true as of consumer-site's own setup) -- confirm
+   the admin resources exist:
+   ```bash
+   aws cloudformation describe-stacks --stack-name <your-stack-name> \
+     --query "Stacks[0].Outputs[?OutputKey=='AdminSiteDeployRoleArn' || OutputKey=='AdminSiteBucketName' || OutputKey=='AdminSiteDistributionId' || OutputKey=='AdminUserPoolId' || OutputKey=='AdminUserPoolClientId' || OutputKey=='AdminApiUrl']"
+   ```
+   If this comes back empty, `sam deploy` once (no parameter changes
+   needed beyond what's already set) to bring the stack current, then
+   re-run the query above.
+2. In the GitHub repo: **Settings -> Secrets and variables -> Actions ->
+   Variables**, add (or confirm) these six -- all repo Variables, not
+   Secrets, same non-sensitive reasoning as consumer-site's own:
+   - `ADMIN_API_URL` -- the `AdminApiUrl` stack output.
+   - `ADMIN_COGNITO_USER_POOL_ID` -- the `AdminUserPoolId` stack output.
+   - `ADMIN_COGNITO_CLIENT_ID` -- the `AdminUserPoolClientId` stack
+     output.
+   - `ADMIN_SITE_DEPLOY_ROLE_ARN` -- the `AdminSiteDeployRoleArn` stack
+     output.
+   - `ADMIN_SITE_BUCKET` -- the `AdminSiteBucketName` stack output.
+   - `ADMIN_SITE_DISTRIBUTION_ID` -- the `AdminSiteDistributionId` stack
+     output.
+   - (`AWS_REGION` should already exist from consumer-site's setup --
+     confirm it's there, don't re-add.)
+3. Push anything under `admin-spa/` to `main` (or run "Deploy admin
+   site" manually from GitHub's Actions tab via `workflow_dispatch`) --
+   it deploys itself from there on, same as consumer-site/learn-site.
+
+Not independently verified end-to-end from this sandbox (no GitHub or
+AWS access here, same limitation as every other CI setup in this
+project) -- Al needs to actually add the six Variables and watch one
+real run succeed before trusting push-to-deploy for admin-spa. If the
+"Configure AWS credentials" step fails with `Not authorized to perform
+sts:AssumeRoleWithWebIdentity`, see consumer-site's own real-incident
+writeup just above (5469) for the exact `role-skip-session-tagging`/
+trust-policy gotcha already solved there -- `AdminSiteDeployRole` was
+written the same way from the start, so this specific failure shouldn't
+recur, but it's the first thing to check if it does.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
