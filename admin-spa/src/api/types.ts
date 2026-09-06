@@ -835,3 +835,36 @@ export interface ManualSeedUrlCreateInput {
   url: string;
   note?: string;
 }
+
+// User management (Cognito) -- Al: "can we add user management and a
+// user group that has no access to user managment." See admin_api/
+// service.py's own "User management (Cognito)" section header comment
+// for the full design: two Cognito groups (Admins/Editors, not a third),
+// Admins-only enforcement, and the last-Admin lockout guard. `group` is
+// nullable for the same reason it's nullable on AuthUser -- an account
+// that exists but was never added to either group is a real, valid "no
+// access" state, not an oversight to paper over with a default.
+export interface AdminUser {
+  username: string;
+  email: string;
+  status: string; // Cognito's UserStatus, e.g. "CONFIRMED", "FORCE_CHANGE_PASSWORD"
+  enabled: boolean;
+  created_at: string;
+  group: "Admins" | "Editors" | null;
+}
+
+export interface CreateUserInput {
+  email: string;
+  group: "Admins" | "Editors";
+}
+
+// Only returned once, directly from create_user's own response -- never
+// persisted or re-fetchable, so the UI must show it to the creating
+// admin immediately (see CreateUserResult's own usage in UsersPage.tsx)
+// or it's gone for good (a fresh admin-set-user-password / delete+
+// recreate would be the only recovery).
+export interface CreateUserResult {
+  email: string;
+  group: "Admins" | "Editors";
+  password: string;
+}

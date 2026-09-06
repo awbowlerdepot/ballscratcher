@@ -1,5 +1,5 @@
 import { BrowserRouter, Route, Routes } from "react-router-dom";
-import { AuthProvider, ProtectedRoute } from "./auth/AuthContext";
+import { AdminRoute, AuthProvider, ProtectedRoute } from "./auth/AuthContext";
 import Layout from "./components/Layout";
 import { ToastProvider } from "./components/Toast";
 import ArticlesPage from "./pages/ArticlesPage";
@@ -13,6 +13,7 @@ import PriceSitesPage from "./pages/PriceSitesPage";
 import ProductDetailPage from "./pages/ProductDetailPage";
 import ProductsPage from "./pages/ProductsPage";
 import ReviewQueuePage from "./pages/ReviewQueuePage";
+import UsersPage from "./pages/UsersPage";
 import VideoCandidatesPage from "./pages/VideoCandidatesPage";
 
 export default function App() {
@@ -40,6 +41,14 @@ export default function App() {
               <Route path="/coverstocks" element={<CoverstocksPage />} />
               <Route path="/blocked-channels" element={<BlockedChannelsPage />} />
               <Route path="/batch-jobs" element={<BatchJobsPage />} />
+              <Route
+                path="/users"
+                element={
+                  <AdminRoute>
+                    <UsersPage />
+                  </AdminRoute>
+                }
+              />
             </Route>
           </Routes>
         </ToastProvider>

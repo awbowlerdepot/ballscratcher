@@ -5558,6 +5558,263 @@ def test_queue_price_discovery_batch_scrape_only_false_omits_it_from_payload():
     assert json.loads(call["Payload"]) == {"discover": True, "limit": 10}
 
 
+# --- User management (Cognito) tests ---
+#
+# See service.py's own "User management (Cognito)" section header
+# comment for the full design. _FakeCognitoClient is a hand-built fake
+# of exactly the cognito-idp Admin*/List* calls those functions use --
+# passed in directly as each function's own cognito_client argument
+# (not a sys.modules["boto3"] swap like the other AWS-touching tests in
+# this file need), since service.py's user-management functions take an
+# already-built client as a parameter rather than importing boto3
+# internally -- see that section's own header comment for why.
+class _FakeCognitoClient:
+    def __init__(self, users=None, groups=None):
+        # users: username -> {"email", "enabled", "status", "created_at"}
+        self.users = users or {}
+        # groups: group name -> set of usernames
+        self.groups = groups if groups is not None else {"Admins": set(), "Editors": set()}
+        self.calls = []
+
+    def list_users(self, UserPoolId, PaginationToken=None):
+        self.calls.append(("list_users", PaginationToken))
+        items = [
+            {
+                "Username": username,
+                "UserStatus": data.get("status", "CONFIRMED"),
+                "Enabled": data.get("enabled", True),
+                "UserCreateDate": data.get("created_at", "2026-01-01"),
+                "Attributes": [{"Name": "email", "Value": data.get("email", username)}],
+            }
+            for username, data in self.users.items()
+        ]
+        return {"Users": items}
+
+    def list_users_in_group(self, UserPoolId, GroupName, NextToken=None):
+        self.calls.append(("list_users_in_group", GroupName))
+        return {"Users": [{"Username": u} for u in self.groups.get(GroupName, set())]}
+
+    def admin_create_user(self, UserPoolId, Username, UserAttributes, MessageAction, TemporaryPassword):
+        self.calls.append(("admin_create_user", Username, MessageAction))
+        email = next(a["Value"] for a in UserAttributes if a["Name"] == "email")
+        self.users[Username] = {"email": email, "enabled": True, "status": "FORCE_CHANGE_PASSWORD"}
+
+    def admin_set_user_password(self, UserPoolId, Username, Password, Permanent):
+        self.calls.append(("admin_set_user_password", Username, Permanent))
+        if Permanent:
+            self.users[Username]["status"] = "CONFIRMED"
+
+    def admin_add_user_to_group(self, UserPoolId, Username, GroupName):
+        self.calls.append(("admin_add_user_to_group", Username, GroupName))
+        self.groups.setdefault(GroupName, set()).add(Username)
+
+    def admin_remove_user_from_group(self, UserPoolId, Username, GroupName):
+        self.calls.append(("admin_remove_user_from_group", Username, GroupName))
+        self.groups.get(GroupName, set()).discard(Username)
+
+    def admin_list_groups_for_user(self, UserPoolId, Username):
+        self.calls.append(("admin_list_groups_for_user", Username))
+        member_of = [g for g, members in self.groups.items() if Username in members]
+        return {"Groups": [{"GroupName": g} for g in member_of]}
+
+    def admin_enable_user(self, UserPoolId, Username):
+        self.calls.append(("admin_enable_user", Username))
+        self.users[Username]["enabled"] = True
+
+    def admin_disable_user(self, UserPoolId, Username):
+        self.calls.append(("admin_disable_user", Username))
+        self.users[Username]["enabled"] = False
+
+    def admin_delete_user(self, UserPoolId, Username):
+        self.calls.append(("admin_delete_user", Username))
+        del self.users[Username]
+        for members in self.groups.values():
+            members.discard(Username)
+
+
+def test_require_admin_role_allows_admin():
+    service.require_admin_role({"role": "admin"})  # does not raise
+
+
+def test_require_admin_role_rejects_editor_and_missing_role():
+    for caller in [{"role": "editor"}, {}, {"role": None}]:
+        try:
+            service.require_admin_role(caller)
+            assert False, f"expected PermissionError for {caller!r}"
+        except PermissionError:
+            pass
+
+
+def test_require_user_pool_id_reads_env_var():
+    os.environ["COGNITO_USER_POOL_ID"] = "us-west-1_abc123"
+    try:
+        assert service.require_user_pool_id() == "us-west-1_abc123"
+    finally:
+        del os.environ["COGNITO_USER_POOL_ID"]
+
+
+def test_require_user_pool_id_raises_when_unset():
+    os.environ.pop("COGNITO_USER_POOL_ID", None)
+    try:
+        service.require_user_pool_id()
+        assert False, "expected RuntimeError"
+    except RuntimeError:
+        pass
+
+
+def test_list_users_annotates_group_membership_and_sorts_by_email():
+    client = _FakeCognitoClient(
+        users={
+            "zed@example.com": {"email": "zed@example.com"},
+            "al@example.com": {"email": "al@example.com"},
+            "unassigned@example.com": {"email": "unassigned@example.com"},
+        },
+        groups={"Admins": {"al@example.com"}, "Editors": {"zed@example.com"}},
+    )
+
+    result = service.list_users(client, "pool-1")
+
+    assert [u["email"] for u in result] == ["al@example.com", "unassigned@example.com", "zed@example.com"]
+    by_email = {u["email"]: u for u in result}
+    assert by_email["al@example.com"]["group"] == "Admins"
+    assert by_email["zed@example.com"]["group"] == "Editors"
+    # An account that exists but was never added to either group must
+    # come back with group=None, not silently defaulted to something
+    # permissive -- see resolve_role_from_groups' own docstring on why
+    # that's a real, valid "no access" state, not an oversight.
+    assert by_email["unassigned@example.com"]["group"] is None
+
+
+def test_create_user_rejects_unknown_group():
+    client = _FakeCognitoClient()
+    try:
+        service.create_user(client, "pool-1", "new@example.com", "SuperAdmins")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+    assert client.calls == []  # rejected before any Cognito call was made
+
+
+def test_create_user_sets_permanent_password_and_adds_to_group():
+    client = _FakeCognitoClient()
+
+    result = service.create_user(client, "pool-1", "new@example.com", "Editors")
+
+    assert result["email"] == "new@example.com"
+    assert result["group"] == "Editors"
+    assert len(result["password"]) >= 16
+    assert "new@example.com" in client.groups["Editors"]
+    assert client.users["new@example.com"]["status"] == "CONFIRMED"  # not FORCE_CHANGE_PASSWORD
+    call_names = [c[0] for c in client.calls]
+    assert call_names == ["admin_create_user", "admin_set_user_password", "admin_add_user_to_group"]
+
+
+def test_set_user_group_moves_user_between_groups():
+    client = _FakeCognitoClient(
+        users={"editor@example.com": {"email": "editor@example.com"}},
+        groups={"Admins": {"admin@example.com"}, "Editors": {"editor@example.com"}},
+    )
+
+    result = service.set_user_group(client, "pool-1", "editor@example.com", "Admins")
+
+    assert result == {"username": "editor@example.com", "group": "Admins"}
+    assert "editor@example.com" not in client.groups["Editors"]
+    assert "editor@example.com" in client.groups["Admins"]
+
+
+def test_set_user_group_rejects_unknown_group():
+    client = _FakeCognitoClient()
+    try:
+        service.set_user_group(client, "pool-1", "someone@example.com", "SuperAdmins")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_set_user_group_blocks_removing_the_last_admin():
+    client = _FakeCognitoClient(
+        users={"al@example.com": {"email": "al@example.com"}},
+        groups={"Admins": {"al@example.com"}, "Editors": set()},
+    )
+
+    try:
+        service.set_user_group(client, "pool-1", "al@example.com", "Editors")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+    # Rejected before any mutating call -- al@example.com must still be
+    # exactly where they started.
+    assert "al@example.com" in client.groups["Admins"]
+    assert "admin_remove_user_from_group" not in [c[0] for c in client.calls]
+
+
+def test_set_user_group_allows_moving_an_admin_when_others_remain():
+    """The guard is specifically "the LAST Admin", not "any Admin" --
+    moving one of two Admins to Editors must still succeed."""
+    client = _FakeCognitoClient(
+        users={"al@example.com": {"email": "al@example.com"}},
+        groups={"Admins": {"al@example.com", "other-admin@example.com"}, "Editors": set()},
+    )
+
+    result = service.set_user_group(client, "pool-1", "al@example.com", "Editors")
+
+    assert result["group"] == "Editors"
+    assert "al@example.com" in client.groups["Editors"]
+    assert "al@example.com" not in client.groups["Admins"]
+    assert "other-admin@example.com" in client.groups["Admins"]
+
+
+def test_set_user_enabled_toggles_both_directions():
+    client = _FakeCognitoClient(users={"al@example.com": {"email": "al@example.com", "enabled": True}})
+
+    disabled = service.set_user_enabled(client, "pool-1", "al@example.com", False)
+    assert disabled == {"username": "al@example.com", "enabled": False}
+    assert client.users["al@example.com"]["enabled"] is False
+
+    enabled = service.set_user_enabled(client, "pool-1", "al@example.com", True)
+    assert enabled == {"username": "al@example.com", "enabled": True}
+    assert client.users["al@example.com"]["enabled"] is True
+
+
+def test_delete_user_removes_the_account():
+    client = _FakeCognitoClient(
+        users={"editor@example.com": {"email": "editor@example.com"}},
+        groups={"Admins": set(), "Editors": {"editor@example.com"}},
+    )
+
+    result = service.delete_user(client, "pool-1", "editor@example.com")
+
+    assert result == {"username": "editor@example.com", "deleted": True}
+    assert "editor@example.com" not in client.users
+    assert "editor@example.com" not in client.groups["Editors"]
+
+
+def test_delete_user_blocks_deleting_the_last_admin():
+    client = _FakeCognitoClient(
+        users={"al@example.com": {"email": "al@example.com"}},
+        groups={"Admins": {"al@example.com"}, "Editors": set()},
+    )
+
+    try:
+        service.delete_user(client, "pool-1", "al@example.com")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+    assert "al@example.com" in client.users  # still there, nothing deleted
+
+
+def test_delete_user_allows_deleting_a_non_admin():
+    client = _FakeCognitoClient(
+        users={"al@example.com": {"email": "al@example.com"}, "editor@example.com": {"email": "editor@example.com"}},
+        groups={"Admins": {"al@example.com"}, "Editors": {"editor@example.com"}},
+    )
+
+    result = service.delete_user(client, "pool-1", "editor@example.com")
+
+    assert result["deleted"] is True
+    assert "editor@example.com" not in client.users
+
+
 if __name__ == "__main__":
     # Tiny monkeypatch shim so this file can run standalone the same way
     # as the other manual test runners in this repo, without pytest.

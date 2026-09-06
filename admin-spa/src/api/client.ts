@@ -1,5 +1,6 @@
 import { getValidIdToken } from "../auth/cognito";
 import type {
+  AdminUser,
   Article,
   ArticleListItem,
   ArticleImageCandidate,
@@ -12,6 +13,8 @@ import type {
   Coverstock,
   CoverstockDetail,
   CheckPriceResult,
+  CreateUserInput,
+  CreateUserResult,
   DashboardSummary,
   DeleteProductPriceSourceResult,
   DiscoverPriceSourcesResult,
@@ -497,4 +500,31 @@ export function createManualSeedUrl(input: ManualSeedUrlCreateInput): Promise<Ma
 
 export function deleteManualSeedUrl(id: string): Promise<{ deleted: boolean; id: string }> {
   return apiDelete(`/manual-seed-urls/${encodeURIComponent(id)}`);
+}
+
+// User management (Cognito) -- Admins-only on the backend (see
+// require_admin_role in admin_api/service.py); UsersPage.tsx also hides
+// itself from the nav for anyone whose AuthUser.role isn't "admin", but
+// that's a UX nicety, not the security boundary -- an Editor calling
+// these directly still gets a 403 from admin_api_authorizer/app.py.
+// username below is always an email address (see create_user's own
+// docstring on why) -- encodeURIComponent handles the "@".
+export function listUsers(): Promise<AdminUser[]> {
+  return apiGet<AdminUser[]>("/users");
+}
+
+export function createUser(input: CreateUserInput): Promise<CreateUserResult> {
+  return apiPost<CreateUserResult>("/users", input);
+}
+
+export function setUserGroup(username: string, group: "Admins" | "Editors"): Promise<{ username: string; group: string }> {
+  return apiPatch(`/users/${encodeURIComponent(username)}/group`, { group });
+}
+
+export function setUserEnabled(username: string, enabled: boolean): Promise<{ username: string; enabled: boolean }> {
+  return apiPatch(`/users/${encodeURIComponent(username)}/enabled`, { enabled });
+}
+
+export function deleteUser(username: string): Promise<{ username: string; deleted: boolean }> {
+  return apiDelete(`/users/${encodeURIComponent(username)}`);
 }

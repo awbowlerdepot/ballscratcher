@@ -1508,6 +1508,16 @@ Resources:
           # covers the unattended case; this is the "sync THIS one right
           # now" on-demand path.
           ARTICLE_SYNC_FUNCTION_NAME: !Ref BowlerdepotArticleSyncFunction
+          # Read by service.py's require_user_pool_id (GET/POST/PATCH/
+          # DELETE /users -- Al: "can we add user management and a user
+          # group that has no access to user managment"). This is the
+          # SAME AdminUserPool AdminApiAuthorizerFunction already reads
+          # for JWT verification above -- this function needs its id too,
+          # not to verify tokens (that's the authorizer's job, already
+          # done by the time a request reaches here), but to make its own
+          # Admin* Cognito API calls (list/create/delete users, change
+          # group membership) against the right pool.
+          COGNITO_USER_POOL_ID: !Ref AdminUserPool
       Policies:
         - Statement:
             - Effect: Allow
@@ -1592,6 +1602,27 @@ Resources:
               Action:
                 - lambda:InvokeFunction
               Resource: !GetAtt BowlerdepotArticleSyncFunction.Arn
+        # For the new /users routes (service.py's "User management
+        # (Cognito)" section) -- list/create/delete accounts, read/change
+        # their group membership, enable/disable. Scoped to exactly
+        # AdminUserPool's own ARN, same "narrowest permission that
+        # actually does the job" convention as every other grant in this
+        # block -- this function can manage users in THIS pool only, not
+        # cognito-idp:* across the account.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - cognito-idp:ListUsers
+                - cognito-idp:ListUsersInGroup
+                - cognito-idp:AdminCreateUser
+                - cognito-idp:AdminSetUserPassword
+                - cognito-idp:AdminAddUserToGroup
+                - cognito-idp:AdminRemoveUserFromGroup
+                - cognito-idp:AdminListGroupsForUser
+                - cognito-idp:AdminEnableUser
+                - cognito-idp:AdminDisableUser
+                - cognito-idp:AdminDeleteUser
+              Resource: !GetAtt AdminUserPool.Arn
       # Four explicit per-method routes instead of a single `Method: ANY`
       # -- found via a real live test (curl OPTIONS /health with no
       # Authorization header returned a bare 401 "Unauthorized" from API

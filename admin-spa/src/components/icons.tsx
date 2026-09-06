@@ -122,6 +122,19 @@ export function IconBatch(props: IconProps) {
   );
 }
 
+// Users -- a simple person silhouette, so it reads distinctly from
+// every other nav icon's shape/document/tag-based glyphs. Admins-only
+// nav item (see Layout.tsx's NAV_ITEMS filter), so this only ever
+// renders for someone whose role is "admin".
+export function IconUsers(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <circle cx="10" cy="6.8" r="3.3" />
+      <path d="M3.5 17.2c0-3.4 2.9-6.1 6.5-6.1s6.5 2.7 6.5 6.1" />
+    </svg>
+  );
+}
+
 export function IconChevronsLeft(props: IconProps) {
   return (
     <svg {...base} {...props}>

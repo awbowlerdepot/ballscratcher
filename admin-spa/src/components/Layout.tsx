@@ -17,9 +17,18 @@ import {
   IconPriceTag,
   IconProducts,
   IconReviewQueue,
+  IconUsers,
   IconVideo,
 } from "./icons";
 
+// adminOnly items are filtered out below for anyone whose role isn't
+// "admin" (see the NAV_ITEMS.filter call in the component itself) --
+// currently just Users (Al: "can we add user management and a user
+// group that has no access to user managment"). This is a UX nicety,
+// not the security boundary -- see AuthContext.tsx's AdminRoute and
+// admin_api/service.py's require_admin_role for the real enforcement;
+// an Editor who somehow reached /users directly would still get 403s
+// from every request the page makes.
 const NAV_ITEMS = [
   { to: "/", label: "Dashboard", end: true, icon: IconDashboard },
   { to: "/products", label: "Products", end: false, icon: IconProducts },
@@ -31,6 +40,7 @@ const NAV_ITEMS = [
   { to: "/coverstocks", label: "Coverstocks", end: false, icon: IconCoverstock },
   { to: "/blocked-channels", label: "Blocked Channels", end: false, icon: IconBlocked },
   { to: "/batch-jobs", label: "Batch Jobs", end: false, icon: IconBatch },
+  { to: "/users", label: "Users", end: false, icon: IconUsers, adminOnly: true },
 ];
 
 // Persisted across reloads/sessions -- a "dense pro-tool" reviewer
@@ -64,6 +74,7 @@ export default function Layout() {
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1");
   const [mobileOpen, setMobileOpen] = useState(false);
+  const visibleNavItems = NAV_ITEMS.filter((item) => !item.adminOnly || user?.role === "admin");
 
   function toggleCollapsed() {
     const next = !collapsed;
@@ -115,7 +126,7 @@ export default function Layout() {
           </button>
         </div>
         <nav className="flex flex-col gap-0.5 p-2">
-          {NAV_ITEMS.map((item) => {
+          {visibleNavItems.map((item) => {
             const Icon = item.icon;
             return (
               <NavLink

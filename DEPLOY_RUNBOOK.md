@@ -10966,6 +10966,90 @@ pointing `admin.bowleriq.com` at the `AdminSiteUrl` stack output's
 resolves, `https://admin.bowleriq.com` serves the SPA directly -- the
 bare CloudFront URL keeps working too.
 
+### 6ab.19. User management: Admins can manage accounts, Editors cannot
+
+Al: "ok can we add user management and a user group that has no access
+to user managment." Two asks in one: (1) a page for creating, listing,
+modifying, and removing admin-spa user accounts, and (2) a hard
+guarantee that one of the two existing Cognito groups has no access to
+that page or its underlying API.
+
+No third group was needed -- `template.yaml` already defined `Admins`
+(precedence 0) and `Editors` (precedence 10) back when Cognito auth was
+first wired up (6ab), with a comment anticipating exactly this split:
+Admins get everything the old shared automation token could do, Editors
+get routine day-to-day review work without the destructive actions.
+"The group with no access to user management" is just Editors, as
+designed; this feature is the first time that boundary is actually
+enforced anywhere instead of merely documented.
+
+**Backend.** `admin_api/service.py` gained a "User management (Cognito)"
+section: `list_users`, `create_user`, `set_user_group`,
+`set_user_enabled`, `delete_user`, plus `require_admin_role` and
+`require_user_pool_id` helpers. These functions take an already-built
+`cognito_client` as an explicit parameter rather than importing `boto3`
+inline like the rest of this file's functions do -- most of them make
+2-3 sequential Cognito calls per request, and injecting a fake client
+directly is simpler to test than the `sys.modules["boto3"]` monkeypatch
+convention used elsewhere. `create_user` automates the two-call sequence
+admin-spa's own README already documented as a manual `aws` CLI
+workaround (`admin-create-user` + `admin-set-user-password
+--permanent`), since the SPA's login form doesn't handle Cognito's
+`FORCE_CHANGE_PASSWORD` first-login challenge -- the generated password
+is returned once, in the create response, and never stored or
+re-fetchable.
+
+`admin_api/app.py` wires `GET/POST /users`,
+`PATCH /users/{username}/group`, `PATCH /users/{username}/enabled`, and
+`DELETE /users/{username}`, all gated by a new `_require_admin` helper
+that calls `service.require_admin_role(caller)` and maps the resulting
+`PermissionError` to a 403 -- the first per-route role check in this
+codebase; `resolve_caller_from_event`'s docstring had explicitly flagged
+enforcement as deferred future work since task #468.
+
+**Last-Admin lockout.** Not something Al asked for by name, but clearly
+needed once accounts can be demoted or deleted: `set_user_group` and
+`delete_user` both refuse to remove the sole remaining `Admins`-group
+member, raising a plain-English `ValueError` that the SPA surfaces
+verbatim. The shared-secret automation token still works regardless of
+group membership, but that's scripts-only -- it doesn't help anyone
+locked out of the browser login.
+
+**template.yaml.** `AdminApiFunction` gained `COGNITO_USER_POOL_ID` (the
+same pool `AdminApiAuthorizerFunction` already reads, needed here for
+`admin_api`'s own `Admin*` calls) and a new IAM statement granting
+`cognito-idp:ListUsers`, `ListUsersInGroup`, `AdminCreateUser`,
+`AdminSetUserPassword`, `AdminAddUserToGroup`,
+`AdminRemoveUserFromGroup`, `AdminListGroupsForUser`, `AdminEnableUser`,
+`AdminDisableUser`, and `AdminDeleteUser`, scoped to `AdminUserPool.Arn`.
+
+**admin-spa.** New `UsersPage.tsx` (list/create/change-group/
+enable-disable/delete, one-time password modal on creation, delete
+confirmation modal), new `AdminRoute` wrapper in `AuthContext.tsx`
+guarding the `/users` route (redirects non-Admins to the Dashboard --
+UX only, not the real boundary), and a `Users` nav item in
+`Layout.tsx`'s sidebar with a new `adminOnly` flag on `NAV_ITEMS`,
+filtered out for anyone whose resolved role isn't `"admin"`. As with
+`AdminRoute`, hiding the nav link is a nicety; an Editor who typed
+`/users` into the address bar directly would still get nothing but 403s
+from every request the page makes, since the backend gate is what
+actually matters.
+
+Verified: `npx tsc -b` in `admin-spa/` compiles clean. Backend test
+suites (`test_admin_api_service.py`, `test_admin_api_authorizer.py`, and
+the full repo suite) pass at 297/297 and 42/42 respectively -- 15 new
+tests cover `list_users`, `create_user`, `set_user_group` (including the
+lockout), `set_user_enabled`, and `delete_user` (including the lockout).
+No migration needed -- this feature is Cognito-only, no new tables.
+
+Files touched: `src/admin_api/service.py`, `src/admin_api/app.py`,
+`template.yaml`, `tests/test_admin_api_service.py`,
+`admin-spa/src/api/types.ts`, `admin-spa/src/api/client.ts`,
+`admin-spa/src/components/icons.tsx`,
+`admin-spa/src/pages/UsersPage.tsx`, `admin-spa/src/App.tsx`,
+`admin-spa/src/auth/AuthContext.tsx`,
+`admin-spa/src/components/Layout.tsx`.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

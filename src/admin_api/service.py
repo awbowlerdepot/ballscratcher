@@ -4160,3 +4160,267 @@ def queue_article_generation(conn, product_id: str, mode: str = "both") -> dict:
         Payload=json.dumps(payload),
     )
     return {"queued": True, "product_id": product_id, "mode": mode}
+
+
+# --- User management (Cognito) ---
+#
+# Al: "can we add user management and a user group that has no access to
+# user managment" -- built on the two Cognito groups AdminUserPool
+# already ships with (see template.yaml's own AdminUserPoolAdminsGroup/
+# AdminUserPoolEditorsGroup comment) rather than inventing a third:
+# Admins get full CRUD over user accounts below, Editors get NONE of it
+# -- see require_admin_role, the actual enforcement. This is the first
+# route-level role gate this project has shipped: task #468 wired
+# caller identity through admin_api but deliberately deferred gating any
+# route on it ("per-route role enforcement is explicitly deferred future
+# work" -- see resolve_caller_from_event's own docstring above). This is
+# that deferred work, scoped narrowly to the one new surface that
+# actually needs it (managing who else gets Admin/Editor access is
+# exactly the kind of action Editors shouldn't have), not retrofitted
+# onto every existing route in one pass.
+#
+# Unlike queue_rescrape/queue_video_discovery above (each builds its own
+# boto3 client inline, one AWS call per function), the functions below
+# take an already-built cognito_client as their first argument instead
+# -- a deliberate departure from this file's usual "import boto3 inside
+# the function" convention, because several of these (create_user,
+# set_user_group, delete_user) make 2-3 SEQUENTIAL Cognito calls against
+# the same client, and app.py's routes need to build exactly one
+# cognito-idp client per request regardless of which of these functions
+# it ends up calling. See app.py's _cognito_client() helper for where
+# that single client gets constructed (same deferred "import boto3"
+# placement, just one level up). Untested against a real Cognito user
+# pool for the same reason every other AWS-touching function in this
+# file is (no AWS access in the sandbox that wrote this) -- unit-tested
+# here against a hand-built fake cognito-idp client passed in directly
+# (see tests/test_admin_api_service.py), which is also simpler to assert
+# against than the sys.modules["boto3"] swap the inline-import functions
+# need.
+
+_MANAGED_GROUPS = ("Admins", "Editors")
+
+
+def require_admin_role(caller: dict) -> None:
+    """Raises PermissionError if caller["role"] isn't "admin" -- app.py's
+    /users routes call this first, before touching Cognito at all (see
+    this section's own header comment for why user management
+    specifically is the first route ever gated on role in this project).
+    PermissionError rather than a bare exception so app.py can map it to
+    a 403 without needing to know anything about what check failed."""
+    if caller.get("role") != "admin":
+        raise PermissionError("Admins only.")
+
+
+def require_user_pool_id() -> str:
+    """Reads COGNITO_USER_POOL_ID (see template.yaml's AdminApiFunction
+    Environment block) -- app.py's /users routes call this once per
+    request, alongside _cognito_client(), and pass the result into
+    whichever of the functions below they need. Raises RuntimeError
+    rather than returning None/"" on a missing env var, matching this
+    project's usual fail-loud-not-silently-broken posture for
+    deployment-config gaps (see e.g. queue_rescrape's own "not
+    configured on this deployment" handling above, which instead returns
+    a normal, expected {"queued": False, ...} -- the difference here is
+    that a misconfigured COGNITO_USER_POOL_ID on the very setup this
+    feature depends on is a real deploy bug worth a loud 500, not a
+    per-product expected-gap outcome)."""
+    user_pool_id = os.environ.get("COGNITO_USER_POOL_ID")
+    if not user_pool_id:
+        raise RuntimeError("COGNITO_USER_POOL_ID is not configured on this deployment")
+    return user_pool_id
+
+
+def _list_usernames_in_group(cognito_client, user_pool_id: str, group: str) -> list:
+    """Paginates list_users_in_group fully (Cognito caps each page, so a
+    pool with enough users in one group could otherwise silently miss
+    some) and returns just the Username strings -- used both by
+    list_users (building the username->group map) and _count_admins
+    (the last-Admin lockout guard) below."""
+    usernames = []
+    kwargs = {"UserPoolId": user_pool_id, "GroupName": group}
+    while True:
+        resp = cognito_client.list_users_in_group(**kwargs)
+        usernames.extend(u["Username"] for u in resp.get("Users", []))
+        token = resp.get("NextToken")
+        if not token:
+            break
+        kwargs["NextToken"] = token
+    return usernames
+
+
+def _count_admins(cognito_client, user_pool_id: str) -> int:
+    return len(_list_usernames_in_group(cognito_client, user_pool_id, "Admins"))
+
+
+def list_users(cognito_client, user_pool_id: str) -> list:
+    """Lists every user in AdminUserPool, each annotated with whichever of
+    Admins/Editors they belong to (None if an account exists but was
+    never added to either group -- see admin_api_authorizer's own
+    resolve_role_from_groups docstring for why that's a real, valid
+    state meaning NO access, not a default role). Cognito's list_users
+    doesn't return group membership directly, so this does one
+    list_users_in_group call per managed group and builds a
+    username->group map from those, rather than one
+    admin_list_groups_for_user call per user (O(1) Cognito calls for two
+    groups instead of O(n) for n users)."""
+    group_by_username = {}
+    for group in _MANAGED_GROUPS:
+        for username in _list_usernames_in_group(cognito_client, user_pool_id, group):
+            group_by_username[username] = group
+
+    users = []
+    kwargs = {"UserPoolId": user_pool_id}
+    while True:
+        resp = cognito_client.list_users(**kwargs)
+        for user in resp.get("Users", []):
+            username = user["Username"]
+            attrs = {a["Name"]: a["Value"] for a in user.get("Attributes", [])}
+            users.append({
+                "username": username,
+                "email": attrs.get("email", username),
+                "status": user.get("UserStatus"),
+                "enabled": user.get("Enabled", True),
+                "created_at": user.get("UserCreateDate"),
+                "group": group_by_username.get(username),
+            })
+        token = resp.get("PaginationToken")
+        if not token:
+            break
+        kwargs["PaginationToken"] = token
+
+    users.sort(key=lambda u: u["email"])
+    return users
+
+
+def _generate_initial_password() -> str:
+    """Meets AdminUserPool's own PasswordPolicy (12+ chars, upper, lower,
+    number required; symbols not required but included here anyway --
+    see template.yaml's PasswordPolicy) using stdlib secrets, no extra
+    dependency. Never logged or persisted anywhere -- returned exactly
+    once, in create_user's own response, for the calling admin to hand
+    off out-of-band. This is the SAME two-call pattern (admin_create_user
+    + admin_set_user_password with Permanent=True) admin-spa/README.md
+    already documents as the manual workaround for phase 1's login form
+    not handling Cognito's FORCE_CHANGE_PASSWORD first-login challenge --
+    this just automates those two calls from the SPA instead of a human
+    typing them, not a new convention."""
+    import secrets
+    import string
+
+    required = [
+        secrets.choice(string.ascii_uppercase),
+        secrets.choice(string.ascii_lowercase),
+        secrets.choice(string.digits),
+        secrets.choice("!@#$%^&*"),
+    ]
+    pool = string.ascii_uppercase + string.ascii_lowercase + string.digits + "!@#$%^&*"
+    required += [secrets.choice(pool) for _ in range(12)]
+    secrets.SystemRandom().shuffle(required)
+    return "".join(required)
+
+
+def create_user(cognito_client, user_pool_id: str, email: str, group: str) -> dict:
+    """Creates a new Cognito user with a PERMANENT password set
+    immediately (not Cognito's own temp-password + FORCE_CHANGE_PASSWORD
+    challenge -- see _generate_initial_password's own docstring for why).
+    MessageAction="SUPPRESS" skips Cognito's own auto-generated invite
+    email since the generated password is returned directly in this
+    function's result for the calling admin to relay however they
+    choose. Username is the email address itself, matching
+    AdminUserPool's UsernameAttributes=["email"] config and this
+    project's own documented manual `admin-create-user` command
+    (admin-spa/README.md) -- Cognito accepts the email as Username
+    directly in this configuration and treats it as the account's own
+    sign-in alias, so every later Admin* call in this module also
+    addresses this user by email, not some separate opaque id.
+
+    Raises ValueError for an unrecognized group -- the two Cognito groups
+    this pool ships with are the only valid destinations, not free text.
+    """
+    if group not in _MANAGED_GROUPS:
+        raise ValueError(f"Unknown group: {group!r}. Must be one of {_MANAGED_GROUPS}.")
+
+    password = _generate_initial_password()
+    cognito_client.admin_create_user(
+        UserPoolId=user_pool_id,
+        Username=email,
+        UserAttributes=[
+            {"Name": "email", "Value": email},
+            {"Name": "email_verified", "Value": "true"},
+        ],
+        MessageAction="SUPPRESS",
+        TemporaryPassword=password,
+    )
+    cognito_client.admin_set_user_password(
+        UserPoolId=user_pool_id, Username=email, Password=password, Permanent=True,
+    )
+    cognito_client.admin_add_user_to_group(
+        UserPoolId=user_pool_id, Username=email, GroupName=group,
+    )
+    return {"email": email, "group": group, "password": password}
+
+
+def set_user_group(cognito_client, user_pool_id: str, username: str, group: str) -> dict:
+    """Moves a user to exactly ONE of the two managed groups, removing
+    them from whichever managed group they're currently in first --
+    Cognito allows a user to belong to multiple groups, but this
+    project's role model (admin_api_authorizer's resolve_role_from_groups)
+    treats Admins/Editors as mutually exclusive, so this keeps that
+    invariant true rather than letting a user silently accumulate both.
+
+    Raises ValueError for an unrecognized target group, or if this
+    change would remove the LAST remaining Admin -- see this section's
+    own header comment: user management is the one place a mistake here
+    can lock every human out of the SPA (the shared-secret automation
+    token still works regardless, but that's scripts-only, not a browser
+    login), so this is a real, deliberate guard, not defensive
+    boilerplate."""
+    if group not in _MANAGED_GROUPS:
+        raise ValueError(f"Unknown group: {group!r}. Must be one of {_MANAGED_GROUPS}.")
+
+    current = cognito_client.admin_list_groups_for_user(UserPoolId=user_pool_id, Username=username)
+    current_groups = [g["GroupName"] for g in current.get("Groups", [])]
+
+    if "Admins" in current_groups and group != "Admins" and _count_admins(cognito_client, user_pool_id) <= 1:
+        raise ValueError(f"Cannot move {username} out of Admins -- they are the last remaining Admin.")
+
+    for name in current_groups:
+        if name in _MANAGED_GROUPS and name != group:
+            cognito_client.admin_remove_user_from_group(
+                UserPoolId=user_pool_id, Username=username, GroupName=name,
+            )
+    cognito_client.admin_add_user_to_group(
+        UserPoolId=user_pool_id, Username=username, GroupName=group,
+    )
+    return {"username": username, "group": group}
+
+
+def set_user_enabled(cognito_client, user_pool_id: str, username: str, enabled: bool) -> dict:
+    """Disable/re-enable -- the reversible, everyday tool for "this person
+    shouldn't have access right now." Prefer this over delete_user for
+    routine access changes: a disabled account still shows up in
+    list_users for an audit trail and can be flipped back on; a deleted
+    one is gone. No last-Admin guard here on purpose -- disabling is
+    reversible by another Admin (or by the shared-secret automation
+    token via a script), so it doesn't carry the same one-way-lockout
+    risk set_user_group/delete_user's guards exist for below."""
+    if enabled:
+        cognito_client.admin_enable_user(UserPoolId=user_pool_id, Username=username)
+    else:
+        cognito_client.admin_disable_user(UserPoolId=user_pool_id, Username=username)
+    return {"username": username, "enabled": enabled}
+
+
+def delete_user(cognito_client, user_pool_id: str, username: str) -> dict:
+    """Irreversible -- see set_user_enabled above for the reversible
+    alternative most day-to-day access changes should use instead.
+    Same last-Admin lockout guard as set_user_group: raises ValueError
+    rather than deleting the only account that could ever undo the
+    mistake."""
+    current = cognito_client.admin_list_groups_for_user(UserPoolId=user_pool_id, Username=username)
+    current_groups = [g["GroupName"] for g in current.get("Groups", [])]
+    if "Admins" in current_groups and _count_admins(cognito_client, user_pool_id) <= 1:
+        raise ValueError(f"Cannot delete {username} -- they are the last remaining Admin.")
+
+    cognito_client.admin_delete_user(UserPoolId=user_pool_id, Username=username)
+    return {"username": username, "deleted": True}

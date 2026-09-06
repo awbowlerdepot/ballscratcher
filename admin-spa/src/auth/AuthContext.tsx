@@ -63,3 +63,24 @@ export function ProtectedRoute({ children }: { children: ReactNode }) {
   }
   return <>{children}</>;
 }
+
+// Wraps a route that's Admins-only (currently just /users -- Al: "can we
+// add user management and a user group that has no access to user
+// managment"). Unlike ProtectedRoute above, this one IS worth being
+// strict about even though it's still not the real security boundary
+// (admin_api's require_admin_role/403 is -- an Editor who edits the URL
+// bar straight to /users and somehow got past this would still get
+// nothing but 403s from every API call the page makes). Redirects
+// Editors and role=null accounts to the Dashboard rather than showing a
+// page that would just error on every request.
+export function AdminRoute({ children }: { children: ReactNode }) {
+  const { user, loading } = useAuth();
+
+  if (loading) {
+    return <div className="flex h-screen items-center justify-center text-ink-500">Loading…</div>;
+  }
+  if (user?.role !== "admin") {
+    return <Navigate to="/" replace />;
+  }
+  return <>{children}</>;
+}

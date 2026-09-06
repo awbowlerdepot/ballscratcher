@@ -1347,4 +1347,97 @@ def regenerate_article_images(product_id: str):
         conn.close()
 
 
+# --- User management (Cognito) ---
+#
+# Al: "can we add user management and a user group that has no access to
+# user managment" -- see service.py's own "User management (Cognito)"
+# section header comment for the full design (why Admins/Editors, not a
+# third group; why this is the first route in this project ever gated
+# on caller["role"]; the last-Admin lockout guard). No conn/get_db_
+# connection() anywhere below -- these routes are pure Cognito calls,
+# nothing here touches Postgres.
+
+
+def _require_admin(caller: dict) -> None:
+    """Thin HTTPException-raising wrapper around service.require_admin_role
+    -- every route below calls this FIRST, before doing anything else
+    (including before building a Cognito client), so an Editor's request
+    never gets far enough to touch AWS at all."""
+    try:
+        service.require_admin_role(caller)
+    except PermissionError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+
+def _cognito_client():
+    """Builds one boto3 cognito-idp client per request -- see service.py's
+    own header comment on why the /users functions take an already-built
+    client as an argument instead of each constructing their own inline
+    (unlike every other AWS-touching function in service.py)."""
+    import boto3
+
+    return boto3.client("cognito-idp")
+
+
+class CreateUserRequest(BaseModel):
+    email: str
+    group: Literal["Admins", "Editors"]
+
+
+class SetUserGroupRequest(BaseModel):
+    group: Literal["Admins", "Editors"]
+
+
+class SetUserEnabledRequest(BaseModel):
+    enabled: bool
+
+
+@app.get("/users")
+def get_users(caller: dict = Depends(get_caller)):
+    _require_admin(caller)
+    user_pool_id = service.require_user_pool_id()
+    return service.list_users(_cognito_client(), user_pool_id)
+
+
+@app.post("/users")
+def post_user(body: CreateUserRequest, caller: dict = Depends(get_caller)):
+    _require_admin(caller)
+    user_pool_id = service.require_user_pool_id()
+    try:
+        return service.create_user(_cognito_client(), user_pool_id, body.email, body.group)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.patch("/users/{username}/group")
+def patch_user_group(username: str, body: SetUserGroupRequest, caller: dict = Depends(get_caller)):
+    # username is an email address (see service.create_user's own
+    # docstring on why) -- the SPA must URL-encode the "@" itself
+    # (encodeURIComponent), same as any other path segment containing
+    # reserved characters.
+    _require_admin(caller)
+    user_pool_id = service.require_user_pool_id()
+    try:
+        return service.set_user_group(_cognito_client(), user_pool_id, username, body.group)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.patch("/users/{username}/enabled")
+def patch_user_enabled(username: str, body: SetUserEnabledRequest, caller: dict = Depends(get_caller)):
+    _require_admin(caller)
+    user_pool_id = service.require_user_pool_id()
+    return service.set_user_enabled(_cognito_client(), user_pool_id, username, body.enabled)
+
+
+@app.delete("/users/{username}")
+def delete_user(username: str, caller: dict = Depends(get_caller)):
+    _require_admin(caller)
+    user_pool_id = service.require_user_pool_id()
+    try:
+        return service.delete_user(_cognito_client(), user_pool_id, username)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
 handler = Mangum(app)
