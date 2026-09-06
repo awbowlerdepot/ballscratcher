@@ -64,6 +64,7 @@ psql "$DATABASE_URL" -f db/migrations/025_product_article_images_theme_driven_pi
 psql "$DATABASE_URL" -f db/migrations/026_product_article_image_candidates.sql
 psql "$DATABASE_URL" -f db/migrations/027_manual_seed_urls.sql
 psql "$DATABASE_URL" -f db/migrations/028_product_articles_bigcommerce_sync.sql
+psql "$DATABASE_URL" -f db/migrations/029_product_articles_visual_theme.sql
 ```
 
 (If you already ran an earlier subset in a prior deploy, just run whatever
@@ -8644,6 +8645,82 @@ module's history**: this is a prompt-level instruction, not a hard
 constraint -- Gemini can still occasionally ignore it. Its real effect
 can only be judged against live invocations after redeploy, the same
 caveat 2026-09-04's ball-prominence prompt change carried.
+
+**2026-09-06 fix -- persist visual_theme so regenerated images stop
+drifting away from the ball's name (migration 029)**
+
+Al's follow-up, same day: "ok i will keep an eye on that but the first
+set of images were amazing and then it started to drift away from
+building the image placing the ball in an environment that matched the
+name of the ball." A second, distinct root cause from the people/props
+fix directly above -- this one explains the DRIFT OVER TIME specifically
+(first generation great, later regenerates progressively worse), not
+the people/venue-element issue.
+
+Root cause, traced through fetch_existing_article's own pre-existing
+docstring caveat: visual_theme -- the 1-2 sentence, name/branding-
+derived scene concept the article-generation model invents (migration
+025, Al's "background driven by the ball's name" ask) -- was NEVER
+persisted anywhere. It only ever existed as a field on the ONE Bedrock
+article-text response that produced it. That was harmless at v3 (images
+always generated in the same call as the text, so the theme was always
+fresh) but stopped being harmless once v7 (2026-09-05) decoupled
+"Regenerate images" from "Regenerate text": an images-only regenerate
+skips the Bedrock text call entirely and reuses the EXISTING row's
+performance_summary/hook as image-prompt context -- and _resolve_
+visual_context's fallback chain meant every one of those images-only
+runs quietly downgraded from the sharp, name-derived theme ("a Fallout
+ball should evoke a wasteland") to generic review-narrative prose
+("reads early and hooks hard off the friction"), producing a much less
+thematic, more genre-generic scene prompt each time. Exactly the "first
+set amazing, then it drifted" pattern Al described -- every "Regenerate
+images" click after the first generation lost the theme a little more.
+
+Fix:
+1. Migration 029 adds a nullable `product_articles.visual_theme` text
+   column.
+2. `fetch_existing_article` now also selects it and returns it.
+3. `store_article` persists `article.get("visual_theme")` on every
+   combined generate/regenerate (always a FRESH value -- the model
+   re-derives it from the current draft every time text is regenerated).
+4. `update_article_text_only` now also sets `visual_theme = %s` -- a
+   text regenerate produces a fresh theme too, so the persisted value
+   moves forward with it.
+5. `update_article_images_only` deliberately leaves visual_theme
+   untouched -- an images-only regenerate has no fresh theme of its own
+   to write; it only ever READS the persisted one.
+6. In `generate_article_for_product`, the images-only branch already
+   passed `existing` (from `fetch_existing_article`) as the `article`
+   dict into `generate_article_image_candidates` -- now that `existing`
+   carries `visual_theme`, `_resolve_visual_context` picks it up
+   automatically with no other wiring needed.
+
+`_resolve_visual_context`'s fallback chain (performance_summary, then
+hook) is unchanged and still applies for the genuinely theme-less case:
+an article generated before this migration, or a response that omitted
+the optional field. No backfill needed -- the next text regenerate for
+an old product populates it going forward.
+
+No `template.yaml` change. Deploy: run migration 029 against the DB,
+then `sam build ProductArticleGeneratorFunction && sam deploy` (or a
+full redeploy).
+
+**Tests** (`tests/test_product_article_generator.py`, 117/117 passing,
+9 new/updated): `_FakeCursor` widened for the new query column and
+`existing_article` shape. New: `test_store_article_persists_visual_
+theme`, `test_store_article_persists_none_when_visual_theme_omitted`,
+`test_update_article_text_only_persists_fresh_visual_theme`, an
+assertion added to `test_update_article_images_only_sets_only_image_
+columns` confirming visual_theme is absent from that UPDATE's SET
+clause, `test_fetch_existing_article_returns_visual_theme_when_present`,
+and the core regression test `test_generate_article_for_product_images_
+only_regenerate_reuses_persisted_visual_theme` (patches generate_
+article_image_candidates to capture its own `article` argument and
+confirms the persisted theme -- not the performance_summary/hook
+fallback -- is what reaches it, verified both via the dict key and via
+`_resolve_visual_context` end to end). Full regression sweep against
+`tests/test_admin_api_service.py` (275/275, unaffected) confirms no
+cross-module breakage.
 
 ### 6u. Article → BigCommerce sync: admin toggle (migration 028) + sync job design spec (job not yet built)
 

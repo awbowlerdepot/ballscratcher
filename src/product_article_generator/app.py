@@ -631,12 +631,18 @@ def fetch_existing_article(conn, product_id: str) -> dict:
     always SETs all four image columns unconditionally (unlike update_
     article_text_only, which structurally omits them from its SET
     clause), so omitting a locked variant's key from the dict would NULL
-    it out rather than leave it alone. Returns None if this product has
-    no article row yet."""
+    it out rather than leave it alone. Also fetches visual_theme
+    (migration 029) -- the PERSISTED name-derived scene concept, added
+    for Al's "images drifted away from matching the ball's name" report:
+    an images-only regenerate needs the real theme back, not just
+    performance_summary/hook, or _resolve_visual_context's fallback
+    chain quietly downgrades to generic review prose every single time
+    (see 029's own header comment for the full incident). Returns None
+    if this product has no article row yet."""
     with conn.cursor() as cur:
         cur.execute(
             """
-            select id, performance_summary, hook,
+            select id, performance_summary, hook, visual_theme,
                    action_shot_image_key, action_shot_image_url,
                    product_shot_image_key, product_shot_image_url
             from product_articles where product_id = %s
@@ -647,9 +653,9 @@ def fetch_existing_article(conn, product_id: str) -> dict:
     if row is None:
         return None
     return {
-        "id": row[0], "performance_summary": row[1], "hook": row[2],
-        "action_shot_image_key": row[3], "action_shot_image_url": row[4],
-        "product_shot_image_key": row[5], "product_shot_image_url": row[6],
+        "id": row[0], "performance_summary": row[1], "hook": row[2], "visual_theme": row[3],
+        "action_shot_image_key": row[4], "action_shot_image_url": row[5],
+        "product_shot_image_key": row[6], "product_shot_image_url": row[7],
     }
 
 
@@ -1580,7 +1586,15 @@ def store_article(conn, product_id: str, article: dict, source_video_ids: list,
     resets status to 'pending' (see 022_product_articles.sql's own
     header comment for why: a previously-approved article going back
     through review on regenerate, rather than silently replacing live
-    content, is deliberate)."""
+    content, is deliberate).
+
+    Persists visual_theme (migration 029) -- article.get("visual_theme")
+    since it's an OPTIONAL field (_REQUIRED_ARTICLE_KEYS doesn't include
+    it; an older/simpler model response may omit it entirely). This is
+    always called with a FRESH article dict (a brand-new generation, or
+    the combined regenerate_text+regenerate_images path -- see generate_
+    article_for_product), so the theme being written here is always the
+    model's own current-run derivation, never a stale reuse."""
     images = images or {}
     has_images = bool(images)
     with conn.cursor() as cur:
@@ -1589,10 +1603,10 @@ def store_article(conn, product_id: str, article: dict, source_video_ids: list,
             insert into product_articles
                 (product_id, status, title, hook, performance_summary, who_should_buy,
                  who_should_skip, pros, cons, buying_tips, verdict, faq, comparison_table,
-                 sibling_product_ids, source_video_ids, generated_at,
+                 sibling_product_ids, source_video_ids, generated_at, visual_theme,
                  action_shot_image_key, action_shot_image_url,
                  product_shot_image_key, product_shot_image_url, images_generated_at)
-            values (%s, 'pending', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(),
+            values (%s, 'pending', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), %s,
                     %s, %s, %s, %s, case when %s then now() else null end)
             on conflict (product_id) do update set
                 status = 'pending',
@@ -1610,6 +1624,7 @@ def store_article(conn, product_id: str, article: dict, source_video_ids: list,
                 sibling_product_ids = excluded.sibling_product_ids,
                 source_video_ids = excluded.source_video_ids,
                 generated_at = excluded.generated_at,
+                visual_theme = excluded.visual_theme,
                 action_shot_image_key = excluded.action_shot_image_key,
                 action_shot_image_url = excluded.action_shot_image_url,
                 product_shot_image_key = excluded.product_shot_image_key,
@@ -1625,6 +1640,7 @@ def store_article(conn, product_id: str, article: dict, source_video_ids: list,
                 json.dumps(article["pros"]), json.dumps(article["cons"]), article["buying_tips"],
                 article["verdict"], json.dumps(article["faq"]), json.dumps(article["comparison_table"]),
                 json.dumps(sibling_product_ids), json.dumps(source_video_ids),
+                article.get("visual_theme"),
                 images.get("action_shot_image_key"), images.get("action_shot_image_url"),
                 images.get("product_shot_image_key"), images.get("product_shot_image_url"),
                 has_images,
@@ -1652,7 +1668,12 @@ def update_article_text_only(conn, product_id: str, article: dict, source_video_
     at all, unlike store_article's upsert which always sets all of them
     together. That omission (not a null/False value -- the columns are
     simply absent from SET) is what lets a text-only regenerate run
-    without ever touching an admin's already-selected images."""
+    without ever touching an admin's already-selected images.
+
+    DOES set visual_theme = %s (migration 029) -- a text regenerate runs
+    a fresh Bedrock call, which re-derives its own fresh theme from the
+    current article draft, so the persisted value should move forward
+    with it, same as every other text field here."""
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -1672,6 +1693,7 @@ def update_article_text_only(conn, product_id: str, article: dict, source_video_
                 sibling_product_ids = %s,
                 source_video_ids = %s,
                 generated_at = now(),
+                visual_theme = %s,
                 reviewed_at = null,
                 resolved_by = null
             where product_id = %s
@@ -1683,6 +1705,7 @@ def update_article_text_only(conn, product_id: str, article: dict, source_video_
                 json.dumps(article["pros"]), json.dumps(article["cons"]), article["buying_tips"],
                 article["verdict"], json.dumps(article["faq"]), json.dumps(article["comparison_table"]),
                 json.dumps(sibling_product_ids), json.dumps(source_video_ids),
+                article.get("visual_theme"),
                 product_id,
             ),
         )
@@ -1704,7 +1727,11 @@ def update_article_images_only(conn, product_id: str, images: dict) -> str:
     candidate's own established precedent (admin_api/service.py) that
     changing an article's images is "a lightweight admin action, not a
     review/approve workflow of its own" and shouldn't gate on or reset
-    the separate text-review workflow."""
+    the separate text-review workflow. Also deliberately leaves visual_
+    theme (migration 029) untouched -- an images-only regenerate has no
+    fresh theme of its own to write (see generate_article_for_product's
+    v7 docstring: it reuses the EXISTING row's persisted theme via
+    fetch_existing_article, read but never rewritten here)."""
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -1866,20 +1893,29 @@ def generate_article_for_product(conn, bedrock_client, model_id: str, product_id
         already-picked images survive untouched.
       - regenerate_text=False, regenerate_images=True ("Regenerate
         images"): skips the Bedrock article-text call entirely and
-        reuses the EXISTING row's own performance_summary/hook (via
-        fetch_existing_article) as the `article` dict passed into
-        generate_article_image_candidates. There's no visual_theme to
-        reuse -- it's a transient Bedrock-response field, never
-        persisted to product_articles (025's own header comment) -- but
-        build_gemini_scene_prompt/build_background_prompts already fall
-        back to performance_summary/hook whenever visual_theme is blank,
-        so this simply exercises that same existing fallback rather than
-        fabricating anything. Writes go through update_article_images_
-        only, which -- per select_article_image_candidate's own
-        established precedent that changing an article's images is "a
-        lightweight admin action, not a review/approve workflow of its
-        own" -- does NOT reset status/reviewed_at/resolved_by. Requires
-        an existing article row (there's no text to draw image-prompt
+        reuses the EXISTING row's own performance_summary/hook/visual_
+        theme (via fetch_existing_article) as the `article` dict passed
+        into generate_article_image_candidates. visual_theme (migration
+        029, added 2026-09-06 for Al's "images drifted away from
+        matching the ball's name" report) is now PERSISTED, so this
+        reuses the actual name-derived scene concept a prior text
+        generation produced, not a degraded fallback -- before 029, this
+        path had no visual_theme to reuse at all (it was a transient
+        Bedrock-response field), so build_gemini_scene_prompt/build_
+        background_prompts' fallback to performance_summary/hook fired
+        on EVERY images-only regenerate, quietly downgrading the scene
+        prompt's specificity each time (see 029's own header comment for
+        the incident). That fallback chain (_resolve_visual_context)
+        still exists and still applies here for the genuinely theme-less
+        case -- an article generated before 029, or a response that
+        omitted the optional field -- just no longer as the routine path.
+        Writes go through update_article_images_only, which -- per
+        select_article_image_candidate's own established precedent that
+        changing an article's images is "a lightweight admin action, not
+        a review/approve workflow of its own" -- does NOT reset status/
+        reviewed_at/resolved_by, and deliberately leaves visual_theme
+        untouched too (nothing fresh to write on this path). Requires an
+        existing article row (there's no text to draw image-prompt
         context from otherwise); the reason "no_existing_article_to_
         regenerate" covers this.
       - regenerate_text=False, regenerate_images=False is a no-op caller

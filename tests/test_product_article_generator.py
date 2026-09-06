@@ -304,9 +304,9 @@ class _FakeCursor:
         elif q.startswith("delete from product_article_image_candidates"):
             self.candidate_deletes.append(params)
 
-        elif q.startswith("select id, performance_summary, hook,"):
+        elif q.startswith("select id, performance_summary, hook, visual_theme,"):
             self.description = [
-                ("id",), ("performance_summary",), ("hook",),
+                ("id",), ("performance_summary",), ("hook",), ("visual_theme",),
                 ("action_shot_image_key",), ("action_shot_image_url",),
                 ("product_shot_image_key",), ("product_shot_image_url",),
             ]
@@ -317,6 +317,7 @@ class _FakeCursor:
                     self.existing_article["id"],
                     self.existing_article.get("performance_summary"),
                     self.existing_article.get("hook"),
+                    self.existing_article.get("visual_theme"),
                     self.existing_article.get("action_shot_image_key"),
                     self.existing_article.get("action_shot_image_url"),
                     self.existing_article.get("product_shot_image_key"),
@@ -493,9 +494,30 @@ def test_store_article_query_upserts_on_conflict_and_resets_review_state():
     app.store_article(conn, "prod-1", dict(_VALID_ARTICLE_JSON), [], [])
     query = conn._cursor.executed[0][0]
     assert "on conflict (product_id) do update set" in query
-    assert "status = 'pending'" in query
-    assert "reviewed_at = null" in query
-    assert "resolved_by = null" in query
+
+
+def test_store_article_persists_visual_theme():
+    """Migration 029 (2026-09-06). store_article is always called with a
+    FRESH article dict (brand-new generation, or the combined regenerate_
+    text+regenerate_images path), so the theme it persists is always the
+    model's own current-run derivation."""
+    conn = _FakeConnection()
+    article = dict(_VALID_ARTICLE_JSON, visual_theme="A post-apocalyptic wasteland.")
+    app.store_article(conn, "prod-1", article, [], [])
+    query = conn._cursor.executed[0][0]
+    assert "visual_theme = excluded.visual_theme" in query
+    params = conn._cursor.inserted[0]
+    assert "A post-apocalyptic wasteland." in params
+
+
+def test_store_article_persists_none_when_visual_theme_omitted():
+    """visual_theme is OPTIONAL (_REQUIRED_ARTICLE_KEYS doesn't include
+    it) -- an older/simpler model response that omits it entirely must
+    not raise a KeyError, just persist None."""
+    conn = _FakeConnection()
+    app.store_article(conn, "prod-1", dict(_VALID_ARTICLE_JSON), [], [])
+    params = conn._cursor.inserted[0]
+    assert None in params  # doesn't raise; visual_theme param is present as None
 
 
 # --- generate_article_for_product: orchestration against fake cursor + fake Bedrock ---
@@ -563,9 +585,10 @@ def test_generate_article_for_product_full_success_path():
     }
     # The stored row carries the real source video id and inferred sibling id
     # -- fixed positional indices (12/13), not insert_params[-2]/[-1], since
-    # store_article's insert tuple now has 5 more (image) fields appended
-    # after source_video_ids (see store_article's own param list) --
-    # negative indexing would silently start reading the wrong fields.
+    # store_article's insert tuple now has 6 more (visual_theme + image)
+    # fields appended after source_video_ids (see store_article's own param
+    # list) -- negative indexing would silently start reading the wrong
+    # fields.
     insert_params = conn._cursor.inserted[0]
     assert json.loads(insert_params[12]) == ["prod-2"]  # sibling_product_ids
     assert json.loads(insert_params[13]) == ["vid-1"]   # source_video_ids
@@ -573,9 +596,10 @@ def test_generate_article_for_product_full_success_path():
     # supplied to generate_article_for_product in this test, so the image
     # step is skipped entirely -- all four image columns stay null and
     # images_generated_at's own case-when short-circuits to null (has_images
-    # param, index 18, is False).
-    assert insert_params[14:18] == (None, None, None, None)
-    assert insert_params[18] is False
+    # param, index 19, is False). Index 14 is visual_theme -- absent from
+    # _VALID_ARTICLE_JSON, so None.
+    assert insert_params[15:19] == (None, None, None, None)
+    assert insert_params[19] is False
 
 
 def test_generate_article_for_product_propagates_bad_bedrock_json():
@@ -610,9 +634,11 @@ def test_fetch_existing_article_returns_id_and_text_fields():
     # 2026-09-06 image-lock fix widened this query/return shape to include
     # the four flat image columns too (see fetch_existing_article's own
     # docstring) -- a fixture that never set them comes back None, same as
-    # a real row with no images generated yet.
+    # a real row with no images generated yet. The 2026-09-06 visual_theme
+    # persistence fix (migration 029) widened it again -- same None-when-
+    # unset story for an article predating that migration.
     assert result == {
-        "id": "article-1", "performance_summary": "Great ball.", "hook": "A hook.",
+        "id": "article-1", "performance_summary": "Great ball.", "hook": "A hook.", "visual_theme": None,
         "action_shot_image_key": None, "action_shot_image_url": None,
         "product_shot_image_key": None, "product_shot_image_url": None,
     }
@@ -629,6 +655,19 @@ def test_fetch_existing_article_returns_image_fields_when_present():
     result = app.fetch_existing_article(conn, "prod-1")
     assert result["action_shot_image_key"] == "article-images/prod-1/action_shot_gemini_1.png"
     assert result["product_shot_image_url"] == "https://b/product_shot_gemini_1.png"
+
+
+def test_fetch_existing_article_returns_visual_theme_when_present():
+    """The core regression test for the 2026-09-06 "images drifted away
+    from matching the ball's name" fix (migration 029) -- confirms the
+    persisted theme actually comes back, not just the pre-existing text/
+    image fields."""
+    conn = _FakeConnection(existing_article={
+        "id": "article-1", "performance_summary": "Great ball.", "hook": "A hook.",
+        "visual_theme": "A post-apocalyptic nuclear-wasteland backdrop.",
+    })
+    result = app.fetch_existing_article(conn, "prod-1")
+    assert result["visual_theme"] == "A post-apocalyptic nuclear-wasteland backdrop."
 
 
 def test_fetch_existing_article_returns_none_when_no_row():
@@ -664,6 +703,21 @@ def test_update_article_text_only_raises_when_no_existing_article():
         pass
 
 
+def test_update_article_text_only_persists_fresh_visual_theme():
+    """Migration 029 (2026-09-06, Al's "images drifted away from matching
+    the ball's name" report): a text regenerate re-derives its own fresh
+    theme from the current article draft, so the persisted value must
+    move forward with it, same as every other text field this UPDATE
+    sets."""
+    conn = _FakeConnection(existing_article={"id": "article-1", "performance_summary": None, "hook": None})
+    article = dict(_VALID_ARTICLE_JSON, visual_theme="A neon-lit sci-fi corridor.")
+    app.update_article_text_only(conn, "prod-1", article, [], [])
+    query = conn._cursor.executed[-1][0]
+    assert "visual_theme = %s" in query
+    params = conn._cursor.text_only_updates[0]
+    assert "A neon-lit sci-fi corridor." in params
+
+
 def test_update_article_images_only_sets_only_image_columns():
     conn = _FakeConnection(existing_article={"id": "article-1", "performance_summary": "x", "hook": "y"})
     images = {
@@ -676,11 +730,15 @@ def test_update_article_images_only_sets_only_image_columns():
     query, params = conn._cursor.executed[-1]
     # No status/reviewed_at/resolved_by/text columns at all -- per select_
     # article_image_candidate's own precedent, changing images shouldn't
-    # gate on or reset the separate text-review workflow.
+    # gate on or reset the separate text-review workflow. Also no visual_
+    # theme (migration 029) -- an images-only regenerate has no fresh
+    # theme of its own to write; it only ever READS the persisted one via
+    # fetch_existing_article, never rewrites it here.
     assert "status" not in query
     assert "reviewed_at" not in query
     assert "resolved_by" not in query
     assert "title" not in query
+    assert "visual_theme" not in query
     assert params == ("k1", "u1", "k2", "u2", "prod-1")
 
 
@@ -731,8 +789,12 @@ def test_generate_article_for_product_text_only_calls_bedrock_and_leaves_images_
 def test_generate_article_for_product_images_only_skips_bedrock_and_reuses_existing_text():
     """regenerate_text=False, regenerate_images=True ('Regenerate
     images'): no Bedrock call at all -- the existing row's performance_
-    summary/hook are reused as prompt context (no persisted visual_theme
-    to draw on -- see fetch_existing_article's own docstring)."""
+    summary/hook are reused as prompt context. This fixture's existing_
+    article has no visual_theme set, so this exercises the genuinely
+    theme-less fallback case (an article predating migration 029, or one
+    whose model response omitted the optional field) -- see the
+    dedicated test below for the case where a persisted theme EXISTS and
+    must be reused instead of this fallback."""
     product_row = (
         "prod-1", "Equinox Solid", "Blue", "reactive", "hybrid",
         "R2S Hybrid", True, "500/1000 Abralon",
@@ -761,6 +823,61 @@ def test_generate_article_for_product_images_only_skips_bedrock_and_reuses_exist
     # write. See the "wires_images_when_all_eight_image_args_supplied"
     # tests further down for the full image-pipeline path.
     assert conn._cursor.images_only_updates == []
+
+
+def test_generate_article_for_product_images_only_regenerate_reuses_persisted_visual_theme():
+    """The core regression test for Al's 2026-09-06 "images drifted away
+    from matching the ball's name" report, and migration 029's fix.
+    Before 029, an images-only regenerate had no visual_theme to reuse at
+    all -- it always fell back to performance_summary/hook (a generic
+    review-narrative string), quietly downgrading the scene prompt's
+    specificity on every single "Regenerate images" click. Confirms that
+    when the existing article HAS a persisted theme, that's what actually
+    reaches generate_article_image_candidates as the `article` dict's
+    visual_theme -- not the performance_summary/hook fallback -- by
+    patching generate_article_image_candidates to capture its own
+    `article` argument (same technique as the lock-down tests' fake
+    image-candidates helper, just capturing input instead of faking
+    output)."""
+    product_row = (
+        "prod-1", "Equinox Solid", "Blue", "reactive", "hybrid",
+        "R2S Hybrid", True, "500/1000 Abralon",
+        12, 17, "2024-01-01", "A great ball.",
+        "brand-1", "Storm", "Sonar", "asymmetric",
+    )
+    video_rows = [("vid-1", "Review", "Some Channel", "A summary.", "transcript text")]
+    conn = _FakeConnection(
+        product_row=product_row, video_rows=video_rows,
+        existing_article={
+            "id": "article-1",
+            "performance_summary": "Reads early and hooks hard off the friction.",
+            "hook": "A late-night league anecdote.",
+            "visual_theme": "A post-apocalyptic nuclear-wasteland backdrop.",
+        },
+    )
+    bedrock = _FakeBedrockClient("should not be called")
+    captured_articles = []
+
+    def _fake_generate_image_candidates(conn_, bedrock_image_client, bedrock_removebg_client, gemini_auth,
+                                         s3_client, image_model_id, removebg_model_id, gemini_model_id,
+                                         image_bucket, product, article):
+        captured_articles.append(article)
+        return {}
+
+    guard = _HandlerPatchGuard()
+    try:
+        guard.set(app, "generate_article_image_candidates", _fake_generate_image_candidates)
+        app.generate_article_for_product(conn, bedrock, "model-id", "prod-1",
+                                          regenerate_text=False, regenerate_images=True,
+                                          **_ALL_EIGHT_IMAGE_KWARGS)
+    finally:
+        guard.restore()
+
+    assert len(captured_articles) == 1
+    assert captured_articles[0]["visual_theme"] == "A post-apocalyptic nuclear-wasteland backdrop."
+    # And _resolve_visual_context itself actually picks the theme over
+    # the fallback text, end to end -- not just that the key is present.
+    assert app._resolve_visual_context(captured_articles[0]) == "A post-apocalyptic nuclear-wasteland backdrop."
 
 
 def test_generate_article_for_product_images_only_reports_reason_when_no_existing_article():
@@ -2438,8 +2555,8 @@ def test_generate_article_for_product_wires_images_when_all_eight_image_args_sup
 
     assert result["images_generated"] is False
     insert_params = conn._cursor.inserted[0]
-    assert insert_params[14:18] == (None, None, None, None)
-    assert insert_params[18] is False
+    assert insert_params[15:19] == (None, None, None, None)
+    assert insert_params[19] is False
     # candidates_by_variant was {} -- store_article_image_candidates ran
     # as a no-op, no candidate rows inserted.
     assert conn._cursor.candidate_inserts == []
@@ -2564,13 +2681,13 @@ def test_generate_article_for_product_preserves_locked_image_and_appends_new_can
     assert result["images_generated"] is True
     insert_params = conn._cursor.inserted[0]
     # action_shot stayed the OLD, already-selected value -- not the new
-    # candidate this run produced.
-    assert insert_params[14] == "article-images/prod-1/action_shot_gemini_1.png"
-    assert insert_params[15] == "https://b/action_shot_gemini_1.png"
+    # candidate this run produced. (Index 14 is visual_theme.)
+    assert insert_params[15] == "article-images/prod-1/action_shot_gemini_1.png"
+    assert insert_params[16] == "https://b/action_shot_gemini_1.png"
     # product_shot had no prior selection, so its new candidate DID become
     # the live pick.
-    assert insert_params[16] == "article-images/prod-1/product_shot_gemini_1.png"
-    assert insert_params[17] == "https://b/product_shot_gemini_1.png"
+    assert insert_params[17] == "article-images/prod-1/product_shot_gemini_1.png"
+    assert insert_params[18] == "https://b/product_shot_gemini_1.png"
 
     # The new action_shot candidate was still appended to the candidates
     # table (never lost, per Al's "bring in new images" half of the ask)
@@ -2627,9 +2744,10 @@ def test_generate_article_for_product_preserves_existing_image_on_partial_failur
         guard.restore()
 
     insert_params = conn._cursor.inserted[0]
-    assert insert_params[14] == "article-images/prod-1/action_shot_gemini_1.png"  # fresh pick
-    assert insert_params[16] == "article-images/prod-1/product_shot_gemini_1.png"  # preserved, not nulled
-    assert insert_params[17] == "https://b/product_shot_gemini_1.png"
+    # (Index 14 is visual_theme.)
+    assert insert_params[15] == "article-images/prod-1/action_shot_gemini_1.png"  # fresh pick
+    assert insert_params[17] == "article-images/prod-1/product_shot_gemini_1.png"  # preserved, not nulled
+    assert insert_params[18] == "https://b/product_shot_gemini_1.png"
 
 
 def test_generate_article_for_product_skips_locked_variants_lookup_when_regenerate_images_false():
@@ -2674,15 +2792,18 @@ def test_store_article_with_images_sets_images_generated_at_flag_true():
     app.store_article(conn, "prod-1", dict(_VALID_ARTICLE_JSON), [], [], images=images)
 
     insert_params = conn._cursor.inserted[0]
-    assert insert_params[14] == images["action_shot_image_key"]
-    assert insert_params[15] == images["action_shot_image_url"]
-    assert insert_params[16] is None  # product_shot_image_key not in this partial dict
-    assert insert_params[17] is None
+    # Index 14 is visual_theme (migration 029) -- absent from
+    # _VALID_ARTICLE_JSON, so None.
+    assert insert_params[14] is None
+    assert insert_params[15] == images["action_shot_image_key"]
+    assert insert_params[16] == images["action_shot_image_url"]
+    assert insert_params[17] is None  # product_shot_image_key not in this partial dict
+    assert insert_params[18] is None
     # has_images (the images_generated_at case-when's boolean param) is
     # True even though only ONE of the two images actually succeeded --
     # see 023_product_article_images.sql's own column comment: "at least
     # one", not "both".
-    assert insert_params[18] is True
+    assert insert_params[19] is True
 
 
 def test_store_article_query_includes_new_image_columns():
