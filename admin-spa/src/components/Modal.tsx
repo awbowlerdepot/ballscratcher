@@ -6,9 +6,13 @@ interface ModalProps {
   title?: string;
   children: ReactNode;
   footer?: ReactNode;
+  // Articles' full preview (images, FAQ, comparison table...) doesn't
+  // fit comfortably in the default max-w-lg every other modal here uses
+  // -- opt-in wider dialog rather than widening every modal in the app.
+  wide?: boolean;
 }
 
-export default function Modal({ open, onClose, title, children, footer }: ModalProps) {
+export default function Modal({ open, onClose, title, children, footer, wide = false }: ModalProps) {
   useEffect(() => {
     if (!open) return;
     function onKeyDown(e: KeyboardEvent) {
@@ -23,13 +27,13 @@ export default function Modal({ open, onClose, title, children, footer }: ModalP
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={onClose}>
       <div
-        className="w-full max-w-lg rounded-lg bg-white shadow-xl"
+        className={`w-full ${wide ? "max-w-3xl" : "max-w-lg"} max-h-[85vh] overflow-y-auto rounded-lg bg-white shadow-xl`}
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
       >
         {title && (
-          <div className="border-b border-slate-200 px-5 py-3">
+          <div className="sticky top-0 border-b border-slate-200 bg-white px-5 py-3">
             <h2 className="text-sm font-semibold text-slate-800">{title}</h2>
           </div>
         )}

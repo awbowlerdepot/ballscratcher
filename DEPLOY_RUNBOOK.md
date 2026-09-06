@@ -9694,13 +9694,66 @@ score_match` / `db/migrations/004_product_videos.sql:35`), not a
 numeric score -- `tsc` had no way to catch this since the type
 annotation itself was the mistake. Threw `TypeError: r.match_confidence.
 toFixed is not a function` the moment a pending video candidate
-rendered, taking down the whole page (no error boundary is in place
-yet -- see `admin-spa/README.md` for that as a known gap). Fixed:
+rendered, taking down the entire app -- no error boundary existed
+anywhere in the component tree yet at the time this was found. Fixed:
 `match_confidence` retyped as `"high" | "low" | null`, rendered as a
-`Badge` instead of a formatted number. This is exactly the class of
-mistake `tsc -b` passing clean can't catch -- it verifies internal
-consistency, not that a type annotation matches the real database
-column, which only exercising the code against live data reveals.
+`Badge` instead of a formatted number, AND an `ErrorBoundary` component
+added around `<Outlet/>` in `Layout.tsx` (keyed by route pathname) so a
+future mistake like this one is contained to a single page instead of
+blanking sign-in/navigation for the whole app too. This is exactly the
+class of mistake `tsc -b` passing clean can't catch -- it verifies
+internal consistency, not that a type annotation matches the real
+database column, which only exercising the code against live data
+reveals.
+
+### 6ab.3. Articles tab
+
+Fifth tab ported into `admin-spa/` (`src/pages/ArticlesPage.tsx`):
+AI-generated ball-review articles (`022_product_articles.sql` onward),
+the same feature `admin-site/index.html`'s Articles tab covers. Routes:
+`GET /articles` (status -- pending/approved/rejected, "all" exists
+server-side but isn't exposed here either, plus product_id/limit/
+offset -- note this endpoint returns no `pending_count`, unlike Review
+Queue/Video Candidates, confirmed by reading `get_articles` in
+`admin_api/app.py` before assuming one existed), `GET /articles/{id}`
+(full detail for the preview modal), `POST .../approve`, `.../reject`
+(no restore/undo endpoint exists on this resource -- a resolved article
+can only move by being regenerated, which resets it to pending),
+`PATCH .../bigcommerce-sync` (freely-reversible boolean toggle, no
+review-workflow gating), `POST .../sync-to-bigcommerce` and
+`.../resync-to-bigcommerce` (fire-and-forget `lambda:InvokeFunction`
+triggers for `BowlerdepotArticleSyncFunction`), `GET .../
+image-candidates` + `POST /article-image-candidates/{id}/select`
+(the v4 Gemini-vs-Stability candidate picker, `026_product_article_
+image_candidates.sql`), and `POST /products/{id}/generate-article` +
+the decoupled `.../regenerate-article-text` / `.../regenerate-article-
+images`.
+
+No bulk actions on this tab (admin-site's own Articles tab never had
+any either -- each article's images/text are unique enough per-row
+that a shared bulk-reject reason doesn't fit as naturally as it does
+for Review Queue/Video Candidates) and no pending-count badge (see the
+routes note above). The full-article preview -- hook, performance
+summary, who-should-buy/skip, pros/cons, buying tips, verdict, FAQ,
+comparison-table row count, inferred-sibling count, source-video count
+-- opens in a wider `Modal` (added a `wide` prop to `Modal.tsx` for
+this, since the default `max-w-lg` every other modal here uses was too
+cramped for a full article). `comparison_table` rows are typed as a
+loose `Record<string, unknown>[]` in `api/types.ts` rather than
+field-by-field, matching admin-site's own "dump it as JSON" treatment
+of that field -- its shape has grown ad hoc (pricing fields added
+later, see public_api's own history) and admin-spa only needs to show
+a row count here, not read specific fields off it.
+
+`npx tsc -b` run for real against the now-present `node_modules` --
+clean, zero errors. Given the match_confidence incident directly
+above, that's treated as necessary and not sufficient, not as proof
+this tab is correct against live data -- it has NOT yet been
+smoke-tested in the browser against a real deployed stack. Two fields
+worth specifically watching on first real load: `comparison_table`'s
+actual shape, and `seed` on image candidates (should be `null` for
+every Gemini row, a number for Stability rows -- see
+`026_product_article_image_candidates.sql`'s own column comment).
 
 ## 7. Ongoing operations
 

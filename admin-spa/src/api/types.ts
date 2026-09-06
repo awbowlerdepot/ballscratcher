@@ -216,3 +216,136 @@ export interface ReassignVideoResult {
   origin_video_id: string;
   merged_with_existing: boolean;
 }
+
+// Ball-review articles (022_product_articles.sql onward). Unlike Review
+// Queue/Video Candidates, GET /articles does NOT return a pending_count
+// -- admin-site's own Articles tab has no pending badge either (checked
+// its renderArticles before assuming one existed here).
+export type ArticleStatus = "pending" | "approved" | "rejected";
+
+// Matches list_articles' SELECT in admin_api/service.py -- a lighter
+// projection than get_article's full row (no hook/performance_summary/
+// faq/etc.), just enough for the list view and its inline thumbnail/
+// sync-toggle.
+export interface ArticleListItem {
+  id: string;
+  product_id: string;
+  product_name: string;
+  brand_name: string;
+  status: ArticleStatus;
+  title: string | null;
+  generated_at: string | null;
+  reviewed_at: string | null;
+  resolved_by: string | null;
+  created_at: string;
+  action_shot_image_url: string | null;
+  product_shot_image_url: string | null;
+  images_generated_at: string | null;
+  sync_to_bigcommerce: boolean;
+  bigcommerce_post_id: string | null;
+  bowlerdepot_synced_at: string | null;
+}
+
+export interface ArticleFaqItem {
+  question: string;
+  answer: string;
+}
+
+// comparison_table rows are heuristically assembled per-product (see
+// 022_product_articles.sql's header comment) and their exact field set
+// has grown ad hoc (pricing fields added later, see public_api's own
+// history) -- typed loosely here since admin-spa only needs to display
+// the row count and raw JSON, not read specific fields off it (same
+// "dump it as JSON" approach admin-site/index.html's own
+// renderArticlePreviewHtml takes).
+export type ArticleComparisonRow = Record<string, unknown>;
+
+// Full detail for one article (GET /articles/{id}) -- select pa.* plus
+// product_name/brand_name, see get_article in admin_api/service.py.
+export interface Article {
+  id: string;
+  product_id: string;
+  product_name: string;
+  brand_name: string;
+  status: ArticleStatus;
+  title: string | null;
+  hook: string | null;
+  performance_summary: string | null;
+  who_should_buy: string[];
+  who_should_skip: string[];
+  pros: string[];
+  cons: string[];
+  buying_tips: string | null;
+  verdict: string | null;
+  faq: ArticleFaqItem[];
+  comparison_table: ArticleComparisonRow[];
+  sibling_product_ids: string[];
+  source_video_ids: string[];
+  generated_at: string | null;
+  reviewed_at: string | null;
+  resolved_by: string | null;
+  created_at: string;
+  action_shot_image_key: string | null;
+  action_shot_image_url: string | null;
+  product_shot_image_key: string | null;
+  product_shot_image_url: string | null;
+  images_generated_at: string | null;
+  sync_to_bigcommerce: boolean;
+  bigcommerce_post_id: string | null;
+  bowlerdepot_synced_at: string | null;
+}
+
+export type ArticleImageVariant = "action_shot" | "product_shot";
+
+// 026_product_article_image_candidates.sql -- every image ever
+// generated for an article's action_shot/product_shot, from either
+// Gemini or Stability (see model_id). seed is Stability-only (null for
+// Gemini, which has no reproducible seed param -- see that migration's
+// own column comment).
+export interface ArticleImageCandidate {
+  id: string;
+  article_id: string;
+  variant: ArticleImageVariant;
+  model_id: string;
+  image_key: string;
+  image_url: string;
+  seed: number | null;
+  is_selected: boolean;
+  created_at: string;
+}
+
+export interface ListArticlesParams {
+  // "all" omits the status filter server-side, same convention as
+  // Video Candidates -- see GET /articles in admin_api/app.py.
+  status?: ArticleStatus | "all";
+  product_id?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export type ArticleRegenerateMode = "both" | "text" | "images";
+
+export interface QueueArticleGenerationResult {
+  queued: boolean;
+  reason?: string;
+  product_id?: string;
+  mode?: ArticleRegenerateMode;
+}
+
+// sync-to-bigcommerce/resync-to-bigcommerce share this shape -- both are
+// fire-and-forget lambda:InvokeFunction triggers, see queue_article_sync/
+// queue_article_resync in admin_api/service.py.
+export interface QueueArticleSyncResult {
+  queued: boolean;
+  reason?: string;
+  article_id?: string;
+  resync?: boolean;
+}
+
+export interface SelectImageCandidateResult {
+  candidate_id: string;
+  article_id: string;
+  variant: ArticleImageVariant;
+  image_key: string;
+  image_url: string;
+}

@@ -1,15 +1,23 @@
 import { getValidIdToken } from "../auth/cognito";
 import type {
+  Article,
+  ArticleListItem,
+  ArticleImageCandidate,
+  ArticleRegenerateMode,
   ApproveReviewResult,
   DashboardSummary,
+  ListArticlesParams,
   ListProductsParams,
   ListReviewQueueParams,
   ListVideoCandidatesParams,
   Product,
+  QueueArticleGenerationResult,
+  QueueArticleSyncResult,
   ReassignVideoResult,
   RejectReviewResult,
   RescrapeResult,
   ReviewQueueListResult,
+  SelectImageCandidateResult,
   VideoCandidateListResult,
 } from "./types";
 
@@ -84,6 +92,20 @@ async function apiPost<T>(path: string, body?: unknown): Promise<T> {
   return handleResponse<T>(resp);
 }
 
+// Only PATCH /articles/{id}/bigcommerce-sync uses this method so far
+// (see set_article_bigcommerce_sync in admin_api/service.py) -- a
+// single-boolean toggle, not a review-workflow action, hence PATCH
+// rather than a POST .../approve-shaped route.
+async function apiPatch<T>(path: string, body: unknown): Promise<T> {
+  const headers = await authHeaders();
+  const resp = await fetch(`${API_BASE}${path}`, {
+    method: "PATCH",
+    headers,
+    body: JSON.stringify(body),
+  });
+  return handleResponse<T>(resp);
+}
+
 export function getDashboardSummary(): Promise<DashboardSummary> {
   return apiGet<DashboardSummary>("/admin/dashboard");
 }
@@ -140,3 +162,94 @@ export function reassignVideoCandidate(id: string, targetProductId: string): Pro
     product_id: targetProductId,
   });
 }
+
+// Ball-review articles (022_product_articles.sql onward). No
+// pending_count on GET /articles -- see the comment on ArticleListItem
+// in types.ts.
+export function listArticles(params: ListArticlesParams = {}): Promise<ArticleListItem[]> {
+  return apiGet<{ items: ArticleListItem[] }>("/articles", { ...params }).then((r) => r.items);
+}
+
+export function getArticle(id: string): Promise<Article> {
+  return apiGet<Article>(`/articles/${encodeURIComponent(id)}`);
+}
+
+// resolved_by omitted, same reasoning as approveReviewItem/
+// approveVideoCandidate above. Only a pending article can be
+// approved/rejected -- product_articles has no restore endpoint (an
+// already-resolved article can only move by being regenerated, which
+// resets it to pending -- see approve_article/reject_article's own
+// docstrings).
+export function approveArticle(id: string): Promise<{ article_id: string; status: "approved" }> {
+  return apiPost(`/articles/${encodeURIComponent(id)}/approve`, {});
+}
+
+export function rejectArticle(id: string, reason?: string): Promise<{ article_id: string; status: "rejected" }> {
+  return apiPost(`/articles/${encodeURIComponent(id)}/reject`, { reason });
+}
+
+// Freely reversible admin preference, not a review resolution -- can be
+// flipped on/off on an article of any status (see
+// set_article_bigcommerce_sync's own docstring).
+export function setArticleBigcommerceSync(
+  id: string,
+  syncToBigcommerce: boolean,
+): Promise<{ article_id: string; sync_to_bigcommerce: boolean }> {
+  return apiPatch(`/articles/${encodeURIComponent(id)}/bigcommerce-sync`, { sync_to_bigcommerce: syncToBigcommerce });
+}
+
+// "Sync now" -- pushes immediately instead of waiting for
+// BowlerdepotArticleSyncFunction's hourly schedule. queued:false with a
+// reason means ARTICLE_SYNC_FUNCTION_NAME isn't configured on this
+// deployment, not an error.
+export function syncArticleNow(id: string): Promise<QueueArticleSyncResult> {
+  return apiPost<QueueArticleSyncResult>(`/articles/${encodeURIComponent(id)}/sync-to-bigcommerce`);
+}
+
+// "Resync" -- overwrites an ALREADY-synced article's live BigCommerce
+// post (update, not create). See queue_article_resync's docstring for
+// why this exists separately from syncArticleNow.
+export function resyncArticleNow(id: string): Promise<QueueArticleSyncResult> {
+  return apiPost<QueueArticleSyncResult>(`/articles/${encodeURIComponent(id)}/resync-to-bigcommerce`);
+}
+
+// Empty list is a normal state (images never configured, or every
+// candidate failed) -- see list_article_image_candidates' own
+// docstring.
+export function listArticleImageCandidates(articleId: string): Promise<ArticleImageCandidate[]> {
+  return apiGet<{ items: ArticleImageCandidate[] }>(`/articles/${encodeURIComponent(articleId)}/image-candidates`).then(
+    (r) => r.items,
+  );
+}
+
+// resolved_by omitted -- accepted by the backend but not persisted
+// anywhere (see select_article_image_candidate's own docstring).
+export function selectArticleImageCandidate(candidateId: string): Promise<SelectImageCandidateResult> {
+  return apiPost<SelectImageCandidateResult>(`/article-image-candidates/${encodeURIComponent(candidateId)}/select`, {});
+}
+
+// The original combined "Generate article" trigger -- only path for a
+// brand-new article (no existing row yet). mode defaults to "both" on
+// the backend.
+export function generateArticle(productId: string): Promise<QueueArticleGenerationResult> {
+  return apiPost<QueueArticleGenerationResult>(`/products/${encodeURIComponent(productId)}/generate-article`);
+}
+
+// Decoupled regenerate -- text-only re-runs the article-text model call
+// and leaves existing images untouched; images-only skips the text call
+// and generates new image candidates using the EXISTING article text as
+// context. Both require an article to already exist (see
+// queue_article_generation's own v7 docstring) -- mode is accepted here
+// purely for call-site clarity, the actual routing lives server-side on
+// which of the two endpoints gets hit.
+export function regenerateArticleText(productId: string): Promise<QueueArticleGenerationResult> {
+  return apiPost<QueueArticleGenerationResult>(`/products/${encodeURIComponent(productId)}/regenerate-article-text`);
+}
+
+export function regenerateArticleImages(productId: string): Promise<QueueArticleGenerationResult> {
+  return apiPost<QueueArticleGenerationResult>(`/products/${encodeURIComponent(productId)}/regenerate-article-images`);
+}
+
+// Kept as a re-export purely so callers importing from client.ts don't
+// also need a separate import from types.ts just for this one type.
+export type { ArticleRegenerateMode };

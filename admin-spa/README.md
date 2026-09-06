@@ -42,6 +42,18 @@ account instead of a shared bearer-token secret.
   different product; the origin candidate is tombstoned as rejected).
   No bulk-reassign or delete here -- those stay product-detail-only
   features until Products gets a detail sub-view.
+- **Articles** (`/articles`) -- AI-generated ball-review articles
+  (`022_product_articles.sql` onward). Status/product-id filters, a
+  full-article preview modal (hook/performance summary/who-should-buy-
+  or-skip/pros-cons/buying tips/verdict/FAQ, plus comparison-table and
+  inferred-siblings counts), per-row approve/reject, a BigCommerce
+  sync toggle with "Sync now"/"Resync" triggers, decoupled
+  "Regen text"/"Regen images" buttons, and an image-candidate picker
+  (`026_product_article_image_candidates.sql`, Gemini vs. Stability
+  shots side by side, click to select which one is live). No bulk
+  actions and no pending-count badge here -- `admin-site/index.html`'s
+  own Articles tab never had either (see `api/types.ts`'s
+  `ArticleListItem` comment on the missing pending_count).
 - A small hand-rolled component library in `src/components/` (`Button`,
   `Badge`, `Card`, `StatCard`, `Modal`, `Toast`, `DataTable`,
   `Pagination`, `Layout`, `ErrorBoundary`) that later tabs (Articles,
@@ -142,9 +154,9 @@ its own git history for precedent).
 - A "set new password" form for the Cognito `newPasswordRequired`
   challenge -- first-time accounts need a permanent password set via
   the CLI (see above) rather than through the app itself.
-- Every other admin-site tab: Articles, Price Sites, Cores,
-  Coverstocks, Blocked Channels, Batch Jobs. These still live on
-  `admin-site/index.html` for now; migrating them is follow-up work.
+- Every other admin-site tab: Price Sites, Cores, Coverstocks, Blocked
+  Channels, Batch Jobs. These still live on `admin-site/index.html` for
+  now; migrating them is follow-up work.
 - A Products detail sub-view (the old admin-site has a tabbed per-
   product panel with its own Videos section, "search again" rescan
   button, and bulk reassign/delete -- admin-spa's Video Candidates tab
@@ -193,3 +205,12 @@ the field and rendering it as a `Badge` instead, and by adding the
 contained to one page instead of taking down sign-in and navigation
 too. `tsc -b` passing clean does not catch this class of bug -- it's a
 wrong assumption about a runtime value's shape, not a type error.
+
+Articles has NOT been smoke-tested against real deployed data yet --
+`tsc -b` passes clean, but given the match_confidence incident above,
+treat that as necessary and not sufficient. Fields most worth watching
+on first real load: `comparison_table` (typed as a loose
+`Record<string, unknown>[]` -- deliberately not modeled field-by-field
+since its shape has grown ad hoc, see `api/types.ts`'s own comment) and
+`seed` on image candidates (should be `null` for every Gemini
+candidate, a number for Stability ones).

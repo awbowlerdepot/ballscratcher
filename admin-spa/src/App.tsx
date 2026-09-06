@@ -2,6 +2,7 @@ import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { AuthProvider, ProtectedRoute } from "./auth/AuthContext";
 import Layout from "./components/Layout";
 import { ToastProvider } from "./components/Toast";
+import ArticlesPage from "./pages/ArticlesPage";
 import DashboardPage from "./pages/DashboardPage";
 import LoginPage from "./pages/LoginPage";
 import ProductsPage from "./pages/ProductsPage";
@@ -26,6 +27,7 @@ export default function App() {
               <Route path="/products" element={<ProductsPage />} />
               <Route path="/review-queue" element={<ReviewQueuePage />} />
               <Route path="/video-candidates" element={<VideoCandidatesPage />} />
+              <Route path="/articles" element={<ArticlesPage />} />
             </Route>
           </Routes>
         </ToastProvider>
