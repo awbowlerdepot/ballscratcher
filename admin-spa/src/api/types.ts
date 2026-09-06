@@ -12,7 +12,11 @@ export interface DashboardKpis {
   missing_skus: number;
   products_with_video: number;
   products_with_price_tracking: number;
-  total_catalog_adu: number;
+  // Al: "can we add some data over time charts to the dashboard, maybe
+  // total catalog adu over time" (predates the 2026-09-06 ADU->Daily
+  // Movement rename -- same metric, see admin_api/service.py's
+  // get_dashboard_summary docstring).
+  total_catalog_daily_movement: number;
 }
 
 export interface TopPopularityItem {
@@ -22,42 +26,42 @@ export interface TopPopularityItem {
   popularity_score: number;
 }
 
-export interface TopAduItem {
+export interface TopDailyMovementItem {
   id: string;
   name: string;
   brand_name: string;
-  total_adu: number;
+  total_daily_movement: number;
 }
 
-export interface AduByBrandItem {
+export interface DailyMovementByBrandItem {
   brand_name: string;
-  total_adu: number;
+  total_daily_movement: number;
 }
 
-export interface AduDeltaItem {
+export interface DailyMovementDeltaItem {
   product_id: string;
   name: string;
   brand_name: string;
   weight_lbs: number | null;
-  previous_adu: number;
-  current_adu: number;
-  delta_adu: number;
+  previous_daily_movement: number;
+  current_daily_movement: number;
+  delta_daily_movement: number;
 }
 
 export interface DashboardSummary {
   kpis: DashboardKpis;
   top_popularity: TopPopularityItem[];
-  top_adu: TopAduItem[];
-  adu_by_brand: AduByBrandItem[];
-  top_growing_adu: AduDeltaItem[];
-  top_shrinking_adu: AduDeltaItem[];
+  top_daily_movement: TopDailyMovementItem[];
+  daily_movement_by_brand: DailyMovementByBrandItem[];
+  top_growing_daily_movement: DailyMovementDeltaItem[];
+  top_shrinking_daily_movement: DailyMovementDeltaItem[];
 }
 
 export type ProductStatus = "current" | "retired";
 
 export type SourcePlatform = "netsuite" | "shopify" | "woocommerce" | "commercebuild" | "craft_cms";
 
-export type ProductSort = "popularity" | "newest" | "oldest" | "name_asc" | "name_desc" | "total_adu";
+export type ProductSort = "popularity" | "newest" | "oldest" | "name_asc" | "name_desc" | "total_daily_movement";
 
 export interface Product {
   id: string;
@@ -74,7 +78,7 @@ export interface Product {
   coverstock_id: string | null;
   coverstock_name: string | null;
   popularity_score: number;
-  total_adu: number;
+  total_daily_movement: number;
 }
 
 export interface ListProductsParams {

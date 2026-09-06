@@ -12,7 +12,7 @@ const LIMIT = 50;
 
 const SORT_OPTIONS: { value: ProductSort; label: string }[] = [
   { value: "popularity", label: "Popularity" },
-  { value: "total_adu", label: "Total ADU" },
+  { value: "total_daily_movement", label: "Avg Daily Movement" },
   { value: "newest", label: "Newest" },
   { value: "oldest", label: "Oldest" },
   { value: "name_asc", label: "Name A-Z" },
@@ -129,7 +129,11 @@ export default function ProductsPage() {
       render: (p) => p.coverstock_name ?? <span className="text-warn">missing</span>,
     },
     { key: "popularity_score", header: "Popularity", render: (p) => p.popularity_score.toFixed(1) },
-    { key: "total_adu", header: "ADU", render: (p) => p.total_adu.toFixed(1) },
+    {
+      key: "total_daily_movement",
+      header: "Avg Daily Movement",
+      render: (p) => p.total_daily_movement.toFixed(1),
+    },
     { key: "updated_at", header: "Updated", render: (p) => new Date(p.updated_at).toLocaleDateString() },
   ];
 

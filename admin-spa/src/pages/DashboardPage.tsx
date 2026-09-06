@@ -59,19 +59,19 @@ export default function DashboardPage() {
           <StatCard label="Missing SKUs" value={kpis.missing_skus} tone={kpis.missing_skus > 0 ? "warn" : "default"} />
           <StatCard label="With video" value={kpis.products_with_video} />
           <StatCard label="With price tracking" value={kpis.products_with_price_tracking} />
-          <StatCard label="Catalog ADU" value={kpis.total_catalog_adu.toFixed(1)} />
+          <StatCard label="Catalog Avg Daily Movement" value={kpis.total_catalog_daily_movement.toFixed(1)} />
         </div>
       </div>
 
-      <Card title="ADU by brand">
+      <Card title="Avg Daily Movement by brand">
         <div className="chart-wrap">
           <Bar
             data={{
-              labels: data.adu_by_brand.map((b) => b.brand_name),
+              labels: data.daily_movement_by_brand.map((b) => b.brand_name),
               datasets: [
                 {
-                  label: "Total ADU",
-                  data: data.adu_by_brand.map((b) => b.total_adu),
+                  label: "Total Avg Daily Movement",
+                  data: data.daily_movement_by_brand.map((b) => b.total_daily_movement),
                   backgroundColor: "#2563eb",
                 },
               ],
@@ -93,35 +93,47 @@ export default function DashboardPage() {
           />
         </Card>
 
-        <Card title="Top 10 by ADU">
+        <Card title="Top 10 by Avg Daily Movement">
           <DataTable
             columns={[
               { key: "name", header: "Ball", render: (r) => `${r.brand_name} ${r.name}` },
-              { key: "total_adu", header: "ADU", render: (r) => r.total_adu.toFixed(1) },
+              {
+                key: "total_daily_movement",
+                header: "Avg Daily Movement",
+                render: (r) => r.total_daily_movement.toFixed(1),
+              },
             ]}
-            rows={data.top_adu}
+            rows={data.top_daily_movement}
             getRowId={(r) => r.id}
           />
         </Card>
 
-        <Card title="Top growing ADU">
+        <Card title="Top growing Avg Daily Movement">
           <DataTable
             columns={[
               { key: "name", header: "Ball", render: (r) => `${r.brand_name} ${r.name}` },
-              { key: "delta_adu", header: "Δ ADU", render: (r) => `+${r.delta_adu.toFixed(1)}` },
+              {
+                key: "delta_daily_movement",
+                header: "Δ Avg Daily Movement",
+                render: (r) => `+${r.delta_daily_movement.toFixed(1)}`,
+              },
             ]}
-            rows={data.top_growing_adu}
+            rows={data.top_growing_daily_movement}
             getRowId={(r) => r.product_id}
           />
         </Card>
 
-        <Card title="Top shrinking ADU">
+        <Card title="Top shrinking Avg Daily Movement">
           <DataTable
             columns={[
               { key: "name", header: "Ball", render: (r) => `${r.brand_name} ${r.name}` },
-              { key: "delta_adu", header: "Δ ADU", render: (r) => r.delta_adu.toFixed(1) },
+              {
+                key: "delta_daily_movement",
+                header: "Δ Avg Daily Movement",
+                render: (r) => r.delta_daily_movement.toFixed(1),
+              },
             ]}
-            rows={data.top_shrinking_adu}
+            rows={data.top_shrinking_daily_movement}
             getRowId={(r) => r.product_id}
           />
         </Card>

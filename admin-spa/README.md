@@ -16,7 +16,7 @@ account instead of a shared bearer-token secret.
   else.
 - **Dashboard** (`/`) -- the landing page, not a tab you click into
   (per Al's "dashboards more prominent" priority). KPI tiles, an
-  ADU-by-brand bar chart, and four Top-10 tables, all from
+  Avg-Daily-Movement-by-brand bar chart, and four Top-10 tables, all from
   `GET /admin/dashboard`.
 - **Products** (`/products`) -- filters (status, brand id, search,
   source platform, sort, the three "missing X" checkboxes), a sortable

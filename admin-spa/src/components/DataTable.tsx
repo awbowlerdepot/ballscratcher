@@ -6,7 +6,7 @@ export interface Column<T> {
   header: string;
   // Omit for a column that can't be sorted client-side (e.g. one that's
   // already driven by a server-side sort param, like Products'
-  // popularity/total_adu -- see pages/ProductsPage.tsx).
+  // popularity/total_daily_movement -- see pages/ProductsPage.tsx).
   sortable?: boolean;
   render: (row: T) => ReactNode;
   className?: string;

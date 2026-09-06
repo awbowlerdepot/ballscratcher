@@ -2287,9 +2287,12 @@ def test_list_brands_empty_when_none_exist():
 # by brand, and things like that." Later same session, follow-up ask:
 # "can we add top 10 days of supply skus descending so lowest number of
 # days first... can we build something would show top 10 growth ADUs and
-# top 10 shrinking ADUs by sku." Seven sequential queries total (KPIs, top
-# popularity, top ADU, ADU by brand, top days-of-supply, top growing ADU,
-# top shrinking ADU) -- _QueryCapturingConnection's fetchone() defaults to
+# top 10 shrinking ADUs by sku" (both quotes predate the 2026-09-06
+# ADU->Daily Movement rename -- see service._TOTAL_DAILY_MOVEMENT_SQL's
+# own comment -- underlying metric unchanged). Seven sequential queries
+# total (KPIs, top popularity, top daily movement, daily movement by
+# brand, top days-of-supply, top growing daily movement, top shrinking
+# daily movement) -- _QueryCapturingConnection's fetchone() defaults to
 # None (unusable here, an aggregate query with no GROUP BY always returns
 # exactly one row), so a tiny local cursor stands in for it that returns
 # an empty-but-iterable row/rowset instead, purely so the SQL TEXT of all
@@ -2349,18 +2352,19 @@ def test_get_dashboard_summary_kpi_query_counts_expected_things():
         assert fragment in kpi_query
 
 
-def test_get_dashboard_summary_kpi_query_reuses_total_adu_sql():
-    """total_catalog_adu must be the SAME _TOTAL_ADU_SQL expression
-    list_products' own total_adu column and sort option already use --
-    not a second, potentially-drifting definition of ADU."""
+def test_get_dashboard_summary_kpi_query_reuses_total_daily_movement_sql():
+    """total_catalog_daily_movement must be the SAME
+    _TOTAL_DAILY_MOVEMENT_SQL expression list_products' own
+    total_daily_movement column and sort option already use -- not a
+    second, potentially-drifting definition of daily movement."""
     conn = _DashboardQueryCapturingConnection()
     service.get_dashboard_summary(conn)
 
     kpi_query = conn.cursor().queries[0]
     assert "product_sku_stock_history" in kpi_query
     assert "having count(*) >= 2" in kpi_query
-    assert "coalesce(sum(t.total_adu), 0)" in kpi_query
-    assert ") t) as total_catalog_adu" in kpi_query
+    assert "coalesce(sum(t.total_daily_movement), 0)" in kpi_query
+    assert ") t) as total_catalog_daily_movement" in kpi_query
 
 
 def test_get_dashboard_summary_top_popularity_query_shape():
@@ -2371,71 +2375,76 @@ def test_get_dashboard_summary_top_popularity_query_shape():
     assert "left join brands b on b.id = p.brand_id" in query
     assert "where t.popularity_score > 0" in query
     assert "order by t.popularity_score desc, t.id asc limit 10" in query
-    # Reuses the real formula, same reasoning as the KPI query's total_adu.
+    # Reuses the real formula, same reasoning as the KPI query's
+    # total_daily_movement.
     assert "product_videos pv" in query
     assert "ln(1 + count(*))" in query
 
 
-def test_get_dashboard_summary_top_adu_query_shape():
+def test_get_dashboard_summary_top_daily_movement_query_shape():
     conn = _DashboardQueryCapturingConnection()
     service.get_dashboard_summary(conn)
 
     query = conn.cursor().queries[2]
     assert "left join brands b on b.id = p.brand_id" in query
-    assert "where t.total_adu > 0" in query
-    assert "order by t.total_adu desc, t.id asc limit 10" in query
+    assert "where t.total_daily_movement > 0" in query
+    assert "order by t.total_daily_movement desc, t.id asc limit 10" in query
     assert "product_sku_stock_history" in query
 
 
-def test_get_dashboard_summary_adu_by_brand_query_shape():
+def test_get_dashboard_summary_daily_movement_by_brand_query_shape():
     """Unlike the other two, this is a real GROUP BY over ALL brands
-    (left join, so a brand with zero matching products/ADU still shows
-    up at 0 -- Al's "ADUs by brand" ask reads as the full breakdown, not
-    a filtered top-N)."""
+    (left join, so a brand with zero matching products/movement still
+    shows up at 0 -- Al's "ADUs by brand" ask (predates the ADU->Daily
+    Movement rename) reads as the full breakdown, not a filtered
+    top-N)."""
     conn = _DashboardQueryCapturingConnection()
     service.get_dashboard_summary(conn)
 
     query = conn.cursor().queries[3]
-    assert "with sku_adu as" in query
+    assert "with sku_daily_movement as" in query
     assert "from brands b" in query
     assert "left join products p on p.brand_id = b.id" in query
     assert "group by b.name" in query
-    assert "order by total_adu desc" in query
-    assert "where t.total_adu > 0" not in query  # no >0 filter here, unlike top_adu
+    assert "order by total_daily_movement desc" in query
+    assert "where t.total_daily_movement > 0" not in query  # no >0 filter here, unlike top_daily_movement
 
 
-def test_get_dashboard_summary_top_growing_adu_query_shape():
-    """Al: "top 10 growth ADUs... by sku." Compares the current
-    ADU_LOOKBACK_DAYS-day window's per-SKU rate against the
-    ADU_LOOKBACK_DAYS days before that -- both windows driven off
-    ADU_LOOKBACK_DAYS (not hardcoded literals), confirming the "current"
-    window stays in lockstep with every other ADU query's own definition
-    of "current". Index 4, not 5 -- top_days_of_supply is no longer one
-    of get_dashboard_summary's own queries (see
-    service.get_top_days_of_supply's own docstring for why)."""
+def test_get_dashboard_summary_top_growing_daily_movement_query_shape():
+    """Al: "top 10 growth ADUs... by sku" (predates the ADU->Daily
+    Movement rename). Compares the current
+    DAILY_MOVEMENT_LOOKBACK_DAYS-day window's per-SKU rate against the
+    DAILY_MOVEMENT_LOOKBACK_DAYS days before that -- both windows driven
+    off DAILY_MOVEMENT_LOOKBACK_DAYS (not hardcoded literals), confirming
+    the "current" window stays in lockstep with every other daily-
+    movement query's own definition of "current". Index 4, not 5 --
+    top_days_of_supply is no longer one of get_dashboard_summary's own
+    queries (see service.get_top_days_of_supply's own docstring for
+    why)."""
     conn = _DashboardQueryCapturingConnection()
     service.get_dashboard_summary(conn)
 
     query = conn.cursor().queries[4]
     assert "with cw as" in query
     assert "pw as" in query
-    assert ("interval '%d days'" % service.ADU_LOOKBACK_DAYS) in query
-    assert ("interval '%d days'" % (2 * service.ADU_LOOKBACK_DAYS)) in query
-    assert "where cw.adu is not null and pw.adu is not null and (cw.adu - pw.adu) > 0" in query
-    assert "order by (cw.adu - pw.adu) desc, sk.id asc limit 10" in query
+    assert ("interval '%d days'" % service.DAILY_MOVEMENT_LOOKBACK_DAYS) in query
+    assert ("interval '%d days'" % (2 * service.DAILY_MOVEMENT_LOOKBACK_DAYS)) in query
+    assert "where cw.daily_movement is not null and pw.daily_movement is not null and (cw.daily_movement - pw.daily_movement) > 0" in query
+    assert "order by (cw.daily_movement - pw.daily_movement) desc, sk.id asc limit 10" in query
 
 
-def test_get_dashboard_summary_top_shrinking_adu_query_shape():
-    """Mirror image of top_growing_adu immediately above -- same shape,
-    opposite filter/sort direction (biggest decrease first)."""
+def test_get_dashboard_summary_top_shrinking_daily_movement_query_shape():
+    """Mirror image of top_growing_daily_movement immediately above --
+    same shape, opposite filter/sort direction (biggest decrease
+    first)."""
     conn = _DashboardQueryCapturingConnection()
     service.get_dashboard_summary(conn)
 
     query = conn.cursor().queries[5]
     assert "with cw as" in query
     assert "pw as" in query
-    assert "where cw.adu is not null and pw.adu is not null and (cw.adu - pw.adu) < 0" in query
-    assert "order by (cw.adu - pw.adu) asc, sk.id asc limit 10" in query
+    assert "where cw.daily_movement is not null and pw.daily_movement is not null and (cw.daily_movement - pw.daily_movement) < 0" in query
+    assert "order by (cw.daily_movement - pw.daily_movement) asc, sk.id asc limit 10" in query
 
 
 def test_get_dashboard_summary_only_runs_six_queries():
@@ -2451,7 +2460,7 @@ def test_get_dashboard_summary_assembles_all_six_results():
                 "total_products", "current_products", "retired_products",
                 "missing_core", "missing_coverstock", "missing_skus",
                 "products_with_video", "products_with_price_tracking",
-                "total_catalog_adu",
+                "total_catalog_daily_movement",
             ],
             "one": (500, 350, 150, 12, 3, 7, 200, 180, "1234.5"),
         },
@@ -2462,28 +2471,28 @@ def test_get_dashboard_summary_assembles_all_six_results():
                 ("prod-2", "Phaze II", "Storm", "875.0"),
             ],
         },
-        {  # top_adu
-            "columns": ["id", "name", "brand_name", "total_adu"],
+        {  # top_daily_movement
+            "columns": ["id", "name", "brand_name", "total_daily_movement"],
             "all": [
                 ("prod-3", "Black Widow 3.0", "Hammer", "42.5"),
             ],
         },
-        {  # adu_by_brand
-            "columns": ["brand_name", "total_adu"],
+        {  # daily_movement_by_brand
+            "columns": ["brand_name", "total_daily_movement"],
             "all": [
                 ("Storm", "300.1"),
                 ("Hammer", "150.0"),
                 ("Ebonite", "0"),
             ],
         },
-        {  # top_growing_adu
-            "columns": ["product_id", "name", "brand_name", "weight_lbs", "previous_adu", "current_adu", "delta_adu"],
+        {  # top_growing_daily_movement
+            "columns": ["product_id", "name", "brand_name", "weight_lbs", "previous_daily_movement", "current_daily_movement", "delta_daily_movement"],
             "all": [
                 ("prod-5", "Intel Tour", "900 Global", 16, "2.00", "5.70", "3.70"),
             ],
         },
-        {  # top_shrinking_adu
-            "columns": ["product_id", "name", "brand_name", "weight_lbs", "previous_adu", "current_adu", "delta_adu"],
+        {  # top_shrinking_daily_movement
+            "columns": ["product_id", "name", "brand_name", "weight_lbs", "previous_daily_movement", "current_daily_movement", "delta_daily_movement"],
             "all": [
                 ("prod-6", "Bionic", "900 Global", 14, "6.00", "1.50", "-4.50"),
             ],
@@ -2496,28 +2505,28 @@ def test_get_dashboard_summary_assembles_all_six_results():
         "total_products": 500, "current_products": 350, "retired_products": 150,
         "missing_core": 12, "missing_coverstock": 3, "missing_skus": 7,
         "products_with_video": 200, "products_with_price_tracking": 180,
-        "total_catalog_adu": "1234.5",
+        "total_catalog_daily_movement": "1234.5",
     }
     assert result["top_popularity"] == [
         {"id": "prod-1", "name": "Absolute", "brand_name": "Storm", "popularity_score": "980.2"},
         {"id": "prod-2", "name": "Phaze II", "brand_name": "Storm", "popularity_score": "875.0"},
     ]
-    assert result["top_adu"] == [
-        {"id": "prod-3", "name": "Black Widow 3.0", "brand_name": "Hammer", "total_adu": "42.5"},
+    assert result["top_daily_movement"] == [
+        {"id": "prod-3", "name": "Black Widow 3.0", "brand_name": "Hammer", "total_daily_movement": "42.5"},
     ]
-    assert result["adu_by_brand"] == [
-        {"brand_name": "Storm", "total_adu": "300.1"},
-        {"brand_name": "Hammer", "total_adu": "150.0"},
-        {"brand_name": "Ebonite", "total_adu": "0"},
+    assert result["daily_movement_by_brand"] == [
+        {"brand_name": "Storm", "total_daily_movement": "300.1"},
+        {"brand_name": "Hammer", "total_daily_movement": "150.0"},
+        {"brand_name": "Ebonite", "total_daily_movement": "0"},
     ]
     assert "top_days_of_supply" not in result  # split out, see get_top_days_of_supply
-    assert result["top_growing_adu"] == [
+    assert result["top_growing_daily_movement"] == [
         {"product_id": "prod-5", "name": "Intel Tour", "brand_name": "900 Global", "weight_lbs": 16,
-         "previous_adu": "2.00", "current_adu": "5.70", "delta_adu": "3.70"},
+         "previous_daily_movement": "2.00", "current_daily_movement": "5.70", "delta_daily_movement": "3.70"},
     ]
-    assert result["top_shrinking_adu"] == [
+    assert result["top_shrinking_daily_movement"] == [
         {"product_id": "prod-6", "name": "Bionic", "brand_name": "900 Global", "weight_lbs": 14,
-         "previous_adu": "6.00", "current_adu": "1.50", "delta_adu": "-4.50"},
+         "previous_daily_movement": "6.00", "current_daily_movement": "1.50", "delta_daily_movement": "-4.50"},
     ]
 
 
@@ -2589,8 +2598,8 @@ def test_get_top_days_of_supply_query_shape():
     assert "latest_qty as" in query
     assert "distinct on (product_sku_id)" in query
     assert "sk.weight_lbs" in query
-    assert "where sa.adu > 0 and lq.quantity is not null" in query
-    assert "order by (lq.quantity / sa.adu) asc, sk.id asc limit 10" in query
+    assert "where sa.daily_movement > 0 and lq.quantity is not null" in query
+    assert "order by (lq.quantity / sa.daily_movement) asc, sk.id asc limit 10" in query
 
 
 def test_get_top_days_of_supply_only_runs_one_query():
@@ -2602,7 +2611,7 @@ def test_get_top_days_of_supply_only_runs_one_query():
 def test_get_top_days_of_supply_assembles_rows():
     conn = _SequencedConnection([
         {
-            "columns": ["product_id", "name", "brand_name", "weight_lbs", "adu", "latest_quantity", "days_of_supply"],
+            "columns": ["product_id", "name", "brand_name", "weight_lbs", "daily_movement", "latest_quantity", "days_of_supply"],
             "all": [
                 ("prod-4", "Fallout", "Roto Grip", 15, "8.90", 4, "0.4"),
             ],
@@ -2613,7 +2622,7 @@ def test_get_top_days_of_supply_assembles_rows():
 
     assert result == [
         {"product_id": "prod-4", "name": "Fallout", "brand_name": "Roto Grip", "weight_lbs": 15,
-         "adu": "8.90", "latest_quantity": 4, "days_of_supply": "0.4"},
+         "daily_movement": "8.90", "latest_quantity": 4, "days_of_supply": "0.4"},
     ]
 
 
@@ -2634,41 +2643,45 @@ def test_list_sku_weights_returns_flat_list():
     assert service.list_sku_weights(conn) == [12, 14, 15, 16]
 
 
-# --- get_catalog_adu_history: real follow-up ask, same session, Al: "can
-# we add some data over time charts to the dashboard, maybe total catalog
-# adu over time similar to what we have per product 7d, 30d, 90d, 1y and
-# all picker." A DIFFERENT definition from kpis.total_catalog_adu above
-# (see the function's own docstring) -- a real, honest, catalog-wide
-# rolling-ADU_LOOKBACK_DAYS-day average, not that exact per-SKU-gated
+# --- get_catalog_daily_movement_history: real follow-up ask, same
+# session, Al: "can we add some data over time charts to the dashboard,
+# maybe total catalog adu over time similar to what we have per product
+# 7d, 30d, 90d, 1y and all picker" (predates the 2026-09-06 ADU->Daily
+# Movement rename). A DIFFERENT definition from
+# kpis.total_catalog_daily_movement above (see the function's own
+# docstring) -- a real, honest, catalog-wide rolling-
+# DAILY_MOVEMENT_LOOKBACK_DAYS-day average, not that exact per-SKU-gated
 # formula replayed at every historical day.
 
-def test_get_catalog_adu_history_query_shape():
+def test_get_catalog_daily_movement_history_query_shape():
     conn = _QueryCapturingConnection()
-    service.get_catalog_adu_history(conn)
+    service.get_catalog_daily_movement_history(conn)
 
     query = conn.cursor().queries[0]
     assert "with bounds as" in query
     assert "generate_series(min_day, max_day, interval '1 day')" in query
     assert "product_sku_stock_history" in query
     assert "lag(psh.quantity) over (partition by psh.product_sku_id order by psh.checked_at)" in query
-    # Drops-only, same interpretation as _TOTAL_ADU_SQL/adu_by_brand.
+    # Drops-only, same interpretation as
+    # _TOTAL_DAILY_MOVEMENT_SQL/daily_movement_by_brand.
     assert "case when delta < 0 then -delta else 0 end" in query
-    # Rolling 30-day trailing window, driven off ADU_LOOKBACK_DAYS (not a
-    # second hardcoded literal) -- confirms the two stay in lockstep.
-    assert ("rows between %d preceding and current row" % (service.ADU_LOOKBACK_DAYS - 1)) in query
-    assert ("/ %s as total_adu" % float(service.ADU_LOOKBACK_DAYS)) in query
+    # Rolling 30-day trailing window, driven off
+    # DAILY_MOVEMENT_LOOKBACK_DAYS (not a second hardcoded literal) --
+    # confirms the two stay in lockstep.
+    assert ("rows between %d preceding and current row" % (service.DAILY_MOVEMENT_LOOKBACK_DAYS - 1)) in query
+    assert ("/ %s as total_daily_movement" % float(service.DAILY_MOVEMENT_LOOKBACK_DAYS)) in query
 
 
-def test_get_catalog_adu_history_only_runs_one_query():
+def test_get_catalog_daily_movement_history_only_runs_one_query():
     conn = _QueryCapturingConnection()
-    service.get_catalog_adu_history(conn)
+    service.get_catalog_daily_movement_history(conn)
     assert len(conn.cursor().queries) == 1
 
 
-def test_get_catalog_adu_history_assembles_day_and_total_adu_rows():
+def test_get_catalog_daily_movement_history_assembles_day_and_total_rows():
     conn = _SequencedConnection([
         {
-            "columns": ["day", "total_adu"],
+            "columns": ["day", "total_daily_movement"],
             "all": [
                 ("2026-07-01", "0.00"),
                 ("2026-07-02", "3.50"),
@@ -2677,18 +2690,18 @@ def test_get_catalog_adu_history_assembles_day_and_total_adu_rows():
         },
     ])
 
-    result = service.get_catalog_adu_history(conn)
+    result = service.get_catalog_daily_movement_history(conn)
 
     assert result == [
-        {"day": "2026-07-01", "total_adu": "0.00"},
-        {"day": "2026-07-02", "total_adu": "3.50"},
-        {"day": "2026-07-03", "total_adu": "3.90"},
+        {"day": "2026-07-01", "total_daily_movement": "0.00"},
+        {"day": "2026-07-02", "total_daily_movement": "3.50"},
+        {"day": "2026-07-03", "total_daily_movement": "3.90"},
     ]
 
 
-def test_get_catalog_adu_history_empty_when_no_stock_history():
-    conn = _SequencedConnection([{"columns": ["day", "total_adu"], "all": []}])
-    assert service.get_catalog_adu_history(conn) == []
+def test_get_catalog_daily_movement_history_empty_when_no_stock_history():
+    conn = _SequencedConnection([{"columns": ["day", "total_daily_movement"], "all": []}])
+    assert service.get_catalog_daily_movement_history(conn) == []
 
 
 # --- list_products: missing_core filter + the cores join (migration 007).
@@ -2795,11 +2808,11 @@ def test_list_products_popularity_score_averages_not_sums():
 
     Scoped to the _POPULARITY_SCORE_SQL constant itself (not the full
     query string) since list_products' query now also embeds
-    _TOTAL_ADU_SQL, which legitimately contains its own unrelated
-    "select sum(" (summing per-SKU ADU into a per-product total) --
-    a blanket substring check against the whole query would false-
-    positive on that, so this checks only the fragment this test
-    actually cares about."""
+    _TOTAL_DAILY_MOVEMENT_SQL, which legitimately contains its own
+    unrelated "select sum(" (summing per-SKU daily movement into a
+    per-product total) -- a blanket substring check against the whole
+    query would false-positive on that, so this checks only the
+    fragment this test actually cares about."""
     conn = _QueryCapturingConnection()
     service.list_products(conn, limit=50, offset=0)
 
@@ -2825,32 +2838,33 @@ def test_list_products_default_sort_unaffected_by_popularity_column():
     assert "order by p.updated_at desc, p.id asc limit %s offset %s" in query
 
 
-# --- list_products: total_adu -- Al: "can we add the sum of the ADUs
-# for each product to the main table." Same trailing-window/drops-only
-# ADU definition as admin-site's own computeSkuForecast, re-implemented
-# in SQL (see _TOTAL_ADU_SQL's own comment for why it can't be shared
-# with that JS copy and must be kept in lockstep by hand). ---
+# --- list_products: total_daily_movement -- Al: "can we add the sum of
+# the ADUs for each product to the main table" (predates the 2026-09-06
+# ADU->Daily Movement rename). Same trailing-window/drops-only
+# definition as admin-site's own computeSkuForecast, re-implemented in
+# SQL (see _TOTAL_DAILY_MOVEMENT_SQL's own comment for why it can't be
+# shared with that JS copy and must be kept in lockstep by hand). ---
 
-def test_list_products_always_selects_total_adu():
+def test_list_products_always_selects_total_daily_movement():
     conn = _QueryCapturingConnection()
     service.list_products(conn, limit=50, offset=0)
 
     query = conn.cursor().queries[0]
-    assert "as total_adu" in query
+    assert "as total_daily_movement" in query
     assert "product_sku_stock_history" in query
     assert "product_skus" in query
 
 
-def test_list_products_total_adu_uses_confirmed_lookback_window():
+def test_list_products_total_daily_movement_uses_confirmed_lookback_window():
     conn = _QueryCapturingConnection()
     service.list_products(conn, limit=50, offset=0)
 
     query = conn.cursor().queries[0]
-    assert f"interval '{service.ADU_LOOKBACK_DAYS} days'" in query
-    assert service.ADU_LOOKBACK_DAYS == 30
+    assert f"interval '{service.DAILY_MOVEMENT_LOOKBACK_DAYS} days'" in query
+    assert service.DAILY_MOVEMENT_LOOKBACK_DAYS == 30
 
 
-def test_list_products_total_adu_only_counts_drops_not_restocks():
+def test_list_products_total_daily_movement_only_counts_drops_not_restocks():
     """The lag()-based delta must only sum NEGATIVE deltas (a quantity
     drop = sold) -- a positive delta (restock) must never add to
     units_sold, same "drop=sold, rise=restock" interpretation
@@ -2863,7 +2877,7 @@ def test_list_products_total_adu_only_counts_drops_not_restocks():
     assert "lag(psh.quantity)" in query
 
 
-def test_list_products_total_adu_requires_at_least_two_readings():
+def test_list_products_total_daily_movement_requires_at_least_two_readings():
     """A SKU with fewer than 2 readings in the window can't compute a
     rate at all -- must be excluded from the sum entirely (having
     count(*) >= 2), not counted as a zero, same as computeSkuForecast's
@@ -2875,7 +2889,7 @@ def test_list_products_total_adu_requires_at_least_two_readings():
     assert "having count(*) >= 2" in query
 
 
-def test_list_products_total_adu_guards_zero_elapsed_days():
+def test_list_products_total_daily_movement_guards_zero_elapsed_days():
     conn = _QueryCapturingConnection()
     service.list_products(conn, limit=50, offset=0)
 
@@ -2883,12 +2897,12 @@ def test_list_products_total_adu_guards_zero_elapsed_days():
     assert "case when sku.elapsed_days > 0 then sku.units_sold / sku.elapsed_days else 0 end" in query
 
 
-def test_list_products_total_adu_scoped_to_this_product_only():
+def test_list_products_total_daily_movement_scoped_to_this_product_only():
     conn = _QueryCapturingConnection()
     service.list_products(conn, limit=50, offset=0)
 
     query = conn.cursor().queries[0]
-    assert "ps_adu.product_id = p.id" in query
+    assert "ps_dm.product_id = p.id" in query
 
 
 # --- common-sense sort options (Al's ask: "lets add some common sense
@@ -2927,19 +2941,20 @@ def test_list_products_sort_name_desc_orders_reverse_alphabetically():
     assert "order by p.name desc, p.id asc limit %s offset %s" in query
 
 
-def test_list_products_sort_total_adu_orders_by_column_desc():
-    # Al's direct follow-up to the Total ADU column itself: "can we add
-    # a sort to the admin ui products list for total ADU". Orders by
-    # the select-list alias (total_adu, not a repeated subquery) --
-    # Postgres allows ORDER BY to reference a SELECT list alias, no
-    # need to duplicate _TOTAL_ADU_SQL a second time. No "nulls last"
-    # needed unlike newest/oldest since _TOTAL_ADU_SQL is always
+def test_list_products_sort_total_daily_movement_orders_by_column_desc():
+    # Al's direct follow-up to the Total ADU column itself (predates the
+    # ADU->Daily Movement rename): "can we add a sort to the admin ui
+    # products list for total ADU". Orders by the select-list alias
+    # (total_daily_movement, not a repeated subquery) -- Postgres allows
+    # ORDER BY to reference a SELECT list alias, no need to duplicate
+    # _TOTAL_DAILY_MOVEMENT_SQL a second time. No "nulls last" needed
+    # unlike newest/oldest since _TOTAL_DAILY_MOVEMENT_SQL is always
     # coalesce(..., 0), never actually null.
     conn = _QueryCapturingConnection()
-    service.list_products(conn, sort="total_adu", limit=50, offset=0)
+    service.list_products(conn, sort="total_daily_movement", limit=50, offset=0)
 
     query = conn.cursor().queries[0]
-    assert "order by total_adu desc, p.id asc limit %s offset %s" in query
+    assert "order by total_daily_movement desc, p.id asc limit %s offset %s" in query
 
 
 def test_list_products_every_sort_option_keeps_id_tiebreaker():
@@ -3072,11 +3087,12 @@ def test_list_products_missing_skus_adds_not_exists_filter_sql():
 
 def test_list_products_omits_missing_skus_filter_by_default():
     # Scoped to the specific NOT EXISTS filter clause rather than a
-    # blanket "product_skus" substring check -- _TOTAL_ADU_SQL now
-    # legitimately joins product_skus (aliased ps_adu) unconditionally
-    # on every call to compute the Total ADU column, so a bare
-    # "product_skus" absence check would false-positive now that it's
-    # a normal part of every query, filter or not.
+    # blanket "product_skus" substring check --
+    # _TOTAL_DAILY_MOVEMENT_SQL now legitimately joins product_skus
+    # (aliased ps_dm) unconditionally on every call to compute the Total
+    # Daily Movement column, so a bare "product_skus" absence check
+    # would false-positive now that it's a normal part of every query,
+    # filter or not.
     conn = _QueryCapturingConnection()
     service.list_products(conn, limit=50, offset=0)
 

@@ -201,6 +201,21 @@ def test_build_article_prompt_asks_for_visual_theme():
     assert "visual_theme" not in app._REQUIRED_ARTICLE_KEYS
 
 
+def test_build_article_prompt_warns_against_borrowing_a_different_editions_name():
+    """Real, confirmed incident (Al, 2026-09-06): a non-Pearl product's
+    article came back naming/describing the Pearl edition, traced to a
+    Pearl review video that had been (wrongly) approved onto the
+    non-pearl product -- see video_discovery's score_match fix for the
+    matching-side half of this. This is the prompt-level defense-in-
+    depth half: even for a correctly-matched video (e.g. one that
+    compares editions), the model shouldn't blend a different edition's
+    name/claims into this article."""
+    prompt = app.build_article_prompt(_SAMPLE_PRODUCT, siblings=[])
+    assert "different edition" in prompt.lower()
+    assert "pearl" in prompt.lower()
+    assert "solid" in prompt.lower()
+
+
 # --- Fake psycopg2-shaped cursor/connection ---
 
 _UNSET = object()

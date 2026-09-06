@@ -1639,7 +1639,8 @@ there's no text to read at all. `pdf_skus` comes back `[]`,
 `price_checker`'s variant/weight matching (see that module's
 `check_bigcommerce_sources`) keys off of to attach cost/stock data to a
 specific SKU, every downstream thing keyed off a SKU row -- price
-checks, SKU stock history/forecasting, the Total ADU column -- silently
+checks, SKU stock history/forecasting, the Total Avg Daily Movement
+column (renamed from "Total ADU" -- see 6ab.15) -- silently
 has nothing to attach to for these products. Real OCR (Tesseract in
 Lambda) was explicitly scoped out at the time that finding was first
 made (real added scope: a new Lambda layer, reliability on numeric
@@ -10616,6 +10617,159 @@ site dropdown.
 
 `npx tsc -b` re-verified clean after the rewrite. Not yet re-smoke-tested
 against real data in a browser.
+
+### 6ab.14. Fix: video-matching cross-contamination between a ball's Solid and Pearl editions
+
+Real, confirmed incident (Al, 2026-09-06): "i have an example where the
+article text gen is added the world pearl to the non pearl version of a
+ball so it looks like the article is for the pearl version but it is for
+the original non pearl." Al's own follow-up correctly diagnosed the root
+cause before it was fully traced: "i think this one might be because
+there are a bunch of videos approved for the pearl in the non pearl."
+
+**Root cause**: bowling balls are frequently sold as separate catalog
+products sharing a base name but differing only by coverstock finish/
+edition word (Solid, Pearl, Hybrid, Particle) -- e.g. "Storm Phaze II"
+and "Storm Phaze II Pearl" are two distinct products with materially
+different performance. `video_discovery`'s `score_match` scored a video
+"high" confidence as long as its title shared the brand name plus just
+ONE significant token with the product's name -- deliberately permissive
+so that colorway suffixes dropped from a video's title wouldn't sink an
+otherwise-good match. That permissiveness let a video titled for a
+ball's Pearl edition ("... Phaze II Pearl Review") also score "high"
+against the SOLID sibling product, since "pearl" isn't a stopword and
+both share every other token. It got auto-approved onto the wrong
+product, and `product_article_generator` then faithfully (and wrongly)
+summarized the Pearl's performance as if it were the Solid's. This exact
+collision shape had actually already been flagged as a known gap in
+`auto_approve_video_candidates.py`'s own module docstring (a hypothetical
+"Storm Absolute Power" vs "Storm Absolute" example) before this real
+incident occurred.
+
+**Fixed** with two layers:
+
+- **Root cause** (`src/video_discovery/app.py`): added
+  `_EDITION_QUALIFIER_WORDS = {"solid", "pearl", "hybrid", "particle"}`
+  and `_title_names_different_edition()`, word-boundary-matched against
+  the video title vs. the product's own name. `score_match` now returns
+  `"low"` if the title names one of these edition words that the
+  product's own name doesn't carry -- even when brand + a product token
+  both otherwise match. Deliberately a smaller set than
+  `product_article_generator`'s own `_LINE_QUALIFIER_WORDS` (which also
+  has "plus", "pro", "max", "reactive") -- words like "reactive" are
+  generic coverstock-material vocabulary that show up in almost any ball
+  review title regardless of edition, so treating them as a mismatch
+  signal would throw out far more good matches than it catches.
+- **Defense-in-depth** (`src/product_article_generator/app.py`):
+  `build_article_prompt` now explicitly instructs the model to write
+  about only the exact edition named in the product's own
+  Name/Coverstock/Factory finish, and to never introduce an edition word
+  into the generated title/hook/performance_summary/verdict/faq that
+  isn't already present in those fields -- even if that word appears in
+  a video title or transcript. This catches the case where a
+  correctly-matched video still discusses multiple editions (e.g. a
+  comparison video), independent of whether the matching fix above ever
+  fires.
+
+3 new tests in `tests/test_video_discovery.py` (86/86 passing), 1 new
+test in `tests/test_product_article_generator.py` (118/118 passing).
+
+**Cleanup for already-approved bad matches**: added
+`pearl_edition_video_mismatch_diagnostic.sql` at the repo root (untracked
+scratch file, same convention as the pre-existing `adu_diagnostic.sql`)
+-- a read-only query joining `product_videos`/`products` to find already-
+APPROVED videos whose title names an edition word the product's own name
+doesn't carry. Consistent with this project's "never auto-fix judgment
+calls" posture (same as how 'low'-confidence matches are left for human
+review, not auto-rejected): review each flagged row and reassign/reject
+by hand via admin-spa's existing Video Candidates tab or product detail
+page Videos sub-tab -- no new tooling needed, and no bulk auto-apply,
+since a title can legitimately mention an edition word for unrelated
+reasons.
+
+### 6ab.15. Rename: "ADU" -> "Avg Daily Movement" everywhere
+
+Al: "can we change ADU do Daily Depletion and Movement. Really we just
+need to get rid of ADU because we are really seeing Movement and
+Depletion." Confirmed via `AskUserQuestion`: compact code/JSON/SQL field
+name is `daily_movement` (e.g. `total_daily_movement`,
+`sku_daily_movement`, `DAILY_MOVEMENT_LOOKBACK_DAYS`); the user-facing UI
+label is **"Avg Daily Movement"** everywhere a label is rendered (table
+headers, sort-dropdown text, dashboard section/chart titles, tooltips).
+
+This is a pure terminology rename, not a formula change -- the metric
+itself (sum of `units_sold / elapsed_days` over a trailing 30-day window,
+counting only stock-quantity DROPS as sold and requiring at least 2
+readings in the window) is exactly what it was under the name "ADU"
+(Average Daily Units, see 6o.10/6i.11). Confirmed via a grep of
+`db/migrations/*.sql` that "adu" was never a real persisted column name
+-- always a derived/computed SQL alias -- so no migration was needed,
+this is a pure application-code/tests/docs rename.
+
+**Renamed**:
+
+- `src/admin_api/service.py`: `ADU_LOOKBACK_DAYS` ->
+  `DAILY_MOVEMENT_LOOKBACK_DAYS`; `_TOTAL_ADU_SQL` ->
+  `_TOTAL_DAILY_MOVEMENT_SQL` (join alias `ps_adu` -> `ps_dm`);
+  `_sku_adu_cte()` -> `_sku_daily_movement_cte()` (returned column `adu`
+  -> `daily_movement`); `_SORT_ORDER_BY`'s `"total_adu"` key ->
+  `"total_daily_movement"`; `get_dashboard_summary()`'s returned dict
+  keys `top_adu`/`adu_by_brand`/`top_growing_adu`/`top_shrinking_adu` ->
+  `top_daily_movement`/`daily_movement_by_brand`/
+  `top_growing_daily_movement`/`top_shrinking_daily_movement`, KPI key
+  `total_catalog_adu` -> `total_catalog_daily_movement`;
+  `get_top_days_of_supply()`'s per-row `adu` field -> `daily_movement`;
+  `get_catalog_adu_history()` -> `get_catalog_daily_movement_history()`.
+- `src/admin_api/app.py`: route `GET /admin/catalog-adu-history` ->
+  `GET /admin/catalog-daily-movement-history`.
+- `admin-spa/src/api/types.ts`: `TopAduItem`/`AduByBrandItem`/
+  `AduDeltaItem` -> `TopDailyMovementItem`/`DailyMovementByBrandItem`/
+  `DailyMovementDeltaItem`; every `*_adu`/`adu_*` field on
+  `DashboardKpis`/`DashboardSummary`/`Product` renamed to match;
+  `ProductSort`'s `"total_adu"` -> `"total_daily_movement"`.
+- `admin-spa/src/pages/ProductsPage.tsx` / `DashboardPage.tsx`: sort
+  option, column header, KPI tile, chart titles/labels, and table
+  columns relabeled "Avg Daily Movement"; data fields updated to match
+  the renamed types; `DashboardPage.tsx`'s fetch/render wired to the
+  renamed `DashboardSummary` fields.
+- `admin-spa/src/components/DataTable.tsx`: one comment reference
+  updated.
+- `admin-spa/README.md`: one prose reference updated.
+- `admin-site/index.html` (legacy UI, kept in parity): Products tab sort
+  dropdown/column, Dashboard tab KPI tile/chart titles/tables all
+  relabeled; `fmtAdu` -> `fmtDailyMovement`; `renderAduByBrandChart`/
+  `renderCatalogAduChart` -> `renderDailyMovementByBrandChart`/
+  `renderCatalogDailyMovementChart`; the `'catalogAdu'` chart-type key
+  (canvas ids, `chartSelectedRange` key, `setChartRange`'s dispatch) ->
+  `'catalogDailyMovement'`; the fetch call updated to the renamed
+  `/admin/catalog-daily-movement-history` route. The unrelated
+  client-side per-SKU forecast function `computeSkuForecast` (used only
+  by the product-detail SKU Stock tab, entirely separate code path from
+  the backend dashboard aggregates) was also renamed for consistency:
+  returns `{dailyMovement, daysOfSupply, stockoutDate}` instead of
+  `{adu, ...}`.
+- `adu_diagnostic.sql` (pre-existing untracked scratch file, not part of
+  the shipped app): result column `sku_adu` -> `sku_daily_movement` for
+  consistency; filename left as-is since it's a personal scratch file,
+  not a shipped artifact.
+
+**Explicitly NOT rewritten**: every verbatim historical "Al: ..." quote
+that used the word "ADU" (in `service.py`, `admin_api/app.py`,
+`test_admin_api_service.py`, and the 6i.11/6o.10-6o.13 changelog entries
+above) was left exactly as originally spoken, per this project's
+established convention of preserving direct quotes verbatim even when
+they use now-outdated terminology -- each is annotated nearby ("predates
+the 2026-09-06 ADU->Daily Movement rename -- same metric") rather than
+edited. The historical changelog entries themselves (6i.11, 6o.10-6o.13)
+document decisions made under the old name at the time and are left
+as-is for that reason, not updated to the new terminology.
+
+**Verification**: `python3 tests/test_admin_api_service.py` -- 275/275
+passing (all matching test/fixture/function names renamed in lockstep
+with `service.py`). `npx tsc -b` in `admin-spa/` -- clean, no errors.
+`admin-site/index.html`'s inline `<script>` block re-checked with
+`node --check` -- valid syntax. Not yet re-smoke-tested against real
+data in a browser.
 
 ## 7. Ongoing operations
 

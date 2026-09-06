@@ -193,8 +193,9 @@
   /* Dashboard tab (Al: "can we create an admin dashboard with some KPIs
      and top 10 lists... we have chart.js included now so we should be
      able to create some interesting visuals with some of the data we
-     have pulled together"). Reuses .chart-wrap below for the ADU-by-
-     brand bar chart, same as the price/SKU-stock line charts. */
+     have pulled together"). Reuses .chart-wrap below for the Avg-Daily-
+     Movement-by-brand bar chart, same as the price/SKU-stock line charts
+     (predates the 2026-09-06 ADU->Daily Movement rename -- same metric). */
   .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 22px; }
   .kpi-card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; }
   .kpi-card .kpi-value { font-size: 24px; font-weight: 700; line-height: 1.2; }
@@ -204,10 +205,12 @@
   @media (max-width: 800px) { .dashboard-cols { grid-template-columns: 1fr; } }
 
   /* Three per-SKU "SKU health" lists (Al: "top 10 days of supply skus...
-     top 10 growth ADUs and top 10 shrinking ADUs") -- a separate 3-up grid
-     from dashboard-cols' 2-up (Popularity/Total ADU) above, since three
-     genuinely-related lists read best side by side rather than forcing an
-     awkward leftover single column in a 2-up grid. */
+     top 10 growth ADUs and top 10 shrinking ADUs") (quote predates the
+     2026-09-06 ADU->Daily Movement rename -- same metric) -- a separate
+     3-up grid from dashboard-cols' 2-up (Popularity/Total Avg Daily
+     Movement) above, since three genuinely-related lists read best side
+     by side rather than forcing an awkward leftover single column in a
+     2-up grid. */
   .dashboard-cols-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; margin-bottom: 22px; }
   .dashboard-cols-3 h3 { margin: 0 0 8px; font-size: 13px; }
   @media (max-width: 1100px) { .dashboard-cols-3 { grid-template-columns: 1fr; } }
@@ -560,10 +563,10 @@
       </div>
       <div class="field">
         <label>Sort</label>
-        <select id="product-sort" title="Popularity = sum of each approved video's view_count, decayed by video age (180-day half-life) -- see service.list_products' docstring. A live-computed 'current popularity' ranking, not raw lifetime views. Newest/Oldest sort by release_date (not scrape time). Total ADU = sum of each SKU's own trailing 30-day Average Daily Units, highest movers first.">
+        <select id="product-sort" title="Popularity = sum of each approved video's view_count, decayed by video age (180-day half-life) -- see service.list_products' docstring. A live-computed 'current popularity' ranking, not raw lifetime views. Newest/Oldest sort by release_date (not scrape time). Avg Daily Movement = sum of each SKU's own trailing 30-day daily movement, highest movers first.">
           <option value="">recently updated</option>
           <option value="popularity">popularity</option>
-          <option value="total_adu">total ADU</option>
+          <option value="total_daily_movement">avg daily movement</option>
           <option value="newest">newest release</option>
           <option value="oldest">oldest release</option>
           <option value="name_asc">name (A&ndash;Z)</option>
@@ -1103,7 +1106,7 @@ function loadActiveTab() {
 // the tab is clicked, same as every other tab's loadX() function, no
 // caching (this catalog's size makes four aggregate queries cheap
 // enough per the same tradeoff list_products' own popularity_score/
-// total_adu columns already made).
+// total_daily_movement columns already made).
 // --------------------------------------------------------------------
 
 async function loadDashboard() {
@@ -1112,20 +1115,21 @@ async function loadDashboard() {
   try {
     // Fetched alongside the main dashboard summary, same "everything this
     // tab needs, one Promise.all, no cascading round trips" reasoning as
-    // loadProductDetailInto. /admin/catalog-adu-history is separate (not
-    // folded into GET /admin/dashboard) since a full daily-bucketed
-    // history is a structurally different, potentially much larger
-    // payload than the small aggregate results that endpoint returns
-    // (see service.get_catalog_adu_history's own docstring for why this
-    // is a real but DIFFERENTLY-DEFINED number from kpis.total_catalog_
-    // adu). /admin/dashboard/days-of-supply is ALSO separate, for a
-    // different reason -- see service.get_top_days_of_supply's own
-    // docstring: Al's weight-toggle ask ("can we put a filter so we can
-    // toggle the different weights") needs to re-run just this one query
-    // on every checkbox change without disturbing the other five.
-    const [data, aduHistoryData, dosData] = await Promise.all([
+    // loadProductDetailInto. /admin/catalog-daily-movement-history is
+    // separate (not folded into GET /admin/dashboard) since a full
+    // daily-bucketed history is a structurally different, potentially
+    // much larger payload than the small aggregate results that endpoint
+    // returns (see service.get_catalog_daily_movement_history's own
+    // docstring for why this is a real but DIFFERENTLY-DEFINED number
+    // from kpis.total_catalog_daily_movement). /admin/dashboard/days-of-
+    // supply is ALSO separate, for a different reason -- see
+    // service.get_top_days_of_supply's own docstring: Al's weight-toggle
+    // ask ("can we put a filter so we can toggle the different weights")
+    // needs to re-run just this one query on every checkbox change
+    // without disturbing the other five.
+    const [data, dailyMovementHistoryData, dosData] = await Promise.all([
       api('GET', '/admin/dashboard'),
-      api('GET', '/admin/catalog-adu-history'),
+      api('GET', '/admin/catalog-daily-movement-history'),
       api('GET', '/admin/dashboard/days-of-supply'),
     ]);
     // Stashed under a fixed 'dashboard' pseudo-product-id -- reuses the
@@ -1134,7 +1138,7 @@ async function loadDashboard() {
     // productChartData) the price/SKU-stock charts already established,
     // rather than a parallel one-off mechanism just for this chart.
     productChartData.dashboard = productChartData.dashboard || {};
-    productChartData.dashboard.catalogAdu = aduHistoryData;
+    productChartData.dashboard.catalogDailyMovement = dailyMovementHistoryData;
     dashboardDosState.availableWeights = dosData.available_weights || [];
     dashboardDosState.items = dosData.items || [];
     renderDashboard(data);
@@ -1143,11 +1147,11 @@ async function loadDashboard() {
   }
 }
 
-// Total catalog ADU / top-10 ADU values -- same .toFixed(2) convention
-// the Products tab's own total_adu column already uses (see that
-// column's own comment), not fmtCount's integer grouping (ADU is a
-// units-per-day RATE, not a count).
-function fmtAdu(n) {
+// Total catalog Avg Daily Movement / top-10 values -- same .toFixed(2)
+// convention the Products tab's own total_daily_movement column already
+// uses (see that column's own comment), not fmtCount's integer grouping
+// (this is a units-per-day RATE, not a count).
+function fmtDailyMovement(n) {
   return n === null || n === undefined ? '—' : Number(n).toFixed(2);
 }
 
@@ -1157,7 +1161,7 @@ function renderDashboard(data) {
     { label: 'Total Products', value: fmtCount(k.total_products) },
     { label: 'Current', value: fmtCount(k.current_products) },
     { label: 'Retired', value: fmtCount(k.retired_products) },
-    { label: 'Total Catalog ADU', value: fmtAdu(k.total_catalog_adu) },
+    { label: 'Total Catalog Avg Daily Movement', value: fmtDailyMovement(k.total_catalog_daily_movement) },
     { label: 'With Approved Video', value: fmtCount(k.products_with_video) },
     { label: 'With Price Tracking', value: fmtCount(k.products_with_price_tracking) },
     { label: 'Missing Core', value: fmtCount(k.missing_core) },
@@ -1173,43 +1177,45 @@ function renderDashboard(data) {
       '<td class="muted">' + escapeHtml(p.brand_name || '—') + '</td>' +
       '<td class="mono">' + Number(p.popularity_score).toFixed(1) + '</td></tr>';
   }).join('');
-  const aduTopRows = (data.top_adu || []).map(function (p, i) {
+  const dailyMovementTopRows = (data.top_daily_movement || []).map(function (p, i) {
     return '<tr><td class="muted small">' + (i + 1) + '</td><td>' + escapeHtml(p.name) + '</td>' +
       '<td class="muted">' + escapeHtml(p.brand_name || '—') + '</td>' +
-      '<td class="mono">' + fmtAdu(p.total_adu) + '</td></tr>';
+      '<td class="mono">' + fmtDailyMovement(p.total_daily_movement) + '</td></tr>';
   }).join('');
 
   // Per-SKU "SKU health" rows (Al: "top 10 days of supply skus descending
   // so lowest number of days first... top 10 growth ADUs and top 10
-  // shrinking ADUs by sku") -- product NAME plus weight badge (same
-  // "weight_lbs + 'lb'" convention the SKU stock table/legend already use,
-  // see s.weight_lbs usages elsewhere in this file), since these are
-  // per-weight rows, not per-product like the two tables above.
+  // shrinking ADUs by sku") (quote predates the 2026-09-06 ADU->Daily
+  // Movement rename -- same metric) -- product NAME plus weight badge
+  // (same "weight_lbs + 'lb'" convention the SKU stock table/legend
+  // already use, see s.weight_lbs usages elsewhere in this file), since
+  // these are per-weight rows, not per-product like the two tables above.
   // Days of Supply itself is NOT built here -- it's rendered into its own
   // #dos-container by renderDaysOfSupplyPanel() below, called once at the
   // end of this function, so its weight-toggle checkboxes can re-render
   // just that one panel on every click (see dashboardDosState's own
   // comment) without renderDashboard tearing down and rebuilding the
   // Growing/Shrinking tables or the charts underneath it.
-  const growingRows = (data.top_growing_adu || []).map(function (s, i) {
+  const growingRows = (data.top_growing_daily_movement || []).map(function (s, i) {
     return '<tr><td class="muted small">' + (i + 1) + '</td>' +
       '<td>' + escapeHtml(s.name) + ' <span class="muted small">' + s.weight_lbs + 'lb</span></td>' +
       '<td class="muted">' + escapeHtml(s.brand_name || '—') + '</td>' +
-      '<td class="mono">' + fmtAdu(s.previous_adu) + ' → ' + fmtAdu(s.current_adu) + '</td>' +
-      '<td class="mono" style="color:#1a7f37;">+' + fmtAdu(s.delta_adu) + '</td></tr>';
+      '<td class="mono">' + fmtDailyMovement(s.previous_daily_movement) + ' → ' + fmtDailyMovement(s.current_daily_movement) + '</td>' +
+      '<td class="mono" style="color:#1a7f37;">+' + fmtDailyMovement(s.delta_daily_movement) + '</td></tr>';
   }).join('');
-  const shrinkingRows = (data.top_shrinking_adu || []).map(function (s, i) {
+  const shrinkingRows = (data.top_shrinking_daily_movement || []).map(function (s, i) {
     return '<tr><td class="muted small">' + (i + 1) + '</td>' +
       '<td>' + escapeHtml(s.name) + ' <span class="muted small">' + s.weight_lbs + 'lb</span></td>' +
       '<td class="muted">' + escapeHtml(s.brand_name || '—') + '</td>' +
-      '<td class="mono">' + fmtAdu(s.previous_adu) + ' → ' + fmtAdu(s.current_adu) + '</td>' +
-      '<td class="mono" style="color:#c0392b;">' + fmtAdu(s.delta_adu) + '</td></tr>';
+      '<td class="mono">' + fmtDailyMovement(s.previous_daily_movement) + ' → ' + fmtDailyMovement(s.current_daily_movement) + '</td>' +
+      '<td class="mono" style="color:#c0392b;">' + fmtDailyMovement(s.delta_daily_movement) + '</td></tr>';
   }).join('');
-  // Both growing/shrinking need up to 2*ADU_LOOKBACK_DAYS (60) days of
-  // accumulated stock history before they can ever return anything (see
-  // service.get_dashboard_summary's own docstring) -- an empty state that
-  // just says "no data" would look broken on a freshly-launched catalog,
-  // so this spells out the real reason rather than leaving Al to guess.
+  // Both growing/shrinking need up to 2*DAILY_MOVEMENT_LOOKBACK_DAYS (60)
+  // days of accumulated stock history before they can ever return
+  // anything (see service.get_dashboard_summary's own docstring) -- an
+  // empty state that just says "no data" would look broken on a
+  // freshly-launched catalog, so this spells out the real reason rather
+  // than leaving Al to guess.
   const trendEmptyMsg = '<tr><td colspan="5" class="muted small">not enough stock history yet -- needs up to 60 days accumulated</td></tr>';
 
   document.getElementById('dashboard-content').innerHTML =
@@ -1219,31 +1225,31 @@ function renderDashboard(data) {
         '<table class="mini"><thead><tr><th></th><th>Product</th><th>Brand</th><th>Score</th></tr></thead><tbody>' +
         (popRows || '<tr><td colspan="4" class="muted">no ranked products yet</td></tr>') +
         '</tbody></table></div>' +
-      '<div><h3>Top 10 by Total ADU</h3>' +
-        '<table class="mini"><thead><tr><th></th><th>Product</th><th>Brand</th><th>ADU</th></tr></thead><tbody>' +
-        (aduTopRows || '<tr><td colspan="4" class="muted">no SKU stock history yet</td></tr>') +
+      '<div><h3>Top 10 by Avg Daily Movement</h3>' +
+        '<table class="mini"><thead><tr><th></th><th>Product</th><th>Brand</th><th>Avg Daily Movement</th></tr></thead><tbody>' +
+        (dailyMovementTopRows || '<tr><td colspan="4" class="muted">no SKU stock history yet</td></tr>') +
         '</tbody></table></div>' +
     '</div>' +
     '<div class="dashboard-cols-3">' +
       '<div id="dos-container"></div>' +
-      '<div><h3>Top 10 Growing ADU</h3>' +
-        '<table class="mini"><thead><tr><th></th><th>SKU</th><th>Brand</th><th>ADU</th><th>Δ</th></tr></thead><tbody>' +
+      '<div><h3>Top 10 Growing Avg Daily Movement</h3>' +
+        '<table class="mini"><thead><tr><th></th><th>SKU</th><th>Brand</th><th>Avg Daily Movement</th><th>Δ</th></tr></thead><tbody>' +
         (growingRows || trendEmptyMsg) +
         '</tbody></table></div>' +
-      '<div><h3>Top 10 Shrinking ADU</h3>' +
-        '<table class="mini"><thead><tr><th></th><th>SKU</th><th>Brand</th><th>ADU</th><th>Δ</th></tr></thead><tbody>' +
+      '<div><h3>Top 10 Shrinking Avg Daily Movement</h3>' +
+        '<table class="mini"><thead><tr><th></th><th>SKU</th><th>Brand</th><th>Avg Daily Movement</th><th>Δ</th></tr></thead><tbody>' +
         (shrinkingRows || trendEmptyMsg) +
         '</tbody></table></div>' +
     '</div>' +
-    '<h3>Total Catalog ADU Over Time</h3>' +
-    buildChartRangeToolbar('dashboard', 'catalogAdu') +
-    '<div class="chart-wrap"><canvas id="catalogAdu-chart-dashboard"></canvas></div>' +
-    '<p id="catalogAdu-chart-empty-dashboard" class="muted small" style="display:none;"></p>' +
-    '<h3 style="margin-top:22px;">Average Daily Units by Brand</h3>' +
-    '<div class="chart-wrap"><canvas id="dashboard-adu-by-brand-chart"></canvas></div>';
+    '<h3>Total Catalog Avg Daily Movement Over Time</h3>' +
+    buildChartRangeToolbar('dashboard', 'catalogDailyMovement') +
+    '<div class="chart-wrap"><canvas id="catalogDailyMovement-chart-dashboard"></canvas></div>' +
+    '<p id="catalogDailyMovement-chart-empty-dashboard" class="muted small" style="display:none;"></p>' +
+    '<h3 style="margin-top:22px;">Avg Daily Movement by Brand</h3>' +
+    '<div class="chart-wrap"><canvas id="dashboard-daily-movement-by-brand-chart"></canvas></div>';
 
-  renderAduByBrandChart(data.adu_by_brand || []);
-  renderCatalogAduChart(productChartData.dashboard.catalogAdu);
+  renderDailyMovementByBrandChart(data.daily_movement_by_brand || []);
+  renderCatalogDailyMovementChart(productChartData.dashboard.catalogDailyMovement);
   renderDaysOfSupplyPanel();
 }
 
@@ -1267,7 +1273,7 @@ function renderDaysOfSupplyPanel() {
     return '<tr><td class="muted small">' + (i + 1) + '</td>' +
       '<td>' + escapeHtml(s.name) + ' <span class="muted small">' + s.weight_lbs + 'lb</span></td>' +
       '<td class="muted">' + escapeHtml(s.brand_name || '—') + '</td>' +
-      '<td class="mono">' + fmtAdu(s.adu) + '</td>' +
+      '<td class="mono">' + fmtDailyMovement(s.daily_movement) + '</td>' +
       '<td class="mono">' + fmtCount(s.latest_quantity) + '</td>' +
       '<td class="mono">' + Number(s.days_of_supply).toFixed(1) + '</td></tr>';
   }).join('');
@@ -1278,7 +1284,7 @@ function renderDaysOfSupplyPanel() {
   container.innerHTML =
     '<h3>Top 10 Days of Supply <span class="muted small">(lowest first)</span></h3>' +
     '<div style="margin-bottom:6px;">' + (checkboxesHtml || '<span class="muted small">no weights on file yet</span>') + '</div>' +
-    '<table class="mini"><thead><tr><th></th><th>SKU</th><th>Brand</th><th>ADU</th><th>Qty</th><th>Days</th></tr></thead><tbody>' +
+    '<table class="mini"><thead><tr><th></th><th>SKU</th><th>Brand</th><th>Avg Daily Movement</th><th>Qty</th><th>Days</th></tr></thead><tbody>' +
     (rows || emptyMsg) +
     '</tbody></table>';
 }
@@ -1314,14 +1320,16 @@ async function fetchDaysOfSupply() {
   }
 }
 
-// Total Catalog ADU over time (Al: "can we add some data over time
-// charts to the dashboard, maybe total catalog adu over time similar to
-// what we have per product 7d, 30d, 90d, 1y and all picker") -- reuses
-// filterHistoryByRange/rangeBounds/baseChartOptions/showChartFallback,
-// same machinery renderPriceChart/renderSkuStockChart already use, just
-// a single catalog-wide series instead of one dataset per source/SKU.
-function renderCatalogAduChart(historyData) {
-  const canvasId = 'catalogAdu-chart-dashboard', emptyId = 'catalogAdu-chart-empty-dashboard';
+// Total Catalog Avg Daily Movement over time (Al: "can we add some data
+// over time charts to the dashboard, maybe total catalog adu over time
+// similar to what we have per product 7d, 30d, 90d, 1y and all picker")
+// (quote predates the 2026-09-06 ADU->Daily Movement rename -- same
+// metric) -- reuses filterHistoryByRange/rangeBounds/baseChartOptions/
+// showChartFallback, same machinery renderPriceChart/renderSkuStockChart
+// already use, just a single catalog-wide series instead of one dataset
+// per source/SKU.
+function renderCatalogDailyMovementChart(historyData) {
+  const canvasId = 'catalogDailyMovement-chart-dashboard', emptyId = 'catalogDailyMovement-chart-empty-dashboard';
   destroyChart(canvasId);
   if (typeof Chart === 'undefined') {
     showChartFallback(canvasId, emptyId, 'Charting library did not load (needs network access to cdn.jsdelivr.net) -- reload once you have a connection.');
@@ -1330,7 +1338,7 @@ function renderCatalogAduChart(historyData) {
   const canvas = document.getElementById(canvasId);
   if (!canvas) return;
 
-  const rangeKey = chartSelectedRange['catalogAdu-dashboard'] || DEFAULT_CHART_RANGE;
+  const rangeKey = chartSelectedRange['catalogDailyMovement-dashboard'] || DEFAULT_CHART_RANGE;
   const rows = filterHistoryByRange((historyData && historyData.items) || [], 'day', rangeKey)
     .slice()
     .sort(function (a, b) { return new Date(a.day) - new Date(b.day); });
@@ -1344,8 +1352,8 @@ function renderCatalogAduChart(historyData) {
   if (emptyEl) emptyEl.style.display = 'none';
 
   const dataset = {
-    label: 'Total Catalog ADU (30-day trailing)',
-    data: rows.map(function (r) { return { x: new Date(r.day).getTime(), y: Number(r.total_adu) }; }),
+    label: 'Total Catalog Avg Daily Movement (30-day trailing)',
+    data: rows.map(function (r) { return { x: new Date(r.day).getTime(), y: Number(r.total_daily_movement) }; }),
     borderColor: CHART_COLORS[0],
     backgroundColor: CHART_COLORS[0],
     pointRadius: 2,
@@ -1365,8 +1373,8 @@ function renderCatalogAduChart(historyData) {
   chartInstances[canvasId] = new Chart(canvas.getContext('2d'), { type: 'line', data: { datasets: [dataset] }, options: options });
 }
 
-function renderAduByBrandChart(rows) {
-  const canvasId = 'dashboard-adu-by-brand-chart';
+function renderDailyMovementByBrandChart(rows) {
+  const canvasId = 'dashboard-daily-movement-by-brand-chart';
   destroyChart(canvasId);
   const canvas = document.getElementById(canvasId);
   if (!canvas) return;
@@ -1376,7 +1384,7 @@ function renderAduByBrandChart(rows) {
   if (typeof Chart === 'undefined') {
     const wrap = canvas.parentElement;
     wrap.innerHTML = '<p class="muted small">' + rows.map(function (r) {
-      return escapeHtml(r.brand_name) + ': ' + fmtAdu(r.total_adu);
+      return escapeHtml(r.brand_name) + ': ' + fmtDailyMovement(r.total_daily_movement);
     }).join(' &middot; ') + '</p>';
     return;
   }
@@ -1385,8 +1393,8 @@ function renderAduByBrandChart(rows) {
     data: {
       labels: rows.map(function (r) { return r.brand_name; }),
       datasets: [{
-        label: 'Total ADU',
-        data: rows.map(function (r) { return Number(r.total_adu) || 0; }),
+        label: 'Total Avg Daily Movement',
+        data: rows.map(function (r) { return Number(r.total_daily_movement) || 0; }),
         backgroundColor: CHART_COLORS[0],
         borderRadius: 3,
       }],
@@ -2665,24 +2673,25 @@ function renderProducts(items) {
         // balls with the same approved-video view counts could show
         // different numbers here (video age).
         '<td title="Sum of each approved video\'s view_count, decayed by video age (180-day half-life)">' + fmtCount(p.popularity_score === null || p.popularity_score === undefined ? null : Math.round(p.popularity_score)) + '</td>' +
-        // total_adu (always returned, see service.list_products'
+        // total_daily_movement (always returned, see service.list_products'
         // docstring) -- sum across this product's SKUs of each weight's
-        // own trailing-30-day Average Daily Units (see computeSkuForecast
-        // and _TOTAL_ADU_SQL's matching definition). A SKU with fewer
-        // than 2 stock readings in the window contributes nothing (not a
-        // fabricated zero), same as that per-SKU forecast's own "adu:
-        // null" case -- so a product with no SKU stock history at all
-        // shows 0 here, same as "no recent sales", not a missing-data
-        // marker; the per-product detail view's own SKU Stock tab is
-        // where that distinction actually matters.
-        '<td title="Sum of each SKU\'s own trailing ' + FORECAST_LOOKBACK_DAYS + '-day Average Daily Units (units sold/day, restocks excluded)">' + (p.total_adu === null || p.total_adu === undefined ? '<span class="muted">&mdash;</span>' : Number(p.total_adu).toFixed(2)) + '</td>' +
+        // own trailing-30-day Average Daily Movement (see
+        // computeSkuForecast and _TOTAL_DAILY_MOVEMENT_SQL's matching
+        // definition). A SKU with fewer than 2 stock readings in the
+        // window contributes nothing (not a fabricated zero), same as
+        // that per-SKU forecast's own "dailyMovement: null" case -- so a
+        // product with no SKU stock history at all shows 0 here, same as
+        // "no recent sales", not a missing-data marker; the per-product
+        // detail view's own SKU Stock tab is where that distinction
+        // actually matters.
+        '<td title="Sum of each SKU\'s own trailing ' + FORECAST_LOOKBACK_DAYS + '-day Average Daily Movement (units sold/day, restocks excluded)">' + (p.total_daily_movement === null || p.total_daily_movement === undefined ? '<span class="muted">&mdash;</span>' : Number(p.total_daily_movement).toFixed(2)) + '</td>' +
         '<td><button class="btn small ' + (p.published ? 'ok' : 'ghost') + '" onclick="togglePublish(\'' + p.id + '\', ' + (!p.published) + ')">' + (p.published ? 'Published' : 'Unpublished') + '</button></td>' +
         '<td>' + fmtDate(p.updated_at) + '</td>' +
         '<td class="actions"><button class="btn small ghost" onclick="toggleProductDetail(\'' + p.id + '\')">Detail</button></td>' +
         '</tr>' +
         '<tr id="product-detail-' + p.id + '" class="detail-row hidden"><td colspan="11"></td></tr>';
     }).join('');
-    listEl.innerHTML = '<table><thead><tr><th>Name</th><th>Brand</th><th>Status</th><th>Core</th><th>Coverstock</th><th>Release Date</th><th>Popularity</th><th>Total ADU</th><th>Published</th><th>Updated</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    listEl.innerHTML = '<table><thead><tr><th>Name</th><th>Brand</th><th>Status</th><th>Core</th><th>Coverstock</th><th>Release Date</th><th>Popularity</th><th>Avg Daily Movement</th><th>Published</th><th>Updated</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
   document.getElementById('product-prev').disabled = productState.offset === 0;
   document.getElementById('product-next').disabled = productState.lastCount < productState.limit;
@@ -3138,11 +3147,12 @@ function buildSkuStockSection(id, skuStockHistoryData) {
     // Industry-standard inventory forecasting -- Al: "with the data for
     // stock levels can we apply some industry standard inventory
     // forecasting to that data." See computeSkuForecast's own comment
-    // for the ADU/Days-of-Supply methodology and its documented limits.
+    // for the Daily Movement/Days-of-Supply methodology and its
+    // documented limits.
     const forecast = computeSkuForecast(s.id, history, latest ? latest.quantity : null);
-    const aduCell = forecast.adu === null
+    const dailyMovementCell = forecast.dailyMovement === null
       ? '<span class="muted">—</span>'
-      : (forecast.adu > 0 ? forecast.adu.toFixed(2) + '/day' : '<span class="muted">no recent sales</span>');
+      : (forecast.dailyMovement > 0 ? forecast.dailyMovement.toFixed(2) + '/day' : '<span class="muted">no recent sales</span>');
     let dosCell;
     if (forecast.daysOfSupply === null) {
       dosCell = '<span class="muted">—</span>';
@@ -3157,7 +3167,7 @@ function buildSkuStockSection(id, skuStockHistoryData) {
       ? fmtForecastDate(forecast.stockoutDate)
       : '<span class="muted">—</span>';
     return '<tr><td>' + s.weight_lbs + 'lb</td><td>' + qtyCell + '</td>' +
-      '<td class="small">' + aduCell + '</td>' +
+      '<td class="small">' + dailyMovementCell + '</td>' +
       '<td>' + dosCell + '</td>' +
       '<td class="muted small">' + stockoutCell + '</td>' +
       '<td class="muted small">' + (latest ? fmtDate(latest.checked_at) : 'never checked') + '</td></tr>';
@@ -3167,8 +3177,8 @@ function buildSkuStockSection(id, skuStockHistoryData) {
   productChartData[id].skuStock = skuStockHistoryData;
   return '<p style="margin-top:14px;"><strong>SKU stock</strong> (BowlerDepot, per weight):</p>' +
     (rows
-      ? '<table class="mini"><thead><tr><th>Weight</th><th>Quantity</th><th>Avg daily usage</th><th>Days of supply</th><th>Est. stockout</th><th>Last checked</th></tr></thead><tbody>' + rows + '</tbody></table>' +
-        '<p class="muted small">Forecast columns use a trailing ' + FORECAST_LOOKBACK_DAYS + '-day Average Daily Units (ADU) -- see this table\'s own tooltip-free methodology note in DEPLOY_RUNBOOK.md.</p>'
+      ? '<table class="mini"><thead><tr><th>Weight</th><th>Quantity</th><th>Avg Daily Movement</th><th>Days of supply</th><th>Est. stockout</th><th>Last checked</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+        '<p class="muted small">Forecast columns use a trailing ' + FORECAST_LOOKBACK_DAYS + '-day Avg Daily Movement -- see this table\'s own tooltip-free methodology note in DEPLOY_RUNBOOK.md.</p>'
       : '<p class="muted">no SKU stock data yet -- recorded alongside a BowlerDepot price check once a SKU\'s weight matches a variant</p>') +
     buildChartRangeToolbar(id, 'skuStock') +
     '<div class="chart-wrap"><canvas id="skuStock-chart-' + id + '"></canvas></div>' +
@@ -3191,39 +3201,43 @@ function latestSkuReadings(history) {
   return latestBySku;
 }
 
-// Trailing window for Average Daily Units (ADU) -- a standard, commonly-
-// cited default lookback for a usage-rate calculation in inventory
-// management (alongside 60/90-day variants). Fixed and independent of
-// the SKU stock chart's own display-range selector (CHART_RANGE_PRESETS)
-// so the forecast doesn't jump around meaninglessly just because someone
-// clicked a different chart-viewing range.
+// Trailing window for Avg Daily Movement (predates the 2026-09-06
+// ADU->Daily Movement rename -- same metric, formerly "ADU") -- a
+// standard, commonly-cited default lookback for a usage-rate calculation
+// in inventory management (alongside 60/90-day variants). Fixed and
+// independent of the SKU stock chart's own display-range selector
+// (CHART_RANGE_PRESETS) so the forecast doesn't jump around
+// meaninglessly just because someone clicked a different chart-viewing
+// range.
 const FORECAST_LOOKBACK_DAYS = 30;
 
 // Al: "with the data for stock levels can we apply some industry
-// standard inventory forecasting to that data." Average Daily Units
-// (ADU) and Days of Supply (DOS) are the standard building blocks behind
-// a reorder-point calculation (Reorder Point = ADU x Lead Time + Safety
-// Stock) -- this project has no supplier lead-time or safety-stock
-// policy data anywhere, so this stops at ADU/DOS/an estimated stockout
-// date rather than a full reorder-point recommendation.
+// standard inventory forecasting to that data." Avg Daily Movement and
+// Days of Supply (DOS) are the standard building blocks behind a
+// reorder-point calculation (Reorder Point = Daily Movement x Lead Time
+// + Safety Stock) -- this project has no supplier lead-time or
+// safety-stock policy data anywhere, so this stops at Daily Movement/
+// DOS/an estimated stockout date rather than a full reorder-point
+// recommendation.
 //
-// ADU only counts DROPS between consecutive readings as "sold" (a rise
-// is treated as a restock and excluded from the usage-rate sum) -- same
-// "drop=sold, rise=restock" reading get_sku_stock_history's own
-// docstring already documents as this project's chosen interpretation
-// of the raw quantity-snapshot data (it can't fully distinguish same-day
-// sold-then-restocked activity, see 017's migration header comment for
-// that honesty note). ADU = total units sold in the window / elapsed
-// days between the first and last reading in that window -- not simply
-// "count of readings", since readings aren't guaranteed to land exactly
-// once a day (rotation-based checking, see list_price_sources_due).
+// Daily Movement only counts DROPS between consecutive readings as
+// "sold" (a rise is treated as a restock and excluded from the
+// usage-rate sum) -- same "drop=sold, rise=restock" reading
+// get_sku_stock_history's own docstring already documents as this
+// project's chosen interpretation of the raw quantity-snapshot data (it
+// can't fully distinguish same-day sold-then-restocked activity, see
+// 017's migration header comment for that honesty note). Daily Movement
+// = total units sold in the window / elapsed days between the first and
+// last reading in that window -- not simply "count of readings", since
+// readings aren't guaranteed to land exactly once a day (rotation-based
+// checking, see list_price_sources_due).
 //
-// Returns {adu, daysOfSupply, stockoutDate}, all null when there's not
-// enough history (fewer than 2 readings in the lookback window) to
-// compute a rate at all; daysOfSupply/stockoutDate are also null (not
-// zero) when adu is 0 -- "no recent sales" isn't the same claim as "sold
-// out", and conflating them would falsely flag a slow-moving weight as
-// urgent.
+// Returns {dailyMovement, daysOfSupply, stockoutDate}, all null when
+// there's not enough history (fewer than 2 readings in the lookback
+// window) to compute a rate at all; daysOfSupply/stockoutDate are also
+// null (not zero) when dailyMovement is 0 -- "no recent sales" isn't the
+// same claim as "sold out", and conflating them would falsely flag a
+// slow-moving weight as urgent.
 function computeSkuForecast(skuId, allHistory, latestQuantity) {
   const cutoff = Date.now() - FORECAST_LOOKBACK_DAYS * 24 * 60 * 60 * 1000;
   const rows = allHistory
@@ -3234,7 +3248,7 @@ function computeSkuForecast(skuId, allHistory, latestQuantity) {
     .slice()
     .sort(function (a, b) { return new Date(a.checked_at) - new Date(b.checked_at); });
 
-  if (rows.length < 2) return { adu: null, daysOfSupply: null, stockoutDate: null };
+  if (rows.length < 2) return { dailyMovement: null, daysOfSupply: null, stockoutDate: null };
 
   let unitsSold = 0;
   for (let i = 1; i < rows.length; i++) {
@@ -3242,18 +3256,18 @@ function computeSkuForecast(skuId, allHistory, latestQuantity) {
     if (drop > 0) unitsSold += drop;
   }
   const elapsedDays = (new Date(rows[rows.length - 1].checked_at).getTime() - new Date(rows[0].checked_at).getTime()) / (24 * 60 * 60 * 1000);
-  if (elapsedDays <= 0) return { adu: null, daysOfSupply: null, stockoutDate: null };
+  if (elapsedDays <= 0) return { dailyMovement: null, daysOfSupply: null, stockoutDate: null };
 
-  const adu = unitsSold / elapsedDays;
-  if (adu <= 0 || latestQuantity === null || latestQuantity === undefined) {
-    return { adu: adu, daysOfSupply: null, stockoutDate: null };
+  const dailyMovement = unitsSold / elapsedDays;
+  if (dailyMovement <= 0 || latestQuantity === null || latestQuantity === undefined) {
+    return { dailyMovement: dailyMovement, daysOfSupply: null, stockoutDate: null };
   }
   if (latestQuantity <= 0) {
-    return { adu: adu, daysOfSupply: 0, stockoutDate: new Date() };
+    return { dailyMovement: dailyMovement, daysOfSupply: 0, stockoutDate: new Date() };
   }
-  const daysOfSupply = latestQuantity / adu;
+  const daysOfSupply = latestQuantity / dailyMovement;
   const stockoutDate = new Date(Date.now() + daysOfSupply * 24 * 60 * 60 * 1000);
-  return { adu: adu, daysOfSupply: daysOfSupply, stockoutDate: stockoutDate };
+  return { dailyMovement: dailyMovement, daysOfSupply: daysOfSupply, stockoutDate: stockoutDate };
 }
 
 function fmtForecastDate(d) {
@@ -3426,10 +3440,11 @@ function setChartRange(productId, chartType, rangeKey) {
   const data = (productChartData[productId] || {})[chartType];
   if (!data) return;
   if (chartType === 'price') renderPriceChart(productId, data);
-  // catalogAdu -- the Dashboard tab's single catalog-wide chart, stashed
-  // under the fixed 'dashboard' pseudo-product-id (see loadDashboard's
-  // own comment) -- takes no productId, unlike the other two.
-  else if (chartType === 'catalogAdu') renderCatalogAduChart(data);
+  // catalogDailyMovement -- the Dashboard tab's single catalog-wide
+  // chart, stashed under the fixed 'dashboard' pseudo-product-id (see
+  // loadDashboard's own comment) -- takes no productId, unlike the other
+  // two.
+  else if (chartType === 'catalogDailyMovement') renderCatalogDailyMovementChart(data);
   else renderSkuStockChart(productId, data);
 }
 
@@ -3592,8 +3607,8 @@ function renderSkuStockChart(productId, historyData) {
 
   // Dashed forecast projection past "today" -- Al: "let's do the dashed
   // line... left of that being historical real number and the right
-  // being forecasted." Reuses computeSkuForecast (same ADU/Days-of-
-  // Supply math as the table above) against the FULL unfiltered history
+  // being forecasted." Reuses computeSkuForecast (same Daily Movement/
+  // Days-of-Supply math as the table above) against the FULL unfiltered history
   // -- not the range-filtered `history` used for the solid line above --
   // since the forecast rate is always a fixed 30-day trailing figure,
   // independent of what range the user happens to be viewing.

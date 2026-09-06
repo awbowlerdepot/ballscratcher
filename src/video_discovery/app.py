@@ -338,13 +338,58 @@ def significant_tokens(name: str) -> set:
     return {tok for tok in _WORD_RE.findall(name.lower()) if tok not in _STOPWORDS}
 
 
+# Cover/finish edition words that commonly distinguish separate catalog
+# products sharing the same base name (e.g. "Phaze II" vs "Phaze II
+# Pearl", sold as two distinct products with materially different
+# performance). Real, confirmed incident (Al, 2026-09-06): a video
+# titled "... Phaze II Pearl Review" scored 'high' against the SOLID
+# "Phaze II" product too, since score_match only required ONE shared
+# significant token and "pearl" isn't a stopword -- it got approved onto
+# the wrong product, and product_article_generator then faithfully
+# (and wrongly) wrote up the Pearl's performance as if it were this
+# ball's. auto_approve_video_candidates.py's own module docstring
+# already flagged this exact collision shape ("Storm Absolute Power"
+# vs "Storm Absolute") as a known gap belonging in score_match, not
+# there -- this is that fix.
+#
+# Deliberately a SMALLER set than product_article_generator's own
+# _LINE_QUALIFIER_WORDS (which also has "plus", "pro", "max",
+# "reactive") -- those are too generic/ambiguous to safely treat as a
+# hard edition signal here ("reactive" in particular is just generic
+# coverstock-material vocabulary that shows up in almost any ball
+# review title, pearl or not; treating it as a mismatch signal would
+# throw out far more good matches than it catches). This list is
+# intentionally limited to words that reliably denote a specific,
+# separately-sold finish/edition in this industry.
+_EDITION_QUALIFIER_WORDS = {"solid", "pearl", "hybrid", "particle"}
+
+
+def _title_names_different_edition(title_lower: str, product_name: str) -> bool:
+    """True if the video title names a specific cover/finish edition
+    (see _EDITION_QUALIFIER_WORDS) that this product's OWN name does not
+    carry -- the collision pattern described above. Word-boundary
+    matched so "pearl" doesn't false-positive on some unrelated
+    substring, and only checked against product_name (not brand_name),
+    since brand names don't carry edition words."""
+    product_name_lower = (product_name or "").lower()
+    for word in _EDITION_QUALIFIER_WORDS:
+        pattern = rf"\b{word}\b"
+        if re.search(pattern, title_lower) and not re.search(pattern, product_name_lower):
+            return True
+    return False
+
+
 def score_match(title: str, brand_name: str, product_name: str) -> str:
     """Returns 'high' if the video title contains the brand name AND at
-    least one significant token from the product name; 'low' otherwise.
-    Deliberately permissive (any one product-name token, not all of them)
-    since colorway suffixes like "Emerald/Black Hybrid" are often dropped
-    from review video titles even when the video is a clear match for the
-    base ball name."""
+    least one significant token from the product name (AND doesn't name
+    a different cover/finish edition than this product's own name --
+    see _title_names_different_edition); 'low' otherwise. Deliberately
+    permissive on the base-name check (any one product-name token, not
+    all of them) since colorway suffixes like "Emerald/Black Hybrid" are
+    often dropped from review video titles even when the video is a
+    clear match for the base ball name -- the edition check above is
+    what keeps that permissiveness from misfiring across two sibling
+    products that share a base name but differ by finish."""
     if not title:
         return "low"
     title_lower = title.lower()
@@ -354,6 +399,9 @@ def score_match(title: str, brand_name: str, product_name: str) -> str:
 
     product_tokens = significant_tokens(product_name)
     product_hit = bool(product_tokens) and any(tok in title_lower for tok in product_tokens)
+
+    if brand_hit and product_hit and _title_names_different_edition(title_lower, product_name):
+        return "low"
 
     return "high" if (brand_hit and product_hit) else "low"
 

@@ -62,6 +62,33 @@ def test_score_match_low_for_blank_title():
     assert app.score_match(None, "Storm", "Absolute") == "low"
 
 
+def test_score_match_low_when_title_names_different_edition_than_product():
+    """Real, confirmed incident (Al, 2026-09-06): a "Phaze II Pearl"
+    review video was scoring 'high' against the SOLID "Phaze II"
+    product (shared "phaze" token), got approved onto the wrong
+    product, and product_article_generator faithfully wrote up the
+    Pearl's performance as this ball's. The title names an edition
+    ("pearl") this product's own name doesn't carry, so this must now
+    score 'low' even though brand + a base-name token both hit."""
+    assert app.score_match("Storm Phaze II Pearl Review", "Storm", "Phaze II") == "low"
+
+
+def test_score_match_high_when_title_and_product_share_the_edition_word():
+    """Same title, but against the Pearl product itself -- the edition
+    word appears in both, so this is a normal, correct match, not the
+    collision pattern above."""
+    assert app.score_match("Storm Phaze II Pearl Review", "Storm", "Phaze II Pearl") == "high"
+
+
+def test_score_match_not_penalized_for_generic_coverstock_words():
+    """'reactive' (and 'plus'/'pro'/'max') are deliberately excluded from
+    the edition-collision check -- see _EDITION_QUALIFIER_WORDS's
+    comment for why treating generic coverstock-material vocabulary as
+    a hard edition signal would throw out far more good matches than it
+    catches."""
+    assert app.score_match("Storm Absolute Reactive Review", "Storm", "Absolute") == "high"
+
+
 def test_build_search_query():
     # "review" dropped 2026-08-15 -- see build_search_query's own comment
     # (real incident: it suppressed Storm Equinox Hybrid's actual #1
