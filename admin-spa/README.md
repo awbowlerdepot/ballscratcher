@@ -54,6 +54,27 @@ account instead of a shared bearer-token secret.
   actions and no pending-count badge here -- `admin-site/index.html`'s
   own Articles tab never had either (see `api/types.ts`'s
   `ArticleListItem` comment on the missing pending_count).
+- **Price Sites** (`/price-sites`) -- combines admin-site's two separate
+  top-level tabs into one page, per Al's own question about whether
+  that made sense (checked: nothing about the two backend resources
+  conflicts, admin-site just never happened to combine their UI).
+  Top section is **Price Sources**, the discovered-match review queue
+  (`product_price_sources`) -- status/product-id filters, pending badge,
+  per-row and bulk approve/reject (same 300ms-paced sequential bulk
+  pattern as Review Queue/Video Candidates), and Undo on resolved rows.
+  Bottom section is **Price Sites**, the retailer registry
+  (`price_sites`) that Price Sources' `price_site_id` points at -- an
+  always-visible add-site form (fetch method toggles between
+  scrape-config fields and API-config fields), a list with Edit/
+  Deactivate-Reactivate/Delete, and an edit `Modal` prefilled with every
+  field the site actually has (fetch_method itself isn't editable --
+  switching scrape/api is a delete-and-recreate, matching admin-site's
+  own `editPriceSite` reasoning). No manual "add a price source to this
+  product" or per-source quick-edit here -- admin-site only ever exposed
+  those from the product-detail Pricing sub-panel, not the standalone
+  tab, so they stay out of scope until Products gets a detail sub-view
+  (same boundary Video Candidates' reassign-only-from-standalone-tab
+  already established).
 - A small hand-rolled component library in `src/components/` (`Button`,
   `Badge`, `Card`, `StatCard`, `Modal`, `Toast`, `DataTable`,
   `Pagination`, `Layout`, `ErrorBoundary`) that later tabs (Articles,
@@ -154,9 +175,9 @@ its own git history for precedent).
 - A "set new password" form for the Cognito `newPasswordRequired`
   challenge -- first-time accounts need a permanent password set via
   the CLI (see above) rather than through the app itself.
-- Every other admin-site tab: Price Sites, Cores, Coverstocks, Blocked
-  Channels, Batch Jobs. These still live on `admin-site/index.html` for
-  now; migrating them is follow-up work.
+- Every other admin-site tab: Cores, Coverstocks, Blocked Channels,
+  Batch Jobs. These still live on `admin-site/index.html` for now;
+  migrating them is follow-up work.
 - A Products detail sub-view (the old admin-site has a tabbed per-
   product panel with its own Videos section, "search again" rescan
   button, and bulk reassign/delete -- admin-spa's Video Candidates tab
@@ -205,6 +226,13 @@ the field and rendering it as a `Badge` instead, and by adding the
 contained to one page instead of taking down sign-in and navigation
 too. `tsc -b` passing clean does not catch this class of bug -- it's a
 wrong assumption about a runtime value's shape, not a type error.
+
+Price Sites has NOT been smoke-tested against real deployed data yet
+either -- `tsc -b` passes clean but that's it. `match_confidence` on
+`PriceSource` was typed as `"high" | "low" | null` by reading
+`db/migrations/014_price_tracking.sql` directly first, specifically
+because of the match_confidence incident above -- worth confirming that
+holds up against a real row regardless.
 
 Articles has NOT been smoke-tested against real deployed data yet --
 `tsc -b` passes clean, but given the match_confidence incident above,

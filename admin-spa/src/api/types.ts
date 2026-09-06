@@ -349,3 +349,109 @@ export interface SelectImageCandidateResult {
   image_key: string;
   image_url: string;
 }
+
+// Price tracking (014_price_tracking.sql onward). Al asked whether it
+// makes sense to combine admin-site's two separate top-level tabs here
+// -- "Price Sources" (the discovered-match review queue, product_price_
+// sources) and "Price Sites" (the retailer registry, price_sites) --
+// since one configures the other (every price source points at a price
+// site via price_site_id). Checked admin-site/index.html first: nothing
+// there ever combines them (the registry's own tab is read-mostly,
+// separate from the review queue), but nothing about the two backend
+// resources conflicts either, so admin-spa combines them into one
+// PriceSitesPage with two sections -- the registry rows feed a live
+// site-id/name lookup for source rows without a second page to visit.
+export type PriceSourceStatus = "pending" | "approved" | "rejected";
+
+// Matches list_price_sources' SELECT in admin_api/service.py.
+// match_confidence is a text enum ('high'|'low'|null), NOT a numeric
+// score -- checked db/migrations/014_price_tracking.sql directly before
+// typing this, given the identical wrong-assumption incident on Video
+// Candidates' match_confidence (see api/types.ts's VideoCandidate
+// comment) was exactly this class of mistake.
+export interface PriceSource {
+  id: string;
+  product_id: string;
+  product_name: string;
+  brand_name: string;
+  price_site_id: string;
+  site_name: string;
+  product_url: string;
+  base_url: string | null;
+  css_selector: string | null;
+  match_query: string | null;
+  match_confidence: "high" | "low" | null;
+  status: PriceSourceStatus;
+  source: "site_search" | "manual";
+  is_active: boolean;
+  last_checked_at: string | null;
+  created_at: string;
+  resolved_at: string | null;
+  resolved_by: string | null;
+}
+
+export interface ListPriceSourcesParams {
+  // "all" omits the status filter server-side, same convention as
+  // Video Candidates/Articles.
+  status?: PriceSourceStatus | "all";
+  product_id?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface PriceSourceListResult {
+  items: PriceSource[];
+  // Only populated when status === "pending" (GET /price-sources).
+  pending_count: number | null;
+}
+
+export type PriceSiteFetchMethod = "scrape" | "api";
+
+// Matches list_price_sites' SELECT. search_url_template/
+// result_link_selector/default_css_selector are null for an 'api' site;
+// api_provider/base_url are null for a 'scrape' site (016_price_
+// tracking_bigcommerce.sql made the scrape-only fields nullable
+// specifically for this split -- see that migration's own column
+// comments).
+export interface PriceSite {
+  id: string;
+  name: string;
+  search_url_template: string | null;
+  result_link_selector: string | null;
+  default_css_selector: string | null;
+  notes: string | null;
+  is_active: boolean;
+  created_at: string;
+  fetch_method: PriceSiteFetchMethod;
+  api_provider: string | null;
+  base_url: string | null;
+}
+
+export interface PriceSiteCreateInput {
+  name: string;
+  fetch_method: PriceSiteFetchMethod;
+  search_url_template?: string;
+  result_link_selector?: string;
+  default_css_selector?: string;
+  api_provider?: string;
+  base_url?: string;
+  notes?: string;
+}
+
+// All optional/independent -- a caller sets whichever field it's
+// actually changing (see update_price_site's own docstring).
+// fetch_method itself is deliberately NOT included here, mirroring
+// admin-site's editPriceSite: switching a site between 'scrape' and
+// 'api' means swapping which fields even apply (the DB's own
+// price_sites_fetch_method_fields_check), which is a delete-and-recreate,
+// not a quick edit.
+export interface PriceSiteUpdateInput {
+  name?: string;
+  search_url_template?: string;
+  result_link_selector?: string;
+  default_css_selector?: string;
+  api_provider?: string;
+  base_url?: string;
+  notes?: string;
+  is_active?: boolean;
+}

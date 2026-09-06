@@ -5,6 +5,7 @@ import { ToastProvider } from "./components/Toast";
 import ArticlesPage from "./pages/ArticlesPage";
 import DashboardPage from "./pages/DashboardPage";
 import LoginPage from "./pages/LoginPage";
+import PriceSitesPage from "./pages/PriceSitesPage";
 import ProductsPage from "./pages/ProductsPage";
 import ReviewQueuePage from "./pages/ReviewQueuePage";
 import VideoCandidatesPage from "./pages/VideoCandidatesPage";
@@ -28,6 +29,7 @@ export default function App() {
               <Route path="/review-queue" element={<ReviewQueuePage />} />
               <Route path="/video-candidates" element={<VideoCandidatesPage />} />
               <Route path="/articles" element={<ArticlesPage />} />
+              <Route path="/price-sites" element={<PriceSitesPage />} />
             </Route>
           </Routes>
         </ToastProvider>

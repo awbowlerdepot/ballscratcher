@@ -9755,6 +9755,63 @@ actual shape, and `seed` on image candidates (should be `null` for
 every Gemini row, a number for Stability rows -- see
 `026_product_article_image_candidates.sql`'s own column comment).
 
+### 6ab.4. Price Sites tab
+
+Sixth tab ported into `admin-spa/` (`src/pages/PriceSitesPage.tsx`) --
+and the first one to combine two of admin-site's separate top-level
+tabs into a single admin-spa page. Al asked directly whether combining
+"Price Sources" (the discovered-match review queue, `product_price_
+sources`) and "Price Sites" (the retailer registry, `price_sites`)
+made sense, since one configures the other (every source points at a
+site via `price_site_id`). Checked `admin-site/index.html` first:
+nothing there ever actually combines their UI -- they're two separate
+tabs with two separate `TAB_LOADERS` entries -- but nothing about the
+two backend resources conflicts either, so admin-spa combines them:
+one page, Price Sources on top (the higher-churn review queue) and
+Price Sites underneath (read-mostly, expected to stay small -- see
+`list_price_sites`' own docstring).
+
+Routes: `GET /price-sources` (status -- pending/approved/rejected, plus
+product_id/limit/offset, `pending_count` only populated for
+status=pending), `POST .../approve`, `.../reject`, `.../restore` (same
+approve/reject/restore/undo shape as Video Candidates, same 300ms-paced
+sequential bulk pattern), and `GET /price-sites` + `POST /price-sites`
++ `PATCH /price-sites/{id}` + `DELETE /price-sites/{id}` for the
+registry (add-site form with fetch-method-conditional fields, an edit
+`Modal` prefilled with every field the site has -- `fetch_method`
+itself isn't editable, matching `editPriceSite`'s own reasoning that
+switching scrape/api is a delete-and-recreate -- a Deactivate/
+Reactivate toggle via the same PATCH, and a hard-delete confirm modal).
+
+Deliberately out of scope, matching admin-site's own tab boundary:
+`POST /products/{id}/price-sources` (manual add-a-source-to-this-
+product), `PATCH /price-sources/{id}` (quick-edit product_url/
+css_selector/is_active on one source), and `DELETE /price-sources/{id}`
+-- grepped `admin-site/index.html` for all three and confirmed every
+call site for them lives in the product-detail Pricing sub-panel
+(`buildPriceTrackingSection`), never the standalone Price Sources tab.
+Same boundary Video Candidates' reassign-only-from-standalone-tab
+already established -- these move over once Products gets a detail
+sub-view, not before. Also out of scope: price/stock history charting
+(`GET /products/{id}/price-history`, `.../sku-stock-history`) and the
+catalog-wide discovery/check-all batch endpoints, which have no
+admin-site UI at all (grepped for them -- zero matches; they're
+curl/script-only operations today).
+
+`match_confidence` on `PriceSource` (the review-queue row) was typed as
+`"high" | "low" | null` by reading `db/migrations/014_price_tracking.
+sql` directly first -- `match_confidence text, -- 'high' | 'low' |
+null (manual)` -- specifically because this is the exact same field
+name/shape that caused the real bug on Video Candidates (see 6ab.2's
+own "Update" paragraph). Confirmed correct against the schema this
+time before writing any render code, not after a browser crash.
+
+`npx tsc -b` passes clean. Not yet smoke-tested against real deployed
+data -- worth confirming both halves (the review queue's bulk actions,
+and the registry's scrape-vs-api conditional form) against a live
+stack, plus the two out-of-scope boundaries above if a Products detail
+view gets built later.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

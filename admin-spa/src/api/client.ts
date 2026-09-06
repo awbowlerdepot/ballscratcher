@@ -7,9 +7,14 @@ import type {
   ApproveReviewResult,
   DashboardSummary,
   ListArticlesParams,
+  ListPriceSourcesParams,
   ListProductsParams,
   ListReviewQueueParams,
   ListVideoCandidatesParams,
+  PriceSite,
+  PriceSiteCreateInput,
+  PriceSiteUpdateInput,
+  PriceSourceListResult,
   Product,
   QueueArticleGenerationResult,
   QueueArticleSyncResult,
@@ -103,6 +108,16 @@ async function apiPatch<T>(path: string, body: unknown): Promise<T> {
     headers,
     body: JSON.stringify(body),
   });
+  return handleResponse<T>(resp);
+}
+
+// Only DELETE /price-sites/{id} uses this method so far -- a real hard
+// delete (cascades to every product_price_sources/product_price_history
+// row pointed at that site, see delete_price_site's own docstring), not
+// used anywhere else in this client.
+async function apiDelete<T>(path: string): Promise<T> {
+  const headers = await authHeaders();
+  const resp = await fetch(`${API_BASE}${path}`, { method: "DELETE", headers });
   return handleResponse<T>(resp);
 }
 
@@ -253,3 +268,54 @@ export function regenerateArticleImages(productId: string): Promise<QueueArticle
 // Kept as a re-export purely so callers importing from client.ts don't
 // also need a separate import from types.ts just for this one type.
 export type { ArticleRegenerateMode };
+
+// Price Sources -- the discovered-match review queue (product_price_
+// sources). Same approve/reject/restore shape as Review Queue/Video
+// Candidates/Price Sites' own registry -- see PriceSource's own comment
+// in types.ts for why match_confidence is typed as a string enum.
+export function listPriceSources(params: ListPriceSourcesParams = {}): Promise<PriceSourceListResult> {
+  return apiGet<PriceSourceListResult>("/price-sources", { ...params });
+}
+
+// resolved_by omitted, same reasoning as approveReviewItem/
+// approveVideoCandidate/approveArticle above.
+export function approvePriceSource(id: string): Promise<{ source_id: string; status: "approved" }> {
+  return apiPost(`/price-sources/${encodeURIComponent(id)}/approve`, {});
+}
+
+export function rejectPriceSource(id: string, reason?: string): Promise<{ source_id: string; status: "rejected" }> {
+  return apiPost(`/price-sources/${encodeURIComponent(id)}/reject`, { reason });
+}
+
+// No resolved_by/reason param, same as restoreVideoCandidate -- there's
+// no decision to attribute when undoing one.
+export function restorePriceSource(id: string): Promise<{ source_id: string; status: "pending" }> {
+  return apiPost(`/price-sources/${encodeURIComponent(id)}/restore`);
+}
+
+// Price Sites -- the retailer registry price_checker's discovery job
+// searches. Read-mostly, expected to stay small and change rarely (see
+// list_price_sites' own docstring) -- unlike the review-queue functions
+// above, this has no bulk/pagination shape at all, matching GET
+// /price-sites returning every configured site (active or not) in one
+// call.
+export function listPriceSites(): Promise<PriceSite[]> {
+  return apiGet<{ items: PriceSite[] }>("/price-sites").then((r) => r.items);
+}
+
+export function createPriceSite(input: PriceSiteCreateInput): Promise<PriceSite> {
+  return apiPost<PriceSite>("/price-sites", input);
+}
+
+export function updatePriceSite(id: string, input: PriceSiteUpdateInput): Promise<{ id: string }> {
+  return apiPatch(`/price-sites/${encodeURIComponent(id)}`, input);
+}
+
+// Hard delete -- cascades to every product_price_sources row (and their
+// product_price_history rows) pointed at this site. See
+// delete_price_site's own docstring for why this is safe to be final
+// unlike a video-candidate-style delete (nothing re-creates a
+// price_sites row on its own).
+export function deletePriceSite(id: string): Promise<{ id: string }> {
+  return apiDelete(`/price-sites/${encodeURIComponent(id)}`);
+}
