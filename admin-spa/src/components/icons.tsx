@@ -104,3 +104,16 @@ export function IconChevronsRight(props: IconProps) {
     </svg>
   );
 }
+
+// The sidebar-collapse toggle -- a rounded outer frame with a vertical
+// divider near the left third, the classic "panel/sidebar" glyph (VS
+// Code, Notion, etc. all use this shape) rather than a chevron, so it
+// reads as "toggle a panel" at a glance instead of "go back/forward".
+export function IconPanelLeft(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <rect x="2.5" y="3.5" width="15" height="13" rx="2" />
+      <path d="M7.8 3.5v13" />
+    </svg>
+  );
+}

@@ -6,10 +6,9 @@ import Button from "./Button";
 import ErrorBoundary from "./ErrorBoundary";
 import {
   IconArticles,
-  IconChevronsLeft,
-  IconChevronsRight,
   IconCore,
   IconDashboard,
+  IconPanelLeft,
   IconPriceTag,
   IconProducts,
   IconReviewQueue,
@@ -52,25 +51,21 @@ export default function Layout() {
         className={`${collapsed ? "w-14" : "w-56"} shrink-0 border-r border-ink-200 bg-ink-100 transition-[width] duration-150`}
       >
         <div
-          className={`flex items-center border-b border-ink-200 py-4 ${collapsed ? "justify-center px-2" : "px-4"}`}
+          className={`flex items-center gap-2 border-b border-ink-200 py-4 ${collapsed ? "justify-center px-2" : "px-4"}`}
         >
-          {!collapsed && <span className="text-base font-semibold text-ink-800">BowlerIQ Admin</span>}
-        </div>
-        <nav className="flex flex-col gap-0.5 p-2">
-          {/* Styled as a nav row, not a corner icon button, so it reads
-              as part of the menu (same icon size, same left-aligned
-              layout, same hover treatment) rather than chrome bolted
-              onto the header. */}
           <button
             onClick={toggleCollapsed}
             title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-            className={`flex items-center gap-2.5 rounded-md py-2 text-sm font-medium text-ink-600 hover:bg-ink-200 ${
-              collapsed ? "justify-center px-2" : "px-3"
-            }`}
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            className="shrink-0 rounded-md p-1 text-ink-500 hover:bg-ink-200 hover:text-ink-800"
           >
-            {collapsed ? <IconChevronsRight className="h-5 w-5 shrink-0" /> : <IconChevronsLeft className="h-5 w-5 shrink-0" />}
-            {!collapsed && <span>Collapse</span>}
+            <IconPanelLeft className="h-5 w-5" />
           </button>
+          {!collapsed && (
+            <span className="truncate text-base font-semibold text-ink-800">BowlerIQ Admin</span>
+          )}
+        </div>
+        <nav className="flex flex-col gap-0.5 p-2">
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
             return (

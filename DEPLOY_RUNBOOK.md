@@ -9970,12 +9970,17 @@ proper hover tooltip component.
 
 Follow-up from Al right after: the toggle button originally lived in
 the sidebar header next to "BowlerIQ Admin" (right-aligned, smaller
-`h-4 w-4` chevron than the nav icons). Moved into `<nav>` itself as the
-first row, styled identically to a `NAV_ITEMS` link (same `h-5 w-5`
-icon size, same left-aligned `px-3`/centered-when-collapsed layout,
-same `hover:bg-ink-200`) so it reads as part of the menu instead of
-header chrome -- the header `div` now only ever holds the title text
-(empty box when collapsed).
+`h-4 w-4` chevron than the nav icons). First fix moved it into `<nav>`
+as its own full-width row -- Al then sent a screenshot of a reference
+app (icon-toggle inline with the title at the top, left-justified
+together, ordinary nav items below with distinct per-item icons) and
+said that's what he meant. Reworked again to match: the toggle is back
+in the header `div`, but now icon-then-title in a plain left-aligned
+flex row (no `justify-between` spreading them apart) instead of a nav
+row of its own, and the chevron icons were swapped for a new
+`IconPanelLeft` (rounded frame with a vertical divider near the left
+third -- the standard "toggle a side panel" glyph, distinct from
+"go back") in `icons.tsx`. `<nav>` is back to just `NAV_ITEMS`.
 
 ## 7. Ongoing operations
 
