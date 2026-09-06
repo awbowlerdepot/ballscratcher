@@ -11050,6 +11050,92 @@ Files touched: `src/admin_api/service.py`, `src/admin_api/app.py`,
 `admin-spa/src/auth/AuthContext.tsx`,
 `admin-spa/src/components/Layout.tsx`.
 
+### 6ab.20. Recharts-based time-series charts: SKU stock, price history, catalog Daily Movement
+
+Al: "there was some charting in the skus & stock section of the UI. can
+we add that back using recharts. while you are at it are there any
+other charts that would be helpful." Investigation found this wasn't
+just one dropped chart -- admin-site/index.html's Chart.js-based
+renderPriceChart/renderSkuStockChart/renderCatalogDailyMovementChart
+(range-picker line charts with a dashed forecast projection on the SKU
+stock one) never got ported to admin-spa at all when each tab was moved
+over (6ab.1-6ab.12), and for SKU stock the ENTIRE forecasting feature
+(Avg Daily Movement/Days of Supply/Est. stockout summary table, not just
+its chart) was dropped too. Al confirmed via AskUserQuestion that he
+wanted all three restored, not just the one he'd noticed.
+
+**New dependency.** Added `recharts` (^2.13.0) to admin-spa/package.json
+per Al's explicit ask to use it here, alongside the existing chart.js/
+react-chartjs-2 (still used by the Dashboard's brand bar chart) --
+recharts' data model (one shared array of merged rows, `<Line
+connectNulls>` per series) is a better fit for multiple sparse,
+independently-timestamped series than Chart.js's per-dataset-array
+model, and is what Al asked for regardless. **This sandbox has no npm
+registry access (separate from the already-documented no-AWS/no-GitHub
+limitations), so `recharts` could not actually be installed or run here
+-- verified as far as possible via `tsc -b` against a hand-written
+permissive stub `declare module "recharts"` swapped in temporarily (all
+of this feature's OWN logic type-checks clean against that stub; the
+real recharts types weren't available to check against). Run `npm
+install` in `admin-spa/` after pulling this commit, then `npm run
+build` (`tsc -b && vite build`) to get real verification before
+deploying.**
+
+**Shared building blocks** (`admin-spa/src/lib/`, `admin-spa/src/
+components/charts/`):
+- `chartRanges.ts` -- ports CHART_RANGE_PRESETS/filterHistoryByRange/
+  rangeBounds (7D/30D/90D/1Y/All, fetch-once-filter-client-side, today
+  as the fixed right edge) from admin-site/index.html verbatim.
+- `skuForecast.ts` -- ports computeSkuForecast/latestSkuReadings
+  verbatim (trailing 30-day Avg Daily Movement, drop=sold/rise=restock,
+  Days of Supply, estimated stockout date; see its own header comment
+  for the full documented-limits writeup).
+- `TimeSeriesChart.tsx` -- the one generic recharts multi-series line
+  chart every chart below is built from: merges each series' own sparse
+  {x,y} points into shared rows keyed by every distinct timestamp
+  (recharts needs one shared data array, unlike Chart.js's independent
+  per-dataset arrays), `connectNulls` per line to draw across the gaps,
+  optional dashed styling + `legendType="none"` for forecast lines,
+  optional "Today" ReferenceLine. Colors picked for admin-spa's dark
+  "ink" theme (tailwind.config.js), not admin-site's original light-page
+  palette.
+- `ChartRangePicker.tsx` -- the 7D/30D/90D/1Y/All button row.
+
+**SKU stock** (`SkuStockChart.tsx`, ProductDetailPage's SKUs & Stock
+tab): restores BOTH the forecast summary table (Weight/Quantity/Avg
+Daily Movement/Days of Supply/Est. stockout/Last checked, with the same
+danger/muted/ok urgency badges by days remaining) and the quantity-over-
+time chart with a dashed forecast line per weight projecting to its
+estimated stockout date (capped at a horizon mirroring the selected
+range). Sits above the pre-existing raw "Recent stock readings" list,
+which stays as-is for row-level drill-down.
+
+**Price history** (`PriceHistoryChart.tsx`, Pricing tab): same gap, no
+forecast concept for price -- just per-source price-over-time with the
+same range picker, above the pre-existing "Recent price checks" list.
+
+**Catalog Daily Movement** (`CatalogDailyMovementChart.tsx`, Dashboard):
+the backend (`GET /admin/catalog-daily-movement-history`) has existed
+since 6ab's Demand Score work but the chart it was built for was never
+actually added to admin-spa's Dashboard -- new `getCatalogDailyMovementHistory`
+client fn + `CatalogDailyMovementHistoryResult`/`-Point` types, rendered
+as its own Card below the existing "Avg Daily Movement by brand" bar
+chart, loaded independently of the rest of the dashboard summary so a
+slow history query can't block the KPI cards.
+
+No backend/template.yaml/migration changes -- every endpoint these
+charts read already existed. Verified: `tsc -b` clean against the
+recharts stub described above (real install/build still needed on Al's
+machine); full Python test suite unaffected (frontend-only change).
+
+Files touched: `admin-spa/package.json`, `admin-spa/src/lib/
+chartRanges.ts` (new), `admin-spa/src/lib/skuForecast.ts` (new),
+`admin-spa/src/components/charts/{ChartRangePicker,TimeSeriesChart,
+SkuStockChart,PriceHistoryChart,CatalogDailyMovementChart}.tsx` (all
+new), `admin-spa/src/pages/ProductDetailPage.tsx`, `admin-spa/src/pages/
+DashboardPage.tsx`, `admin-spa/src/api/types.ts`, `admin-spa/src/api/
+client.ts`.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

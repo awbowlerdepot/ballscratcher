@@ -57,6 +57,23 @@ export interface DashboardSummary {
   top_shrinking_daily_movement: DailyMovementDeltaItem[];
 }
 
+// GET /admin/catalog-daily-movement-history -- backs the Dashboard's
+// "Total Catalog Avg Daily Movement over time" chart, restoring a piece
+// of the admin-SPA port that never made it over from admin-site/
+// index.html (see service.get_catalog_daily_movement_history's own
+// docstring for why this is a REAL but differently-defined number from
+// DashboardKpis.total_catalog_daily_movement). One row per calendar day
+// across the full observed product_sku_stock_history range -- zeros are
+// real zeros, not gaps.
+export interface CatalogDailyMovementHistoryPoint {
+  day: string;
+  total_daily_movement: number;
+}
+
+export interface CatalogDailyMovementHistoryResult {
+  items: CatalogDailyMovementHistoryPoint[];
+}
+
 export type ProductStatus = "current" | "retired";
 
 export type SourcePlatform = "netsuite" | "shopify" | "woocommerce" | "commercebuild" | "craft_cms";

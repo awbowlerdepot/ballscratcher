@@ -14,7 +14,8 @@
     "react-router-dom": "^6.26.0",
     "amazon-cognito-identity-js": "^6.3.12",
     "chart.js": "^4.4.4",
-    "react-chartjs-2": "^5.2.0"
+    "react-chartjs-2": "^5.2.0",
+    "recharts": "^2.13.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.3",

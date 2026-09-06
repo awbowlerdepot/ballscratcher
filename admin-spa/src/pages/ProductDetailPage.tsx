@@ -51,6 +51,8 @@ import type {
 } from "../api/types";
 import Badge from "../components/Badge";
 import Button from "../components/Button";
+import PriceHistoryChart from "../components/charts/PriceHistoryChart";
+import SkuStockChart from "../components/charts/SkuStockChart";
 import type { Column } from "../components/DataTable";
 import DataTable from "../components/DataTable";
 import Modal from "../components/Modal";
@@ -971,6 +973,8 @@ export default function ProductDetailPage() {
             </div>
           </div>
 
+          {priceHistory && <PriceHistoryChart data={priceHistory} />}
+
           {priceHistory && priceHistory.history.length > 0 && (
             <div>
               <p className="mb-1 text-sm font-semibold text-ink-800">Recent price checks</p>
@@ -1043,6 +1047,8 @@ export default function ProductDetailPage() {
               </tbody>
             </table>
           </div>
+
+          {skuStockHistory && <SkuStockChart data={skuStockHistory} />}
 
           {skuStockHistory && skuStockHistory.history.length > 0 && (
             <div>

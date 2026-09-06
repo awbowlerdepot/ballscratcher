@@ -8,6 +8,7 @@ import type {
   ApproveReviewResult,
   BlockedChannel,
   Brand,
+  CatalogDailyMovementHistoryResult,
   Core,
   CoreDetail,
   Coverstock,
@@ -151,6 +152,12 @@ async function apiDelete<T>(path: string): Promise<T> {
 
 export function getDashboardSummary(): Promise<DashboardSummary> {
   return apiGet<DashboardSummary>("/admin/dashboard");
+}
+
+// Full history, no query params -- same "fetch once, filter client-side
+// per range button" shape as getSkuStockHistory/getPriceHistory below.
+export function getCatalogDailyMovementHistory(): Promise<CatalogDailyMovementHistoryResult> {
+  return apiGet<CatalogDailyMovementHistoryResult>("/admin/catalog-daily-movement-history");
 }
 
 export function listProducts(params: ListProductsParams = {}): Promise<Product[]> {

@@ -8,9 +8,10 @@ import {
 } from "chart.js";
 import { useEffect, useState } from "react";
 import { Bar } from "react-chartjs-2";
-import { getDashboardSummary } from "../api/client";
-import type { DashboardSummary } from "../api/types";
+import { getCatalogDailyMovementHistory, getDashboardSummary } from "../api/client";
+import type { CatalogDailyMovementHistoryPoint, DashboardSummary } from "../api/types";
 import Card from "../components/Card";
+import CatalogDailyMovementChart from "../components/charts/CatalogDailyMovementChart";
 import DataTable from "../components/DataTable";
 import StatCard from "../components/StatCard";
 
@@ -26,11 +27,19 @@ ChartJS.register(CategoryScale, LinearScale, BarElement, Tooltip, Legend);
 export default function DashboardPage() {
   const [data, setData] = useState<DashboardSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Loaded separately from the rest of the dashboard -- its own endpoint,
+  // and there's no reason a slow catalog-history query should block the
+  // KPI cards/Top 10 tables from rendering. null while loading, [] once
+  // loaded with no history yet.
+  const [dailyMovementHistory, setDailyMovementHistory] = useState<CatalogDailyMovementHistoryPoint[] | null>(null);
 
   useEffect(() => {
     getDashboardSummary()
       .then(setData)
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load dashboard."));
+    getCatalogDailyMovementHistory()
+      .then((r) => setDailyMovementHistory(r.items))
+      .catch(() => setDailyMovementHistory([]));
   }, []);
 
   if (error) {
@@ -80,6 +89,12 @@ export default function DashboardPage() {
           />
         </div>
       </Card>
+
+      {dailyMovementHistory && dailyMovementHistory.length > 0 && (
+        <Card title="Avg Daily Movement over time">
+          <CatalogDailyMovementChart items={dailyMovementHistory} />
+        </Card>
+      )}
 
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <Card title="Top 10 by popularity">
