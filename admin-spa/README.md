@@ -188,10 +188,11 @@ account instead of a shared bearer-token secret.
   flush at the bottom of every card regardless of the row's stretched
   height, instead of floating wherever the text above happened to end.
   Follow-up: the Title column's thumbnail went from `h-8 w-8` (32px) to
-  `h-12 w-12` (48px), per Al -- 32px read as a colored square more than
-  a recognizable ball photo; the "no images"/blank placeholders were
-  resized and given a matching `bg-ink-50` slot so they still read as
-  an empty image box rather than floating text at the bigger size.
+  `h-12 w-12` (48px) to, after Al looked at it live, `h-20 w-20` (5rem/
+  80px) -- 32px read as a colored square more than a recognizable ball
+  photo. The "no images"/blank placeholders track the same size and
+  the "no images" one keeps its `bg-ink-50` slot so it still reads as
+  an empty image box rather than floating text.
 
 ## Auth model
 
