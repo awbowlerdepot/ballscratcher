@@ -10524,8 +10524,53 @@ far" (confirmed again here: the registry fetch for that optional binary
 is itself blocked, 403, in this sandbox) -- not something this change
 caused or can fix from here; run `npm run build` on Al's own machine
 before the next CloudFront deploy, same standing caveat every other
-admin-spa UI commit has carried. Not yet smoke-tested against real data
-in a browser.
+admin-spa UI commit has carried.
+
+**Real, confirmed incident, found the moment Al actually clicked into a
+product**: every single request on the page -- `GET /products/{id}`
+itself included -- came back `503 Service Unavailable`, and the page
+rendered "Product not found" even though the product plainly existed.
+Root cause: this page's first cut fetched its six admin_api calls (plus
+two more for an existing article) via `Promise.all`, firing them all at
+once. `AdminApiFunction`'s own comment in `template.yaml` (written
+during an earlier real incident, the catalog-wide core backfill) already
+documents exactly this failure mode for this AWS account: Lambda
+`UnreservedConcurrentExecutions` here is capped at 10, account-wide,
+shared by every function this project runs -- and HTTP API v2 surfaces
+that throttle as a bare 503 with nothing in CloudWatch, which is why the
+browser console showed 503s on every endpoint at once and the app-level
+logs showed nothing. A single page load firing 6-8 concurrent
+invocations at `AdminApiFunction` alone is enough to eat a meaningful
+slice of that 10-slot account-wide pool by itself.
+
+Fixed by rewriting `ProductDetailPage.tsx`'s `load()` to await each
+admin_api call one at a time instead of `Promise.all`-ing them -- same
+"one request, not a burst" posture `scripts/backfill_core_ids.py`'s own
+retry-with-backoff was written for (see that script's module docstring
+and the `AdminApiFunction` comment's own cross-reference to it). The
+article-detail follow-up calls (`getArticle`/`listArticleImageCandidates`)
+moved out of `load()` into their own `useEffect` keyed on the loaded
+article's id, for the same reason. Each of the six load steps also now
+fails independently (a `loadPart` helper wraps each call in its own
+try/catch, showing a toast) rather than the old single `.catch()` that
+let ANY one of the six calls -- price-history, say -- blank the whole
+page's product data even when `GET /products/{id}` itself had already
+succeeded. Trade-off: product detail now takes roughly the sum of six
+round-trips to fully populate instead of the max of six (parallel), a
+few seconds instead of under one -- an acceptable cost against the page
+simply failing to load at all on this account's concurrency ceiling.
+`npx tsc -b` re-verified clean after the rewrite. Not yet re-smoke-
+tested against real data in a browser (that's what surfaced this in the
+first place -- worth confirming the fix live before considering this
+page done).
+
+This is the second time this exact 10-concurrent-execution ceiling has
+bitten a feature in this project (see `AdminApiFunction`'s own comment
+for the first, the core backfill script) -- worth keeping in mind for
+any FUTURE admin-spa page that's tempted to `Promise.all` multiple
+admin_api calls at once: on this account, don't, until the Lambda
+concurrency quota increase mentioned in that comment actually goes
+through.
 
 ## 7. Ongoing operations
 

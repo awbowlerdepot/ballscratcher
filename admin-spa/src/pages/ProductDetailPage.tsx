@@ -105,41 +105,92 @@ export default function ProductDetailPage() {
   const [submitting, setSubmitting] = useState(false);
   const [discoverResult, setDiscoverResult] = useState<string | null>(null);
 
-  function load() {
+  // Sequential, not Promise.all -- real, confirmed incident on this AWS
+  // account (see template.yaml's own comment above AdminApiFunction):
+  // Lambda UnreservedConcurrentExecutions is capped at 10 account-wide
+  // (AWS's default low tier for a new/unverified account), and a burst
+  // of concurrent invocations against this same function has already
+  // been seen to exhaust that pool and come back as a bare 503 from
+  // AdminHttpApi with nothing in CloudWatch -- HTTP API v2's own way of
+  // surfacing a Lambda-service throttle. This page needs six separate
+  // admin_api calls (plus two more if an article exists); firing them
+  // all via Promise.all was exactly that burst. Awaiting them one at a
+  // time keeps this page to a single in-flight AdminApiFunction
+  // invocation at once, same "one request, not a burst" posture
+  // scripts/backfill_core_ids.py's own retry-with-backoff was written
+  // for. Slower wall-clock (roughly the sum of six round-trips instead
+  // of the max of six), but that's a fair trade against the page simply
+  // failing to load at all.
+  //
+  // Each fetch also fails independently rather than aborting the whole
+  // load -- a stumble on, say, price-history shouldn't blank a product
+  // that loaded fine; it just leaves that one sub-tab empty and reports
+  // the failure via the toast instead of the whole-page error view.
+  async function load() {
     if (!id) return;
     setLoading(true);
     setError(null);
-    Promise.all([
-      getProduct(id),
-      listVideoCandidates({ product_id: id, status: "all", limit: 200 }),
-      listArticles({ product_id: id, status: "all", limit: 1 }),
-      listProductPriceSources(id, "all"),
-      getPriceHistory(id),
-      getSkuStockHistory(id),
-    ])
-      .then(async ([p, videoData, articleData, priceSourceItems, priceHistoryData, skuStockData]) => {
-        setProduct(p);
-        setVideos(videoData.items);
-        setPriceSources(priceSourceItems);
-        setPriceHistory(priceHistoryData);
-        setSkuStockHistory(skuStockData);
-        const item = articleData[0] ?? null;
-        setArticleItem(item);
-        if (item) {
-          const [full, candidates] = await Promise.all([getArticle(item.id), listArticleImageCandidates(item.id)]);
-          setArticle(full);
-          setArticleCandidates(candidates);
-        } else {
-          setArticle(null);
-          setArticleCandidates([]);
-        }
-      })
-      .catch((err) => setError(err instanceof Error ? err.message : "Failed to load product."))
-      .finally(() => setLoading(false));
+    try {
+      const p = await getProduct(id);
+      setProduct(p);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load product.");
+      setLoading(false);
+      return;
+    }
+
+    async function loadPart<T>(label: string, fn: () => Promise<T>, apply: (result: T) => void) {
+      try {
+        apply(await fn());
+      } catch (err) {
+        show(err instanceof Error ? `${label}: ${err.message}` : `Failed to load ${label}.`, "danger");
+      }
+    }
+
+    await loadPart("videos", () => listVideoCandidates({ product_id: id, status: "all", limit: 200 }), (r) =>
+      setVideos(r.items),
+    );
+    await loadPart("article", () => listArticles({ product_id: id, status: "all", limit: 1 }), (r) =>
+      setArticleItem(r[0] ?? null),
+    );
+    await loadPart("price sources", () => listProductPriceSources(id, "all"), setPriceSources);
+    await loadPart("price history", () => getPriceHistory(id), setPriceHistory);
+    await loadPart("SKU stock history", () => getSkuStockHistory(id), setSkuStockHistory);
+    setLoading(false);
   }
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(load, [id]);
+  // Article full detail + image candidates depend on articleItem (set by
+  // load() above) rather than living inside load() itself -- keeps the
+  // same one-request-at-a-time posture without load() needing to know
+  // about article-specific follow-up calls.
+  useEffect(() => {
+    if (!articleItem) {
+      setArticle(null);
+      setArticleCandidates([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const full = await getArticle(articleItem.id);
+        if (cancelled) return;
+        setArticle(full);
+        const candidates = await listArticleImageCandidates(articleItem.id);
+        if (!cancelled) setArticleCandidates(candidates);
+      } catch (err) {
+        if (!cancelled) show(err instanceof Error ? `article detail: ${err.message}` : "Failed to load article detail.", "danger");
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [articleItem?.id]);
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
 
   if (loading && !product) {
     return <p className="text-sm text-ink-500">Loading…</p>;
