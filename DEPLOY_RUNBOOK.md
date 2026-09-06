@@ -8580,6 +8580,71 @@ ProductArticleGeneratorFunction && sam deploy` (or a full redeploy)
 picks it up. No admin-site/admin_api changes needed; the existing
 candidate-picker UI already reflects whatever `is_selected` says.
 
+**2026-09-06 fix -- exclude people/bowling-venue props from generated
+images (Al: "ive noticed a drift in the images coming back to now
+include alot of in bowling venue elements and even humans. where before
+they were just themed backgrounds ... Is that a change or just where it
+went on its own")**
+
+Investigated as a "is this a code change or model drift" question
+first, before touching anything. Two side-by-side examples Al sent of
+the same product made the answer clear: one image was a themed neon
+sci-fi lane BACKDROP with the ball as the sole subject (what he wants
+and has been getting most of the time), the other a photograph of a
+person mid-delivery with bowling shoes and pins scattered mid-frame
+(what he doesn't want) -- same prompt shape, same pipeline, different
+roll of the dice.
+
+Root cause, confirmed against `git log`: `build_gemini_scene_prompt`'s
+"a dynamic editorial action/lifestyle photograph" framing has NEVER
+excluded people, hands, or bowling pins -- that instruction only ever
+existed on the Stability path's own `build_background_prompts`
+(explicit "no people, no hands" in both its prompt text and its
+`negative_prompt`). That gap in the Gemini prompt predates both of the
+two other changes that made it visible on 2026-09-04: (1) the v5 switch
+from Gemini 2.5 Flash Image to Gemini 3 Pro Image (2.5 was being retired
+by Google on Vertex AI 2026-10-02) -- a materially different model
+generation, plausibly more inclined to read "action/lifestyle
+photograph" as literally photographing a bowler; and (2) Stability
+candidates (which carried the "no people" ban) being disabled by
+default that same day per Al's own "will never be better than the
+gemini images" call, so every candidate is now Gemini-only with no ban
+anywhere in the pipeline.
+
+Fix, in `build_gemini_scene_prompt` (`src/product_article_generator/
+app.py`) only:
+- Dropped "lifestyle photograph" from the action_shot framing (now "a
+  dynamic hero shot conveying motion and energy") -- "lifestyle
+  photograph" is exactly the phrase that most invites a literal photo of
+  a person.
+- Added an explicit exclusion list to both variants' prompts: no people,
+  hands, arms, legs, human figures, bowling shoes, scoreboards/monitors,
+  or bowling pins anywhere in frame, even blurred/background. Explicitly
+  preserved the thing Al DID want kept: a themed lane/alley-style
+  backdrop is still allowed when the theme calls for it -- the fix is
+  "no people/props," not "no bowling lane."
+
+No migration, no `template.yaml` change -- pure Lambda-code change,
+picked up by `sam build ProductArticleGeneratorFunction && sam deploy`
+(or a full redeploy). This only affects prompt text sent to Gemini for
+FUTURE generations -- it does not touch already-generated/selected
+images (and per the image-lock fix just above, an already-selected
+image is safe from being dislodged by a regenerate anyway).
+
+**Tests** (`tests/test_product_article_generator.py`, 112/112 passing):
+updated `test_build_gemini_scene_prompt_distinguishes_action_from_
+product_framing` for the new framing wording; new `test_build_gemini_
+scene_prompt_excludes_people_and_bowling_venue_props` confirms the
+exclusion list is present for both variants AND that a themed lane/alley
+setting is still explicitly permitted (this is a people/props fix, not
+a "no bowling lane at all" fix).
+
+**Honest caveat, same as every other Gemini prompt change in this
+module's history**: this is a prompt-level instruction, not a hard
+constraint -- Gemini can still occasionally ignore it. Its real effect
+can only be judged against live invocations after redeploy, the same
+caveat 2026-09-04's ball-prominence prompt change carried.
+
 ### 6u. Article → BigCommerce sync: admin toggle (migration 028) + sync job design spec (job not yet built)
 
 Follow-up to 6s/6t (the ball-review article generator): Al asked how to get

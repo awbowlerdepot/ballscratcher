@@ -1114,22 +1114,47 @@ def composite_ball_on_background(cutout_png_bytes: bytes, background_png_bytes: 
 
 
 def build_gemini_scene_prompt(product: dict, article: dict, variant: str) -> str:
-    """The single integrated prompt Gemini 2.5 Flash Image gets, per
-    variant -- unlike Stability's split "cutout here, background prompt
-    there" approach, Gemini does the placement AND generation in one
-    call, so the prompt has to say BOTH what scene to create and that the
-    reference ball must be carried through unchanged. Mirrors the exact
-    shape of the prompt that produced the yeri.ai reference result Al
-    sent ("generate a scene depicting a Fallout environment and then
-    place the ball in the reference image into that scene, match the
-    color scheme of the reference image") -- grounded in _resolve_visual_
-    context (visual_theme first) rather than a hardcoded "Fallout", since
-    the theme has to be product-specific, not that one example."""
+    """The single integrated prompt Gemini gets, per variant -- unlike
+    Stability's split "cutout here, background prompt there" approach,
+    Gemini does the placement AND generation in one call, so the prompt
+    has to say BOTH what scene to create and that the reference ball must
+    be carried through unchanged. Mirrors the exact shape of the prompt
+    that produced the yeri.ai reference result Al sent ("generate a scene
+    depicting a Fallout environment and then place the ball in the
+    reference image into that scene, match the color scheme of the
+    reference image") -- grounded in _resolve_visual_context (visual_
+    theme first) rather than a hardcoded "Fallout", since the theme has
+    to be product-specific, not that one example.
+
+    REAL INCIDENT (2026-09-06, Al): after the v5 switch to Gemini 3 Pro
+    Image (DEFAULT_GEMINI_IMAGE_MODEL_ID) and Stability being disabled by
+    default (see ENABLE_STABILITY_CANDIDATES), Al reported images
+    "drifting" toward literal bowling-venue photography -- a human hand/
+    arm and legs mid-delivery, bowling shoes, pins scattered mid-frame --
+    versus the themed-backdrop-only hero shots this was designed to
+    produce. Two side-by-side examples he sent, same product, same
+    prompt shape: one a clean neon/sci-fi lane BACKDROP with the ball as
+    the sole subject (what he wants), the other a photograph of someone
+    mid-throw with the ball incidental in the foreground (what he
+    doesn't). Root cause: this prompt's "dynamic editorial action/
+    lifestyle photograph" framing has NEVER excluded people/pins/a bowler
+    -- that instruction only ever existed on the Stability path's own
+    build_background_prompts (explicit "no people, no hands" in both the
+    prompt and its negative_prompt). That gap was invisible while
+    Stability's candidate (with its own ban) was still in the mix, and
+    Gemini 2.5 Flash Image apparently defaulted to a themed-backdrop
+    reading of "action/lifestyle photograph" more often than Gemini 3 Pro
+    Image does -- but the underlying gap in THIS prompt predates both of
+    those changes. Al's own framing: a lane/alley-style backdrop is fine
+    when the theme calls for it, but no person, hands, bowling shoes, or
+    pins anywhere in frame -- "all are hallucinations that just feel
+    phony." Fixed by adding an explicit exclusion list below, the same
+    posture the Stability path already had."""
     context = _resolve_visual_context(article)
     scene_desc = context or "an elevated, premium studio scene"
 
     if variant == "action_shot":
-        framing = "a dynamic editorial action/lifestyle photograph, with the ball large and prominent in the frame"
+        framing = "a dynamic hero shot conveying motion and energy, with the ball large and prominent in the frame"
     else:
         framing = (
             "an elevated, premium product photograph, not in motion, shot close-up "
@@ -1145,7 +1170,13 @@ def build_gemini_scene_prompt(product: dict, article: dict, variant: str) -> str
         "surface pattern, and logo/text exactly as shown in the reference image -- "
         "only change what's around it. Match the lighting and color grading of the "
         "new scene onto the ball naturally, with a realistic contact shadow and "
-        "ambient light on its surface. Photorealistic, high quality, no text "
+        "ambient light on its surface. This is a single-subject hero shot of the "
+        "ball alone -- do not include any people, hands, arms, legs, human figures, "
+        "bowling shoes, scoreboards/monitors, or bowling pins anywhere in the frame, "
+        "even blurred or in the background. The scene may still evoke a bowling lane "
+        "or alley setting where the theme calls for it, but it must read as an "
+        "empty, stylized environment built around the ball -- not a photograph of "
+        "someone in the act of bowling. Photorealistic, high quality, no text "
         "overlays, no watermark."
     )
 

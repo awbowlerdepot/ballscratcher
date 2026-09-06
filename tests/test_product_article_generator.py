@@ -1640,7 +1640,12 @@ def test_build_gemini_scene_prompt_instructs_keeping_the_ball_unchanged():
 def test_build_gemini_scene_prompt_distinguishes_action_from_product_framing():
     action_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "action_shot")
     product_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "product_shot")
-    assert "action/lifestyle photograph" in action_prompt
+    # 2026-09-06 fix: "action/lifestyle photograph" (the pre-fix wording)
+    # dropped in favor of "dynamic hero shot conveying motion and energy"
+    # -- "lifestyle photograph" is exactly the phrase that invited Gemini
+    # 3 Pro Image to render a literal photograph of a person bowling (see
+    # this function's own "REAL INCIDENT" docstring section).
+    assert "dynamic hero shot conveying motion and energy" in action_prompt
     assert "not in motion" in product_prompt
     assert action_prompt != product_prompt
 
@@ -1657,6 +1662,30 @@ def test_build_gemini_scene_prompt_instructs_ball_to_be_large_and_prominent():
         assert "hero subject" in prompt
         assert "large and prominent" in prompt
         assert "not small or distant" in prompt
+
+
+def test_build_gemini_scene_prompt_excludes_people_and_bowling_venue_props():
+    """REAL INCIDENT (2026-09-06, Al): with Stability disabled by default,
+    every candidate now comes from this prompt alone -- and it had NEVER
+    excluded people/pins/a bowler the way the (now-unused-by-default)
+    Stability prompt always did. Al sent two side-by-side examples of the
+    same product: a themed neon-lane BACKDROP with the ball as the sole
+    subject (wanted) vs. a photograph of a person mid-delivery with
+    bowling shoes and scattered pins (not wanted, "hallucinations that
+    just feel phony"). Confirms the new exclusion list is present for
+    both variants, and that a themed lane/alley backdrop itself is still
+    explicitly allowed -- Al's own distinction was people/pins/props, not
+    the lane setting itself."""
+    action_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "action_shot")
+    product_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "product_shot")
+    for prompt in (action_prompt, product_prompt):
+        assert "do not include any people, hands, arms, legs, human figures" in prompt
+        assert "bowling shoes" in prompt
+        assert "bowling pins" in prompt
+        assert "not a photograph of someone in the act of bowling" in prompt
+        # The lane/alley setting itself is still explicitly permitted --
+        # this is a "no people/props" fix, not a "no bowling lane" one.
+        assert "may still evoke a bowling lane or alley setting" in prompt
 
 
 class _FakeGeminiResponse:
