@@ -23,7 +23,10 @@ import { useToast } from "../components/Toast";
 
 const LIMIT = 50;
 
-const VARIANT_LABELS: Record<string, string> = { action_shot: "Action shot", product_shot: "Product shot" };
+// Exported (not local to this file) so ProductDetailPage's Article
+// sub-tab can render the exact same bowling.com-shaped preview instead
+// of duplicating this JSX -- see that page's own comment.
+export const VARIANT_LABELS: Record<string, string> = { action_shot: "Action shot", product_shot: "Product shot" };
 
 function fmtDate(iso: string | null): string {
   return iso ? new Date(iso).toLocaleString() : "—";
@@ -417,7 +420,7 @@ export default function ArticlesPage() {
 // plain action_shot_image_url/product_shot_image_url set directly (no
 // candidate rows) -- falls back to showing those two images plainly in
 // that case, same as admin-site's own imagesBlock fallback.
-function ArticlePreview({
+export function ArticlePreview({
   article,
   candidates,
   onSelectCandidate,

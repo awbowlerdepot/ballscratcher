@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { listProducts, rescrapeProduct } from "../api/client";
 import type { ListProductsParams, Product, ProductSort, SourcePlatform } from "../api/types";
 import Badge from "../components/Badge";
@@ -98,10 +99,22 @@ export default function ProductsPage() {
     {
       key: "name",
       header: "Product",
+      // Links into ProductDetailPage's sub-tabs (Overview/Videos/Article/
+      // Pricing/SKUs & Stock/Raw Data) -- Al: "there is no way to see all
+      // the sub 'tabs' for products" (task #535). The old external-site
+      // link moves to a separate small "↗" affixed after the name rather
+      // than disappearing -- it's still useful (jumping straight to the
+      // manufacturer's own page), just no longer the only thing a click
+      // here does.
       render: (p) => (
-        <a href={p.url} target="_blank" rel="noreferrer" className="font-medium text-ink-800 hover:text-primary">
-          {p.brand_name} {p.name}
-        </a>
+        <span className="font-medium text-ink-800">
+          <Link to={`/products/${p.id}`} className="hover:text-primary hover:underline">
+            {p.brand_name} {p.name}
+          </Link>{" "}
+          <a href={p.url} target="_blank" rel="noreferrer" className="text-xs text-ink-400 hover:text-primary" title="View source page">
+            ↗
+          </a>
+        </span>
       ),
     },
     {

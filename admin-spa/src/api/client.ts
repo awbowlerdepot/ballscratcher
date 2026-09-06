@@ -12,6 +12,10 @@ import type {
   Coverstock,
   CoverstockDetail,
   DashboardSummary,
+  DiscoverVideosResult,
+  ImageReorderResult,
+  ImageUpdateInput,
+  ImageUpdateResult,
   ListArticlesParams,
   ListCoresParams,
   ListCoverstocksParams,
@@ -21,11 +25,14 @@ import type {
   ListVideoCandidatesParams,
   ManualSeedUrl,
   ManualSeedUrlCreateInput,
+  PriceHistoryResult,
   PriceSite,
   PriceSiteCreateInput,
   PriceSiteUpdateInput,
   PriceSourceListResult,
   Product,
+  ProductDetail,
+  ProductPriceSource,
   QueueArticleGenerationResult,
   QueueArticleSyncResult,
   ReassignVideoResult,
@@ -34,6 +41,8 @@ import type {
   RescrapeResult,
   ReviewQueueListResult,
   SelectImageCandidateResult,
+  SetPublishedResult,
+  SkuStockHistoryResult,
   VideoCandidateListResult,
 } from "./types";
 
@@ -142,6 +151,63 @@ export function listProducts(params: ListProductsParams = {}): Promise<Product[]
 
 export function rescrapeProduct(id: string): Promise<RescrapeResult> {
   return apiPost<RescrapeResult>(`/products/${encodeURIComponent(id)}/rescrape`);
+}
+
+// Product detail page (the sub-tabs view) -- get_product's `select p.*`
+// plus skus/images/discovered_url/bowlerdepot_matches/bowwwl_matches, see
+// ProductDetail's own comment in types.ts.
+export function getProduct(id: string): Promise<ProductDetail> {
+  return apiGet<ProductDetail>(`/products/${encodeURIComponent(id)}`);
+}
+
+export function setProductPublished(id: string, published: boolean): Promise<SetPublishedResult> {
+  return apiPatch(`/products/${encodeURIComponent(id)}/published`, { published });
+}
+
+// "Search for videos again" on the product detail Videos sub-tab -- same
+// soft-fail queued/reason convention as rescrapeProduct, see
+// service.queue_video_discovery's docstring.
+export function discoverVideosForProduct(id: string): Promise<DiscoverVideosResult> {
+  return apiPost<DiscoverVideosResult>(`/products/${encodeURIComponent(id)}/discover-videos`);
+}
+
+// Per-image visibility/thumbnail toggles (migration 010) -- product
+// detail Overview sub-tab's image cards.
+export function updateProductImage(
+  productId: string,
+  imageId: string,
+  input: ImageUpdateInput,
+): Promise<ImageUpdateResult> {
+  return apiPatch(`/products/${encodeURIComponent(productId)}/images/${encodeURIComponent(imageId)}`, input);
+}
+
+// Whole-list reorder (move up/down resubmits the full resulting id list)
+// -- see service.reorder_product_images' docstring for why.
+export function reorderProductImages(productId: string, imageIds: string[]): Promise<ImageReorderResult> {
+  return apiPost<ImageReorderResult>(`/products/${encodeURIComponent(productId)}/images/reorder`, {
+    image_ids: imageIds,
+  });
+}
+
+// This product's own "site setup" for price tracking -- status="all"
+// default (pending/approved/rejected together) mirrors the product
+// detail view's own default, see list_product_price_sources' docstring.
+export function listProductPriceSources(productId: string, status = "all"): Promise<ProductPriceSource[]> {
+  return apiGet<{ items: ProductPriceSource[] }>(`/products/${encodeURIComponent(productId)}/price-sources`, {
+    status,
+  }).then((r) => r.items);
+}
+
+// days widened to 3650 by admin-site's own product detail panel (see that
+// file's loadProductDetailInto comment) so a chart's range picker can
+// filter client-side without a re-fetch per click -- callers here default
+// the same way.
+export function getPriceHistory(productId: string, days = 3650): Promise<PriceHistoryResult> {
+  return apiGet<PriceHistoryResult>(`/products/${encodeURIComponent(productId)}/price-history`, { days });
+}
+
+export function getSkuStockHistory(productId: string, days = 3650): Promise<SkuStockHistoryResult> {
+  return apiGet<SkuStockHistoryResult>(`/products/${encodeURIComponent(productId)}/sku-stock-history`, { days });
 }
 
 export function refreshVideoSummary(id: string): Promise<RefreshRollupResult> {

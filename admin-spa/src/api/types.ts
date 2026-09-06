@@ -103,6 +103,172 @@ export interface RescrapeResult {
   queue_env_var?: string;
 }
 
+export interface SetPublishedResult {
+  product_id: string;
+  published: boolean;
+}
+
+// POST /products/{id}/discover-videos -- same soft-fail queued/reason
+// shape as RescrapeResult above (see queue_video_discovery's own
+// docstring), just without url/queue_env_var since there's no scrape
+// queue involved.
+export interface DiscoverVideosResult {
+  queued: boolean;
+  reason?: string;
+  product_id?: string;
+}
+
+// One row of product_skus (GET /products/{id} -- select * so every
+// column rides through; typed loosely for the columns admin-spa
+// actually renders, see ProductDetail's own comment for why the rest
+// stays untyped rather than chasing product_skus' full DDL here).
+export interface ProductSku {
+  id: string;
+  product_id: string;
+  weight_lbs: number;
+  rg: number | null;
+  differential: number | null;
+  mass_bias: number | null;
+  source: string | null;
+  needs_review: boolean;
+  [key: string]: unknown;
+}
+
+// One row of product_images (GET /products/{id} -- select * ordered by
+// display_order, id). stored_url is the processed "detail" size variant
+// (null until image_processor catches up); source_url is always the
+// original manufacturer image, used as a fallback for display -- see
+// image_processor/app.py's storage-convention comment and admin-site's
+// own imageCards builder (loadProductDetailInto) for the exact same
+// full/thumb fallback logic this admin-spa page ports.
+export interface ProductImage {
+  id: string;
+  product_id: string;
+  image_type: string | null;
+  source_url: string;
+  stored_url: string | null;
+  weight_lbs_context: number | null;
+  display_order: number;
+  is_thumbnail: boolean;
+  is_visible: boolean;
+  [key: string]: unknown;
+}
+
+export interface ImageUpdateInput {
+  is_visible?: boolean;
+  is_thumbnail?: boolean;
+}
+
+export interface ImageUpdateResult {
+  image_id: string;
+  product_id: string;
+  is_visible?: boolean;
+  is_thumbnail?: boolean;
+}
+
+export interface ImageReorderResult {
+  product_id: string;
+  image_ids: string[];
+}
+
+// Full detail for one product (GET /products/{id}) -- service.get_product
+// does `select p.*` plus core/brand/manufacturer names joined on, so this
+// carries every products column PLUS the handful admin-spa actually
+// renders typed explicitly. Deliberately loose (see the `[key: string]:
+// unknown` escape hatch) rather than hand-mirroring products' full DDL
+// here -- same reasoning admin-site's own renderProductRawFields takes
+// (dump whatever's there), and it means a new products column never
+// requires a matching types.ts edit just to keep compiling.
+export interface ProductDetail {
+  id: string;
+  brand_id: string;
+  brand_name: string;
+  manufacturer_name: string | null;
+  name: string;
+  url: string;
+  status: ProductStatus;
+  published: boolean;
+  source_platform: SourcePlatform | null;
+  description: string | null;
+  core_id: string | null;
+  core_name: string | null;
+  core_type: string | null;
+  coverstock_id: string | null;
+  coverstock_name: string | null;
+  release_date: string | null;
+  created_at: string;
+  updated_at: string;
+  video_reviews_summary: string | null;
+  video_reviews_summary_generated_at: string | null;
+  video_reviews_summary_video_count: number | null;
+  skus: ProductSku[];
+  images: ProductImage[];
+  discovered_url: Record<string, unknown> | null;
+  bowlerdepot_matches: Record<string, unknown>[];
+  bowwwl_matches: Record<string, unknown>[];
+  [key: string]: unknown;
+}
+
+// Per-product price-source row shape (GET /products/{id}/price-sources)
+// -- distinct from the catalog-wide PriceSource type below: no product_
+// name/brand_name (redundant on a page already scoped to one product),
+// but carries fetch_method/latest_price/latest_cost_price/latest_in_stock/
+// base_url that list_product_price_sources' own correlated subqueries add
+// -- see that function's docstring in admin_api/service.py.
+export interface ProductPriceSource {
+  id: string;
+  price_site_id: string;
+  site_name: string;
+  fetch_method: PriceSiteFetchMethod;
+  product_url: string;
+  css_selector: string | null;
+  match_query: string | null;
+  match_confidence: "high" | "low" | null;
+  status: PriceSourceStatus;
+  source: "site_search" | "manual";
+  is_active: boolean;
+  last_checked_at: string | null;
+  created_at: string;
+  resolved_at: string | null;
+  resolved_by: string | null;
+  latest_price: number | null;
+  latest_checked_at: string | null;
+  latest_error: string | null;
+  latest_cost_price: number | null;
+  latest_in_stock: boolean | null;
+  base_url: string | null;
+}
+
+// GET /products/{id}/price-history -- sources for a legend, raw history
+// rows for the chart, see service.get_price_history's docstring.
+export interface PriceHistoryPoint {
+  price_source_id: string;
+  price: number | null;
+  error: string | null;
+  checked_at: string;
+  cost_price: number | null;
+  in_stock: boolean | null;
+}
+
+export interface PriceHistoryResult {
+  sources: { id: string; site_name: string }[];
+  history: PriceHistoryPoint[];
+}
+
+// GET /products/{id}/sku-stock-history -- same two-part shape as price
+// history above, see service.get_sku_stock_history's docstring.
+export interface SkuStockHistoryPoint {
+  product_sku_id: string;
+  price_source_id: string;
+  quantity: number | null;
+  checked_at: string;
+}
+
+export interface SkuStockHistoryResult {
+  skus: { id: string; weight_lbs: number }[];
+  history: SkuStockHistoryPoint[];
+}
+
 // POST /products/{id}/refresh-video-summary's response -- "no
 // approved+summarized videos yet" is a normal, expected outcome
 // (rollup_regenerated: false + reason), not an HTTP error, same

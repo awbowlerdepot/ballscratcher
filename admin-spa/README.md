@@ -283,13 +283,11 @@ its own git history for precedent).
 - A "set new password" form for the Cognito `newPasswordRequired`
   challenge -- first-time accounts need a permanent password set via
   the CLI (see above) rather than through the app itself.
-- A Products detail sub-view (the old admin-site has a tabbed per-
-  product panel with its own Videos section, "search again" rescan
-  button, and bulk reassign/delete -- admin-spa's Video Candidates tab
-  only covers the standalone list, not that richer per-product view).
-  This is now the one piece of admin-site/index.html functionality
-  with no admin-spa equivalent at all -- every top-level tab has been
-  ported.
+- Bulk select/reassign/delete on the product detail page's own Videos
+  sub-tab (admin-site's product panel has this; `ProductDetailPage.tsx`
+  currently does per-row approve/reject/restore/reassign only, same as
+  the standalone Video Candidates tab -- see 2026-09-06's DEPLOY_
+  RUNBOOK.md entry for the sub-tabs page this note used to be about).
 - A real brand-name dropdown on the Products/Cores/Coverstocks filter
   bars (currently a raw brand-id text field on each) -- `GET /brands`
   does exist in admin_api (confirmed while building Batch Jobs' Manual

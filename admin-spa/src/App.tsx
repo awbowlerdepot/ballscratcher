@@ -10,6 +10,7 @@ import CoverstocksPage from "./pages/CoverstocksPage";
 import DashboardPage from "./pages/DashboardPage";
 import LoginPage from "./pages/LoginPage";
 import PriceSitesPage from "./pages/PriceSitesPage";
+import ProductDetailPage from "./pages/ProductDetailPage";
 import ProductsPage from "./pages/ProductsPage";
 import ReviewQueuePage from "./pages/ReviewQueuePage";
 import VideoCandidatesPage from "./pages/VideoCandidatesPage";
@@ -30,6 +31,7 @@ export default function App() {
             >
               <Route path="/" element={<DashboardPage />} />
               <Route path="/products" element={<ProductsPage />} />
+              <Route path="/products/:id" element={<ProductDetailPage />} />
               <Route path="/review-queue" element={<ReviewQueuePage />} />
               <Route path="/video-candidates" element={<VideoCandidatesPage />} />
               <Route path="/articles" element={<ArticlesPage />} />

@@ -10429,6 +10429,104 @@ rendering as expected, and the off-canvas drawer's slide/backdrop
 actually behaving as reasoned through. See admin-spa/README.md's
 "Verified so far" for the same caveat in more detail.
 
+### 6ab.12. Product detail page: the sub-tabs admin-spa was missing
+
+Al: "Currently there is only a list with checkboxes for bulk actions.
+there is no way to see all the sub 'tabs' for products" -- exactly the
+gap admin-spa/README.md's own "What's not here yet" list had been
+flagging since the Video Candidates tab was ported (6ab.2): admin-site/
+index.html's per-product detail panel (Overview/Videos/Article/Pricing/
+SKUs & Stock/Raw Data, tab-ified back in task #308) had no admin-spa
+equivalent at all -- `ProductsPage.tsx` could only bulk-rescrape a list
+of rows, never drill into one.
+
+**New page**: `src/pages/ProductDetailPage.tsx`, routed at `/products/
+:id` (`App.tsx`). `ProductsPage.tsx`'s "Product" column now links there
+(`brand_name name` as an internal `<Link>`), with the old external-site
+link demoted to a small trailing "↗" rather than removed.
+
+**Data loading**: everything fetches once up front via `Promise.all` --
+`GET /products/{id}` (the full `select p.*` row plus skus/images),
+`GET /video-candidates?product_id=…&status=all`, `GET /articles?
+product_id=…&status=all&limit=1` (then `GET /articles/{id}` + `GET /
+articles/{id}/image-candidates` if one exists), `GET /products/{id}/
+price-sources?status=all`, `GET /products/{id}/price-history`, and `GET
+/products/{id}/sku-stock-history` -- same "fetch alongside everything
+else, not lazily per tab click" reasoning admin-site's own
+`loadProductDetailInto` used, so switching tabs is instant. Any mutation
+(approve a video, select an image candidate, reorder images, toggle
+published…) just re-runs the same `load()` to keep every tab in sync,
+rather than patching local state piecemeal.
+
+**New admin_api client functions/types** (`api/client.ts`/`api/
+types.ts`) -- all against ALREADY-DEPLOYED admin_api routes (every one
+of these has existed since the image-ordering/video-candidates/price-
+tracking features shipped; admin-site's own product-detail panel has
+used them all along -- admin-spa's client just never had wrappers for
+them until now, so **no backend change ships with this feature**):
+`getProduct` (`GET /products/{id}`), `setProductPublished` (`PATCH
+.../published`), `discoverVideosForProduct` (`POST .../discover-
+videos`), `updateProductImage`/`reorderProductImages` (`PATCH .../
+images/{id}`, `POST .../images/reorder`), `listProductPriceSources`
+(`GET .../price-sources`), `getPriceHistory`/`getSkuStockHistory` (`GET
+.../price-history`, `GET .../sku-stock-history`). `ProductDetail` is
+typed loosely (a `[key: string]: unknown` escape hatch alongside the
+fields the page actually renders) since `get_product` does `select p.*`
+-- same reasoning admin-site's own `renderProductRawFields` takes, and
+it means a future new `products` column never breaks this page's build.
+
+**The six sub-tabs**:
+- **Overview** -- image grid with the same move-up/down/set-thumbnail/
+  toggle-visibility controls as admin-site (reorder resubmits the whole
+  id list, see `reorder_product_images`'s own docstring for why), core/
+  coverstock/source/release-date, description, and a Publish/Unpublish
+  toggle (new to any admin-spa product view -- `PATCH .../published` had
+  no caller anywhere in admin-spa before this).
+- **Videos** -- this product's candidates across every status at once
+  (not just pending), per-row Approve/Reject/Undo/Reassign (same modal
+  pattern as `VideoCandidatesPage.tsx`), a "Search for videos again"
+  button (`discoverVideosForProduct`), and the video-reviews rollup text
+  with its own "Refresh rollup now" button. Deliberately NOT ported:
+  bulk select/reassign/delete on this scoped list -- admin-site has it,
+  this first cut doesn't (see admin-spa/README.md's updated "what's not
+  here yet" entry) -- per-row actions cover the common case and keep
+  this already-large page's scope bounded.
+- **Article** -- reuses `ArticlesPage.tsx`'s own `ArticlePreview`
+  component (now exported instead of file-local) so the exact same
+  bowling.com-shaped render, image-candidate picker, generate/regenerate/
+  approve/reject/sync controls appear here as on the standalone Articles
+  tab, without duplicating that JSX.
+- **Pricing** -- this product's configured price sources (site, method,
+  status, latest price/stock/checked-at) as a table, plus a "recent price
+  checks" table of the last 30 history rows. No Chart.js line chart here
+  despite `chart.js`/`react-chartjs-2` already being a dependency
+  (DashboardPage uses them) -- aligning multiple price sources' checks
+  onto one time axis cleanly needs either a time-scale adapter or a
+  hand-rolled label-bucketing pass, and a plain table gets the same
+  information in front of Al with far less risk of a subtly-wrong chart;
+  a real chart here is a reasonable follow-up, not a gap that blocks
+  this feature.
+- **SKUs & Stock** -- `product.skus` (weight/RG/differential/mass bias/
+  source/needs-review) plus a "recent stock readings" table from `GET
+  .../sku-stock-history`, same table-not-chart reasoning as Pricing.
+- **Raw Data** -- every remaining `products` column as a key/value table
+  (mirrors admin-site's `renderProductRawFields`), the `discovered_url`
+  crawl record as raw JSON, and the Rescrape button -- kept here rather
+  than on Overview, matching task #332's own "Move Rescrape button from
+  Overview to Raw Data tab" precedent from the admin-site version of this
+  panel.
+
+**Verification**: `npx tsc -b` (whole-project references, not just this
+page) -- clean, zero errors. `npm run build`'s `vite build` step still
+fails in this sandbox on the pre-existing `@rollup/rollup-linux-arm64-
+gnu` platform mismatch documented in admin-spa/README.md's "Verified so
+far" (confirmed again here: the registry fetch for that optional binary
+is itself blocked, 403, in this sandbox) -- not something this change
+caused or can fix from here; run `npm run build` on Al's own machine
+before the next CloudFront deploy, same standing caveat every other
+admin-spa UI commit has carried. Not yet smoke-tested against real data
+in a browser.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
