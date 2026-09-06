@@ -9658,9 +9658,10 @@ is platform-specific, and this `node_modules` was installed on macOS,
 not this sandbox's Linux; see https://github.com/npm/cli/issues/4828)
 -- this is an environment mismatch, not a code defect, but it does mean
 the production bundle itself still needs a real `npm run build` on
-Al's machine before the next deploy. The Review Queue tab itself has
-not yet been smoke-tested against real data the way Dashboard/Products
-have.
+Al's machine before the next deploy. **Update**: the Review Queue tab
+has since been smoke-tested against real data too and confirmed
+working -- all three phase-1+ tabs (Dashboard, Products, Review Queue)
+are now verified end to end against the live stack.
 
 ## 7. Ongoing operations
 

@@ -159,5 +159,5 @@ not defined` and blanked the whole app on first load. Fixed via
 from the same dependency chain, that needs `vite-plugin-node-polyfills`
 (or a manual shim) added there too.
 
-Review Queue (approve/reject/bulk) has not yet been smoke-tested
-against real data -- it's `tsc`-clean but untried in the browser.
+Review Queue (approve/reject/bulk) has since been smoke-tested against
+real data too -- confirmed working.
