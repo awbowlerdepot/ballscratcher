@@ -9968,6 +9968,15 @@ sandbox limitation) -- worth an actual look, especially the collapsed
 width and whether `title`-attribute tooltips feel sufficient versus a
 proper hover tooltip component.
 
+Follow-up from Al right after: the toggle button originally lived in
+the sidebar header next to "BowlerIQ Admin" (right-aligned, smaller
+`h-4 w-4` chevron than the nav icons). Moved into `<nav>` itself as the
+first row, styled identically to a `NAV_ITEMS` link (same `h-5 w-5`
+icon size, same left-aligned `px-3`/centered-when-collapsed layout,
+same `hover:bg-ink-200`) so it reads as part of the menu instead of
+header chrome -- the header `div` now only ever holds the title text
+(empty box when collapsed).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

@@ -52,19 +52,25 @@ export default function Layout() {
         className={`${collapsed ? "w-14" : "w-56"} shrink-0 border-r border-ink-200 bg-ink-100 transition-[width] duration-150`}
       >
         <div
-          className={`flex items-center border-b border-ink-200 py-4 ${collapsed ? "justify-center px-2" : "justify-between px-4"}`}
+          className={`flex items-center border-b border-ink-200 py-4 ${collapsed ? "justify-center px-2" : "px-4"}`}
         >
           {!collapsed && <span className="text-base font-semibold text-ink-800">BowlerIQ Admin</span>}
-          <button
-            onClick={toggleCollapsed}
-            className="rounded-md p-1.5 text-ink-500 hover:bg-ink-200 hover:text-ink-800"
-            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-          >
-            {collapsed ? <IconChevronsRight className="h-4 w-4" /> : <IconChevronsLeft className="h-4 w-4" />}
-          </button>
         </div>
         <nav className="flex flex-col gap-0.5 p-2">
+          {/* Styled as a nav row, not a corner icon button, so it reads
+              as part of the menu (same icon size, same left-aligned
+              layout, same hover treatment) rather than chrome bolted
+              onto the header. */}
+          <button
+            onClick={toggleCollapsed}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            className={`flex items-center gap-2.5 rounded-md py-2 text-sm font-medium text-ink-600 hover:bg-ink-200 ${
+              collapsed ? "justify-center px-2" : "px-3"
+            }`}
+          >
+            {collapsed ? <IconChevronsRight className="h-5 w-5 shrink-0" /> : <IconChevronsLeft className="h-5 w-5 shrink-0" />}
+            {!collapsed && <span>Collapse</span>}
+          </button>
           {NAV_ITEMS.map((item) => {
             const Icon = item.icon;
             return (
