@@ -9584,11 +9584,11 @@ ADU-by-brand bar chart via `react-chartjs-2`, and four Top-10 tables,
 all from the existing `GET /admin/dashboard`) and **Products**
 (`/products` -- the full existing filter set, sortable table, and a
 bulk "Rescrape selected" action against `POST /products/{id}/
-rescrape`). Every other admin-site tab (Review Queue, Video Candidates,
-Articles, Price Sites, Cores, Coverstocks, Blocked Channels, Batch
-Jobs) stays on the existing `admin-site/index.html` for now -- see
-`admin-spa/README.md`'s "what's not here yet" for the full list and the
-reasoning (this is a foundation to build on, not a full port).
+rescrape`). Every other admin-site tab (Video Candidates, Articles,
+Price Sites, Cores, Coverstocks, Blocked Channels, Batch Jobs) stays on
+the existing `admin-site/index.html` for now -- see `admin-spa/
+README.md`'s "what's not here yet" for the full list and the reasoning
+(this is a foundation to build on, not a full port).
 
 **Sandbox limitation, disclosed**: this sandbox has no npm registry
 access (confirmed via `npm ping` returning a proxy 403 this session,
@@ -9612,6 +9612,55 @@ via `admin-set-user-password` at account-creation time -- see
 filters (currently a raw brand-id text field -- there's no `GET
 /brands` on the admin side the way `consumer-site` has on the public
 API).
+
+### 6ab.1. Real-world verification, a real bug fix, and the Review Queue tab
+
+Al deployed the stack and ran `npm install` locally for real (this
+sandbox still can't -- no registry access). Two things followed:
+
+**A real bug, found and fixed**: first `npm run dev` produced a blank
+screen. Browser console: `Uncaught ReferenceError: global is not
+defined`, thrown from `node_modules/buffer` (a transitive dependency of
+`amazon-cognito-identity-js`) before React could render anything.
+Vite doesn't polyfill Node globals the way webpack did, and this
+library assumes `global` exists. Fixed with one line in `admin-spa/
+vite.config.ts`:
+```ts
+define: { global: "globalThis" },
+```
+After that fix and a dev-server restart, sign-in, the Dashboard's real
+KPI/chart data, and a Products bulk rescrape (confirmed via a real
+"Queued rescrape for N products" toast, meaning the action actually
+reached SQS) all worked end to end against the live stack. This is the
+first phase-1 functionality actually exercised outside this sandbox.
+
+**Review Queue tab** (`/review-queue`, `admin-spa/src/pages/
+ReviewQueuePage.tsx`): the scraped-field-correction moderation queue --
+`GET /review-queue` (status/product_id/limit/offset params, an item's
+`field_name` is either a whitelisted product column or a per-SKU
+`rg_15lb`-style field, see `admin_api/service.py`'s
+`parse_review_field_name`) plus `POST /review-queue/{id}/approve` and
+`/reject`. Per-row and bulk approve/reject, a shared-reason modal for
+rejects (replacing admin-site's plain `prompt()`), and the same
+sequential-with-300ms-delay bulk execution `admin-site/index.html`'s
+own bulk feature (task #219) already established to avoid API
+Gateway/Lambda throttling. No inline-edit of the proposed value exists
+on either UI -- approve always applies the scraped value as stored.
+
+**Verification note**: with `node_modules` now present (installed on
+Al's Mac, visible in this sandbox via the shared mount), `npx tsc -b`
+was run for real this time and passed clean with zero errors --
+stronger verification than the "written against documented types,
+never compiled" disclaimer that applied to the original phase-1 ship.
+A real `vite build` still fails in this sandbox specifically (`Cannot
+find module @rollup/rollup-linux-arm64-gnu` -- rollup's native binary
+is platform-specific, and this `node_modules` was installed on macOS,
+not this sandbox's Linux; see https://github.com/npm/cli/issues/4828)
+-- this is an environment mismatch, not a code defect, but it does mean
+the production bundle itself still needs a real `npm run build` on
+Al's machine before the next deploy. The Review Queue tab itself has
+not yet been smoke-tested against real data the way Dashboard/Products
+have.
 
 ## 7. Ongoing operations
 

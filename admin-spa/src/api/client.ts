@@ -1,5 +1,14 @@
 import { getValidIdToken } from "../auth/cognito";
-import type { DashboardSummary, ListProductsParams, Product, RescrapeResult } from "./types";
+import type {
+  ApproveReviewResult,
+  DashboardSummary,
+  ListProductsParams,
+  ListReviewQueueParams,
+  Product,
+  RejectReviewResult,
+  RescrapeResult,
+  ReviewQueueListResult,
+} from "./types";
 
 // Unlike consumer-site's PublicApiFunction client, every request here
 // needs an Authorization header -- AdminHttpApi is gated by
@@ -82,4 +91,22 @@ export function listProducts(params: ListProductsParams = {}): Promise<Product[]
 
 export function rescrapeProduct(id: string): Promise<RescrapeResult> {
   return apiPost<RescrapeResult>(`/products/${encodeURIComponent(id)}/rescrape`);
+}
+
+export function listReviewQueue(params: ListReviewQueueParams = {}): Promise<ReviewQueueListResult> {
+  return apiGet<ReviewQueueListResult>("/review-queue", { ...params });
+}
+
+// resolved_by is intentionally omitted -- admin_api's ApproveRequest/
+// RejectRequest both make it Optional and fall back to the
+// authenticated caller's identity (see get_caller in admin_api/app.py)
+// when the client doesn't supply one. There's no field for editing
+// proposed_value before approving -- the backend always applies the
+// row's stored value as-is (see service.py's build_update_plan).
+export function approveReviewItem(id: string): Promise<ApproveReviewResult> {
+  return apiPost<ApproveReviewResult>(`/review-queue/${encodeURIComponent(id)}/approve`, {});
+}
+
+export function rejectReviewItem(id: string, reason?: string): Promise<RejectReviewResult> {
+  return apiPost<RejectReviewResult>(`/review-queue/${encodeURIComponent(id)}/reject`, { reason });
 }

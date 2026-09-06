@@ -102,3 +102,54 @@ export interface RescrapeResult {
   url?: string;
   queue_env_var?: string;
 }
+
+export type ReviewQueueStatus = "pending" | "approved" | "rejected";
+
+// field_name doubles as the "what kind of review is this" signal --
+// there's no separate table/type column. It's either a whitelisted
+// product column (name, coverstock_material, published, etc.) or a
+// per-SKU field matching `(rg|differential|mass_bias)_(\d{1,2})lb`
+// (e.g. "rg_15lb") -- see parse_review_field_name in
+// src/admin_api/service.py. current_value/proposed_value are always
+// strings here regardless of the underlying column's real type
+// (numeric/bool casting happens server-side on approve).
+export interface ReviewQueueItem {
+  id: string;
+  product_id: string;
+  product_name: string;
+  product_url: string;
+  field_name: string;
+  current_value: string | null;
+  proposed_value: string | null;
+  source: string | null;
+  reason: string | null;
+  status: ReviewQueueStatus;
+  created_at: string;
+  resolved_at: string | null;
+  resolved_by: string | null;
+}
+
+export interface ListReviewQueueParams {
+  status?: ReviewQueueStatus;
+  product_id?: string;
+  limit?: number;
+  offset?: number;
+}
+
+export interface ReviewQueueListResult {
+  items: ReviewQueueItem[];
+  // Only populated when status === "pending" -- null otherwise (see
+  // GET /review-queue in admin_api/app.py).
+  pending_count: number | null;
+}
+
+export interface ApproveReviewResult {
+  review_id: string;
+  status: "approved";
+  applied: { table: string; column: string; value: unknown; where: unknown };
+}
+
+export interface RejectReviewResult {
+  review_id: string;
+  status: "rejected";
+}

@@ -5,6 +5,7 @@ import { ToastProvider } from "./components/Toast";
 import DashboardPage from "./pages/DashboardPage";
 import LoginPage from "./pages/LoginPage";
 import ProductsPage from "./pages/ProductsPage";
+import ReviewQueuePage from "./pages/ReviewQueuePage";
 
 export default function App() {
   return (
@@ -22,6 +23,7 @@ export default function App() {
             >
               <Route path="/" element={<DashboardPage />} />
               <Route path="/products" element={<ProductsPage />} />
+              <Route path="/review-queue" element={<ReviewQueuePage />} />
             </Route>
           </Routes>
         </ToastProvider>

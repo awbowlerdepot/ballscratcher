@@ -6,13 +6,14 @@ import Button from "./Button";
 const NAV_ITEMS = [
   { to: "/", label: "Dashboard", end: true },
   { to: "/products", label: "Products", end: false },
+  { to: "/review-queue", label: "Review Queue", end: false },
 ];
 
-// Phase-1 shell: sidebar + top bar + <Outlet/>. Review Queue, Video
-// Candidates, Articles, Price Sites, etc. all still live on the
-// existing admin-site/index.html for now (see README.md's "not here
-// yet" section) -- this SPA starts with just the two tabs Al asked for
-// in phase 1 (Dashboard, Products) and grows from there.
+// Shell: sidebar + top bar + <Outlet/>. Video Candidates, Articles,
+// Price Sites, Cores, Coverstocks, Blocked Channels, and Batch Jobs
+// still live on the existing admin-site/index.html for now (see
+// README.md's "not here yet" section) -- tabs move over here one at a
+// time as they're ported.
 export default function Layout() {
   const { user, signOut } = useAuth();
 

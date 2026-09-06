@@ -22,11 +22,21 @@ account instead of a shared bearer-token secret.
   source platform, sort, the three "missing X" checkboxes), a sortable
   table, checkbox multi-select, and a bulk "Rescrape selected" action --
   `GET /products` + `POST /products/{id}/rescrape`.
+- **Review Queue** (`/review-queue`) -- the scraped-field-correction
+  moderation queue (a `field_name` is either a whitelisted product
+  column or a per-SKU `rg`/`differential`/`mass_bias` value -- see
+  `api/types.ts`'s `ReviewQueueItem` comment). Status/product-id
+  filters, a pending-count badge, per-row and bulk approve/reject
+  (bulk fires sequentially with a 300ms pause between calls, matching
+  `admin-site/index.html`'s own throttling-avoidance precedent), and a
+  reason modal for rejects. There's no inline-edit of the proposed
+  value on either this or the old UI -- approve always applies the
+  scraped value exactly as-is.
 - A small hand-rolled component library in `src/components/` (`Button`,
   `Badge`, `Card`, `StatCard`, `Modal`, `Toast`, `DataTable`,
-  `Pagination`, `Layout`) that later tabs (Review Queue, Video
-  Candidates, Articles, Price Sites, Cores/Coverstocks...) can build on
-  without re-solving sort/select/bulk-action each time.
+  `Pagination`, `Layout`) that later tabs (Video Candidates, Articles,
+  Price Sites, Cores/Coverstocks...) can build on without re-solving
+  sort/select/bulk-action each time.
 
 ## Auth model
 
@@ -117,19 +127,37 @@ its own git history for precedent).
 - A "set new password" form for the Cognito `newPasswordRequired`
   challenge -- first-time accounts need a permanent password set via
   the CLI (see above) rather than through the app itself.
-- Every other admin-site tab: Review Queue, Video Candidates, Articles,
-  Price Sites, Cores, Coverstocks, Blocked Channels, Batch Jobs. These
-  still live on `admin-site/index.html` for now; migrating them is
-  follow-up work once phase 1's foundation (auth, hosting, component
-  library) has been used for a while.
+- Every other admin-site tab: Video Candidates, Articles, Price Sites,
+  Cores, Coverstocks, Blocked Channels, Batch Jobs. These still live on
+  `admin-site/index.html` for now; migrating them is follow-up work.
 - A real brand-name dropdown on the Products filter bar (currently a
   raw brand-id text field -- there's no `GET /brands` on the admin API
   the way `consumer-site` has on the public one).
-- Automated tests, and a real `npm install`/build. This sandbox has no
-  network access to the npm registry (confirmed this session --
-  `npm ping` returns a 403 from the proxy), so every file here was
-  written from the TypeScript/React/Cognito APIs' documented shapes,
-  never actually compiled or run. Review with more scrutiny than code
-  that was verified locally, and do a real `npm install && npm run dev`
-  smoke test -- especially sign-in -- before trusting this in
-  production.
+- Automated tests.
+
+## Verified so far
+
+Sign-in, Dashboard, and Products (including bulk rescrape) have been
+smoke-tested against a real deployed stack -- Cognito login, KPI data,
+and a queued rescrape all confirmed working end to end. `tsc -b`
+compiles clean for the whole app (verified directly, not just written
+against documented types). A real `npm run build`/`vite build` has
+**not** been run successfully yet in this sandbox -- it fails here on a
+platform mismatch (this sandbox is Linux, `node_modules` was installed
+on a Mac, and `rollup`'s native binary is platform-specific; see
+https://github.com/npm/cli/issues/4828), not a code issue, but it means
+the production bundle itself is unverified. Run `npm run build`
+yourself before the first real CloudFront deploy to confirm.
+
+One real gotcha already hit and fixed: `amazon-cognito-identity-js`
+pulls in Node's `buffer` package, which assumes a global `global`
+object that doesn't exist in a browser. Vite doesn't polyfill Node
+globals the way webpack did, so this threw `ReferenceError: global is
+not defined` and blanked the whole app on first load. Fixed via
+`define: { global: "globalThis" }` in `vite.config.ts` -- if a similar
+`process is not defined`/`Buffer is not defined` error ever shows up
+from the same dependency chain, that needs `vite-plugin-node-polyfills`
+(or a manual shim) added there too.
+
+Review Queue (approve/reject/bulk) has not yet been smoke-tested
+against real data -- it's `tsc`-clean but untried in the browser.
