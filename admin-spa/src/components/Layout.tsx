@@ -6,6 +6,7 @@ import Button from "./Button";
 import ErrorBoundary from "./ErrorBoundary";
 import {
   IconArticles,
+  IconBlocked,
   IconCore,
   IconCoverstock,
   IconDashboard,
@@ -25,6 +26,7 @@ const NAV_ITEMS = [
   { to: "/price-sites", label: "Price Sites", end: false, icon: IconPriceTag },
   { to: "/cores", label: "Cores", end: false, icon: IconCore },
   { to: "/coverstocks", label: "Coverstocks", end: false, icon: IconCoverstock },
+  { to: "/blocked-channels", label: "Blocked Channels", end: false, icon: IconBlocked },
 ];
 
 // Persisted across reloads/sessions -- a "dense pro-tool" reviewer
@@ -32,10 +34,9 @@ const NAV_ITEMS = [
 // they've learned the icons, not to re-collapse it every time.
 const SIDEBAR_COLLAPSED_KEY = "admin-spa:sidebar-collapsed";
 
-// Shell: sidebar + top bar + <Outlet/>. Blocked Channels and Batch Jobs
-// still live on the existing admin-site/index.html for now (see
-// README.md's "not here yet" section) -- tabs move over here one at a
-// time as they're ported.
+// Shell: sidebar + top bar + <Outlet/>. Batch Jobs still lives on the
+// existing admin-site/index.html for now (see README.md's "not here
+// yet" section) -- tabs move over here one at a time as they're ported.
 export default function Layout() {
   const { user, signOut } = useAuth();
   const location = useLocation();

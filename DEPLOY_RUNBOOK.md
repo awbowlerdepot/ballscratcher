@@ -10019,6 +10019,44 @@ picked up when the Batch Jobs tab itself is ported (6ab.10 below).
 `npx tsc -b --force` passes clean. Not yet smoke-tested against real
 deployed data.
 
+### 6ab.9. Blocked Channels tab
+
+Ninth tab ported into `admin-spa/` (`src/pages/BlockedChannelsPage.tsx`)
+-- the admin-curated YouTube channel denylist from
+`021_blocked_video_channels.sql`. On admin-site this panel lives
+*inside* the Video Candidates tab (a small blocklist tightly coupled to
+that tab's own `channel_title` column, per that migration's own header
+comment), not as its own top-level nav item -- but here it gets a
+standalone page/route (`/blocked-channels`) like Cores/Coverstocks did,
+matching admin-spa's established one-page-per-resource convention
+rather than admin-site's tab layout.
+
+Three routes, confirmed by reading `app.py`/`service.py` directly: `GET
+/blocked-channels` (flat list, most-recent-first, no pagination -- same
+"expected to stay small" shape as Price Sites), `POST /blocked-channels`
+(`channel_title` + optional `note`; the DB's `on conflict
+(lower(channel_title)) do nothing` handles re-blocking an
+already-blocked channel, case-insensitive, as a harmless no-op rather
+than an error -- confirmed in `create_blocked_channel`'s own code, not
+assumed), and `DELETE /blocked-channels/{id}` (hard delete -- "a row
+here IS the block," so unblocking is just removing the row, same
+reasoning as `delete_price_site`). No update endpoint anywhere, so
+`types.ts`'s `BlockedChannel` has no corresponding `*UpdateInput` type.
+
+Also ported admin-site's per-row "Block channel" quick-action
+(`blockChannelForVideo` there) onto `VideoCandidatesPage.tsx`'s actions
+column, reading `channel_title` straight off the row rather than
+requiring a trip to the new Blocked Channels page first -- same
+in-context convenience admin-site's own version offered. New
+`IconBlocked` (circle + diagonal bar, the standard "no entry" glyph)
+added to `icons.tsx` for the nav entry.
+
+`npx tsc -b --force` passes clean. Not yet smoke-tested against real
+deployed data -- see admin-spa/README.md's "Verified so far" for what's
+worth confirming on first real click-through (the quick-block button in
+particular, since it's new surface area beyond a straight port of the
+admin-site panel).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

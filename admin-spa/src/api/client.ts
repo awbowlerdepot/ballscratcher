@@ -5,6 +5,7 @@ import type {
   ArticleImageCandidate,
   ArticleRegenerateMode,
   ApproveReviewResult,
+  BlockedChannel,
   Core,
   CoreDetail,
   Coverstock,
@@ -343,4 +344,24 @@ export function listCoverstocks(params: ListCoverstocksParams = {}): Promise<Cov
 
 export function getCoverstock(id: string): Promise<CoverstockDetail> {
   return apiGet<CoverstockDetail>(`/coverstocks/${encodeURIComponent(id)}`);
+}
+
+// Blocked video channels -- admin-curated denylist, see BlockedChannel's
+// own comment in types.ts. No update endpoint (a row here IS the
+// block) and no pagination (expected to stay a short, hand-curated
+// list, same shape as Price Sites).
+export function listBlockedChannels(): Promise<BlockedChannel[]> {
+  return apiGet<{ items: BlockedChannel[] }>("/blocked-channels").then((r) => r.items);
+}
+
+export function createBlockedChannel(channelTitle: string, note?: string): Promise<BlockedChannel> {
+  return apiPost<BlockedChannel>("/blocked-channels", { channel_title: channelTitle, note });
+}
+
+// Hard delete -- "unblocking" a channel. Its videos become eligible for
+// the BigCommerce push again on the next bowlerdepot_video_sync run;
+// nothing about their approval status or the video_reviews_summary
+// rollup changes.
+export function deleteBlockedChannel(id: string): Promise<{ deleted: boolean; id: string }> {
+  return apiDelete(`/blocked-channels/${encodeURIComponent(id)}`);
 }

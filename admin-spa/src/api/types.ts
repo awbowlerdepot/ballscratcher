@@ -547,3 +547,19 @@ export interface ListCoverstocksParams {
   limit?: number;
   offset?: number;
 }
+
+// Blocked video channels (021_blocked_video_channels.sql): an admin-
+// curated denylist of YouTube channel display names (not stable
+// channel ids -- see the migration's header comment for why) whose
+// videos must never be pushed to BigCommerce's Product Videos feature
+// via src/bowlerdepot_video_sync. Deliberately does NOT affect
+// video_discovery, approval, or the video_reviews_summary rollup --
+// a blocked channel's videos stay approved and keep feeding the
+// aggregate summary. No update endpoint exists -- a row here IS the
+// block, so admin_api only exposes list/create/delete.
+export interface BlockedChannel {
+  id: string;
+  channel_title: string;
+  note: string | null;
+  created_at: string;
+}

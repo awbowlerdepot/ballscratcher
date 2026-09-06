@@ -97,6 +97,18 @@ export function IconCoverstock(props: IconProps) {
   );
 }
 
+// Blocked Channels -- the standard "no entry" circle-with-diagonal-bar
+// glyph, so it reads as "denylist" at a glance next to Cores/
+// Coverstocks' shape-based icons.
+export function IconBlocked(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <circle cx="10" cy="10" r="7.3" />
+      <path d="M5.1 5.1l9.8 9.8" />
+    </svg>
+  );
+}
+
 export function IconChevronsLeft(props: IconProps) {
   return (
     <svg {...base} {...props}>

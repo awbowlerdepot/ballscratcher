@@ -3,6 +3,7 @@ import { AuthProvider, ProtectedRoute } from "./auth/AuthContext";
 import Layout from "./components/Layout";
 import { ToastProvider } from "./components/Toast";
 import ArticlesPage from "./pages/ArticlesPage";
+import BlockedChannelsPage from "./pages/BlockedChannelsPage";
 import CoresPage from "./pages/CoresPage";
 import CoverstocksPage from "./pages/CoverstocksPage";
 import DashboardPage from "./pages/DashboardPage";
@@ -34,6 +35,7 @@ export default function App() {
               <Route path="/price-sites" element={<PriceSitesPage />} />
               <Route path="/cores" element={<CoresPage />} />
               <Route path="/coverstocks" element={<CoverstocksPage />} />
+              <Route path="/blocked-channels" element={<BlockedChannelsPage />} />
             </Route>
           </Routes>
         </ToastProvider>

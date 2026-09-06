@@ -94,6 +94,16 @@ account instead of a shared bearer-token secret.
   core_type/release_era swapped for material/type; kept as its own file
   rather than a shared generic component, same call CoresPage itself
   made.
+- **Blocked Channels** (`/blocked-channels`) -- an admin-curated
+  denylist (021_blocked_video_channels.sql) of YouTube channel display
+  names whose videos never get pushed to BigCommerce's Product Videos
+  feature via `src/bowlerdepot_video_sync`. On admin-site this panel
+  lives inside the Video Candidates tab; here it's its own top-level
+  page, matching the rest of the SPA's one-page-per-resource pattern.
+  Create/list/delete only (no update -- a row here IS the block).
+  `VideoCandidatesPage.tsx` also got a "Block channel" quick-action per
+  row, mirroring admin-site's `blockChannelForVideo`, so an admin
+  spotting a competitor's video doesn't have to leave the review queue.
 - A small hand-rolled component library in `src/components/` (`Button`,
   `Badge`, `Card`, `StatCard`, `Modal`, `Toast`, `DataTable`,
   `Pagination`, `Layout`, `ErrorBoundary`) that later tabs (Articles,
@@ -210,9 +220,8 @@ its own git history for precedent).
 - A "set new password" form for the Cognito `newPasswordRequired`
   challenge -- first-time accounts need a permanent password set via
   the CLI (see above) rather than through the app itself.
-- Every other admin-site tab: Blocked Channels, Batch Jobs. These still
-  live on `admin-site/index.html` for now; migrating them is follow-up
-  work.
+- The last remaining admin-site tab: Batch Jobs. It still lives on
+  `admin-site/index.html` for now; migrating it is follow-up work.
 - A Products detail sub-view (the old admin-site has a tabbed per-
   product panel with its own Videos section, "search again" rescan
   button, and bulk reassign/delete -- admin-spa's Video Candidates tab
@@ -279,6 +288,16 @@ one migration later) and also NOT yet smoke-tested against real data --
 (coverstock_material/coverstock_type) but admin_api returns them as
 plain strings, confirmed by reading service.py's list_coverstocks
 directly rather than assuming.
+
+Blocked Channels has NOT been smoke-tested against real deployed data
+yet -- `tsc -b` passes clean only. Simplest data shape of any tab so
+far (four columns, no enum/nullable-vs-required ambiguity to get wrong
+the way match_confidence was), but the quick-block button added to
+VideoCandidatesPage's actions column is new surface area worth a real
+click-through: confirm a blocked channel actually shows up on
+`/blocked-channels` afterward and that blocking an already-blocked
+channel (case-insensitive dedupe, per the migration's own unique index)
+doesn't surface a confusing error to the user.
 
 Articles has NOT been smoke-tested against real deployed data yet --
 `tsc -b` passes clean, but given the match_confidence incident above,

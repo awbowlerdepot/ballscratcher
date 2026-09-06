@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   approveVideoCandidate,
+  createBlockedChannel,
   listVideoCandidates,
   reassignVideoCandidate,
   rejectVideoCandidate,
@@ -151,6 +152,31 @@ export default function VideoCandidatesPage() {
     }
   }
 
+  // Quick-block mirrors admin-site's blockChannelForVideo -- available
+  // right on the row so an admin spotting a competitor's video in the
+  // review queue doesn't have to go find the Blocked Channels page
+  // first. Approval status and the video_reviews_summary rollup are
+  // untouched; see BlockedChannel's own comment in types.ts.
+  async function handleBlockChannel(row: VideoCandidate) {
+    if (!row.channel_title) {
+      show("This video has no channel name to block.", "danger");
+      return;
+    }
+    if (
+      !window.confirm(
+        `Block channel "${row.channel_title}"? Its approved videos stay approved (and still feed the summary rollup) but will never be pushed to BigCommerce.`,
+      )
+    ) {
+      return;
+    }
+    try {
+      await createBlockedChannel(row.channel_title);
+      show(`Blocked "${row.channel_title}".`, "ok");
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Failed to block channel.", "danger");
+    }
+  }
+
   function openReassignModal(row: VideoCandidate) {
     setReassignTarget(row);
     setReassignProductId("");
@@ -257,6 +283,9 @@ export default function VideoCandidatesPage() {
           )}
           <Button size="sm" variant="secondary" onClick={() => openReassignModal(r)}>
             Reassign
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => handleBlockChannel(r)}>
+            Block channel
           </Button>
         </div>
       ),
