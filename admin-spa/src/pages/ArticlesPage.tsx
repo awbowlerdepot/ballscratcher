@@ -455,7 +455,10 @@ function ArticlePreview({
             </div>
           ))
       ) : article.action_shot_image_url || article.product_shot_image_url ? (
-        <div className="flex gap-3">
+        // flex-wrap: two 160px figures + gap don't fit this Modal's content
+        // width on a narrow phone (see the mobile pass, 2026-09-05) --
+        // without it these would force the modal itself to scroll sideways.
+        <div className="flex flex-wrap gap-3">
           {article.action_shot_image_url && (
             <figure className="w-40">
               <img src={article.action_shot_image_url} alt="Action shot" className="h-28 w-full rounded object-cover" />

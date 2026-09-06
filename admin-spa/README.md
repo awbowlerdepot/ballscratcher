@@ -148,6 +148,29 @@ account instead of a shared bearer-token secret.
   (`w-14`, labels hidden, `title` attribute for a hover tooltip
   instead); the collapsed/expanded state is remembered in
   `localStorage` across reloads.
+- **Mobile-responsive pass** (2026-09-05) -- scoped to Al's stated
+  priority ("quick checks on the go"): Dashboard, Review Queue, Video
+  Candidates, and Blocked Channels get real phone treatment; denser
+  pages (Products, Batch Jobs, Price Sites, Cores, Coverstocks,
+  Articles) just need to not visually break. `Layout.tsx`'s sidebar
+  becomes an off-canvas drawer below the `md` breakpoint (hamburger to
+  open, backdrop/close-button/nav-pick to close) instead of a
+  permanently-reserved column. `DataTable.tsx` gets a CSS-only
+  responsive mode: below `md` every table becomes a stack of bordered
+  cards with each cell's column header injected via
+  `data-label`/`before:content-[attr(...)]`, so this benefits every
+  page using `DataTable` with no per-page changes. `Modal.tsx` needed
+  no changes (already `w-full`/`max-w-*` with viewport padding); two
+  raw `<table>`s inside Cores'/Coverstocks' own detail modals (they
+  don't use `DataTable`) got an `overflow-x-auto` wrapper instead.
+  Fixed-width filter/form inputs on the four priority pages became
+  `w-full sm:w-{n}` so they don't sit oddly narrow when stacked; on the
+  denser pages the existing `flex-wrap` filter bars and individually
+  narrow (≤288px) field widths already fit a phone viewport without
+  intervention. See `DEPLOY_RUNBOOK.md`'s admin-SPA section for the
+  full writeup, including the one real bug this pass found and fixed
+  (ArticlesPage's action/product-shot image row lacked `flex-wrap` and
+  would have forced its own Modal to scroll sideways on a narrow phone).
 
 ## Auth model
 
@@ -304,21 +327,23 @@ also NOT yet smoke-tested against real data -- `tsc -b` passes clean
 only.
 
 Coverstocks is structurally identical to Cores (same read-only shape,
-one migration later) and also NOT yet smoke-tested against real data --
-`tsc -b` passes clean only. material/type are Postgres enum columns
+one migration later). material/type are Postgres enum columns
 (coverstock_material/coverstock_type) but admin_api returns them as
 plain strings, confirmed by reading service.py's list_coverstocks
-directly rather than assuming.
+directly rather than assuming. **Update:** Al clicked through Cores,
+Coverstocks, Blocked Channels, and Batch Jobs against the real deployed
+stack on 2026-09-05 and confirmed all four "are just as good as the
+originals" -- the per-tab caveats above/below are superseded for basic
+functionality; anything more exotic than a first pass (Batch Jobs' Stop
+button mid-loop, an exact-multiple-of-200-rows pagination edge case,
+etc.) still hasn't specifically been exercised.
 
-Blocked Channels has NOT been smoke-tested against real deployed data
-yet -- `tsc -b` passes clean only. Simplest data shape of any tab so
-far (four columns, no enum/nullable-vs-required ambiguity to get wrong
-the way match_confidence was), but the quick-block button added to
-VideoCandidatesPage's actions column is new surface area worth a real
-click-through: confirm a blocked channel actually shows up on
-`/blocked-channels` afterward and that blocking an already-blocked
-channel (case-insensitive dedupe, per the migration's own unique index)
-doesn't surface a confusing error to the user.
+Blocked Channels' quick-block button on VideoCandidatesPage's actions
+column is new surface area confirmed working in that same real
+click-through: a blocked channel shows up on `/blocked-channels`
+afterward, and blocking an already-blocked channel (case-insensitive
+dedupe, per the migration's own unique index) doesn't surface a
+confusing error to the user.
 
 Articles has NOT been smoke-tested against real deployed data yet --
 `tsc -b` passes clean, but given the match_confidence incident above,
@@ -329,12 +354,13 @@ since its shape has grown ad hoc, see `api/types.ts`'s own comment) and
 `seed` on image candidates (should be `null` for every Gemini
 candidate, a number for Stability ones).
 
-Batch Jobs has NOT been smoke-tested against real deployed data yet --
-`tsc -b` passes clean only, and this is the most code-heavy tab ported
-so far (a generic `BatchRunner<T>` component driving a client-side
-list-then-loop against real product IDs, six times over with two
-different result shapes). Most worth confirming on first real
-click-through: the Stop button actually halts the loop between items
+Batch Jobs got a first real click-through from Al on 2026-09-05 (see the
+"Update" note above) confirming the tab holds up in general use -- this
+is still the most code-heavy tab ported so far (a generic `BatchRunner<T>`
+component driving a client-side list-then-loop against real product IDs,
+six times over with two different result shapes), so some scenarios are
+still unexercised. Most worth confirming next: the Stop button actually
+halts the loop between items
 (the `runningRef` pattern was chosen deliberately over plain state
 specifically to avoid a stale-closure bug here, but hasn't been
 exercised against a real multi-page product list); the "Refresh ALL"
@@ -358,3 +384,17 @@ rendered and looked at. **First thing to do on a real machine: run
 called out above and anywhere text sits directly on a `bg-{role}-light`
 chip (badges, error banners, the Toast) -- those were sized by contrast
 math, not by looking at them.
+
+The mobile-responsive pass (see "What's here" above) has the same
+limitation, one level deeper: this sandbox can't run a real browser at
+all, mobile or desktop, so nothing here has been checked at an actual
+~375px width either -- only `tsc -b --force` (clean) and manual tracing
+of each Tailwind breakpoint class against the CSS it should produce.
+Two specific things worth a real phone (or a resized desktop browser)
+before trusting this: the `content-[attr(data-label)]` labels in
+`DataTable.tsx` depend on Tailwind's arbitrary-value content utility
+actually compiling as expected (confirmed supported since 3.3, this
+project pins `^3.4.10`, but "should compile" and "renders correctly at
+this exact viewport" are different claims); and the off-canvas sidebar
+drawer in `Layout.tsx` (`fixed` + `translate-x-full`/`translate-x-0` +
+a `z-30` backdrop) has only been reasoned through, never seen animate.

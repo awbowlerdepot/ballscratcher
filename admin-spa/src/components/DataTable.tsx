@@ -84,10 +84,28 @@ export default function DataTable<T>({
           </div>
         </div>
       )}
+      {/*
+        Mobile pass (2026-09-05): below `md`, a real <table> with 6-8
+        columns (Review Queue, Video Candidates, Products...) doesn't
+        fit a ~375px phone -- the old `overflow-x-auto` wrapper kept the
+        page itself from breaking, but sideways-scrolling a table to
+        read one row is a bad "quick check on the go" experience. Below
+        md this switches to the classic CSS-only responsive-table
+        pattern instead: `table`/`thead`/`tbody`/`tr`/`td` all become
+        plain flow elements (`block`/`flex`), each row becomes its own
+        bordered card, and each cell gets its column header injected as
+        an inline label via `data-label` + `before:content-[attr(...)]`
+        (Tailwind's arbitrary-value content utility, supported since
+        3.3 -- this project pins ^3.4.10). At md+ every one of these
+        classes reverts to the normal table display values, so desktop
+        is pixel-identical to before. A column with an empty header
+        (the actions column on nearly every page) gets `data-label=""`,
+        which renders no label -- exactly what's wanted there.
+      */}
       <div className="overflow-x-auto rounded-lg border border-ink-200 bg-ink-100">
         <table className="w-full text-left text-sm">
-          <thead className="border-b border-ink-200 bg-ink-50 text-xs uppercase tracking-wide text-ink-500">
-            <tr>
+          <thead className="hidden border-b border-ink-200 bg-ink-50 text-xs uppercase tracking-wide text-ink-500 md:table-header-group">
+            <tr className="md:table-row">
               {selectable && (
                 <th className="w-10 px-2.5 py-1.5">
                   <input
@@ -115,10 +133,13 @@ export default function DataTable<T>({
               ))}
             </tr>
           </thead>
-          <tbody>
+          <tbody className="block md:table-row-group">
             {rows.length === 0 && (
-              <tr>
-                <td colSpan={columns.length + (selectable ? 1 : 0)} className="px-3 py-8 text-center text-ink-400">
+              <tr className="block md:table-row">
+                <td
+                  colSpan={columns.length + (selectable ? 1 : 0)}
+                  className="block px-3 py-8 text-center text-ink-400 md:table-cell"
+                >
                   {emptyMessage}
                 </td>
               </tr>
@@ -126,9 +147,15 @@ export default function DataTable<T>({
             {rows.map((row) => {
               const id = getRowId(row);
               return (
-                <tr key={id} className="border-b border-ink-200 last:border-0 hover:bg-ink-200">
+                <tr
+                  key={id}
+                  className="mb-2 block rounded-md border border-ink-200 last:mb-0 hover:bg-ink-200 md:mb-0 md:table-row md:rounded-none md:border-0 md:border-b md:last:border-0"
+                >
                   {selectable && (
-                    <td className="px-2.5 py-1.5">
+                    <td
+                      data-label=""
+                      className="flex items-center justify-between gap-3 px-2.5 py-1.5 before:font-medium before:uppercase before:tracking-wide before:text-ink-500 before:content-[attr(data-label)] md:table-cell md:before:content-none"
+                    >
                       <input
                         type="checkbox"
                         checked={selectedIds?.has(id) ?? false}
@@ -138,7 +165,11 @@ export default function DataTable<T>({
                     </td>
                   )}
                   {columns.map((col) => (
-                    <td key={col.key} className={`px-2.5 py-1.5 ${col.className ?? ""}`}>
+                    <td
+                      key={col.key}
+                      data-label={col.header}
+                      className={`flex items-start justify-between gap-3 px-2.5 py-1.5 before:shrink-0 before:pt-0.5 before:text-xs before:font-medium before:uppercase before:tracking-wide before:text-ink-500 before:content-[attr(data-label)] md:table-cell md:before:content-none ${col.className ?? ""}`}
+                    >
                       {col.render(row)}
                     </td>
                   ))}

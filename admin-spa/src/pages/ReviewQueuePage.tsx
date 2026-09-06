@@ -207,13 +207,13 @@ export default function ReviewQueuePage() {
             <option value="rejected">Rejected</option>
           </select>
         </div>
-        <div>
+        <div className="w-full sm:w-auto">
           <label className="mb-1 block text-xs font-medium text-ink-600">Product ID</label>
           <input
             value={productId}
             onChange={(e) => resetAndSet(setProductId)(e.target.value)}
             placeholder="uuid"
-            className="w-64 rounded-md border border-ink-300 px-2 py-1.5 text-sm"
+            className="w-full rounded-md border border-ink-300 px-2 py-1.5 text-sm sm:w-64"
           />
         </div>
       </div>

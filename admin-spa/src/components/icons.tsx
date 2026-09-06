@@ -150,3 +150,23 @@ export function IconPanelLeft(props: IconProps) {
     </svg>
   );
 }
+
+// Mobile-only nav trigger (hamburger) -- opens the off-canvas sidebar
+// drawer below the md breakpoint, where the desktop collapse/expand
+// icon rail doesn't apply (see Layout.tsx's mobileOpen state).
+export function IconMenu(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M3 5.5h14M3 10h14M3 14.5h14" />
+    </svg>
+  );
+}
+
+// Mobile drawer's own close button -- paired with IconMenu above.
+export function IconClose(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M5 5l10 10M15 5L5 15" />
+    </svg>
+  );
+}

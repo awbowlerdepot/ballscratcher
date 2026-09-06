@@ -107,25 +107,25 @@ export default function BlockedChannelsPage() {
       </p>
 
       <div className="flex flex-wrap items-end gap-3 rounded-lg border border-ink-200 bg-ink-100 p-3">
-        <div>
+        <div className="w-full sm:w-auto">
           <label className="mb-1 block text-xs font-medium text-ink-600">Channel name</label>
           <input
             value={newTitle}
             onChange={(e) => setNewTitle(e.target.value)}
             placeholder="e.g. Bowling.com"
-            className="w-56 rounded-md border border-ink-300 px-2 py-1.5 text-sm"
+            className="w-full rounded-md border border-ink-300 px-2 py-1.5 text-sm sm:w-56"
           />
         </div>
-        <div>
+        <div className="w-full sm:w-auto">
           <label className="mb-1 block text-xs font-medium text-ink-600">Note (optional)</label>
           <input
             value={newNote}
             onChange={(e) => setNewNote(e.target.value)}
             placeholder="e.g. competitor retailer"
-            className="w-56 rounded-md border border-ink-300 px-2 py-1.5 text-sm"
+            className="w-full rounded-md border border-ink-300 px-2 py-1.5 text-sm sm:w-56"
           />
         </div>
-        <Button variant="primary" onClick={handleCreate} disabled={creating}>
+        <Button variant="primary" onClick={handleCreate} disabled={creating} className="w-full sm:w-auto">
           {creating ? "Blocking…" : "Block"}
         </Button>
       </div>

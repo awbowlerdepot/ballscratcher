@@ -159,6 +159,7 @@ export default function CoresPage() {
                 core), safe to investigate for cleanup.
               </p>
             ) : (
+              <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
                 <thead className="border-b border-ink-200 text-xs uppercase tracking-wide text-ink-500">
                   <tr>
@@ -185,6 +186,7 @@ export default function CoresPage() {
                   ))}
                 </tbody>
               </table>
+              </div>
             )}
           </div>
         )}

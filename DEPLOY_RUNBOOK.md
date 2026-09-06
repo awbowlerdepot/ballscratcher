@@ -10123,6 +10123,95 @@ what specifically is worth confirming on first real click-through
 gate, and the Manual Seed URLs brand dropdown's first real
 `GET /brands` call).
 
+### 6ab.11. Mobile-responsive pass
+
+Al: "the last few tabs done... now I want to work on making this a bit
+more mobile friendly" -- with every top-level admin-site tab now ported
+(6ab.1-10), this was the next priority, over further UI polish. Before
+starting, `AskUserQuestion` resolved genuine scope ambiguity in "mobile
+friendly" -- Al picked "quick checks on the go": Dashboard, Review
+Queue, Video Candidates, and Blocked Channels get real phone-optimized
+treatment; denser pages (Products, Batch Jobs, Price Sites, Cores,
+Coverstocks, Articles) only need to not visually break, horizontal
+scroll acceptable there.
+
+**`Layout.tsx`'s sidebar** -- previously a permanently-reserved column
+at every width (on a ~375px phone, even the icon-only collapsed rail
+ate a meaningful share of it). Below the `md` breakpoint it's now an
+off-canvas drawer: `fixed` positioned, `-translate-x-full`/
+`translate-x-0` toggled by new `mobileOpen` state, a `bg-black/60`
+backdrop, opened via a hamburger button in the header (new `IconMenu`)
+and closed by the backdrop, an explicit close button (new `IconClose`),
+or picking a nav item. At `md:` and up every one of those classes
+reverts and the existing `collapsed` icon-rail desktop behavior is
+untouched -- two separate buttons (`hidden md:inline-flex` for the
+desktop collapse toggle, `md:hidden` for the mobile close button)
+sidestep needing a JS `matchMedia` check to decide which behavior a
+click should have.
+
+**`DataTable.tsx`'s responsive mode** -- the highest-leverage single
+change, since every page already renders through this one shared
+component. Below `md`, a real `<table>` with 6-8 columns doesn't fit a
+phone; the previous `overflow-x-auto` wrapper kept the *page* from
+breaking but made reading one row a sideways-scroll chore, which fails
+"quick check on the go" even though it technically "doesn't break."
+Below `md` the table/thead/tbody/tr/td all become plain flow elements
+(`block`/`flex`), each row becomes its own bordered card, and each
+cell's column header is injected as an inline label via a `data-label`
+attribute plus Tailwind's `before:content-[attr(data-label)]`
+arbitrary-value utility (supported since Tailwind 3.3; this project
+pins `^3.4.10`, confirmed in `package.json`). At `md:` and up every
+class reverts to normal table display values, so desktop rendering is
+unchanged. A column with an empty header (the actions column on nearly
+every page) gets `data-label=""`, which correctly renders no label.
+
+**`Modal.tsx`** needed no code changes -- it already used `w-full`
+combined with `max-w-lg`/`max-w-3xl`, `max-h-[85vh] overflow-y-auto`,
+and `p-4` padding on the backdrop, which already behaves correctly at
+narrow widths. What the modal-sizing audit *did* find: two raw
+`<table>` elements inside CoresPage.tsx's and CoverstocksPage.tsx's own
+product-list detail modals bypass `DataTable` entirely (grep-audited
+every `<table` in `admin-spa/src` to catch this, not just the shared
+component) and had no overflow protection at all. Both wrapped in a
+plain `<div className="overflow-x-auto">`, same fix as the original
+non-mobile-specific pass this project already applied elsewhere.
+
+**Priority-page filter bars** -- ReviewQueuePage, VideoCandidatesPage,
+and PriceSitesPage's own Product ID field, and BlockedChannelsPage's
+channel-name/note fields, previously used fixed widths (`w-64`/`w-56`).
+Changed to `w-full sm:w-{64,56}` (wrapping div gets `w-full sm:w-auto`)
+so they span full width when stacked on a phone instead of floating at
+an odd fixed width -- purely a "looks intentional" fix, since the fixed
+widths already fit under any real phone viewport and never caused
+overflow.
+
+**Dense pages left alone, on purpose** -- audited every fixed-width
+filter/form input across Products/Batch Jobs/Price Sites/Cores/
+Coverstocks/Articles (`grep` for `w-4[0-9]` through `w-8[0-9]` across
+`src/pages`). Every one of these lives inside a `flex flex-wrap`
+container and tops out at `w-72` (288px), which already fits and wraps
+cleanly under a phone viewport with zero code changes -- exactly what
+"don't visually break, no full redesign" calls for. One real bug found
+during this audit, unrelated to filter bars: ArticlesPage's article
+preview modal rendered its action-shot/product-shot image pair in a
+plain `flex gap-3` (no wrap) -- two 160px figures plus their gap don't
+fit this Modal's own content width on a narrow phone (~303px available
+inside `Modal`'s `px-5` padding once the backdrop's own `p-4` is
+subtracted from a 375px viewport), which would have forced the *modal
+itself* to scroll sideways. Fixed by adding `flex-wrap`, same pattern
+already used for the Cores/Coverstocks candidate-grid rows.
+
+Same sandbox caveat as every other UI-affecting commit in this project:
+`npm run dev`/`vite build` cannot run here (platform mismatch, see
+6ab.6 and admin-spa/README.md), so nothing above has been rendered and
+looked at, mobile or otherwise -- verification is `npx tsc -b --force`
+(clean) plus manual tracing of each Tailwind class against the CSS it
+should produce. Two things specifically worth a real phone before
+trusting this: the `content-[attr(data-label)]` labels actually
+rendering as expected, and the off-canvas drawer's slide/backdrop
+actually behaving as reasoned through. See admin-spa/README.md's
+"Verified so far" for the same caveat in more detail.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
