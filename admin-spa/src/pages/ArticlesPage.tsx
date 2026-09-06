@@ -202,23 +202,27 @@ export default function ArticlesPage() {
         // to whichever line it happened to sit next to instead of staying
         // pinned to the top of the block. shrink-0 on the image keeps a
         // long title from squeezing the thumbnail down as it wraps.
+        // h-12 w-12 (was h-8 w-8, per Al's follow-up): a 32px thumbnail
+        // read as an afterthought next to the title -- 48px is still a
+        // list-row thumbnail, not a hero shot, but it's actually
+        // recognizable as the ball rather than a colored square.
         <div className="flex items-start gap-2">
           {a.action_shot_image_url ? (
             <img
               src={a.action_shot_image_url}
               alt=""
               title="Action shot"
-              className="h-8 w-8 shrink-0 rounded object-cover"
+              className="h-12 w-12 shrink-0 rounded object-cover"
             />
           ) : a.images_generated_at ? (
             <span
-              className="mt-1.5 h-8 w-8 shrink-0 text-center text-[10px] leading-tight text-ink-400"
+              className="flex h-12 w-12 shrink-0 items-center justify-center rounded bg-ink-50 text-center text-[10px] leading-tight text-ink-400"
               title="Image generation ran but produced no images"
             >
               no images
             </span>
           ) : (
-            <span className="h-8 w-8 shrink-0" aria-hidden="true" />
+            <span className="h-12 w-12 shrink-0" aria-hidden="true" />
           )}
           <div className="min-w-0">
             <button className="text-left font-medium text-ink-800 hover:text-primary" onClick={() => openPreview(a.id)}>

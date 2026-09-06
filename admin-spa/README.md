@@ -187,6 +187,11 @@ account instead of a shared bearer-token secret.
   got `flex-col` + `mt-auto` on their trailing badge/button so it sits
   flush at the bottom of every card regardless of the row's stretched
   height, instead of floating wherever the text above happened to end.
+  Follow-up: the Title column's thumbnail went from `h-8 w-8` (32px) to
+  `h-12 w-12` (48px), per Al -- 32px read as a colored square more than
+  a recognizable ball photo; the "no images"/blank placeholders were
+  resized and given a matching `bg-ink-50` slot so they still read as
+  an empty image box rather than floating text at the bigger size.
 
 ## Auth model
 
