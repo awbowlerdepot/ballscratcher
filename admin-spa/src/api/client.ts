@@ -11,7 +11,10 @@ import type {
   CoreDetail,
   Coverstock,
   CoverstockDetail,
+  CheckPriceResult,
   DashboardSummary,
+  DeleteProductPriceSourceResult,
+  DiscoverPriceSourcesResult,
   DiscoverVideosResult,
   ImageReorderResult,
   ImageUpdateInput,
@@ -33,6 +36,8 @@ import type {
   Product,
   ProductDetail,
   ProductPriceSource,
+  ProductPriceSourceCreateInput,
+  ProductPriceSourceCreateResult,
   QueueArticleGenerationResult,
   QueueArticleSyncResult,
   ReassignVideoResult,
@@ -208,6 +213,40 @@ export function getPriceHistory(productId: string, days = 3650): Promise<PriceHi
 
 export function getSkuStockHistory(productId: string, days = 3650): Promise<SkuStockHistoryResult> {
   return apiGet<SkuStockHistoryResult>(`/products/${encodeURIComponent(productId)}/sku-stock-history`, { days });
+}
+
+// Product detail Pricing sub-tab's own action buttons -- "Find price
+// sources"/"Check price now" (mirroring the Videos sub-tab's "search
+// again" trigger), the manual-add form, and per-row delete. All three
+// hit already-deployed admin_api routes (admin-site's own product-detail
+// price tracking section has used them for a while, see
+// buildPriceTrackingSection) -- these were simply missing from
+// admin-spa's client until ProductDetailPage needed them too.
+export function discoverPriceSourcesForProduct(productId: string): Promise<DiscoverPriceSourcesResult> {
+  return apiPost<DiscoverPriceSourcesResult>(`/products/${encodeURIComponent(productId)}/discover-price-sources`);
+}
+
+export function checkPriceForProduct(productId: string): Promise<CheckPriceResult> {
+  return apiPost<CheckPriceResult>(`/products/${encodeURIComponent(productId)}/check-price`);
+}
+
+// Manual-override path -- see create_product_price_source's own
+// docstring. Immediately approved/source='manual', not a candidate to
+// review.
+export function createProductPriceSource(
+  productId: string,
+  input: ProductPriceSourceCreateInput,
+): Promise<ProductPriceSourceCreateResult> {
+  return apiPost<ProductPriceSourceCreateResult>(`/products/${encodeURIComponent(productId)}/price-sources`, input);
+}
+
+// Hard delete -- cascades to that source's own product_price_history
+// rows (migration 014's on-delete-cascade), see
+// delete_product_price_source's own docstring. Named *Product*PriceSource
+// to distinguish from deletePriceSite (the price_sites registry, a
+// different resource entirely).
+export function deleteProductPriceSource(sourceId: string): Promise<DeleteProductPriceSourceResult> {
+  return apiDelete(`/price-sources/${encodeURIComponent(sourceId)}`);
 }
 
 export function refreshVideoSummary(id: string): Promise<RefreshRollupResult> {

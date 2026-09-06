@@ -2,7 +2,12 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import {
   approveArticle,
+  approvePriceSource,
   approveVideoCandidate,
+  checkPriceForProduct,
+  createProductPriceSource,
+  deleteProductPriceSource,
+  discoverPriceSourcesForProduct,
   discoverVideosForProduct,
   generateArticle,
   getArticle,
@@ -11,15 +16,18 @@ import {
   getSkuStockHistory,
   listArticleImageCandidates,
   listArticles,
+  listPriceSites,
   listProductPriceSources,
   listVideoCandidates,
   reassignVideoCandidate,
   regenerateArticleImages,
   regenerateArticleText,
   rejectArticle,
+  rejectPriceSource,
   rejectVideoCandidate,
   rescrapeProduct,
   resyncArticleNow,
+  restorePriceSource,
   restoreVideoCandidate,
   reorderProductImages,
   refreshVideoSummary,
@@ -34,6 +42,7 @@ import type {
   ArticleImageCandidate,
   ArticleListItem,
   PriceHistoryResult,
+  PriceSite,
   ProductDetail,
   ProductImage,
   ProductPriceSource,
@@ -95,6 +104,7 @@ export default function ProductDetailPage() {
   const [priceSources, setPriceSources] = useState<ProductPriceSource[]>([]);
   const [priceHistory, setPriceHistory] = useState<PriceHistoryResult | null>(null);
   const [skuStockHistory, setSkuStockHistory] = useState<SkuStockHistoryResult | null>(null);
+  const [priceSites, setPriceSites] = useState<PriceSite[]>([]);
 
   const [rejectVideoTarget, setRejectVideoTarget] = useState<VideoCandidate | null>(null);
   const [rejectVideoReason, setRejectVideoReason] = useState("");
@@ -102,8 +112,15 @@ export default function ProductDetailPage() {
   const [reassignProductId, setReassignProductId] = useState("");
   const [rejectArticleOpen, setRejectArticleOpen] = useState(false);
   const [rejectArticleReason, setRejectArticleReason] = useState("");
+  const [rejectPriceSourceTarget, setRejectPriceSourceTarget] = useState<ProductPriceSource | null>(null);
+  const [rejectPriceSourceReason, setRejectPriceSourceReason] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [discoverResult, setDiscoverResult] = useState<string | null>(null);
+  const [discoverPriceResult, setDiscoverPriceResult] = useState<string | null>(null);
+  const [manualSiteId, setManualSiteId] = useState("");
+  const [manualUrl, setManualUrl] = useState("");
+  const [manualSelector, setManualSelector] = useState("");
+  const [addingManualSource, setAddingManualSource] = useState(false);
 
   // Sequential, not Promise.all -- real, confirmed incident on this AWS
   // account (see template.yaml's own comment above AdminApiFunction):
@@ -156,6 +173,12 @@ export default function ProductDetailPage() {
     await loadPart("price sources", () => listProductPriceSources(id, "all"), setPriceSources);
     await loadPart("price history", () => getPriceHistory(id), setPriceHistory);
     await loadPart("SKU stock history", () => getSkuStockHistory(id), setSkuStockHistory);
+    // Price Sites registry -- feeds the Pricing sub-tab's manual-add
+    // dropdown (site name -> id). Same catalog-wide, active-only list
+    // PriceSitesPage itself fetches; harmless to re-fetch per product
+    // page load since it's small and read-mostly (see PriceSite's own
+    // comment in types.ts).
+    await loadPart("price sites", () => listPriceSites(), setPriceSites);
     setLoading(false);
   }
 
@@ -435,6 +458,101 @@ export default function ProductDetailPage() {
     }
   }
 
+  // --- Pricing ------------------------------------------------------------
+  // Ported from admin-site's buildPriceTrackingSection -- the buttons Al
+  // noticed missing (approve/reject/undo/delete per source, "Find price
+  // sources"/"Check price now" triggers, and the manual-add form) were
+  // simply never carried over when this tab's first cut only rendered a
+  // read-only table.
+
+  async function handleDiscoverPriceSources() {
+    setDiscoverPriceResult(null);
+    try {
+      const result = await discoverPriceSourcesForProduct(id!);
+      setDiscoverPriceResult(
+        result.queued ? "Queued -- check back in a bit for new sources." : (result.reason ?? "Not queued."),
+      );
+    } catch (err) {
+      setDiscoverPriceResult(err instanceof Error ? err.message : "Failed to queue price-source search.");
+    }
+  }
+
+  async function handleCheckPriceNow() {
+    try {
+      const result = await checkPriceForProduct(id!);
+      show(result.queued ? "Price check queued." : (result.reason ?? "Not queued."), result.queued ? "ok" : "danger");
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Price check failed.", "danger");
+    }
+  }
+
+  async function handleApprovePriceSource(s: ProductPriceSource) {
+    try {
+      await approvePriceSource(s.id);
+      show("Approved.", "ok");
+      load();
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Approve failed.", "danger");
+    }
+  }
+
+  async function confirmRejectPriceSource() {
+    if (!rejectPriceSourceTarget) return;
+    setSubmitting(true);
+    try {
+      await rejectPriceSource(rejectPriceSourceTarget.id, rejectPriceSourceReason || undefined);
+      show("Rejected.", "ok");
+      setRejectPriceSourceTarget(null);
+      load();
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Reject failed.", "danger");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function handleRestorePriceSource(s: ProductPriceSource) {
+    try {
+      await restorePriceSource(s.id);
+      show("Restored to pending.", "ok");
+      load();
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Restore failed.", "danger");
+    }
+  }
+
+  async function handleDeletePriceSource(s: ProductPriceSource) {
+    if (!window.confirm(`Delete this price source (${s.site_name})? This also removes its price history.`)) return;
+    try {
+      await deleteProductPriceSource(s.id);
+      show("Deleted.", "ok");
+      load();
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Delete failed.", "danger");
+    }
+  }
+
+  async function handleAddManualPriceSource() {
+    if (!manualSiteId || !manualUrl) return;
+    setAddingManualSource(true);
+    try {
+      await createProductPriceSource(id!, {
+        price_site_id: manualSiteId,
+        product_url: manualUrl,
+        css_selector: manualSelector || undefined,
+      });
+      show("Added.", "ok");
+      setManualSiteId("");
+      setManualUrl("");
+      setManualSelector("");
+      load();
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Failed to add.", "danger");
+    } finally {
+      setAddingManualSource(false);
+    }
+  }
+
   // --- Raw Data ---------------------------------------------------------
 
   async function handleRescrape() {
@@ -557,6 +675,39 @@ export default function ProductDetailPage() {
       render: (s) => (s.latest_in_stock === null ? "—" : s.latest_in_stock ? <Badge tone="ok">yes</Badge> : <Badge tone="danger">no</Badge>),
     },
     { key: "latest_checked_at", header: "Last checked", render: (s) => fmtDate(s.latest_checked_at) },
+    {
+      key: "actions",
+      header: "",
+      stackOnMobile: true,
+      render: (s) => (
+        <div className="flex flex-wrap gap-1.5">
+          {s.status === "pending" ? (
+            <>
+              <Button size="sm" variant="primary" onClick={() => handleApprovePriceSource(s)}>
+                Approve
+              </Button>
+              <Button
+                size="sm"
+                variant="danger"
+                onClick={() => {
+                  setRejectPriceSourceTarget(s);
+                  setRejectPriceSourceReason("");
+                }}
+              >
+                Reject
+              </Button>
+            </>
+          ) : (
+            <Button size="sm" variant="secondary" onClick={() => handleRestorePriceSource(s)}>
+              Undo
+            </Button>
+          )}
+          <Button size="sm" variant="ghost" onClick={() => handleDeletePriceSource(s)}>
+            Delete
+          </Button>
+        </div>
+      ),
+    },
   ];
 
   const sortedImages = [...product.images].sort((a, b) => a.display_order - b.display_order);
@@ -761,7 +912,65 @@ export default function ProductDetailPage() {
 
       {tab === "pricing" && (
         <div className="flex flex-col gap-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <Button size="sm" variant="secondary" onClick={handleDiscoverPriceSources}>
+              Find price sources
+            </Button>
+            <Button size="sm" variant="secondary" onClick={handleCheckPriceNow}>
+              Check price now
+            </Button>
+            {discoverPriceResult && <span className="text-xs text-ink-500">{discoverPriceResult}</span>}
+          </div>
           <DataTable columns={priceSourceColumns} rows={priceSources} getRowId={(s) => s.id} emptyMessage="No price sources configured yet." />
+
+          <div className="rounded-md border border-ink-200 p-3">
+            <p className="mb-2 text-sm font-semibold text-ink-800">Add price source manually</p>
+            <div className="flex flex-wrap items-end gap-2">
+              <div>
+                <label className="mb-1 block text-xs font-medium text-ink-600">Site</label>
+                <select
+                  value={manualSiteId}
+                  onChange={(e) => setManualSiteId(e.target.value)}
+                  className="rounded-md border border-ink-300 px-2 py-1.5 text-sm focus:border-primary focus:outline-none"
+                >
+                  <option value="">Select a site…</option>
+                  {priceSites
+                    .filter((s) => s.is_active)
+                    .map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                </select>
+              </div>
+              <div className="min-w-[16rem] flex-1">
+                <label className="mb-1 block text-xs font-medium text-ink-600">Product URL</label>
+                <input
+                  value={manualUrl}
+                  onChange={(e) => setManualUrl(e.target.value)}
+                  placeholder="https://…"
+                  className="w-full rounded-md border border-ink-300 px-2 py-1.5 text-sm focus:border-primary focus:outline-none"
+                />
+              </div>
+              <div className="min-w-[12rem]">
+                <label className="mb-1 block text-xs font-medium text-ink-600">CSS selector override (optional)</label>
+                <input
+                  value={manualSelector}
+                  onChange={(e) => setManualSelector(e.target.value)}
+                  className="w-full rounded-md border border-ink-300 px-2 py-1.5 text-sm focus:border-primary focus:outline-none"
+                />
+              </div>
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={handleAddManualPriceSource}
+                disabled={addingManualSource || !manualSiteId || !manualUrl}
+              >
+                {addingManualSource ? "Adding…" : "Add"}
+              </Button>
+            </div>
+          </div>
+
           {priceHistory && priceHistory.history.length > 0 && (
             <div>
               <p className="mb-1 text-sm font-semibold text-ink-800">Recent price checks</p>
@@ -968,6 +1177,30 @@ export default function ProductDetailPage() {
         <textarea
           value={rejectArticleReason}
           onChange={(e) => setRejectArticleReason(e.target.value)}
+          rows={3}
+          className="w-full rounded-md border border-ink-300 px-3 py-2 text-sm focus:border-primary focus:outline-none"
+        />
+      </Modal>
+
+      <Modal
+        open={rejectPriceSourceTarget !== null}
+        onClose={() => (submitting ? undefined : setRejectPriceSourceTarget(null))}
+        title="Reject price source"
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setRejectPriceSourceTarget(null)} disabled={submitting}>
+              Cancel
+            </Button>
+            <Button variant="danger" onClick={confirmRejectPriceSource} disabled={submitting}>
+              {submitting ? "Rejecting…" : "Reject"}
+            </Button>
+          </>
+        }
+      >
+        <label className="mb-1 block text-xs font-medium text-ink-600">Reason (optional)</label>
+        <textarea
+          value={rejectPriceSourceReason}
+          onChange={(e) => setRejectPriceSourceReason(e.target.value)}
           rows={3}
           className="w-full rounded-md border border-ink-300 px-3 py-2 text-sm focus:border-primary focus:outline-none"
         />

@@ -10572,6 +10572,51 @@ admin_api calls at once: on this account, don't, until the Lambda
 concurrency quota increase mentioned in that comment actually goes
 through.
 
+### 6ab.13. Product detail page: restored the Pricing tab's action buttons
+
+Al reported: "we lost the pricing buttons in the product details pricing
+tab." Confirmed against `admin-site`'s legacy `buildPriceTrackingSection`
+(the source-of-truth panel this tab was ported from in 6ab.12): the
+initial port only rendered the price-sources table and the recent-checks
+history read-only. It dropped the entire action surface that section
+used to have -- Approve/Reject/Undo/Delete per price source, "Find price
+sources"/"Check price now" buttons, and a manual-add form. This was a
+genuine gap in the original port, not a regression of something that had
+been working.
+
+All of the admin_api routes needed already existed and were already
+deployed (`approve_price_source`/`reject_price_source`/
+`restore_price_source`, `queue_price_discovery`, `queue_price_check`,
+`create_product_price_source`, `delete_product_price_source`) -- this
+was purely an admin-spa frontend gap, no backend changes.
+
+Added to `admin-spa/src/pages/ProductDetailPage.tsx`'s Pricing tab:
+
+- An actions column on the price-sources table, matching the existing
+  `videoColumns` pattern: Approve/Reject while `status === "pending"`,
+  otherwise an Undo button (`restore_price_source`), plus an always-
+  present Delete button.
+- A toolbar above the table with "Find price sources" (queues discovery
+  via `discover_price_sources`) and "Check price now" (queues an
+  immediate check via `check_price`) buttons, plus a status line for the
+  discovery result -- same pattern as the Videos tab's "Search for videos
+  again" row.
+- A manual-add form below the table: a site `<select>` populated from
+  `GET /price-sites` (filtered to active sites), a product URL field, and
+  an optional CSS-selector-override field, calling
+  `create_product_price_source`.
+- A reject-price-source `<Modal>` (reason textarea, Cancel/Reject
+  footer), matching the existing reject-video/reject-article modal
+  pattern already in this file.
+
+`load()`'s existing sequential-fetch pattern (see 6ab.12's 503 fix -- no
+`Promise.all` on this page, ever) gained one more step: `listPriceSites()`
+into a new `priceSites` state, used to populate the manual-add form's
+site dropdown.
+
+`npx tsc -b` re-verified clean after the rewrite. Not yet re-smoke-tested
+against real data in a browser.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

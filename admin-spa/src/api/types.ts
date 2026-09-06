@@ -269,6 +269,50 @@ export interface SkuStockHistoryResult {
   history: SkuStockHistoryPoint[];
 }
 
+// POST /products/{id}/discover-price-sources and .../check-price -- same
+// soft-fail queued/reason shape as DiscoverVideosResult (see
+// queue_price_discovery/queue_price_check's own docstrings, both mirror
+// queue_video_discovery).
+export interface DiscoverPriceSourcesResult {
+  queued: boolean;
+  reason?: string;
+  product_id?: string;
+}
+
+export interface CheckPriceResult {
+  queued: boolean;
+  reason?: string;
+  product_id?: string;
+}
+
+// POST /products/{id}/price-sources -- the manual-override path (see
+// create_product_price_source's own docstring): an admin attaching an
+// exact URL directly rather than waiting on/correcting discovery.
+export interface ProductPriceSourceCreateInput {
+  price_site_id: string;
+  product_url: string;
+  css_selector?: string;
+  resolved_by?: string;
+  external_product_id?: string;
+}
+
+export interface ProductPriceSourceCreateResult {
+  id: string;
+  product_id: string;
+  price_site_id: string;
+  product_url: string;
+  external_product_id: string | null;
+  status: "approved";
+  source: "manual";
+}
+
+// DELETE /price-sources/{id} -- hard delete, cascades to that source's
+// own price-history rows (see delete_product_price_source's docstring).
+export interface DeleteProductPriceSourceResult {
+  deleted: boolean;
+  id: string;
+}
+
 // POST /products/{id}/refresh-video-summary's response -- "no
 // approved+summarized videos yet" is a normal, expected outcome
 // (rollup_regenerated: false + reason), not an HTTP error, same
