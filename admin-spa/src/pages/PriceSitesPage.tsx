@@ -191,11 +191,11 @@ export default function PriceSitesPage() {
             href={resolveExternalUrl(r.product_url, r.base_url)}
             target="_blank"
             rel="noreferrer"
-            className="font-medium text-slate-800 hover:text-primary"
+            className="font-medium text-ink-800 hover:text-primary"
           >
             {r.site_name}
           </a>
-          <div className="text-xs text-slate-500">
+          <div className="text-xs text-ink-500">
             {r.source === "manual" ? "manually added" : `auto-matched, ${r.match_confidence ?? "—"} confidence`}
           </div>
         </div>
@@ -207,7 +207,7 @@ export default function PriceSitesPage() {
       render: (r) => (
         <div>
           {r.product_name}
-          <div className="text-xs text-slate-500">{r.brand_name}</div>
+          <div className="text-xs text-ink-500">{r.brand_name}</div>
         </div>
       ),
     },
@@ -383,17 +383,17 @@ export default function PriceSitesPage() {
     <div className="flex flex-col gap-8">
       <section className="flex flex-col gap-4">
         <div className="flex items-center gap-3">
-          <h1 className="text-xl font-semibold text-slate-800">Price Sources</h1>
+          <h1 className="text-xl font-semibold text-ink-800">Price Sources</h1>
           {sourcesPendingCount !== null && <Badge tone="pending">{sourcesPendingCount} pending</Badge>}
         </div>
 
-        <div className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-white p-3">
+        <div className="flex flex-wrap items-end gap-3 rounded-lg border border-ink-200 bg-ink-100 p-3">
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600">Status</label>
+            <label className="mb-1 block text-xs font-medium text-ink-600">Status</label>
             <select
               value={sourceStatus}
               onChange={(e) => resetSourcesAndSet(setSourceStatus)(e.target.value as PriceSourceStatus)}
-              className="rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+              className="rounded-md border border-ink-300 px-2 py-1.5 text-sm"
             >
               <option value="pending">Pending</option>
               <option value="approved">Approved</option>
@@ -401,17 +401,17 @@ export default function PriceSitesPage() {
             </select>
           </div>
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600">Product ID</label>
+            <label className="mb-1 block text-xs font-medium text-ink-600">Product ID</label>
             <input
               value={sourceProductId}
               onChange={(e) => resetSourcesAndSet(setSourceProductId)(e.target.value)}
               placeholder="uuid"
-              className="w-64 rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+              className="w-64 rounded-md border border-ink-300 px-2 py-1.5 text-sm"
             />
           </div>
         </div>
 
-        {sourcesError && <div className="rounded-md bg-danger-light px-4 py-3 text-sm text-red-800">{sourcesError}</div>}
+        {sourcesError && <div className="rounded-md bg-danger-light px-4 py-3 text-sm text-danger">{sourcesError}</div>}
 
         <DataTable
           columns={sourceColumns}
@@ -427,31 +427,31 @@ export default function PriceSitesPage() {
         <Pagination offset={sourcesOffset} limit={LIMIT} itemCount={sources.length} onOffsetChange={setSourcesOffset} />
       </section>
 
-      <section className="flex flex-col gap-4 border-t border-slate-200 pt-6">
-        <h2 className="text-xl font-semibold text-slate-800">Price Sites</h2>
-        <p className="text-sm text-slate-500">
+      <section className="flex flex-col gap-4 border-t border-ink-200 pt-6">
+        <h2 className="text-xl font-semibold text-ink-800">Price Sites</h2>
+        <p className="text-sm text-ink-500">
           The registry of retailers price_checker's discovery job searches. Adding a site here makes it eligible for the
           next "find price sources" pass on any product -- no new deploy needed.
         </p>
 
-        <div className="flex flex-col gap-3 rounded-lg border border-slate-200 bg-white p-4">
-          <h3 className="text-sm font-semibold text-slate-800">Add a price site</h3>
+        <div className="flex flex-col gap-3 rounded-lg border border-ink-200 bg-ink-100 p-4">
+          <h3 className="text-sm font-semibold text-ink-800">Add a price site</h3>
           <div className="flex flex-wrap items-end gap-3">
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600">Name</label>
+              <label className="mb-1 block text-xs font-medium text-ink-600">Name</label>
               <input
                 value={newSite.name}
                 onChange={(e) => setNewSite({ ...newSite, name: e.target.value })}
                 placeholder="e.g. BowlingBall.com"
-                className="w-56 rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                className="w-56 rounded-md border border-ink-300 px-2 py-1.5 text-sm"
               />
             </div>
             <div>
-              <label className="mb-1 block text-xs font-medium text-slate-600">Fetch method</label>
+              <label className="mb-1 block text-xs font-medium text-ink-600">Fetch method</label>
               <select
                 value={newSite.fetchMethod}
                 onChange={(e) => setNewSite({ ...newSite, fetchMethod: e.target.value as PriceSiteFetchMethod })}
-                className="rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                className="rounded-md border border-ink-300 px-2 py-1.5 text-sm"
               >
                 <option value="scrape">Scrape (search + CSS selector)</option>
                 <option value="api">API (e.g. BowlerDepot/BigCommerce)</option>
@@ -462,51 +462,51 @@ export default function PriceSitesPage() {
           {newSite.fetchMethod === "scrape" ? (
             <div className="flex flex-wrap items-end gap-3">
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600">Search URL template</label>
+                <label className="mb-1 block text-xs font-medium text-ink-600">Search URL template</label>
                 <input
                   value={newSite.searchUrlTemplate}
                   onChange={(e) => setNewSite({ ...newSite, searchUrlTemplate: e.target.value })}
                   placeholder="https://example.com/search?q={query}"
-                  className="w-72 rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                  className="w-72 rounded-md border border-ink-300 px-2 py-1.5 text-sm"
                 />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600">Result link selector</label>
+                <label className="mb-1 block text-xs font-medium text-ink-600">Result link selector</label>
                 <input
                   value={newSite.resultLinkSelector}
                   onChange={(e) => setNewSite({ ...newSite, resultLinkSelector: e.target.value })}
                   placeholder=".product-item-link"
-                  className="w-48 rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                  className="w-48 rounded-md border border-ink-300 px-2 py-1.5 text-sm"
                 />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600">Default price selector</label>
+                <label className="mb-1 block text-xs font-medium text-ink-600">Default price selector</label>
                 <input
                   value={newSite.defaultCssSelector}
                   onChange={(e) => setNewSite({ ...newSite, defaultCssSelector: e.target.value })}
                   placeholder="[itemprop=price]"
-                  className="w-48 rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                  className="w-48 rounded-md border border-ink-300 px-2 py-1.5 text-sm"
                 />
               </div>
             </div>
           ) : (
             <div className="flex flex-wrap items-end gap-3">
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600">API provider</label>
+                <label className="mb-1 block text-xs font-medium text-ink-600">API provider</label>
                 <input
                   value={newSite.apiProvider}
                   onChange={(e) => setNewSite({ ...newSite, apiProvider: e.target.value })}
                   placeholder="bigcommerce"
-                  className="w-48 rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                  className="w-48 rounded-md border border-ink-300 px-2 py-1.5 text-sm"
                 />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600">Storefront base URL</label>
+                <label className="mb-1 block text-xs font-medium text-ink-600">Storefront base URL</label>
                 <input
                   value={newSite.baseUrl}
                   onChange={(e) => setNewSite({ ...newSite, baseUrl: e.target.value })}
                   placeholder="https://www.bowlerdepot.com"
-                  className="w-64 rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                  className="w-64 rounded-md border border-ink-300 px-2 py-1.5 text-sm"
                 />
               </div>
             </div>
@@ -514,11 +514,11 @@ export default function PriceSitesPage() {
 
           <div className="flex items-end gap-3">
             <div className="flex-1">
-              <label className="mb-1 block text-xs font-medium text-slate-600">Notes (optional)</label>
+              <label className="mb-1 block text-xs font-medium text-ink-600">Notes (optional)</label>
               <input
                 value={newSite.notes}
                 onChange={(e) => setNewSite({ ...newSite, notes: e.target.value })}
-                className="w-full max-w-md rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                className="w-full max-w-md rounded-md border border-ink-300 px-2 py-1.5 text-sm"
               />
             </div>
             <Button variant="primary" onClick={handleCreateSite} disabled={creatingSite}>
@@ -527,7 +527,7 @@ export default function PriceSitesPage() {
           </div>
         </div>
 
-        {sitesError && <div className="rounded-md bg-danger-light px-4 py-3 text-sm text-red-800">{sitesError}</div>}
+        {sitesError && <div className="rounded-md bg-danger-light px-4 py-3 text-sm text-danger">{sitesError}</div>}
 
         <DataTable
           columns={[
@@ -537,7 +537,7 @@ export default function PriceSitesPage() {
               render: (s: PriceSite) => (
                 <div>
                   {s.name} {!s.is_active && <Badge tone="muted">inactive</Badge>}
-                  {s.notes && <div className="text-xs text-slate-500">{s.notes}</div>}
+                  {s.notes && <div className="text-xs text-ink-500">{s.notes}</div>}
                 </div>
               ),
             },
@@ -548,10 +548,10 @@ export default function PriceSitesPage() {
                 s.fetch_method === "api" ? (
                   <div>
                     <Badge tone="muted">api: {s.api_provider ?? "?"}</Badge>
-                    {s.base_url && <div className="font-mono text-xs text-slate-500">{s.base_url}</div>}
+                    {s.base_url && <div className="font-mono text-xs text-ink-500">{s.base_url}</div>}
                   </div>
                 ) : (
-                  <div className="font-mono text-xs text-slate-500">
+                  <div className="font-mono text-xs text-ink-500">
                     <div>{s.search_url_template}</div>
                     <div>{s.result_link_selector}</div>
                     <div>{s.default_css_selector}</div>
@@ -597,12 +597,12 @@ export default function PriceSitesPage() {
           </>
         }
       >
-        <label className="mb-1 block text-xs font-medium text-slate-600">Reason (optional, applied to all selected)</label>
+        <label className="mb-1 block text-xs font-medium text-ink-600">Reason (optional, applied to all selected)</label>
         <textarea
           value={rejectReason}
           onChange={(e) => setRejectReason(e.target.value)}
           rows={3}
-          className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary focus:outline-none"
+          className="w-full rounded-md border border-ink-300 px-3 py-2 text-sm focus:border-primary focus:outline-none"
         />
       </Modal>
 
@@ -623,11 +623,11 @@ export default function PriceSitesPage() {
       >
         <div className="flex flex-col gap-3">
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600">Name</label>
+            <label className="mb-1 block text-xs font-medium text-ink-600">Name</label>
             <input
               value={editForm.name}
               onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-              className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+              className="w-full rounded-md border border-ink-300 px-2 py-1.5 text-sm"
             />
           </div>
           {/* fetch_method itself isn't editable here -- switching a site between
@@ -637,56 +637,56 @@ export default function PriceSitesPage() {
           {editTarget?.fetch_method === "api" ? (
             <>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600">API provider</label>
+                <label className="mb-1 block text-xs font-medium text-ink-600">API provider</label>
                 <input
                   value={editForm.apiProvider}
                   onChange={(e) => setEditForm({ ...editForm, apiProvider: e.target.value })}
-                  className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                  className="w-full rounded-md border border-ink-300 px-2 py-1.5 text-sm"
                 />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600">Storefront base URL</label>
+                <label className="mb-1 block text-xs font-medium text-ink-600">Storefront base URL</label>
                 <input
                   value={editForm.baseUrl}
                   onChange={(e) => setEditForm({ ...editForm, baseUrl: e.target.value })}
-                  className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                  className="w-full rounded-md border border-ink-300 px-2 py-1.5 text-sm"
                 />
               </div>
             </>
           ) : (
             <>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600">Search URL template</label>
+                <label className="mb-1 block text-xs font-medium text-ink-600">Search URL template</label>
                 <input
                   value={editForm.searchUrlTemplate}
                   onChange={(e) => setEditForm({ ...editForm, searchUrlTemplate: e.target.value })}
-                  className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                  className="w-full rounded-md border border-ink-300 px-2 py-1.5 text-sm"
                 />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600">Result link selector</label>
+                <label className="mb-1 block text-xs font-medium text-ink-600">Result link selector</label>
                 <input
                   value={editForm.resultLinkSelector}
                   onChange={(e) => setEditForm({ ...editForm, resultLinkSelector: e.target.value })}
-                  className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                  className="w-full rounded-md border border-ink-300 px-2 py-1.5 text-sm"
                 />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-slate-600">Default price selector</label>
+                <label className="mb-1 block text-xs font-medium text-ink-600">Default price selector</label>
                 <input
                   value={editForm.defaultCssSelector}
                   onChange={(e) => setEditForm({ ...editForm, defaultCssSelector: e.target.value })}
-                  className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+                  className="w-full rounded-md border border-ink-300 px-2 py-1.5 text-sm"
                 />
               </div>
             </>
           )}
           <div>
-            <label className="mb-1 block text-xs font-medium text-slate-600">Notes</label>
+            <label className="mb-1 block text-xs font-medium text-ink-600">Notes</label>
             <input
               value={editForm.notes}
               onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
-              className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+              className="w-full rounded-md border border-ink-300 px-2 py-1.5 text-sm"
             />
           </div>
         </div>
@@ -707,7 +707,7 @@ export default function PriceSitesPage() {
           </>
         }
       >
-        <p className="text-sm text-slate-600">
+        <p className="text-sm text-ink-600">
           This permanently deletes every product's price-source rows and history for this site. This cannot be undone.
         </p>
       </Modal>

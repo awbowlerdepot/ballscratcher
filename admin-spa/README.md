@@ -96,6 +96,15 @@ account instead of a shared bearer-token secret.
   A bug in one page now shows an inline error card instead of blanking
   sign-in/navigation for the whole app -- see "Verified so far" below
   for the incident that prompted this.
+- **"Dense pro-tool" dark theme** (2026-09-05) -- Al picked this from a
+  set of style mockups over chat, replacing the earlier light slate/blue
+  palette. See `DEPLOY_RUNBOOK.md`'s admin-SPA style-decision writeup for
+  the full token design; the short version is a from-scratch `ink`
+  grayscale in `tailwind.config.js` (every former `slate-N` class was
+  mechanically renamed to `ink-N`, since the number-to-usage meaning
+  didn't change, only the literal color), a single indigo `primary`
+  accent, and `color-scheme: dark` on `body` so native `<select>`/
+  `<input>`/checkbox chrome follows along without per-page classes.
 
 ## Auth model
 
@@ -257,3 +266,17 @@ on first real load: `comparison_table` (typed as a loose
 since its shape has grown ad hoc, see `api/types.ts`'s own comment) and
 `seed` on image candidates (should be `null` for every Gemini
 candidate, a number for Stability ones).
+
+The dense-pro-tool restyle has NOT been visually verified in a running
+browser -- `tsc -b` passes clean, and every color-token usage was
+manually traced (see `DEPLOY_RUNBOOK.md`) to catch same-tone
+hover-on-surface collisions (three found and fixed: nav-item hover,
+ghost-button hover, table-row hover all previously resolved to the same
+color as the surface they sit on). But `npm run dev`/`vite build` still
+hit the same platform-mismatch failure noted above (this sandbox is
+Linux, `node_modules` is Mac-built), so nothing here has actually been
+rendered and looked at. **First thing to do on a real machine: run
+`npm run dev` and eyeball every page**, especially the two hover states
+called out above and anywhere text sits directly on a `bg-{role}-light`
+chip (badges, error banners, the Toast) -- those were sized by contrast
+math, not by looking at them.

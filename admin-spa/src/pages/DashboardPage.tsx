@@ -34,10 +34,10 @@ export default function DashboardPage() {
   }, []);
 
   if (error) {
-    return <div className="rounded-md bg-danger-light px-4 py-3 text-sm text-red-800">{error}</div>;
+    return <div className="rounded-md bg-danger-light px-4 py-3 text-sm text-danger">{error}</div>;
   }
   if (!data) {
-    return <div className="text-sm text-slate-500">Loading dashboard…</div>;
+    return <div className="text-sm text-ink-500">Loading dashboard…</div>;
   }
 
   const { kpis } = data;
@@ -45,7 +45,7 @@ export default function DashboardPage() {
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="mb-3 text-xl font-semibold text-slate-800">Dashboard</h1>
+        <h1 className="mb-3 text-xl font-semibold text-ink-800">Dashboard</h1>
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
           <StatCard label="Total products" value={kpis.total_products} />
           <StatCard label="Current" value={kpis.current_products} />

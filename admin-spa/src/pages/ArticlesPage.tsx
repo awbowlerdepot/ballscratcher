@@ -205,14 +205,14 @@ export default function ArticlesPage() {
               className="mr-1.5 inline-block h-8 w-8 rounded object-cover align-middle"
             />
           ) : a.images_generated_at ? (
-            <span className="mr-1.5 text-xs text-slate-400" title="Image generation ran but produced no images">
+            <span className="mr-1.5 text-xs text-ink-400" title="Image generation ran but produced no images">
               no images
             </span>
           ) : null}
-          <button className="font-medium text-slate-800 hover:text-primary" onClick={() => openPreview(a.id)}>
+          <button className="font-medium text-ink-800 hover:text-primary" onClick={() => openPreview(a.id)}>
             {a.title || "(untitled)"}
           </button>
-          <div className="text-xs text-slate-400">
+          <div className="text-xs text-ink-400">
             {a.id.slice(0, 8)}&hellip;{" "}
             <button
               className="text-primary hover:underline"
@@ -231,7 +231,7 @@ export default function ArticlesPage() {
       render: (a) => (
         <div>
           {a.product_name}
-          <div className="text-xs text-slate-500">{a.brand_name}</div>
+          <div className="text-xs text-ink-500">{a.brand_name}</div>
         </div>
       ),
     },
@@ -243,7 +243,7 @@ export default function ArticlesPage() {
         a.resolved_by ? (
           <div>
             {a.resolved_by}
-            <div className="text-xs text-slate-500">{fmtDate(a.reviewed_at)}</div>
+            <div className="text-xs text-ink-500">{fmtDate(a.reviewed_at)}</div>
           </div>
         ) : (
           "—"
@@ -270,7 +270,7 @@ export default function ArticlesPage() {
               <Button size="sm" variant="ghost" onClick={() => handleResyncNow(a.id)}>
                 Resync
               </Button>
-              <span className="text-xs text-slate-400">synced {fmtDate(a.bowlerdepot_synced_at)}</span>
+              <span className="text-xs text-ink-400">synced {fmtDate(a.bowlerdepot_synced_at)}</span>
             </>
           )}
         </div>
@@ -309,15 +309,15 @@ export default function ArticlesPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <h1 className="text-xl font-semibold text-slate-800">Articles</h1>
+      <h1 className="text-xl font-semibold text-ink-800">Articles</h1>
 
-      <div className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-white p-3">
+      <div className="flex flex-wrap items-end gap-3 rounded-lg border border-ink-200 bg-ink-100 p-3">
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-600">Status</label>
+          <label className="mb-1 block text-xs font-medium text-ink-600">Status</label>
           <select
             value={status}
             onChange={(e) => resetAndSet(setStatus)(e.target.value as ArticleStatus)}
-            className="rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+            className="rounded-md border border-ink-300 px-2 py-1.5 text-sm"
           >
             <option value="pending">Pending</option>
             <option value="approved">Approved</option>
@@ -325,17 +325,17 @@ export default function ArticlesPage() {
           </select>
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-600">Product ID</label>
+          <label className="mb-1 block text-xs font-medium text-ink-600">Product ID</label>
           <input
             value={productId}
             onChange={(e) => resetAndSet(setProductId)(e.target.value)}
             placeholder="uuid"
-            className="w-64 rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+            className="w-64 rounded-md border border-ink-300 px-2 py-1.5 text-sm"
           />
         </div>
       </div>
 
-      {error && <div className="rounded-md bg-danger-light px-4 py-3 text-sm text-red-800">{error}</div>}
+      {error && <div className="rounded-md bg-danger-light px-4 py-3 text-sm text-danger">{error}</div>}
 
       <DataTable
         columns={columns}
@@ -361,17 +361,17 @@ export default function ArticlesPage() {
           </>
         }
       >
-        <label className="mb-1 block text-xs font-medium text-slate-600">Reason (optional)</label>
+        <label className="mb-1 block text-xs font-medium text-ink-600">Reason (optional)</label>
         <textarea
           value={rejectReason}
           onChange={(e) => setRejectReason(e.target.value)}
           rows={3}
-          className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary focus:outline-none"
+          className="w-full rounded-md border border-ink-300 px-3 py-2 text-sm focus:border-primary focus:outline-none"
         />
       </Modal>
 
       <Modal open={previewId !== null} onClose={() => setPreviewId(null)} title={previewArticle?.title || "Article preview"} wide>
-        {previewLoading && <p className="text-sm text-slate-500">Loading…</p>}
+        {previewLoading && <p className="text-sm text-ink-500">Loading…</p>}
         {previewArticle && (
           <ArticlePreview article={previewArticle} candidates={previewCandidates} onSelectCandidate={handleSelectCandidate} />
         )}
@@ -398,8 +398,8 @@ function ArticlePreview({
   const listBlock = (label: string, items: string[]) =>
     items.length ? (
       <div>
-        <p className="text-sm font-semibold text-slate-800">{label}</p>
-        <ul className="list-disc pl-5 text-sm text-slate-600">
+        <p className="text-sm font-semibold text-ink-800">{label}</p>
+        <ul className="list-disc pl-5 text-sm text-ink-600">
           {items.map((s, i) => (
             <li key={i}>{s}</li>
           ))}
@@ -415,7 +415,7 @@ function ArticlePreview({
 
   return (
     <div className="flex flex-col gap-3 text-sm">
-      <p className="font-mono text-xs text-slate-400">
+      <p className="font-mono text-xs text-ink-400">
         id: {article.id}{" "}
         <button
           className="text-primary hover:underline"
@@ -431,15 +431,15 @@ function ArticlePreview({
           .sort()
           .map((variant) => (
             <div key={variant}>
-              <p className="mb-1 font-semibold text-slate-800">{VARIANT_LABELS[variant] ?? variant} candidates:</p>
+              <p className="mb-1 font-semibold text-ink-800">{VARIANT_LABELS[variant] ?? variant} candidates:</p>
               <div className="flex flex-wrap gap-3">
                 {byVariant[variant].map((c) => (
                   <div
                     key={c.id}
-                    className={`w-40 rounded-md border p-2 ${c.is_selected ? "border-primary" : "border-slate-200"}`}
+                    className={`w-40 rounded-md border p-2 ${c.is_selected ? "border-primary" : "border-ink-200"}`}
                   >
                     <img src={c.image_url} alt="" loading="lazy" className="mb-1 h-28 w-full rounded object-cover" />
-                    <div className="mb-1 truncate text-xs text-slate-500" title={c.model_id}>
+                    <div className="mb-1 truncate text-xs text-ink-500" title={c.model_id}>
                       {c.model_id}
                     </div>
                     {c.is_selected ? (
@@ -459,25 +459,25 @@ function ArticlePreview({
           {article.action_shot_image_url && (
             <figure className="w-40">
               <img src={article.action_shot_image_url} alt="Action shot" className="h-28 w-full rounded object-cover" />
-              <figcaption className="text-center text-xs text-slate-500">Action shot</figcaption>
+              <figcaption className="text-center text-xs text-ink-500">Action shot</figcaption>
             </figure>
           )}
           {article.product_shot_image_url && (
             <figure className="w-40">
               <img src={article.product_shot_image_url} alt="Product shot" className="h-28 w-full rounded object-cover" />
-              <figcaption className="text-center text-xs text-slate-500">Product shot</figcaption>
+              <figcaption className="text-center text-xs text-ink-500">Product shot</figcaption>
             </figure>
           )}
         </div>
       ) : article.images_generated_at ? (
-        <p className="text-xs text-slate-400">Image generation ran but produced no images for this article.</p>
+        <p className="text-xs text-ink-400">Image generation ran but produced no images for this article.</p>
       ) : null}
 
-      {article.hook && <p className="italic text-slate-700">{article.hook}</p>}
+      {article.hook && <p className="italic text-ink-700">{article.hook}</p>}
       {article.performance_summary && (
         <div>
-          <p className="font-semibold text-slate-800">Performance summary</p>
-          <p className="text-slate-600">{article.performance_summary}</p>
+          <p className="font-semibold text-ink-800">Performance summary</p>
+          <p className="text-ink-600">{article.performance_summary}</p>
         </div>
       )}
       {listBlock("Who should buy this", article.who_should_buy)}
@@ -486,36 +486,36 @@ function ArticlePreview({
       {listBlock("Cons", article.cons)}
       {article.buying_tips && (
         <div>
-          <p className="font-semibold text-slate-800">Buying tips</p>
-          <p className="text-slate-600">{article.buying_tips}</p>
+          <p className="font-semibold text-ink-800">Buying tips</p>
+          <p className="text-ink-600">{article.buying_tips}</p>
         </div>
       )}
       {article.verdict && (
         <div>
-          <p className="font-semibold text-slate-800">Verdict</p>
-          <p className="text-slate-600">{article.verdict}</p>
+          <p className="font-semibold text-ink-800">Verdict</p>
+          <p className="text-ink-600">{article.verdict}</p>
         </div>
       )}
       {article.faq.length > 0 && (
         <div>
-          <p className="font-semibold text-slate-800">FAQ</p>
+          <p className="font-semibold text-ink-800">FAQ</p>
           {article.faq.map((qa, i) => (
             <div key={i} className="mb-1.5">
-              <p className="text-xs font-medium text-slate-600">{qa.question}</p>
-              <p className="text-slate-600">{qa.answer}</p>
+              <p className="text-xs font-medium text-ink-600">{qa.question}</p>
+              <p className="text-ink-600">{qa.answer}</p>
             </div>
           ))}
         </div>
       )}
       {article.comparison_table.length > 0 && (
-        <p className="text-xs text-slate-500">Comparison table: {article.comparison_table.length} row(s)</p>
+        <p className="text-xs text-ink-500">Comparison table: {article.comparison_table.length} row(s)</p>
       )}
       {article.sibling_product_ids.length > 0 && (
-        <p className="text-xs text-slate-500">
+        <p className="text-xs text-ink-500">
           Inferred siblings (heuristic -- not ground truth): {article.sibling_product_ids.length} product(s)
         </p>
       )}
-      <p className="text-xs text-slate-400">
+      <p className="text-xs text-ink-400">
         Source videos: {article.source_video_ids.length} &middot; generated {fmtDate(article.generated_at)}
       </p>
     </div>

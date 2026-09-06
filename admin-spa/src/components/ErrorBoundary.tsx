@@ -33,9 +33,9 @@ export default class ErrorBoundary extends Component<Props, State> {
     if (this.state.error) {
       return (
         <div className="flex flex-col items-start gap-3 rounded-lg border border-danger bg-danger-light p-6">
-          <h2 className="text-sm font-semibold text-red-900">Something went wrong on this page</h2>
-          <p className="max-w-xl text-sm text-red-800">{this.state.error.message}</p>
-          <p className="text-xs text-red-700">
+          <h2 className="text-sm font-semibold text-red-200">Something went wrong on this page</h2>
+          <p className="max-w-xl text-sm text-red-300">{this.state.error.message}</p>
+          <p className="text-xs text-red-400">
             Check the browser console for the full stack trace. Other pages should still work -- try navigating away and
             back.
           </p>

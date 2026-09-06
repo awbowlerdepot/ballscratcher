@@ -186,11 +186,11 @@ export default function VideoCandidatesPage() {
             href={`https://youtube.com/watch?v=${r.youtube_video_id}`}
             target="_blank"
             rel="noreferrer"
-            className="font-medium text-slate-800 hover:text-primary"
+            className="font-medium text-ink-800 hover:text-primary"
           >
             {r.title}
           </a>
-          <div className="text-xs text-slate-500">
+          <div className="text-xs text-ink-500">
             {r.channel_title} · {formatDuration(r.duration_seconds)}
           </div>
         </div>
@@ -274,17 +274,17 @@ export default function VideoCandidatesPage() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center gap-3">
-        <h1 className="text-xl font-semibold text-slate-800">Video Candidates</h1>
+        <h1 className="text-xl font-semibold text-ink-800">Video Candidates</h1>
         {pendingCount !== null && <Badge tone="pending">{pendingCount} pending</Badge>}
       </div>
 
-      <div className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-white p-3">
+      <div className="flex flex-wrap items-end gap-3 rounded-lg border border-ink-200 bg-ink-100 p-3">
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-600">Status</label>
+          <label className="mb-1 block text-xs font-medium text-ink-600">Status</label>
           <select
             value={status}
             onChange={(e) => resetAndSet(setStatus)(e.target.value as VideoCandidateStatus)}
-            className="rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+            className="rounded-md border border-ink-300 px-2 py-1.5 text-sm"
           >
             <option value="pending">Pending</option>
             <option value="approved">Approved</option>
@@ -292,17 +292,17 @@ export default function VideoCandidatesPage() {
           </select>
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-600">Product ID</label>
+          <label className="mb-1 block text-xs font-medium text-ink-600">Product ID</label>
           <input
             value={productId}
             onChange={(e) => resetAndSet(setProductId)(e.target.value)}
             placeholder="uuid"
-            className="w-64 rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+            className="w-64 rounded-md border border-ink-300 px-2 py-1.5 text-sm"
           />
         </div>
       </div>
 
-      {error && <div className="rounded-md bg-danger-light px-4 py-3 text-sm text-red-800">{error}</div>}
+      {error && <div className="rounded-md bg-danger-light px-4 py-3 text-sm text-danger">{error}</div>}
 
       <DataTable
         columns={columns}
@@ -332,12 +332,12 @@ export default function VideoCandidatesPage() {
           </>
         }
       >
-        <label className="mb-1 block text-xs font-medium text-slate-600">Reason (optional, applied to all selected)</label>
+        <label className="mb-1 block text-xs font-medium text-ink-600">Reason (optional, applied to all selected)</label>
         <textarea
           value={rejectReason}
           onChange={(e) => setRejectReason(e.target.value)}
           rows={3}
-          className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary focus:outline-none"
+          className="w-full rounded-md border border-ink-300 px-3 py-2 text-sm focus:border-primary focus:outline-none"
         />
       </Modal>
 
@@ -356,16 +356,16 @@ export default function VideoCandidatesPage() {
           </>
         }
       >
-        <p className="mb-2 text-sm text-slate-600">
+        <p className="mb-2 text-sm text-ink-600">
           Moves "{reassignTarget?.title}" to a different product. The original candidate is tombstoned as rejected on{" "}
           {reassignTarget?.brand_name} {reassignTarget?.product_name}.
         </p>
-        <label className="mb-1 block text-xs font-medium text-slate-600">Target product ID</label>
+        <label className="mb-1 block text-xs font-medium text-ink-600">Target product ID</label>
         <input
           value={reassignProductId}
           onChange={(e) => setReassignProductId(e.target.value)}
           placeholder="uuid"
-          className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary focus:outline-none"
+          className="w-full rounded-md border border-ink-300 px-3 py-2 text-sm focus:border-primary focus:outline-none"
         />
       </Modal>
     </div>

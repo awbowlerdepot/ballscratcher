@@ -81,7 +81,7 @@ export default function CoresPage() {
     {
       key: "core_type",
       header: "Type",
-      render: (c) => c.core_type ?? <span className="text-slate-400">—</span>,
+      render: (c) => c.core_type ?? <span className="text-ink-400">—</span>,
     },
     {
       key: "product_count",
@@ -102,65 +102,65 @@ export default function CoresPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <h1 className="text-xl font-semibold text-slate-800">Cores</h1>
+      <h1 className="text-xl font-semibold text-ink-800">Cores</h1>
 
-      <div className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-white p-3">
+      <div className="flex flex-wrap items-end gap-3 rounded-lg border border-ink-200 bg-ink-100 p-3">
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-600">Search core name</label>
+          <label className="mb-1 block text-xs font-medium text-ink-600">Search core name</label>
           <input
             value={search}
             onChange={(e) => resetAndSet(setSearch)(e.target.value)}
             placeholder="e.g. collision"
-            className="w-56 rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+            className="w-56 rounded-md border border-ink-300 px-2 py-1.5 text-sm"
           />
         </div>
         <div>
           {/* Raw brand-id text field, same as Products' own filter bar --
               there's no GET /brands on the admin API for a real dropdown
               yet (see admin-spa/README.md's "what's not here yet"). */}
-          <label className="mb-1 block text-xs font-medium text-slate-600">Brand ID</label>
+          <label className="mb-1 block text-xs font-medium text-ink-600">Brand ID</label>
           <input
             value={brandId}
             onChange={(e) => resetAndSet(setBrandId)(e.target.value)}
             placeholder="uuid"
-            className="w-64 rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+            className="w-64 rounded-md border border-ink-300 px-2 py-1.5 text-sm"
           />
         </div>
       </div>
 
-      {error && <div className="rounded-md bg-danger-light px-4 py-3 text-sm text-red-800">{error}</div>}
+      {error && <div className="rounded-md bg-danger-light px-4 py-3 text-sm text-danger">{error}</div>}
 
       <DataTable columns={columns} rows={items} getRowId={(c) => c.id} emptyMessage={loading ? "Loading…" : "No cores match."} />
 
       <Pagination offset={offset} limit={LIMIT} itemCount={items.length} onOffsetChange={setOffset} />
 
       <Modal open={detailId !== null} onClose={() => setDetailId(null)} title={detail ? `${detail.brand_name} ${detail.name}` : "Core"}>
-        {detailLoading && <p className="text-sm text-slate-500">Loading…</p>}
+        {detailLoading && <p className="text-sm text-ink-500">Loading…</p>}
         {detail && (
           <div className="flex flex-col gap-3 text-sm">
-            <p className="text-slate-600">
+            <p className="text-ink-600">
               {detail.products.length} product{detail.products.length === 1 ? "" : "s"} using this core
               {detail.core_type && (
                 <>
                   {" "}
-                  &middot; type: <span className="font-medium text-slate-800">{detail.core_type}</span>
+                  &middot; type: <span className="font-medium text-ink-800">{detail.core_type}</span>
                 </>
               )}
               {detail.release_era && (
                 <>
                   {" "}
-                  &middot; era: <span className="font-medium text-slate-800">{detail.release_era}</span>
+                  &middot; era: <span className="font-medium text-ink-800">{detail.release_era}</span>
                 </>
               )}
             </p>
             {detail.products.length === 0 ? (
-              <p className="text-xs text-slate-400">
+              <p className="text-xs text-ink-400">
                 None -- likely an orphaned row (every referencing product was reassigned or rescraped under a different
                 core), safe to investigate for cleanup.
               </p>
             ) : (
               <table className="w-full text-left text-sm">
-                <thead className="border-b border-slate-200 text-xs uppercase tracking-wide text-slate-500">
+                <thead className="border-b border-ink-200 text-xs uppercase tracking-wide text-ink-500">
                   <tr>
                     <th className="py-1.5 pr-3 font-medium">Name</th>
                     <th className="py-1.5 pr-3 font-medium">Status</th>
@@ -170,7 +170,7 @@ export default function CoresPage() {
                 </thead>
                 <tbody>
                   {detail.products.map((p) => (
-                    <tr key={p.id} className="border-b border-slate-100 last:border-0">
+                    <tr key={p.id} className="border-b border-ink-100 last:border-0">
                       <td className="py-1.5 pr-3">
                         <a href={p.url} target="_blank" rel="noreferrer" className="text-primary hover:underline">
                           {p.name}

@@ -84,12 +84,12 @@ export default function DataTable<T>({
           </div>
         </div>
       )}
-      <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+      <div className="overflow-x-auto rounded-lg border border-ink-200 bg-ink-100">
         <table className="w-full text-left text-sm">
-          <thead className="border-b border-slate-200 bg-slate-50 text-xs uppercase tracking-wide text-slate-500">
+          <thead className="border-b border-ink-200 bg-ink-50 text-xs uppercase tracking-wide text-ink-500">
             <tr>
               {selectable && (
-                <th className="w-10 px-3 py-2">
+                <th className="w-10 px-2.5 py-1.5">
                   <input
                     type="checkbox"
                     checked={allSelected}
@@ -99,10 +99,10 @@ export default function DataTable<T>({
                 </th>
               )}
               {columns.map((col) => (
-                <th key={col.key} className={`px-3 py-2 font-medium ${col.className ?? ""}`}>
+                <th key={col.key} className={`px-2.5 py-1.5 font-medium ${col.className ?? ""}`}>
                   {col.sortable && onSortChange ? (
                     <button
-                      className="flex items-center gap-1 hover:text-slate-800"
+                      className="flex items-center gap-1 hover:text-ink-800"
                       onClick={() => onSortChange(col.key)}
                     >
                       {col.header}
@@ -118,7 +118,7 @@ export default function DataTable<T>({
           <tbody>
             {rows.length === 0 && (
               <tr>
-                <td colSpan={columns.length + (selectable ? 1 : 0)} className="px-3 py-8 text-center text-slate-400">
+                <td colSpan={columns.length + (selectable ? 1 : 0)} className="px-3 py-8 text-center text-ink-400">
                   {emptyMessage}
                 </td>
               </tr>
@@ -126,9 +126,9 @@ export default function DataTable<T>({
             {rows.map((row) => {
               const id = getRowId(row);
               return (
-                <tr key={id} className="border-b border-slate-100 last:border-0 hover:bg-slate-50">
+                <tr key={id} className="border-b border-ink-200 last:border-0 hover:bg-ink-200">
                   {selectable && (
-                    <td className="px-3 py-2">
+                    <td className="px-2.5 py-1.5">
                       <input
                         type="checkbox"
                         checked={selectedIds?.has(id) ?? false}
@@ -138,7 +138,7 @@ export default function DataTable<T>({
                     </td>
                   )}
                   {columns.map((col) => (
-                    <td key={col.key} className={`px-3 py-2 ${col.className ?? ""}`}>
+                    <td key={col.key} className={`px-2.5 py-1.5 ${col.className ?? ""}`}>
                       {col.render(row)}
                     </td>
                   ))}

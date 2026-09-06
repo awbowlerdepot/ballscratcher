@@ -99,7 +99,7 @@ export default function ProductsPage() {
       key: "name",
       header: "Product",
       render: (p) => (
-        <a href={p.url} target="_blank" rel="noreferrer" className="font-medium text-slate-800 hover:text-primary">
+        <a href={p.url} target="_blank" rel="noreferrer" className="font-medium text-ink-800 hover:text-primary">
           {p.brand_name} {p.name}
         </a>
       ),
@@ -126,44 +126,44 @@ export default function ProductsPage() {
 
   return (
     <div className="flex flex-col gap-4">
-      <h1 className="text-xl font-semibold text-slate-800">Products</h1>
+      <h1 className="text-xl font-semibold text-ink-800">Products</h1>
 
-      <div className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-white p-3">
+      <div className="flex flex-wrap items-end gap-3 rounded-lg border border-ink-200 bg-ink-100 p-3">
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-600">Status</label>
+          <label className="mb-1 block text-xs font-medium text-ink-600">Status</label>
           <select
             value={status}
             onChange={(e) => resetAndSet(setStatus)(e.target.value as ListProductsParams["status"])}
-            className="rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+            className="rounded-md border border-ink-300 px-2 py-1.5 text-sm"
           >
             <option value="current">Current</option>
             <option value="retired">Retired</option>
           </select>
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-600">Brand ID</label>
+          <label className="mb-1 block text-xs font-medium text-ink-600">Brand ID</label>
           <input
             value={brandId}
             onChange={(e) => resetAndSet(setBrandId)(e.target.value)}
             placeholder="uuid"
-            className="w-32 rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+            className="w-32 rounded-md border border-ink-300 px-2 py-1.5 text-sm"
           />
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-600">Search</label>
+          <label className="mb-1 block text-xs font-medium text-ink-600">Search</label>
           <input
             value={search}
             onChange={(e) => resetAndSet(setSearch)(e.target.value)}
             placeholder="Ball name…"
-            className="w-40 rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+            className="w-40 rounded-md border border-ink-300 px-2 py-1.5 text-sm"
           />
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-600">Source</label>
+          <label className="mb-1 block text-xs font-medium text-ink-600">Source</label>
           <select
             value={sourcePlatform}
             onChange={(e) => resetAndSet(setSourcePlatform)(e.target.value as SourcePlatform | "")}
-            className="rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+            className="rounded-md border border-ink-300 px-2 py-1.5 text-sm"
           >
             <option value="">All</option>
             {SOURCE_OPTIONS.map((s) => (
@@ -174,11 +174,11 @@ export default function ProductsPage() {
           </select>
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-600">Sort</label>
+          <label className="mb-1 block text-xs font-medium text-ink-600">Sort</label>
           <select
             value={sort}
             onChange={(e) => resetAndSet(setSort)(e.target.value as ProductSort)}
-            className="rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+            className="rounded-md border border-ink-300 px-2 py-1.5 text-sm"
           >
             {SORT_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
@@ -187,11 +187,11 @@ export default function ProductsPage() {
             ))}
           </select>
         </div>
-        <label className="flex items-center gap-1.5 pb-1.5 text-sm text-slate-600">
+        <label className="flex items-center gap-1.5 pb-1.5 text-sm text-ink-600">
           <input type="checkbox" checked={missingCore} onChange={(e) => resetAndSet(setMissingCore)(e.target.checked)} />
           Missing core
         </label>
-        <label className="flex items-center gap-1.5 pb-1.5 text-sm text-slate-600">
+        <label className="flex items-center gap-1.5 pb-1.5 text-sm text-ink-600">
           <input
             type="checkbox"
             checked={missingCoverstock}
@@ -199,13 +199,13 @@ export default function ProductsPage() {
           />
           Missing coverstock
         </label>
-        <label className="flex items-center gap-1.5 pb-1.5 text-sm text-slate-600">
+        <label className="flex items-center gap-1.5 pb-1.5 text-sm text-ink-600">
           <input type="checkbox" checked={missingSkus} onChange={(e) => resetAndSet(setMissingSkus)(e.target.checked)} />
           Missing SKUs
         </label>
       </div>
 
-      {error && <div className="rounded-md bg-danger-light px-4 py-3 text-sm text-red-800">{error}</div>}
+      {error && <div className="rounded-md bg-danger-light px-4 py-3 text-sm text-danger">{error}</div>}
 
       <DataTable
         columns={columns}

@@ -12,9 +12,9 @@ interface StatCardProps {
 // breakage).
 export default function StatCard({ label, value, tone = "default" }: StatCardProps) {
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
-      <div className="text-xs font-medium uppercase tracking-wide text-slate-500">{label}</div>
-      <div className={`mt-1 text-2xl font-semibold ${tone === "warn" ? "text-warn" : "text-slate-900"}`}>
+    <div className="rounded-lg border border-ink-200 bg-ink-100 p-4 shadow-sm">
+      <div className="text-xs font-medium uppercase tracking-wide text-ink-500">{label}</div>
+      <div className={`mt-1 text-2xl font-semibold ${tone === "warn" ? "text-warn" : "text-ink-900"}`}>
         {value}
       </div>
     </div>

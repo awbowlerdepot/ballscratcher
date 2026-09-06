@@ -6,10 +6,13 @@ import type { ReactNode } from "react";
 type Tone = "ok" | "pending" | "danger" | "muted" | "primary";
 
 const TONE_CLASSES: Record<Tone, string> = {
-  ok: "bg-ok-light text-green-800",
+  ok: "bg-ok-light text-ok",
   pending: "bg-warn-light text-warn",
-  danger: "bg-danger-light text-red-800",
-  muted: "bg-slate-100 text-slate-500",
+  danger: "bg-danger-light text-danger",
+  // ink-200, not ink-100 -- ink-100 is the same tone as the surrounding
+  // card/row surface, so a "muted" badge would be nearly invisible sitting
+  // on top of one.
+  muted: "bg-ink-200 text-ink-600",
   primary: "bg-primary-light text-primary-dark",
 };
 

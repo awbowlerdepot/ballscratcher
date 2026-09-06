@@ -17,7 +17,7 @@ export default function Pagination({ offset, limit, itemCount, onOffsetChange }:
   const page = Math.floor(offset / limit) + 1;
 
   return (
-    <div className="mt-3 flex items-center justify-between text-sm text-slate-500">
+    <div className="mt-3 flex items-center justify-between text-sm text-ink-500">
       <span>
         Showing {itemCount === 0 ? 0 : offset + 1}–{offset + itemCount}
         {hasNext ? "+" : ""} (page {page})

@@ -14,10 +14,15 @@ interface ToastContextValue {
 
 const ToastContext = createContext<ToastContextValue | null>(null);
 
+// Raised surface (ink-100), not the page bg -- these used to be a
+// literal always-dark bg-slate-900 that popped against a light page;
+// now the whole app is dark, so a toast just needs to sit one step
+// above the page like any other card, with a colored left-border and
+// full-opacity text to stay legible pinned in the corner.
 const TONE_CLASSES: Record<ToastTone, string> = {
-  ok: "bg-slate-900 border-ok",
-  danger: "bg-slate-900 border-danger",
-  info: "bg-slate-900 border-primary",
+  ok: "bg-ink-100 border-ok",
+  danger: "bg-ink-100 border-danger",
+  info: "bg-ink-100 border-primary",
 };
 
 export function ToastProvider({ children }: { children: ReactNode }) {

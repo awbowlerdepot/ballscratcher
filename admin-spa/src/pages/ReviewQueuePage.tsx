@@ -134,7 +134,7 @@ export default function ReviewQueuePage() {
       key: "product_name",
       header: "Product",
       render: (r) => (
-        <a href={r.product_url} target="_blank" rel="noreferrer" className="font-medium text-slate-800 hover:text-primary">
+        <a href={r.product_url} target="_blank" rel="noreferrer" className="font-medium text-ink-800 hover:text-primary">
           {r.product_name}
         </a>
       ),
@@ -143,7 +143,7 @@ export default function ReviewQueuePage() {
     {
       key: "current_value",
       header: "Current",
-      render: (r) => <span className="font-mono text-xs text-slate-500">{r.current_value ?? "—"}</span>,
+      render: (r) => <span className="font-mono text-xs text-ink-500">{r.current_value ?? "—"}</span>,
     },
     {
       key: "proposed_value",
@@ -190,17 +190,17 @@ export default function ReviewQueuePage() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center gap-3">
-        <h1 className="text-xl font-semibold text-slate-800">Review Queue</h1>
+        <h1 className="text-xl font-semibold text-ink-800">Review Queue</h1>
         {pendingCount !== null && <Badge tone="pending">{pendingCount} pending</Badge>}
       </div>
 
-      <div className="flex flex-wrap items-end gap-3 rounded-lg border border-slate-200 bg-white p-3">
+      <div className="flex flex-wrap items-end gap-3 rounded-lg border border-ink-200 bg-ink-100 p-3">
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-600">Status</label>
+          <label className="mb-1 block text-xs font-medium text-ink-600">Status</label>
           <select
             value={status}
             onChange={(e) => resetAndSet(setStatus)(e.target.value as ReviewQueueStatus)}
-            className="rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+            className="rounded-md border border-ink-300 px-2 py-1.5 text-sm"
           >
             <option value="pending">Pending</option>
             <option value="approved">Approved</option>
@@ -208,17 +208,17 @@ export default function ReviewQueuePage() {
           </select>
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-slate-600">Product ID</label>
+          <label className="mb-1 block text-xs font-medium text-ink-600">Product ID</label>
           <input
             value={productId}
             onChange={(e) => resetAndSet(setProductId)(e.target.value)}
             placeholder="uuid"
-            className="w-64 rounded-md border border-slate-300 px-2 py-1.5 text-sm"
+            className="w-64 rounded-md border border-ink-300 px-2 py-1.5 text-sm"
           />
         </div>
       </div>
 
-      {error && <div className="rounded-md bg-danger-light px-4 py-3 text-sm text-red-800">{error}</div>}
+      {error && <div className="rounded-md bg-danger-light px-4 py-3 text-sm text-danger">{error}</div>}
 
       <DataTable
         columns={columns}
@@ -248,12 +248,12 @@ export default function ReviewQueuePage() {
           </>
         }
       >
-        <label className="mb-1 block text-xs font-medium text-slate-600">Reason (optional, applied to all selected)</label>
+        <label className="mb-1 block text-xs font-medium text-ink-600">Reason (optional, applied to all selected)</label>
         <textarea
           value={rejectReason}
           onChange={(e) => setRejectReason(e.target.value)}
           rows={3}
-          className="w-full rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary focus:outline-none"
+          className="w-full rounded-md border border-ink-300 px-3 py-2 text-sm focus:border-primary focus:outline-none"
         />
       </Modal>
     </div>

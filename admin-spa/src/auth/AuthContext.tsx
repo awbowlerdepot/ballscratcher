@@ -56,7 +56,7 @@ export function ProtectedRoute({ children }: { children: ReactNode }) {
   const location = useLocation();
 
   if (loading) {
-    return <div className="flex h-screen items-center justify-center text-slate-500">Loading…</div>;
+    return <div className="flex h-screen items-center justify-center text-ink-500">Loading…</div>;
   }
   if (!user) {
     return <Navigate to="/login" state={{ from: location }} replace />;

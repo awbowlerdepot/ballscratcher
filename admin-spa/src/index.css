@@ -2,8 +2,13 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Dense pro-tool restyle -- dark by design, not a prefers-color-scheme
+   toggle, so color-scheme is set explicitly to get dark-themed native
+   controls (checkboxes, scrollbars) instead of light ones that would
+   clash. */
 body {
-  @apply bg-slate-50 text-slate-900 font-sans;
+  @apply bg-ink-50 text-ink-800 font-sans;
+  color-scheme: dark;
 }
 
 /* Chart.js draws onto a <canvas> sized by its parent -- without an

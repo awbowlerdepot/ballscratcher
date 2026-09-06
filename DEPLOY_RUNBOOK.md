@@ -9842,6 +9842,103 @@ row-toggle shape.
 `npx tsc -b` passes clean. Not yet smoke-tested against real deployed
 data.
 
+### 6ab.6. UI style decision: "dense pro-tool" dark theme
+
+Al asked (2026-09-05) to pause tab-porting and pick a visual direction
+for admin-spa before going further, since phase 1 had just been running
+with whatever the scaffold produced (a light slate/blue Tailwind theme,
+deliberately continuous with `admin-site/index.html`'s own CSS custom
+properties -- see the old comment this replaced in
+`tailwind.config.js`). Presented six mockup directions (current/slate,
+a softer shadcn-style zinc theme, a dense dark pro-tool theme, a theme
+pulling BowlerDepot's real storefront brand colors from the
+`bowlerdepot-learn` research in 6t, a warm-neutral theme, and a
+high-contrast monochrome theme) as rendered swatches, not just prose.
+Al picked **dense pro-tool**: dark chrome, tight rows, a single accent
+color, on the reasoning that this is a tool someone lives in all day
+doing rapid review/approve work, not a public-facing surface that needs
+brand continuity.
+
+Implementation, in `admin-spa/tailwind.config.js` and every component/
+page under `admin-spa/src/`:
+
+- **`ink` color scale** -- a from-scratch 10-step dark-UI grayscale
+  (`ink-50` through `ink-900`) that mirrors Tailwind's built-in `slate`
+  scale's *bucket meaning per number* (50 = page background, 100 =
+  raised surface, 200 = border, 500/600 = secondary/body text, 800/900
+  = headings/highest-contrast text) but with the literal light/dark
+  direction inverted, since the whole app is now dark. Because the
+  bucket-per-number meaning didn't change, every `slate-N` class in
+  every page and component was mechanically renamed to `ink-N` (`sed`
+  across `admin-spa/src/**/*.tsx`) and needed no further per-usage
+  thought -- `bg-slate-50` (page bg) became `bg-ink-50` (still page bg,
+  now dark) automatically. `bg-white` (used for the same "raised
+  surface" role as `slate-100` everywhere in this codebase) was
+  likewise swapped to `bg-ink-100` app-wide.
+- **Single indigo `primary` accent** replacing the old blue
+  (`primary.DEFAULT: #6366f1`). Two things needed to NOT share one
+  token despite both being "the darker shade of primary" under the old
+  naming: `primary.dark` is now a deliberately *light* indigo
+  (`#a5b4fc`), used as text sitting on top of the dark `primary.light`
+  chip background (Layout's active nav item, Badge's `primary` tone,
+  DataTable's "N selected" bar) -- while a solid button's hover state
+  needs the opposite, a *darker* shade of the fill. Button.tsx's
+  primary variant got its own `primary-hover` token (`#4f46e5`) instead
+  of reusing `primary-dark` for that, specifically to avoid a hover
+  state that would have made the button lighter and the white button
+  text unreadable.
+- **Status colors (`danger`/`ok`/`warn`) kept distinct hues**, just
+  recalibrated for dark backgrounds (bright, saturated `DEFAULT` for
+  text/solid fills; a near-black tinted `light` wash for chip/banner
+  backgrounds instead of the old pale tint). The "single accent"
+  direction is about the primary interactive color, not about
+  collapsing approve/reject/warning signal color into monochrome.
+- **`color-scheme: dark`** added to `body` in `index.css` alongside the
+  `bg-ink-50 text-ink-800` base styles, so every plain, unstyled
+  `<select>`/`<input>`/checkbox across every page (most filter bars
+  never had explicit background/text classes on their form controls)
+  picks up dark native chrome from the browser's own UA stylesheet
+  instead of needing per-page classes.
+- **Three same-tone hover-on-surface collisions** were caught by
+  grepping every `hover:bg-ink-100` against what surface it actually
+  sits on, since the mechanical slate-to-ink rename made a hover state
+  resolve to literally the same color as its parent surface in three
+  places: Layout's inactive nav-item hover (sidebar is `bg-ink-100`,
+  hover was also `ink-100`), Button's `ghost` variant hover (ghost
+  buttons commonly sit on an `ink-100` card/row), and DataTable's row
+  hover. All three were bumped to `hover:bg-ink-200` (Layout/Button) or
+  `hover:bg-ink-200` with the row's resting border also bumped from
+  `ink-100` to `ink-200` (DataTable), so hovering now visibly lightens
+  instead of doing nothing. `Toast.tsx` had the opposite problem: its
+  `TONE_CLASSES` used a literal `bg-slate-900` as an always-dark toast
+  box (deliberate even under the old light theme) which the blanket
+  rename turned into `bg-ink-900` -- under the new scale that's the
+  *brightest* step, which would have produced a near-white toast with
+  invisible white text. Manually corrected to `bg-ink-100` (now just a
+  normal raised surface, since the whole app is dark already, no
+  special-casing needed).
+- Light **density pass** on `DataTable.tsx` (every page's table):
+  cell/header padding tightened from `px-3 py-2` to `px-2.5 py-1.5`.
+  Not a full per-page spacing audit -- most of the "dense" feel comes
+  from the shared `DataTable`/`Layout` components every page already
+  builds on.
+
+`npx tsc -b --force` passes clean. **Not visually verified in a running
+browser** -- `npm run dev`/`vite build` hit the same Linux-sandbox/
+Mac-built-`node_modules` platform mismatch already on file in 6ab's
+"Verified so far" (rollup's native binary is platform-specific; see
+https://github.com/npm/cli/issues/4828), and this sandbox has no
+registry access to install the correct `@rollup/rollup-linux-arm64-gnu`
+binary either (403 from a network policy). Every color-token usage was
+instead traced by hand across every component and page file, which is
+how the three hover collisions and the Toast regression above were
+caught -- but hand-tracing contrast is not the same as looking at it
+rendered. **Run `npm run dev` on a real machine and eyeball every page**
+before treating this as done, especially: the three corrected hover
+states, anywhere text sits on a `bg-{role}-light` chip (Badge, error
+banners, Toast), and the native form controls relying on
+`color-scheme: dark` rather than explicit classes.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
