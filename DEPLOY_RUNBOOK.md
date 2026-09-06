@@ -10942,6 +10942,30 @@ trust-policy gotcha already solved there -- `AdminSiteDeployRole` was
 written the same way from the start, so this specific failure shouldn't
 recur, but it's the first thing to check if it does.
 
+### 6ab.18. Custom domain: admin.bowleriq.com
+
+Al requested `admin.bowleriq.com` for the admin SPA, following the same
+`AdminSiteDomainName`/`AdminSiteCertificateArn` mechanism as
+`data.bowleriq.com` (6n above) -- the cert was requested and DNS-
+validated in `us-east-1` by hand outside `sam deploy`, per that same
+CloudFront-requires-us-east-1 constraint. Real ACM cert ARN Al
+confirmed:
+`arn:aws:acm:us-east-1:563981859606:certificate/a36defe8-3ab1-498f-bc54-765489cbc5d1`.
+
+Both values baked into `samconfig.toml`'s `parameter_overrides` (same
+place `ConsumerSiteDomainName`/`ConsumerSiteCertificateArn` and
+`LearnSiteDomainName`/`LearnSiteCertificateArn` already live) so a plain
+`sam deploy` picks them up without retyping them --
+`AdminSiteDomainName="admin.bowleriq.com"` and
+`AdminSiteCertificateArn="arn:aws:acm:us-east-1:563981859606:certificate/a36defe8-3ab1-498f-bc54-765489cbc5d1"`.
+Still needs, same as 6n's own steps 4-5: a real `sam deploy` to actually
+set `Aliases`/`ViewerCertificate` on `AdminSiteDistribution`, then a
+second CNAME record at whatever DNS provider hosts `bowleriq.com`
+pointing `admin.bowleriq.com` at the `AdminSiteUrl` stack output's
+`*.cloudfront.net` domain (strip the `https://`). Once that CNAME
+resolves, `https://admin.bowleriq.com` serves the SPA directly -- the
+bare CloudFront URL keeps working too.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
