@@ -6,6 +6,7 @@ import Button from "./Button";
 import ErrorBoundary from "./ErrorBoundary";
 import {
   IconArticles,
+  IconBatch,
   IconBlocked,
   IconCore,
   IconCoverstock,
@@ -27,6 +28,7 @@ const NAV_ITEMS = [
   { to: "/cores", label: "Cores", end: false, icon: IconCore },
   { to: "/coverstocks", label: "Coverstocks", end: false, icon: IconCoverstock },
   { to: "/blocked-channels", label: "Blocked Channels", end: false, icon: IconBlocked },
+  { to: "/batch-jobs", label: "Batch Jobs", end: false, icon: IconBatch },
 ];
 
 // Persisted across reloads/sessions -- a "dense pro-tool" reviewer
@@ -34,9 +36,12 @@ const NAV_ITEMS = [
 // they've learned the icons, not to re-collapse it every time.
 const SIDEBAR_COLLAPSED_KEY = "admin-spa:sidebar-collapsed";
 
-// Shell: sidebar + top bar + <Outlet/>. Batch Jobs still lives on the
-// existing admin-site/index.html for now (see README.md's "not here
-// yet" section) -- tabs move over here one at a time as they're ported.
+// Shell: sidebar + top bar + <Outlet/>. Every top-level admin-site tab
+// has now been ported here (Batch Jobs, the last one, landed
+// 2026-09-05) -- admin-site/index.html's richer per-product detail
+// sub-view (Videos section, rescan, bulk reassign/delete) has not,
+// though, so that file still has a real reason to stick around. See
+// README.md's "What's not here yet".
 export default function Layout() {
   const { user, signOut } = useAuth();
   const location = useLocation();

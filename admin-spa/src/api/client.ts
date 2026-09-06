@@ -6,6 +6,7 @@ import type {
   ArticleRegenerateMode,
   ApproveReviewResult,
   BlockedChannel,
+  Brand,
   Core,
   CoreDetail,
   Coverstock,
@@ -18,6 +19,8 @@ import type {
   ListProductsParams,
   ListReviewQueueParams,
   ListVideoCandidatesParams,
+  ManualSeedUrl,
+  ManualSeedUrlCreateInput,
   PriceSite,
   PriceSiteCreateInput,
   PriceSiteUpdateInput,
@@ -26,6 +29,7 @@ import type {
   QueueArticleGenerationResult,
   QueueArticleSyncResult,
   ReassignVideoResult,
+  RefreshRollupResult,
   RejectReviewResult,
   RescrapeResult,
   ReviewQueueListResult,
@@ -138,6 +142,16 @@ export function listProducts(params: ListProductsParams = {}): Promise<Product[]
 
 export function rescrapeProduct(id: string): Promise<RescrapeResult> {
   return apiPost<RescrapeResult>(`/products/${encodeURIComponent(id)}/rescrape`);
+}
+
+export function refreshVideoSummary(id: string): Promise<RefreshRollupResult> {
+  return apiPost<RefreshRollupResult>(`/products/${encodeURIComponent(id)}/refresh-video-summary`);
+}
+
+// Backs the Manual Seed URLs brand picker on the Batch Jobs page --
+// same GET /brands admin-site's own brand-picker dropdowns use.
+export function listBrands(): Promise<Brand[]> {
+  return apiGet<{ items: Brand[] }>("/brands").then((r) => r.items);
 }
 
 export function listReviewQueue(params: ListReviewQueueParams = {}): Promise<ReviewQueueListResult> {
@@ -364,4 +378,18 @@ export function createBlockedChannel(channelTitle: string, note?: string): Promi
 // rollup changes.
 export function deleteBlockedChannel(id: string): Promise<{ deleted: boolean; id: string }> {
   return apiDelete(`/blocked-channels/${encodeURIComponent(id)}`);
+}
+
+// Manual seed URLs -- see ManualSeedUrl's own comment in types.ts.
+// Same list/create/delete-only shape as Blocked Channels.
+export function listManualSeedUrls(): Promise<ManualSeedUrl[]> {
+  return apiGet<{ items: ManualSeedUrl[] }>("/manual-seed-urls").then((r) => r.items);
+}
+
+export function createManualSeedUrl(input: ManualSeedUrlCreateInput): Promise<ManualSeedUrl> {
+  return apiPost<ManualSeedUrl>("/manual-seed-urls", input);
+}
+
+export function deleteManualSeedUrl(id: string): Promise<{ deleted: boolean; id: string }> {
+  return apiDelete(`/manual-seed-urls/${encodeURIComponent(id)}`);
 }

@@ -3,6 +3,7 @@ import { AuthProvider, ProtectedRoute } from "./auth/AuthContext";
 import Layout from "./components/Layout";
 import { ToastProvider } from "./components/Toast";
 import ArticlesPage from "./pages/ArticlesPage";
+import BatchJobsPage from "./pages/BatchJobsPage";
 import BlockedChannelsPage from "./pages/BlockedChannelsPage";
 import CoresPage from "./pages/CoresPage";
 import CoverstocksPage from "./pages/CoverstocksPage";
@@ -36,6 +37,7 @@ export default function App() {
               <Route path="/cores" element={<CoresPage />} />
               <Route path="/coverstocks" element={<CoverstocksPage />} />
               <Route path="/blocked-channels" element={<BlockedChannelsPage />} />
+              <Route path="/batch-jobs" element={<BatchJobsPage />} />
             </Route>
           </Routes>
         </ToastProvider>

@@ -109,6 +109,19 @@ export function IconBlocked(props: IconProps) {
   );
 }
 
+// Batch Jobs -- a stack of layers, reading as "run this over a whole
+// pile of records at once" rather than the one-item-at-a-time feel of
+// Products/Review Queue's icons.
+export function IconBatch(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M10 2.8 17.2 6.6 10 10.4 2.8 6.6z" />
+      <path d="M2.8 10.4 10 14.2l7.2-3.8" />
+      <path d="M2.8 14.2 10 18l7.2-3.8" />
+    </svg>
+  );
+}
+
 export function IconChevronsLeft(props: IconProps) {
   return (
     <svg {...base} {...props}>

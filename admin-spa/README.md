@@ -104,6 +104,24 @@ account instead of a shared bearer-token secret.
   `VideoCandidatesPage.tsx` also got a "Block channel" quick-action per
   row, mirroring admin-site's `blockChannelForVideo`, so an admin
   spotting a competitor's video doesn't have to leave the review queue.
+- **Batch Jobs** (`/batch-jobs`) -- the last remaining admin-site tab,
+  now fully ported. Three parts: a single-product rollup refresh
+  (`POST /products/{id}/refresh-video-summary`), six list-then-loop
+  bulk operations (a reusable `BatchRunner<T>` generic component in
+  `BatchJobsPage.tsx` replaces admin-site's config-driven
+  `runBatch`/`BATCH_CONFIGS`, listing against one `GET /products`
+  boolean filter and then calling one POST endpoint per product,
+  sequentially, with a Stop button that takes effect between items --
+  `running` is tracked in a ref, not just state, since the loop reads
+  it on every iteration), and the Manual Seed URLs panel
+  (027_manual_seed_urls.sql -- the orphan-page catch for a real, live
+  product a manufacturer's site stopped linking to internally, list/
+  create/delete against `/manual-seed-urls`, brand-scoped via a new
+  `GET /brands`-backed dropdown). New `listBrands`/`Brand` in
+  api/client.ts+types.ts -- turns out `GET /brands` already existed in
+  admin_api (backs admin-site's own brand-picker dropdowns) even though
+  this README's "not here yet" list still called out a missing brand
+  filter API; that line has been corrected.
 - A small hand-rolled component library in `src/components/` (`Button`,
   `Badge`, `Card`, `StatCard`, `Modal`, `Toast`, `DataTable`,
   `Pagination`, `Layout`, `ErrorBoundary`) that later tabs (Articles,
@@ -220,15 +238,18 @@ its own git history for precedent).
 - A "set new password" form for the Cognito `newPasswordRequired`
   challenge -- first-time accounts need a permanent password set via
   the CLI (see above) rather than through the app itself.
-- The last remaining admin-site tab: Batch Jobs. It still lives on
-  `admin-site/index.html` for now; migrating it is follow-up work.
 - A Products detail sub-view (the old admin-site has a tabbed per-
   product panel with its own Videos section, "search again" rescan
   button, and bulk reassign/delete -- admin-spa's Video Candidates tab
   only covers the standalone list, not that richer per-product view).
-- A real brand-name dropdown on the Products filter bar (currently a
-  raw brand-id text field -- there's no `GET /brands` on the admin API
-  the way `consumer-site` has on the public one).
+  This is now the one piece of admin-site/index.html functionality
+  with no admin-spa equivalent at all -- every top-level tab has been
+  ported.
+- A real brand-name dropdown on the Products/Cores/Coverstocks filter
+  bars (currently a raw brand-id text field on each) -- `GET /brands`
+  does exist in admin_api (confirmed while building Batch Jobs' Manual
+  Seed URLs panel, which does use it) and could back one; nobody has
+  wired it into those three filter bars yet.
 - Automated tests.
 
 ## Verified so far
@@ -307,6 +328,22 @@ on first real load: `comparison_table` (typed as a loose
 since its shape has grown ad hoc, see `api/types.ts`'s own comment) and
 `seed` on image candidates (should be `null` for every Gemini
 candidate, a number for Stability ones).
+
+Batch Jobs has NOT been smoke-tested against real deployed data yet --
+`tsc -b` passes clean only, and this is the most code-heavy tab ported
+so far (a generic `BatchRunner<T>` component driving a client-side
+list-then-loop against real product IDs, six times over with two
+different result shapes). Most worth confirming on first real
+click-through: the Stop button actually halts the loop between items
+(the `runningRef` pattern was chosen deliberately over plain state
+specifically to avoid a stale-closure bug here, but hasn't been
+exercised against a real multi-page product list); the "Refresh ALL"
+confirm dialog fires before any real Bedrock spend; and that
+`listProducts`'s existing pagination (`page.length < limit` as the
+stop condition) doesn't silently truncate a filter that returns exactly
+a multiple of 200 rows. Manual Seed URLs' brand dropdown is the first
+real use of the `GET /brands` endpoint in admin-spa -- confirm it
+actually populates from a real deployed stack.
 
 The dense-pro-tool restyle has NOT been visually verified in a running
 browser -- `tsc -b` passes clean, and every color-token usage was

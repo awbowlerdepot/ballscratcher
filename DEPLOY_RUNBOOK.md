@@ -10057,6 +10057,72 @@ worth confirming on first real click-through (the quick-block button in
 particular, since it's new surface area beyond a straight port of the
 admin-site panel).
 
+### 6ab.10. Batch Jobs tab -- last admin-site tab ported
+
+Tenth and final tab ported into `admin-spa/` (`src/pages/BatchJobsPage.tsx`)
+-- every top-level admin-site tab now has an admin-spa equivalent (the
+richer per-product detail sub-view is the one piece of admin-site that
+doesn't, see admin-spa/README.md's "What's not here yet"). Three parts,
+same as admin-site's `#tab-batch`:
+
+1. **Single-product rollup refresh** -- `refreshVideoSummary(id)`
+   (`POST /products/{id}/refresh-video-summary`), a thin form + button.
+2. **Six list-then-loop bulk operations** -- "Refresh stale rollups"/
+   "Refresh ALL" (`needs_video_summary_refresh`/
+   `has_approved_video_summaries` filters, calling
+   `refresh-video-summary` per product) and "Backfill missing core/
+   coverstock/SKU info" + "Backfill 900 Global full weight table"
+   (`missing_core`/`missing_coverstock`/`missing_skus`/
+   `html_fallback_skus` filters, calling `rescrape` per product) --
+   same six filters/endpoints admin-site's `BATCH_CONFIGS` object
+   already used, confirmed by reading that object directly rather than
+   re-deriving the endpoint list from scratch.
+3. **Manual Seed URLs** (`027_manual_seed_urls.sql`) -- the orphan-page
+   catch for a real, live product a manufacturer's site stopped linking
+   to internally (real incident: storm-equinox-bowling-ball). List/
+   create/delete against `/manual-seed-urls`, brand-scoped.
+
+The six bulk operations share one generic `BatchRunner<T>` component
+(defined in `BatchJobsPage.tsx`, not `components/`, since nothing else
+in the app needs a client-side list-then-loop runner) rather than
+admin-site's config-object-plus-shared-function approach -- the React
+equivalent of the same idea. One thing worth calling out: `running` is
+tracked in a `useRef`, not just `useState`. The loop is a `for` loop
+inside an `async` function that checks the running flag on every
+iteration; a plain `state` value read inside that closure would be
+whatever it was when the loop started, not updated by a later Stop
+click, so the flag has to live somewhere a ref can see fresh without
+re-running the effect. `filterParam` is typed as a closed
+`BatchFilterParam` union (the six known boolean filters), not
+`keyof ListProductsParams`, so a `BatchRunner` can't accidentally be
+pointed at a non-boolean field like `limit` or `sort`.
+
+Building Manual Seed URLs surfaced a real documentation gap: admin-spa's
+README claimed "there's no `GET /brands` on the admin API" as a reason
+the Products/Cores/Coverstocks filter bars use raw brand-id text
+fields instead of name dropdowns. That's wrong -- `GET /brands` exists
+in `admin_api/app.py` and already backs admin-site's own
+`brand-picker` dropdowns (confirmed in `app.py` directly, not assumed
+from the README's claim). New `Brand`/`listBrands()` added to
+`types.ts`/`client.ts` and used for the Manual Seed URLs brand select.
+README corrected to note the endpoint exists and simply hasn't been
+wired into those three filter bars yet -- upgrading them is still
+follow-up work, just for a different reason than previously written.
+
+New `IconBatch` (a three-tier stack, reading as "act on a pile of
+records at once") added to `icons.tsx` for the nav entry.
+`Layout.tsx`'s shell comment updated to reflect that every top-level
+admin-site tab is now ported.
+
+`npx tsc -b --force` passes clean. Not yet smoke-tested against real
+deployed data -- this is the most code-heavy tab ported so far
+(a generic component driving six separate client-side loops against
+real product IDs), so see admin-spa/README.md's "Verified so far" for
+what specifically is worth confirming on first real click-through
+(the Stop button's actual behavior mid-loop, the "Refresh ALL" confirm
+gate, and the Manual Seed URLs brand dropdown's first real
+`GET /brands` call).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

@@ -103,6 +103,24 @@ export interface RescrapeResult {
   queue_env_var?: string;
 }
 
+// POST /products/{id}/refresh-video-summary's response -- "no
+// approved+summarized videos yet" is a normal, expected outcome
+// (rollup_regenerated: false + reason), not an HTTP error, same
+// convention as RescrapeResult's queued/reason shape.
+export interface RefreshRollupResult {
+  product_id: string;
+  rollup_regenerated: boolean;
+  reason?: string;
+  video_count?: number;
+}
+
+// GET /brands -- backs a real name-based dropdown instead of a raw-UUID
+// text field. Short, unpaginated (a dozen or so brands total).
+export interface Brand {
+  id: string;
+  name: string;
+}
+
 export type ReviewQueueStatus = "pending" | "approved" | "rejected";
 
 // field_name doubles as the "what kind of review is this" signal --
@@ -562,4 +580,30 @@ export interface BlockedChannel {
   channel_title: string;
   note: string | null;
   created_at: string;
+}
+
+// Manual seed URLs (027_manual_seed_urls.sql): the permanent catch for
+// a real, live, in-stock product page a manufacturer's own site has
+// stopped linking to internally, so it never surfaces via a category-
+// listing crawl or sitemap fetch no matter how often discovery runs
+// (real incident: storm-equinox-bowling-ball). Seeding a URL here gets
+// it force-included on that platform's next scheduled discovery run --
+// currently only wired into commercebuild's own discovery
+// (Storm/Roto Grip/900 Global). Same list/create/delete-only shape as
+// BlockedChannel, but deduped on the URL itself (plain unique
+// constraint, not case-insensitive -- URLs are case-sensitive in a way
+// a channel display name isn't).
+export interface ManualSeedUrl {
+  id: string;
+  brand_id: string;
+  brand_name: string;
+  url: string;
+  note: string | null;
+  created_at: string;
+}
+
+export interface ManualSeedUrlCreateInput {
+  brand_id: string;
+  url: string;
+  note?: string;
 }
