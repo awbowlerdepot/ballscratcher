@@ -563,10 +563,11 @@
       </div>
       <div class="field">
         <label>Sort</label>
-        <select id="product-sort" title="Popularity = sum of each approved video's view_count, decayed by video age (180-day half-life) -- see service.list_products' docstring. A live-computed 'current popularity' ranking, not raw lifetime views. Newest/Oldest sort by release_date (not scrape time). Avg Daily Movement = sum of each SKU's own trailing 30-day daily movement, highest movers first.">
+        <select id="product-sort" title="Popularity = sum of each approved video's view_count, decayed by video age (180-day half-life) -- see service.list_products' docstring. A live-computed 'current popularity' ranking, not raw lifetime views. Newest/Oldest sort by release_date (not scrape time). Avg Daily Movement = sum of each SKU's own trailing 30-day daily movement, highest movers first. Demand Score = a 50/50 percentile-rank blend of Popularity and Avg Daily Movement (0-100, higher = more demand by either signal) -- see service._DEMAND_SCORE_CTE's own comment for why this is a separate number rather than folded into Popularity itself.">
           <option value="">recently updated</option>
           <option value="popularity">popularity</option>
           <option value="total_daily_movement">avg daily movement</option>
+          <option value="demand_score">demand score</option>
           <option value="newest">newest release</option>
           <option value="oldest">oldest release</option>
           <option value="name_asc">name (A&ndash;Z)</option>
@@ -2685,13 +2686,21 @@ function renderProducts(items) {
         // detail view's own SKU Stock tab is where that distinction
         // actually matters.
         '<td title="Sum of each SKU\'s own trailing ' + FORECAST_LOOKBACK_DAYS + '-day Average Daily Movement (units sold/day, restocks excluded)">' + (p.total_daily_movement === null || p.total_daily_movement === undefined ? '<span class="muted">&mdash;</span>' : Number(p.total_daily_movement).toFixed(2)) + '</td>' +
+        // demand_score (always returned, see service.list_products'
+        // docstring) -- a 0-1 percentile-rank blend of popularity_score
+        // and total_daily_movement (see service._DEMAND_SCORE_CTE's own
+        // comment for the formula and why it's a separate number, not a
+        // change to popularity_score itself). Shown as a friendlier
+        // 0-100 score, same "don't make Al do the math" reasoning as
+        // popularity_score's own Math.round above.
+        '<td title="50/50 percentile-rank blend of Popularity and Avg Daily Movement (0-100, higher = more demand by either signal) -- see service._DEMAND_SCORE_CTE for the full formula/reasoning">' + (p.demand_score === null || p.demand_score === undefined ? '<span class="muted">&mdash;</span>' : Math.round(p.demand_score * 100)) + '</td>' +
         '<td><button class="btn small ' + (p.published ? 'ok' : 'ghost') + '" onclick="togglePublish(\'' + p.id + '\', ' + (!p.published) + ')">' + (p.published ? 'Published' : 'Unpublished') + '</button></td>' +
         '<td>' + fmtDate(p.updated_at) + '</td>' +
         '<td class="actions"><button class="btn small ghost" onclick="toggleProductDetail(\'' + p.id + '\')">Detail</button></td>' +
         '</tr>' +
-        '<tr id="product-detail-' + p.id + '" class="detail-row hidden"><td colspan="11"></td></tr>';
+        '<tr id="product-detail-' + p.id + '" class="detail-row hidden"><td colspan="12"></td></tr>';
     }).join('');
-    listEl.innerHTML = '<table><thead><tr><th>Name</th><th>Brand</th><th>Status</th><th>Core</th><th>Coverstock</th><th>Release Date</th><th>Popularity</th><th>Avg Daily Movement</th><th>Published</th><th>Updated</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
+    listEl.innerHTML = '<table><thead><tr><th>Name</th><th>Brand</th><th>Status</th><th>Core</th><th>Coverstock</th><th>Release Date</th><th>Popularity</th><th>Avg Daily Movement</th><th>Demand Score</th><th>Published</th><th>Updated</th><th>Actions</th></tr></thead><tbody>' + rows + '</tbody></table>';
   }
   document.getElementById('product-prev').disabled = productState.offset === 0;
   document.getElementById('product-next').disabled = productState.lastCount < productState.limit;

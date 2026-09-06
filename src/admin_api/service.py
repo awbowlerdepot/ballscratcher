@@ -471,8 +471,88 @@ _SORT_ORDER_BY = {
     # coalesce(..., 0), so it's never actually null, just possibly 0 for
     # a product with no qualifying SKU readings.
     "total_daily_movement": "total_daily_movement desc, p.id asc",
+    # See _DEMAND_SCORE_CTE below for what this actually is. No "nulls
+    # last" needed -- the `demand` CTE's percent_rank() covers every row
+    # of `products` unconditionally, so the left join in list_products
+    # always matches and demand_score is never null.
+    "demand_score": "demand_score desc, p.id asc",
 }
 _DEFAULT_ORDER_BY = "p.updated_at desc, p.id asc"
+
+# Demand Score -- Al: "loosely avg daily movement is a demand number,
+# meaning the higher the number the more units moving down to the next
+# channel... we could take this demand number and enhance the popularity
+# number, that being said im not sure what the best way to add it into
+# that calculation is." Discussed and deliberately kept as a SEPARATE
+# metric rather than folded into popularity_score itself (confirmed via
+# AskUserQuestion), for two reasons:
+#   1. Different meaning: popularity_score is a top-of-funnel INTEREST
+#      signal (YouTube review views, catalog-wide, any brand). Daily
+#      movement is a bottom-of-funnel REALIZED DEMAND signal, but only
+#      for SKUs BowlerDepot happens to track stock on -- most of the
+#      catalog will show total_daily_movement = 0 not because nobody's
+#      buying it, but because there's no stock-history data for it at
+#      all. Blending that straight into popularity_score would silently
+#      penalize every ball without BowlerDepot tracking relative to ones
+#      with it -- not a "less popular" signal, a "less instrumented"
+#      one.
+#   2. popularity_score is also public_api's number, shown to shoppers
+#      on consumer-site's Browse sort. Mixing in an internal, single-
+#      retailer sell-through signal there would change what a customer-
+#      facing "popular" ranking even means, without Al having asked for
+#      that. Demand Score stays admin_api-only.
+#
+# Scale mismatch between the two inputs (popularity_score is an
+# unbounded log-of-views number in the thousands; total_daily_movement
+# is a small units/day rate, usually single digits) rules out just
+# adding them raw -- one would swamp the other. Percentile rank
+# (percent_rank(), 0=lowest in the catalog, 1=highest) normalizes both
+# onto the same 0-1 scale regardless of their native units, and handles
+# missing data gracefully: a product with no videos and no stock history
+# sinks to the bottom on both axes rather than raising a division error
+# or dominating the blend.
+#
+# Weights are a plain 50/50 split -- a neutral starting point, not a
+# claim that interest and realized demand are equally predictive of
+# anything. Deliberately named/exposed as two constants (not baked into
+# one hardcoded formula) so retuning later -- e.g. weighting movement
+# higher since it's realized purchases, not just interest -- is a
+# one-line change, not a rewrite.
+_DEMAND_SCORE_POPULARITY_WEIGHT = 0.5
+_DEMAND_SCORE_DAILY_MOVEMENT_WEIGHT = 0.5
+
+# Named _DEMAND_SCORE_CTE, not _..._SQL like the two constants above --
+# this is a `with` prefix meant to be prepended to a query's SQL text
+# (see list_products' own usage), not a scalar expression that can be
+# dropped inline into an existing SELECT list the way
+# _POPULARITY_SCORE_SQL/_TOTAL_DAILY_MOVEMENT_SQL can.
+#
+# Computed as its own CTE (not an inline correlated subquery like
+# popularity_score/total_daily_movement above) because percent_rank()
+# has to be ranked against the WHOLE catalog to mean anything stable --
+# a percentile computed only within whatever filters/pagination the
+# Products tab currently has applied would shift every time someone
+# changes a filter, making the number useless for comparing across
+# views. `from products p` here (unfiltered, no WHERE) guarantees every
+# product gets ranked against the full catalog exactly once, then
+# list_products' own WHERE/pagination is applied afterward via the left
+# join below -- same "rank once, filter after" shape as a materialized
+# view would give, without needing one.
+#
+# Degenerate case, worth knowing about rather than being surprised by:
+# if every product currently has total_daily_movement = 0 (e.g. very
+# early on, before enough SKU stock history has accumulated anywhere),
+# percent_rank() over a column with no variance returns 0 for every row
+# -- demand_score temporarily reduces to just the popularity half of the
+# blend until real movement data differentiates products. Not a bug,
+# just nothing to rank yet on that axis.
+_DEMAND_SCORE_CTE = f"""with demand as (
+        select p.id,
+               {_DEMAND_SCORE_POPULARITY_WEIGHT} * percent_rank() over (order by ({_POPULARITY_SCORE_SQL}))
+             + {_DEMAND_SCORE_DAILY_MOVEMENT_WEIGHT} * percent_rank() over (order by ({_TOTAL_DAILY_MOVEMENT_SQL}))
+             as demand_score
+        from products p
+    )"""
 
 
 def list_products(conn, published: bool = None, brand_id: str = None, search: str = None,
@@ -663,7 +743,17 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     the 2026-09-06 ADU->Daily Movement rename; same metric, see
     _TOTAL_DAILY_MOVEMENT_SQL's own comment). A 'total_daily_movement'
     sort option (desc only, highest-movers first) was added as a direct
-    follow-up (see _SORT_ORDER_BY above)."""
+    follow-up (see _SORT_ORDER_BY above).
+
+    demand_score (see _DEMAND_SCORE_CTE above) is also always computed
+    and returned -- a 50/50 percentile-rank blend of popularity_score and
+    total_daily_movement, added as a separate metric (not folded into
+    popularity_score itself) per Al's own "not sure what the best way to
+    add it into that calculation is" -- see _DEMAND_SCORE_CTE's own
+    comment for the full reasoning and the two reasons it stays a
+    distinct column rather than changing popularity_score in place. A
+    'demand_score' sort option (desc only) was added alongside it, same
+    pattern as total_daily_movement's own rollout."""
     # p alias + left join cores: needed once c.name entered the picture --
     # products and cores both have a plain "name" column, so every
     # previously-bare column reference below (name, published, brand_id,
@@ -676,13 +766,16 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     # and reading which brand a row belongs to both work off a real name,
     # not a UUID you'd have to look up separately.
     query = f"""
+        {_DEMAND_SCORE_CTE}
         select p.id, p.brand_id, b.name as brand_name, p.name, p.url, p.status, p.published, p.updated_at,
                p.core_id, c.name as core_name, p.release_date, p.coverstock_id, p.coverstock_name,
                {_POPULARITY_SCORE_SQL} as popularity_score,
-               {_TOTAL_DAILY_MOVEMENT_SQL} as total_daily_movement
+               {_TOTAL_DAILY_MOVEMENT_SQL} as total_daily_movement,
+               d.demand_score
         from products p
         left join cores c on c.id = p.core_id
         left join brands b on b.id = p.brand_id
+        left join demand d on d.id = p.id
         where 1=1
     """
     params = []

@@ -10771,6 +10771,99 @@ with `service.py`). `npx tsc -b` in `admin-spa/` -- clean, no errors.
 `node --check` -- valid syntax. Not yet re-smoke-tested against real
 data in a browser.
 
+### 6ab.16. Demand Score: a percentile-rank blend of Popularity and Avg Daily Movement
+
+Al's direct follow-up to the ADU rename (6ab.15), after asking what Avg
+Daily Movement actually represents: "loosely avg daily movement is a
+demand number, meaning the higher the number the more units moving down
+to the next channel down to the next channel, in this case from
+Distributor > Retailer. So we could take this demand number and enhance
+the popularity number, that being said im not sure what the best way to
+add it into that calculation is."
+
+**Scoping decision (confirmed via `AskUserQuestion`)**: rather than
+changing `popularity_score` itself, Demand Score ships as a **separate**
+new metric/column/sort, admin_api-only. Two reasons, both explained to
+Al before building:
+
+1. **Different meaning, different coverage.** `popularity_score` is a
+   top-of-funnel INTEREST signal (YouTube review views, catalog-wide,
+   any brand). `total_daily_movement` is a bottom-of-funnel REALIZED
+   DEMAND signal, but only for SKUs BowlerDepot happens to track stock
+   on -- most of the catalog shows `total_daily_movement = 0` not
+   because nobody's buying it, but because there's no stock-history data
+   for it at all. Folding that straight into `popularity_score` would
+   silently penalize every ball without BowlerDepot tracking relative to
+   ones with it -- a "less instrumented" signal masquerading as a "less
+   popular" one.
+2. **`popularity_score` is also public_api's number**, shown to shoppers
+   on consumer-site's Browse sort. Mixing an internal, single-retailer
+   sell-through signal into a customer-facing "popular" ranking would
+   change what that ranking means without Al having asked for that.
+   Demand Score stays out of `public_api`/consumer-site entirely.
+
+**Formula** (`src/admin_api/service.py`): a 50/50 weighted blend of
+`percent_rank()` (0=lowest in the catalog, 1=highest) over
+`popularity_score` and over `total_daily_movement`, `* 100` for display
+as a friendlier 0-100 score rather than a decimal. Percentile rank
+(rather than a raw weighted sum) solves two problems at once:
+
+- **Scale mismatch**: `popularity_score` is an unbounded log-of-views
+  number in the thousands; `total_daily_movement` is a small units/day
+  rate, usually single digits. Adding them raw would let one swamp the
+  other regardless of weighting.
+- **Missing data**: a product with no videos and no stock history sinks
+  to the bottom on both axes rather than raising a division error or
+  distorting the blend.
+
+Weights (`_DEMAND_SCORE_POPULARITY_WEIGHT`/
+`_DEMAND_SCORE_DAILY_MOVEMENT_WEIGHT`, both `0.5`) are a neutral starting
+split, not a claim that interest and realized demand are equally
+predictive of anything -- exposed as two named constants specifically so
+retuning later (e.g. weighting movement higher since it's realized
+purchases, not just interest) is a one-line change, not a rewrite.
+
+**Implementation shape**: unlike `popularity_score`/
+`total_daily_movement` (each an inline correlated subquery per row),
+`demand_score` is computed once in its own `with demand as (...)` CTE
+(`_DEMAND_SCORE_CTE`) that ranks every row of `products`, unconditionally
+-- no `WHERE` of its own -- then left-joined onto `list_products`' main
+query by `id`. This is deliberate: `percent_rank()` only means something
+stable if it's computed against the WHOLE catalog. Computing it as an
+inline correlated subquery inside the already-filtered/paginated main
+query would make the percentile shift every time someone changed a
+filter on the Products tab, which would make the number useless for
+comparing across views.
+
+**Degenerate case, documented rather than hidden**: if every product
+currently has `total_daily_movement = 0` (e.g. very early on, before
+enough SKU stock history has accumulated anywhere), `percent_rank()`
+over a column with no variance returns 0 for every row -- `demand_score`
+temporarily reduces to just the popularity half of the blend until real
+movement data differentiates products. Not a bug, just nothing to rank
+yet on that axis.
+
+**Surfaced identically to `total_daily_movement`'s own rollout**
+(6o.10/6o.11): a `demand_score` column (always computed/returned, never
+null) plus a `'demand_score'` sort option (desc only -- no "nulls last"
+needed, same reasoning as `total_daily_movement`'s own sort) on
+`GET /products`, in both `admin-spa`'s `ProductsPage.tsx` (as "Demand
+Score", rendered `Math.round(demand_score * 100)`) and
+`admin-site/index.html`'s legacy Products tab (same rendering, kept in
+parity per this project's current both-UIs-maintained convention). Not
+added to the Dashboard tab's Top-10 lists in this pass -- Al didn't ask
+for that, and `total_daily_movement`'s own Dashboard rollout (6o.11)
+happened as a separate later step after its Products-tab debut, so a
+"Top 10 by Demand Score" list is a natural, low-risk follow-up rather
+than something this pass needed to include.
+
+7 new tests in `tests/test_admin_api_service.py` (query-shape assertions
+for the CTE/join/sort, an unfiltered-CTE structural check, and a weights-
+sum-to-one sanity check) -- full suite 282/282 passing. `npx tsc -b` in
+`admin-spa/` clean. `admin-site/index.html`'s inline `<script>` block
+re-checked with `node --check` -- valid syntax. Not yet smoke-tested
+against real data in a browser.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

@@ -2905,6 +2905,82 @@ def test_list_products_total_daily_movement_scoped_to_this_product_only():
     assert "ps_dm.product_id = p.id" in query
 
 
+# --- Demand Score (Al: "loosely avg daily movement is a demand number...
+# we could take this demand number and enhance the popularity number,
+# that being said im not sure what the best way to add it into that
+# calculation is") -- a separate percentile-rank blend of popularity_score
+# and total_daily_movement, deliberately NOT folded into popularity_score
+# itself (see _DEMAND_SCORE_CTE's own comment for the two reasons why).
+
+def test_list_products_always_selects_demand_score():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "with demand as" in query
+    assert "d.demand_score" in query
+    assert "percent_rank()" in query
+
+
+def test_demand_score_cte_ranks_against_the_full_catalog_unfiltered():
+    """The whole point of computing demand_score in its own CTE (see
+    _DEMAND_SCORE_CTE's own comment) rather than as an inline correlated
+    subquery is that percent_rank() has to rank every product against the
+    WHOLE catalog to mean anything stable -- a percentile computed only
+    within whatever filters/pagination list_products' caller happens to
+    have applied would shift every time someone changes a filter. So the
+    CTE's outer `from products p` (the one percent_rank() actually windows
+    over) must be immediately followed by the CTE's own closing paren --
+    no WHERE/AND narrowing it -- even though the nested popularity_score/
+    total_daily_movement subqueries embedded inside it each have their
+    own unrelated internal WHERE clauses (scoping THEM to one product via
+    correlation, not scoping the outer CTE's row set)."""
+    assert "from products p\n    )" in service._DEMAND_SCORE_CTE
+
+
+def test_list_products_demand_score_blends_both_metrics_via_percent_rank():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    # Both underlying metrics must be ranked, not compared as raw values --
+    # a raw sum would let popularity_score's unbounded log-of-views scale
+    # swamp total_daily_movement's small units/day rate.
+    assert query.count("percent_rank()") == 2
+
+
+def test_list_products_demand_score_default_weights_sum_to_one():
+    assert service._DEMAND_SCORE_POPULARITY_WEIGHT + service._DEMAND_SCORE_DAILY_MOVEMENT_WEIGHT == 1.0
+
+
+def test_list_products_demand_score_left_joined_by_product_id():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "left join demand d on d.id = p.id" in query
+
+
+def test_list_products_demand_score_still_present_alongside_filters():
+    """The demand CTE/join must survive regardless of which list_products
+    filters are active -- it's prepended once to the query text, not
+    conditionally built like the WHERE clauses below it."""
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, brand_id="some-brand-id", missing_core=True, sort="newest", limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "with demand as" in query
+    assert "d.demand_score" in query
+
+
+def test_list_products_sort_demand_score_orders_by_column_desc():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, sort="demand_score", limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "order by demand_score desc, p.id asc limit %s offset %s" in query
+
+
 # --- common-sense sort options (Al's ask: "lets add some common sense
 # sort options for both the admin and consumer UIs") -- newest/oldest by
 # release_date, alphabetical by name. See service.py's _SORT_ORDER_BY.

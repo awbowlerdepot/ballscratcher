@@ -61,7 +61,15 @@ export type ProductStatus = "current" | "retired";
 
 export type SourcePlatform = "netsuite" | "shopify" | "woocommerce" | "commercebuild" | "craft_cms";
 
-export type ProductSort = "popularity" | "newest" | "oldest" | "name_asc" | "name_desc" | "total_daily_movement";
+// "demand_score" -- Al: "loosely avg daily movement is a demand number...
+// we could take this demand number and enhance the popularity number,
+// that being said im not sure what the best way to add it into that
+// calculation is." Kept as a separate sort/column rather than changing
+// what "popularity" means -- see admin_api/service.py's _DEMAND_SCORE_CTE
+// comment for the full reasoning (scale mismatch between the two inputs,
+// and popularity_score being the number public_api/consumer-site also
+// shows shoppers, which this deliberately doesn't touch).
+export type ProductSort = "popularity" | "newest" | "oldest" | "name_asc" | "name_desc" | "total_daily_movement" | "demand_score";
 
 export interface Product {
   id: string;
@@ -79,6 +87,12 @@ export interface Product {
   coverstock_name: string | null;
   popularity_score: number;
   total_daily_movement: number;
+  // 0-1 percentile-rank blend of popularity_score and
+  // total_daily_movement (see ProductSort's own comment above and
+  // admin_api's _DEMAND_SCORE_CTE for the formula/reasoning). Always
+  // present, never null -- every product gets ranked in the underlying
+  // CTE regardless of whether it has any videos or stock history.
+  demand_score: number;
 }
 
 export interface ListProductsParams {

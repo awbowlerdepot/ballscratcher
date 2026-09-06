@@ -359,7 +359,7 @@ def get_products(
     missing_video_candidates: Optional[bool] = Query(None),
     source_platform: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
-    sort: Optional[str] = Query(None, description="'popularity', 'newest', 'oldest', 'name_asc', or 'name_desc' (see service.list_products'/_SORT_ORDER_BY's docstring); omitted/anything else keeps the default recently-updated order"),
+    sort: Optional[str] = Query(None, description="'popularity', 'total_daily_movement', 'demand_score', 'newest', 'oldest', 'name_asc', or 'name_desc' (see service.list_products'/_SORT_ORDER_BY's docstring); omitted/anything else keeps the default recently-updated order"),
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
 ):
