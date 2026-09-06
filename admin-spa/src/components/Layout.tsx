@@ -1,18 +1,35 @@
+import { useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../auth/AuthContext";
 import Badge from "./Badge";
 import Button from "./Button";
 import ErrorBoundary from "./ErrorBoundary";
+import {
+  IconArticles,
+  IconChevronsLeft,
+  IconChevronsRight,
+  IconCore,
+  IconDashboard,
+  IconPriceTag,
+  IconProducts,
+  IconReviewQueue,
+  IconVideo,
+} from "./icons";
 
 const NAV_ITEMS = [
-  { to: "/", label: "Dashboard", end: true },
-  { to: "/products", label: "Products", end: false },
-  { to: "/review-queue", label: "Review Queue", end: false },
-  { to: "/video-candidates", label: "Video Candidates", end: false },
-  { to: "/articles", label: "Articles", end: false },
-  { to: "/price-sites", label: "Price Sites", end: false },
-  { to: "/cores", label: "Cores", end: false },
+  { to: "/", label: "Dashboard", end: true, icon: IconDashboard },
+  { to: "/products", label: "Products", end: false, icon: IconProducts },
+  { to: "/review-queue", label: "Review Queue", end: false, icon: IconReviewQueue },
+  { to: "/video-candidates", label: "Video Candidates", end: false, icon: IconVideo },
+  { to: "/articles", label: "Articles", end: false, icon: IconArticles },
+  { to: "/price-sites", label: "Price Sites", end: false, icon: IconPriceTag },
+  { to: "/cores", label: "Cores", end: false, icon: IconCore },
 ];
+
+// Persisted across reloads/sessions -- a "dense pro-tool" reviewer
+// living in this app all day will want the wider table area back once
+// they've learned the icons, not to re-collapse it every time.
+const SIDEBAR_COLLAPSED_KEY = "admin-spa:sidebar-collapsed";
 
 // Shell: sidebar + top bar + <Outlet/>. Coverstocks, Blocked Channels,
 // and Batch Jobs still live on the existing admin-site/index.html for
@@ -21,28 +38,52 @@ const NAV_ITEMS = [
 export default function Layout() {
   const { user, signOut } = useAuth();
   const location = useLocation();
+  const [collapsed, setCollapsed] = useState(() => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "1");
+
+  function toggleCollapsed() {
+    const next = !collapsed;
+    setCollapsed(next);
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, next ? "1" : "0");
+  }
 
   return (
     <div className="flex min-h-screen">
-      <aside className="w-56 shrink-0 border-r border-ink-200 bg-ink-100">
-        <div className="border-b border-ink-200 px-4 py-4">
-          <span className="text-base font-semibold text-ink-800">BowlerIQ Admin</span>
+      <aside
+        className={`${collapsed ? "w-14" : "w-56"} shrink-0 border-r border-ink-200 bg-ink-100 transition-[width] duration-150`}
+      >
+        <div
+          className={`flex items-center border-b border-ink-200 py-4 ${collapsed ? "justify-center px-2" : "justify-between px-4"}`}
+        >
+          {!collapsed && <span className="text-base font-semibold text-ink-800">BowlerIQ Admin</span>}
+          <button
+            onClick={toggleCollapsed}
+            className="rounded-md p-1.5 text-ink-500 hover:bg-ink-200 hover:text-ink-800"
+            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            {collapsed ? <IconChevronsRight className="h-4 w-4" /> : <IconChevronsLeft className="h-4 w-4" />}
+          </button>
         </div>
         <nav className="flex flex-col gap-0.5 p-2">
-          {NAV_ITEMS.map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.end}
-              className={({ isActive }) =>
-                `rounded-md px-3 py-2 text-sm font-medium ${
-                  isActive ? "bg-primary-light text-primary-dark" : "text-ink-600 hover:bg-ink-200"
-                }`
-              }
-            >
-              {item.label}
-            </NavLink>
-          ))}
+          {NAV_ITEMS.map((item) => {
+            const Icon = item.icon;
+            return (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                end={item.end}
+                title={collapsed ? item.label : undefined}
+                className={({ isActive }) =>
+                  `flex items-center gap-2.5 rounded-md py-2 text-sm font-medium ${
+                    collapsed ? "justify-center px-2" : "px-3"
+                  } ${isActive ? "bg-primary-light text-primary-dark" : "text-ink-600 hover:bg-ink-200"}`
+                }
+              >
+                <Icon className="h-5 w-5 shrink-0" />
+                {!collapsed && <span>{item.label}</span>}
+              </NavLink>
+            );
+          })}
         </nav>
       </aside>
       <div className="flex flex-1 flex-col">

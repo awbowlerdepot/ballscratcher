@@ -105,6 +105,13 @@ account instead of a shared bearer-token secret.
   didn't change, only the literal color), a single indigo `primary`
   accent, and `color-scheme: dark` on `body` so native `<select>`/
   `<input>`/checkbox chrome follows along without per-page classes.
+- **Nav icons + collapsible sidebar** -- each `Layout.tsx` nav item now
+  has a small hand-rolled inline SVG icon (`src/components/icons.tsx`;
+  no icon library dependency, see that file's own comment on why). A
+  chevron button in the sidebar header collapses it to icon-only
+  (`w-14`, labels hidden, `title` attribute for a hover tooltip
+  instead); the collapsed/expanded state is remembered in
+  `localStorage` across reloads.
 
 ## Auth model
 

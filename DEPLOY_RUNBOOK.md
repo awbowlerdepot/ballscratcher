@@ -9939,6 +9939,35 @@ states, anywhere text sits on a `bg-{role}-light` chip (Badge, error
 banners, Toast), and the native form controls relying on
 `color-scheme: dark` rather than explicit classes.
 
+### 6ab.7. Nav icons + collapsible sidebar
+
+Al asked to add icons to the sidebar nav and make it collapsible to
+icon-only. `admin-spa` had no icon library dependency at all, and this
+sandbox's npm registry access is unreliable (403s on scoped packages,
+per 6ab.6 above) -- rather than risk a dependency install that might
+not survive to a real `npm install`, seven nav icons plus a collapse
+chevron were hand-rolled as inline SVG in a new
+`src/components/icons.tsx` (stroke-based, `currentColor`, Tabler/
+Feather-ish proportions so they read consistently with the rest of the
+app rather than needing their own color rules).
+
+`Layout.tsx`'s `NAV_ITEMS` now carries an `icon` component per entry.
+A chevron button in the sidebar header toggles a `collapsed` boolean
+that's read from/written to `localStorage`
+(`admin-spa:sidebar-collapsed`) so the choice survives reloads --
+someone doing rapid review work all day shouldn't have to re-collapse
+it every session. Collapsed state: sidebar width drops from `w-56` to
+`w-14`, nav item labels are hidden (icon centered, `title` attribute
+picks up the label as a native hover tooltip instead), and the
+"BowlerIQ Admin" header text is hidden too (just the toggle button
+remains, centered).
+
+`npx tsc -b --force` passes clean. Same caveat as 6ab.6 above applies:
+not visually verified in a running browser (same platform-mismatch
+sandbox limitation) -- worth an actual look, especially the collapsed
+width and whether `title`-attribute tooltips feel sufficient versus a
+proper hover tooltip component.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
