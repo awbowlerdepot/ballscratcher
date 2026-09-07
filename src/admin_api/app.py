@@ -1359,6 +1359,39 @@ def regenerate_article_images(product_id: str):
         conn.close()
 
 
+@app.post("/products/{product_id}/regenerate-article-action-shot")
+def regenerate_article_action_shot(product_id: str):
+    # Single-variant sibling of regenerate_article_images above (Al:
+    # "missing some product shots still. can we add the ability to just
+    # generate a new product or action shot individually") -- same
+    # decoupled-images-only behavior (existing article text untouched, no
+    # review-status reset), but scoped to just the action_shot variant so
+    # a still-good product_shot is never regenerated (or dislodged) just
+    # to fill in a missing action_shot. See queue_article_generation's own
+    # v8 docstring for exactly what mode="action_shot" sets.
+    conn = service.get_db_connection()
+    try:
+        return service.queue_article_generation(conn, product_id, mode="action_shot")
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/products/{product_id}/regenerate-article-product-shot")
+def regenerate_article_product_shot(product_id: str):
+    # Single-variant sibling of regenerate_article_images above -- see
+    # regenerate_article_action_shot's own comment just above for the
+    # full reasoning, mirrored here for product_shot.
+    conn = service.get_db_connection()
+    try:
+        return service.queue_article_generation(conn, product_id, mode="product_shot")
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
 # --- User management (Cognito) ---
 #
 # Al: "can we add user management and a user group that has no access to

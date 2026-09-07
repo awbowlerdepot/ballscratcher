@@ -4,7 +4,9 @@ import {
   getArticle,
   listArticleImageCandidates,
   listArticles,
+  regenerateArticleActionShot,
   regenerateArticleImages,
+  regenerateArticleProductShot,
   regenerateArticleText,
   rejectArticle,
   resyncArticleNow,
@@ -161,6 +163,28 @@ export default function ArticlesPage() {
       const result = await regenerateArticleImages(productIdForArticle);
       show(
         result.queued ? "Queued -- reopen this article in a bit to see the new candidates." : (result.reason ?? "Not queued."),
+        result.queued ? "ok" : "danger",
+      );
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Regenerate failed.", "danger");
+    }
+  }
+
+  // Single-variant regenerate, surfaced inside the preview modal next to
+  // each shot's own candidates (Al: "missing some product shots still.
+  // can we add the ability to just generate a new product or action shot
+  // individually") -- doesn't touch the other variant's existing image
+  // or burn a generation call on it, unlike handleRegenerateImages above.
+  async function handleRegenerateVariant(productIdForArticle: string, variant: "action_shot" | "product_shot") {
+    try {
+      const result =
+        variant === "action_shot"
+          ? await regenerateArticleActionShot(productIdForArticle)
+          : await regenerateArticleProductShot(productIdForArticle);
+      show(
+        result.queued
+          ? `Queued -- reopen this article in a bit to see the new ${VARIANT_LABELS[variant].toLowerCase()} candidates.`
+          : (result.reason ?? "Not queued."),
         result.queued ? "ok" : "danger",
       );
     } catch (err) {
@@ -407,7 +431,12 @@ export default function ArticlesPage() {
       <Modal open={previewId !== null} onClose={() => setPreviewId(null)} title={previewArticle?.title || "Article preview"} wide>
         {previewLoading && <p className="text-sm text-ink-500">Loading…</p>}
         {previewArticle && (
-          <ArticlePreview article={previewArticle} candidates={previewCandidates} onSelectCandidate={handleSelectCandidate} />
+          <ArticlePreview
+            article={previewArticle}
+            candidates={previewCandidates}
+            onSelectCandidate={handleSelectCandidate}
+            onRegenerateVariant={(variant) => handleRegenerateVariant(previewArticle.product_id, variant)}
+          />
         )}
       </Modal>
     </div>
@@ -424,10 +453,15 @@ export function ArticlePreview({
   article,
   candidates,
   onSelectCandidate,
+  onRegenerateVariant,
 }: {
   article: Article;
   candidates: ArticleImageCandidate[];
   onSelectCandidate: (candidateId: string) => void;
+  // Optional -- ProductDetailPage's Article sub-tab reuses this same
+  // component read-only-ish (see that page's own comment on why it
+  // shares this JSX) and may not wire a regenerate action through.
+  onRegenerateVariant?: (variant: "action_shot" | "product_shot") => void;
 }) {
   const listBlock = (label: string, items: string[]) =>
     items.length ? (
@@ -459,6 +493,23 @@ export function ArticlePreview({
           Copy ID
         </button>
       </p>
+
+      {/* Per-variant regenerate -- always visible regardless of whether
+          this variant has any candidates yet (Al's "missing some product
+          shots still" case has NONE for that variant, so a button tucked
+          inside the per-variant candidates block below would never
+          render for exactly the case that needs it). Only shown when the
+          caller wired an action through (see this component's own prop
+          comment). */}
+      {onRegenerateVariant && (
+        <div className="flex flex-wrap gap-2">
+          {(["action_shot", "product_shot"] as const).map((variant) => (
+            <Button key={variant} size="sm" variant="secondary" onClick={() => onRegenerateVariant(variant)}>
+              Regenerate {VARIANT_LABELS[variant].toLowerCase()}
+            </Button>
+          ))}
+        </div>
+      )}
 
       {candidates.length > 0 ? (
         Object.keys(byVariant)

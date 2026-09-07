@@ -9034,6 +9034,96 @@ wrong-directory deploy miss on `AdminApiFunction` (6ab.26's real
 follow-up), it's worth confirming this Lambda's deploy actually ran too,
 not just AdminApiFunction's.
 
+### 6t.1 Per-variant image regenerate (action_shot-only / product_shot-only), 2026-09-07
+
+Al: "missing some product shots still. can we add the ability to just
+generate a new product or action shot individually." Before this
+change, `POST /products/{id}/regenerate-article-images` (6t/v7's
+decoupled "Regenerate images" trigger) always regenerated BOTH shots
+together -- if only `product_shot` was missing/bad, using it meant
+burning a Gemini call on an already-good `action_shot` too, and risking
+dislodging it if a fresh candidate looked different (see 6ab's own
+locked-variant-preservation fix for why that risk is real, not
+theoretical).
+
+**Why this was a small change, not a rewrite**: `generate_article_
+image_candidates`'s returned dict (`{"action_shot": [...], "product_
+shot": [...]}`) was already allowed to have EITHER key missing or empty
+-- `store_article_image_candidates` already skips (no delete, no
+insert) any variant with an empty candidates list, and `generate_
+article_for_product`'s own images-dict-building loop already falls back
+to "keep the existing value" for any variant with no fresh candidates.
+Both of those existing fallbacks are exactly what single-variant
+regenerate needs -- the only real gap was that `generate_article_image_
+candidates` always generated BOTH variants unconditionally, with no way
+to ask for just one.
+
+**`src/product_article_generator/app.py`**: `generate_article_image_
+candidates` gained a `variants` param (default `("action_shot",
+"product_shot")`, so every existing caller is byte-for-byte unaffected)
+that scopes its two internal loops (the interleaved Gemini loop and the
+Stability/composite loop) to just the requested variant(s) -- the
+reference-image fetch and shared cutout are still done at most once
+regardless, since both are variant-agnostic. `generate_article_for_
+product` gained a matching `image_variants` param, threaded straight
+through. `handler()`'s on-demand `{"product_id": ...}` path now also
+reads an optional `event["image_variants"]` list (tuple()'d before
+passing through) off the event, defaulting to both variants when
+absent.
+
+**`src/admin_api/service.py`**: `queue_article_generation`'s `mode`
+param now also accepts `"action_shot"`/`"product_shot"` (alongside the
+existing `"both"`/`"text"`/`"images"`) -- both behave like `mode=
+"images"` (regenerate_text=False, regenerate_images=True, same
+"requires an existing article" requirement) but additionally set
+`payload["image_variants"]` to a single-element list.
+
+**`src/admin_api/app.py`**: two new routes mirroring `regenerate-
+article-images`'s own shape --
+`POST /products/{id}/regenerate-article-action-shot` and
+`POST /products/{id}/regenerate-article-product-shot`, each just
+calling `queue_article_generation` with the matching mode. No request
+body, same as every other on-demand trigger in this project.
+
+**`admin-spa/src/api/client.ts`** + **`admin-spa/src/api/types.ts`**:
+`regenerateArticleActionShot`/`regenerateArticleProductShot` client
+functions hitting the two new routes; `ArticleRegenerateMode` widened to
+include the two new mode strings.
+
+**`admin-spa/src/pages/ArticlesPage.tsx`**: `ArticlePreview` (the shared
+bowling.com-shaped article-review component, also reused by
+`ProductDetailPage`'s Article sub-tab) gained an optional `onRegenerate
+Variant` prop and, when supplied, two small "Regenerate action shot" /
+"Regenerate product shot" buttons rendered ABOVE the per-variant
+candidate galleries -- not tucked inside them, since a variant with zero
+existing candidates (Al's actual "missing" case) would never render a
+button placed inside its own now-empty gallery section. Wired in both
+`ArticlesPage.tsx`'s own preview modal and `ProductDetailPage.tsx`'s
+Article sub-tab (the more likely place Al actually notices and fixes a
+single missing shot on a specific product).
+
+**Tests**: `tests/test_product_article_generator.py` (134/134 passing,
+3 new) -- `test_generate_article_image_candidates_single_variant_only`
+confirms `variants=("action_shot",)` never touches product_shot at all
+(no Gemini calls, no S3 writes, no dict key); `test_generate_article_
+for_product_threads_image_variants_to_candidate_generation` confirms
+the `image_variants` param reaches `generate_article_image_candidates`
+as its own `variants` kwarg, and that the untouched variant's existing
+image survives via the same existing-value fallback the locked-variant/
+partial-failure tests already exercise; `test_handler_on_demand_
+product_id_reads_image_variants_from_event` confirms the event's raw
+JSON list becomes a tuple by the time it reaches `generate_article_for_
+product`. `tests/test_admin_api_service.py` (290/290 passing, 2 new) --
+`test_queue_article_generation_mode_action_shot_sets_regenerate_flags_
+and_image_variants` and its `product_shot` sibling confirm the Lambda
+payload shape for each new mode.
+
+No migration, no `template.yaml` change -- pure application-code
+addition, same deploy story as 6t/v7's original decoupled-regenerate
+feature (`sam build && sam deploy`, unscoped, for `product_article_
+generator` and `admin_api`; `admin-spa`'s own S3+CloudFront deploy for
+the frontend half).
+
 ### 6u. Article → BigCommerce sync: admin toggle (migration 028) + sync job design spec (job not yet built)
 
 Follow-up to 6s/6t (the ball-review article generator): Al asked how to get

@@ -20,7 +20,9 @@ import {
   listProductPriceSources,
   listVideoCandidates,
   reassignVideoCandidate,
+  regenerateArticleActionShot,
   regenerateArticleImages,
+  regenerateArticleProductShot,
   regenerateArticleText,
   rejectArticle,
   rejectPriceSource,
@@ -455,6 +457,18 @@ export default function ProductDetailPage() {
   async function handleRegenerateImages() {
     try {
       const result = await regenerateArticleImages(id!);
+      show(result.queued ? "Queued." : (result.reason ?? "Not queued."), result.queued ? "ok" : "danger");
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Regenerate failed.", "danger");
+    }
+  }
+
+  // Single-variant sibling of handleRegenerateImages -- see ArticlesPage.
+  // tsx's own handleRegenerateVariant for the full reasoning (Al:
+  // "missing some product shots still...").
+  async function handleRegenerateVariant(variant: "action_shot" | "product_shot") {
+    try {
+      const result = variant === "action_shot" ? await regenerateArticleActionShot(id!) : await regenerateArticleProductShot(id!);
       show(result.queued ? "Queued." : (result.reason ?? "Not queued."), result.queued ? "ok" : "danger");
     } catch (err) {
       show(err instanceof Error ? err.message : "Regenerate failed.", "danger");
@@ -976,7 +990,14 @@ export default function ProductDetailPage() {
             </div>
           )}
 
-          {article && <ArticlePreview article={article} candidates={articleCandidates} onSelectCandidate={handleSelectCandidate} />}
+          {article && (
+            <ArticlePreview
+              article={article}
+              candidates={articleCandidates}
+              onSelectCandidate={handleSelectCandidate}
+              onRegenerateVariant={handleRegenerateVariant}
+            />
+          )}
         </div>
       )}
 

@@ -401,6 +401,24 @@ export function regenerateArticleImages(productId: string): Promise<QueueArticle
   return apiPost<QueueArticleGenerationResult>(`/products/${encodeURIComponent(productId)}/regenerate-article-images`);
 }
 
+// Single-variant siblings of regenerateArticleImages (Al: "missing some
+// product shots still. can we add the ability to just generate a new
+// product or action shot individually") -- each hits its own dedicated
+// backend route (mode="action_shot"/"product_shot" server-side, see
+// queue_article_generation's own v8 docstring) so only that one shot
+// regenerates, leaving the other variant's existing image untouched.
+export function regenerateArticleActionShot(productId: string): Promise<QueueArticleGenerationResult> {
+  return apiPost<QueueArticleGenerationResult>(
+    `/products/${encodeURIComponent(productId)}/regenerate-article-action-shot`,
+  );
+}
+
+export function regenerateArticleProductShot(productId: string): Promise<QueueArticleGenerationResult> {
+  return apiPost<QueueArticleGenerationResult>(
+    `/products/${encodeURIComponent(productId)}/regenerate-article-product-shot`,
+  );
+}
+
 // Kept as a re-export purely so callers importing from client.ts don't
 // also need a separate import from types.ts just for this one type.
 export type { ArticleRegenerateMode };

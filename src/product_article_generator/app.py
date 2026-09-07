@@ -1652,7 +1652,8 @@ def store_article_image(s3_client, bucket: str, product_id: str, name: str, png_
 def generate_article_image_candidates(conn, bedrock_image_client, bedrock_removebg_client, gemini_auth: dict,
                                        s3_client, image_model_id: str, removebg_model_id: str,
                                        gemini_model_id: str, image_bucket: str,
-                                       product: dict, article: dict) -> dict:
+                                       product: dict, article: dict,
+                                       variants: tuple = ("action_shot", "product_shot")) -> dict:
     """Best-effort, non-fatal: by the time this runs the article TEXT has
     already been generated successfully (see generate_article_for_
     product) -- an image failure here must never lose an otherwise-good
@@ -1664,6 +1665,21 @@ def generate_article_image_candidates(conn, bedrock_image_client, bedrock_remove
     generate_article_for_product treats index 0 of each list as the
     auto-selected default (see that function's own docstring) and
     store_article_image_candidates persists the rest alongside it.
+
+    v8 (2026-09-07): `variants` optionally narrows generation to a
+    SUBSET of ("action_shot", "product_shot") -- Al: "missing some
+    product shots still. can we add the ability to just generate a new
+    product or action shot individually". Only the requested variant(s)
+    run in each loop below (the reference-image fetch and, when
+    applicable, the shared cutout are still done at most once regardless
+    of how many variants are requested, since both are variant-agnostic
+    and there's no reason to skip that sharing just because the caller
+    only wants one shot). The returned dict simply omits keys for any
+    variant not in `variants` -- store_article_image_candidates and the
+    images-dict-building loop in generate_article_for_product both
+    already treat a variant missing from candidates_by_variant as "no
+    new candidates, keep whatever exists," which is exactly the desired
+    single-variant behavior with no changes needed in either of those.
 
     v4 (see this module's own docstring for the full v1-v4 history): the
     product's real reference photo is fetched ONCE and reused across
@@ -1747,15 +1763,17 @@ def generate_article_image_candidates(conn, bedrock_image_client, bedrock_remove
     # build a fresh Session (and a fresh urllib3 Retry/adapter) per call.
     gemini_session = get_gemini_requests_session()
 
-    results = {"action_shot": [], "product_shot": []}
+    results = {variant: [] for variant in variants}
 
     # v6: interleaved (action_shot #1, product_shot #1, action_shot #2,
     # ...) rather than looping each variant to completion before starting
     # the other -- see this function's own "v6 REAL INCIDENT" docstring
     # section for why. i is the same 0-based "candidate index" used for
     # both the S3 key suffix and the prompt-variation suffix below.
+    # v8: only iterates the requested `variants` subset -- with both
+    # requested (the default) this is unchanged from v6/v7.
     for i in range(NUM_GEMINI_CANDIDATES_PER_VARIANT):
-        for variant in ("action_shot", "product_shot"):
+        for variant in variants:
             aspect_ratio = _VARIANT_ASPECT_RATIOS[variant]
             try:
                 prompt = build_gemini_scene_prompt(product, article, variant)
@@ -1776,7 +1794,7 @@ def generate_article_image_candidates(conn, bedrock_image_client, bedrock_remove
                 logger.exception("Failed to generate Gemini %s candidate #%d for product_id=%s",
                                   variant, i + 1, product["id"])
 
-    for variant in ("action_shot", "product_shot"):
+    for variant in variants:
         aspect_ratio = _VARIANT_ASPECT_RATIOS[variant]
         if cutout_png_bytes is not None:
             import random
@@ -2111,7 +2129,8 @@ def generate_article_for_product(conn, bedrock_client, model_id: str, product_id
                                   gemini_auth: dict = None, image_model_id: str = None,
                                   removebg_model_id: str = None, gemini_model_id: str = None,
                                   image_bucket: str = None, force: bool = False,
-                                  regenerate_text: bool = True, regenerate_images: bool = True) -> dict:
+                                  regenerate_text: bool = True, regenerate_images: bool = True,
+                                  image_variants: tuple = ("action_shot", "product_shot")) -> dict:
     """Orchestrates one product's full generation. force=True (the
     admin-triggered on-demand path -- see admin_api.queue_article_
     generation) skips the "already has an article" check the batch
@@ -2182,7 +2201,22 @@ def generate_article_for_product(conn, bedrock_client, model_id: str, product_id
         regenerate" covers this.
       - regenerate_text=False, regenerate_images=False is a no-op caller
         error, not a real use case; guarded defensively rather than
-        silently doing nothing expensive."""
+        silently doing nothing expensive.
+
+    v8 (2026-09-07): image_variants (default both, unchanged behavior)
+    narrows a regenerate_images=True run to just ("action_shot",) or
+    ("product_shot",) -- Al: "missing some product shots still. can we
+    add the ability to just generate a new product or action shot
+    individually", so a still-good action_shot doesn't get regenerated
+    (burning an API call, and risking dislodging a good image) just to
+    fill in a missing product_shot, or vice versa. Passed straight
+    through to generate_article_image_candidates's own `variants` param;
+    the `images` dict-building loop below already only writes an entry
+    for a variant that's actually in candidates_by_variant or has an
+    existing value, so a variant excluded from image_variants simply
+    never has a fresh key computed here and falls through to the
+    existing-value branch -- no other change needed for the excluded
+    variant to be left completely alone."""
     if not regenerate_text and not regenerate_images:
         return {"product_id": product_id, "generated": False, "reason": "nothing_to_regenerate"}
 
@@ -2218,6 +2252,7 @@ def generate_article_for_product(conn, bedrock_client, model_id: str, product_id
         candidates_by_variant = generate_article_image_candidates(
             conn, bedrock_image_client, bedrock_removebg_client, gemini_auth, s3_client,
             image_model_id, removebg_model_id, gemini_model_id, image_bucket, product, article,
+            variants=image_variants,
         )
 
     # Which variants already have a live pick -- an admin's explicit
@@ -2338,6 +2373,14 @@ def handler(event, context):
     ...} path above is unaffected -- it already only ever handles exactly
     one product.
 
+    v8 (2026-09-07): the on-demand {"product_id": ...} path also reads an
+    optional "image_variants" list off the event (e.g. ["action_shot"]),
+    threaded through as generate_article_for_product's own image_variants
+    tuple -- see that function's own v8 docstring. Absent/empty defaults
+    to both variants, same as before this change. The batch sweep path
+    never reads this either, same reasoning as regenerate_text/images
+    above: a scheduled run always wants every variant a product needs.
+
     gemini_auth (v5, see this module's own docstring for the full v4->v5
     ADC/Vertex-AI switch) is built here, not passed straight from a
     secret the way the rest of this function's config is: the service
@@ -2396,6 +2439,15 @@ def handler(event, context):
     conn = get_db_connection()
     try:
         if event.get("product_id"):
+            # v8: event["image_variants"], if present, is a JSON list (e.g.
+            # ["action_shot"]) -- tuple()'d to match generate_article_for_
+            # product's own tuple-typed param. Absent (every pre-v8 caller,
+            # and admin_api.queue_article_generation's mode="both"/"text"/
+            # "images" payloads, none of which set this key) falls back to
+            # both variants, byte-for-byte the pre-v8 default.
+            image_variants = tuple(event["image_variants"]) if event.get("image_variants") else (
+                "action_shot", "product_shot",
+            )
             result = generate_article_for_product(
                 conn, bedrock_client, model_id, event["product_id"],
                 s3_client=s3_client, bedrock_image_client=bedrock_image_client,
@@ -2404,6 +2456,7 @@ def handler(event, context):
                 gemini_model_id=gemini_model_id, image_bucket=image_bucket, force=True,
                 regenerate_text=event.get("regenerate_text", True),
                 regenerate_images=event.get("regenerate_images", True),
+                image_variants=image_variants,
             )
             return {"statusCode": 200, "body": json.dumps({"results": [result]})}
 

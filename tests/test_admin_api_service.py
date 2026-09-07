@@ -4802,6 +4802,69 @@ def test_queue_article_generation_mode_images_sets_regenerate_flags_in_payload()
     }
 
 
+def test_queue_article_generation_mode_action_shot_sets_regenerate_flags_and_image_variants():
+    """v8 (Al: "missing some product shots still. can we add the ability
+    to just generate a new product or action shot individually") --
+    mode="action_shot" behaves like mode="images" but additionally scopes
+    the payload's image_variants to just that one shot."""
+    db = _fake_db_with_product()
+    conn = FakeConnection(db)
+    fake_lambda = _FakeLambdaClient()
+
+    class _FakeBoto3:
+        def client(self, name):
+            return fake_lambda
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    os.environ["PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME"] = "bowling-scraper-product-article-generator"
+    try:
+        result = service.queue_article_generation(conn, "prod-1", mode="action_shot")
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+        del os.environ["PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME"]
+
+    assert result == {"queued": True, "product_id": "prod-1", "mode": "action_shot"}
+    call = fake_lambda.invocations[0]
+    assert json.loads(call["Payload"]) == {
+        "product_id": "prod-1", "regenerate_text": False, "regenerate_images": True,
+        "image_variants": ["action_shot"],
+    }
+
+
+def test_queue_article_generation_mode_product_shot_sets_regenerate_flags_and_image_variants():
+    """Symmetric sibling of the action_shot test above, for product_shot."""
+    db = _fake_db_with_product()
+    conn = FakeConnection(db)
+    fake_lambda = _FakeLambdaClient()
+
+    class _FakeBoto3:
+        def client(self, name):
+            return fake_lambda
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    os.environ["PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME"] = "bowling-scraper-product-article-generator"
+    try:
+        result = service.queue_article_generation(conn, "prod-1", mode="product_shot")
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+        del os.environ["PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME"]
+
+    assert result == {"queued": True, "product_id": "prod-1", "mode": "product_shot"}
+    call = fake_lambda.invocations[0]
+    assert json.loads(call["Payload"]) == {
+        "product_id": "prod-1", "regenerate_text": False, "regenerate_images": True,
+        "image_variants": ["product_shot"],
+    }
+
+
 def test_queue_article_generation_rejects_unknown_mode():
     db = _fake_db_with_product()
     conn = FakeConnection(db)

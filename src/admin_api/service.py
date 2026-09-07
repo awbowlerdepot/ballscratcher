@@ -4089,9 +4089,24 @@ def queue_article_generation(conn, product_id: str, mode: str = "both") -> dict:
     text/regenerate_images explicitly so handler() threads the right
     combination through to generate_article_for_product (see that
     function's own v7 docstring for what each combination actually does,
-    e.g. why "images" requires an article to already exist)."""
-    if mode not in ("both", "text", "images"):
-        raise ValueError(f"Unknown mode {mode!r} -- expected 'both', 'text', or 'images'")
+    e.g. why "images" requires an article to already exist).
+
+    v8 (2026-09-07): mode also accepts "action_shot"/"product_shot" --
+    Al: "missing some product shots still. can we add the ability to
+    just generate a new product or action shot individually". Both
+    behave like mode="images" (regenerate_text=False, regenerate_
+    images=True, same "requires an existing article" requirement) but
+    additionally set payload["image_variants"] to a single-element list,
+    which app.py's handler() threads through to generate_article_for_
+    product's image_variants param (see that function's own v8
+    docstring) so only the requested shot is regenerated -- a still-good
+    action_shot is never touched (no wasted API call, no risk of
+    dislodging a locked-in pick) just to fill in a missing product_shot,
+    or vice versa."""
+    if mode not in ("both", "text", "images", "action_shot", "product_shot"):
+        raise ValueError(
+            f"Unknown mode {mode!r} -- expected 'both', 'text', 'images', 'action_shot', or 'product_shot'"
+        )
 
     with conn.cursor() as cur:
         cur.execute("select id from products where id = %s", (product_id,))
@@ -4109,6 +4124,14 @@ def queue_article_generation(conn, product_id: str, mode: str = "both") -> dict:
     elif mode == "images":
         payload["regenerate_text"] = False
         payload["regenerate_images"] = True
+    elif mode == "action_shot":
+        payload["regenerate_text"] = False
+        payload["regenerate_images"] = True
+        payload["image_variants"] = ["action_shot"]
+    elif mode == "product_shot":
+        payload["regenerate_text"] = False
+        payload["regenerate_images"] = True
+        payload["image_variants"] = ["product_shot"]
 
     import boto3
 

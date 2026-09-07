@@ -1002,7 +1002,7 @@ def test_generate_article_for_product_images_only_regenerate_reuses_persisted_vi
 
     def _fake_generate_image_candidates(conn_, bedrock_image_client, bedrock_removebg_client, gemini_auth,
                                          s3_client, image_model_id, removebg_model_id, gemini_model_id,
-                                         image_bucket, product, article):
+                                         image_bucket, product, article, variants=("action_shot", "product_shot")):
         captured_articles.append(article)
         return {}
 
@@ -1163,10 +1163,15 @@ def test_handler_on_demand_product_id_forces_single_generation():
     # regenerate_flags_from_event below for the non-default case.
     assert kwargs["regenerate_text"] is True
     assert kwargs["regenerate_images"] is True
+    # v8: image_variants is always threaded through too now, defaulting to
+    # both variants when the event doesn't specify "image_variants" -- see
+    # test_handler_on_demand_product_id_reads_image_variants_from_event
+    # below for the single-variant case.
+    assert kwargs["image_variants"] == ("action_shot", "product_shot")
     assert set(kwargs.keys()) == {
         "s3_client", "bedrock_image_client", "bedrock_removebg_client", "gemini_auth",
         "image_model_id", "removebg_model_id", "gemini_model_id", "image_bucket",
-        "regenerate_text", "regenerate_images",
+        "regenerate_text", "regenerate_images", "image_variants",
     }
     body = json.loads(result["body"])
     assert body["results"] == [{"product_id": "prod-1", "generated": True, "article_id": "a1",
@@ -1200,6 +1205,34 @@ def test_handler_on_demand_product_id_reads_regenerate_flags_from_event():
     _, _, kwargs = calls[0]
     assert kwargs["regenerate_text"] is False
     assert kwargs["regenerate_images"] is True
+
+
+def test_handler_on_demand_product_id_reads_image_variants_from_event():
+    """v8: {"product_id": ..., "image_variants": ["action_shot"]} -- the
+    new single-variant admin_api route's payload shape (see admin_api.
+    service.queue_article_generation's own v8 docstring) -- must reach
+    generate_article_for_product as a tuple, not the raw JSON list."""
+    conn = _FakeConnection()
+    calls = []
+
+    def _fake_generate(conn_, bedrock, model_id, product_id, force=False, **kwargs):
+        calls.append((product_id, force, kwargs))
+        return {"product_id": product_id, "generated": True, "article_id": "a1",
+                "video_count": 1, "sibling_count": 0}
+
+    guard = _HandlerPatchGuard()
+    try:
+        guard.set_module("boto3", _fake_boto3_module(_FakeBedrockClient("{}")))
+        guard.set(app, "get_db_connection", lambda: conn)
+        guard.set(app, "generate_article_for_product", _fake_generate)
+        app.handler({"product_id": "prod-1", "regenerate_text": False, "regenerate_images": True,
+                      "image_variants": ["action_shot"]}, None)
+    finally:
+        guard.restore()
+
+    assert len(calls) == 1
+    _, _, kwargs = calls[0]
+    assert kwargs["image_variants"] == ("action_shot",)
 
 
 def test_handler_batch_mode_continues_after_one_product_errors():
@@ -2510,6 +2543,44 @@ def test_generate_article_image_candidates_default_is_three_gemini_no_stability(
     assert len(s3.put_calls) == 6
 
 
+def test_generate_article_image_candidates_single_variant_only():
+    """v8: variants=("action_shot",) (Al: "missing some product shots
+    still. can we add the ability to just generate a new product or
+    action shot individually") -- only action_shot is generated at all,
+    product_shot is completely untouched (no Gemini calls, no S3 writes,
+    not even a key in the returned dict), and the Stability loop (when
+    enabled) is scoped the same way."""
+    import requests
+
+    conn = _FakeConnection(reference_image_url="https://example.com/ball.jpg")
+    removebg_client = _FakeImageBedrockClient({"images": [_fake_cutout_png_b64()], "finish_reasons": [None]})
+    bg_client = _FakeImageBedrockClient({"images": [_fake_background_png_b64()], "finish_reasons": [None]})
+    fake_post, gemini_calls = _fake_gemini_post()
+    s3 = _FakeS3Client()
+
+    original_get = requests.get
+    original_get_session = app.get_gemini_requests_session
+    requests.get = lambda url, timeout=None: _fake_reference_photo_response()
+    app.get_gemini_requests_session = lambda: _FakeGeminiSession(fake_post)
+    try:
+        result = app.generate_article_image_candidates(
+            conn, bedrock_image_client=bg_client, bedrock_removebg_client=removebg_client,
+            gemini_auth=_FAKE_GEMINI_AUTH, s3_client=s3, image_model_id="model-id",
+            removebg_model_id="removebg-model-id", gemini_model_id="gemini-model-id", image_bucket="bucket",
+            product={"id": "prod-1", "color": "Blue"}, article=_SAMPLE_ARTICLE, variants=("action_shot",),
+        )
+    finally:
+        requests.get = original_get
+        app.get_gemini_requests_session = original_get_session
+
+    assert set(result.keys()) == {"action_shot"}
+    assert len(result["action_shot"]) == 3
+    # 3 Gemini calls for action_shot only -- product_shot is never touched.
+    assert len(gemini_calls) == 3
+    assert len(s3.put_calls) == 3
+    assert all("product_shot" not in c["Key"] for c in s3.put_calls)
+
+
 def test_generate_article_image_candidates_stability_enabled_adds_fourth_candidate():
     """Regression coverage for the ENABLE_STABILITY_CANDIDATES fallback
     itself (see this module's own docstring on why it's kept, not
@@ -2922,6 +2993,68 @@ _ALL_EIGHT_IMAGE_KWARGS = dict(
     gemini_auth=_FAKE_GEMINI_AUTH, image_model_id="model-id", removebg_model_id="removebg-model-id",
     gemini_model_id="gemini-model-id", image_bucket="bucket",
 )
+
+
+def test_generate_article_for_product_threads_image_variants_to_candidate_generation():
+    """v8 wiring test (Al: "missing some product shots still. can we add
+    the ability to just generate a new product or action shot
+    individually") -- image_variants=("product_shot",) must reach
+    generate_article_image_candidates as its own `variants` kwarg, and
+    the untouched action_shot's existing image must survive into the
+    final images dict unchanged (the same fallback mechanism the partial-
+    failure test above exercises, but here because action_shot was never
+    even asked for, not because it failed)."""
+    product_row = (
+        "prod-1", "Equinox Solid", "Blue", "reactive", "hybrid",
+        "R2S Hybrid", True, "500/1000 Abralon",
+        12, 17, "2024-01-01", "A great ball.",
+        "brand-1", "Storm", "Sonar", "asymmetric",
+    )
+    video_rows = [("vid-1", "Review", "Some Channel", "A summary.", "transcript text")]
+    conn = _FakeConnection(
+        product_row=product_row, video_rows=video_rows,
+        existing_article={
+            "id": "article-1", "performance_summary": "Old summary.", "hook": "Old hook.",
+            "action_shot_image_key": "article-images/prod-1/action_shot_gemini_1.png",
+            "action_shot_image_url": "https://b/action_shot_gemini_1.png",
+            "product_shot_image_key": None, "product_shot_image_url": None,
+        },
+        selected_variants=[],
+    )
+    bedrock = _FakeBedrockClient("should not be called")
+    captured_kwargs = []
+
+    def _fake_generate_image_candidates(*args, **kwargs):
+        captured_kwargs.append(kwargs)
+        return {"product_shot": [{"key": "article-images/prod-1/product_shot_gemini_1.png",
+                                   "url": "https://b/product_shot_gemini_1.png",
+                                   "model_id": "gemini-model", "seed": None}]}
+
+    guard = _HandlerPatchGuard()
+    try:
+        guard.set(app, "generate_article_image_candidates", _fake_generate_image_candidates)
+        result = app.generate_article_for_product(
+            conn, bedrock, "model-id", "prod-1",
+            regenerate_text=False, regenerate_images=True, image_variants=("product_shot",),
+            **_ALL_EIGHT_IMAGE_KWARGS,
+        )
+    finally:
+        guard.restore()
+
+    assert len(captured_kwargs) == 1
+    assert captured_kwargs[0]["variants"] == ("product_shot",)
+    assert result["images_generated"] is True
+    # update_article_images_only's params tuple:
+    # (action_shot_key, action_shot_url, product_shot_key, product_shot_url, product_id).
+    update_params = conn._cursor.images_only_updates[0]
+    # action_shot: untouched existing value, preserved via the exact same
+    # "no new candidates for this variant -> keep existing" fallback the
+    # partial-failure test above exercises.
+    assert update_params[0] == "article-images/prod-1/action_shot_gemini_1.png"
+    assert update_params[1] == "https://b/action_shot_gemini_1.png"
+    # product_shot: the fresh candidate this run produced.
+    assert update_params[2] == "article-images/prod-1/product_shot_gemini_1.png"
+    assert update_params[3] == "https://b/product_shot_gemini_1.png"
 
 
 def test_generate_article_for_product_preserves_locked_image_and_appends_new_candidate_unselected():

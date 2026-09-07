@@ -610,7 +610,7 @@ export interface ListArticlesParams {
   offset?: number;
 }
 
-export type ArticleRegenerateMode = "both" | "text" | "images";
+export type ArticleRegenerateMode = "both" | "text" | "images" | "action_shot" | "product_shot";
 
 export interface QueueArticleGenerationResult {
   queued: boolean;
