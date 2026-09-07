@@ -79,18 +79,31 @@
      section on the top and bottom" -- bigger negative vertical margin
      on the photo itself (not the frame's padding, and not touching the
      dark card at all) so more of the white-framed photo pokes out past
-     the card's own top/bottom edge. */
+     the card's own top/bottom edge. Then, after seeing it live: "can
+     the hero section be 100% width for the dark section. font is too
+     big and the image is not overhanging" -- .article-detail-hero is
+     now the full-bleed outer band (the classic relative/left-1/2/
+     -mx-[50vw]/w-screen trick to escape .page's own max-w-5xl
+     container without touching .page itself), with a new
+     .article-detail-hero-inner holding the actual max-w-5xl grid so
+     the image/text still line up with every other section on the
+     page; h1 dropped from text-3xl to text-2xl inside the hero only
+     (global h1 elsewhere untouched); overhang margin increased again
+     in case the smaller amount genuinely wasn't visible after deploy. */
   .article-detail-hero {
-    @apply mb-10 grid grid-cols-1 gap-8 rounded-lg bg-neutral-900 px-6 py-8 md:grid-cols-[320px_1fr] md:px-8;
+    @apply relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-neutral-900 py-10;
+  }
+  .article-detail-hero-inner {
+    @apply mx-auto grid max-w-5xl grid-cols-1 gap-8 px-6 md:grid-cols-[320px_1fr] md:px-8;
   }
   .article-detail-hero h1 {
-    @apply text-white;
+    @apply text-2xl text-white;
   }
   .article-detail-image-frame {
     @apply flex items-center justify-center overflow-visible px-2 md:px-4;
   }
   .article-detail-image {
-    @apply -my-16 aspect-[4/3] w-full -rotate-[12deg] rounded-sm bg-white p-2 shadow-2xl md:-my-24;
+    @apply -my-20 aspect-[4/3] w-full -rotate-[12deg] rounded-sm bg-white p-2 shadow-2xl md:-my-28;
   }
   .article-detail-image img {
     @apply h-full w-full rounded-[2px] object-cover;

@@ -398,14 +398,16 @@ function renderArticlePage(baseHtml: string, card: ArticleCard, article: Article
     <div class="page">
       <a class="back-link" href="/">&larr; All reviews</a>
       <div class="article-detail-hero">
-        <div class="article-detail-image-frame">
-          <div class="article-detail-image">
-            ${heroImage ? `<img src="${escapeHtml(heroImage)}" alt="${escapeHtml(article.product?.name ?? card.product_name)}" />` : ""}
+        <div class="article-detail-hero-inner">
+          <div class="article-detail-image-frame">
+            <div class="article-detail-image">
+              ${heroImage ? `<img src="${escapeHtml(heroImage)}" alt="${escapeHtml(article.product?.name ?? card.product_name)}" />` : ""}
+            </div>
           </div>
-        </div>
-        <div>
-          <h1>${escapeHtml(article.title)}</h1>
-          <p class="article-detail-hook">${escapeHtml(article.hook)}</p>
+          <div>
+            <h1>${escapeHtml(article.title)}</h1>
+            <p class="article-detail-hook">${escapeHtml(article.hook)}</p>
+          </div>
         </div>
       </div>
       ${article.performance_summary ? `<h2>Performance</h2><p>${escapeHtml(article.performance_summary)}</p>` : ""}
