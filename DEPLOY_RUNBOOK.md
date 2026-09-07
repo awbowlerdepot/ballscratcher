@@ -11966,6 +11966,23 @@ narrower case).
 `admin-spa` verified via `npx tsc -b` (clean) -- this is UI-state-only,
 no new tests (no backend/logic change, nothing pytest-testable here;
 same pattern as 6n.1's earlier filter-state fix on the consumer site).
+
+**Real follow-up, same day**: Al, after the above shipped: "we are
+still losing context when going back from a product detail page. it is
+a real time suck." The `productsListSearch` state above only gets read
+off `location.state` once; `setTab`'s own `setSearchParams(updater, {
+replace: true })` call -- fired on every manual tab click, i.e. almost
+immediately on landing, since browsing the sub-tabs is the entire point
+of this page -- doesn't pass `state` through, and React Router resets
+`location.state` to `undefined` on any navigation where `state` isn't
+explicitly forwarded. So `productsListSearch` was getting wiped by the
+first tab click, long before anyone reached "Back to Products" -- which
+made the fix above look like it had never worked at all. Fixed by
+passing `state: location.state` into that `setSearchParams` call so tab
+clicks stop clobbering it. Confirmed this is the *only* `setSearchParams`
+call site in `ProductDetailPage.tsx`, so nothing else on this page can
+still be silently resetting it. `npx tsc -b` clean again.
+
 No migration, no `template.yaml` change. Deploy via:
 
 ```bash

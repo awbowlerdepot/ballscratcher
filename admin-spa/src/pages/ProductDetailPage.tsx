@@ -134,13 +134,27 @@ export default function ProductDetailPage() {
   // so clicking through Overview -> Videos -> Article doesn't pile up
   // separate back-button stops) -- makes the current tab bookmarkable/
   // shareable/refreshable, not just reachable via an inbound link.
+  //
+  // REAL INCIDENT (2026-09-07, Al): "we are still losing context when
+  // going back from a product detail page. it is a real time suck."
+  // The productsListSearch fix above only reads location.state once on
+  // mount, but setSearchParams's own navigate() call resets location.
+  // state to undefined unless you explicitly pass it back through --
+  // and this is the ONLY thing on this page that calls setSearchParams.
+  // So the very first tab click after landing (Overview -> Article, or
+  // any of them) silently wiped out productsListSearch, long before
+  // anyone actually clicked "Back to Products" -- since browsing tabs
+  // is the entire point of this page, that made the fix look like it
+  // never worked at all. Fixed by forwarding the CURRENT location.state
+  // through every setSearchParams call here, so tab clicks stop erasing
+  // it.
   function setTab(next: DetailTab) {
     setTabState(next);
     setSearchParams((prev) => {
       const params = new URLSearchParams(prev);
       params.set("tab", next);
       return params;
-    }, { replace: true });
+    }, { replace: true, state: location.state });
   }
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
