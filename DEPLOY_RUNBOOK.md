@@ -11175,6 +11175,84 @@ arm64-gnu` optional-dependency bug, unrelated to this change).
 Files touched: `admin-spa/src/components/DataTable.tsx`,
 `admin-spa/src/pages/ProductsPage.tsx`.
 
+### 6ab.22. Fix: admin-spa CI break -- `package-lock.json` never regenerated for recharts
+
+Real, confirmed incident: after 6ab.20 (recharts charts feature) shipped,
+Al's GitHub Actions build failed on `npm ci` with `EUSAGE`: `package.json`
+and `package-lock.json` are out of sync, missing `recharts@2.15.4` and
+~30 transitive dependencies. Root cause: 6ab.20 added `recharts` to
+`admin-spa/package.json`'s `dependencies`, but this sandbox had no npm
+registry access at the time (`npm install`/`npm view` both returned 403),
+so `package-lock.json` was never actually regenerated to match -- only
+hand-edited. `npm ci` (used in CI, unlike a developer's own `npm
+install`) refuses to proceed at all when the two files disagree, which is
+exactly the intended behavior working as designed; this was a real gap
+in what got committed, not a CI bug.
+
+By this session, `admin-spa/node_modules` had a genuinely-installed real
+`recharts` (v2.15.4, with a real `node_modules/recharts` package) --
+most likely from Al running `npm install` on his own machine and this
+sandbox's mount syncing the result, the same pattern already observed
+earlier this project (`origin/main`'s tracking ref silently advancing
+after a push). This made `npm install --package-lock-only` able to
+regenerate `package-lock.json` for real this time (247 packages, up from
+210) rather than needing another hand-edit or stub. Verified with a
+clean `npm ci` in this sandbox against the regenerated lock file --
+succeeds, `recharts` installs correctly.
+
+Files touched: `admin-spa/package-lock.json` only.
+
+### 6ab.23. `product_article_generator`: cap the daily sweep at MAX_PRODUCTS_PER_INVOCATION
+
+Al asked how many products the daily article-generation sweep would
+produce; a direct SQL count (matching `list_products_needing_article`'s
+eligibility gate) came back 53. Investigating the batch Lambda's actual
+execution model surfaced a real, previously undisclosed risk: `handler`'s
+scheduled `{}`/`{"batch": true}` path fetched and looped over EVERY
+eligible product in one invocation with no cap, each product costing one
+Bedrock text call plus up to `NUM_GEMINI_CANDIDATES_PER_VARIANT * 2` (6)
+Gemini image calls (several of which retry with backoff on a 429 -- see
+this function's own v6 image-pipeline incident). Against this function's
+600s `Timeout`, 53 products in one run was a real risk of timing out
+mid-loop.
+
+Separately this same session, requesting an AWS Lambda concurrency quota
+increase surfaced that this account's entire Lambda concurrency ceiling
+was only 10 (`AdminApiFunction`'s own long-standing `template.yaml`
+comment) -- confirmed, not theoretical: Al reported hitting that ceiling
+repeatedly over 24 hours after filing the request. That makes any one
+invocation finishing promptly and releasing its execution slot matter
+more than it used to, on top of the timeout risk on its own.
+
+Fixed the same way `video_discovery` bounds `MAX_SEARCHES_PER_INVOCATION`:
+`list_products_needing_article` now takes an optional `max_products` and
+applies it as a plain SQL `LIMIT` on top of its existing `order by p.id`
+(deterministic -- the same lowest-id eligible products lead every capped
+run). `handler()` reads `MAX_PRODUCTS_PER_INVOCATION` (env var, defaults
+to `DEFAULT_MAX_PRODUCTS_PER_INVOCATION = 10`) for the scheduled path, or
+an explicit `{"batch": true, "limit": N}` on a manual invoke overrides it
+-- useful for deliberately powering through a backlog (like the confirmed
+53) in one manual run without permanently raising the daily default.
+Products left over after a capped run are untouched (`list_products_
+needing_article`'s "no article row yet" gate still applies), so they
+simply roll into the next scheduled run -- the same non-destructive
+partial-completion behavior this was already relying on, just bounded on
+purpose now instead of by accident.
+
+`DEFAULT_MAX_PRODUCTS_PER_INVOCATION = 10` is a starting estimate, not a
+measured one -- there's no real per-product timing data for this function
+yet. 10 products x a generous ~45s worst case each is ~450s, leaving
+real margin under the 600s timeout; tune via this function's own
+CloudWatch Duration metric once a few real capped invocations have run.
+
+Verified: full existing test suite re-run clean (123/123 in this file,
+no regressions elsewhere) plus new tests for the LIMIT SQL shape and for
+`handler`'s cap-resolution order (env var default, env var override,
+event `limit` override).
+
+Files touched: `src/product_article_generator/app.py`, `template.yaml`,
+`tests/test_product_article_generator.py`.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

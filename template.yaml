@@ -2256,6 +2256,21 @@ Resources:
           GEMINI_IMAGE_MODEL_ID: !Ref GeminiModelId
           GEMINI_REGION: !Ref GeminiRegion
           IMAGE_BUCKET: !Ref ImageBucket
+          # See app.py's "INVOCATION CAP" module docstring section --
+          # bounds how many eligible products the DailySchedule sweep
+          # below processes per invocation, so a large backlog can't run
+          # this function's 600s Timeout out mid-loop (a real, confirmed
+          # risk: Al found 53 eligible products via direct SQL count on
+          # 2026-09-06). Not a measured number -- a starting estimate
+          # (10 products x ~45s worst case each, well under 600s) to be
+          # tuned via this function's own CloudWatch Duration metric.
+          # Same account-wide Lambda concurrency ceiling (10, see
+          # AdminApiFunction's own comment) that motivated this also
+          # means an invocation finishing promptly and releasing its
+          # execution slot matters more than it used to. A manual
+          # {"batch": true, "limit": N} invoke can override this for
+          # deliberate backlog catch-up without raising the daily default.
+          MAX_PRODUCTS_PER_INVOCATION: "10"
       Policies:
         - VPCAccessPolicy: {}
         - Statement:

@@ -409,6 +409,36 @@ def test_list_products_needing_article_query_excludes_blocked_channels_and_exist
     assert "pv.summary is not null" in executed_query
 
 
+def test_list_products_needing_article_no_limit_when_max_products_omitted():
+    """Default/uncapped call (max_products=None) must not append a LIMIT
+    clause at all -- see "INVOCATION CAP" in app.py's own module
+    docstring for why a cap exists elsewhere, but this function itself
+    stays usable uncapped rather than requiring every caller to pass a
+    sentinel like 0 or -1."""
+    conn = _FakeConnection(needing_article=[])
+    app.list_products_needing_article(conn)
+    executed_query, executed_params = conn._cursor.executed[0]
+    assert "limit" not in executed_query
+    assert executed_params == ()
+
+
+def test_list_products_needing_article_applies_limit_when_max_products_given():
+    """See "INVOCATION CAP" in app.py's own module docstring -- a plain
+    SQL LIMIT on top of the existing `order by p.id`, so a capped run is
+    deterministic (same lowest-id products every time) rather than an
+    arbitrary subset."""
+    conn = _FakeConnection(needing_article=["prod-1", "prod-2"])
+    result = app.list_products_needing_article(conn, max_products=10)
+    executed_query, executed_params = conn._cursor.executed[0]
+    assert executed_query.rstrip().endswith("limit %s")
+    assert executed_params == [10]
+    # The fake cursor doesn't actually enforce the LIMIT (no real
+    # Postgres here -- see test_list_products_needing_article_query_
+    # excludes_blocked_channels_and_existing_articles's own comment), so
+    # this only confirms the query/params shape, not real row-limiting.
+    assert result == ["prod-1", "prod-2"]
+
+
 # --- fetch_product_content ---
 
 def test_fetch_product_content_returns_none_for_missing_product():
@@ -1078,7 +1108,7 @@ def test_handler_on_demand_product_id_reads_regenerate_flags_from_event():
 def test_handler_batch_mode_continues_after_one_product_errors():
     conn = _FakeConnection()
 
-    def _fake_list(conn_):
+    def _fake_list(conn_, max_products=None):
         return ["prod-1", "prod-2"]
 
     def _fake_generate(conn_, bedrock, model_id, product_id, force=False, **kwargs):
@@ -1103,6 +1133,79 @@ def test_handler_batch_mode_continues_after_one_product_errors():
     assert body["results"][0] == {"product_id": "prod-1", "generated": False, "reason": "error"}
     assert body["results"][1]["generated"] is True
     assert conn.closed is True
+
+
+def test_handler_batch_mode_defaults_cap_to_DEFAULT_MAX_PRODUCTS_PER_INVOCATION():
+    """See "INVOCATION CAP" in app.py's own module docstring -- with no
+    MAX_PRODUCTS_PER_INVOCATION env var set and no event["limit"], the
+    scheduled {}/{"batch": true} path must still cap at the module's own
+    default rather than falling back to uncapped (max_products=None),
+    which is what this whole feature exists to prevent."""
+    conn = _FakeConnection()
+    captured = {}
+
+    def _fake_list(conn_, max_products=None):
+        captured["max_products"] = max_products
+        return []
+
+    guard = _HandlerPatchGuard()
+    try:
+        guard.set_module("boto3", _fake_boto3_module(_FakeBedrockClient("{}")))
+        guard.set(app, "get_db_connection", lambda: conn)
+        guard.set(app, "list_products_needing_article", _fake_list)
+        os.environ.pop("MAX_PRODUCTS_PER_INVOCATION", None)
+        app.handler({}, None)
+    finally:
+        guard.restore()
+
+    assert captured["max_products"] == app.DEFAULT_MAX_PRODUCTS_PER_INVOCATION
+
+
+def test_handler_batch_mode_reads_cap_from_env_var():
+    conn = _FakeConnection()
+    captured = {}
+
+    def _fake_list(conn_, max_products=None):
+        captured["max_products"] = max_products
+        return []
+
+    guard = _HandlerPatchGuard()
+    try:
+        guard.set_module("boto3", _fake_boto3_module(_FakeBedrockClient("{}")))
+        guard.set(app, "get_db_connection", lambda: conn)
+        guard.set(app, "list_products_needing_article", _fake_list)
+        os.environ["MAX_PRODUCTS_PER_INVOCATION"] = "25"
+        app.handler({"batch": True}, None)
+    finally:
+        os.environ.pop("MAX_PRODUCTS_PER_INVOCATION", None)
+        guard.restore()
+
+    assert captured["max_products"] == 25
+
+
+def test_handler_batch_mode_event_limit_overrides_env_var():
+    """A manual {"batch": true, "limit": N} invoke -- see handler's own
+    v8 docstring -- is the deliberate-backlog-catch-up override, and must
+    win over MAX_PRODUCTS_PER_INVOCATION rather than being ignored."""
+    conn = _FakeConnection()
+    captured = {}
+
+    def _fake_list(conn_, max_products=None):
+        captured["max_products"] = max_products
+        return []
+
+    guard = _HandlerPatchGuard()
+    try:
+        guard.set_module("boto3", _fake_boto3_module(_FakeBedrockClient("{}")))
+        guard.set(app, "get_db_connection", lambda: conn)
+        guard.set(app, "list_products_needing_article", _fake_list)
+        os.environ["MAX_PRODUCTS_PER_INVOCATION"] = "10"
+        app.handler({"batch": True, "limit": 50}, None)
+    finally:
+        os.environ.pop("MAX_PRODUCTS_PER_INVOCATION", None)
+        guard.restore()
+
+    assert captured["max_products"] == 50
 
 
 def test_handler_constructs_image_and_removebg_bedrock_clients_in_configured_regions():
