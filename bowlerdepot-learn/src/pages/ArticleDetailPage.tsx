@@ -64,7 +64,7 @@ export default function ArticleDetailPage() {
       <div className="relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-neutral-900 py-10">
         <div className="mx-auto grid max-w-5xl grid-cols-1 gap-8 px-6 md:grid-cols-[320px_1fr] md:px-8">
           <div className="flex items-center justify-center overflow-visible px-2 md:relative md:px-4">
-            <div className="-my-3 aspect-[4/3] w-full -rotate-[12deg] rounded-sm bg-white p-2 shadow-2xl md:absolute md:left-0 md:top-1/2 md:my-0 md:w-[320px] md:-translate-y-1/2">
+            <div className="-my-[0.8rem] aspect-[4/3] w-full -rotate-[12deg] rounded-sm bg-white p-2 shadow-[0_12px_24px_-6px_rgba(0,0,0,0.55)] md:absolute md:left-0 md:top-1/2 md:my-0 md:w-[345px] md:-translate-y-1/2">
               {heroImage ? (
                 <img
                   src={heroImage}

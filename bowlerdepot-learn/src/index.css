@@ -134,7 +134,19 @@
      text-lg->text-base). Both changes verified live against
      https://learn.bowlerdepot.com (inline style overrides, screenshot,
      iterate) before being written back here, at both desktop and
-     mobile widths. */
+     mobile widths.
+
+     Al, once more: "make the drop shadow smaller and a bit darker.
+     also make the image larger" -- swapped shadow-2xl (0 25px 50px
+     -12px rgba(0,0,0,0.25)) for a tighter, darker arbitrary shadow
+     (0 12px 24px -6px rgba(0,0,0,0.55)) so it reads as a crisp shadow
+     under the tilted photo rather than a soft blur. Widened the
+     desktop box from md:w-[320px] to md:w-[345px] (380px/350px both
+     overlapped the text column in live testing; 345px is the largest
+     that doesn't) and increased the mobile overhang from -my-3 to the
+     arbitrary -my-[0.8rem] to match. Verified live against
+     https://learn.bowlerdepot.com at both breakpoints before being
+     written back here. */
   .article-detail-hero {
     @apply relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-neutral-900 py-10;
   }
@@ -148,7 +160,7 @@
     @apply flex items-center justify-center overflow-visible px-2 md:relative md:px-4;
   }
   .article-detail-image {
-    @apply -my-3 aspect-[4/3] w-full -rotate-[12deg] rounded-sm bg-white p-2 shadow-2xl md:absolute md:left-0 md:top-1/2 md:my-0 md:w-[320px] md:-translate-y-1/2;
+    @apply -my-[0.8rem] aspect-[4/3] w-full -rotate-[12deg] rounded-sm bg-white p-2 shadow-[0_12px_24px_-6px_rgba(0,0,0,0.55)] md:absolute md:left-0 md:top-1/2 md:my-0 md:w-[345px] md:-translate-y-1/2;
   }
   .article-detail-image img {
     @apply h-full w-full rounded-[2px] object-cover;
