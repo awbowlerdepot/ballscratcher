@@ -748,10 +748,43 @@ isn't scarce: `ProductDetailPage.tsx`'s admin_api calls were deliberately
 serialized (6ab.12) instead of `Promise.all`-ed specifically because of
 this same ceiling, and `PublicApiFunction`'s cold-start fix (6l.6's own
 follow-up) ruled out provisioned/reserved concurrency for the identical
-reason -- both
-decisions could be reconsidered now, but neither has been touched here;
-Al would need to weigh the trade-offs (page load latency vs. simplicity,
-in the first case) before either gets unwound.
+reason -- both decisions could be reconsidered now, but neither has been
+touched here; Al would need to weigh the trade-offs (page load latency
+vs. simplicity, in the first case) before either gets unwound.
+
+**REVERTED AGAIN, same day -- second real, confirmed incident.** Al
+followed up asking to revisit both flagged decisions above; the
+`ProductDetailPage.tsx` one (6ab.25) reverted to `Promise.all`, firing
+six concurrent admin_api calls from a single page load. That collided
+directly with the `ReservedConcurrentExecutions: 2` reservation just
+added here: reserved concurrency isn't only a floor, it's also a hard
+CEILING on that function specifically, independent of how much headroom
+the account has elsewhere. Six concurrent invocations against a function
+capped at 2 throttles the excess four -- and API Gateway surfaces that
+Lambda-service throttle as the exact same bare `{"message":"Service
+Unavailable"}` 503 this whole saga started with. Al reported it live;
+the specific failing request URLs he pasted (`GET /video-candidates`,
+`/articles`, `/price-history`, `/price-sites`, all for the same
+`product_id`) confirmed it immediately -- four of `ProductDetailPage.
+tsx`'s own six parallel calls.
+
+**Fix: removed `ReservedConcurrentExecutions` from `AdminApiFunction`
+entirely**, rather than raising the number. With the account's real
+1000-execution headroom, this function doesn't need protecting from
+being starved by other functions the way it did at 10 -- and giving it
+any small fixed reservation just re-creates the identical self-
+throttling risk against admin-spa's own legitimate parallel-call
+patterns (this page today, any future page tomorrow). `AdminApiFunction`'s
+`template.yaml` comment was updated in place again (third revision of
+the same paragraph, full history kept) rather than deleted or
+overwritten, so the complete arc -- reserved -> reverted (2026, 10-slot
+ceiling) -> re-added (2026-09-06, 1000-slot fix) -> reverted again
+(2026-09-06, same day, self-throttling against 6ab.25) -- stays visible
+for whoever touches this function's concurrency settings next.
+
+Verified via the CFN-tolerant YAML loader (74 resources,
+`ReservedConcurrentExecutions` absent from `AdminApiFunction`).
+Template-only change, no Python code touched.
 
 Redeploy just `AdminApiFunction`:
 ```bash

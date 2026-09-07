@@ -1444,15 +1444,35 @@ Resources:
       # RESOLVED 2026-09-06: Al requested and AWS approved a Lambda
       # concurrency quota increase for this account, to the standard 1000
       # (via AWS Service Quotas, service code `lambda`, quota "Concurrent
-      # executions") -- confirmed by Al directly, not yet re-verified via
-      # `aws lambda get-account-settings`. With 1000 total, reserving 2
-      # for this function leaves 998 unreserved, comfortably above the
-      # 10-slot floor, so the reservation below is safe to re-add.
-      # scripts/backfill_core_ids.py's retry-with-backoff (see its module
-      # docstring) stays in place regardless -- it's a reasonable client-
-      # side safety net even with real concurrency headroom, not just a
-      # workaround for the old scarcity.
-      ReservedConcurrentExecutions: 2
+      # executions"). With 1000 total, reserving 2 for this function
+      # left 998 unreserved, comfortably above the 10-slot floor, so
+      # ReservedConcurrentExecutions: 2 was re-added here believing it
+      # was now purely a safety net with no downside.
+      #
+      # REVERTED AGAIN, SAME DAY -- second real, confirmed incident:
+      # ReservedConcurrentExecutions isn't just a floor, it's also a hard
+      # CEILING -- it caps this function at that many concurrent
+      # invocations regardless of how much headroom the account has
+      # elsewhere. The very next change shipped in this same session
+      # (ProductDetailPage.tsx's 6ab.25 revert to Promise.all, made for
+      # the same "concurrency isn't scarce anymore" reason) made a single
+      # product-detail page load fire SIX concurrent calls at this exact
+      # function -- immediately exceeding a self-imposed cap of 2 and
+      # throttling, surfaced to Al as the identical bare "Service
+      # Unavailable" 503 this whole saga started with. Confirmed via the
+      # actual failing request URLs Al reported (GET /video-candidates,
+      # /articles, /price-history, /price-sites for the same product_id
+      # -- four of ProductDetailPage.tsx's six parallel calls).
+      #
+      # No reservation at all is the right answer now: with the account's
+      # real headroom (1000, not 10), AdminApiFunction doesn't need
+      # protecting from other functions starving it, and giving it any
+      # small fixed reservation just re-creates the same self-throttling
+      # risk against admin-spa's own legitimate parallel-call patterns
+      # (this page, and any future one that fires several admin_api calls
+      # at once). scripts/backfill_core_ids.py's retry-with-backoff (see
+      # its module docstring) stays in place regardless -- reasonable
+      # client-side insurance either way, not a substitute for this.
       Environment:
         Variables:
           # Read by service.py's approve_video_candidate -- see its
