@@ -11938,6 +11938,40 @@ sam build && sam deploy
 cd admin-spa && npm run build   # then the usual S3/CloudFront admin-spa deploy step
 ```
 
+### 6ab.28. Products tab: "Back to Products" link was dropping the list's filter/sort/page state
+
+Al: "also while you are at it the back to products link loses the
+previous product list context." 6ab.26 made ProductsPage's own filter/
+sort/offset state survive navigating AWAY from the list (URL search
+params instead of `useState`), but every `Link` INTO the product detail
+page (the row link, the Article icon, the Video icon -- both desktop
+table and mobile card) still pointed at a bare `/products/${p.id}`, and
+`ProductDetailPage.tsx`'s own "← Back to Products" link back was a bare
+`to="/products"`. Landing back on the list with no query string reset
+it straight back to `DEFAULT_STATUS`/`DEFAULT_SORT`/offset 0 -- the same
+"resetting to default over and over" complaint 6ab.26 fixed for the
+outbound direction, just still broken on the way back in.
+
+Fixed by carrying the list's current query string along as React
+Router `state` on every `Link` from `ProductsPage.tsx` into a product
+(`state={{ productsListSearch: searchParams.toString() }}`, six call
+sites: the name/row link and both status-icon links, once each for
+desktop and mobile). `ProductDetailPage.tsx` reads it back via
+`useLocation()` and rebuilds the "Back to Products" href as `/products?
+${productsListSearch}` when present, falling back to a bare `/products`
+otherwise (arriving by direct link, bookmark, or a refresh, all of
+which drop router state -- harmless, just the pre-fix behavior in that
+narrower case).
+
+`admin-spa` verified via `npx tsc -b` (clean) -- this is UI-state-only,
+no new tests (no backend/logic change, nothing pytest-testable here;
+same pattern as 6n.1's earlier filter-state fix on the consumer site).
+No migration, no `template.yaml` change. Deploy via:
+
+```bash
+cd admin-spa && npm run build   # then the usual S3/CloudFront admin-spa deploy step
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

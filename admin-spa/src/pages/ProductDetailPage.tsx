@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useParams, useSearchParams } from "react-router-dom";
 import {
   approveArticle,
   approvePriceSource,
@@ -103,6 +103,20 @@ function formatDuration(seconds: number | null): string {
 export default function ProductDetailPage() {
   const { id } = useParams<{ id: string }>();
   const { show } = useToast();
+
+  // "Back to Products" used to always land on a bare /products, which
+  // reset ProductsPage's own URL-search-param-backed filter/sort/page
+  // state back to defaults -- the exact "resetting to default over and
+  // over" problem 6ab.26 fixed for navigating AWAY from the list, just
+  // showing up again on the way BACK. Every Link into this page from
+  // ProductsPage now passes the list's current query string along as
+  // router state (productsListSearch); we read it back here to rebuild
+  // the same URL. Falls back to a bare /products for any other way of
+  // reaching this page (direct link, bookmark, browser refresh, which
+  // drops router state) -- harmless, just the pre-fix behavior.
+  const location = useLocation();
+  const productsListSearch = (location.state as { productsListSearch?: string } | null)?.productsListSearch;
+  const backToProductsHref = productsListSearch ? `/products?${productsListSearch}` : "/products";
 
   // ?tab= lets a link land directly on a sub-tab -- e.g. ProductsPage's
   // Article-status icon links to `/products/{id}?tab=article` rather
@@ -757,7 +771,7 @@ export default function ProductDetailPage() {
   return (
     <div className="flex flex-col gap-4">
       <div>
-        <Link to="/products" className="text-xs text-primary hover:underline">
+        <Link to={backToProductsHref} className="text-xs text-primary hover:underline">
           ← Back to Products
         </Link>
         <div className="mt-1 flex flex-wrap items-center gap-2">

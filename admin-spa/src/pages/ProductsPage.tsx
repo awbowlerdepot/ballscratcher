@@ -214,7 +214,11 @@ export default function ProductsPage() {
       // here does.
       render: (p) => (
         <span className="font-medium text-ink-800">
-          <Link to={`/products/${p.id}`} className="hover:text-primary hover:underline">
+          <Link
+            to={`/products/${p.id}`}
+            state={{ productsListSearch: searchParams.toString() }}
+            className="hover:text-primary hover:underline"
+          >
             {p.brand_name} {p.name}
           </Link>{" "}
           <a href={p.url} target="_blank" rel="noreferrer" className="text-xs text-ink-400 hover:text-primary" title="View source page">
@@ -240,6 +244,7 @@ export default function ProductsPage() {
       render: (p) => (
         <Link
           to={`/products/${p.id}?tab=article`}
+          state={{ productsListSearch: searchParams.toString() }}
           title={articleIconLabel(p.article_status)}
           className={`inline-flex ${articleIconTone(p.article_status)} hover:opacity-70`}
         >
@@ -259,6 +264,7 @@ export default function ProductsPage() {
       render: (p) => (
         <Link
           to={`/products/${p.id}?tab=videos`}
+          state={{ productsListSearch: searchParams.toString() }}
           title={videoIconLabel(p)}
           className={`inline-flex items-center gap-1 ${videoIconTone(p)} hover:opacity-70`}
         >
@@ -419,7 +425,11 @@ export default function ProductsPage() {
         )}
         {products.map((p) => (
           <div key={p.id} className="flex items-center gap-3 rounded-lg border border-ink-200 bg-ink-100 p-3">
-            <Link to={`/products/${p.id}`} className="min-w-0 flex-1">
+            <Link
+              to={`/products/${p.id}`}
+              state={{ productsListSearch: searchParams.toString() }}
+              className="min-w-0 flex-1"
+            >
               <div className="truncate text-sm font-medium text-ink-800">
                 {p.brand_name} {p.name}
               </div>
@@ -428,6 +438,7 @@ export default function ProductsPage() {
             <div className="flex shrink-0 items-center gap-1">
               <Link
                 to={`/products/${p.id}?tab=article`}
+                state={{ productsListSearch: searchParams.toString() }}
                 title={articleIconLabel(p.article_status)}
                 className={`-m-1 flex items-center rounded p-1 ${articleIconTone(p.article_status)} hover:bg-ink-200`}
               >
@@ -435,6 +446,7 @@ export default function ProductsPage() {
               </Link>
               <Link
                 to={`/products/${p.id}?tab=videos`}
+                state={{ productsListSearch: searchParams.toString() }}
                 title={videoIconLabel(p)}
                 className={`-m-1 flex items-center gap-1 rounded p-1 ${videoIconTone(p)} hover:bg-ink-200`}
               >
