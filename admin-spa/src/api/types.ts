@@ -110,6 +110,16 @@ export interface Product {
   // present, never null -- every product gets ranked in the underlying
   // CTE regardless of whether it has any videos or stock history.
   demand_score: number;
+  // Left-joined from product_articles (one row max per product, unique
+  // on product_id -- see migration 022). article_status is null when no
+  // article has ever been generated for this product yet; otherwise
+  // it's that row's real status ('pending' | 'approved' | 'rejected').
+  // Backs the Article status icon in ProductsPage's list (Al: "an
+  // article icon with state so green if approved, yellow if pending,
+  // and grey if not generated"). article_id rides along so the icon can
+  // link straight into ProductDetailPage's Article sub-tab.
+  article_id: string | null;
+  article_status: ArticleStatus | null;
 }
 
 export interface ListProductsParams {

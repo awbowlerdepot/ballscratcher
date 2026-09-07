@@ -11625,6 +11625,95 @@ sam build PublicApiFunction
 sam deploy
 ```
 
+### 6ab.26. Products tab: per-row Article status icon + URL-backed filter/sort state (no more resetting)
+
+Al, two asks together: "can we add icons to the product list items to
+click on the different elements that could be associated with them from
+the list. mainly an article icon with state so green if approved,
+yellow if pending, and grey if not generated. If you click the icon it
+takes you to the article. also some state management for the filtering
+and sorting of that list so it doesn't reset to the default over and
+over."
+
+**Article status icon.** `admin_api/service.py`'s `list_products` now
+left-joins `product_articles` (`left join product_articles pa on
+pa.product_id = p.id`, one row max per product per migration 022's
+`unique (product_id)`, so this join can never fan out the result set)
+and selects `pa.id as article_id, pa.status as article_status`. Always
+selected unconditionally, no opt-in filter flag -- same "cheap enough to
+include without a separate round-trip" reasoning core_name/coverstock_
+name/the three materialized score columns already follow on this same
+query. `article_status` is `null` when a product has never had an
+article generated at all, otherwise it's that row's real
+`'pending'`/`'approved'`/`'rejected'` value.
+
+`admin-spa/src/api/types.ts`'s `Product` interface gained
+`article_id: string | null` and `article_status: ArticleStatus | null`
+to match. `ProductsPage.tsx` renders a new "Article" column (the
+existing `IconArticles` glyph from `components/icons.tsx`, already used
+in the sidebar nav) as a `Link` to `/products/{id}?tab=article`, colored
+by state: `text-ok` (green) for approved, `text-warn` (yellow) for
+pending, `text-ink-400` (grey) for never-generated. Al didn't call out
+rejected explicitly in his three-state description, but leaving it
+lumped in with "never generated" grey would make an actively-rejected
+article indistinguishable from one nobody's touched yet -- used
+`text-danger` (red) instead, matching `ArticlesPage`'s own existing
+approved=ok/anything-else=danger badge convention. The column is marked
+`primary` so it survives into the collapsed mobile card alongside
+Product/Status.
+
+**Clicking the icon actually lands on the Article tab.** `ProductDetail
+Page.tsx`'s sub-tab state (`overview`/`videos`/`article`/`pricing`/
+`skus`/`raw`) used to be plain `useState("overview")` with no way to
+deep-link into a specific tab -- a link into the page always landed on
+Overview, so the new icon would have required an extra manual click
+every time to actually get to the article. Now reads an initial value
+from `?tab=` (via `useSearchParams`, falling back to `"overview"` for a
+missing or unrecognized value -- same harmless-if-wrong convention every
+other filter value in this app already follows) and keeps the URL in
+sync on manual tab clicks too (`replace: true`, so clicking through
+tabs doesn't pile up back-button stops). This also makes any tab
+bookmarkable/shareable/refresh-safe now, not just the Article one.
+
+**Filter/sort state stopped resetting.** `ProductsPage.tsx`'s status/
+brand/search/source/sort/missing-core/missing-coverstock/missing-skus/
+offset were all plain `useState`, which React throws away on unmount --
+so clicking a product row (or now the new Article icon) into
+ProductDetailPage and hitting "Back to Products" always came back to
+the hardcoded defaults (status=current, sort=popularity, everything else
+cleared), no matter what Al had actually set up. There was nothing wrong
+with the values themselves, they just never survived leaving the page.
+Moved every one of them into the URL query string via `useSearchParams`
+instead: a single `updateFilter(key, value)` writer deletes a param
+entirely for an "empty" value (blank string / unchecked box) rather than
+writing it, so the URL stays clean and an absent param means "default",
+matching the `DEFAULT_STATUS`/`DEFAULT_SORT` constants the read side
+falls back to. Every write uses `{ replace: true }` so toggling a filter
+doesn't spam the browser history the way `push` would. Since search
+params live on the router rather than this component, they're still
+there when `ProductsPage` remounts -- the filtered/sorted view is now
+also bookmarkable, shareable, and survives a manual page refresh, not
+just back-navigation.
+
+**Tests**: `tests/test_admin_api_service.py` gained
+`test_list_products_joins_product_articles_for_article_status`
+(confirms the join + both selected columns appear in the generated SQL,
+same query-text-assertion convention every other `list_products` filter
+test on this file already uses) -- 285/285 passing (up from 284). Full
+project-wide regression sweep re-run clean (every `tests/test_*.py`
+passes except the two pre-existing, unrelated pytest-dependency gaps).
+`admin-spa` verified via `npx tsc -b` (clean).
+
+No migration, no `template.yaml` change -- the join is plain SQL against
+an existing table, and the URL-state/icon work is admin-spa-only. Deploy
+via:
+
+```bash
+sam build AdminApiFunction
+sam deploy
+cd admin-spa && npm run build   # then the usual S3/CloudFront admin-spa deploy step
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

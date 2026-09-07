@@ -1,10 +1,11 @@
 import { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { listProducts, rescrapeProduct } from "../api/client";
 import type { ListProductsParams, Product, ProductSort, SourcePlatform } from "../api/types";
 import Badge from "../components/Badge";
 import type { BulkAction, Column } from "../components/DataTable";
 import DataTable from "../components/DataTable";
+import { IconArticles } from "../components/icons";
 import Pagination from "../components/Pagination";
 import { useToast } from "../components/Toast";
 
@@ -22,6 +23,28 @@ const SORT_OPTIONS: { value: ProductSort; label: string }[] = [
 
 const SOURCE_OPTIONS: SourcePlatform[] = ["netsuite", "shopify", "woocommerce", "commercebuild", "craft_cms"];
 
+// Article-status icon color/tooltip -- Al: "an article icon with state
+// so green if approved, yellow if pending, and grey if not generated."
+// Al didn't mention rejected explicitly (a product he's actively
+// rejected articles for is presumably rare next to pending/approved/
+// never-generated), but leaving it lumped in with grey would make a
+// rejected article look identical to one that was never even attempted
+// -- red, matching ArticlesPage's own approved=ok/anything-else=danger
+// badge convention, keeps it visually distinct instead.
+function articleIconTone(status: Product["article_status"]): string {
+  if (status === "approved") return "text-ok";
+  if (status === "pending") return "text-warn";
+  if (status === "rejected") return "text-danger";
+  return "text-ink-400";
+}
+
+function articleIconLabel(status: Product["article_status"]): string {
+  if (status === "approved") return "Article approved -- click to view";
+  if (status === "pending") return "Article pending review -- click to review";
+  if (status === "rejected") return "Article rejected -- click to view";
+  return "No article generated yet -- click to open the Article tab";
+}
+
 // Ports admin-site/index.html's Products tab -- same filter set
 // (status/brand/search/source_platform/missing_core/missing_coverstock/
 // missing_skus), same bulk rescrape action, now via the DataTable
@@ -31,22 +54,43 @@ const SOURCE_OPTIONS: SourcePlatform[] = ["netsuite", "shopify", "woocommerce", 
 // takes brand_id, and there's no GET /brands here yet the way
 // consumer-site has) -- a real dropdown is a good phase-2 follow-up
 // once a brands lookup endpoint exists on the admin side.
+// Defaults for every filter/sort control below -- also what a bare
+// `/products` (no query string at all) falls back to, so first-ever
+// visits and a manually-cleared URL both behave exactly like before
+// this feature existed.
+const DEFAULT_STATUS: ListProductsParams["status"] = "current";
+const DEFAULT_SORT: ProductSort = "popularity";
+
 export default function ProductsPage() {
   const { show } = useToast();
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [offset, setOffset] = useState(0);
 
-  const [status, setStatus] = useState<ListProductsParams["status"]>("current");
-  const [brandId, setBrandId] = useState("");
-  const [search, setSearch] = useState("");
-  const [sourcePlatform, setSourcePlatform] = useState<SourcePlatform | "">("");
-  const [sort, setSort] = useState<ProductSort>("popularity");
-  const [missingCore, setMissingCore] = useState(false);
-  const [missingCoverstock, setMissingCoverstock] = useState(false);
-  const [missingSkus, setMissingSkus] = useState(false);
+  // Filters/sort/offset all live in the URL query string rather than
+  // component state -- Al: "some state management for the filtering and
+  // sorting of that list so it doesn't reset to the default over and
+  // over." Plain useState reset to its initial value every time this
+  // component unmounted (e.g. clicking a product row into
+  // ProductDetailPage, or now the new Article icon, then hitting "Back
+  // to Products") since React throws local state away on unmount --
+  // there was nothing wrong with the values themselves, they just never
+  // survived the round trip. Search params live on the router, not this
+  // component, so they're still there when ProductsPage remounts; as a
+  // bonus the filtered view is now also bookmarkable/shareable and
+  // survives a manual page refresh.
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const status = (searchParams.get("status") as ListProductsParams["status"] | null) ?? DEFAULT_STATUS;
+  const brandId = searchParams.get("brand_id") ?? "";
+  const search = searchParams.get("search") ?? "";
+  const sourcePlatform = (searchParams.get("source_platform") as SourcePlatform | null) ?? "";
+  const sort = (searchParams.get("sort") as ProductSort | null) ?? DEFAULT_SORT;
+  const missingCore = searchParams.get("missing_core") === "1";
+  const missingCoverstock = searchParams.get("missing_coverstock") === "1";
+  const missingSkus = searchParams.get("missing_skus") === "1";
+  const offset = Number(searchParams.get("offset") ?? "0") || 0;
 
   const filters: ListProductsParams = {
     status,
@@ -70,17 +114,46 @@ export default function ProductsPage() {
       .finally(() => setLoading(false));
     // Re-fetch whenever any filter or the page offset changes. Filters
     // reset offset to 0 via the individual setters below (see
-    // resetAndSet), so this doesn't need offset in a way that fights
+    // updateFilter), so this doesn't need offset in a way that fights
     // that.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, brandId, search, sourcePlatform, sort, missingCore, missingCoverstock, missingSkus, offset]);
 
-  function resetAndSet<T>(setter: (v: T) => void) {
-    return (value: T) => {
-      setOffset(0);
-      setSelectedIds(new Set());
-      setter(value);
-    };
+  // Single writer for every filter control -- deletes a param entirely
+  // rather than writing its "empty" value (blank string, "false") so
+  // the URL stays clean and matches DEFAULT_STATUS/DEFAULT_SORT's own
+  // "absent means default" reading above. `replace: true` so toggling
+  // filters doesn't pile up a back-button stop per keystroke/click --
+  // only actual navigation (leaving/returning to this page) should be
+  // a history entry.
+  function updateFilter(key: string, value: string | boolean) {
+    setSelectedIds(new Set());
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        const isEmpty = value === "" || value === false;
+        if (isEmpty) {
+          next.delete(key);
+        } else {
+          next.set(key, typeof value === "boolean" ? "1" : value);
+        }
+        next.delete("offset");
+        return next;
+      },
+      { replace: true },
+    );
+  }
+
+  function setOffset(next: number) {
+    setSearchParams(
+      (prev) => {
+        const params = new URLSearchParams(prev);
+        if (next > 0) params.set("offset", String(next));
+        else params.delete("offset");
+        return params;
+      },
+      { replace: true },
+    );
   }
 
   async function handleBulkRescrape(rows: Product[]) {
@@ -129,6 +202,27 @@ export default function ProductsPage() {
       primary: true,
       render: (p) => <Badge tone={p.status === "current" ? "ok" : "muted"}>{p.status}</Badge>,
     },
+    {
+      key: "article",
+      header: "Article",
+      // Al: "add icons to the product list items to click on the
+      // different elements that could be associated with them from the
+      // list" -- the article icon is the first of these (a per-row
+      // shortcut into ProductDetailPage's Article sub-tab), colored by
+      // review state so the state is visible without opening the
+      // product at all. Kept `primary` so it survives into the
+      // collapsed mobile card too, same as Product/Status above.
+      primary: true,
+      render: (p) => (
+        <Link
+          to={`/products/${p.id}?tab=article`}
+          title={articleIconLabel(p.article_status)}
+          className={`inline-flex ${articleIconTone(p.article_status)} hover:opacity-70`}
+        >
+          <IconArticles className="h-5 w-5" />
+        </Link>
+      ),
+    },
     { key: "core_name", header: "Core", render: (p) => p.core_name ?? <span className="text-warn">missing</span> },
     {
       key: "coverstock_name",
@@ -166,7 +260,7 @@ export default function ProductsPage() {
           <label className="mb-1 block text-xs font-medium text-ink-600">Status</label>
           <select
             value={status}
-            onChange={(e) => resetAndSet(setStatus)(e.target.value as ListProductsParams["status"])}
+            onChange={(e) => updateFilter("status", e.target.value)}
             className="rounded-md border border-ink-300 px-2 py-1.5 text-sm"
           >
             <option value="current">Current</option>
@@ -177,7 +271,7 @@ export default function ProductsPage() {
           <label className="mb-1 block text-xs font-medium text-ink-600">Brand ID</label>
           <input
             value={brandId}
-            onChange={(e) => resetAndSet(setBrandId)(e.target.value)}
+            onChange={(e) => updateFilter("brand_id", e.target.value)}
             placeholder="uuid"
             className="w-32 rounded-md border border-ink-300 px-2 py-1.5 text-sm"
           />
@@ -186,7 +280,7 @@ export default function ProductsPage() {
           <label className="mb-1 block text-xs font-medium text-ink-600">Search</label>
           <input
             value={search}
-            onChange={(e) => resetAndSet(setSearch)(e.target.value)}
+            onChange={(e) => updateFilter("search", e.target.value)}
             placeholder="Ball name…"
             className="w-40 rounded-md border border-ink-300 px-2 py-1.5 text-sm"
           />
@@ -195,7 +289,7 @@ export default function ProductsPage() {
           <label className="mb-1 block text-xs font-medium text-ink-600">Source</label>
           <select
             value={sourcePlatform}
-            onChange={(e) => resetAndSet(setSourcePlatform)(e.target.value as SourcePlatform | "")}
+            onChange={(e) => updateFilter("source_platform", e.target.value)}
             className="rounded-md border border-ink-300 px-2 py-1.5 text-sm"
           >
             <option value="">All</option>
@@ -210,7 +304,7 @@ export default function ProductsPage() {
           <label className="mb-1 block text-xs font-medium text-ink-600">Sort</label>
           <select
             value={sort}
-            onChange={(e) => resetAndSet(setSort)(e.target.value as ProductSort)}
+            onChange={(e) => updateFilter("sort", e.target.value)}
             className="rounded-md border border-ink-300 px-2 py-1.5 text-sm"
           >
             {SORT_OPTIONS.map((opt) => (
@@ -221,19 +315,19 @@ export default function ProductsPage() {
           </select>
         </div>
         <label className="flex items-center gap-1.5 pb-1.5 text-sm text-ink-600">
-          <input type="checkbox" checked={missingCore} onChange={(e) => resetAndSet(setMissingCore)(e.target.checked)} />
+          <input type="checkbox" checked={missingCore} onChange={(e) => updateFilter("missing_core", e.target.checked)} />
           Missing core
         </label>
         <label className="flex items-center gap-1.5 pb-1.5 text-sm text-ink-600">
           <input
             type="checkbox"
             checked={missingCoverstock}
-            onChange={(e) => resetAndSet(setMissingCoverstock)(e.target.checked)}
+            onChange={(e) => updateFilter("missing_coverstock", e.target.checked)}
           />
           Missing coverstock
         </label>
         <label className="flex items-center gap-1.5 pb-1.5 text-sm text-ink-600">
-          <input type="checkbox" checked={missingSkus} onChange={(e) => resetAndSet(setMissingSkus)(e.target.checked)} />
+          <input type="checkbox" checked={missingSkus} onChange={(e) => updateFilter("missing_skus", e.target.checked)} />
           Missing SKUs
         </label>
       </div>

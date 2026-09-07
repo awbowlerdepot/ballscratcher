@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
   approveArticle,
   approvePriceSource,
@@ -61,6 +61,16 @@ import { ArticlePreview } from "./ArticlesPage";
 
 type DetailTab = "overview" | "videos" | "article" | "pricing" | "skus" | "raw";
 
+// Kept in one place so the ?tab= reader below and the tab buttons/links
+// that write it (ProductsPage's new Article-status icon in particular --
+// Al: "click the icon it takes you to the article") always agree on what
+// a valid value looks like.
+const DETAIL_TABS: DetailTab[] = ["overview", "videos", "article", "pricing", "skus", "raw"];
+
+function isDetailTab(value: string | null): value is DetailTab {
+  return value !== null && (DETAIL_TABS as string[]).includes(value);
+}
+
 function fmtDate(iso: string | null | undefined): string {
   return iso ? new Date(iso).toLocaleString() : "—";
 }
@@ -94,7 +104,30 @@ export default function ProductDetailPage() {
   const { id } = useParams<{ id: string }>();
   const { show } = useToast();
 
-  const [tab, setTab] = useState<DetailTab>("overview");
+  // ?tab= lets a link land directly on a sub-tab -- e.g. ProductsPage's
+  // Article-status icon links to `/products/{id}?tab=article` rather
+  // than always dropping onto Overview and making Al click Article
+  // himself every time. Falls back to "overview" for a missing or
+  // unrecognized value, same "harmless if wrong" convention every other
+  // filter/sort value elsewhere in admin-spa already follows.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [tab, setTabState] = useState<DetailTab>(() => {
+    const fromUrl = searchParams.get("tab");
+    return isDetailTab(fromUrl) ? fromUrl : "overview";
+  });
+
+  // Keeps the URL in sync with manual tab clicks too (replace, not push,
+  // so clicking through Overview -> Videos -> Article doesn't pile up
+  // separate back-button stops) -- makes the current tab bookmarkable/
+  // shareable/refreshable, not just reachable via an inbound link.
+  function setTab(next: DetailTab) {
+    setTabState(next);
+    setSearchParams((prev) => {
+      const params = new URLSearchParams(prev);
+      params.set("tab", next);
+      return params;
+    }, { replace: true });
+  }
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 

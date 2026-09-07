@@ -617,7 +617,20 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     'newest'/'oldest' (release_date), 'name_asc'/'name_desc'
     (alphabetical). Anything else (including the default None) keeps the
     existing updated_at-desc order, same unrecognized-value-is-harmless
-    convention as every other filter/sort value on this endpoint."""
+    convention as every other filter/sort value on this endpoint.
+
+    article_id/article_status: left-joined from product_articles (022_
+    product_articles.sql, one row per product, unique on product_id).
+    article_status is null when no row exists yet (never generated) --
+    admin-spa's Products tab uses that three-way null/pending/approved
+    (rejected also passes through as-is) split to render a status icon
+    per row without a second round-trip per product. Al's direct ask:
+    "add icons to the product list items to click on the different
+    elements that could be associated with them... an article icon with
+    state so green if approved, yellow if pending, and grey if not
+    generated." article_id rides along so the icon can link straight to
+    that product's Article sub-tab without admin-spa needing to guess or
+    re-fetch it."""
     # p alias + left join cores: needed once c.name entered the picture --
     # products and cores both have a plain "name" column, so every
     # previously-bare column reference below (name, published, brand_id,
@@ -629,13 +642,18 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     # brand filter dropdown (see list_brands below) so filtering by brand
     # and reading which brand a row belongs to both work off a real name,
     # not a UUID you'd have to look up separately.
+    # left join product_articles too (pa.id/pa.status) -- one row max per
+    # product (unique on product_id), so this join can never fan out the
+    # result set the way a videos/skus join would.
     query = f"""
         select p.id, p.brand_id, b.name as brand_name, p.name, p.url, p.status, p.published, p.updated_at,
                p.core_id, c.name as core_name, p.release_date, p.coverstock_id, p.coverstock_name,
-               p.popularity_score, p.total_daily_movement, p.demand_score
+               p.popularity_score, p.total_daily_movement, p.demand_score,
+               pa.id as article_id, pa.status as article_status
         from products p
         left join cores c on c.id = p.core_id
         left join brands b on b.id = p.brand_id
+        left join product_articles pa on pa.product_id = p.id
         where 1=1
     """
     params = []

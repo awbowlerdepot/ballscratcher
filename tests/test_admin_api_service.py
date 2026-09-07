@@ -2732,6 +2732,29 @@ def test_list_products_missing_core_adds_filter_sql():
     assert "p.core_id is null" in query
 
 
+# --- list_products: article_id/article_status -- left-joined from
+# product_articles (022_product_articles.sql, one row max per product,
+# unique on product_id) so admin-spa's Products list can render a
+# per-row Article status icon without a second round-trip. Al: "add
+# icons to the product list items to click on the different elements
+# that could be associated with them from the list... an article icon
+# with state so green if approved, yellow if pending, and grey if not
+# generated." Always joined/selected (no opt-in flag), same "cheap
+# enough to include unconditionally" convention core_name/coverstock_
+# name/the three materialized score columns above already follow --
+# there's no filter argument gating this one, just the always-present
+# join.
+
+def test_list_products_joins_product_articles_for_article_status():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "left join product_articles pa on pa.product_id = p.id" in query
+    assert "pa.id as article_id" in query
+    assert "pa.status as article_status" in query
+
+
 # --- list_products: source_platform filter -- built for
 # scripts/rescrape_netsuite_products.py (the MOTIV image-scoping fix's
 # catalog-wide cleanup, see netsuite_product_scraper's "SECOND real bug"
