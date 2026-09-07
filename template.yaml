@@ -1730,11 +1730,31 @@ Resources:
       # FastAPI/Mangum/psycopg2/boto3) on top of the first request's
       # Secrets Manager call + fresh Postgres handshake -- none of which
       # the existing connection-reuse fix (6l.6) touches, since that only
-      # helps *warm* invocations. Provisioned concurrency/reserved
-      # concurrency were ruled out -- see AdminApiFunction's own comment
-      # below on this account's 10-execution total concurrency ceiling,
-      # which a memory bump doesn't touch at all.
+      # helps *warm* invocations. Provisioned/reserved concurrency were
+      # ruled out at the time -- see AdminApiFunction's own comment below
+      # on this account's old 10-execution total concurrency ceiling,
+      # which a memory bump doesn't touch at all but which also left no
+      # room to provision anything on top of it.
       MemorySize: 1024
+      # ADDED 2026-09-06 (6ab.25 follow-up in DEPLOY_RUNBOOK.md): the
+      # account's Lambda concurrency quota was raised to 1000 (see
+      # AdminApiFunction's own comment, RESOLVED 2026-09-06), so
+      # provisioned concurrency -- the fix that actually eliminates a
+      # cold start rather than just shortening it -- is viable now. Al
+      # chose 1 warm instance (accepting the ongoing per-instance-hour
+      # AWS cost) over the free-but-cold-starts-still-happen reserved-
+      # concurrency-only option. AutoPublishAlias is required for
+      # ProvisionedConcurrencyConfig -- SAM publishes a new Version on
+      # every deploy and points this function's HttpApi integration at
+      # the `live` alias automatically, so API Gateway always invokes
+      # the alias (which has the warm instance) rather than $LATEST
+      # (which wouldn't). One practical consequence: deploys now take
+      # noticeably longer, since CloudFormation waits for the new
+      # version's provisioned-concurrency instance to finish
+      # initializing before the deploy completes.
+      AutoPublishAlias: live
+      ProvisionedConcurrencyConfig:
+        ProvisionedConcurrentExecutions: 1
       Policies:
         - Statement:
             - Effect: Allow

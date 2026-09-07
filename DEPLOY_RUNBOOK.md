@@ -11493,9 +11493,44 @@ cd admin-spa && npm run build
 # then redeploy admin-spa's static hosting per its own section above
 ```
 
-**`PublicApiFunction`'s cold-start mitigation:** see the follow-up entry
-immediately after this one once that decision is made -- this section
-will be updated in place rather than duplicated.
+**`PublicApiFunction`: provisioned concurrency, 1 instance.** The 1024MB
+`MemorySize` bump (6l.6's follow-up) only ever shortened cold starts, not
+eliminated them -- it couldn't, since Lambda still has to actually cold-
+init a fresh container on the first request to a new instance. Provisioned
+concurrency is the fix that removes the cold start entirely (a warm
+instance is always sitting there, ready), but it has a real ongoing AWS
+cost (billed per provisioned instance-hour whether or not it's handling
+traffic) and was ruled out at the time purely because the account's old
+10-slot ceiling left no room to provision anything on top of it. Asked
+Al directly given the cost trade-off; chose **1 warm instance** over the
+free-but-still-cold-starts reserved-concurrency-only alternative.
+
+`template.yaml`: `PublicApiFunction` gained `AutoPublishAlias: live` and
+`ProvisionedConcurrencyConfig: {ProvisionedConcurrentExecutions: 1}`.
+`AutoPublishAlias` is required by `ProvisionedConcurrencyConfig` --
+without it, provisioned concurrency has nothing to attach to
+(`$LATEST` doesn't support it). SAM publishes a new Lambda Version on
+every deploy and automatically repoints this function's `HttpApi` event
+integration at the `live` alias instead of `$LATEST`, so API Gateway
+always invokes the alias carrying the warm instance -- no manual alias
+wiring needed anywhere else in the template.
+
+**Real operational consequence, worth knowing before the next deploy:**
+deploys now take noticeably longer. CloudFormation waits for the new
+version's provisioned-concurrency instance to finish initializing
+(`Pending` -> `Ready`) before the stack update completes, since API
+Gateway can't safely be pointed at a version whose warm instance isn't
+up yet. This is expected, not a hang.
+
+Verified via the CFN-tolerant YAML loader (74 resources,
+`AutoPublishAlias: live` and `ProvisionedConcurrentExecutions: 1`
+present on `PublicApiFunction`). Template-only change, no Python code
+touched.
+
+```bash
+sam build PublicApiFunction
+sam deploy
+```
 
 ## 7. Ongoing operations
 
