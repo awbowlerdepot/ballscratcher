@@ -164,7 +164,24 @@
      -0.8rem to -0.6rem closes the rest of the gap, verified live
      (getBoundingClientRect on both the photo box and the adjacent
      text) to a clean few-pixel buffer at both breakpoints before
-     being written back here -- not just eyeballed. */
+     being written back here -- not just eyeballed.
+
+     Al, next: "on mobile can we have the image hanging off the top
+     of the hero with the drop shadow giving it depth" plus "also
+     kill the rotation only on mobile." Live inspection showed mobile
+     wasn't actually overhanging anything -- the photo sat fully
+     inside the hero's own py-10 top padding (a few px of clearance,
+     not a hang). Mobile now goes flat (rotate-0) and gets a real
+     mt-14 pull-up so the box's top edge sits ~16px above the hero's
+     own top edge, into the white page background, with the existing
+     drop shadow doing the "lifted off the page" depth cue -- mb-0
+     (no negative bottom margin any more) so it doesn't reopen the
+     eyebrow-overlap problem fixed above. Desktop is untouched:
+     md:-rotate-[8deg] still applies there, and md:my-0 still resets
+     both margins for the position:absolute layout. Verified live
+     (screenshot + getBoundingClientRect against both the hero's top
+     edge and the "All reviews" link above it, to confirm real
+     clearance) before being written back here. */
   .article-detail-hero {
     @apply relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-neutral-900 py-10;
   }
@@ -178,7 +195,7 @@
     @apply flex items-center justify-center overflow-visible px-2 md:relative md:px-4;
   }
   .article-detail-image {
-    @apply -my-[0.6rem] aspect-[4/3] w-full -rotate-[8deg] rounded-sm bg-white p-2 shadow-[0_12px_24px_-6px_rgba(0,0,0,0.55)] md:absolute md:left-0 md:top-1/2 md:my-0 md:w-[325px] md:-translate-y-1/2;
+    @apply mt-14 mb-0 aspect-[4/3] w-full rotate-0 md:-rotate-[8deg] rounded-sm bg-white p-2 shadow-[0_12px_24px_-6px_rgba(0,0,0,0.55)] md:absolute md:left-0 md:top-1/2 md:my-0 md:w-[325px] md:-translate-y-1/2;
   }
   .article-detail-image img {
     @apply h-full w-full rounded-[2px] object-cover;
