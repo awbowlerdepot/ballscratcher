@@ -201,6 +201,26 @@ def test_build_article_prompt_asks_for_visual_theme():
     assert "visual_theme" not in app._REQUIRED_ARTICLE_KEYS
 
 
+def test_build_article_prompt_visual_theme_requires_literal_iconography():
+    """REAL INCIDENT, follow-up (2026-09-07, Al): "the theme concept
+    isn't working as well as it could be. for instance a 'black widow'
+    ball has no spider elements at all in the background. and a black
+    venom ball with a snake on it is just plain jane." The old visual_
+    theme instruction only asked for a "distinctive visual backdrop/
+    scene concept" -- nothing required it to name an actual, literal
+    creature/object/symbol rather than just a mood or color palette.
+    Confirms the instruction now explicitly requires naming the literal
+    thing a name like "Black Widow" or "Venom" evokes, with concrete
+    examples, and calls out a generic moody-but-empty scene as the
+    failure to avoid."""
+    prompt = app.build_article_prompt(_SAMPLE_PRODUCT, siblings=[])
+    theme_section = prompt.split("visual_theme")[1]
+    assert "you MUST name that literal thing explicitly" in theme_section
+    assert "Black Widow" in theme_section and "spider" in theme_section
+    assert "Venom" in theme_section and "snake" in theme_section
+    assert "never actually shows the creature/object/symbol" in theme_section
+
+
 def test_build_article_prompt_warns_against_borrowing_a_different_editions_name():
     """Real, confirmed incident (Al, 2026-09-06): a non-Pearl product's
     article came back naming/describing the Pearl edition, traced to a
@@ -1890,13 +1910,55 @@ def test_build_gemini_scene_prompt_instructs_ball_to_be_large_and_prominent():
     generated images. Gemini gets no pixel-level size control (unlike
     the Stability path's composite_ball_on_background, which places the
     cutout at an explicit fraction of the frame) -- the prompt itself is
-    the only lever, so it has to say so explicitly, for both variants."""
+    the only lever, so it has to say so explicitly, for both variants.
+
+    2026-09-07 update: product_shot's "large and prominent" vague zoom
+    language was replaced with an explicit numeric catalog-photography
+    spec (see test_build_gemini_scene_prompt_uses_uniform_product_shot_
+    framing) to fix ball-size inconsistency across products -- so this
+    test now only checks the shared "hero subject" framing plus action_
+    shot's own "large and prominent" language, which is unchanged."""
     action_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "action_shot")
     product_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "product_shot")
     for prompt in (action_prompt, product_prompt):
         assert "hero subject" in prompt
-        assert "large and prominent" in prompt
-        assert "not small or distant" in prompt
+    assert "large and prominent" in action_prompt
+
+
+def test_build_gemini_scene_prompt_uses_uniform_product_shot_framing():
+    """REAL INCIDENT, follow-up (2026-09-07, Al): "for that image can we
+    make sure the bowling balls is a uniform size. when it is changing
+    size it doesn't look good on the learn site along side all the other
+    balls." product_shot images are shown side by side on the Learn
+    site's article-card grid (ArticleCard.tsx), so ball-to-frame ratio
+    has to be consistent across every product, not just "large" in a
+    vague sense. Confirms product_shot now gets an explicit, numeric
+    catalog-photography framing spec, and that action_shot -- whose
+    whole point is a dynamic, varied hero composition -- deliberately
+    does NOT get this constraint."""
+    action_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "action_shot")
+    product_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "product_shot")
+    assert "60-65%" in product_prompt
+    assert "CATALOG photograph" in product_prompt
+    assert "same relative size and framing in EVERY generated image" in product_prompt
+    assert "60-65%" not in action_prompt
+    assert "CATALOG photograph" not in action_prompt
+
+
+def test_build_gemini_scene_prompt_requires_literal_theme_iconography():
+    """REAL INCIDENT, follow-up (2026-09-07, Al): "the theme concept
+    isn't working as well as it could be. for instance a 'black widow'
+    ball has no spider elements at all in the background. and a black
+    venom ball with a snake on it is just plain jane." Confirms both
+    variants now instruct Gemini to render any creature/object/symbol
+    from the scene concept literally and visibly, not just through mood/
+    color, and to treat a generic-but-well-lit background as a failure."""
+    action_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "action_shot")
+    product_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "product_shot")
+    for prompt in (action_prompt, product_prompt):
+        assert "literally and unmistakably visible" in prompt
+        assert "not merely implied through color grading or mood lighting" in prompt
+        assert "is a failure to follow the scene concept" in prompt
 
 
 def test_build_gemini_scene_prompt_excludes_people_and_bowling_venue_props():

@@ -8915,6 +8915,109 @@ invocations after redeploy. Worth keeping an eye on the next batch of
 generated candidates the same way Al caught this drift in the first
 place.
 
+**2026-09-07 follow-up fix -- product_shot uniform sizing, logo drift
+still occurring, and literal theme iconography.** Al: "the ai image
+drift i just went over is still there for the product shot images. The
+logo on the balls is being skewed and in most cases made larger and not
+maintaining the original proportions. for that image can we make sure
+the bowling balls is a uniform size. when it is changing size it
+doesn't look good on the learn site along side all the other balls.
+also the theme concept isn't working as well as it could be. for
+instance a 'black widow' ball has no spider elements at all in the
+background. and a black venom ball with a snake on it is just plain
+jane and not much of a them in the images." Three findings, all scoped
+to `product_shot` (or worse on it, for the theme issue) -- `product_
+shot_image_url` is specifically what `bowlerdepot-learn`'s `ArticleCard.
+tsx` shows in its side-by-side grid (6f.2's #452-455), so this variant's
+consistency and quality matter more there than `action_shot`'s ever
+would.
+
+1. **Logo drift persisting despite the 2026-09-06 fix, product_shot
+   only.** Suspected contributor: product_shot's own old framing said
+   "shot close-up so the ball is large and prominent in the frame" --
+   an extreme, tightly-cropped zoom gives Gemini's img2img more canvas
+   area to regenerate at high fidelity per unit of the ball's actual
+   detail, plausibly amplifying exactly the fine-detail (logo)
+   re-drawing the prior fix targeted. `action_shot` never asked for a
+   "close-up" the same way, and Al's report was specific to product_
+   shot -- consistent with this theory, though not provable from this
+   sandbox (no live Gemini invocations reachable here). Addressed as a
+   side effect of #2 below (a less extreme, fixed camera distance), plus
+   the logo-proportion sentence itself no longer references camera-
+   distance variation (which doesn't apply to product_shot once its
+   size is fixed) and instead just says the constraint "applies
+   regardless of how the shot is framed."
+
+2. **Ball size inconsistency, product_shot only.** Al: "make sure the
+   bowling balls is a uniform size... it doesn't look good on the learn
+   site along side all the other balls." The old framing was a vague,
+   non-numeric zoom instruction with no run-to-run consistency
+   guarantee. product_shot's framing is now an explicit, numeric,
+   catalog-photography spec: ball diameter ~60-65% of the frame's
+   shorter dimension, centered, even margin, called out as identical for
+   EVERY product and modeled explicitly on e-commerce listing photography
+   (Amazon/Zappos-style). `action_shot` is deliberately NOT made uniform
+   -- Al's ask was scoped to product_shot ("for THAT image"), and action_
+   shot's whole point is a dynamic, varied hero composition.
+
+3. **Theme concept underperforming -- weak/absent literal iconography.**
+   Al's own examples: "Black Widow" produced no spider/web imagery;
+   "Venom" came out "plain jane." Two failure points addressed: (a)
+   `build_article_prompt`'s `visual_theme` field instruction (Bedrock)
+   now explicitly requires naming a concrete creature/object/symbol when
+   the product name evokes one (with "Black Widow" -> spider/web and
+   "Venom" -> snake/fangs as worked examples), and calls out "generically
+   dark/moody but no actual creature shown" as exactly the failure to
+   avoid; (b) `build_gemini_scene_prompt` itself (both variants) now
+   separately requires any creature/object/symbol referenced by the
+   scene concept to be literally, unmistakably visible in the generated
+   scene, not just implied through lighting/color -- a defense-in-depth
+   layer independent of how well the theme text itself is written.
+
+No migration, no `template.yaml` change -- pure prompt-text changes in
+`src/product_article_generator/app.py` (`build_article_prompt`'s
+visual_theme instructions, `build_gemini_scene_prompt`'s framing/size/
+literal-theme text). Only affects FUTURE generations -- does not touch
+already-generated/selected images. `build_gemini_scene_prompt`'s own
+docstring gained a matching "REAL INCIDENT, follow-up" paragraph,
+quoting Al verbatim, following this function's existing incident-
+paragraph convention.
+
+**Tests** (`tests/test_product_article_generator.py`, 127/127 passing,
+3 new, 1 rewritten): `test_build_article_prompt_visual_theme_requires_
+literal_iconography` confirms the Bedrock prompt's literal-iconography
+language and worked examples; `test_build_gemini_scene_prompt_uses_
+uniform_product_shot_framing` confirms the numeric catalog-photography
+spec is present for product_shot and absent from action_shot; `test_
+build_gemini_scene_prompt_requires_literal_theme_iconography` confirms
+the literal-visibility instruction on both variants. `test_build_
+gemini_scene_prompt_instructs_ball_to_be_large_and_prominent` (pre-
+existing) was narrowed -- its old assertion that BOTH variants contain
+"large and prominent"/"not small or distant" no longer holds now that
+product_shot has its own numeric sizing spec instead of that vague
+language; it now checks the shared "hero subject" framing plus action_
+shot's own unchanged "large and prominent" wording. Full project-wide
+regression sweep re-run clean (every `tests/test_*.py` passes except the
+two pre-existing, unrelated pytest-dependency gaps).
+
+**Honest caveat, same as every prompt change in this module's
+history**: prompt-level instructions, not hard pixel-level constraints
+-- real effect can only be judged against live invocations after
+redeploy. Worth a close look at the next batch of product_shot
+candidates specifically (ball size consistency across different
+products, and whether name-driven themes like "Black Widow"/"Venom" now
+actually show the creature).
+
+**Deploy note**: `ProductArticleGeneratorFunction` is a distinct Lambda
+from `AdminApiFunction` -- use the full, unscoped `sam build && sam
+deploy` (not `sam build ProductArticleGeneratorFunction`), consistent
+with 6a.5's caution and Al's own stated habit. Worth double-checking
+this function actually got rebuilt/redeployed for both this fix and the
+2026-09-06 one Al reported was "still there" -- given the same-day
+wrong-directory deploy miss on `AdminApiFunction` (6ab.26's real
+follow-up), it's worth confirming this Lambda's deploy actually ran too,
+not just AdminApiFunction's.
+
 ### 6u. Article → BigCommerce sync: admin toggle (migration 028) + sync job design spec (job not yet built)
 
 Follow-up to 6s/6t (the ball-review article generator): Al asked how to get

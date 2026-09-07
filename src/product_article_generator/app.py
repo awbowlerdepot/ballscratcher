@@ -876,12 +876,22 @@ def build_article_prompt(product: dict, siblings: list) -> str:
         "this specific ball, grounded in what the ball's OWN NAME and "
         "branding evoke -- for example a ball named \"Fallout\" evokes a "
         "post-apocalyptic/nuclear-wasteland aesthetic, a ball named "
-        "\"Origin\" might evoke something cosmic or primordial. Be specific "
-        "and creative, not generic bowling-alley imagery, UNLESS the name "
-        "genuinely has no strong thematic connotation on its own -- in that "
-        "case describe an elevated, premium scene instead. This field is "
-        "purely for generating article artwork; it is never shown to "
-        "readers.\n"
+        "\"Origin\" might evoke something cosmic or primordial. IMPORTANT: "
+        "if the name evokes a concrete creature, object, or symbol -- an "
+        "animal (\"Black Widow\" -> a spider, its web), a substance "
+        "(\"Venom\" -> a snake, fangs, dripping venom), a place or artifact "
+        "-- you MUST name that literal thing explicitly and describe it as "
+        "a visible element actually present in the scene (a spiderweb "
+        "draped across the backdrop, a coiled snake or scale texture worked "
+        "into the surface the ball rests on), not just a color palette or "
+        "mood inspired by it. A generically dark, moody, or dramatic scene "
+        "that never actually shows the creature/object/symbol the name "
+        "evokes is exactly the kind of weak, generic result to avoid here. "
+        "Be specific and creative, not generic bowling-alley imagery, "
+        "UNLESS the name genuinely has no strong thematic connotation on "
+        "its own -- in that case describe an elevated, premium scene "
+        "instead. This field is purely for generating article artwork; it "
+        "is never shown to readers.\n"
     )
 
 
@@ -1257,38 +1267,131 @@ def build_gemini_scene_prompt(product: dict, article: dict, variant: str) -> str
     ball can be rotated/tilted to any angle, but the logo/graphics must
     always occupy the exact same PROPORTION of the ball's own surface
     that they do in the reference image -- scaling rigidly with the ball
-    as one object, never independently enlarged, shrunk, or restyled."""
+    as one object, never independently enlarged, shrunk, or restyled.
+
+    REAL INCIDENT, follow-up (2026-09-07, Al): "the ai image drift i just
+    went over is still there for the product shot images. The logo on
+    the balls is being skewed and in most cases made larger and not
+    maintaining the original proportions. for that image can we make
+    sure the bowling balls is a uniform size. when it is changing size
+    it doesn't look good on the learn site along side all the other
+    balls. also the theme concept isn't working as well as it could be.
+    for instance a 'black widow' ball has no spider elements at all in
+    the background. and a black venom ball with a snake on it is just
+    plain jane and not much of a them in the images." Three distinct
+    findings, all specific to product_shot (or, for the third, worse on
+    product_shot because that variant's images are the ones actually
+    shown side by side -- see ArticleCard.tsx's product_shot_image_url
+    preference, task #452-455):
+
+    1. Logo drift persisting despite the fix above, product_shot only.
+    Suspected contributor: product_shot's own framing said "shot
+    close-up so the ball is large and prominent in the frame" -- an
+    extreme, tightly-cropped zoom gives Gemini's img2img far more
+    canvas area to regenerate at high fidelity per unit of the ball's
+    actual reference-image detail, which plausibly amplifies exactly
+    the kind of fine-detail (logo) re-drawing the first fix targeted.
+    action_shot's framing never asked for a "close-up" the same way, and
+    Al's report is specific to product_shot -- consistent with this
+    theory, though not provable from this sandbox (no real Gemini
+    invocations reachable here). Addressed as a side effect of fix #2
+    below (a less extreme, fixed camera distance for product_shot),
+    plus the logo-proportion instruction itself is now explicitly framing-
+    independent ("this applies regardless of how the shot is framed")
+    rather than referencing camera-distance variation, which no longer
+    applies to product_shot once its size is fixed.
+
+    2. Ball size inconsistency, product_shot only. Al: "make sure the
+    bowling balls is a uniform size... it doesn't look good on the learn
+    site along side all the other balls" -- the Learn site's article
+    cards (ArticleCard.tsx) show many products' product_shot images side
+    by side in a grid, so ball-to-frame ratio varying between products
+    reads as visibly broken there in a way it wouldn't in an article
+    detail page showing one image at a time. The old framing ("close-up
+    so the ball is large and prominent") was a vague, non-numeric
+    zoom instruction with no run-to-run consistency guarantee.
+    product_shot's framing is now an explicit, numeric, catalog-photography
+    spec (ball diameter ~60-65% of the frame's shorter dimension,
+    centered, consistent margin) called out as identical for EVERY
+    product, explicitly modeled on e-commerce listing photography
+    (Amazon/Zappos-style) where exactly this consistency is the norm.
+    action_shot is deliberately NOT made uniform -- Al's ask was scoped
+    to product_shot specifically ("for THAT image"), and action_shot's
+    whole point is a dynamic, varied hero composition.
+
+    3. Theme concept underperforming -- weak or absent literal
+    iconography. Al's own examples: "Black Widow" (a spider's name)
+    produced no spider/web imagery at all; "Venom" (evokes a snake)
+    came out "plain jane." Two possible failure points, both addressed:
+    the visual_theme field itself (generated by build_article_prompt,
+    Bedrock/Claude) may describe only a mood/color palette rather than a
+    literal object -- that instruction now explicitly requires naming
+    a concrete creature/object/symbol when the name evokes one, and
+    calls out "generically dark/moody but no actual creature shown" as
+    exactly the failure to avoid. Independently, even a well-written
+    theme description could get diluted by Gemini during image
+    generation if nothing in THIS prompt insists on literal, visible
+    inclusion -- added a standalone sentence here requiring any
+    creature/object/symbol referenced by the scene concept to be
+    literally, unmistakably visible in the generated scene, not just
+    implied through lighting/color."""
     context = _resolve_visual_context(article)
     scene_desc = context or "an elevated, premium studio scene"
 
     if variant == "action_shot":
         framing = "a dynamic hero shot conveying motion and energy, with the ball large and prominent in the frame"
+        size_clause = (
+            "The ball's on-screen size may vary somewhat shot to shot with camera "
+            "distance, in service of a dynamic, energetic composition."
+        )
     else:
         framing = (
-            "an elevated, premium product photograph, not in motion, shot close-up "
-            "so the ball is large and prominent in the frame"
+            "a standardized product-catalog photograph, not in motion: the ball "
+            "centered in frame, photographed straight-on at a consistent, moderate "
+            "camera distance"
+        )
+        size_clause = (
+            "This is a CATALOG photograph, not a dramatic close-up: frame the shot "
+            "so the ball's diameter fills approximately 60-65% of the frame's "
+            "shorter dimension, centered, with even margin on all sides -- use "
+            "this exact same relative size and framing in EVERY generated image "
+            "for EVERY product, matching a professional e-commerce product-listing "
+            "photography standard (think Amazon or Zappos product photos) rather "
+            "than varying shot to shot. Many products' images are shown side by "
+            "side on a listing page, so a ball that's noticeably larger or smaller "
+            "in frame than the others looks broken there -- do not zoom in tighter "
+            "or pull back further than this standard regardless of the ball's own "
+            "color, size, or design."
         )
 
     return (
         f"Generate a scene depicting {scene_desc}, then place the exact bowling "
-        f"ball shown in the reference image into that scene as {framing}. The ball "
-        "is the hero subject of the image -- it should be large and prominent, "
-        "filling a substantial portion of the frame, not small or distant within "
-        "the scene. Keep the ball itself completely unchanged -- the same colors, "
-        "surface pattern, and logo/text exactly as shown in the reference image -- "
-        "only change what's around it. The ball's printed logo, graphics, and text "
-        "must occupy exactly the same proportion of the ball's surface that they do "
-        "in the reference image -- do not enlarge, shrink, stretch, or otherwise "
-        "resize the logo relative to the ball, even as the ball's own size within "
-        "the frame changes with camera distance. The ball may be rotated or tilted "
-        "to any angle, but its logo and graphics must scale and rotate together "
-        "with it as one rigid, unmodified object, matching the manufacturer's "
-        "actual printed design exactly, never redrawn larger, bolder, or more "
-        "prominent than the reference. Match the lighting and color grading of the "
-        "new scene onto the ball naturally, with a realistic contact shadow and "
-        "ambient light on its surface. This is a single-subject hero shot of the "
-        "ball alone -- do not include any people, hands, arms, legs, human figures, "
-        "bowling shoes, scoreboards/monitors, or bowling pins anywhere in the frame, "
+        f"ball shown in the reference image into that scene as {framing}. "
+        f"{size_clause} The ball is the hero subject of the image -- clearly the "
+        "focus of the shot, framed per the sizing instruction above rather than "
+        "small or distant within the scene. If the scene concept above references "
+        "a specific creature, object, or symbol (a spider and its web, a snake, "
+        "flames, ice, machinery, a specific artifact, etc.), that element must be "
+        "literally and unmistakably visible somewhere in the generated scene -- "
+        "not merely implied through color grading or mood lighting. A technically "
+        "well-lit but thematically generic background, with no actual sign of "
+        "the creature/object/symbol the concept describes, is a failure to follow "
+        "the scene concept, not an acceptable substitute for it. Keep the ball "
+        "itself completely unchanged -- the same colors, surface pattern, and "
+        "logo/text exactly as shown in the reference image -- only change what's "
+        "around it. The ball's printed logo, graphics, and text must occupy "
+        "exactly the same proportion of the ball's surface that they do in the "
+        "reference image -- do not enlarge, shrink, stretch, or otherwise resize "
+        "the logo relative to the ball. The ball may be rotated or tilted to any "
+        "angle, but its logo and graphics must scale and rotate together with it "
+        "as one rigid, unmodified object, matching the manufacturer's actual "
+        "printed design exactly, never redrawn larger, bolder, or more prominent "
+        "than the reference -- this applies regardless of how the shot is framed. "
+        "Match the lighting and color grading of the new scene onto the ball "
+        "naturally, with a realistic contact shadow and ambient light on its "
+        "surface. This is a single-subject hero shot of the ball alone -- do not "
+        "include any people, hands, arms, legs, human figures, bowling shoes, "
+        "scoreboards/monitors, or bowling pins anywhere in the frame, "
         "even blurred or in the background. The scene may still evoke a bowling lane "
         "or alley setting where the theme calls for it, but it must read as an "
         "empty, stylized environment built around the ball -- not a photograph of "
