@@ -11709,8 +11709,115 @@ an existing table, and the URL-state/icon work is admin-spa-only. Deploy
 via:
 
 ```bash
-sam build AdminApiFunction
-sam deploy
+sam build && sam deploy   # NOT the scoped "sam build AdminApiFunction" -- see 6a.5
+cd admin-spa && npm run build   # then the usual S3/CloudFront admin-spa deploy step
+```
+
+**Real follow-up, same day**: Al reported "all deployed but i don't see
+the styling of the article icon base on the state of the article" --
+every icon was rendering the same grey. Not a code bug: he'd run the
+scoped `sam build AdminApiFunction` from the wrong working directory, so
+the deploy never actually picked up this commit's `service.py` change
+at all (`article_status` was simply absent from every row, and the
+icon's tone function falls back to grey for anything that isn't
+literally `"approved"`/`"pending"`/`"rejected"`). Also worth calling out
+directly: the deploy instructions above originally said `sam build
+AdminApiFunction && sam deploy`, which is exactly the scoped-build
+command 6a.5 already has two confirmed incidents against -- corrected
+above to the full unscoped `sam build && sam deploy`. Resolved once the
+deploy actually ran from the right directory.
+
+### 6ab.27. Products tab: Video status icon + full mobile-card redesign
+
+Al, two more asks on top of 6ab.26: "the mobile version of the list
+looks like an after thought can you just fully redesign that card in
+the list to be better all around and not carry forward any of the
+desktop elements. focus on showing what is important and assume someone
+will click through to get more details. the only thing that i think is
+important are the icons. can we add one similar for videos. similar
+state. grey if none approved and yellow if approve but no summaries and
+green if approved and summaries. maybe a count next to the icon for
+number of videos."
+
+**Video status icon.** Same idea as 6ab.26's Article icon, extended to
+`product_videos`. The one real wrinkle: `product_articles` is one row
+per product (a plain `left join` was safe), but `product_videos` is
+genuinely one-to-many -- a plain join would fan the product row out
+once per video. `admin_api/service.py`'s `list_products` now uses `left
+join lateral (select count(*) as video_count, count(*) filter (where
+pv.status = 'approved') as approved_video_count, count(*) filter (where
+pv.status = 'approved' and pv.summary is not null) as
+approved_summarized_video_count from product_videos pv where
+pv.product_id = p.id) v on true` -- one correlated pass per product
+computing all three counts together, then `coalesce(v.*, 0)` in the
+outer select so a product with zero videos gets real zeros, not nulls
+(unlike `article_status`, which admin-spa does treat as nullable).
+`video_count` is every candidate regardless of status -- the number Al
+actually asked for next to the icon; the other two counts are what the
+icon's color is derived from client-side (`approved_video_count === 0`
+-> grey, `> 0` with `approved_summarized_video_count` still `0` ->
+yellow, any summarized approved video -> green).
+
+`admin-spa/src/api/types.ts`'s `Product` gains `video_count`/
+`approved_video_count`/`approved_summarized_video_count` (all `number`,
+never `null`). `ProductsPage.tsx` gets a new `videoIconTone`/
+`videoIconLabel` pair (mirroring `articleIconTone`/`articleIconLabel`)
+and a "Videos" column next to "Article" on the desktop table, using the
+existing `IconVideo` glyph from `components/icons.tsx` (already used in
+the sidebar nav) with the count rendered alongside it. Links to
+`/products/{id}?tab=videos` -- no new deep-link plumbing needed, since
+6ab.26 already made `ProductDetailPage.tsx`'s tab state read any of the
+six valid tab names from `?tab=`, not just `article`.
+
+**Mobile card, fully redesigned, not a DataTable variant.** The
+Products table's existing mobile story was DataTable's generic
+`mobileCollapsible` mode -- collapse every column down to whichever
+were flagged `primary`, plus a tap-to-expand toggle for the rest. Al:
+"the mobile version of the list looks like an after thought... focus on
+showing what is important and assume someone will click through to get
+more details. the only thing that i think is important are the icons."
+That's a real product decision (what belongs on a phone-sized card),
+not a styling tweak to the existing collapse mechanism, so this
+specific page moves off it entirely rather than just re-flagging which
+columns are `primary`:
+
+- `DataTable` (with the full 8-column desktop layout: Product, Status,
+  Article, Videos, Core, Coverstock, Popularity, Avg Daily Movement,
+  Demand Score, Updated, plus selection/bulk-rescrape) now renders
+  inside a `hidden md:block` wrapper -- unchanged at `md:`+, invisible
+  below it. `mobileCollapsible` and every column's `primary` flag were
+  removed from this page's usage since neither means anything once
+  DataTable never renders below `md` here anymore.
+- A brand-new `md:hidden` block renders one compact card per product
+  instead: brand+name and a status badge (wrapped in a `Link` to
+  `/products/{id}`, so tapping the card's text goes to the full detail
+  page), plus the Article and Video icons as two more `Link`s beside it
+  (siblings, not nested inside the first `Link` -- anchors can't nest).
+  Nothing else from the desktop table carries over -- no Core,
+  Coverstock, Popularity, Avg Daily Movement, Demand Score, Updated, no
+  selection checkboxes, no bulk-rescrape. All of that is either on the
+  product detail page a tap away, or (bulk actions) stays a
+  desktop-only workflow, matching Al's own framing of what's actually
+  worth showing at a glance on a phone.
+
+**Tests**: `tests/test_admin_api_service.py` gained
+`test_list_products_joins_lateral_video_counts` (confirms the lateral
+join, all three `count(*) filter (...)` expressions, and the outer
+`coalesce(...)` wrapping -- same query-text-assertion convention every
+other `list_products` test on this file uses). One pre-existing test,
+`test_list_products_always_selects_the_three_materialized_score_columns`,
+asserted `"product_videos" not in query` back when that was true;
+updated its comment and dropped that specific assertion now that a
+legitimate `product_videos` join exists for an unrelated reason (its
+`percent_rank()`/`product_sku_stock_history` assertions, the ones that
+actually prove the old per-row scoring subqueries are gone, are
+untouched). 286/286 passing (up from 285). Full project-wide regression
+sweep re-run clean. `admin-spa` verified via `npx tsc -b` (clean).
+
+No migration, no `template.yaml` change. Deploy via:
+
+```bash
+sam build && sam deploy
 cd admin-spa && npm run build   # then the usual S3/CloudFront admin-spa deploy step
 ```
 

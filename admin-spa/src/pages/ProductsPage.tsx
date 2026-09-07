@@ -5,7 +5,7 @@ import type { ListProductsParams, Product, ProductSort, SourcePlatform } from ".
 import Badge from "../components/Badge";
 import type { BulkAction, Column } from "../components/DataTable";
 import DataTable from "../components/DataTable";
-import { IconArticles } from "../components/icons";
+import { IconArticles, IconVideo } from "../components/icons";
 import Pagination from "../components/Pagination";
 import { useToast } from "../components/Toast";
 
@@ -43,6 +43,38 @@ function articleIconLabel(status: Product["article_status"]): string {
   if (status === "pending") return "Article pending review -- click to review";
   if (status === "rejected") return "Article rejected -- click to view";
   return "No article generated yet -- click to open the Article tab";
+}
+
+// Video-status icon color/tooltip -- Al's direct follow-up: "can we add
+// one similar for videos. similar state. grey if none approved and
+// yellow if approve but no summaries and green if approved and
+// summaries. maybe a count next to the icon for number of videos."
+// Unlike the article icon (one status value), video state is derived
+// from two counts admin_api's list_products now returns (see that
+// function's own docstring): approved_video_count = 0 is grey
+// regardless of how many un-reviewed candidates exist, > 0 with
+// approved_summarized_video_count still 0 is yellow, and any
+// summarized approved video makes it green.
+type VideoCounts = Pick<Product, "video_count" | "approved_video_count" | "approved_summarized_video_count">;
+
+function videoIconTone(p: VideoCounts): string {
+  if (p.approved_summarized_video_count > 0) return "text-ok";
+  if (p.approved_video_count > 0) return "text-warn";
+  return "text-ink-400";
+}
+
+function videoIconLabel(p: VideoCounts): string {
+  const plural = (n: number) => (n === 1 ? "" : "s");
+  if (p.approved_summarized_video_count > 0) {
+    return `${p.approved_video_count} approved video${plural(p.approved_video_count)}, summarized -- click to view`;
+  }
+  if (p.approved_video_count > 0) {
+    return `${p.approved_video_count} approved video${plural(p.approved_video_count)}, no summaries yet -- click to review`;
+  }
+  if (p.video_count > 0) {
+    return `${p.video_count} video candidate${plural(p.video_count)} found, none approved yet -- click to review`;
+  }
+  return "No video candidates found yet -- click to open the Videos tab";
 }
 
 // Ports admin-site/index.html's Products tab -- same filter set
@@ -180,9 +212,6 @@ export default function ProductsPage() {
       // than disappearing -- it's still useful (jumping straight to the
       // manufacturer's own page), just no longer the only thing a click
       // here does.
-      // Kept visible in a collapsed mobile card (see `primary` below) --
-      // it's the one thing you need to identify which row this even is.
-      primary: true,
       render: (p) => (
         <span className="font-medium text-ink-800">
           <Link to={`/products/${p.id}`} className="hover:text-primary hover:underline">
@@ -197,9 +226,6 @@ export default function ProductsPage() {
     {
       key: "status",
       header: "Status",
-      // Also kept visible collapsed -- current-vs-retired is worth
-      // seeing at a glance without expanding, same reasoning as Product.
-      primary: true,
       render: (p) => <Badge tone={p.status === "current" ? "ok" : "muted"}>{p.status}</Badge>,
     },
     {
@@ -210,9 +236,7 @@ export default function ProductsPage() {
       // list" -- the article icon is the first of these (a per-row
       // shortcut into ProductDetailPage's Article sub-tab), colored by
       // review state so the state is visible without opening the
-      // product at all. Kept `primary` so it survives into the
-      // collapsed mobile card too, same as Product/Status above.
-      primary: true,
+      // product at all.
       render: (p) => (
         <Link
           to={`/products/${p.id}?tab=article`}
@@ -220,6 +244,26 @@ export default function ProductsPage() {
           className={`inline-flex ${articleIconTone(p.article_status)} hover:opacity-70`}
         >
           <IconArticles className="h-5 w-5" />
+        </Link>
+      ),
+    },
+    {
+      key: "videos",
+      header: "Videos",
+      // Same idea as Article above, extended to product_videos -- see
+      // videoIconTone/videoIconLabel's own comment for the grey/yellow/
+      // green derivation. The count next to the icon is every candidate
+      // regardless of status (Al: "a count next to the icon for number
+      // of videos"), so a grey icon showing "6" still tells you there's
+      // unreviewed work waiting, distinct from a grey icon showing "0".
+      render: (p) => (
+        <Link
+          to={`/products/${p.id}?tab=videos`}
+          title={videoIconLabel(p)}
+          className={`inline-flex items-center gap-1 ${videoIconTone(p)} hover:opacity-70`}
+        >
+          <IconVideo className="h-5 w-5" />
+          <span className="text-xs font-semibold">{p.video_count}</span>
         </Link>
       ),
     },
@@ -334,17 +378,73 @@ export default function ProductsPage() {
 
       {error && <div className="rounded-md bg-danger-light px-4 py-3 text-sm text-danger">{error}</div>}
 
-      <DataTable
-        columns={columns}
-        rows={products}
-        getRowId={(p) => p.id}
-        selectable
-        selectedIds={selectedIds}
-        onSelectionChange={setSelectedIds}
-        bulkActions={bulkActions}
-        emptyMessage={loading ? "Loading…" : "No products match these filters."}
-        mobileCollapsible
-      />
+      {/* Desktop/tablet: the real table, every column, unchanged. Hidden
+          below md -- see ProductMobileCard below for why this isn't
+          just DataTable's generic mobileCollapsible mode anymore. */}
+      <div className="hidden md:block">
+        <DataTable
+          columns={columns}
+          rows={products}
+          getRowId={(p) => p.id}
+          selectable
+          selectedIds={selectedIds}
+          onSelectionChange={setSelectedIds}
+          bulkActions={bulkActions}
+          emptyMessage={loading ? "Loading…" : "No products match these filters."}
+        />
+      </div>
+
+      {/* Mobile: a from-scratch card, not DataTable's generic "collapse
+          desktop columns into a card" mode. Al: "the mobile version of
+          the list looks like an after thought... focus on showing what
+          is important and assume someone will click through to get more
+          details. the only thing that i think is important are the
+          icons." Every column this table has beyond identity/status/the
+          two review-state icons (Core, Coverstock, Popularity, Avg
+          Daily Movement, Demand Score, Updated) is exactly the kind of
+          "glance at a dense desktop table" data that doesn't matter for
+          a quick phone check -- it's all on the product detail page a
+          tap away. No selection/bulk-rescrape here either, same
+          simplification; that stays a desktop workflow. */}
+      <div className="flex flex-col gap-2 md:hidden">
+        {loading && (
+          <div className="rounded-lg border border-ink-200 bg-ink-100 px-4 py-8 text-center text-sm text-ink-400">
+            Loading…
+          </div>
+        )}
+        {!loading && products.length === 0 && (
+          <div className="rounded-lg border border-ink-200 bg-ink-100 px-4 py-8 text-center text-sm text-ink-400">
+            No products match these filters.
+          </div>
+        )}
+        {products.map((p) => (
+          <div key={p.id} className="flex items-center gap-3 rounded-lg border border-ink-200 bg-ink-100 p-3">
+            <Link to={`/products/${p.id}`} className="min-w-0 flex-1">
+              <div className="truncate text-sm font-medium text-ink-800">
+                {p.brand_name} {p.name}
+              </div>
+              <Badge tone={p.status === "current" ? "ok" : "muted"}>{p.status}</Badge>
+            </Link>
+            <div className="flex shrink-0 items-center gap-1">
+              <Link
+                to={`/products/${p.id}?tab=article`}
+                title={articleIconLabel(p.article_status)}
+                className={`-m-1 flex items-center rounded p-1 ${articleIconTone(p.article_status)} hover:bg-ink-200`}
+              >
+                <IconArticles className="h-6 w-6" />
+              </Link>
+              <Link
+                to={`/products/${p.id}?tab=videos`}
+                title={videoIconLabel(p)}
+                className={`-m-1 flex items-center gap-1 rounded p-1 ${videoIconTone(p)} hover:bg-ink-200`}
+              >
+                <IconVideo className="h-6 w-6" />
+                <span className="text-xs font-semibold">{p.video_count}</span>
+              </Link>
+            </div>
+          </div>
+        ))}
+      </div>
 
       <Pagination offset={offset} limit={LIMIT} itemCount={products.length} onOffsetChange={setOffset} />
     </div>

@@ -2755,6 +2755,35 @@ def test_list_products_joins_product_articles_for_article_status():
     assert "pa.status as article_status" in query
 
 
+# --- list_products: video_count/approved_video_count/approved_summarized_
+# video_count -- Al's direct follow-up to the article icon: "can we add
+# one similar for videos. similar state. grey if none approved and yellow
+# if approve but no summaries and green if approved and summaries. maybe
+# a count next to the icon for number of videos." Unlike product_articles
+# (one-to-one, plain left join), product_videos is one-to-many -- this
+# needs a `left join lateral` computing all three counts in one pass
+# rather than a join that would fan out the product row per video.
+
+def test_list_products_joins_lateral_video_counts():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "left join lateral (" in query
+    assert "count(*) as video_count" in query
+    assert "count(*) filter (where pv.status = 'approved') as approved_video_count" in query
+    assert (
+        "count(*) filter (where pv.status = 'approved' and pv.summary is not null) "
+        "as approved_summarized_video_count" in query
+    )
+    assert "from product_videos pv" in query
+    assert "where pv.product_id = p.id" in query
+    assert ") v on true" in query
+    assert "coalesce(v.video_count, 0) as video_count" in query
+    assert "coalesce(v.approved_video_count, 0) as approved_video_count" in query
+    assert "coalesce(v.approved_summarized_video_count, 0) as approved_summarized_video_count" in query
+
+
 # --- list_products: source_platform filter -- built for
 # scripts/rescrape_netsuite_products.py (the MOTIV image-scoping fix's
 # catalog-wide cleanup, see netsuite_product_scraper's "SECOND real bug"
@@ -2821,7 +2850,13 @@ def test_list_products_always_selects_the_three_materialized_score_columns():
     assert "p.total_daily_movement" in query
     assert "p.demand_score" in query
     # None of the old live-computed shapes should remain in this query.
-    assert "product_videos" not in query
+    # NOTE: product_videos itself is no longer a valid "must be absent"
+    # check here -- the video-status-icon feature (see the "left join
+    # lateral" tests above) added a legitimate, deliberate join against
+    # it for an unrelated reason (video_count/approved_video_count/
+    # approved_summarized_video_count). percent_rank()/product_sku_
+    # stock_history are still the right "old scoring shape is gone"
+    # checks: neither has any other reason to appear in this query.
     assert "product_sku_stock_history" not in query
     assert "percent_rank()" not in query
 

@@ -630,7 +630,33 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     state so green if approved, yellow if pending, and grey if not
     generated." article_id rides along so the icon can link straight to
     that product's Article sub-tab without admin-spa needing to guess or
-    re-fetch it."""
+    re-fetch it.
+
+    video_count/approved_video_count/approved_summarized_video_count:
+    the same idea extended to product_videos, Al's direct follow-up:
+    "can we add one similar for videos. similar state. grey if none
+    approved and yellow if approve but no summaries and green if
+    approved and summaries. maybe a count next to the icon for number
+    of videos." Unlike product_articles this is a genuine one-to-many
+    table (many candidate videos per product), so a plain left join
+    would fan out the row -- `left join lateral (...) v on true`
+    computes all three counts in one pass over that product's own
+    product_videos rows instead (Postgres runs the subquery once per
+    outer row, correlated on p.id, same as a scalar subquery would, but
+    without needing three separate subqueries/round-trips through the
+    table for video_count vs approved_video_count vs approved_
+    summarized_video_count). video_count is every row regardless of
+    status (what "number of videos" literally asked for); the other two
+    are what admin-spa derives the icon's grey/yellow/green state from
+    -- approved_video_count = 0 is grey (nothing approved yet, whether
+    that's because none exist or none have been reviewed), > 0 with
+    approved_summarized_video_count still 0 is yellow (approved but
+    video_summarizer hasn't produced a per-video summary for any of
+    them yet), and approved_summarized_video_count > 0 is green. All
+    three coalesce to 0 (not null) for a product with zero product_
+    videos rows at all, via `coalesce(v.video_count, 0)` etc., so
+    admin-spa never has to null-check these the way it does for
+    article_status."""
     # p alias + left join cores: needed once c.name entered the picture --
     # products and cores both have a plain "name" column, so every
     # previously-bare column reference below (name, published, brand_id,
@@ -645,15 +671,30 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     # left join product_articles too (pa.id/pa.status) -- one row max per
     # product (unique on product_id), so this join can never fan out the
     # result set the way a videos/skus join would.
+    # left join lateral product_videos aggregates -- see video_count's own
+    # docstring paragraph above for why this needs to be a lateral
+    # subquery (one-to-many) rather than a plain join the way product_
+    # articles' one-to-one join above works.
     query = f"""
         select p.id, p.brand_id, b.name as brand_name, p.name, p.url, p.status, p.published, p.updated_at,
                p.core_id, c.name as core_name, p.release_date, p.coverstock_id, p.coverstock_name,
                p.popularity_score, p.total_daily_movement, p.demand_score,
-               pa.id as article_id, pa.status as article_status
+               pa.id as article_id, pa.status as article_status,
+               coalesce(v.video_count, 0) as video_count,
+               coalesce(v.approved_video_count, 0) as approved_video_count,
+               coalesce(v.approved_summarized_video_count, 0) as approved_summarized_video_count
         from products p
         left join cores c on c.id = p.core_id
         left join brands b on b.id = p.brand_id
         left join product_articles pa on pa.product_id = p.id
+        left join lateral (
+            select
+                count(*) as video_count,
+                count(*) filter (where pv.status = 'approved') as approved_video_count,
+                count(*) filter (where pv.status = 'approved' and pv.summary is not null) as approved_summarized_video_count
+            from product_videos pv
+            where pv.product_id = p.id
+        ) v on true
         where 1=1
     """
     params = []

@@ -120,6 +120,20 @@ export interface Product {
   // link straight into ProductDetailPage's Article sub-tab.
   article_id: string | null;
   article_status: ArticleStatus | null;
+  // Aggregated from product_videos via a lateral join (a genuine
+  // one-to-many table, unlike product_articles above) -- see
+  // admin_api's list_products docstring for the full reasoning. Always
+  // a real number, never null (coalesced to 0 server-side even when a
+  // product has zero product_videos rows). Backs the Video status icon
+  // next to the Article one (Al: "grey if none approved and yellow if
+  // approve but no summaries and green if approved and summaries...
+  // maybe a count next to the icon for number of videos") --
+  // video_count is the displayed count (every candidate regardless of
+  // status), approved_video_count/approved_summarized_video_count are
+  // what the icon's color is derived from.
+  video_count: number;
+  approved_video_count: number;
+  approved_summarized_video_count: number;
 }
 
 export interface ListProductsParams {
