@@ -1923,6 +1923,29 @@ def test_build_gemini_scene_prompt_excludes_people_and_bowling_venue_props():
         assert "may still evoke a bowling lane or alley setting" in prompt
 
 
+def test_build_gemini_scene_prompt_forbids_resizing_the_logo():
+    """REAL INCIDENT (2026-09-06, Al): "the ball images are starting to
+    be changed. mainly the logos are being enlarged so that they are no
+    longer proportial to how they are designed to be by the
+    manufacturer... the balls can be rotated and just about anything
+    else but the logos can not be resized on the ball." Distinct from
+    the pre-existing "logo/text exactly as shown" instruction (asserted
+    by test_build_gemini_scene_prompt_instructs_keeping_the_ball_
+    unchanged) -- that says WHAT must stay the same but never said logo
+    SIZE relative to the ball's surface was itself a hard constraint,
+    which is exactly the gap that let it drift. Confirms the new,
+    standalone proportion instruction is present, that rotation/tilt is
+    still explicitly allowed (this is a size fix, not a "no rotation"
+    fix), and that it holds for both variants."""
+    action_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "action_shot")
+    product_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "product_shot")
+    for prompt in (action_prompt, product_prompt):
+        assert "same proportion of the ball's surface" in prompt
+        assert "do not enlarge, shrink, stretch, or otherwise" in prompt
+        assert "may be rotated or tilted to any angle" in prompt
+        assert "never redrawn larger, bolder, or more prominent" in prompt
+
+
 class _FakeGeminiResponse:
     def __init__(self, payload: dict, status_ok: bool = True):
         self._payload = payload

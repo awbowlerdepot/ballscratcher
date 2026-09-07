@@ -1230,7 +1230,34 @@ def build_gemini_scene_prompt(product: dict, article: dict, variant: str) -> str
     when the theme calls for it, but no person, hands, bowling shoes, or
     pins anywhere in frame -- "all are hallucinations that just feel
     phony." Fixed by adding an explicit exclusion list below, the same
-    posture the Stability path already had."""
+    posture the Stability path already had.
+
+    REAL INCIDENT (2026-09-06, Al): "im seeing a small drift in the ai
+    images for articles. the ball images are starting to be changed.
+    mainly the logos are being enlarged so that they are no longer
+    proportial to how they are designed to be by the manufacturer...
+    the balls can be rotated and just about anything else but the logos
+    can not be resized on the ball." A different failure mode from the
+    people/venue drift above and the visual_theme drift in migration
+    029 -- this one is Gemini subtly re-drawing the ball's printed
+    logo/graphics at a larger scale relative to the ball's own surface
+    each time it regenerates the ball into a new scene, rather than
+    treating the logo as a fixed, rigid part of the physical object
+    being photographed. The old "keep the ball itself completely
+    unchanged... only change what's around it" instruction said WHAT
+    had to stay the same (colors, pattern, logo/text) but never said
+    logo SIZE relative to the ball's surface was itself a hard
+    constraint -- and "the ball large and prominent, filling a
+    substantial portion of the frame" (a camera-distance/zoom
+    instruction) was apparently bleeding into the model enlarging the
+    logo along with the ball's on-screen size, rather than just zooming
+    the whole rigid object in. Fixed by adding an explicit, standalone
+    instruction that separates the two: the ball's on-screen SIZE (how
+    much of the frame it fills, via camera distance) can change, and the
+    ball can be rotated/tilted to any angle, but the logo/graphics must
+    always occupy the exact same PROPORTION of the ball's own surface
+    that they do in the reference image -- scaling rigidly with the ball
+    as one object, never independently enlarged, shrunk, or restyled."""
     context = _resolve_visual_context(article)
     scene_desc = context or "an elevated, premium studio scene"
 
@@ -1249,7 +1276,15 @@ def build_gemini_scene_prompt(product: dict, article: dict, variant: str) -> str
         "filling a substantial portion of the frame, not small or distant within "
         "the scene. Keep the ball itself completely unchanged -- the same colors, "
         "surface pattern, and logo/text exactly as shown in the reference image -- "
-        "only change what's around it. Match the lighting and color grading of the "
+        "only change what's around it. The ball's printed logo, graphics, and text "
+        "must occupy exactly the same proportion of the ball's surface that they do "
+        "in the reference image -- do not enlarge, shrink, stretch, or otherwise "
+        "resize the logo relative to the ball, even as the ball's own size within "
+        "the frame changes with camera distance. The ball may be rotated or tilted "
+        "to any angle, but its logo and graphics must scale and rotate together "
+        "with it as one rigid, unmodified object, matching the manufacturer's "
+        "actual printed design exactly, never redrawn larger, bolder, or more "
+        "prominent than the reference. Match the lighting and color grading of the "
         "new scene onto the ball naturally, with a realistic contact shadow and "
         "ambient light on its surface. This is a single-subject hero shot of the "
         "ball alone -- do not include any people, hands, arms, legs, human figures, "

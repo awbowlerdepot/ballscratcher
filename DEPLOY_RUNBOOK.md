@@ -8855,6 +8855,66 @@ fallback -- is what reaches it, verified both via the dict key and via
 `tests/test_admin_api_service.py` (275/275, unaffected) confirms no
 cross-module breakage.
 
+**2026-09-06 fix -- stop Gemini from enlarging the ball's printed logo
+relative to its own surface.** Al: "im seeing a small drift in the ai
+images for articles. the ball images are starting to be changed. mainly
+the logos are being enlarged so that they are no longer proportial to
+how they are designed to be by the manufacturer... the balls can be
+rotated and just about anything else but the logos can not be resized
+on the ball." A third distinct drift mode in this same prompt, after the
+people/venue-props drift and the visual_theme drift above -- this one is
+about logo SCALE specifically, not subject matter or theme.
+
+Root cause: `build_gemini_scene_prompt`'s existing instruction ("keep
+the ball itself completely unchanged -- the same colors, surface
+pattern, and logo/text exactly as shown in the reference image") said
+WHAT had to stay the same but never made logo size relative to the
+ball's own surface a standalone, explicit constraint. Meanwhile "the
+ball large and prominent, filling a substantial portion of the frame"
+is a camera-distance/zoom instruction, but with nothing separating the
+two ideas, Gemini apparently conflated "make the ball bigger on screen"
+with "redraw its markings bigger" over successive regenerates -- a
+generative img2img model doesn't have true pixel-copy fidelity for a
+reference image the way a compositing pipeline (the old Stability
+cutout+paste approach) does, so it's resynthesizing the logo's shape
+each time rather than literally reusing the source pixels.
+
+Fixed by adding a standalone sentence to the prompt (both variants) that
+separates the two concepts explicitly: the ball's on-screen size may
+change with camera distance, and the ball may be rotated/tilted to any
+angle, but its logo/graphics must occupy exactly the same proportion of
+the ball's surface as in the reference image, scaling and rotating
+rigidly with the ball as one object -- never independently enlarged,
+shrunk, or restyled. `build_gemini_scene_prompt`'s own docstring gained
+a matching "REAL INCIDENT" paragraph, quoting Al verbatim, following the
+same pattern the two earlier drift incidents in this same function
+already used.
+
+No migration, no `template.yaml` change -- pure prompt-text change,
+picked up by `sam build ProductArticleGeneratorFunction && sam deploy`.
+Only affects FUTURE generations, same caveat as every other prompt
+change in this module -- it does not touch already-generated/selected
+images.
+
+**Tests** (`tests/test_product_article_generator.py`, 124/124 passing,
+1 new): `test_build_gemini_scene_prompt_forbids_resizing_the_logo`
+confirms the new proportion-preservation instruction is present for
+both variants, that rotation/tilt is still explicitly permitted (a size
+fix, not a "no rotation" fix), and is written to be distinct from the
+pre-existing "logo/text exactly as shown" assertion in `test_build_
+gemini_scene_prompt_instructs_keeping_the_ball_unchanged` (which tests
+content fidelity, not scale). Full project-wide sweep re-run clean
+(every `tests/test_*.py` passes except the two pre-existing, unrelated
+pytest-dependency gaps).
+
+**Honest caveat, same as every other Gemini prompt change in this
+module's history**: this is a prompt-level instruction, not a hard
+constraint enforced pixel-by-pixel -- Gemini can still occasionally
+ignore it, and its real effect can only be judged against live
+invocations after redeploy. Worth keeping an eye on the next batch of
+generated candidates the same way Al caught this drift in the first
+place.
+
 ### 6u. Article → BigCommerce sync: admin toggle (migration 028) + sync job design spec (job not yet built)
 
 Follow-up to 6s/6t (the ball-review article generator): Al asked how to get
