@@ -11446,6 +11446,57 @@ Files touched: `db/migrations/030_materialized_product_scores.sql`
 `tests/test_refresh_product_scores.py` (new),
 `tests/test_admin_api_service.py`, `tests/test_public_api_service.py`.
 
+### 6ab.25. Revisiting two decisions made under the old 10-slot concurrency ceiling
+
+Follow-up to the `AdminApiFunction` `ReservedConcurrentExecutions`
+resolution (the "RESOLVED (2026-09-06)" note in the core-backfill
+incident section, ~2000 lines above this one -- the account's Lambda
+concurrency quota was raised from the new-account default of 10 to the
+standard 1000). Al: "lets revisit both" -- both meaning `ProductDetail
+Page.tsx`'s deliberately-serialized loading and `PublicApiFunction`'s
+cold-start mitigation, the two other decisions in this codebase that had
+been shaped around that same ceiling and were flagged (not changed) when
+the quota fix shipped.
+
+**`ProductDetailPage.tsx`'s `load()`, reverted to `Promise.all`.** 6ab.12
+originally serialized six admin_api calls (`listVideoCandidates`,
+`listArticles`, `listProductPriceSources`, `getPriceHistory`,
+`getSkuStockHistory`, `listPriceSites`) specifically because a burst of
+concurrent invocations against `AdminApiFunction` had already caused a
+real, confirmed incident on the account's old 10-slot ceiling (bare 503s
+with nothing in CloudWatch, root-caused in the core-backfill incident
+this same account limit is documented against). With 1000 slots now,
+six concurrent invocations from one page load isn't a meaningful risk,
+so `load()` now fires all six via `Promise.all` -- wall-clock time drops
+from roughly the sum of six round-trips to the max of one. `loadPart`'s
+per-call try/catch is unchanged and still does its job under
+`Promise.all`: it swallows its own errors and reports them via toast
+internally, so no individual call rejecting can short-circuit the others
+or reject the outer `Promise.all` -- a stumble on, say, price-history
+still can't blank a product that loaded fine. The article-detail
+follow-up effect (`getArticle` + `listArticleImageCandidates`, split out
+of `load()` in 6ab.12 for the same reason) got the identical treatment --
+those two calls don't depend on each other's result, so they're now also
+`Promise.all`-ed instead of sequential.
+
+Verified via `npx tsc -b` (clean build, no type errors) -- a behavioral/
+performance change with no API contract change, so no admin_api or
+`types.ts` updates were needed. Not smoke-tested live against real data
+in a browser yet; worth a quick manual check of the product detail page
+after deploy to confirm all six sub-tabs still populate correctly under
+the new parallel load.
+
+Files touched: `admin-spa/src/pages/ProductDetailPage.tsx` only.
+
+```bash
+cd admin-spa && npm run build
+# then redeploy admin-spa's static hosting per its own section above
+```
+
+**`PublicApiFunction`'s cold-start mitigation:** see the follow-up entry
+immediately after this one once that decision is made -- this section
+will be updated in place rather than duplicated.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

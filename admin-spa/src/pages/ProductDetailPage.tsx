@@ -124,27 +124,27 @@ export default function ProductDetailPage() {
   const [manualSelector, setManualSelector] = useState("");
   const [addingManualSource, setAddingManualSource] = useState(false);
 
-  // Sequential, not Promise.all -- real, confirmed incident on this AWS
-  // account (see template.yaml's own comment above AdminApiFunction):
-  // Lambda UnreservedConcurrentExecutions is capped at 10 account-wide
-  // (AWS's default low tier for a new/unverified account), and a burst
-  // of concurrent invocations against this same function has already
-  // been seen to exhaust that pool and come back as a bare 503 from
-  // AdminHttpApi with nothing in CloudWatch -- HTTP API v2's own way of
-  // surfacing a Lambda-service throttle. This page needs six separate
-  // admin_api calls (plus two more if an article exists); firing them
-  // all via Promise.all was exactly that burst. Awaiting them one at a
-  // time keeps this page to a single in-flight AdminApiFunction
-  // invocation at once, same "one request, not a burst" posture
-  // scripts/backfill_core_ids.py's own retry-with-backoff was written
-  // for. Slower wall-clock (roughly the sum of six round-trips instead
-  // of the max of six), but that's a fair trade against the page simply
-  // failing to load at all.
+  // Promise.all, not sequential (REVERTED 2026-09-06 -- see 6ab.27 in
+  // DEPLOY_RUNBOOK.md): this page originally fired six separate admin_api
+  // calls one at a time specifically because this AWS account's Lambda
+  // UnreservedConcurrentExecutions was capped at 10 account-wide (AWS's
+  // default low tier for a new/unverified account), and a burst of
+  // concurrent invocations against AdminApiFunction had already been seen
+  // to exhaust that pool and come back as a bare 503 from AdminHttpApi
+  // with nothing in CloudWatch. Al requested and AWS approved a
+  // concurrency quota increase to the standard 1000 (see AdminApiFunction's
+  // own template.yaml comment, RESOLVED 2026-09-06) -- with that much
+  // headroom, six concurrent invocations from one page load is no longer
+  // a meaningful risk, so this reverts to the faster parallel load (the
+  // max of six round-trips instead of their sum).
   //
-  // Each fetch also fails independently rather than aborting the whole
+  // Each fetch still fails independently rather than aborting the whole
   // load -- a stumble on, say, price-history shouldn't blank a product
   // that loaded fine; it just leaves that one sub-tab empty and reports
   // the failure via the toast instead of the whole-page error view.
+  // loadPart already swallows its own errors internally, so Promise.all
+  // here is safe -- no individual call rejecting can short-circuit the
+  // others or reject the outer Promise.all.
   async function load() {
     if (!id) return;
     setLoading(true);
@@ -166,28 +166,33 @@ export default function ProductDetailPage() {
       }
     }
 
-    await loadPart("videos", () => listVideoCandidates({ product_id: id, status: "all", limit: 200 }), (r) =>
-      setVideos(r.items),
-    );
-    await loadPart("article", () => listArticles({ product_id: id, status: "all", limit: 1 }), (r) =>
-      setArticleItem(r[0] ?? null),
-    );
-    await loadPart("price sources", () => listProductPriceSources(id, "all"), setPriceSources);
-    await loadPart("price history", () => getPriceHistory(id), setPriceHistory);
-    await loadPart("SKU stock history", () => getSkuStockHistory(id), setSkuStockHistory);
-    // Price Sites registry -- feeds the Pricing sub-tab's manual-add
-    // dropdown (site name -> id). Same catalog-wide, active-only list
-    // PriceSitesPage itself fetches; harmless to re-fetch per product
-    // page load since it's small and read-mostly (see PriceSite's own
-    // comment in types.ts).
-    await loadPart("price sites", () => listPriceSites(), setPriceSites);
+    await Promise.all([
+      loadPart("videos", () => listVideoCandidates({ product_id: id, status: "all", limit: 200 }), (r) =>
+        setVideos(r.items),
+      ),
+      loadPart("article", () => listArticles({ product_id: id, status: "all", limit: 1 }), (r) =>
+        setArticleItem(r[0] ?? null),
+      ),
+      loadPart("price sources", () => listProductPriceSources(id, "all"), setPriceSources),
+      loadPart("price history", () => getPriceHistory(id), setPriceHistory),
+      loadPart("SKU stock history", () => getSkuStockHistory(id), setSkuStockHistory),
+      // Price Sites registry -- feeds the Pricing sub-tab's manual-add
+      // dropdown (site name -> id). Same catalog-wide, active-only list
+      // PriceSitesPage itself fetches; harmless to re-fetch per product
+      // page load since it's small and read-mostly (see PriceSite's own
+      // comment in types.ts).
+      loadPart("price sites", () => listPriceSites(), setPriceSites),
+    ]);
     setLoading(false);
   }
 
   // Article full detail + image candidates depend on articleItem (set by
-  // load() above) rather than living inside load() itself -- keeps the
-  // same one-request-at-a-time posture without load() needing to know
-  // about article-specific follow-up calls.
+  // load() above) rather than living inside load() itself, so this stays
+  // its own effect regardless of load()'s parallel/sequential posture.
+  // The two calls themselves are independent of each other (neither
+  // result feeds the other) -- fired via Promise.all now that this
+  // account isn't concurrency-constrained (see 6ab.27 in DEPLOY_RUNBOOK.md
+  // and load()'s own comment above).
   useEffect(() => {
     if (!articleItem) {
       setArticle(null);
@@ -197,11 +202,13 @@ export default function ProductDetailPage() {
     let cancelled = false;
     (async () => {
       try {
-        const full = await getArticle(articleItem.id);
+        const [full, candidates] = await Promise.all([
+          getArticle(articleItem.id),
+          listArticleImageCandidates(articleItem.id),
+        ]);
         if (cancelled) return;
         setArticle(full);
-        const candidates = await listArticleImageCandidates(articleItem.id);
-        if (!cancelled) setArticleCandidates(candidates);
+        setArticleCandidates(candidates);
       } catch (err) {
         if (!cancelled) show(err instanceof Error ? `article detail: ${err.message}` : "Failed to load article detail.", "danger");
       }
