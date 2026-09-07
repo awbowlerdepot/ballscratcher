@@ -70,8 +70,8 @@ export default function ArticleDetailPage() {
 
       <div className="relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-neutral-900 py-10">
         <div className="mx-auto grid max-w-5xl grid-cols-1 gap-8 px-6 md:grid-cols-[320px_1fr] md:px-8">
-          <div className="flex items-center justify-center overflow-visible px-2 md:px-4">
-            <div className="-my-20 aspect-[4/3] w-full -rotate-[12deg] rounded-sm bg-white p-2 shadow-2xl md:-my-28">
+          <div className="flex items-center justify-center overflow-visible px-2 md:relative md:px-4">
+            <div className="-my-3 aspect-[4/3] w-full -rotate-[12deg] rounded-sm bg-white p-2 shadow-2xl md:absolute md:left-1/2 md:top-1/2 md:my-0 md:aspect-auto md:h-96 md:w-[85%] md:-translate-x-1/2 md:-translate-y-1/2">
               {heroImage ? (
                 <img
                   src={heroImage}

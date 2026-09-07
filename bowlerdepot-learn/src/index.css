@@ -88,8 +88,33 @@
      .article-detail-hero-inner holding the actual max-w-5xl grid so
      the image/text still line up with every other section on the
      page; h1 dropped from text-3xl to text-2xl inside the hero only
-     (global h1 elsewhere untouched); overhang margin increased again
-     in case the smaller amount genuinely wasn't visible after deploy. */
+     (global h1 elsewhere untouched).
+
+     The overhang STILL didn't show after that deploy -- root cause
+     found by inspecting the live DOM: .article-detail-hero-inner is a
+     CSS grid, and grid's default align-items:stretch was forcing
+     .article-detail-image-frame (a grid item) to stretch to match the
+     TEXT column's height every time, which silently defeats a
+     negative-margin overhang trick (the margin only escapes a
+     container whose own size comes from ITS OWN content, not one
+     that's externally stretched to match a sibling). Confirmed live on
+     https://learn.bowlerdepot.com with getBoundingClientRect() before
+     touching any source file.
+
+     Fix, verified live before being written back here:
+     - Mobile (single-column grid, image and text are separate rows so
+       there's no stretch-to-sibling fight) keeps the original in-flow
+       negative-margin technique, just with a much smaller margin
+       (-my-20 was tuned for the desktop bug and way overshoots on
+       mobile, overlapping the eyebrow/heading below it).
+     - Desktop (md:, two-column row) instead takes the image OUT of
+       grid flow entirely: the frame becomes a positioning anchor
+       (md:relative) sized by grid stretch as before, and the photo is
+       md:absolute, centered on the frame via left/top 50% + translate
+       -50%/-50%, with an explicit height (md:h-96) that's independent
+       of the row's height -- so it always overhangs by a fixed,
+       predictable amount no matter how long the article's hook text
+       runs. */
   .article-detail-hero {
     @apply relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-neutral-900 py-10;
   }
@@ -100,10 +125,10 @@
     @apply text-2xl text-white;
   }
   .article-detail-image-frame {
-    @apply flex items-center justify-center overflow-visible px-2 md:px-4;
+    @apply flex items-center justify-center overflow-visible px-2 md:relative md:px-4;
   }
   .article-detail-image {
-    @apply -my-20 aspect-[4/3] w-full -rotate-[12deg] rounded-sm bg-white p-2 shadow-2xl md:-my-28;
+    @apply -my-3 aspect-[4/3] w-full -rotate-[12deg] rounded-sm bg-white p-2 shadow-2xl md:absolute md:left-1/2 md:top-1/2 md:my-0 md:aspect-auto md:h-96 md:w-[85%] md:-translate-x-1/2 md:-translate-y-1/2;
   }
   .article-detail-image img {
     @apply h-full w-full rounded-[2px] object-cover;
