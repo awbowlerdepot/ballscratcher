@@ -374,6 +374,86 @@ def test_filter_out_pre_release_videos_empty_list():
     assert app.filter_out_pre_release_videos([], date(2021, 6, 1)) == []
 
 
+# --- compute_earliest_valid_video_date / the announced_date-or-45-days
+# correction (2026-09-06): Al's own words -- "when i said that videos that
+# fall before a date should be rejected automatically i was referring to
+# the announcement date not the release date... reject them if they are
+# from before the ball was announced or 45 days before the ball was
+# released you don't know that [announced_date]". The bug this fixes: the
+# original release_date-only cutoff was rejecting real, legitimate
+# announcement/preview coverage published before a ball actually shipped. ---
+
+def test_compute_earliest_valid_video_date_prefers_announced_date():
+    assert app.compute_earliest_valid_video_date(
+        date(2021, 6, 1), date(2021, 4, 1),
+    ) == date(2021, 4, 1)
+
+
+def test_compute_earliest_valid_video_date_falls_back_to_release_minus_45_days():
+    """announced_date is unpopulated for every product today (see
+    003_date_tracking_and_bowwwl.sql) -- this is the real-world branch
+    that actually runs in production right now."""
+    assert app.compute_earliest_valid_video_date(date(2021, 6, 1), None) == date(2021, 4, 17)
+
+
+def test_compute_earliest_valid_video_date_none_when_both_unknown():
+    assert app.compute_earliest_valid_video_date(None, None) is None
+
+
+def test_compute_earliest_valid_video_date_none_release_date_only_source_of_truth_when_announced_missing():
+    assert app.compute_earliest_valid_video_date(None, date(2021, 4, 1)) == date(2021, 4, 1)
+
+
+def test_is_before_release_keeps_video_published_within_the_45_day_pre_announcement_buffer():
+    """The actual bug: a video published 30 days before release_date (and
+    announced_date unknown) is real early-announcement coverage, not a
+    mismatch -- the old release_date-only comparison wrongly rejected it.
+    Cutoff here is 2021-06-01 - 45d = 2021-04-17, and the video was
+    published 2021-05-02 (30 days before release) -- after that cutoff,
+    so it must be KEPT, not rejected."""
+    assert app.is_before_release("2021-05-02T00:00:00Z", date(2021, 6, 1)) is False
+
+
+def test_is_before_release_still_rejects_video_published_before_the_45_day_buffer():
+    """One day earlier than the 45-day cutoff (2021-04-16, cutoff is
+    2021-04-17) -- still correctly rejected as implausibly early."""
+    assert app.is_before_release("2021-04-16T00:00:00Z", date(2021, 6, 1)) is True
+
+
+def test_is_before_release_exactly_on_the_45_day_buffer_is_not_rejected():
+    assert app.is_before_release("2021-04-17T00:00:00Z", date(2021, 6, 1)) is False
+
+
+def test_is_before_release_uses_announced_date_over_the_45_day_buffer_when_known():
+    """announced_date=2021-05-15 is LATER than release_date-45d
+    (2021-04-17) -- once a real announced_date exists it's authoritative,
+    even though it's a tighter cutoff than the 45-day fallback would be."""
+    assert app.is_before_release(
+        "2021-05-01T00:00:00Z", date(2021, 6, 1), announced_date=date(2021, 5, 15),
+    ) is True
+    assert app.is_before_release(
+        "2021-05-20T00:00:00Z", date(2021, 6, 1), announced_date=date(2021, 5, 15),
+    ) is False
+
+
+def test_filter_out_pre_release_videos_respects_the_45_day_buffer():
+    videos = [
+        {"youtube_video_id": "v-too-early", "published_at": "2021-04-16T00:00:00Z"},
+        {"youtube_video_id": "v-within-buffer", "published_at": "2021-05-02T00:00:00Z"},
+    ]
+    kept = app.filter_out_pre_release_videos(videos, date(2021, 6, 1))
+    assert [v["youtube_video_id"] for v in kept] == ["v-within-buffer"]
+
+
+def test_filter_out_pre_release_videos_passes_announced_date_through():
+    videos = [
+        {"youtube_video_id": "v-before-announcement", "published_at": "2021-05-01T00:00:00Z"},
+        {"youtube_video_id": "v-after-announcement", "published_at": "2021-05-20T00:00:00Z"},
+    ]
+    kept = app.filter_out_pre_release_videos(videos, date(2021, 6, 1), announced_date=date(2021, 5, 15))
+    assert [v["youtube_video_id"] for v in kept] == ["v-after-announcement"]
+
+
 # --- parse_video_details_response / fetch_video_statistics: videos.list,
 # the only call that ever returns view/like/comment counts (search.list's
 # snippet part never does -- see module docstring's VIDEO STATS section).
@@ -486,12 +566,15 @@ class _FakeCursor:
         self.executed.append((q, params))
 
         if q.startswith("select p.id, p.name, b.name as brand_name, p.release_date"):
-            self.description = [("id",), ("name",), ("brand_name",), ("release_date",)]
-            self._rows = [(p["id"], p["name"], p["brand_name"], p.get("release_date")) for p in self.products]
-        elif q.startswith("select pv.id, pv.youtube_video_id, pv.published_at, p.release_date"):
-            self.description = [("id",), ("youtube_video_id",), ("published_at",), ("release_date",)]
+            self.description = [("id",), ("name",), ("brand_name",), ("release_date",), ("announced_date",)]
             self._rows = [
-                (r["id"], r["youtube_video_id"], r.get("published_at"), r.get("release_date"))
+                (p["id"], p["name"], p["brand_name"], p.get("release_date"), p.get("announced_date"))
+                for p in self.products
+            ]
+        elif q.startswith("select pv.id, pv.youtube_video_id, pv.published_at, p.release_date"):
+            self.description = [("id",), ("youtube_video_id",), ("published_at",), ("release_date",), ("announced_date",)]
+            self._rows = [
+                (r["id"], r["youtube_video_id"], r.get("published_at"), r.get("release_date"), r.get("announced_date"))
                 for r in self.refresh_rows
             ]
         elif q.startswith("insert into product_videos"):
@@ -549,7 +632,10 @@ def test_fetch_products_to_search_defaults_to_current_status_only():
     conn = _FakeConn(products=[{"id": "p1", "name": "Absolute", "brand_name": "Storm"}])
     products = app.fetch_products_to_search(conn, {}, max_products=90)
 
-    assert products == [{"id": "p1", "name": "Absolute", "brand_name": "Storm", "release_date": None}]
+    assert products == [{
+        "id": "p1", "name": "Absolute", "brand_name": "Storm",
+        "release_date": None, "announced_date": None,
+    }]
     query, params = conn.cursor().executed[0]
     assert "p.published = true" not in query
     assert "p.status = 'current'" in query
@@ -705,7 +791,10 @@ def test_select_video_ids_needing_stats_refresh_orders_stale_first():
     conn = _FakeConn(refresh_rows=[{"id": "pv1", "youtube_video_id": "v1"}])
     rows = app.select_video_ids_needing_stats_refresh(conn, limit=200)
 
-    assert rows == [{"id": "pv1", "youtube_video_id": "v1", "published_at": None, "release_date": None}]
+    assert rows == [{
+        "id": "pv1", "youtube_video_id": "v1", "published_at": None,
+        "release_date": None, "announced_date": None,
+    }]
     query, params = conn.cursor().executed[0]
     assert "join products p on p.id = pv.product_id" in query
     assert "order by pv.stats_fetched_at asc nulls first, pv.id asc limit %s" in query
@@ -725,6 +814,24 @@ def test_select_video_ids_needing_stats_refresh_includes_published_at_and_releas
     assert rows == [{
         "id": "pv1", "youtube_video_id": "v1",
         "published_at": "2020-01-01T00:00:00+00:00", "release_date": "2021-06-01",
+        "announced_date": None,
+    }]
+
+
+def test_select_video_ids_needing_stats_refresh_includes_announced_date():
+    """The actual fix this test file is catching up to: apply_video_stats
+    needs announced_date (not just release_date) to compute the correct
+    pre-release cutoff -- see compute_earliest_valid_video_date."""
+    conn = _FakeConn(refresh_rows=[
+        {"id": "pv1", "youtube_video_id": "v1", "published_at": "2020-01-01T00:00:00+00:00",
+         "release_date": "2021-06-01", "announced_date": "2021-04-01"},
+    ])
+    rows = app.select_video_ids_needing_stats_refresh(conn, limit=200)
+
+    assert rows == [{
+        "id": "pv1", "youtube_video_id": "v1",
+        "published_at": "2020-01-01T00:00:00+00:00", "release_date": "2021-06-01",
+        "announced_date": "2021-04-01",
     }]
 
 
@@ -823,6 +930,32 @@ def test_apply_video_stats_does_not_reject_when_published_on_or_after_release():
     )
 
     assert conn.cursor().short_reject_updates == []
+
+
+def test_apply_video_stats_does_not_reject_a_video_within_the_45_day_pre_announcement_buffer():
+    """The actual bug fix, exercised at the refresh-time enforcement
+    layer: a video published 30 days before release_date (announced_date
+    unknown) is real early coverage, not a mismatch -- must not be
+    force-rejected."""
+    conn = _FakeConn()
+    app.apply_video_stats(
+        conn, "pv1", {"duration_seconds": 300}, "2026-08-13T00:00:00+00:00",
+        published_at="2021-05-02T00:00:00Z", release_date=date(2021, 6, 1),
+    )
+
+    assert conn.cursor().short_reject_updates == []
+
+
+def test_apply_video_stats_uses_announced_date_when_known():
+    conn = _FakeConn()
+    fetched_at = "2026-08-13T00:00:00+00:00"
+    app.apply_video_stats(
+        conn, "pv1", {"duration_seconds": 300}, fetched_at,
+        published_at="2021-05-01T00:00:00Z", release_date=date(2021, 6, 1),
+        announced_date=date(2021, 5, 15),
+    )
+
+    assert conn.cursor().short_reject_updates == [(fetched_at, app.PRE_RELEASE_REJECTED_BY, "pv1")]
 
 
 def test_apply_video_stats_pre_release_reject_runs_even_when_stats_empty():
@@ -1213,6 +1346,56 @@ def test_handler_drops_pre_release_candidates_before_insert(monkeypatch):
 
     assert [v["youtube_video_id"] for v in captured_videos] == ["v-real"]
     assert body["new_candidates"] == 1
+
+
+def test_handler_uses_announced_date_for_pre_release_cutoff_at_discovery_time(monkeypatch):
+    """The actual fix, exercised end-to-end through handler: a product
+    with a real announced_date uses it (not the 45-day release_date
+    fallback) as the discovery-time cutoff -- passed through from
+    fetch_products_to_search's dict straight into
+    filter_out_pre_release_videos."""
+    captured_videos = []
+
+    monkeypatch.setattr(app, "get_youtube_api_key", lambda: "fake-key")
+    monkeypatch.setattr(app, "get_db_connection", lambda: _FakeConn())
+    monkeypatch.setattr(app, "get_youtube_requests_session", lambda: object())
+    monkeypatch.setattr(
+        app, "fetch_products_to_search",
+        lambda conn, job, max_products: [{
+            "id": "prod-good", "name": "Absolute", "brand_name": "Storm",
+            "release_date": date(2021, 6, 1), "announced_date": date(2021, 5, 15),
+        }],
+    )
+    monkeypatch.setattr(
+        app, "search_youtube",
+        lambda api_key, query, max_results, session=None: [
+            # Published before the real announced_date but AFTER the
+            # 45-day release_date fallback -- only correct if
+            # announced_date is actually being used as the cutoff.
+            {"youtube_video_id": "v-before-announcement", "title": "Storm Absolute Full Review",
+             "channel_title": "c1", "published_at": "2021-05-01T00:00:00Z", "thumbnail_url": None},
+            {"youtube_video_id": "v-after-announcement", "title": "Storm Absolute Full Review",
+             "channel_title": "c1", "published_at": "2021-05-20T00:00:00Z", "thumbnail_url": None},
+        ],
+    )
+    monkeypatch.setattr(
+        app, "fetch_video_statistics",
+        lambda api_key, video_ids, session=None: {
+            "v-before-announcement": {"view_count": 500, "duration_seconds": 300},
+            "v-after-announcement": {"view_count": 500, "duration_seconds": 300},
+        },
+    )
+
+    def fake_insert(conn, pid, q, videos):
+        captured_videos.extend(videos)
+        return len(videos)
+
+    monkeypatch.setattr(app, "insert_candidates", fake_insert)
+    monkeypatch.setattr(app, "mark_product_searched", lambda conn, pid: None)
+
+    app.handler({}, None)
+
+    assert [v["youtube_video_id"] for v in captured_videos] == ["v-after-announcement"]
 
 
 def test_handler_keeps_candidates_when_product_release_date_unknown(monkeypatch):

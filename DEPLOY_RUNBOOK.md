@@ -3611,6 +3611,72 @@ sam build VideoDiscoveryFunction
 sam deploy
 ```
 
+**Follow-up (2026-09-06): PRE-RELEASE FILTER was comparing against the
+wrong date -- real incident, videos wrongly rejected.** Al: "i keep
+finding videos that have been rejected and i think it is a
+misunderstanding. when i said that videos that fall before a date should
+be rejected automatically i was refering to the announcement date not
+the release data. can you adjust that to reject them if they are from
+before the balls was announced or 45 days before the balls was released
+you don't know that [the real `announced_date`]." The filter above
+(2026-09-04) compared straight against `release_date`, but manufacturers
+routinely publish real announcement/preview coverage weeks before a ball
+actually ships -- that legitimate early coverage was being wrongly
+force-rejected as if it were a mismatched sibling/prior-generation ball.
+
+`products.announced_date` already existed as a real, reserved column
+(`003_date_tracking_and_bowwwl.sql`, `alter table products add column
+announced_date date` -- "no current scraper populates this") so this is
+a logic fix, not a new migration.
+
+`src/video_discovery/app.py` gained `PRE_ANNOUNCEMENT_BUFFER_DAYS = 45`
+(Al's own number) and a new pure function `compute_earliest_valid_video_
+date(release_date, announced_date)`: returns `announced_date` when known,
+else `release_date - 45 days`, else `None`. `is_before_release` and
+`filter_out_pre_release_videos` both gained an optional `announced_date`
+parameter and now compare against this computed cutoff instead of
+`release_date` directly. Plumbed through both enforcement points from the
+2026-09-04 filter:
+- **Discovery time**: `fetch_products_to_search`'s SELECT now also
+  includes `p.announced_date`; `handler`'s call site and its log line
+  both pass it through.
+- **Refresh time**: `select_video_ids_needing_stats_refresh`'s join now
+  also returns `p.announced_date`; `apply_video_stats` and `refresh_
+  video_stats` both gained/thread an `announced_date` parameter into
+  `is_before_release`.
+
+**Known limitation, not yet resolved:** `apply_video_stats` only ever
+force-transitions a row *to* `status = 'rejected'` -- it has no un-reject
+path. Videos already wrongly rejected under the pre-2026-09-06 release_
+date-only bug will NOT self-correct just because this fix shipped; they
+need either a manual Undo (the existing restore button/`restore_video_
+candidate`, see 6i.9-era work) per row, or a future one-off backfill pass
+that re-evaluates every currently-`'rejected'` row whose `resolved_by =
+'video_discovery (published before...)'` against the corrected cutoff.
+Al hasn't asked for that backfill yet -- flagging it here so it isn't
+lost.
+
+Tests (`tests/test_video_discovery.py`, 100/100 passing, 13 new):
+`compute_earliest_valid_video_date`'s branches (announced_date present,
+falls back to release-45, both unknown); `is_before_release`/`filter_
+out_pre_release_videos` proving the actual bug fix -- a video published
+30 days before `release_date` (announced_date unknown) is now KEPT, one
+published 46 days before is still rejected, exactly 45 days before is
+kept (boundary), and a real `announced_date` takes precedence over the
+45-day fallback in both directions; `apply_video_stats` mirroring the
+same behavior at the refresh-time enforcement layer; `handler` proving
+`announced_date` flows end-to-end from `fetch_products_to_search` through
+to the discovery-time filter. Existing tests for the 2026-09-04 filter's
+fixture data (`_FakeCursor`'s `select p.id...`/`select pv.id...` row
+building) were widened to a 5th `announced_date` column.
+
+No migration, no `template.yaml` change -- redeploy just
+`VideoDiscoveryFunction`:
+```bash
+sam build VideoDiscoveryFunction
+sam deploy
+```
+
 **Follow-up (2026-09-04): expose the YouTube publish date everywhere a
 video is shown.** Al: "can we also expose the youtube publish date in
 the ui everywhere a video is shown." Pure display fix, no backend or
