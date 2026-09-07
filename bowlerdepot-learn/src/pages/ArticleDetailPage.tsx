@@ -68,22 +68,28 @@ export default function ArticleDetailPage() {
         &larr; All reviews
       </Link>
 
-      <div className="mb-10 grid grid-cols-1 gap-8 md:grid-cols-[320px_1fr]">
-        <div className="aspect-[4/3] w-full overflow-hidden rounded-md bg-paper-border/40">
-          {heroImage ? (
-            <img src={heroImage} alt={product?.name || article.title} className="h-full w-full object-cover" />
-          ) : null}
+      <div className="mb-10 grid grid-cols-1 gap-8 rounded-lg bg-neutral-900 px-6 py-8 md:grid-cols-[320px_1fr] md:px-8">
+        <div className="flex items-center justify-center overflow-visible px-2 md:px-4">
+          <div className="-my-16 aspect-[4/3] w-full -rotate-[12deg] rounded-sm bg-white p-2 shadow-2xl md:-my-24">
+            {heroImage ? (
+              <img
+                src={heroImage}
+                alt={product?.name || article.title}
+                className="h-full w-full rounded-[2px] object-cover"
+              />
+            ) : null}
+          </div>
         </div>
-        <div>
-          <p className="mb-1 text-[11px] font-semibold uppercase tracking-widest text-muted">
+        <div className="flex flex-col justify-center">
+          <p className="mb-1 text-[11px] font-semibold uppercase tracking-widest text-white/60">
             {taxonomyLabel || product?.core_type || product?.coverstock_type}
           </p>
-          <h1 className="font-display text-3xl font-semibold text-ink">{article.title}</h1>
-          <p className="mt-2 text-lg text-muted">{article.hook}</p>
+          <h1 className="font-display text-3xl font-semibold text-white">{article.title}</h1>
+          <p className="mt-2 text-lg text-white/80">{article.hook}</p>
           <div className="mt-4 flex flex-wrap gap-3">
             {shopUrl ? (
               <a
-                className="rounded-full bg-accent px-5 py-2 text-sm font-medium text-white no-underline hover:opacity-90"
+                className="rounded-full bg-white px-5 py-2 text-sm font-medium text-neutral-900 no-underline hover:bg-white/90"
                 href={shopUrl}
                 target="_blank"
                 rel="noreferrer"

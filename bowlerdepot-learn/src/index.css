@@ -51,17 +51,52 @@
   .back-link {
     @apply mb-6 inline-block text-sm font-medium text-muted no-underline hover:text-ink;
   }
+  /* Al: "make the image look like a photograph with a white border. and
+     have the section be inverse colors so dark background and white
+     text" -- dark card (not full-bleed to the viewport edge; stays
+     inside .page's max-w-5xl like every other section) with a white
+     matte/frame around the hero image for a printed-photo look. Al,
+     after seeing it: "we went away from blue" (drop the accent-blue CTA
+     here, keep this section black-and-white) and "rotate the image
+     10-20 degrees" (a tilted snapshot look, not a flat product tile).
+     Then, after seeing the navy-tinted bg-ink background: "the blue is
+     still there... make it dark grey almost black" -- neutral-900
+     (#171717, no blue channel) instead of the brand's own navy ink
+     color, scoped to just this hero card (bg-ink itself is untouched
+     everywhere else on the site -- it's the real bowlerdepot.com brand
+     text color, not something Al asked to change globally). Al, once
+     more: "make it so the top and bottom of the image overflow outside
+     the darker header. maybe add a bit of drop shadow too" -- the frame
+     drops its own vertical padding and the photo gets negative vertical
+     margin instead, so it visually pokes out past the dark card's top
+     and bottom edges (the card has no overflow-hidden, so this is a
+     plain CSS overflow, not a clip-path trick); shadow bumped from
+     shadow-xl to shadow-2xl to sell the "sitting on top of the card"
+     look now that it's breaking the edge. Al then tried a subtle
+     gradient on the dark background and it didn't render right in
+     preview -- reverted to the flat bg-neutral-900 fill, untouched
+     since. Al: "make the image larger so that it over hangs the darker
+     section on the top and bottom" -- bigger negative vertical margin
+     on the photo itself (not the frame's padding, and not touching the
+     dark card at all) so more of the white-framed photo pokes out past
+     the card's own top/bottom edge. */
   .article-detail-hero {
-    @apply mb-10 grid grid-cols-1 gap-8 md:grid-cols-[320px_1fr];
+    @apply mb-10 grid grid-cols-1 gap-8 rounded-lg bg-neutral-900 px-6 py-8 md:grid-cols-[320px_1fr] md:px-8;
+  }
+  .article-detail-hero h1 {
+    @apply text-white;
+  }
+  .article-detail-image-frame {
+    @apply flex items-center justify-center overflow-visible px-2 md:px-4;
   }
   .article-detail-image {
-    @apply aspect-[4/3] w-full overflow-hidden rounded-md bg-paper-border/40;
+    @apply -my-16 aspect-[4/3] w-full -rotate-[12deg] rounded-sm bg-white p-2 shadow-2xl md:-my-24;
   }
   .article-detail-image img {
-    @apply h-full w-full object-cover;
+    @apply h-full w-full rounded-[2px] object-cover;
   }
   .article-detail-hook {
-    @apply mt-2 text-lg text-muted;
+    @apply mt-2 text-lg text-white/80;
   }
   .article-grid {
     @apply grid grid-cols-1 gap-x-8 gap-y-10 sm:grid-cols-2 lg:grid-cols-3;
