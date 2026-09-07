@@ -1421,7 +1421,7 @@ Resources:
       # even started. Root cause, confirmed via `aws lambda
       # get-account-settings` and CloudWatch's Throttles metric on this
       # function: this AWS account's Lambda UnreservedConcurrentExecutions
-      # is 10 (AWS's default low tier for a new/unverified account, not
+      # was 10 (AWS's default low tier for a new/unverified account, not
       # the usual 1000) -- and every rescrape call this function issues
       # publishes onto one of five different platform scrape queues,
       # each with its own SQS-triggered Lambda that fires immediately and
@@ -1433,25 +1433,26 @@ Resources:
       # a plain 503, which is why nothing showed up in the app-level logs.
       #
       # A ReservedConcurrentExecutions: 2 reservation here was tried and
-      # reverted -- real, confirmed deploy failure: "Specified
+      # reverted at the time -- real, confirmed deploy failure: "Specified
       # ReservedConcurrentExecutions for function decreases account's
       # UnreservedConcurrentExecution below its minimum value of [10]."
       # AWS enforces a hard floor of 10 concurrent executions that must
-      # always remain in the account's *unreserved* pool -- since this
-      # account's entire limit IS 10, there's nothing above that floor to
-      # carve a reservation out of; reserving even 1 slot here is rejected
-      # outright regardless of what number is used. There is no
-      # template-level mitigation available until the account's total
-      # limit is raised. scripts/backfill_core_ids.py's retry-with-backoff
-      # (see its module docstring) is the only fix currently in place --
-      # it's a client-side/script-level change, not a deploy, so it's
-      # already in effect. Request a Lambda concurrency quota increase for
-      # this account via AWS Service Quotas (service code `lambda`, quota
-      # "Concurrent executions") before the next catalog-wide backfill --
-      # once the account limit is meaningfully above 10, revisit adding
-      # ReservedConcurrentExecutions back here, since retries alone are a
-      # workaround for the underlying scarcity, not a substitute for
-      # actually having enough concurrency.
+      # always remain in the account's *unreserved* pool, and this
+      # account's entire limit WAS 10, so there was nothing above that
+      # floor to carve a reservation out of.
+      #
+      # RESOLVED 2026-09-06: Al requested and AWS approved a Lambda
+      # concurrency quota increase for this account, to the standard 1000
+      # (via AWS Service Quotas, service code `lambda`, quota "Concurrent
+      # executions") -- confirmed by Al directly, not yet re-verified via
+      # `aws lambda get-account-settings`. With 1000 total, reserving 2
+      # for this function leaves 998 unreserved, comfortably above the
+      # 10-slot floor, so the reservation below is safe to re-add.
+      # scripts/backfill_core_ids.py's retry-with-backoff (see its module
+      # docstring) stays in place regardless -- it's a reasonable client-
+      # side safety net even with real concurrency headroom, not just a
+      # workaround for the old scarcity.
+      ReservedConcurrentExecutions: 2
       Environment:
         Variables:
           # Read by service.py's approve_video_candidate -- see its

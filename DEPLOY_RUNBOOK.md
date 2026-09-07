@@ -726,6 +726,39 @@ executions") before running a catalog-wide backfill like this again --
 once the account limit is meaningfully above 10, revisit adding
 `ReservedConcurrentExecutions` back to `AdminApiFunction`.
 
+**RESOLVED (2026-09-06): the quota increase came through.** Al filed the
+request (see 6ab.23's own note on hitting the old ceiling repeatedly
+over the following 24 hours) and AWS approved it -- the account's Lambda
+concurrent-executions limit is now the standard 1000, not the
+new-account default 10. Re-added `ReservedConcurrentExecutions: 2` to
+`AdminApiFunction` in `template.yaml` (with 1000 total, 2 reserved
+leaves 998 unreserved -- comfortably clear of AWS's 10-slot floor, so
+this deploys cleanly where the original attempt was rejected outright).
+`AdminApiFunction`'s own `template.yaml` comment block was updated in
+place to mark the incident resolved rather than deleted, so the full
+history/reasoning stays visible for whoever reads it next. Verified via
+the CFN-tolerant YAML loader (74 resources, `ReservedConcurrentExecutions:
+2` present on `AdminApiFunction`) -- a template-only property change, no
+Python code touched, so no test suite is affected.
+
+`scripts/backfill_core_ids.py`'s retry-with-backoff stays as-is -- cheap
+insurance against any future throttle, not something this reservation
+makes obsolete. Not yet revisited, and worth a look now that concurrency
+isn't scarce: `ProductDetailPage.tsx`'s admin_api calls were deliberately
+serialized (6ab.12) instead of `Promise.all`-ed specifically because of
+this same ceiling, and `PublicApiFunction`'s cold-start fix (6l.6's own
+follow-up) ruled out provisioned/reserved concurrency for the identical
+reason -- both
+decisions could be reconsidered now, but neither has been touched here;
+Al would need to weigh the trade-offs (page load latency vs. simplicity,
+in the first case) before either gets unwound.
+
+Redeploy just `AdminApiFunction`:
+```bash
+sam build AdminApiFunction
+sam deploy
+```
+
 **Cores tab (the "other direction" view):** Everything above (the Products
 tab's Core column, the missing-core filter/backfill) shows core info
 one product at a time -- the many-products-to-one-core relationship
