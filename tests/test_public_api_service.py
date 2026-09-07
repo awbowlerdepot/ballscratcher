@@ -368,71 +368,30 @@ def test_list_products_orders_by_id_as_tiebreaker():
 
 # --- popularity ranking: Al's ask -- decay view_count by video age so a
 # ball's ranking reflects CURRENT popularity, not lifetime view totals.
-# See service.py's POPULARITY_HALF_LIFE_DAYS/_POPULARITY_SCORE_SQL for the
-# full writeup (180-day half-life, chosen given bowling balls' own 6-12
-# month current-to-retired lifespan -- Al's own follow-up question).
+# As of migration 030 (2026-09-06 performance fix), popularity_score is a
+# plain materialized column on `products`, recomputed daily by
+# refresh_product_scores/app.py -- see that module's own docstring for the
+# full formula writeup (180-day half-life, chosen given bowling balls' own
+# 6-12 month current-to-retired lifespan -- Al's own follow-up question).
+# list_products below just reads the column now; the formula-level tests
+# (averaging vs summing, half-life value, etc.) live in
+# tests/test_refresh_product_scores.py instead.
 
 def test_list_products_always_selects_popularity_score():
     """popularity_score is unconditional, not gated behind sort= -- a
     Browse card should be able to show a "trending" signal even in the
-    default order."""
+    default order. As of migration 030 this is a plain column read, not a
+    correlated subquery."""
     conn = _QueryCapturingConnection()
     service.list_products(conn)
 
     query = conn.cursor().queries[0]
-    assert "as popularity_score" in query
-    assert "pv.status = 'approved'" in query
-    assert "pv.view_count is not null" in query
-
-
-def test_list_products_popularity_score_uses_confirmed_half_life():
-    conn = _QueryCapturingConnection()
-    service.list_products(conn)
-
-    query = conn.cursor().queries[0]
-    assert f"86400.0 * {service.POPULARITY_HALF_LIFE_DAYS}" in query
-    assert service.POPULARITY_HALF_LIFE_DAYS == 180
-
-
-def test_list_products_popularity_score_averages_not_sums():
-    """Al's follow-up, real incident: a raw sum let video COUNT dominate
-    the ranking -- a ball with 20 mediocre videos could outrank a ball
-    with 4 genuinely popular ones purely on volume. Confirms the SQL now
-    averages per-video decayed views and applies a sub-linear
-    ln(1 + count) volume boost instead of the old plain sum."""
-    conn = _QueryCapturingConnection()
-    service.list_products(conn)
-
-    query = conn.cursor().queries[0]
-    assert "select avg(" in query
-    assert "* ln(1 + count(*))" in query
-    assert "select sum(" not in query  # the old shape, must be gone
-
-
-def test_popularity_formula_dampens_video_count_vs_a_raw_sum():
-    """Pure-math sanity check (no DB) of the formula's actual behavior --
-    confirms the worked example in _POPULARITY_SCORE_SQL's own comment:
-    at equal per-video quality, 20 videos should score ~1.9x a 4-video
-    ball (ln(21)/ln(5)), not the 5x (20/4) a raw sum would have produced."""
-    import math
-
-    per_video_score = 10_000  # equal per-video quality on both balls
-    four_video_ball = per_video_score * math.log(1 + 4)
-    twenty_video_ball = per_video_score * math.log(1 + 20)
-
-    ratio = twenty_video_ball / four_video_ball
-    assert 1.8 < ratio < 2.0  # nowhere near the raw-sum's 20/4 = 5.0
-
-    old_raw_sum_ratio = (per_video_score * 20) / (per_video_score * 4)
-    assert old_raw_sum_ratio == 5.0
-    assert ratio < old_raw_sum_ratio
+    assert "p.popularity_score" in query
 
 
 def test_list_products_default_sort_is_unaffected_by_popularity_column():
     """Adding popularity_score to the SELECT list must not change the
-    default order-by or any existing bind param position (it's
-    interpolated into the SQL text directly, not passed as a param --
-    see _POPULARITY_SCORE_SQL's own comment on why)."""
+    default order-by or any existing bind param position."""
     conn = _QueryCapturingConnection()
     service.list_products(conn, brand_id="brand-1")
 
@@ -447,7 +406,7 @@ def test_list_products_sort_popularity_orders_by_score_desc():
     service.list_products(conn, sort="popularity")
 
     query = conn.cursor().queries[0]
-    assert "order by popularity_score desc, p.id asc limit %s offset %s" in query
+    assert "order by p.popularity_score desc, p.id asc limit %s offset %s" in query
 
 
 def test_list_products_unrecognized_sort_value_falls_back_to_default_order():

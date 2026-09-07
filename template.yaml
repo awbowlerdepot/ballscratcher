@@ -2952,6 +2952,50 @@ Resources:
             Description: Checks price for the most-overdue approved+active product_price_sources rows (see list_price_sources_due).
             Enabled: true
 
+  RefreshProductScoresFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-refresh-product-scores
+      CodeUri: src/refresh_product_scores/
+      Handler: app.handler
+      # Three plain set-based UPDATEs against however many rows `products`
+      # has -- see app.py's own module docstring for why this doesn't
+      # carry the same per-invocation timeout risk product_article_
+      # generator's LLM/image-generation loop does. 120s matches
+      # BowwwlCrossCheckFunction's own moderate default; revisit only if
+      # a real invocation ever approaches it (see app.py's docstring).
+      Timeout: 120
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+      # Daily -- matches the actual freshness ceiling of the data these
+      # scores are derived from: PriceCheckerFunction (SKU stock, feeds
+      # total_daily_movement) and VideoDiscoveryFunction's own
+      # DailyStatsRefresh (view counts, feeds popularity_score) both
+      # already run rate(1 day) -- see 030_materialized_product_scores.
+      # sql's own header comment. No explicit ordering against either of
+      # those schedules (EventBridge rate() schedules aren't sequenced
+      # against each other in this template, same as every other daily
+      # job here) -- a run that lands slightly before that day's price/
+      # stats refresh just reflects yesterday's numbers for one more day,
+      # not a correctness bug.
+      Events:
+        DailyScoreRefresh:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 day)
+            Name: bowling-scraper-refresh-product-scores-daily
+            Description: Recomputes products.popularity_score/total_daily_movement/demand_score for every product (030_materialized_product_scores.sql).
+            Enabled: true
+      # Also accepts a direct/manual invocation with {} (no job-shape
+      # branching -- see app.py's own handler docstring) -- useful for a
+      # one-time run right after this feature first deploys, so the new
+      # columns don't sit at their default 0 for up to a full day before
+      # the first scheduled run.
+
   BowlerdepotVideoSyncFunction:
     Type: AWS::Serverless::Function
     Properties:

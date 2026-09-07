@@ -174,70 +174,20 @@ def list_brands(conn) -> list:
 # decay so that older videos will organically move down a 'popular'
 # ranking when summed up for a ball ... We will not have a way to see what
 # videos do over time so I feel like applying some version of a time decay
-# is the next best thing." There's no point-in-time view-count HISTORY to
-# work with (stats_fetched_at, migration 013, only ever holds the latest
-# fetch) -- no way to measure real view *velocity*. This is a deliberate
-# proxy instead: exponential decay by each video's own age (published_at),
-# same half-life shape as radioactive decay -- a video's view_count counts
-# for half as much once it's POPULARITY_HALF_LIFE_DAYS old, a quarter at
-# 2x that, an eighth at 3x, and so on, asymptotically toward (never
-# reaching) zero.
-#
-# HALF_LIFE_DAYS=180 (6 months), not the more conventional 12-month
-# default for this kind of ranking -- Al's own follow-up question: "bowling
-# balls ... are usually retired in 6-12 months, do you think that has an
-# effect on this recommendation." It does: list_products defaults to
-# status='current', and a current ball's entire video history almost
-# always sits inside that same 6-12 month window. A 12- or 24-month
-# half-life barely decays anything across a window that short -- it would
-# rank current balls almost entirely by raw view count, exactly what this
-# feature exists to avoid. A 6-month half-life gives real separation
-# inside a ball's actual current lifespan: a launch-month video still
-# counts for roughly half by the time that same ball nears retirement,
-# instead of the decay curve being nearly flat the whole time.
-#
-# Interpolated directly into the SQL text below (not passed as a bind
-# param) -- it's a fixed Python constant, not caller input, so there's no
-# injection concern, and keeping it out of params avoids shifting every
-# other bind param's position in this already-parameter-heavy query. Kept
-# in sync by hand with admin_api/service.py's identical copy of this same
-# constant/subquery -- these are two independently-deployed Lambdas with
-# no shared module between them (see this project's other per-Lambda
-# duplicated constants, e.g. MAX_VIDEO_IDS_PER_CALL).
-POPULARITY_HALF_LIFE_DAYS = 180
-
-# NULLs (never-fetched view_count, or a video with no published_at/
-# created_at at all -- shouldn't happen, created_at has a NOT NULL
-# default, but coalesce guards it anyway) are excluded via `pv.view_count
-# is not null` rather than treated as 0 -- a video nobody's pulled stats
-# for yet should be invisible to this ranking, not silently count as "0
-# views" and drag a ball's score down before a stats refresh ever runs.
-# Only status='approved' rows count (Al's confirmed choice) -- an
-# unreviewed 'pending' candidate might not even really be about this
-# product yet (see reassign_video_candidate's whole reason for existing).
-#
-# AVERAGE decayed view count per video, times ln(1 + video count) --
-# NOT a plain sum. Al's follow-up, real incident: a raw sum (the
-# original shape here) let video COUNT dominate the ranking -- a ball
-# with 20 mediocre videos could outrank a ball with 4 genuinely popular
-# ones purely on volume, which isn't "popular", it's "reviewed a lot."
-# ln(1 + count) still gives volume a real, deliberate boost (more
-# corroborating videos IS meaningfully more evidence of popularity than
-# fewer), just a sub-linear one instead of a straight multiplier: at
-# equal per-video quality, 20 videos score ~1.9x a 4-video ball (ln(21)
-# / ln(5)), not the old 5x (20/4) a raw sum produced. A few standout
-# videos can still beat a pile of average ones, since the AVERAGE is
-# what's being scaled, not the count itself. count(*) is always >= 1
-# whenever the WHERE clause matches any row, and the whole subquery
-# returns NULL (then 0, via the outer coalesce) when it matches zero
-# rows -- no separate zero-video special case needed.
-_POPULARITY_SCORE_SQL = f"""coalesce((
-                   select avg(
-                       pv.view_count * power(2, -extract(epoch from (now() - coalesce(pv.published_at, pv.created_at))) / (86400.0 * {POPULARITY_HALF_LIFE_DAYS}))
-                   ) * ln(1 + count(*))
-                   from product_videos pv
-                   where pv.product_id = p.id and pv.status = 'approved' and pv.view_count is not null
-               ), 0)"""
+# is the next best thing." popularity_score used to be computed HERE, as a
+# correlated subquery run on every single list_products call (same
+# exponential-decay-by-video-age formula admin_api/service.py's identical
+# copy used) -- REAL PERFORMANCE INCIDENT (2026-09-06, see
+# 030_materialized_product_scores.sql's own header comment for the full
+# writeup): this was the literal public-facing Browse page cost Al asked
+# about, recomputed per card on every page load. The formula (half-life
+# decay, HALF_LIFE_DAYS=180 chosen for a bowling ball's real 6-12 month
+# retirement lifespan, AVERAGE decayed view count * ln(1 + video count) so
+# volume can't dominate quality) now lives in exactly one place:
+# src/refresh_product_scores/app.py, which recomputes it once a day into
+# the real products.popularity_score column instead. list_products below
+# just reads that column now -- see products.popularity_score's own
+# column comment (030) for the formula history if you're looking for it.
 
 # Common-sense sort options for the Browse page's "Sort" control -- Al's
 # ask: "lets add some common sense sort options for both the admin and
@@ -252,10 +202,10 @@ _POPULARITY_SCORE_SQL = f"""coalesce((
 # explicitly -- Postgres's own default for a plain `desc` sort is `nulls
 # first`, which would otherwise push every ball with an unknown release
 # date to the very top of "Newest". Kept in sync by hand with admin_api/
-# service.py's identical copy, same no-shared-module reasoning as
-# POPULARITY_HALF_LIFE_DAYS above.
+# service.py's identical copy, same no-shared-module reasoning as this
+# project's other hand-synced per-Lambda constants.
 _SORT_ORDER_BY = {
-    "popularity": "popularity_score desc, p.id asc",
+    "popularity": "p.popularity_score desc, p.id asc",
     "newest": "p.release_date desc nulls last, p.id asc",
     "oldest": "p.release_date asc nulls last, p.id asc",
     "name_asc": "p.name asc, p.id asc",
@@ -302,17 +252,19 @@ def list_products(conn, status: str = "current", brand_id: str = None, core_id: 
     round-trip -- video_reviews_summary's actual TEXT is left for the
     detail page, a card has no room for it).
 
-    popularity_score is always computed and returned (see
-    _POPULARITY_SCORE_SQL/POPULARITY_HALF_LIFE_DAYS above) -- cheap
-    enough at this catalog's size to include on every call, not gated
-    behind sort='popularity', so a card can show a "trending" indicator
-    even when the visitor is browsing in the default order.
+    popularity_score is always selected (a plain products.popularity_score
+    column read as of migration 030 -- see this module's own header
+    comment above for the real performance incident that prompted storing
+    it instead of computing it live here) -- cheap enough to include on
+    every call, not gated behind sort='popularity', so a card can show a
+    "trending" indicator even when the visitor is browsing in the default
+    order.
 
     sort: None (default) keeps the existing 'updated_at desc' order --
     most-recently-touched-by-a-scraper first, which is really "recently
     changed", not "popular". Accepted values (see _SORT_ORDER_BY above):
-    'popularity' (the view-count-decay ranking -- Al's ask, see
-    _POPULARITY_SCORE_SQL's docstring), 'newest'/'oldest' (release_date),
+    'popularity' (the view-count-decay ranking -- Al's ask, formula lives
+    in refresh_product_scores/app.py now), 'newest'/'oldest' (release_date),
     'name_asc'/'name_desc' (alphabetical). Any other value (including
     None) is silently ignored and falls back to the default order, same
     unrecognized-value-is-harmless convention every other filter on this
@@ -333,7 +285,7 @@ def list_products(conn, status: str = "current", brand_id: str = None, core_id: 
                    p.primary_image_url
                ) as primary_image_url,
                p.video_reviews_summary_video_count,
-               {_POPULARITY_SCORE_SQL} as popularity_score
+               p.popularity_score
         from products p
         join brands b on b.id = p.brand_id
         left join cores c on c.id = p.core_id

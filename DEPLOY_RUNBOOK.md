@@ -11253,6 +11253,100 @@ event `limit` override).
 Files touched: `src/product_article_generator/app.py`, `template.yaml`,
 `tests/test_product_article_generator.py`.
 
+### 6ab.24. Materialize popularity_score/total_daily_movement/demand_score -- real performance incident
+
+Same session as 6ab.23, Al: "there are some performance bottlenecks at
+this point on the public/admin facing sites. what are some options to
+optimize this? Caching/lambda limits etc." Investigating heavy sort
+queries surfaced a real, previously undisclosed cost: `popularity_score`
+and `total_daily_movement` were never stored anywhere -- both were
+computed as correlated subqueries, per product row, on every single
+request that touched them. No index fixes this (the underlying FK
+columns -- `product_videos.product_id`, `product_sku_stock_history
+(product_sku_id, checked_at)`, `product_skus.product_id` -- already each
+had one); the cost was structural: real per-row aggregation work,
+repeated on every request, against a catalog that had grown well past
+the "small catalog" size this design was originally reasonable for (see
+`017_price_tracking_sku_stock.sql`'s own header comment, which names this
+exact live-computed-not-stored posture as a deliberate prior choice, not
+an oversight -- this migration is that choice's reconsideration).
+
+Actually counting the damage: `admin_api.list_products` recomputed both
+formulas per returned row, AND (via its `demand` CTE) recomputed them
+again over the ENTIRE unfiltered catalog on every single call just to
+rank `demand_score`'s `percent_rank()`. `admin_api.get_dashboard_summary`
+recomputed `total_daily_movement` a third time (catalog-wide KPI sum) and
+both formulas a fourth and fifth time (top-10 popularity/daily-movement
+queries) -- one Dashboard page load cost five full-catalog passes of
+these formulas. `public_api.list_products` -- the actual public-facing
+consumer-site Browse page -- recomputed `popularity_score` per card on
+every page load too, which was the literal public-site cost Al originally
+asked about, not just an admin-tool problem.
+
+Fix: stop computing these live. Migration `030_materialized_product_
+scores.sql` adds three real, indexed columns to `products`
+(`popularity_score`, `total_daily_movement`, `demand_score`, all
+`numeric not null default 0`), and a new scheduled Lambda,
+`refresh_product_scores` (`bowling-scraper-refresh-product-scores`),
+recomputes all three once a day via three plain set-based `UPDATE`
+statements instead of once per API request. Daily matches the actual
+freshness ceiling already in place -- `price_checker` (feeds
+`total_daily_movement`) and `video_discovery`'s stats refresh (feeds
+`popularity_score`) both already run `rate(1 day)`, so recomputing more
+often would just re-derive the same numbers from data that hasn't
+changed yet. `demand_score`'s `UPDATE` runs last, in the same invocation,
+so it ranks against the values that run just wrote (not yesterday's) --
+a `percent_rank()` blend over the two now-materialized columns, cheap
+now that it's two window-function passes over real columns instead of
+two full re-evaluations of the underlying subqueries. Unlike
+`product_article_generator`'s per-invocation cap (6ab.23), this Lambda
+is deliberately NOT given one -- three whole-table SQL `UPDATE`s is a
+fundamentally different, much cheaper cost model than per-product
+LLM/image-generation calls, with no equivalent timeout risk.
+
+`admin_api/service.py`'s `list_products`/`get_dashboard_summary` and
+`public_api/service.py`'s `list_products` were all simplified to just
+read the materialized columns -- no more correlated subqueries, no more
+`demand` CTE, no more `percent_rank()` at request time anywhere in either
+API. The formulas themselves (half-life decay for popularity,
+drops-only/lookback-window for daily movement, 50/50 percent-rank blend
+for demand) are unchanged -- they just moved, verbatim, into
+`refresh_product_scores/app.py`, now the single source of truth all
+three formulas live in. `admin_api/service.py`'s own
+`DAILY_MOVEMENT_LOOKBACK_DAYS` constant was kept (not deleted) since it's
+still needed by the Dashboard's growing/shrinking-movement trend queries
+and `get_catalog_daily_movement_history`, which compute a genuinely
+different, inherently-live two-window comparison that migration 030
+deliberately did not touch.
+
+**Operational note -- one-time backfill needed after this deploys:** the
+three new columns default to 0 for every existing row until
+`refresh_product_scores` runs for the first time (its `UPDATE`s touch
+every row unconditionally, no `WHERE`). To avoid a ~24h window of every
+product showing 0 popularity/movement/demand right after this deploys
+(until the daily schedule's first automatic run), invoke it manually
+once right after deploying:
+
+```
+aws lambda invoke --function-name bowling-scraper-refresh-product-scores --region us-west-1 /tmp/refresh-scores-out.json && cat /tmp/refresh-scores-out.json
+```
+
+Verified: new `tests/test_refresh_product_scores.py` (21 tests, this
+Lambda had zero prior coverage) plus updated tests in
+`test_admin_api_service.py`/`test_public_api_service.py` for the
+simplified queries. Full project-wide sweep re-run clean (every
+`tests/test_*.py` passes except the two pre-existing, unrelated
+pytest-dependency gaps in `test_product_scraper.py`/
+`test_url_discovery.py`).
+
+Files touched: `db/migrations/030_materialized_product_scores.sql`
+(new), `src/refresh_product_scores/app.py` (new),
+`src/refresh_product_scores/requirements.txt` (new), `template.yaml`
+(new `RefreshProductScoresFunction` resource + daily `Schedule`),
+`src/admin_api/service.py`, `src/public_api/service.py`,
+`tests/test_refresh_product_scores.py` (new),
+`tests/test_admin_api_service.py`, `tests/test_public_api_service.py`.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

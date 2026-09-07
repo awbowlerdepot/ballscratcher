@@ -291,101 +291,38 @@ def list_brands(conn) -> list:
         return [dict(zip(columns, row)) for row in cur.fetchall()]
 
 
-# Video-popularity ranking (Al's ask -- see public_api/service.py's
-# identical POPULARITY_HALF_LIFE_DAYS/_POPULARITY_SCORE_SQL for the full
-# writeup of the decay formula and why 6 months, not the more usual 12,
-# given bowling balls' own 6-12 month current-to-retired lifespan). Kept
-# in sync BY HAND with that copy -- admin_api and public_api are two
-# independently-deployed Lambdas with no shared module between them (same
-# per-Lambda-duplicated-constant convention as MAX_VIDEO_IDS_PER_CALL
-# elsewhere in this project). Surfaced here too, not just on the public
-# API, so Al can see/sort by the actual computed number in the admin
-# Products tab and sanity-check it before trusting it on the live site.
-POPULARITY_HALF_LIFE_DAYS = 180
-
-# AVERAGE decayed view count per video, times ln(1 + video count) -- NOT
-# a plain sum. Al's follow-up, real incident: a raw sum (the original
-# shape here) let video COUNT dominate -- a ball with 20 mediocre videos
-# could outrank a ball with 4 genuinely popular ones purely on volume.
-# ln(1 + count) still gives volume a real, deliberate boost (more
-# corroborating videos IS meaningfully more evidence of popularity), just
-# sub-linear instead of a straight multiplier: at equal per-video
-# quality, 20 videos score ~1.9x a 4-video ball (ln(21)/ln(5)), not the
-# old 5x (20/4) a raw sum produced. See public_api/service.py's identical
-# copy for the full writeup/worked numbers; kept in sync by hand, same
-# no-shared-module reasoning as everything else on this constant.
-_POPULARITY_SCORE_SQL = f"""coalesce((
-                   select avg(
-                       pv.view_count * power(2, -extract(epoch from (now() - coalesce(pv.published_at, pv.created_at))) / (86400.0 * {POPULARITY_HALF_LIFE_DAYS}))
-                   ) * ln(1 + count(*))
-                   from product_videos pv
-                   where pv.product_id = p.id and pv.status = 'approved' and pv.view_count is not null
-               ), 0)"""
-
-# Total daily movement across a product's SKUs -- a trailing-window
-# average of units DEPLETED per day, not "usage" (Al: "can we add the
-# sum of the ADUs for each product to the main table" -- originally
-# built and named as "Average Daily Units"/ADU; renamed 2026-09-06,
-# Al: "can we change ADU do Daily Depletion and Movement. Really we
-# just need to get rid of ADU because we are really seeing Movement and
-# Depletion" -- the underlying formula is UNCHANGED, this is a
-# terminology-only rename (see DEPLOY_RUNBOOK.md for the full writeup)).
-# Same trailing-window/drops-only definition as admin-site's own
-# computeSkuForecast (index.html) -- deliberately re-implemented here in
-# SQL rather than shared, same no-shared-module reasoning as
-# POPULARITY_HALF_LIFE_DAYS above, but the two MUST stay in lockstep or
-# the Products tab's summary number would silently disagree with each
-# product detail page's own per-SKU movement figures.
-# DAILY_MOVEMENT_LOOKBACK_DAYS mirrors admin-site's
-# FORECAST_LOOKBACK_DAYS = 30 constant.
+# Video-popularity ranking (Al's ask) and total daily movement across a
+# product's SKUs used to each be computed HERE, as a correlated subquery
+# constant (_POPULARITY_SCORE_SQL / _TOTAL_DAILY_MOVEMENT_SQL) run on
+# every single list_products/get_dashboard_summary call. REAL PERFORMANCE
+# INCIDENT (2026-09-06, see 030_materialized_product_scores.sql's own
+# header comment for the full writeup): that was fine at a small catalog
+# size, stopped being fine at this one -- list_products' now-removed
+# `demand` CTE alone recomputed both formulas over the ENTIRE unfiltered
+# catalog on every call just to rank demand_score, and get_dashboard_
+# summary below recomputed them a further three times for its own KPI/
+# top-10 queries. Both formulas (and demand_score's own percent_rank()
+# blend, previously _DEMAND_SCORE_CTE here) now live in exactly one
+# place: src/refresh_product_scores/app.py, which recomputes them once a
+# day into real products.popularity_score/total_daily_movement/
+# demand_score columns instead. This function and get_dashboard_summary
+# below just read those columns now -- see products.popularity_score's
+# own column comment (030) for the formula history if you're looking for
+# it.
 #
-# Per SKU, within the lookback window: units_sold = sum of only the
-# DROPS between consecutive readings (a rise is a restock, excluded --
-# same interpretation get_sku_stock_history's own docstring documents);
-# elapsed_days = time between the first and last reading in that window;
-# sku_daily_movement = units_sold / elapsed_days. A SKU needs at least 2
-# readings in the window to compute a rate at all (matching
-# computeSkuForecast's `rows.length < 2 -> adu: null` -- the JS helper's
-# own internal variable name predates this rename and still says "adu";
-# only the admin-facing terminology changed here, not that helper) --
-# excluded from the sum via the `having count(*) >= 2` below, same
-# effective "contributes nothing, not a fabricated zero" behavior as the
-# JS version returning null. Guarded division on elapsed_days > 0 for
-# the same edge case computeSkuForecast itself guards.
-#
-# Chosen to run unconditionally in the initial GET /products call (same
-# tradeoff popularity_score above already made, at the same catalog
-# size) rather than a separate async round-trip -- Al offered either
-# ("if it need to be an async fetch that is fine... or if it is fast
-# enough to just grab in the initial call that is fine too"). If this
-# ever turns out to be the slow part of the page at a larger catalog
-# size, splitting it into its own endpoint the way needs_video_summary_
-# refresh's staleness check stayed OUT of this always-on path is the
-# fallback, not a rewrite.
+# DAILY_MOVEMENT_LOOKBACK_DAYS survives here (unlike the two SQL
+# constants above) because the Dashboard's growing/shrinking-movement
+# trend queries and get_catalog_daily_movement_history below still
+# compute a genuinely different, inherently-live two-window comparison
+# via _sku_daily_movement_cte -- that's not a duplicate of the
+# materialized total_daily_movement column, so it wasn't touched by the
+# 030 migration. refresh_product_scores/app.py keeps its OWN independent
+# copy of this same constant for the materialized column's formula, same
+# hand-synced-constant convention as everywhere else in this project
+# (Al: "can we add the sum of the ADUs for each product to the main
+# table" -- originally "Average Daily Units"/ADU; renamed 2026-09-06 to
+# Daily Movement, same underlying number, see DEPLOY_RUNBOOK.md).
 DAILY_MOVEMENT_LOOKBACK_DAYS = 30
-
-_TOTAL_DAILY_MOVEMENT_SQL = f"""coalesce((
-                   select sum(case when sku.elapsed_days > 0 then sku.units_sold / sku.elapsed_days else 0 end)
-                   from (
-                       select
-                           h.product_sku_id,
-                           sum(case when h.delta < 0 then -h.delta else 0 end) as units_sold,
-                           extract(epoch from (max(h.checked_at) - min(h.checked_at))) / 86400.0 as elapsed_days
-                       from (
-                           select
-                               psh.product_sku_id,
-                               psh.checked_at,
-                               psh.quantity - lag(psh.quantity) over (partition by psh.product_sku_id order by psh.checked_at) as delta
-                           from product_sku_stock_history psh
-                           join product_skus ps_dm on ps_dm.id = psh.product_sku_id
-                           where ps_dm.product_id = p.id
-                             and psh.quantity is not null
-                             and psh.checked_at >= now() - interval '{DAILY_MOVEMENT_LOOKBACK_DAYS} days'
-                       ) h
-                       group by h.product_sku_id
-                       having count(*) >= 2
-                   ) sku
-               ), 0)"""
 
 
 def _sku_daily_movement_cte(min_days_ago: int, max_days_ago: int = 0) -> str:
@@ -394,10 +331,11 @@ def _sku_daily_movement_cte(min_days_ago: int, max_days_ago: int = 0) -> str:
     10 days of supply skus descending so lowest number of days first... can
     we build something would show top 10 growth ADUs and top 10 shrinking
     ADUs by sku" (that ask predates the 2026-09-06 ADU->Daily Movement
-    rename -- see _TOTAL_DAILY_MOVEMENT_SQL's own comment -- the underlying
-    metric asked for here is unchanged). Same drops-only, >=2-readings-
-    required, elapsed_days-based per-SKU rate _TOTAL_DAILY_MOVEMENT_SQL and
-    daily_movement_by_brand's own inline sku_daily_movement CTE already
+    rename -- the underlying metric asked for here is unchanged). Same
+    drops-only, >=2-readings-required, elapsed_days-based per-SKU rate the
+    old _TOTAL_DAILY_MOVEMENT_SQL established (now removed -- see 030's
+    header comment; the formula lives on in refresh_product_scores/app.py)
+    and daily_movement_by_brand's own inline sku_daily_movement CTE
     establish, just parameterized by an arbitrary trailing window instead
     of a single hardcoded DAILY_MOVEMENT_LOOKBACK_DAYS -- the growing/
     shrinking queries need TWO different windows (the current
@@ -419,9 +357,10 @@ def _sku_daily_movement_cte(min_days_ago: int, max_days_ago: int = 0) -> str:
 
     Returns a parenthesized subquery of (product_sku_id, daily_movement) --
     daily_movement is NULL (not a bare division) whenever elapsed_days
-    isn't > 0, same guarded-division convention
-    _TOTAL_DAILY_MOVEMENT_SQL's own `case when sku.elapsed_days > 0 then
-    ... else 0 end` uses, just NULL instead of 0 here since these callers
+    isn't > 0, same guarded-division convention the old
+    _TOTAL_DAILY_MOVEMENT_SQL's `case when sku.elapsed_days > 0 then
+    ... else 0 end` used (now removed, formula lives on in
+    refresh_product_scores/app.py), just NULL instead of 0 here since these callers
     need to entirely exclude a SKU without a computable rate (0 would be a
     nonsensical "no growth" or "infinite days of supply" result), not fold
     it into a sum. Callers filter on `daily_movement is not null` /
@@ -458,7 +397,7 @@ def _sku_daily_movement_cte(min_days_ago: int, max_days_ago: int = 0) -> str:
 # release_date (not created_at/updated_at) with an explicit `nulls last`
 # in both directions.
 _SORT_ORDER_BY = {
-    "popularity": "popularity_score desc, p.id asc",
+    "popularity": "p.popularity_score desc, p.id asc",
     "newest": "p.release_date desc nulls last, p.id asc",
     "oldest": "p.release_date asc nulls last, p.id asc",
     "name_asc": "p.name asc, p.id asc",
@@ -466,93 +405,28 @@ _SORT_ORDER_BY = {
     # Al: "can we add a sort to the admin ui products list for total
     # ADU" -- direct follow-up to the Total ADU column itself (see
     # _TOTAL_DAILY_MOVEMENT_SQL above; that quote predates the 2026-09-06
-    # ADU->Daily Movement rename, same metric). No "nulls last" needed
-    # unlike newest/oldest: _TOTAL_DAILY_MOVEMENT_SQL is wrapped in
-    # coalesce(..., 0), so it's never actually null, just possibly 0 for
-    # a product with no qualifying SKU readings.
-    "total_daily_movement": "total_daily_movement desc, p.id asc",
-    # See _DEMAND_SCORE_CTE below for what this actually is. No "nulls
-    # last" needed -- the `demand` CTE's percent_rank() covers every row
-    # of `products` unconditionally, so the left join in list_products
-    # always matches and demand_score is never null.
-    "demand_score": "demand_score desc, p.id asc",
+    # ADU->Daily Movement rename, same metric). No "nulls last" needed --
+    # as of migration 030, products.total_daily_movement is `not null
+    # default 0` (see that migration), so it's never actually null, just
+    # possibly 0 for a product with no qualifying SKU readings.
+    "total_daily_movement": "p.total_daily_movement desc, p.id asc",
+    # See _DEMAND_SCORE_CTE below for what this actually was before
+    # migration 030 materialized it as a real column. No "nulls last"
+    # needed -- `not null default 0` (030), same as total_daily_movement
+    # above.
+    "demand_score": "p.demand_score desc, p.id asc",
 }
 _DEFAULT_ORDER_BY = "p.updated_at desc, p.id asc"
 
-# Demand Score -- Al: "loosely avg daily movement is a demand number,
-# meaning the higher the number the more units moving down to the next
-# channel... we could take this demand number and enhance the popularity
-# number, that being said im not sure what the best way to add it into
-# that calculation is." Discussed and deliberately kept as a SEPARATE
-# metric rather than folded into popularity_score itself (confirmed via
-# AskUserQuestion), for two reasons:
-#   1. Different meaning: popularity_score is a top-of-funnel INTEREST
-#      signal (YouTube review views, catalog-wide, any brand). Daily
-#      movement is a bottom-of-funnel REALIZED DEMAND signal, but only
-#      for SKUs BowlerDepot happens to track stock on -- most of the
-#      catalog will show total_daily_movement = 0 not because nobody's
-#      buying it, but because there's no stock-history data for it at
-#      all. Blending that straight into popularity_score would silently
-#      penalize every ball without BowlerDepot tracking relative to ones
-#      with it -- not a "less popular" signal, a "less instrumented"
-#      one.
-#   2. popularity_score is also public_api's number, shown to shoppers
-#      on consumer-site's Browse sort. Mixing in an internal, single-
-#      retailer sell-through signal there would change what a customer-
-#      facing "popular" ranking even means, without Al having asked for
-#      that. Demand Score stays admin_api-only.
-#
-# Scale mismatch between the two inputs (popularity_score is an
-# unbounded log-of-views number in the thousands; total_daily_movement
-# is a small units/day rate, usually single digits) rules out just
-# adding them raw -- one would swamp the other. Percentile rank
-# (percent_rank(), 0=lowest in the catalog, 1=highest) normalizes both
-# onto the same 0-1 scale regardless of their native units, and handles
-# missing data gracefully: a product with no videos and no stock history
-# sinks to the bottom on both axes rather than raising a division error
-# or dominating the blend.
-#
-# Weights are a plain 50/50 split -- a neutral starting point, not a
-# claim that interest and realized demand are equally predictive of
-# anything. Deliberately named/exposed as two constants (not baked into
-# one hardcoded formula) so retuning later -- e.g. weighting movement
-# higher since it's realized purchases, not just interest -- is a
-# one-line change, not a rewrite.
-_DEMAND_SCORE_POPULARITY_WEIGHT = 0.5
-_DEMAND_SCORE_DAILY_MOVEMENT_WEIGHT = 0.5
-
-# Named _DEMAND_SCORE_CTE, not _..._SQL like the two constants above --
-# this is a `with` prefix meant to be prepended to a query's SQL text
-# (see list_products' own usage), not a scalar expression that can be
-# dropped inline into an existing SELECT list the way
-# _POPULARITY_SCORE_SQL/_TOTAL_DAILY_MOVEMENT_SQL can.
-#
-# Computed as its own CTE (not an inline correlated subquery like
-# popularity_score/total_daily_movement above) because percent_rank()
-# has to be ranked against the WHOLE catalog to mean anything stable --
-# a percentile computed only within whatever filters/pagination the
-# Products tab currently has applied would shift every time someone
-# changes a filter, making the number useless for comparing across
-# views. `from products p` here (unfiltered, no WHERE) guarantees every
-# product gets ranked against the full catalog exactly once, then
-# list_products' own WHERE/pagination is applied afterward via the left
-# join below -- same "rank once, filter after" shape as a materialized
-# view would give, without needing one.
-#
-# Degenerate case, worth knowing about rather than being surprised by:
-# if every product currently has total_daily_movement = 0 (e.g. very
-# early on, before enough SKU stock history has accumulated anywhere),
-# percent_rank() over a column with no variance returns 0 for every row
-# -- demand_score temporarily reduces to just the popularity half of the
-# blend until real movement data differentiates products. Not a bug,
-# just nothing to rank yet on that axis.
-_DEMAND_SCORE_CTE = f"""with demand as (
-        select p.id,
-               {_DEMAND_SCORE_POPULARITY_WEIGHT} * percent_rank() over (order by ({_POPULARITY_SCORE_SQL}))
-             + {_DEMAND_SCORE_DAILY_MOVEMENT_WEIGHT} * percent_rank() over (order by ({_TOTAL_DAILY_MOVEMENT_SQL}))
-             as demand_score
-        from products p
-    )"""
+# Demand Score's formula (a 50/50 percent_rank() blend of popularity_
+# score and total_daily_movement -- see products.demand_score's own
+# column comment, migration 030, for the full "why a separate metric,
+# why percentile rank, why 50/50" reasoning that used to live here) now
+# lives solely in src/refresh_product_scores/app.py -- see this file's
+# own comment above DAILY_MOVEMENT_LOOKBACK_DAYS for the real performance
+# incident that moved it there. Nothing here computes it anymore;
+# list_products/get_dashboard_summary below just read the materialized
+# products.demand_score column.
 
 
 def list_products(conn, published: bool = None, brand_id: str = None, search: str = None,
@@ -726,34 +600,24 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     (product_videos is a separate table, not a nullable column on
     products).
 
-    popularity_score (see _POPULARITY_SCORE_SQL above) is always
-    computed and returned, same as public_api's copy of this query --
-    cheap enough at this catalog's size to include unconditionally, so
-    the Products tab can show the column without a separate round-trip
-    even when not sorting by it. Accepted sort values (see
-    _SORT_ORDER_BY above): 'popularity' (desc), 'newest'/'oldest'
-    (release_date), 'name_asc'/'name_desc' (alphabetical). Anything else
-    (including the default None) keeps the existing updated_at-desc
-    order, same unrecognized-value-is-harmless convention as every other
-    filter/sort value on this endpoint.
-
-    total_daily_movement (see _TOTAL_DAILY_MOVEMENT_SQL above) is
-    likewise always computed and returned -- Al: "can we add the sum of
-    the ADUs for each product to the main table" (that quote predates
-    the 2026-09-06 ADU->Daily Movement rename; same metric, see
-    _TOTAL_DAILY_MOVEMENT_SQL's own comment). A 'total_daily_movement'
-    sort option (desc only, highest-movers first) was added as a direct
-    follow-up (see _SORT_ORDER_BY above).
-
-    demand_score (see _DEMAND_SCORE_CTE above) is also always computed
-    and returned -- a 50/50 percentile-rank blend of popularity_score and
-    total_daily_movement, added as a separate metric (not folded into
-    popularity_score itself) per Al's own "not sure what the best way to
-    add it into that calculation is" -- see _DEMAND_SCORE_CTE's own
-    comment for the full reasoning and the two reasons it stays a
-    distinct column rather than changing popularity_score in place. A
-    'demand_score' sort option (desc only) was added alongside it, same
-    pattern as total_daily_movement's own rollout."""
+    popularity_score, total_daily_movement, demand_score: as of migration
+    030 (see that migration's own header comment for the real performance
+    incident that prompted it), these are plain columns on `products`,
+    recomputed once a day by refresh_product_scores -- NOT computed here
+    anymore. Before 030 this query ran _POPULARITY_SCORE_SQL/_TOTAL_
+    DAILY_MOVEMENT_SQL/_DEMAND_SCORE_CTE (correlated subqueries + a
+    whole-catalog percent_rank() CTE) on every single call; that code is
+    gone from this function entirely, not just unused, since
+    refresh_product_scores/app.py is now the one and only place those
+    formulas live. Always selected unconditionally (same "cheap enough to
+    include without a separate round-trip" reasoning as before -- more
+    true than ever now that it's a plain column read, not a computed
+    subquery). Accepted sort values (see _SORT_ORDER_BY above):
+    'popularity'/'total_daily_movement'/'demand_score' (each desc),
+    'newest'/'oldest' (release_date), 'name_asc'/'name_desc'
+    (alphabetical). Anything else (including the default None) keeps the
+    existing updated_at-desc order, same unrecognized-value-is-harmless
+    convention as every other filter/sort value on this endpoint."""
     # p alias + left join cores: needed once c.name entered the picture --
     # products and cores both have a plain "name" column, so every
     # previously-bare column reference below (name, published, brand_id,
@@ -766,16 +630,12 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     # and reading which brand a row belongs to both work off a real name,
     # not a UUID you'd have to look up separately.
     query = f"""
-        {_DEMAND_SCORE_CTE}
         select p.id, p.brand_id, b.name as brand_name, p.name, p.url, p.status, p.published, p.updated_at,
                p.core_id, c.name as core_name, p.release_date, p.coverstock_id, p.coverstock_name,
-               {_POPULARITY_SCORE_SQL} as popularity_score,
-               {_TOTAL_DAILY_MOVEMENT_SQL} as total_daily_movement,
-               d.demand_score
+               p.popularity_score, p.total_daily_movement, p.demand_score
         from products p
         left join cores c on c.id = p.core_id
         left join brands b on b.id = p.brand_id
-        left join demand d on d.id = p.id
         where 1=1
     """
     params = []
@@ -931,21 +791,22 @@ def get_dashboard_summary(conn) -> dict:
     and top 10 lists... Top 10s i think we can do Popularity and ADUs. An
     interesting number would be total ADUs across all balls, ADUs by
     brand, and things like that" (that quote predates the 2026-09-06
-    ADU->Daily Movement rename -- see _TOTAL_DAILY_MOVEMENT_SQL's own
-    comment -- the underlying metric is unchanged, only the name). Backs
-    a new Dashboard tab -- one endpoint, not several, since every number
-    here is read-only and the tab renders them all at once on load (same
-    "one round trip" reasoning list_products'
-    popularity_score/total_daily_movement columns already used at this
-    catalog's size).
+    ADU->Daily Movement rename -- the underlying metric is unchanged,
+    only the name). Backs a new Dashboard tab -- one endpoint, not
+    several, since every number here is read-only and the tab renders
+    them all at once on load (same "one round trip" reasoning
+    list_products' popularity_score/total_daily_movement columns already
+    used at this catalog's size).
 
-    Reuses _POPULARITY_SCORE_SQL and _TOTAL_DAILY_MOVEMENT_SQL as-is
-    everywhere possible rather than re-deriving either formula a second
-    time -- both are already the single source of truth list_products'
-    own columns and sort options read from, so the Dashboard's numbers
-    are guaranteed to agree with what the Products tab already shows for
-    the same product, not a second, potentially-drifting definition of
-    "popularity" or "daily movement".
+    Reads the same materialized popularity_score/total_daily_movement
+    columns (030_materialized_product_scores.sql) that list_products'
+    own columns and sort options already read, rather than re-deriving
+    either formula a second time -- both are recomputed daily by
+    refresh_product_scores/app.py, the single source of truth for these
+    formulas now, so the Dashboard's numbers are guaranteed to agree with
+    what the Products tab already shows for the same product, not a
+    second, potentially-drifting definition of "popularity" or "daily
+    movement".
 
     Six separate queries, not one giant one: KPI counts, top 10
     popularity, top 10 daily movement, daily-movement-by-brand, top 10
@@ -1021,52 +882,52 @@ def get_dashboard_summary(conn) -> dict:
                     where pv.status = 'approved' and pv.summary is not null) as products_with_video,
                 (select count(distinct pps.product_id) from product_price_sources pps
                     where pps.status = 'approved' and pps.is_active) as products_with_price_tracking,
-                (select coalesce(sum(t.total_daily_movement), 0) from (
-                    select {_TOTAL_DAILY_MOVEMENT_SQL} as total_daily_movement from products p
-                ) t) as total_catalog_daily_movement
+                (select coalesce(sum(total_daily_movement), 0) from products) as total_catalog_daily_movement
         """)
         columns = [desc[0] for desc in cur.description]
         kpis = dict(zip(columns, cur.fetchone()))
 
-        cur.execute(f"""
-            select * from (
-                select p.id, p.name, b.name as brand_name,
-                       {_POPULARITY_SCORE_SQL} as popularity_score
-                from products p
-                left join brands b on b.id = p.brand_id
-            ) t
-            where t.popularity_score > 0
-            order by t.popularity_score desc, t.id asc
+        # popularity_score/total_daily_movement below: plain reads of the
+        # materialized products columns (030_materialized_product_scores.
+        # sql) -- these two queries used to each recompute the same
+        # correlated-subquery formula list_products' own popularity_score/
+        # total_daily_movement columns already used, over the WHOLE
+        # catalog, a THIRD and FOURTH time on top of what a Dashboard
+        # page load's other queries already cost. See this file's own
+        # comment above DAILY_MOVEMENT_LOOKBACK_DAYS for the full incident
+        # writeup.
+        cur.execute("""
+            select p.id, p.name, b.name as brand_name, p.popularity_score
+            from products p
+            left join brands b on b.id = p.brand_id
+            where p.popularity_score > 0
+            order by p.popularity_score desc, p.id asc
             limit 10
         """)
         columns = [desc[0] for desc in cur.description]
         top_popularity = [dict(zip(columns, row)) for row in cur.fetchall()]
 
-        cur.execute(f"""
-            select * from (
-                select p.id, p.name, b.name as brand_name,
-                       {_TOTAL_DAILY_MOVEMENT_SQL} as total_daily_movement
-                from products p
-                left join brands b on b.id = p.brand_id
-            ) t
-            where t.total_daily_movement > 0
-            order by t.total_daily_movement desc, t.id asc
+        cur.execute("""
+            select p.id, p.name, b.name as brand_name, p.total_daily_movement
+            from products p
+            left join brands b on b.id = p.brand_id
+            where p.total_daily_movement > 0
+            order by p.total_daily_movement desc, p.id asc
             limit 10
         """)
         columns = [desc[0] for desc in cur.description]
         top_daily_movement = [dict(zip(columns, row)) for row in cur.fetchall()]
 
-        # Daily movement by brand: a real GROUP BY aggregate (not
-        # _TOTAL_DAILY_MOVEMENT_SQL summed per product like the two
-        # queries above) -- reimplements the same per-SKU daily-movement
-        # definition documented on _TOTAL_DAILY_MOVEMENT_SQL itself
-        # (drops-only, DAILY_MOVEMENT_LOOKBACK_DAYS window, >=2 readings
-        # required), but un-correlated from any single product so it can
-        # be grouped by brand directly instead of running once per
-        # product and summing in Python. MUST stay in lockstep with
-        # _TOTAL_DAILY_MOVEMENT_SQL's definition, same hand-synced-
-        # constant reasoning as POPULARITY_HALF_LIFE_DAYS/
-        # _POPULARITY_SCORE_SQL's own comment.
+        # Daily movement by brand: a real GROUP BY aggregate (not a read
+        # of the materialized total_daily_movement column like the query
+        # above) -- reimplements the same per-SKU daily-movement
+        # definition (drops-only, DAILY_MOVEMENT_LOOKBACK_DAYS window,
+        # >=2 readings required), but un-correlated from any single
+        # product so it can be grouped by brand directly instead of
+        # running once per product and summing in Python. MUST stay in
+        # lockstep with refresh_product_scores/app.py's own copy of this
+        # same formula, same hand-synced-constant reasoning documented
+        # above DAILY_MOVEMENT_LOOKBACK_DAYS.
         cur.execute(f"""
             with sku_daily_movement as (
                 select h.product_sku_id,
@@ -1165,8 +1026,7 @@ def get_catalog_daily_movement_history(conn) -> list:
     time charts to the dashboard, maybe total catalog adu over time
     similar to what we have per product 7d, 30d, 90d, 1y and all
     picker" (that quote predates the 2026-09-06 ADU->Daily Movement
-    rename -- see _TOTAL_DAILY_MOVEMENT_SQL's own comment -- same
-    underlying metric, name only changed). Backs a new line chart on the
+    rename -- same underlying metric, name only changed). Backs a new line chart on the
     Dashboard tab, reusing the SAME client-side range-picker machinery
     (CHART_RANGE_PRESETS/filterHistoryByRange/buildChartRangeToolbar in
     admin-site/index.html) the price/SKU-stock charts already
@@ -1178,11 +1038,11 @@ def get_catalog_daily_movement_history(conn) -> list:
     REAL but DIFFERENTLY-DEFINED number from the Dashboard's own
     `kpis.total_catalog_daily_movement` (see get_dashboard_summary
     above), not a time-series of that exact same point-in-time formula.
-    The KPI card's total_catalog_daily_movement is
-    `_TOTAL_DAILY_MOVEMENT_SQL` summed across every product -- a PER-SKU
+    The KPI card's total_catalog_daily_movement is products.
+    total_daily_movement (030) summed across every product -- a PER-SKU
     trailing-DAILY_MOVEMENT_LOOKBACK_DAYS-window figure that only counts
     a SKU at all once it has >=2 readings in that specific window (see
-    _TOTAL_DAILY_MOVEMENT_SQL's own docstring). Re-running that exact
+    refresh_product_scores/app.py's docstring, point 2). Re-running that exact
     per-SKU-gated definition at every historical calendar day would need
     one correlated subquery PER DAY in the requested range -- expensive,
     and arguably not even what "daily movement over time" should look

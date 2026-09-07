@@ -2353,43 +2353,44 @@ def test_get_dashboard_summary_kpi_query_counts_expected_things():
 
 
 def test_get_dashboard_summary_kpi_query_reuses_total_daily_movement_sql():
-    """total_catalog_daily_movement must be the SAME
-    _TOTAL_DAILY_MOVEMENT_SQL expression list_products' own
-    total_daily_movement column and sort option already use -- not a
-    second, potentially-drifting definition of daily movement."""
+    """total_catalog_daily_movement must read the SAME materialized
+    products.total_daily_movement column (030) list_products' own column
+    and sort option already read -- not a second, potentially-drifting
+    definition of daily movement. As of the 2026-09-06 materialization
+    fix this is a plain sum over the column, not a correlated subquery."""
     conn = _DashboardQueryCapturingConnection()
     service.get_dashboard_summary(conn)
 
     kpi_query = conn.cursor().queries[0]
-    assert "product_sku_stock_history" in kpi_query
-    assert "having count(*) >= 2" in kpi_query
-    assert "coalesce(sum(t.total_daily_movement), 0)" in kpi_query
-    assert ") t) as total_catalog_daily_movement" in kpi_query
+    assert "(select coalesce(sum(total_daily_movement), 0) from products) as total_catalog_daily_movement" in kpi_query
 
 
 def test_get_dashboard_summary_top_popularity_query_shape():
+    """As of migration 030, this reads the materialized
+    products.popularity_score column directly -- no correlated subquery
+    against product_videos anymore (that formula now lives solely in
+    refresh_product_scores/app.py)."""
     conn = _DashboardQueryCapturingConnection()
     service.get_dashboard_summary(conn)
 
     query = conn.cursor().queries[1]
     assert "left join brands b on b.id = p.brand_id" in query
-    assert "where t.popularity_score > 0" in query
-    assert "order by t.popularity_score desc, t.id asc limit 10" in query
-    # Reuses the real formula, same reasoning as the KPI query's
-    # total_daily_movement.
-    assert "product_videos pv" in query
-    assert "ln(1 + count(*))" in query
+    assert "where p.popularity_score > 0" in query
+    assert "order by p.popularity_score desc, p.id asc limit 10" in query
+    assert "product_videos" not in query  # the old correlated-subquery shape, must be gone
 
 
 def test_get_dashboard_summary_top_daily_movement_query_shape():
+    """As of migration 030, this reads the materialized
+    products.total_daily_movement column directly."""
     conn = _DashboardQueryCapturingConnection()
     service.get_dashboard_summary(conn)
 
     query = conn.cursor().queries[2]
     assert "left join brands b on b.id = p.brand_id" in query
-    assert "where t.total_daily_movement > 0" in query
-    assert "order by t.total_daily_movement desc, t.id asc limit 10" in query
-    assert "product_sku_stock_history" in query
+    assert "where p.total_daily_movement > 0" in query
+    assert "order by p.total_daily_movement desc, p.id asc limit 10" in query
+    assert "product_sku_stock_history" not in query  # the old correlated-subquery shape, must be gone
 
 
 def test_get_dashboard_summary_daily_movement_by_brand_query_shape():
@@ -2774,52 +2775,32 @@ def test_list_products_omits_status_filter_by_default():
     assert "p.status = %s" not in query
 
 
-# --- list_products: popularity ranking -- Al's ask ("can we build in a
+# --- list_products: popularity_score/total_daily_movement/demand_score
+# -- Al's original asks: video-popularity time decay ("can we build in a
 # view_count time decay so that older videos will organically move down a
-# 'popular' ranking"). Same POPULARITY_HALF_LIFE_DAYS/_POPULARITY_SCORE_SQL
-# as public_api/service.py's identical copy (kept in sync by hand, see
-# that constant's own comment for why there's no shared module). Surfaced
-# here too -- not just the public API -- so Al can see/sort by the actual
-# computed number in the admin Products tab.
+# 'popular' ranking"), catalog-wide unit movement ("can we add the sum of
+# the ADUs for each product to the main table"), and a blended Demand
+# Score ("loosely avg daily movement is a demand number... we could take
+# this demand number and enhance the popularity number"). As of migration
+# 030 (2026-09-06 performance fix), all three are plain materialized
+# columns on `products`, recomputed daily by refresh_product_scores/
+# app.py -- list_products below just reads them now; no correlated
+# subqueries or CTEs left in this query at all. The formula-level tests
+# (half-life value, avg-not-sum, drops-only movement, demand weights,
+# etc.) live in tests/test_refresh_product_scores.py instead.
 
-def test_list_products_always_selects_popularity_score():
+def test_list_products_always_selects_the_three_materialized_score_columns():
     conn = _QueryCapturingConnection()
     service.list_products(conn, limit=50, offset=0)
 
     query = conn.cursor().queries[0]
-    assert "as popularity_score" in query
-    assert "pv.status = 'approved'" in query
-    assert "pv.view_count is not null" in query
-
-
-def test_list_products_popularity_score_uses_confirmed_half_life():
-    conn = _QueryCapturingConnection()
-    service.list_products(conn, limit=50, offset=0)
-
-    query = conn.cursor().queries[0]
-    assert f"86400.0 * {service.POPULARITY_HALF_LIFE_DAYS}" in query
-    assert service.POPULARITY_HALF_LIFE_DAYS == 180
-
-
-def test_list_products_popularity_score_averages_not_sums():
-    """Al's follow-up, real incident: a raw sum let video COUNT dominate
-    the ranking. Confirms the SQL averages per-video decayed views and
-    applies a sub-linear ln(1 + count) volume boost, not a plain sum.
-
-    Scoped to the _POPULARITY_SCORE_SQL constant itself (not the full
-    query string) since list_products' query now also embeds
-    _TOTAL_DAILY_MOVEMENT_SQL, which legitimately contains its own
-    unrelated "select sum(" (summing per-SKU daily movement into a
-    per-product total) -- a blanket substring check against the whole
-    query would false-positive on that, so this checks only the
-    fragment this test actually cares about."""
-    conn = _QueryCapturingConnection()
-    service.list_products(conn, limit=50, offset=0)
-
-    query = conn.cursor().queries[0]
-    assert "select avg(" in query
-    assert "* ln(1 + count(*))" in query
-    assert "select sum(" not in service._POPULARITY_SCORE_SQL
+    assert "p.popularity_score" in query
+    assert "p.total_daily_movement" in query
+    assert "p.demand_score" in query
+    # None of the old live-computed shapes should remain in this query.
+    assert "product_videos" not in query
+    assert "product_sku_stock_history" not in query
+    assert "percent_rank()" not in query
 
 
 def test_list_products_sort_popularity_orders_by_score_desc():
@@ -2827,150 +2808,15 @@ def test_list_products_sort_popularity_orders_by_score_desc():
     service.list_products(conn, sort="popularity", limit=50, offset=0)
 
     query = conn.cursor().queries[0]
-    assert "order by popularity_score desc, p.id asc limit %s offset %s" in query
+    assert "order by p.popularity_score desc, p.id asc limit %s offset %s" in query
 
 
-def test_list_products_default_sort_unaffected_by_popularity_column():
+def test_list_products_sort_total_daily_movement_orders_by_column_desc():
     conn = _QueryCapturingConnection()
-    service.list_products(conn, limit=50, offset=0)
+    service.list_products(conn, sort="total_daily_movement", limit=50, offset=0)
 
     query = conn.cursor().queries[0]
-    assert "order by p.updated_at desc, p.id asc limit %s offset %s" in query
-
-
-# --- list_products: total_daily_movement -- Al: "can we add the sum of
-# the ADUs for each product to the main table" (predates the 2026-09-06
-# ADU->Daily Movement rename). Same trailing-window/drops-only
-# definition as admin-site's own computeSkuForecast, re-implemented in
-# SQL (see _TOTAL_DAILY_MOVEMENT_SQL's own comment for why it can't be
-# shared with that JS copy and must be kept in lockstep by hand). ---
-
-def test_list_products_always_selects_total_daily_movement():
-    conn = _QueryCapturingConnection()
-    service.list_products(conn, limit=50, offset=0)
-
-    query = conn.cursor().queries[0]
-    assert "as total_daily_movement" in query
-    assert "product_sku_stock_history" in query
-    assert "product_skus" in query
-
-
-def test_list_products_total_daily_movement_uses_confirmed_lookback_window():
-    conn = _QueryCapturingConnection()
-    service.list_products(conn, limit=50, offset=0)
-
-    query = conn.cursor().queries[0]
-    assert f"interval '{service.DAILY_MOVEMENT_LOOKBACK_DAYS} days'" in query
-    assert service.DAILY_MOVEMENT_LOOKBACK_DAYS == 30
-
-
-def test_list_products_total_daily_movement_only_counts_drops_not_restocks():
-    """The lag()-based delta must only sum NEGATIVE deltas (a quantity
-    drop = sold) -- a positive delta (restock) must never add to
-    units_sold, same "drop=sold, rise=restock" interpretation
-    computeSkuForecast's own docstring documents."""
-    conn = _QueryCapturingConnection()
-    service.list_products(conn, limit=50, offset=0)
-
-    query = conn.cursor().queries[0]
-    assert "case when h.delta < 0 then -h.delta else 0 end" in query
-    assert "lag(psh.quantity)" in query
-
-
-def test_list_products_total_daily_movement_requires_at_least_two_readings():
-    """A SKU with fewer than 2 readings in the window can't compute a
-    rate at all -- must be excluded from the sum entirely (having
-    count(*) >= 2), not counted as a zero, same as computeSkuForecast's
-    own `rows.length < 2 -> adu: null`."""
-    conn = _QueryCapturingConnection()
-    service.list_products(conn, limit=50, offset=0)
-
-    query = conn.cursor().queries[0]
-    assert "having count(*) >= 2" in query
-
-
-def test_list_products_total_daily_movement_guards_zero_elapsed_days():
-    conn = _QueryCapturingConnection()
-    service.list_products(conn, limit=50, offset=0)
-
-    query = conn.cursor().queries[0]
-    assert "case when sku.elapsed_days > 0 then sku.units_sold / sku.elapsed_days else 0 end" in query
-
-
-def test_list_products_total_daily_movement_scoped_to_this_product_only():
-    conn = _QueryCapturingConnection()
-    service.list_products(conn, limit=50, offset=0)
-
-    query = conn.cursor().queries[0]
-    assert "ps_dm.product_id = p.id" in query
-
-
-# --- Demand Score (Al: "loosely avg daily movement is a demand number...
-# we could take this demand number and enhance the popularity number,
-# that being said im not sure what the best way to add it into that
-# calculation is") -- a separate percentile-rank blend of popularity_score
-# and total_daily_movement, deliberately NOT folded into popularity_score
-# itself (see _DEMAND_SCORE_CTE's own comment for the two reasons why).
-
-def test_list_products_always_selects_demand_score():
-    conn = _QueryCapturingConnection()
-    service.list_products(conn, limit=50, offset=0)
-
-    query = conn.cursor().queries[0]
-    assert "with demand as" in query
-    assert "d.demand_score" in query
-    assert "percent_rank()" in query
-
-
-def test_demand_score_cte_ranks_against_the_full_catalog_unfiltered():
-    """The whole point of computing demand_score in its own CTE (see
-    _DEMAND_SCORE_CTE's own comment) rather than as an inline correlated
-    subquery is that percent_rank() has to rank every product against the
-    WHOLE catalog to mean anything stable -- a percentile computed only
-    within whatever filters/pagination list_products' caller happens to
-    have applied would shift every time someone changes a filter. So the
-    CTE's outer `from products p` (the one percent_rank() actually windows
-    over) must be immediately followed by the CTE's own closing paren --
-    no WHERE/AND narrowing it -- even though the nested popularity_score/
-    total_daily_movement subqueries embedded inside it each have their
-    own unrelated internal WHERE clauses (scoping THEM to one product via
-    correlation, not scoping the outer CTE's row set)."""
-    assert "from products p\n    )" in service._DEMAND_SCORE_CTE
-
-
-def test_list_products_demand_score_blends_both_metrics_via_percent_rank():
-    conn = _QueryCapturingConnection()
-    service.list_products(conn, limit=50, offset=0)
-
-    query = conn.cursor().queries[0]
-    # Both underlying metrics must be ranked, not compared as raw values --
-    # a raw sum would let popularity_score's unbounded log-of-views scale
-    # swamp total_daily_movement's small units/day rate.
-    assert query.count("percent_rank()") == 2
-
-
-def test_list_products_demand_score_default_weights_sum_to_one():
-    assert service._DEMAND_SCORE_POPULARITY_WEIGHT + service._DEMAND_SCORE_DAILY_MOVEMENT_WEIGHT == 1.0
-
-
-def test_list_products_demand_score_left_joined_by_product_id():
-    conn = _QueryCapturingConnection()
-    service.list_products(conn, limit=50, offset=0)
-
-    query = conn.cursor().queries[0]
-    assert "left join demand d on d.id = p.id" in query
-
-
-def test_list_products_demand_score_still_present_alongside_filters():
-    """The demand CTE/join must survive regardless of which list_products
-    filters are active -- it's prepended once to the query text, not
-    conditionally built like the WHERE clauses below it."""
-    conn = _QueryCapturingConnection()
-    service.list_products(conn, brand_id="some-brand-id", missing_core=True, sort="newest", limit=50, offset=0)
-
-    query = conn.cursor().queries[0]
-    assert "with demand as" in query
-    assert "d.demand_score" in query
+    assert "order by p.total_daily_movement desc, p.id asc limit %s offset %s" in query
 
 
 def test_list_products_sort_demand_score_orders_by_column_desc():
@@ -2978,7 +2824,28 @@ def test_list_products_sort_demand_score_orders_by_column_desc():
     service.list_products(conn, sort="demand_score", limit=50, offset=0)
 
     query = conn.cursor().queries[0]
-    assert "order by demand_score desc, p.id asc limit %s offset %s" in query
+    assert "order by p.demand_score desc, p.id asc limit %s offset %s" in query
+
+
+def test_list_products_default_sort_unaffected_by_score_columns():
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "order by p.updated_at desc, p.id asc limit %s offset %s" in query
+
+
+def test_list_products_score_columns_still_present_alongside_filters():
+    """The three score columns are part of the fixed SELECT list, not
+    conditionally built like the WHERE clauses below them -- they must
+    survive regardless of which list_products filters are active."""
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, brand_id="some-brand-id", missing_core=True, sort="newest", limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "p.popularity_score" in query
+    assert "p.total_daily_movement" in query
+    assert "p.demand_score" in query
 
 
 # --- common-sense sort options (Al's ask: "lets add some common sense
@@ -3017,20 +2884,10 @@ def test_list_products_sort_name_desc_orders_reverse_alphabetically():
     assert "order by p.name desc, p.id asc limit %s offset %s" in query
 
 
-def test_list_products_sort_total_daily_movement_orders_by_column_desc():
-    # Al's direct follow-up to the Total ADU column itself (predates the
-    # ADU->Daily Movement rename): "can we add a sort to the admin ui
-    # products list for total ADU". Orders by the select-list alias
-    # (total_daily_movement, not a repeated subquery) -- Postgres allows
-    # ORDER BY to reference a SELECT list alias, no need to duplicate
-    # _TOTAL_DAILY_MOVEMENT_SQL a second time. No "nulls last" needed
-    # unlike newest/oldest since _TOTAL_DAILY_MOVEMENT_SQL is always
-    # coalesce(..., 0), never actually null.
-    conn = _QueryCapturingConnection()
-    service.list_products(conn, sort="total_daily_movement", limit=50, offset=0)
-
-    query = conn.cursor().queries[0]
-    assert "order by total_daily_movement desc, p.id asc limit %s offset %s" in query
+# (duplicate test_list_products_sort_total_daily_movement_orders_by_column_desc
+# removed here -- see the materialized-columns block above, which now
+# covers this same sort option reading the real p.total_daily_movement
+# column instead of a select-list alias.)
 
 
 def test_list_products_every_sort_option_keeps_id_tiebreaker():
@@ -3296,13 +3153,11 @@ def test_list_products_missing_video_candidates_adds_not_exists_filter_sql():
 
 
 def test_list_products_omits_missing_video_candidates_filter_by_default():
-    # Note: product_videos is ALREADY referenced in every query's SELECT
-    # list via _POPULARITY_SCORE_SQL (an `exists`-free correlated
-    # subquery scoped to pv.status = 'approved' and pv.view_count is not
-    # null) -- so this checks for the exact WHERE-clause text this
-    # filter adds (a plain, unscoped `not exists`), not just any mention
-    # of product_videos, to avoid a false positive against that
-    # pre-existing subquery.
+    # Checks for the exact WHERE-clause text this filter adds (a plain,
+    # unscoped `not exists`), not just any mention of product_videos --
+    # other filters below (needs_video_summary_refresh/has_approved_
+    # video_summaries) also reference product_videos with their own,
+    # differently-scoped `exists` clauses.
     conn = _QueryCapturingConnection()
     service.list_products(conn, limit=50, offset=0)
 
@@ -3325,8 +3180,9 @@ def test_list_products_missing_video_candidates_distinct_from_needs_video_summar
     video (an `exists` check with pv.status/pv.summary conditions inside
     it); this one requires the opposite, zero product_videos rows of any
     status at all -- the WHERE-clause text this filter adds has no
-    status/summary condition inside it (unlike _POPULARITY_SCORE_SQL's
-    always-present SELECT-list subquery, which does)."""
+    status/summary condition inside it (unlike needs_video_summary_
+    refresh/has_approved_video_summaries' own `exists` clauses, which
+    do)."""
     conn = _QueryCapturingConnection()
     service.list_products(conn, missing_video_candidates=True, limit=50, offset=0)
 
