@@ -50,13 +50,6 @@ export default function ArticleDetailPage() {
 
   const product = article.product;
   const heroImage = article.action_shot_image_url || product?.primary_image_url;
-  // Al: "would it be possible to link to the ecommerce product page for
-  // some balls inline too" -- ecommerce_url (from public_api, resolved
-  // out of price_checker's own BigCommerce price-tracking data) is a
-  // REAL storefront product page when price_checker has matched and
-  // approved a BowlerDepot source for this product; otherwise fall back
-  // to the search-results link every ball has always had.
-  const shopUrl = product?.ecommerce_url || (product ? bowlerDepotSearchUrl(product.name) : null);
   // Migration 031 -- "Bowling Balls · Ball Review" eyebrow, read straight
   // off the article row rather than hardcoded (see ArticleCard's own
   // comment on the same fields). Null for a pre-migration article.
@@ -71,7 +64,7 @@ export default function ArticleDetailPage() {
       <div className="relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-neutral-900 py-10">
         <div className="mx-auto grid max-w-5xl grid-cols-1 gap-8 px-6 md:grid-cols-[320px_1fr] md:px-8">
           <div className="flex items-center justify-center overflow-visible px-2 md:relative md:px-4">
-            <div className="-my-3 aspect-[4/3] w-full -rotate-[12deg] rounded-sm bg-white p-2 shadow-2xl md:absolute md:left-1/2 md:top-1/2 md:my-0 md:aspect-auto md:h-96 md:w-[85%] md:-translate-x-1/2 md:-translate-y-1/2">
+            <div className="-my-3 aspect-[4/3] w-full -rotate-[12deg] rounded-sm bg-white p-2 shadow-2xl md:absolute md:left-0 md:top-1/2 md:my-0 md:w-[320px] md:-translate-y-1/2">
               {heroImage ? (
                 <img
                   src={heroImage}
@@ -85,20 +78,8 @@ export default function ArticleDetailPage() {
             <p className="mb-1 text-[11px] font-semibold uppercase tracking-widest text-white/60">
               {taxonomyLabel || product?.core_type || product?.coverstock_type}
             </p>
-            <h1 className="font-display text-2xl font-semibold text-white">{article.title}</h1>
-            <p className="mt-2 text-lg text-white/80">{article.hook}</p>
-            <div className="mt-4 flex flex-wrap gap-3">
-              {shopUrl ? (
-                <a
-                  className="rounded-full bg-white px-5 py-2 text-sm font-medium text-neutral-900 no-underline hover:bg-white/90"
-                  href={shopUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Shop this ball at BowlerDepot
-                </a>
-              ) : null}
-            </div>
+            <h1 className="font-display text-xl font-semibold text-white">{article.title}</h1>
+            <p className="mt-2 text-base text-white/80">{article.hook}</p>
           </div>
         </div>
       </div>

@@ -114,7 +114,27 @@
        -50%/-50%, with an explicit height (md:h-96) that's independent
        of the row's height -- so it always overhangs by a fixed,
        predictable amount no matter how long the article's hook text
-       runs. */
+       runs.
+
+     Al, once the fix was live: "you switched to portrait aspect ratio.
+     i would rather lose the button and make the fonts a touch smaller
+     than do that" -- the md:h-96/md:w-[85%]/md:aspect-auto combo above
+     produced a taller-than-wide box instead of the original 4:3
+     landscape photo. Reverted to aspect-[4/3] (kept active at md too,
+     not overridden) sized by an explicit width instead of height
+     (md:w-[320px], matching the column's own width -- height then
+     falls out of the aspect ratio automatically, at 240px). Anchored
+     left instead of centered (md:left-0, no translate-x) so the wider
+     box doesn't creep into the text column. To make room for that
+     natural-height landscape box to still overhang a shorter card: the
+     "Shop this ball at BowlerDepot" CTA is gone from the hero entirely
+     (shopUrl computation removed too -- it had no other use on this
+     page; Similar Balls cards compute their own ecommerce link
+     separately), and h1/hook dropped one step (text-2xl->text-xl,
+     text-lg->text-base). Both changes verified live against
+     https://learn.bowlerdepot.com (inline style overrides, screenshot,
+     iterate) before being written back here, at both desktop and
+     mobile widths. */
   .article-detail-hero {
     @apply relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-neutral-900 py-10;
   }
@@ -122,19 +142,19 @@
     @apply mx-auto grid max-w-5xl grid-cols-1 gap-8 px-6 md:grid-cols-[320px_1fr] md:px-8;
   }
   .article-detail-hero h1 {
-    @apply text-2xl text-white;
+    @apply text-xl text-white;
   }
   .article-detail-image-frame {
     @apply flex items-center justify-center overflow-visible px-2 md:relative md:px-4;
   }
   .article-detail-image {
-    @apply -my-3 aspect-[4/3] w-full -rotate-[12deg] rounded-sm bg-white p-2 shadow-2xl md:absolute md:left-1/2 md:top-1/2 md:my-0 md:aspect-auto md:h-96 md:w-[85%] md:-translate-x-1/2 md:-translate-y-1/2;
+    @apply -my-3 aspect-[4/3] w-full -rotate-[12deg] rounded-sm bg-white p-2 shadow-2xl md:absolute md:left-0 md:top-1/2 md:my-0 md:w-[320px] md:-translate-y-1/2;
   }
   .article-detail-image img {
     @apply h-full w-full rounded-[2px] object-cover;
   }
   .article-detail-hook {
-    @apply mt-2 text-lg text-white/80;
+    @apply mt-2 text-base text-white/80;
   }
   .article-grid {
     @apply grid grid-cols-1 gap-x-8 gap-y-10 sm:grid-cols-2 lg:grid-cols-3;
