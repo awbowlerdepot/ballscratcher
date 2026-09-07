@@ -11,22 +11,41 @@ export default function ArticleCard({ article }: { article: ArticleCardType }) {
   // list_articles' own docstrings).
   const cardImage = article.product_shot_image_url || article.primary_image_url;
   return (
-    <div className="article-card">
-      <Link to={`/articles/${article.product_id}`} className="article-card-media">
+    <div className="group">
+      <Link to={`/articles/${article.product_id}`} className="block overflow-hidden rounded-md bg-paper-border/40">
         {cardImage ? (
-          <img src={cardImage} alt={article.product_name} loading="lazy" />
+          <img
+            src={cardImage}
+            alt={article.product_name}
+            loading="lazy"
+            className="aspect-[4/3] w-full object-cover"
+          />
         ) : (
-          <div className="article-card-media-placeholder" aria-hidden="true" />
+          <div
+            className="aspect-[4/3] w-full bg-gradient-to-br from-secondary to-accent"
+            aria-hidden="true"
+          />
         )}
       </Link>
-      <div className="article-card-body">
-        <div className="article-card-brand">{article.brand_name}</div>
-        <Link to={`/articles/${article.product_id}`} className="article-card-title">
+      <div className="mt-3 flex flex-col gap-1">
+        <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-widest text-muted">
+          <span>{article.brand_name}</span>
+          {article.article_type_name ? (
+            <>
+              <span aria-hidden="true">&middot;</span>
+              <span>{article.article_type_name}</span>
+            </>
+          ) : null}
+        </div>
+        <Link
+          to={`/articles/${article.product_id}`}
+          className="font-display text-lg font-semibold leading-snug text-ink no-underline group-hover:text-accent"
+        >
           {article.title}
         </Link>
-        <p className="article-card-hook">{article.hook}</p>
+        <p className="text-sm text-muted">{article.hook}</p>
         {article.coverstock_type ? (
-          <div className="article-card-meta">{article.coverstock_type} coverstock</div>
+          <div className="text-xs text-muted">{article.coverstock_type} coverstock</div>
         ) : null}
       </div>
     </div>

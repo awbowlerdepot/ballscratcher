@@ -624,7 +624,7 @@ def fetch_product_content(conn, product_id: str) -> dict:
                    p.coverstock_name, p.has_particle, p.factory_finish,
                    lower(p.weights_available) as weights_min,
                    upper(p.weights_available) as weights_max,
-                   p.release_date, p.description,
+                   p.release_date, p.description, p.product_type,
                    b.id as brand_id, b.name as brand_name,
                    c.name as core_name, c.core_type
             from products p
@@ -1798,8 +1798,43 @@ def generate_article_image_candidates(conn, bedrock_image_client, bedrock_remove
     return results
 
 
+def resolve_category_and_article_type(conn, product_type: str) -> tuple:
+    """Migration 031: looks up (category_id, article_type_id) for a given
+    products.product_type ('ball'/'bag'/'shoe', migration 019). Every
+    article this module generates today is the sole seeded article_type
+    row within its category (there's exactly one -- 'ball-review' under
+    'bowling-balls') -- picked by display_order/id rather than a
+    hardcoded slug so this function keeps working unchanged if/when a
+    category ever grows a second article_type.
+
+    Returns (None, None), never raises, when no category row is mapped
+    to this product_type yet (e.g. 'bag'/'shoe' -- no Learn-site category
+    exists for those today). category_id/article_type_id are nullable
+    FKs on product_articles, same convention as core_id/coverstock_id on
+    products, so an article for an not-yet-onboarded product_type still
+    generates fine, just without a category/type label until a category
+    row for it is added (migration 031's own header comment covers why
+    this is deliberately its own taxonomy, not a reuse of product_type
+    itself)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select c.id, at.id
+            from categories c
+            join article_types at on at.category_id = c.id
+            where c.product_type = %s
+            order by at.display_order, at.id
+            limit 1
+            """,
+            (product_type,),
+        )
+        row = cur.fetchone()
+        return (row[0], row[1]) if row else (None, None)
+
+
 def store_article(conn, product_id: str, article: dict, source_video_ids: list,
-                   sibling_product_ids: list, images: dict = None) -> str:
+                   sibling_product_ids: list, images: dict = None,
+                   category_id: str = None, article_type_id: str = None) -> str:
     """Upsert -- a regenerate overwrites the existing row in place and
     resets status to 'pending' (see 022_product_articles.sql's own
     header comment for why: a previously-approved article going back
@@ -1812,7 +1847,12 @@ def store_article(conn, product_id: str, article: dict, source_video_ids: list,
     always called with a FRESH article dict (a brand-new generation, or
     the combined regenerate_text+regenerate_images path -- see generate_
     article_for_product), so the theme being written here is always the
-    model's own current-run derivation, never a stale reuse."""
+    model's own current-run derivation, never a stale reuse.
+
+    category_id/article_type_id (migration 031) come from the caller's
+    resolve_category_and_article_type(product["product_type"]) -- may be
+    None for a not-yet-onboarded product_type, which is fine, they're
+    nullable FKs."""
     images = images or {}
     has_images = bool(images)
     with conn.cursor() as cur:
@@ -1823,9 +1863,10 @@ def store_article(conn, product_id: str, article: dict, source_video_ids: list,
                  who_should_skip, pros, cons, buying_tips, verdict, faq, comparison_table,
                  sibling_product_ids, source_video_ids, generated_at, visual_theme,
                  action_shot_image_key, action_shot_image_url,
-                 product_shot_image_key, product_shot_image_url, images_generated_at)
+                 product_shot_image_key, product_shot_image_url, images_generated_at,
+                 category_id, article_type_id)
             values (%s, 'pending', %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), %s,
-                    %s, %s, %s, %s, case when %s then now() else null end)
+                    %s, %s, %s, %s, case when %s then now() else null end, %s, %s)
             on conflict (product_id) do update set
                 status = 'pending',
                 title = excluded.title,
@@ -1848,6 +1889,8 @@ def store_article(conn, product_id: str, article: dict, source_video_ids: list,
                 product_shot_image_key = excluded.product_shot_image_key,
                 product_shot_image_url = excluded.product_shot_image_url,
                 images_generated_at = excluded.images_generated_at,
+                category_id = excluded.category_id,
+                article_type_id = excluded.article_type_id,
                 reviewed_at = null,
                 resolved_by = null
             returning id
@@ -1862,6 +1905,7 @@ def store_article(conn, product_id: str, article: dict, source_video_ids: list,
                 images.get("action_shot_image_key"), images.get("action_shot_image_url"),
                 images.get("product_shot_image_key"), images.get("product_shot_image_url"),
                 has_images,
+                category_id, article_type_id,
             ),
         )
         article_id = cur.fetchone()[0]
@@ -2235,7 +2279,9 @@ def generate_article_for_product(conn, bedrock_client, model_id: str, product_id
     sibling_product_ids = [s["id"] for s in siblings]
 
     if regenerate_text and regenerate_images:
-        article_id = store_article(conn, product_id, article, source_video_ids, sibling_product_ids, images=images)
+        category_id, article_type_id = resolve_category_and_article_type(conn, product.get("product_type"))
+        article_id = store_article(conn, product_id, article, source_video_ids, sibling_product_ids, images=images,
+                                    category_id=category_id, article_type_id=article_type_id)
     elif regenerate_text:
         article_id = update_article_text_only(conn, product_id, article, source_video_ids, sibling_product_ids)
     else:

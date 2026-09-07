@@ -3029,6 +3029,38 @@ def test_get_core_returns_none_for_missing_id():
     assert "where c.id = %s" in queries[0]
 
 
+# --- list_categories (migration 031 -- Learn-site content taxonomy) --
+
+def test_list_categories_queries_categories_and_article_types_tables():
+    """Al: 'having Categories with one being Bowling balls and Ball
+    review being a type of article' -- two separate lookup tables read
+    (not one denormalized query), same nest-in-Python shape as public_
+    api's own list_categories (see that module's own test coverage)."""
+    conn = _QueryCapturingConnection()
+    service.list_categories(conn)
+
+    queries = conn.cursor().queries
+    assert len(queries) == 2
+    assert "from categories" in queries[0]
+    assert "order by display_order, name" in queries[0]
+    assert "from article_types" in queries[1]
+    assert "order by display_order, name" in queries[1]
+
+
+def test_list_categories_selects_product_type_hint():
+    """admin_api's copy includes categories.product_type (public_api's
+    Learn-facing copy doesn't need it) -- this is the optional hint back
+    to products.product_type that resolve_category_and_article_type
+    joins on, and the Articles review tab will eventually want to show
+    it. Deliberately NOT a foreign key (see migration 031's own header
+    comment) -- just a plain column, so no join needed to select it."""
+    conn = _QueryCapturingConnection()
+    service.list_categories(conn)
+
+    query = conn.cursor().queries[0]
+    assert "product_type" in query
+
+
 # --- list_products: missing_coverstock filter + coverstock_id/name
 # columns (migration 008) -- Al's direct follow-up to the cores work,
 # "can we do the same thing we did for cores for covers, those are also

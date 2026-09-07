@@ -1457,6 +1457,46 @@ def get_coverstock(conn, coverstock_id: str):
         return coverstock
 
 
+def list_categories(conn) -> list:
+    """Learn-site content taxonomy (migration 031) -- Al: "having
+    Categories with one being Bowling balls and Ball review being a type
+    of article." Small, mostly-static reference data (unlike cores/
+    coverstocks, which grow organically out of scraped catalog data), so
+    no brand/search filtering or pagination like list_cores/
+    list_coverstocks above: just every category, each carrying its own
+    article_types nested inline, ordered by display_order. Mirrors what
+    public_api's own list_categories returns to the Learn site itself --
+    this admin_api copy exists so the Articles review tab can eventually
+    show/filter by category+type without a second round-trip design."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select id, slug, name, description, product_type, display_order
+            from categories
+            order by display_order, name
+            """
+        )
+        columns = [desc[0] for desc in cur.description]
+        categories = [dict(zip(columns, row)) for row in cur.fetchall()]
+
+        cur.execute(
+            """
+            select id, category_id, slug, name, description, display_order
+            from article_types
+            order by display_order, name
+            """
+        )
+        at_columns = [desc[0] for desc in cur.description]
+        article_types = [dict(zip(at_columns, row)) for row in cur.fetchall()]
+
+    by_category = {}
+    for at in article_types:
+        by_category.setdefault(at["category_id"], []).append(at)
+    for c in categories:
+        c["article_types"] = by_category.get(c["id"], [])
+    return categories
+
+
 # ---------------------------------------------------------------------
 # Rescrape trigger (POST /products/{id}/rescrape), built for the cores
 # backfill (migration 007, scripts/backfill_core_ids.py): core_id only

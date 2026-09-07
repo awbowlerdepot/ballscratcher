@@ -253,7 +253,7 @@ class _FakeCursor:
     def __init__(self, needing_article=None, product_row=None, video_rows=None,
                  sibling_candidates=None, store_article_id="article-1",
                  reference_image_url=_UNSET, existing_article=None,
-                 selected_variants=None):
+                 selected_variants=None, category_article_type=(None, None)):
         self.needing_article = needing_article or []
         self.product_row = product_row
         self.video_rows = video_rows or []
@@ -282,6 +282,13 @@ class _FakeCursor:
         # article_for_product runs to compute locked_variants. Only
         # meaningful together with existing_article being set.
         self.selected_variants = selected_variants or []
+        # Migration 031 -- (category_id, article_type_id) resolve_
+        # category_and_article_type returns for whatever product_type
+        # this fixture's product_row carries. Defaults to (None, None),
+        # same "not every product_type is onboarded into the Learn
+        # taxonomy yet" case that function's own docstring documents as
+        # normal, not an error.
+        self.category_article_type = category_article_type
         self.executed = []
         self.description = None
         self._rows = []
@@ -322,9 +329,20 @@ class _FakeCursor:
                 ("id",), ("name",), ("color",), ("coverstock_material",), ("coverstock_type",),
                 ("coverstock_name",), ("has_particle",), ("factory_finish",),
                 ("weights_min",), ("weights_max",), ("release_date",), ("description",),
+                ("product_type",),
                 ("brand_id",), ("brand_name",), ("core_name",), ("core_type",),
             ]
-            self._rows = [self.product_row] if self.product_row else []
+            row = self.product_row
+            # product_type (migration 019/031 wiring) was added to the
+            # real SELECT after every one of this test file's 16-element
+            # product_row fixtures were written -- rather than touch all
+            # of them, a legacy 16-tuple gets "ball" spliced in at the
+            # same position the real SQL now selects it (right after
+            # description, before brand_id). A test that cares about a
+            # non-ball product_type can pass a full 17-tuple directly.
+            if row is not None and len(row) == 16:
+                row = row[:12] + ("ball",) + row[12:]
+            self._rows = [row] if row else []
 
         elif q.startswith("select id, title, channel_title, summary, transcript"):
             self.description = [
@@ -380,6 +398,11 @@ class _FakeCursor:
             self.images_only_updates.append(params)
             self.description = [("id",)]
             self._rows = [(self.existing_article["id"],)] if self.existing_article else []
+
+        elif q.startswith("select c.id, at.id"):
+            self.description = [("category_id",), ("article_type_id",)]
+            cat_id, atype_id = self.category_article_type
+            self._rows = [(cat_id, atype_id)] if cat_id is not None else []
 
         elif q.startswith("select coalesce("):
             if self.reference_image_url is _UNSET:
@@ -542,6 +565,21 @@ def test_infer_sibling_products_empty_when_no_candidates():
     assert app.infer_sibling_products(conn, product) == []
 
 
+# --- resolve_category_and_article_type (migration 031) ---
+
+def test_resolve_category_and_article_type_returns_ids_when_mapped():
+    conn = _FakeConnection(category_article_type=("cat-1", "atype-1"))
+    assert app.resolve_category_and_article_type(conn, "ball") == ("cat-1", "atype-1")
+
+
+def test_resolve_category_and_article_type_returns_none_when_unmapped():
+    """A product_type with no matching category row (e.g. 'bag'/'shoe' --
+    no Learn category onboarded for those yet) resolves to (None, None)
+    rather than raising -- see the function's own docstring."""
+    conn = _FakeConnection()  # default category_article_type=(None, None)
+    assert app.resolve_category_and_article_type(conn, "bag") == (None, None)
+
+
 # --- store_article ---
 
 def test_store_article_inserts_json_encoded_fields_and_commits():
@@ -591,6 +629,31 @@ def test_store_article_persists_none_when_visual_theme_omitted():
     app.store_article(conn, "prod-1", dict(_VALID_ARTICLE_JSON), [], [])
     params = conn._cursor.inserted[0]
     assert None in params  # doesn't raise; visual_theme param is present as None
+
+
+def test_store_article_persists_category_and_article_type_ids():
+    """Migration 031 -- category_id/article_type_id are the last two
+    columns in store_article's own insert list (see that function's
+    docstring); both the INSERT and the ON CONFLICT UPDATE SET must
+    carry them."""
+    conn = _FakeConnection()
+    app.store_article(conn, "prod-1", dict(_VALID_ARTICLE_JSON), [], [],
+                       category_id="cat-1", article_type_id="atype-1")
+    query, params = conn._cursor.executed[0]
+    assert params[-2:] == ("cat-1", "atype-1")
+    assert "category_id = excluded.category_id" in query
+    assert "article_type_id = excluded.article_type_id" in query
+
+
+def test_store_article_defaults_category_and_article_type_to_none():
+    """A not-yet-onboarded product_type (resolve_category_and_article_
+    type returns (None, None) -- see that function's own test) must not
+    force a caller to pass anything; store_article's own defaults cover
+    it."""
+    conn = _FakeConnection()
+    app.store_article(conn, "prod-1", dict(_VALID_ARTICLE_JSON), [], [])
+    params = conn._cursor.inserted[0]
+    assert params[-2:] == (None, None)
 
 
 # --- generate_article_for_product: orchestration against fake cursor + fake Bedrock ---
@@ -647,7 +710,8 @@ def test_generate_article_for_product_full_success_path():
     video_rows = [("vid-1", "Review", "Some Channel", "A summary.", "transcript text")]
     sibling_candidates = [{"id": "prod-2", "name": "Equinox Hybrid"}]
     conn = _FakeConnection(product_row=product_row, video_rows=video_rows,
-                            sibling_candidates=sibling_candidates, store_article_id="article-99")
+                            sibling_candidates=sibling_candidates, store_article_id="article-99",
+                            category_article_type=("cat-1", "atype-1"))
     bedrock = _FakeBedrockClient(json.dumps(_VALID_ARTICLE_JSON))
 
     result = app.generate_article_for_product(conn, bedrock, "model-id", "prod-1")
@@ -673,6 +737,11 @@ def test_generate_article_for_product_full_success_path():
     # _VALID_ARTICLE_JSON, so None.
     assert insert_params[15:19] == (None, None, None, None)
     assert insert_params[19] is False
+    # Migration 031 -- resolved from product_type='ball' (spliced default,
+    # see _FakeCursor's product_row-splicing comment) via this fixture's
+    # configured category_article_type, and threaded through to the
+    # store_article call's own category_id/article_type_id params.
+    assert insert_params[20:22] == ("cat-1", "atype-1")
 
 
 def test_generate_article_for_product_propagates_bad_bedrock_json():

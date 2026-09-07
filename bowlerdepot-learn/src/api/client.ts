@@ -1,4 +1,4 @@
-import type { ArticleCard, ProductArticleResponse } from "./types";
+import type { ArticleCard, Category, ProductArticleResponse } from "./types";
 
 // Same unauthenticated-PublicApiFunction posture as consumer-site/src/
 // api/client.ts (see its own comments for the full "why no auth"
@@ -47,6 +47,8 @@ async function apiGet<T>(path: string, params: Record<string, string | number | 
 export interface ListArticlesParams {
   brand_id?: string;
   coverstock_id?: string;
+  // Migration 031 -- id of a row from getCategories() below.
+  category_id?: string;
   search?: string;
   // 'newest' | 'oldest' | 'title_asc' | 'title_desc' -- see public_api/
   // service.py's _ARTICLE_SORT_ORDER_BY docstring in the main repo.
@@ -59,6 +61,7 @@ export function listArticles(params: ListArticlesParams = {}): Promise<ArticleCa
   return apiGet<{ items: ArticleCard[] }>("/articles", {
     brand_id: params.brand_id,
     coverstock_id: params.coverstock_id,
+    category_id: params.category_id,
     search: params.search,
     sort: params.sort,
     limit: params.limit,
@@ -68,6 +71,20 @@ export function listArticles(params: ListArticlesParams = {}): Promise<ArticleCa
 
 export function getBrands(): Promise<{ id: string; name: string }[]> {
   return apiGet<{ items: { id: string; name: string }[] }>("/brands").then((r) => r.items);
+}
+
+// Learn-site content taxonomy (migration 031) -- see types.ts's Category
+// comment. Small/static, fetched once and cached in module scope: every
+// page on the site wants the same list (nav label, eyebrow text), and it
+// changes only when an admin adds a new category/article_type, not per
+// request.
+let _categoriesCache: Promise<Category[]> | null = null;
+
+export function getCategories(): Promise<Category[]> {
+  if (!_categoriesCache) {
+    _categoriesCache = apiGet<{ items: Category[] }>("/categories").then((r) => r.items);
+  }
+  return _categoriesCache;
 }
 
 export function getProductArticle(productId: string): Promise<ProductArticleResponse> {

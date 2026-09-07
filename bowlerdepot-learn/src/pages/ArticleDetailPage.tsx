@@ -41,12 +41,12 @@ export default function ArticleDetailPage() {
       .finally(() => setLoading(false));
   }, [productId]);
 
-  if (loading) return <p className="empty-state">Loading...</p>;
-  if (notFound) return <p className="empty-state">That ball isn't in our catalog.</p>;
-  if (error) return <p className="error-message">{error}</p>;
+  if (loading) return <p className="py-8 text-center text-muted">Loading...</p>;
+  if (notFound) return <p className="py-8 text-center text-muted">That ball isn't in our catalog.</p>;
+  if (error) return <p className="py-8 text-center text-alert">{error}</p>;
 
   const article = data?.article;
-  if (!article) return <p className="empty-state">No review is published for this ball yet.</p>;
+  if (!article) return <p className="py-8 text-center text-muted">No review is published for this ball yet.</p>;
 
   const product = article.product;
   const heroImage = article.action_shot_image_url || product?.primary_image_url;
@@ -57,24 +57,37 @@ export default function ArticleDetailPage() {
   // approved a BowlerDepot source for this product; otherwise fall back
   // to the search-results link every ball has always had.
   const shopUrl = product?.ecommerce_url || (product ? bowlerDepotSearchUrl(product.name) : null);
+  // Migration 031 -- "Bowling Balls · Ball Review" eyebrow, read straight
+  // off the article row rather than hardcoded (see ArticleCard's own
+  // comment on the same fields). Null for a pre-migration article.
+  const taxonomyLabel = [article.category_name, article.article_type_name].filter(Boolean).join(" · ");
 
   return (
-    <div className="page">
-      <Link to="/" className="back-link">
+    <div>
+      <Link to="/" className="mb-6 inline-block text-sm font-medium text-muted hover:text-ink">
         &larr; All reviews
       </Link>
 
-      <div className="article-detail-hero">
-        <div className="article-detail-image">
-          {heroImage ? <img src={heroImage} alt={product?.name || article.title} /> : null}
+      <div className="mb-10 grid grid-cols-1 gap-8 md:grid-cols-[320px_1fr]">
+        <div className="aspect-[4/3] w-full overflow-hidden rounded-md bg-paper-border/40">
+          {heroImage ? (
+            <img src={heroImage} alt={product?.name || article.title} className="h-full w-full object-cover" />
+          ) : null}
         </div>
         <div>
-          {product ? <div className="article-detail-eyebrow">{product.core_type || product.coverstock_type}</div> : null}
-          <h1>{article.title}</h1>
-          <p className="article-detail-hook">{article.hook}</p>
-          <div className="article-detail-actions">
+          <p className="mb-1 text-[11px] font-semibold uppercase tracking-widest text-muted">
+            {taxonomyLabel || product?.core_type || product?.coverstock_type}
+          </p>
+          <h1 className="font-display text-3xl font-semibold text-ink">{article.title}</h1>
+          <p className="mt-2 text-lg text-muted">{article.hook}</p>
+          <div className="mt-4 flex flex-wrap gap-3">
             {shopUrl ? (
-              <a className="btn btn-primary" href={shopUrl} target="_blank" rel="noreferrer">
+              <a
+                className="rounded-full bg-accent px-5 py-2 text-sm font-medium text-white no-underline hover:opacity-90"
+                href={shopUrl}
+                target="_blank"
+                rel="noreferrer"
+              >
                 Shop this ball at BowlerDepot
               </a>
             ) : null}
@@ -83,27 +96,27 @@ export default function ArticleDetailPage() {
       </div>
 
       {article.performance_summary ? (
-        <div className="article-section">
-          <h2>Performance</h2>
-          <p>{article.performance_summary}</p>
+        <div className="mb-10">
+          <h2 className="mb-3 font-display text-xl font-semibold text-ink">Performance</h2>
+          <p className="text-ink/90">{article.performance_summary}</p>
         </div>
       ) : null}
 
-      {(article.pros?.length || article.cons?.length) ? (
-        <div className="article-section">
-          <h2>Pros &amp; Cons</h2>
-          <div className="pros-cons-grid">
+      {article.pros?.length || article.cons?.length ? (
+        <div className="mb-10">
+          <h2 className="mb-3 font-display text-xl font-semibold text-ink">Pros &amp; Cons</h2>
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
             <div>
-              <div className="pros-title">Pros</div>
-              <ul>
+              <div className="mb-2 text-sm font-semibold text-green-700">Pros</div>
+              <ul className="list-disc space-y-1 pl-5 text-sm text-ink/90">
                 {(article.pros || []).map((p, i) => (
                   <li key={i}>{p}</li>
                 ))}
               </ul>
             </div>
             <div>
-              <div className="cons-title">Cons</div>
-              <ul>
+              <div className="mb-2 text-sm font-semibold text-alert">Cons</div>
+              <ul className="list-disc space-y-1 pl-5 text-sm text-ink/90">
                 {(article.cons || []).map((c, i) => (
                   <li key={i}>{c}</li>
                 ))}
@@ -114,9 +127,9 @@ export default function ArticleDetailPage() {
       ) : null}
 
       {article.who_should_buy?.length ? (
-        <div className="article-section">
-          <h2>Who Should Buy This</h2>
-          <ul>
+        <div className="mb-10">
+          <h2 className="mb-3 font-display text-xl font-semibold text-ink">Who Should Buy This</h2>
+          <ul className="list-disc space-y-1 pl-5 text-sm text-ink/90">
             {article.who_should_buy.map((w, i) => (
               <li key={i}>{w}</li>
             ))}
@@ -125,9 +138,9 @@ export default function ArticleDetailPage() {
       ) : null}
 
       {article.who_should_skip?.length ? (
-        <div className="article-section">
-          <h2>Who Should Skip This</h2>
-          <ul>
+        <div className="mb-10">
+          <h2 className="mb-3 font-display text-xl font-semibold text-ink">Who Should Skip This</h2>
+          <ul className="list-disc space-y-1 pl-5 text-sm text-ink/90">
             {article.who_should_skip.map((w, i) => (
               <li key={i}>{w}</li>
             ))}
@@ -136,39 +149,47 @@ export default function ArticleDetailPage() {
       ) : null}
 
       {article.buying_tips ? (
-        <div className="article-section">
-          <h2>Buying Tips</h2>
-          <p>{article.buying_tips}</p>
+        <div className="mb-10">
+          <h2 className="mb-3 font-display text-xl font-semibold text-ink">Buying Tips</h2>
+          <p className="text-ink/90">{article.buying_tips}</p>
         </div>
       ) : null}
 
       {article.verdict ? (
-        <div className="article-section">
-          <h2>Verdict</h2>
-          <p>{article.verdict}</p>
+        <div className="mb-10">
+          <h2 className="mb-3 font-display text-xl font-semibold text-ink">Verdict</h2>
+          <p className="text-ink/90">{article.verdict}</p>
         </div>
       ) : null}
 
       {product?.skus?.length ? (
-        <div className="article-section">
-          <h2>Specs</h2>
-          <div className="comparison-table-wrap">
-            <table className="comparison-table">
+        <div className="mb-10">
+          <h2 className="mb-3 font-display text-xl font-semibold text-ink">Specs</h2>
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse text-sm">
               <thead>
                 <tr>
-                  <th>Weight</th>
-                  <th>RG</th>
-                  <th>Differential</th>
-                  <th>Mass Bias</th>
+                  <th className="border-b border-paper-border px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-muted">
+                    Weight
+                  </th>
+                  <th className="border-b border-paper-border px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-muted">
+                    RG
+                  </th>
+                  <th className="border-b border-paper-border px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-muted">
+                    Differential
+                  </th>
+                  <th className="border-b border-paper-border px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-muted">
+                    Mass Bias
+                  </th>
                 </tr>
               </thead>
               <tbody>
                 {product.skus.map((sku) => (
                   <tr key={sku.weight_lbs}>
-                    <td>{sku.weight_lbs} lb</td>
-                    <td>{sku.rg ?? "--"}</td>
-                    <td>{sku.differential ?? "--"}</td>
-                    <td>{sku.mass_bias ?? "--"}</td>
+                    <td className="border-b border-paper-border px-3 py-2">{sku.weight_lbs} lb</td>
+                    <td className="border-b border-paper-border px-3 py-2">{sku.rg ?? "--"}</td>
+                    <td className="border-b border-paper-border px-3 py-2">{sku.differential ?? "--"}</td>
+                    <td className="border-b border-paper-border px-3 py-2">{sku.mass_bias ?? "--"}</td>
                   </tr>
                 ))}
               </tbody>
@@ -178,36 +199,39 @@ export default function ArticleDetailPage() {
       ) : null}
 
       {article.comparison_table?.length ? (
-        <div className="article-section">
-          <h2>Similar Balls</h2>
-          <div className="article-grid">
+        <div className="mb-10">
+          <h2 className="mb-3 font-display text-xl font-semibold text-ink">Similar Balls</h2>
+          <div className="grid grid-cols-1 gap-x-8 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
             {article.comparison_table.map((c) => {
               const price = formatPrice(c.ecommerce_price, c.ecommerce_price_currency);
               return (
                 <a
                   key={c.id}
-                  className="article-card"
+                  className="group block"
                   href={c.ecommerce_url || bowlerDepotSearchUrl(c.name)}
                   target="_blank"
                   rel="noreferrer"
                 >
-                  <div className="article-card-media">
+                  <div className="aspect-[4/3] w-full overflow-hidden rounded-md bg-paper-border/40">
                     {c.primary_image_url ? (
-                      <img src={c.primary_image_url} alt={c.name} loading="lazy" />
-                    ) : (
-                      <div className="article-card-media-placeholder" aria-hidden="true" />
-                    )}
+                      <img
+                        src={c.primary_image_url}
+                        alt={c.name}
+                        loading="lazy"
+                        className="h-full w-full object-cover"
+                      />
+                    ) : null}
                   </div>
-                  <div className="article-card-body">
-                    <div className="article-card-title">{c.name}</div>
-                    <div className="article-card-meta">
+                  <div className="mt-3">
+                    <div className="font-display font-semibold text-ink group-hover:text-accent">{c.name}</div>
+                    <div className="text-xs text-muted">
                       {[c.core_name, c.coverstock_name].filter(Boolean).join(" · ")}
                     </div>
                     {price ? (
-                      <div className="article-card-price">
+                      <div className="mt-1 text-sm font-semibold text-accent">
                         {price}
                         {c.ecommerce_in_stock === false ? (
-                          <span className="article-card-stock-badge"> · Out of stock</span>
+                          <span className="font-normal text-alert"> &middot; Out of stock</span>
                         ) : null}
                       </div>
                     ) : null}
@@ -220,33 +244,36 @@ export default function ArticleDetailPage() {
       ) : null}
 
       {article.faq?.length ? (
-        <div className="article-section">
-          <h2>FAQ</h2>
+        <div className="mb-10">
+          <h2 className="mb-3 font-display text-xl font-semibold text-ink">FAQ</h2>
           {article.faq.map((item, i) => (
-            <div className="faq-item" key={i}>
-              <p className="faq-question">{item.question}</p>
-              <p className="faq-answer">{item.answer}</p>
+            <div className="border-t border-paper-border py-4" key={i}>
+              <p className="mb-1 font-medium text-ink">{item.question}</p>
+              <p className="text-muted">{item.answer}</p>
             </div>
           ))}
         </div>
       ) : null}
 
       {article.related_reviews?.length ? (
-        <div className="article-section">
-          <h2>Related Reviews</h2>
-          <div className="article-grid">
+        <div className="mb-10">
+          <h2 className="mb-3 font-display text-xl font-semibold text-ink">Related Reviews</h2>
+          <div className="grid grid-cols-1 gap-x-8 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
             {article.related_reviews.map((r) => (
-              <Link key={r.product_id} className="article-card" to={`/articles/${r.product_id}`}>
-                <div className="article-card-media">
+              <Link key={r.product_id} className="group block" to={`/articles/${r.product_id}`}>
+                <div className="aspect-[4/3] w-full overflow-hidden rounded-md bg-paper-border/40">
                   {r.primary_image_url ? (
-                    <img src={r.primary_image_url} alt={r.product_name} loading="lazy" />
-                  ) : (
-                    <div className="article-card-media-placeholder" aria-hidden="true" />
-                  )}
+                    <img
+                      src={r.primary_image_url}
+                      alt={r.product_name}
+                      loading="lazy"
+                      className="h-full w-full object-cover"
+                    />
+                  ) : null}
                 </div>
-                <div className="article-card-body">
-                  <div className="article-card-title">{r.title}</div>
-                  <div className="article-card-meta">{r.product_name}</div>
+                <div className="mt-3">
+                  <div className="font-display font-semibold text-ink group-hover:text-accent">{r.title}</div>
+                  <div className="text-xs text-muted">{r.product_name}</div>
                 </div>
               </Link>
             ))}

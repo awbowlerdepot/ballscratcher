@@ -669,6 +669,18 @@ def get_coverstock(coverstock_id: str):
         conn.close()
 
 
+@app.get("/categories")
+def get_categories():
+    # Learn-site content taxonomy (migration 031) -- see
+    # service.list_categories' docstring. Small/static, no filters or
+    # pagination needed like /cores and /coverstocks above.
+    conn = service.get_db_connection()
+    try:
+        return {"items": service.list_categories(conn)}
+    finally:
+        conn.close()
+
+
 @app.post("/products/{product_id}/refresh-video-summary")
 def refresh_video_summary(product_id: str):
     # On-demand counterpart to video_summarizer's automatic rollup

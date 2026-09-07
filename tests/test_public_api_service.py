@@ -590,6 +590,67 @@ def test_list_articles_passes_through_limit_and_offset():
     assert params[-2:] == [10, 20]
 
 
+def test_list_articles_category_id_filters_and_is_first_bind_param():
+    """Migration 031 -- category_id filters the SAME way brand_id/
+    coverstock_id do (scoped to the article's own persisted pa.category_id,
+    not a live join back through product_type). Al's category filter
+    dropdown on the Learn index page needs this to actually narrow results."""
+    conn = _QueryCapturingConnection()
+    service.list_articles(conn, category_id="cat-1")
+
+    query = conn.cursor().queries[0]
+    params = conn.cursor().params[0]
+    assert "and pa.category_id = %s" in query
+    assert params == ["cat-1", 24, 0]
+
+
+def test_list_articles_no_category_filter_by_default():
+    conn = _QueryCapturingConnection()
+    service.list_articles(conn)
+
+    query = conn.cursor().queries[0]
+    assert "and pa.category_id = %s" not in query
+
+
+def test_list_articles_joins_categories_and_article_types():
+    """The card list needs the same category/article_type eyebrow label
+    the detail page shows (ArticleCard.tsx: "Bowling Balls · Ball
+    Review") -- left-joined so a pre-migration/unmapped article still
+    lists, just without those four fields."""
+    conn = _QueryCapturingConnection()
+    service.list_articles(conn)
+
+    query = conn.cursor().queries[0]
+    assert "left join categories cat on cat.id = pa.category_id" in query
+    assert "left join article_types atype on atype.id = pa.article_type_id" in query
+    assert "cat.name as category_name" in query
+    assert "atype.name as article_type_name" in query
+
+
+# --- list_categories (GET /categories, Learn-site taxonomy) --
+
+def test_list_categories_queries_categories_and_article_types_tables():
+    """Al, picking a Learn theme: 'having Categories with one being
+    Bowling balls and Ball review being a type of article' -- the
+    nav/eyebrow labels this backs need both lookup tables read, not just
+    categories, so a category with no article_types yet still nests an
+    empty list rather than erroring."""
+    conn = _QueryCapturingConnection()
+    service.list_categories(conn)
+
+    queries = conn.cursor().queries
+    assert any("from categories" in q for q in queries)
+    assert any("from article_types" in q for q in queries)
+
+
+def test_list_categories_orders_by_display_order():
+    conn = _QueryCapturingConnection()
+    service.list_categories(conn)
+
+    queries = conn.cursor().queries
+    assert any("order by display_order, name" in q for q in queries)
+
+
 # --- get_product / get_products_compare / list_similar_products:
 # multi-query assembly against a hand-built fake cursor ---
 
@@ -875,7 +936,7 @@ class _FakeCursor:
             self._description = [("id",)]
             self._result_row = (pid,) if (p is not None and p["published"]) else None
 
-        elif q.startswith("select id, title, hook, performance_summary, who_should_buy, who_should_skip,"):
+        elif q.startswith("select pa.id, pa.title, pa.hook, pa.performance_summary, pa.who_should_buy, pa.who_should_skip,"):
             pid = params[0]
             article = self.db.get("product_articles", {}).get(pid)
             self._description = [(c,) for c in (
@@ -883,10 +944,16 @@ class _FakeCursor:
                 "pros", "cons", "buying_tips", "verdict", "faq", "sibling_product_ids",
                 "source_video_ids", "generated_at", "reviewed_at",
                 "action_shot_image_url", "product_shot_image_url",
+                "category_name", "category_slug", "article_type_name", "article_type_slug",
             )]
             if article is None or article.get("status") != "approved":
                 self._result_row = None
             else:
+                # Migration 031 -- read straight off the fixture's own
+                # article dict (a test that cares sets these keys
+                # directly, same flat-dict-not-a-real-join simplification
+                # this whole fixture already uses elsewhere); None/absent
+                # is the normal pre-migration/not-yet-onboarded case.
                 self._result_row = (
                     article["id"], article.get("title"), article.get("hook"),
                     article.get("performance_summary"), article.get("who_should_buy", []),
@@ -895,6 +962,8 @@ class _FakeCursor:
                     article.get("sibling_product_ids", []), article.get("source_video_ids", []),
                     article.get("generated_at"), article.get("reviewed_at"),
                     article.get("action_shot_image_url"), article.get("product_shot_image_url"),
+                    article.get("category_name"), article.get("category_slug"),
+                    article.get("article_type_name"), article.get("article_type_slug"),
                 )
 
         elif q.startswith("select p.name, p.url, c.name as core_name, c.core_type,"):
@@ -1624,6 +1693,43 @@ def test_get_product_article_returns_full_approved_article_with_live_spec_join()
     assert article["product"]["core_name"] == "Sonar"
     assert article["product"]["coverstock_name"] == "R2S Hybrid"
     assert article["product"]["skus"] == [{"weight_lbs": 15, "rg": 2.49, "differential": 0.048, "mass_bias": None}]
+
+
+def test_get_product_article_includes_category_and_article_type_when_mapped():
+    """Migration 031 -- ArticleDetailPage.tsx's 'Bowling Balls · Ball
+    Review' eyebrow is read straight off these four fields."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(
+        db, pid,
+        category_name="Bowling Balls", category_slug="bowling-balls",
+        article_type_name="Ball Review", article_type_slug="ball-review",
+    )
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    article = result["article"]
+    assert article["category_name"] == "Bowling Balls"
+    assert article["category_slug"] == "bowling-balls"
+    assert article["article_type_name"] == "Ball Review"
+    assert article["article_type_slug"] == "ball-review"
+
+
+def test_get_product_article_category_fields_null_for_pre_migration_article():
+    """An article generated before migration 031's resolve_category_and_
+    article_type wiring (or for a not-yet-onboarded product_type) has no
+    category_id/article_type_id -- the left join just yields nulls, not
+    an error, and the Learn detail page falls back to core_type/
+    coverstock_type (see ArticleDetailPage.tsx's own taxonomyLabel)."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid)
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    article = result["article"]
+    assert article.get("category_name") is None
+    assert article.get("article_type_name") is None
 
 
 def test_get_product_article_comparison_table_drops_unpublished_siblings():

@@ -91,6 +91,7 @@ def get_products_compare(ids: str = Query(..., description="Comma-separated prod
 def get_articles(
     brand_id: Optional[str] = Query(None),
     coverstock_id: Optional[str] = Query(None),
+    category_id: Optional[str] = Query(None, description="Filter to one Learn-site category (migration 031), e.g. 'Bowling Balls' -- see service.list_categories/GET /categories for the id to pass"),
     search: Optional[str] = Query(None),
     sort: Optional[str] = Query(None, description="'newest', 'oldest', 'title_asc', or 'title_desc' (see service._ARTICLE_SORT_ORDER_BY's docstring); omitted/anything else keeps the default most-recently-approved-first order"),
     limit: int = Query(24, le=100),
@@ -104,9 +105,19 @@ def get_articles(
     # literal-path route in this file stays visually together.
     conn = service.get_db_connection()
     return {"items": service.list_articles(
-        conn, brand_id=brand_id, coverstock_id=coverstock_id, search=search,
-        sort=sort, limit=limit, offset=offset,
+        conn, brand_id=brand_id, coverstock_id=coverstock_id, category_id=category_id,
+        search=search, sort=sort, limit=limit, offset=offset,
     )}
+
+
+@app.get("/categories")
+def get_categories():
+    # Learn-site content taxonomy (migration 031) -- see
+    # service.list_categories' own docstring. Backs the Learn nav's
+    # "Bowling Balls" / "Ball Review" labels and any future category
+    # switcher, read from data rather than hardcoded into the frontend.
+    conn = service.get_db_connection()
+    return {"items": service.list_categories(conn)}
 
 
 @app.get("/products/{product_id}")

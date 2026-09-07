@@ -2,6 +2,33 @@
 // main repo) -- see list_articles/get_product_article's own docstrings
 // for exactly which fields each shape guarantees vs. leaves null.
 
+// Learn-site content taxonomy (migration 031) -- Al: "having Categories
+// with one being Bowling balls and Ball review being a type of article.
+// Just to ensure future expansion." article_types is nested inline
+// (mirrors admin_api's own list_categories shape) so a category's
+// available write-up kinds are always available without a second
+// round-trip. Today there's exactly one of each ("Bowling Balls" /
+// "Ball Review"), but nav/label components should read these off
+// GET /categories rather than hardcode the strings, so a future category
+// or article_type just shows up.
+export interface ArticleType {
+  id: string;
+  category_id: string;
+  slug: string;
+  name: string;
+  description?: string | null;
+  display_order: number;
+}
+
+export interface Category {
+  id: string;
+  slug: string;
+  name: string;
+  description?: string | null;
+  display_order: number;
+  article_types: ArticleType[];
+}
+
 export interface ArticleCard {
   article_id: string;
   title: string;
@@ -23,6 +50,12 @@ export interface ArticleCard {
   // primary_image_url in that case, same pattern the detail page's hero
   // image already uses.
   product_shot_image_url?: string | null;
+  // Migration 031 -- null for a pre-migration article or a not-yet-
+  // onboarded product_type; a card should simply omit the label then.
+  category_name?: string | null;
+  category_slug?: string | null;
+  article_type_name?: string | null;
+  article_type_slug?: string | null;
 }
 
 export interface ProductSku {
@@ -114,6 +147,11 @@ export interface ArticleDetail {
   reviewed_at?: string | null;
   action_shot_image_url?: string | null;
   product_shot_image_url?: string | null;
+  // Migration 031 -- see ArticleCard's own comment on these four fields.
+  category_name?: string | null;
+  category_slug?: string | null;
+  article_type_name?: string | null;
+  article_type_slug?: string | null;
   product: ArticleProductSpec | null;
   comparison_table: ComparisonRow[];
   related_reviews: RelatedReview[];

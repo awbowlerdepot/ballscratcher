@@ -65,6 +65,8 @@ psql "$DATABASE_URL" -f db/migrations/026_product_article_image_candidates.sql
 psql "$DATABASE_URL" -f db/migrations/027_manual_seed_urls.sql
 psql "$DATABASE_URL" -f db/migrations/028_product_articles_bigcommerce_sync.sql
 psql "$DATABASE_URL" -f db/migrations/029_product_articles_visual_theme.sql
+psql "$DATABASE_URL" -f db/migrations/030_materialized_product_scores.sql
+psql "$DATABASE_URL" -f db/migrations/031_content_categories_article_types.sql
 ```
 
 (If you already ran an earlier subset in a prior deploy, just run whatever
@@ -11987,6 +11989,137 @@ No migration, no `template.yaml` change. Deploy via:
 
 ```bash
 cd admin-spa && npm run build   # then the usual S3/CloudFront admin-spa deploy step
+```
+
+### 6ac. Learn-site restyle (Editorial Magazine + Space Grotesk) + a real Categories/article-types backend taxonomy (migration 031)
+
+Al, asked to add style options to the plain Learn site: "can we add
+some style to the learn site? ... lets you tailwind and provide me a
+few options." Shown three rendered Tailwind theme mockups (Storefront
+Continuity, Editorial Magazine, Bold Sport); picked **Editorial
+Magazine** after also asking to see real font comparisons ("can i get
+visuals of what you are meaning"), and separately picked **Space
+Grotesk** for headlines over Fraunces/Instrument Serif ("can we go with
+a touch more modern font"). In the same message: "i think having
+Categories with one being Bowing balls and Ball review being a type of
+article. Just to ensure furutre expansion" -- asked to clarify scope
+(visual-only vs. a real backend model), Al picked **"Full backend
+category system."**
+
+**Migration 031** (`db/migrations/031_content_categories_article_types.sql`):
+two new lookup tables, `categories` (id, slug, name, description,
+`product_type` -- an OPTIONAL plain column, deliberately NOT a foreign
+key back to `products.product_type`, display_order) and `article_types`
+(id, category_id FK not null, slug, name, description, display_order,
+unique on category_id+slug). `product_articles` gets two new NULLABLE
+FK columns, `category_id`/`article_type_id` -- same never-forced-
+NOT-NULL convention as `products.core_id`/`coverstock_id` (007/008).
+Seeded with exactly the two rows Al asked for: category
+`bowling-balls`/"Bowling Balls", article_type `ball-review`/"Ball
+Review", with existing `product_articles` rows backfilled to point at
+them.
+
+**Why decoupled from `products.product_type`** (019's ball/bag/shoe
+dispatch column) rather than reusing it directly: `product_type`
+answers "what physical item is this," categories answer "what Learn-
+site content area is this" -- a future category like "News" or "Buying
+Guides" may have no `product_type` at all, and this table needs to
+support that without a schema change. The optional `product_type`
+column on `categories` is just a resolution *hint*, read by a new
+`resolve_category_and_article_type(conn, product_type)` function in
+`product_article_generator/app.py` (joins `categories`->`article_types`
+on `c.product_type = %s`, ordered by `display_order, id`, returns
+`(None, None)` when unmapped rather than raising) -- so onboarding a
+new product_type later just needs a new `categories` row, not a code
+change.
+
+**Wired end-to-end**:
+- `product_article_generator/app.py`: `fetch_product_content` now
+  selects `p.product_type`; `resolve_category_and_article_type` runs on
+  every full-regenerate (`regenerate_text and regenerate_images`) and
+  `store_article` persists `category_id`/`article_type_id` (appended at
+  the END of the INSERT param tuple, after `has_images`, so no existing
+  index-based test assertion shifted). Text-only regenerate does NOT
+  re-resolve category -- an article's category doesn't change just
+  because its copy got regenerated.
+- `admin_api/service.py` + `app.py`: new `list_categories(conn)`
+  (categories + nested article_types) behind `GET /categories`, mirrors
+  the shape the Articles review tab will eventually filter by.
+- `public_api/service.py` + `app.py`: `list_articles` gained a
+  `category_id` filter (same non-negotiable-published-status posture as
+  every other filter in that function) plus left-joined
+  `category_name`/`category_slug`/`article_type_name`/
+  `article_type_slug` for card eyebrows; `get_product_article` gained
+  the same four fields (left-joined, so a pre-migration article or an
+  unmapped product_type still returns 200 with those fields null, never
+  an error); new `list_categories(conn)` behind `GET /categories` for
+  the Learn site's own nav/eyebrow labels.
+- Learn frontend (`bowlerdepot-learn/`): `types.ts`/`client.ts` get
+  `Category`/`ArticleType` types + `getCategories()` (cached, mirrors
+  `getBrands()`); `ArticleCard.tsx` shows the article_type_name next to
+  the brand name; `LearnIndexPage.tsx` renders a "Bowling Balls · Ball
+  Review" eyebrow read from `getCategories()[0]`, not hardcoded;
+  `ArticleDetailPage.tsx` computes `taxonomyLabel` from
+  `category_name`/`article_type_name`, falling back to
+  `core_type`/`coverstock_type` when null (pre-migration article).
+
+**Editorial Magazine theme**: warm-paper background (`#faf8f4`), thin
+border (`#e8e2d6`), minimal borderless cards, Space Grotesk headlines
+over Cabin body copy -- Cabin/navy-text (`#0f0f2d`)/accent-blue
+(`#1f439e`)/alert-red (`#d14343`) are real bowlerdepot.com brand values
+researched for this feature; the warm paper/border/muted palette is
+this theme's own addition on top of them, not a replacement, per Al's
+own framing earlier in the project ("how do we best create a user
+experience that is not disjointed" from the storefront). Added
+`tailwindcss`/`postcss`/`autoprefixer` to `bowlerdepot-learn/
+package.json` (versions matched to `admin-spa`'s already-vendored
+copies), new `postcss.config.js`/`tailwind.config.js`, and a full
+rewrite of `src/index.css` (Google Fonts import, `@layer base` for
+element defaults, `@layer components` re-implementing the old
+hand-rolled class names via `@apply`). `Nav.tsx`/`App.tsx`/
+`ArticleCard.tsx`/`LearnIndexPage.tsx`/`ArticleDetailPage.tsx` rewritten
+with Tailwind utilities.
+
+**Real bug caught and fixed**: Tailwind v3's content-based purging
+removes unused `@layer components` classes too, not just utilities --
+`scripts/prerender.ts` (a `.ts` file outside `src/`) hand-builds its
+static HTML with literal `class="..."` strings for SEO/no-JS visitors
+(see that file's own comment: `main.tsx`'s `createRoot(...).render(...)`
+fully replaces it for every JS-enabled visitor, so there's no hydration
+mismatch risk, but the prerendered markup still needs to look right for
+crawlers), and it was outside `tailwind.config.js`'s original `content`
+array, so every one of those classes (`.article-card`, `.faq-item`,
+etc.) was silently compiling to nothing. Fixed by adding
+`"./scripts/**/*.ts"` to `content`; verified by compiling
+`src/index.css` standalone and confirming non-zero match counts for the
+affected classes before vs. after.
+
+**Tests**: `test_product_article_generator.py` -- new
+`resolve_category_and_article_type` tests (mapped + unmapped cases) and
+`store_article` category/article_type persistence tests; the FakeCursor's
+`fetch_product_content` fixture row gained a `product_type` column,
+handled via a length-based splice (`row[:12] + ("ball",) + row[12:]`)
+rather than editing all 16 scattered `product_row` tuple literals in
+that file. `test_admin_api_service.py` -- new `list_categories` query-
+shape tests. `test_public_api_service.py` -- new `list_articles`
+category_id-filter/join tests, `list_categories` query-shape tests, and
+`get_product_article` category-field tests (both the mapped case and
+the null-for-pre-migration-article case). **Full suite: 107/107**
+(`test_public_api_service.py`), **288/288** (`test_admin_api_service.py`),
+**131/131** (`test_product_article_generator.py`); full repo-wide sweep
+across every other `tests/test_*.py` file confirmed no regressions (the
+two files that error with `ModuleNotFoundError: No module named
+'pytest'` -- `test_product_scraper.py`/`test_url_discovery.py` -- are a
+pre-existing, unrelated sandbox gap, not caused by this change).
+`npx tsc -b` clean in `bowlerdepot-learn/`.
+
+No `template.yaml` change (this feature touches existing Lambdas/APIs
+only, no new resources). Deploy via:
+
+```bash
+psql "$DATABASE_URL" -f db/migrations/031_content_categories_article_types.sql
+sam build && sam deploy   # picks up product_article_generator/admin_api/public_api changes
+cd bowlerdepot-learn && npm run build   # then the usual GitHub Actions deploy (push to main)
 ```
 
 ## 7. Ongoing operations

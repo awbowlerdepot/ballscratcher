@@ -356,8 +356,44 @@ _ARTICLE_SORT_ORDER_BY = {
 _ARTICLE_DEFAULT_ORDER_BY = "pa.reviewed_at desc nulls last, pa.id asc"
 
 
-def list_articles(conn, brand_id: str = None, coverstock_id: str = None, search: str = None,
-                   sort: str = None, limit: int = 24, offset: int = 0) -> list:
+def list_categories(conn) -> list:
+    """Learn-site content taxonomy (migration 031) -- Al, picking a Learn
+    theme: "having Categories with one being Bowling balls and Ball
+    review being a type of article. Just to ensure future expansion."
+    Every category with its article_types nested inline (mirrors admin_
+    api's own list_categories -- see that module's docstring for the
+    fuller rationale on why this is its own small lookup taxonomy,
+    deliberately decoupled from products.product_type). Backs the Learn
+    site's nav/eyebrow labels so "Bowling Balls" / "Ball Review" are read
+    off this data rather than hardcoded into a component -- a future
+    category or article_type just needs a row here, not a frontend
+    deploy."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "select id, slug, name, description, display_order from categories order by display_order, name"
+        )
+        columns = [desc[0] for desc in cur.description]
+        categories = [dict(zip(columns, row)) for row in cur.fetchall()]
+
+        cur.execute(
+            """
+            select id, category_id, slug, name, description, display_order
+            from article_types order by display_order, name
+            """
+        )
+        at_columns = [desc[0] for desc in cur.description]
+        article_types = [dict(zip(at_columns, row)) for row in cur.fetchall()]
+
+    by_category = {}
+    for at in article_types:
+        by_category.setdefault(at["category_id"], []).append(at)
+    for c in categories:
+        c["article_types"] = by_category.get(c["id"], [])
+    return categories
+
+
+def list_articles(conn, brand_id: str = None, coverstock_id: str = None, category_id: str = None,
+                   search: str = None, sort: str = None, limit: int = 24, offset: int = 0) -> list:
     """Card-shaped results for the Learn section's browse/index page --
     one row per APPROVED article whose product is still published, same
     published-is-non-negotiable posture as every other route in this
@@ -405,13 +441,24 @@ def list_articles(conn, brand_id: str = None, coverstock_id: str = None, search:
     most-recently-touched default. See _ARTICLE_SORT_ORDER_BY above for
     the full accepted set; any other value (including None) falls back
     to the default, same unrecognized-value-is-harmless convention
-    list_products already follows."""
+    list_products already follows.
+
+    category_name/category_slug/article_type_name/article_type_slug
+    (migration 031) -- left-joined, so an older article row generated
+    before this migration's backfill ran (or a not-yet-onboarded
+    product_type -- see resolve_category_and_article_type's docstring in
+    product_article_generator/app.py) still lists, just with those four
+    fields null. category_id filters the same way brand_id/coverstock_id
+    do, scoped to pa.category_id (the article's own persisted category,
+    not a live join back through product_type)."""
     query = f"""
         select pa.id as article_id, pa.title, pa.hook, pa.generated_at, pa.reviewed_at,
                pa.product_shot_image_url,
                p.id as product_id, p.name as product_name, p.url as product_url,
                b.name as brand_name,
                p.coverstock_name, p.coverstock_type,
+               cat.name as category_name, cat.slug as category_slug,
+               atype.name as article_type_name, atype.slug as article_type_slug,
                coalesce(
                    (
                        select pi.stored_url from product_images pi
@@ -424,6 +471,8 @@ def list_articles(conn, brand_id: str = None, coverstock_id: str = None, search:
         from product_articles pa
         join products p on p.id = pa.product_id
         join brands b on b.id = p.brand_id
+        left join categories cat on cat.id = pa.category_id
+        left join article_types atype on atype.id = pa.article_type_id
         where pa.status = 'approved' and p.published = true
     """
     params = []
@@ -433,6 +482,9 @@ def list_articles(conn, brand_id: str = None, coverstock_id: str = None, search:
     if coverstock_id:
         query += " and p.coverstock_id = %s"
         params.append(coverstock_id)
+    if category_id:
+        query += " and pa.category_id = %s"
+        params.append(category_id)
     if search:
         query += " and (pa.title ilike %s or pa.hook ilike %s)"
         params.append(f"%{search}%")
@@ -731,7 +783,15 @@ def get_product_article(conn, product_id: str):
     (or search-page fallbacks), not internal review-to-review links, so
     they stay out of the prerendered crawl-relevant markup for the same
     reason related_reviews' own links ARE prerendered and these never
-    were (see that field's docstring)."""
+    were (see that field's docstring).
+
+    category_name/category_slug/article_type_name/article_type_slug
+    (migration 031) -- left-joined off the article's own persisted
+    category_id/article_type_id, same "Bowling Balls" / "Ball Review"
+    taxonomy list_articles/list_categories expose. Null together for a
+    pre-migration article that predates the backfill or a not-yet-
+    onboarded product_type -- the Learn detail page should treat that the
+    same as any other optional label (omit it), not an error."""
     with conn.cursor() as cur:
         cur.execute("select id from products where id = %s and published = true", (product_id,))
         if cur.fetchone() is None:
@@ -739,12 +799,16 @@ def get_product_article(conn, product_id: str):
 
         cur.execute(
             """
-            select id, title, hook, performance_summary, who_should_buy, who_should_skip,
-                   pros, cons, buying_tips, verdict, faq, sibling_product_ids,
-                   source_video_ids, generated_at, reviewed_at,
-                   action_shot_image_url, product_shot_image_url
-            from product_articles
-            where product_id = %s and status = 'approved'
+            select pa.id, pa.title, pa.hook, pa.performance_summary, pa.who_should_buy, pa.who_should_skip,
+                   pa.pros, pa.cons, pa.buying_tips, pa.verdict, pa.faq, pa.sibling_product_ids,
+                   pa.source_video_ids, pa.generated_at, pa.reviewed_at,
+                   pa.action_shot_image_url, pa.product_shot_image_url,
+                   cat.name as category_name, cat.slug as category_slug,
+                   atype.name as article_type_name, atype.slug as article_type_slug
+            from product_articles pa
+            left join categories cat on cat.id = pa.category_id
+            left join article_types atype on atype.id = pa.article_type_id
+            where pa.product_id = %s and pa.status = 'approved'
             """,
             (product_id,),
         )

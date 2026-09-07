@@ -9,13 +9,13 @@ export default function App() {
   return (
     <>
       <Nav />
-      <main className="site-main">
+      <main className="mx-auto min-h-[60vh] max-w-5xl px-6 py-10">
         <Outlet />
       </main>
-      <footer className="site-footer">
+      <footer className="border-t border-paper-border px-6 py-8 text-center text-sm text-muted">
         <p>
           Bowling ball reviews from{" "}
-          <a href="https://bowlerdepot.com" target="_blank" rel="noreferrer">
+          <a href="https://bowlerdepot.com" target="_blank" rel="noreferrer" className="text-accent">
             The Bowler Depot
           </a>
           . Not affiliated with any manufacturer mentioned here.
