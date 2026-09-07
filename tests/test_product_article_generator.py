@@ -201,24 +201,32 @@ def test_build_article_prompt_asks_for_visual_theme():
     assert "visual_theme" not in app._REQUIRED_ARTICLE_KEYS
 
 
-def test_build_article_prompt_visual_theme_requires_literal_iconography():
+def test_build_article_prompt_visual_theme_nudges_toward_literal_iconography():
     """REAL INCIDENT, follow-up (2026-09-07, Al): "the theme concept
     isn't working as well as it could be. for instance a 'black widow'
     ball has no spider elements at all in the background. and a black
     venom ball with a snake on it is just plain jane." The old visual_
     theme instruction only asked for a "distinctive visual backdrop/
-    scene concept" -- nothing required it to name an actual, literal
+    scene concept" -- nothing nudged it toward naming an actual, literal
     creature/object/symbol rather than just a mood or color palette.
-    Confirms the instruction now explicitly requires naming the literal
-    thing a name like "Black Widow" or "Venom" evokes, with concrete
-    examples, and calls out a generic moody-but-empty scene as the
-    failure to avoid."""
+
+    Second real incident, same day: after the first fix (which made this
+    a hard "you MUST name that literal thing" requirement) Al clarified
+    "i don't know that we want that to be literalism just was suprised
+    to not see spider webs in the black widow one for sure" -- he wanted
+    a nudge not to skip an obvious literal element, not a rule forcing
+    literalism into every image. Confirms the instruction names the
+    literal thing a name like "Black Widow" or "Venom" evokes as a
+    strong, encouraged choice with concrete examples, while explicitly
+    saying a mood/color-only treatment is also a fine choice and this
+    isn't a rule to force a literal creature into every image."""
     prompt = app.build_article_prompt(_SAMPLE_PRODUCT, siblings=[])
     theme_section = prompt.split("visual_theme")[1]
-    assert "you MUST name that literal thing explicitly" in theme_section
     assert "Black Widow" in theme_section and "spider" in theme_section
     assert "Venom" in theme_section and "snake" in theme_section
-    assert "never actually shows the creature/object/symbol" in theme_section
+    assert "strong, encouraged choice" in theme_section
+    assert "a mood/color-only treatment is a perfectly fine choice too" in theme_section
+    assert "isn't a rule to force a literal creature into every image" in theme_section
 
 
 def test_build_article_prompt_warns_against_borrowing_a_different_editions_name():
@@ -1945,20 +1953,26 @@ def test_build_gemini_scene_prompt_uses_uniform_product_shot_framing():
     assert "CATALOG photograph" not in action_prompt
 
 
-def test_build_gemini_scene_prompt_requires_literal_theme_iconography():
+def test_build_gemini_scene_prompt_nudges_toward_literal_theme_iconography():
     """REAL INCIDENT, follow-up (2026-09-07, Al): "the theme concept
     isn't working as well as it could be. for instance a 'black widow'
     ball has no spider elements at all in the background. and a black
-    venom ball with a snake on it is just plain jane." Confirms both
-    variants now instruct Gemini to render any creature/object/symbol
-    from the scene concept literally and visibly, not just through mood/
-    color, and to treat a generic-but-well-lit background as a failure."""
+    venom ball with a snake on it is just plain jane."
+
+    Second real incident, same day: Al clarified this shouldn't be a
+    hard requirement -- "i don't know that we want that to be literalism
+    just was suprised to not see spider webs in the black widow one for
+    sure." Confirms both variants nudge Gemini toward rendering any
+    creature/object/symbol from the scene concept visibly (not just
+    through mood/color), while explicitly framing it as a preference,
+    not a hard rule -- a mood/color-only treatment is called out as
+    still a fine result."""
     action_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "action_shot")
     product_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "product_shot")
     for prompt in (action_prompt, product_prompt):
-        assert "literally and unmistakably visible" in prompt
-        assert "not merely implied through color grading or mood lighting" in prompt
-        assert "is a failure to follow the scene concept" in prompt
+        assert "strong, encouraged choice to make that element visible" in prompt
+        assert "don't leave an obvious one out" in prompt
+        assert "That's a preference, not a hard rule" in prompt
 
 
 def test_build_gemini_scene_prompt_excludes_people_and_bowling_venue_props():

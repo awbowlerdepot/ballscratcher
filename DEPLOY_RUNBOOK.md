@@ -8962,43 +8962,57 @@ would.
 
 3. **Theme concept underperforming -- weak/absent literal iconography.**
    Al's own examples: "Black Widow" produced no spider/web imagery;
-   "Venom" came out "plain jane." Two failure points addressed: (a)
+   "Venom" came out "plain jane." Two points addressed: (a)
    `build_article_prompt`'s `visual_theme` field instruction (Bedrock)
-   now explicitly requires naming a concrete creature/object/symbol when
-   the product name evokes one (with "Black Widow" -> spider/web and
-   "Venom" -> snake/fangs as worked examples), and calls out "generically
-   dark/moody but no actual creature shown" as exactly the failure to
-   avoid; (b) `build_gemini_scene_prompt` itself (both variants) now
-   separately requires any creature/object/symbol referenced by the
-   scene concept to be literally, unmistakably visible in the generated
-   scene, not just implied through lighting/color -- a defense-in-depth
-   layer independent of how well the theme text itself is written.
+   now names a concrete creature/object/symbol when the product name
+   evokes one as a good, encouraged choice (with "Black Widow" ->
+   spider/web and "Venom" -> snake/fangs as worked examples); (b)
+   `build_gemini_scene_prompt` itself (both variants) now separately
+   nudges toward making any creature/object/symbol referenced by the
+   scene concept visible in the generated scene, not just implied
+   through lighting/color -- a defense-in-depth layer independent of
+   how well the theme text itself is written.
+
+   **Same-day correction**: the first draft of this fix made literal
+   iconography a hard requirement ("you MUST name that literal thing",
+   a purely moody scene framed as "a failure to follow the scene
+   concept"). Al, on seeing it: "i don't know that we want that to be
+   literalism just was suprised to not see spider webs in the black
+   widow one for sure." Reworded both instructions from a requirement
+   to a strong preference/nudge -- naming the literal thing is called
+   out as a "strong, encouraged choice," and a mood/color-only
+   treatment is explicitly still a "perfectly fine choice." The point
+   is not skipping an obvious literal element, not forcing literalism
+   into every image (plenty of names -- "Fallout", "Origin" -- have no
+   clean literal referent, and forcing one there would make images
+   worse).
 
 No migration, no `template.yaml` change -- pure prompt-text changes in
 `src/product_article_generator/app.py` (`build_article_prompt`'s
 visual_theme instructions, `build_gemini_scene_prompt`'s framing/size/
-literal-theme text). Only affects FUTURE generations -- does not touch
+theme text). Only affects FUTURE generations -- does not touch
 already-generated/selected images. `build_gemini_scene_prompt`'s own
 docstring gained a matching "REAL INCIDENT, follow-up" paragraph,
-quoting Al verbatim, following this function's existing incident-
-paragraph convention.
+quoting Al verbatim (both messages), following this function's existing
+incident-paragraph convention.
 
 **Tests** (`tests/test_product_article_generator.py`, 127/127 passing,
-3 new, 1 rewritten): `test_build_article_prompt_visual_theme_requires_
-literal_iconography` confirms the Bedrock prompt's literal-iconography
-language and worked examples; `test_build_gemini_scene_prompt_uses_
-uniform_product_shot_framing` confirms the numeric catalog-photography
-spec is present for product_shot and absent from action_shot; `test_
-build_gemini_scene_prompt_requires_literal_theme_iconography` confirms
-the literal-visibility instruction on both variants. `test_build_
-gemini_scene_prompt_instructs_ball_to_be_large_and_prominent` (pre-
-existing) was narrowed -- its old assertion that BOTH variants contain
-"large and prominent"/"not small or distant" no longer holds now that
-product_shot has its own numeric sizing spec instead of that vague
-language; it now checks the shared "hero subject" framing plus action_
-shot's own unchanged "large and prominent" wording. Full project-wide
-regression sweep re-run clean (every `tests/test_*.py` passes except the
-two pre-existing, unrelated pytest-dependency gaps).
+3 new, 1 rewritten): `test_build_article_prompt_visual_theme_nudges_
+toward_literal_iconography` confirms the Bedrock prompt's soft-
+preference language and worked examples, and that a mood/color-only
+treatment is explicitly still called a fine choice; `test_build_gemini_
+scene_prompt_uses_uniform_product_shot_framing` confirms the numeric
+catalog-photography spec is present for product_shot and absent from
+action_shot; `test_build_gemini_scene_prompt_nudges_toward_literal_
+theme_iconography` confirms the same soft-preference framing on both
+variants. `test_build_gemini_scene_prompt_instructs_ball_to_be_large_
+and_prominent` (pre-existing) was narrowed -- its old assertion that
+BOTH variants contain "large and prominent"/"not small or distant" no
+longer holds now that product_shot has its own numeric sizing spec
+instead of that vague language; it now checks the shared "hero subject"
+framing plus action_shot's own unchanged "large and prominent" wording.
+Full project-wide regression sweep re-run clean (every `tests/test_*.py`
+passes except the two pre-existing, unrelated pytest-dependency gaps).
 
 **Honest caveat, same as every prompt change in this module's
 history**: prompt-level instructions, not hard pixel-level constraints
