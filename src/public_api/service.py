@@ -791,7 +791,15 @@ def get_product_article(conn, product_id: str):
     taxonomy list_articles/list_categories expose. Null together for a
     pre-migration article that predates the backfill or a not-yet-
     onboarded product_type -- the Learn detail page should treat that the
-    same as any other optional label (omit it), not an error."""
+    same as any other optional label (omit it), not an error.
+
+    product.status ('current' or 'retired', same products.status column
+    get_product already exposes) -- newly selected here specifically to
+    back the Learn detail page's post-verdict "shop this ball" CTA: Al
+    wants that CTA to only render while the ball is still sold, and
+    retired balls (which still keep their article, per this whole
+    function's "never regenerate over a spec correction" posture) simply
+    shouldn't be pushed to an ecommerce page that no longer sells them."""
     with conn.cursor() as cur:
         cur.execute("select id from products where id = %s and published = true", (product_id,))
         if cur.fetchone() is None:
@@ -825,7 +833,7 @@ def get_product_article(conn, product_id: str):
         # table section actually needs, not the full detail-page payload.
         cur.execute(
             """
-            select p.name, p.url, c.name as core_name, c.core_type,
+            select p.name, p.url, p.status, c.name as core_name, c.core_type,
                    p.coverstock_name, p.coverstock_type, b.name as brand_name,
                    coalesce(
                        (

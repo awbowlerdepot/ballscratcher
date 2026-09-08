@@ -68,6 +68,13 @@ export interface ProductSku {
 export interface ArticleProductSpec {
   name: string;
   url: string;
+  // 'current' | 'retired', same products.status column the admin/
+  // consumer sites already filter on. Gates the post-verdict "shop this
+  // ball" CTA (see ArticleDetailPage.tsx) -- a retired ball keeps its
+  // article (specs/verdict stay accurate per this file's other fields'
+  // "never regenerate" posture) but shouldn't push readers to buy
+  // something no longer sold.
+  status?: "current" | "retired" | null;
   core_name?: string | null;
   core_type?: string | null;
   coverstock_name?: string | null;

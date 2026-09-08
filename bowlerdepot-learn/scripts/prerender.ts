@@ -388,6 +388,17 @@ function renderStructuredData(card: ArticleCard, article: ArticleDetail, heroIma
   return blocks.map((b) => `<script type="application/ld+json">${JSON.stringify(b)}</script>`).join("\n    ");
 }
 
+// Note: the post-verdict "shop this ball" CTA (Al: "after the verdict in
+// each article can we include the call to action to shop for the ball
+// ... This should only show while the ball is current") is deliberately
+// NOT rendered into this function's static HTML -- same reasoning as
+// comparison_table's ecommerce_url/price fields staying out of the
+// prerendered markup (see get_product_article's docstring in the main
+// repo): it's an external BowlerDepot storefront link, not crawl-
+// relevant content, and product.status can flip current->retired
+// between builds, so a stale prerendered CTA could outlive the point it
+// should've stopped showing. ArticleDetailPage.tsx renders it
+// client-side instead, gated live on product.status.
 function renderArticlePage(baseHtml: string, card: ArticleCard, article: ArticleDetail): string {
   const metaDescription = escapeHtml((article.hook || card.hook || "").slice(0, 300));
   const heroImage = article.action_shot_image_url || article.product?.primary_image_url || card.primary_image_url;

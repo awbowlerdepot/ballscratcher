@@ -151,6 +151,35 @@ export default function ArticleDetailPage() {
         </div>
       ) : null}
 
+      {/* Al: "after the verdict in each article can we include the call
+          to action to shop for the ball ... This should only show while
+          the ball is current." Gated on product.status (see
+          ArticleProductSpec's own comment on that field) rather than
+          just ecommerce_url presence -- a retired ball can still have a
+          leftover BowlerDepot price-tracking row, and pushing readers to
+          buy something no longer sold is worse than showing no CTA at
+          all. Falls back to bowlerDepotSearchUrl the same way every
+          other ecommerce link on this page already does when
+          ecommerce_url itself is null. */}
+      {product && product.status === "current" ? (
+        <div className="mb-10 flex flex-wrap items-center justify-between gap-4 rounded-xl bg-accent px-6 py-6">
+          <div>
+            <p className="font-display text-lg font-semibold text-white">
+              Like what you read? Shop the {product.name}.
+            </p>
+            <p className="mt-1 text-sm text-white/80">This ball is currently available at BowlerDepot.com.</p>
+          </div>
+          <a
+            href={product.ecommerce_url || bowlerDepotSearchUrl(product.name)}
+            target="_blank"
+            rel="noreferrer"
+            className="shrink-0 whitespace-nowrap rounded-lg bg-white px-5 py-3 font-display text-sm font-semibold text-accent hover:bg-white/90"
+          >
+            Shop this ball &rarr;
+          </a>
+        </div>
+      ) : null}
+
       {product?.skus?.length ? (
         <div className="mb-10">
           <h2 className="mb-3 font-display text-xl font-semibold text-ink">Specs</h2>

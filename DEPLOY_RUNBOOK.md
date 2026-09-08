@@ -12319,6 +12319,66 @@ same `ADMIN_API_URL`/`ADMIN_API_TOKEN` env vars, same cron entry, the
 heartbeat call is automatic once the admin API has migration 032
 applied.
 
+### 6ae. Learn article pages: post-verdict "shop this ball" CTA, gated on ball status
+
+Al: "after the verdict in each article can we include the call to action
+to shop for the ball ... This should only show while the ball is
+current. can you give me some mockups. something similar to the hero
+that will drive people to the ecommerce site." Presented three mockup
+options (full-bleed dark band matching the hero, an accent-blue inline
+card, and a minimal left-accent bar); Al picked the accent-blue card
+(Option B).
+
+**Gap found while building it**: `get_product_article` (`src/public_
+api/service.py`) already resolved `ecommerce_url`/pricing for the
+product spec highlight (6t-era work), but never selected `products.
+status` -- there was no way for the Learn frontend to know whether a ball
+was still sold before this. No new migration needed; `products.status`
+(`current`/`retired` enum, 001_init_schema.sql) already existed.
+
+**Wired end-to-end**:
+- `public_api/service.py`: `get_product_article`'s product spec-highlight
+  query now selects `p.status` alongside the existing `p.name, p.url,
+  ...` columns. Docstring extended with the reasoning: a retired ball
+  keeps its article (specs/verdict are still accurate, same "never
+  regenerate over a live-data change" posture this function's docstring
+  already describes for core/coverstock), but shouldn't be pushed to an
+  ecommerce page that no longer sells it.
+- `bowlerdepot-learn/src/api/types.ts`: `ArticleProductSpec` gained
+  `status?: "current" | "retired" | null`.
+- `bowlerdepot-learn/src/pages/ArticleDetailPage.tsx`: new CTA block
+  rendered right after the Verdict section, before Specs -- an
+  accent-blue (`bg-accent`) card with the ball's name, a one-line "in
+  stock at BowlerDepot.com" note, and a "Shop this ball" button. Gated
+  on `product.status === "current"` (not just `ecommerce_url` presence
+  -- a retired ball can still have a leftover price-tracking row). Links
+  to `product.ecommerce_url`, falling back to `bowlerDepotSearchUrl()`
+  the same way every other ecommerce link on this page already does.
+- `bowlerdepot-learn/scripts/prerender.ts`: **deliberately NOT mirrored**
+  into the static/SEO HTML, same reasoning `comparison_table`'s own
+  ecommerce links already stay out of prerendered markup (see that
+  field's docstring in `service.py`) -- it's an external storefront
+  link, not crawl-relevant content, and `status` can flip between
+  builds, so a stale prerendered CTA could outlive the point it should've
+  stopped showing. Left a comment at the omission site explaining why,
+  so a future reader doesn't assume it was missed.
+
+**Tests**: `test_public_api_service.py` -- `_FakeCursor`'s product
+spec-highlight branch (and its match string) updated for the new
+`p.status` column; `test_get_product_article_returns_full_approved_
+article_with_live_spec_join` extended to assert `status == "current"`;
+new `test_get_product_article_product_status_reflects_retired_ball`.
+**Full suite: 108/108** (`test_public_api_service.py`); repo-wide sweep
+across every other `tests/test_*.py` confirmed no regressions. `npx tsc
+-b` clean in `bowlerdepot-learn/`.
+
+No `template.yaml` change. Deploy via:
+
+```bash
+sam build && sam deploy   # picks up public_api's new p.status select
+cd bowlerdepot-learn && npm run build   # tsc -b + vite build + prerender, then the usual GitHub Actions deploy (push to main)
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

@@ -966,11 +966,11 @@ class _FakeCursor:
                     article.get("article_type_name"), article.get("article_type_slug"),
                 )
 
-        elif q.startswith("select p.name, p.url, c.name as core_name, c.core_type,"):
+        elif q.startswith("select p.name, p.url, p.status, c.name as core_name, c.core_type,"):
             pid = params[0]
             p = self.db["products"].get(pid)
             self._description = [(c,) for c in (
-                "name", "url", "core_name", "core_type", "coverstock_name", "coverstock_type",
+                "name", "url", "status", "core_name", "core_type", "coverstock_name", "coverstock_type",
                 "brand_name", "primary_image_url", "ecommerce_url",
                 "ecommerce_price", "ecommerce_price_currency", "ecommerce_in_stock",
             )]
@@ -980,7 +980,7 @@ class _FakeCursor:
                 core = self.db["cores"].get(p.get("core_id"), {})
                 offer = _derive_bigcommerce_offer(self.db, pid)
                 self._result_row = (
-                    p["name"], p["url"], core.get("name"), core.get("core_type"),
+                    p["name"], p["url"], p["status"], core.get("name"), core.get("core_type"),
                     p.get("coverstock_name"), p.get("coverstock_type"),
                     self.db["brands"].get(p.get("brand_id"), {}).get("name"),
                     _derive_primary_image_url(self.db, pid, p),
@@ -1693,6 +1693,24 @@ def test_get_product_article_returns_full_approved_article_with_live_spec_join()
     assert article["product"]["core_name"] == "Sonar"
     assert article["product"]["coverstock_name"] == "R2S Hybrid"
     assert article["product"]["skus"] == [{"weight_lbs": 15, "rg": 2.49, "differential": 0.048, "mass_bias": None}]
+    # Al: "This should only show while the ball is current" -- the Learn
+    # frontend's post-verdict shop CTA (ArticleDetailPage.tsx) gates on
+    # this field, so it has to actually reach the payload.
+    assert article["product"]["status"] == "current"
+
+
+def test_get_product_article_product_status_reflects_retired_ball():
+    """A retired ball keeps its article (see this function's own
+    docstring on why specs/verdict are never regenerated over a status
+    change), but the frontend's shop-this-ball CTA must be able to tell
+    it's retired so it can hide itself."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1", status="retired")
+    _seed_approved_article(db, pid)
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result["article"]["product"]["status"] == "retired"
 
 
 def test_get_product_article_includes_category_and_article_type_when_mapped():
