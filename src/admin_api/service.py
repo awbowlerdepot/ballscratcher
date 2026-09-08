@@ -887,7 +887,12 @@ def get_dashboard_summary(conn) -> dict:
         products_with_video (>=1 approved+summarized video),
         products_with_price_tracking (>=1 approved+active price source),
         total_catalog_daily_movement (sum of every product's
-        total_daily_movement).
+        total_daily_movement), videos_awaiting_transcript (approved
+        product_videos rows with no transcript_note and no summary yet --
+        see needs_transcript() in scripts/home_transcript_fetcher.py,
+        same definition, just aggregated instead of per-row -- these are
+        the candidates genuinely stuck waiting on the Pi's next cron run,
+        032_transcript_fetcher_runs.sql).
       top_popularity: up to 10 {id, name, brand_name, popularity_score}
         dicts, popularity_score > 0 only (a product with zero approved
         videos has nothing meaningful to rank -- omitted rather than
@@ -925,6 +930,12 @@ def get_dashboard_summary(conn) -> dict:
         expect these two lists to stay empty for a while on a freshly-
         launched catalog (see admin-site's own empty-state copy for
         this).
+      transcript_fetcher_last_run: {fetcher_name, ran_at, total,
+        got_transcript, no_captions, errors} for the most recent row in
+        transcript_fetcher_runs (032), or None if the table is empty --
+        see record_transcript_fetcher_run's own docstring for how a row
+        gets there. Answers "when did the Pi's cron last actually run"
+        directly instead of Al having to SSH in and check the log.
     """
     with conn.cursor() as cur:
         cur.execute(f"""
@@ -941,7 +952,10 @@ def get_dashboard_summary(conn) -> dict:
                     where pv.status = 'approved' and pv.summary is not null) as products_with_video,
                 (select count(distinct pps.product_id) from product_price_sources pps
                     where pps.status = 'approved' and pps.is_active) as products_with_price_tracking,
-                (select coalesce(sum(total_daily_movement), 0) from products) as total_catalog_daily_movement
+                (select coalesce(sum(total_daily_movement), 0) from products) as total_catalog_daily_movement,
+                (select count(*) from product_videos pv
+                    where pv.status = 'approved' and pv.transcript_note is null and pv.summary is null
+                ) as videos_awaiting_transcript
         """)
         columns = [desc[0] for desc in cur.description]
         kpis = dict(zip(columns, cur.fetchone()))
@@ -1070,6 +1084,29 @@ def get_dashboard_summary(conn) -> dict:
         columns = [desc[0] for desc in cur.description]
         top_shrinking_daily_movement = [dict(zip(columns, row)) for row in cur.fetchall()]
 
+        # Most recent Pi cron heartbeat (032_transcript_fetcher_runs.sql) --
+        # see this function's own docstring addition below and that
+        # migration's header comment for the real ask this answers ("i
+        # can't remember how frequently that wakes up... suggest how we
+        # can expose that process in the ui"). None (not an empty dict)
+        # when the table has no rows yet -- either a fresh deploy before
+        # the Pi script has been updated to report in, or the Pi simply
+        # hasn't run since this migration shipped. The admin-spa side
+        # treats None as "never reported" rather than assuming a stale
+        # zero-value run happened.
+        cur.execute("""
+            select fetcher_name, ran_at, total, got_transcript, no_captions, errors
+            from transcript_fetcher_runs
+            order by ran_at desc
+            limit 1
+        """)
+        row = cur.fetchone()
+        if row is None:
+            transcript_fetcher_last_run = None
+        else:
+            columns = [desc[0] for desc in cur.description]
+            transcript_fetcher_last_run = dict(zip(columns, row))
+
     return {
         "kpis": kpis,
         "top_popularity": top_popularity,
@@ -1077,7 +1114,42 @@ def get_dashboard_summary(conn) -> dict:
         "daily_movement_by_brand": daily_movement_by_brand,
         "top_growing_daily_movement": top_growing_daily_movement,
         "top_shrinking_daily_movement": top_shrinking_daily_movement,
+        "transcript_fetcher_last_run": transcript_fetcher_last_run,
     }
+
+
+def record_transcript_fetcher_run(conn, fetcher_name: str, total: int, got_transcript: int,
+                                   no_captions: int, errors: int) -> dict:
+    """Backs POST /admin/transcript-fetcher-heartbeat -- the Pi-side
+    home_transcript_fetcher.py's run() calls this once, right after it
+    finishes, with exactly the same summary dict it already logs locally
+    (`logger.info("Done: %s", summary)`). See 032_transcript_fetcher_runs.
+    sql's header comment for the real ask this answers: nothing in this
+    project could previously say when the Pi's daily cron last actually
+    ran, since that cron is off AWS entirely and its log never left the
+    Pi. This is deliberately just an insert, no validation beyond the
+    NOT NULL columns already enforcing shape -- a heartbeat that fails to
+    write should never be the reason a real transcript-fetch run's work
+    gets lost, and the caller (run()) treats this as best-effort/non-
+    fatal by design, same reasoning as this function's own simplicity.
+
+    fetcher_name isn't constrained to an enum at the DB or API layer
+    ('plain' and 'browser' are the two the Pi scripts send today, per
+    DEPLOY_RUNBOOK.md 6j/6k) -- a free-text label costs nothing here and
+    avoids a migration if a third fetcher variant ever shows up."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into transcript_fetcher_runs (fetcher_name, total, got_transcript, no_captions, errors)
+            values (%s, %s, %s, %s, %s)
+            returning id, fetcher_name, ran_at, total, got_transcript, no_captions, errors
+            """,
+            (fetcher_name, total, got_transcript, no_captions, errors),
+        )
+        columns = [desc[0] for desc in cur.description]
+        result = dict(zip(columns, cur.fetchone()))
+    conn.commit()
+    return result
 
 
 def get_catalog_daily_movement_history(conn) -> list:

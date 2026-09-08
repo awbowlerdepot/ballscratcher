@@ -211,6 +211,19 @@ class TranscriptSubmitRequest(BaseModel):
     transcript_note: Optional[str] = None
 
 
+class TranscriptFetcherHeartbeatRequest(BaseModel):
+    # Mirrors the exact summary dict scripts/home_transcript_fetcher.py's
+    # run() already builds and logs locally on the Pi (`{"total": ...,
+    # "got_transcript": ..., "no_captions": ..., "errors": ...}`) plus
+    # fetcher_name identifying which of the two Pi scripts sent it -- see
+    # service.record_transcript_fetcher_run's docstring.
+    fetcher_name: str
+    total: int
+    got_transcript: int
+    no_captions: int
+    errors: int
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}
@@ -836,6 +849,26 @@ def submit_video_transcript(video_id: str, body: TranscriptSubmitRequest):
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/admin/transcript-fetcher-heartbeat")
+def transcript_fetcher_heartbeat(body: TranscriptFetcherHeartbeatRequest):
+    # Entry point for scripts/home_transcript_fetcher.py's run() (both the
+    # plain-HTTP and Playwright-based Pi scripts share this call, see that
+    # module's docstring) -- called once, right after a daily cron run
+    # finishes, purely so admin-spa's Dashboard can show "last Pi run"
+    # instead of Al having to remember the schedule or SSH in to check
+    # (032_transcript_fetcher_runs.sql, service.record_transcript_
+    # fetcher_run's docstring has the full incident this answers). No
+    # LookupError/ValueError handling needed -- this is a plain insert,
+    # nothing to look up or validate beyond Pydantic's own type checking.
+    conn = service.get_db_connection()
+    try:
+        return service.record_transcript_fetcher_run(
+            conn, body.fetcher_name, body.total, body.got_transcript, body.no_captions, body.errors,
+        )
     finally:
         conn.close()
 

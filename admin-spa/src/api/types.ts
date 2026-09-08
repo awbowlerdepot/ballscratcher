@@ -17,6 +17,29 @@ export interface DashboardKpis {
   // Movement rename -- same metric, see admin_api/service.py's
   // get_dashboard_summary docstring).
   total_catalog_daily_movement: number;
+  // Approved product_videos rows with no transcript_note and no summary
+  // yet -- genuinely stuck waiting on the Pi's next cron run (see
+  // TranscriptFetcherLastRun below). 032_transcript_fetcher_runs.sql, Al:
+  // "the one step that we cant force to happen is generating video
+  // summaries... can you check on that and then maybe suggest how we can
+  // expose that process in the ui".
+  videos_awaiting_transcript: number;
+}
+
+// One row from transcript_fetcher_runs (032) -- the Pi-side home
+// transcript fetcher (scripts/home_transcript_fetcher.py /
+// home_transcript_fetcher_browser.py, DEPLOY_RUNBOOK.md 6j/6k) POSTs one
+// of these to /admin/transcript-fetcher-heartbeat right after each daily
+// cron run finishes. null on DashboardSummary.transcript_fetcher_last_run
+// means the table is empty -- either a fresh deploy before the Pi script
+// picked up the heartbeat call, or the Pi genuinely hasn't run yet.
+export interface TranscriptFetcherLastRun {
+  fetcher_name: string;
+  ran_at: string;
+  total: number;
+  got_transcript: number;
+  no_captions: number;
+  errors: number;
 }
 
 export interface TopPopularityItem {
@@ -55,6 +78,7 @@ export interface DashboardSummary {
   daily_movement_by_brand: DailyMovementByBrandItem[];
   top_growing_daily_movement: DailyMovementDeltaItem[];
   top_shrinking_daily_movement: DailyMovementDeltaItem[];
+  transcript_fetcher_last_run: TranscriptFetcherLastRun | null;
 }
 
 // GET /admin/catalog-daily-movement-history -- backs the Dashboard's

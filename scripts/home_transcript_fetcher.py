@@ -53,6 +53,14 @@ Or, to avoid putting the token in your crontab in plaintext, put the
 env vars in a small shell wrapper (chmod 600) and call that from cron
 instead. See DEPLOY_RUNBOOK.md's "Home transcript fetcher" section for
 the full setup walkthrough.
+
+As of 032_transcript_fetcher_runs.sql, run() also POSTs its own summary
+to /admin/transcript-fetcher-heartbeat right after each run (best-effort,
+see submit_heartbeat's docstring) so admin-spa's Dashboard can show when
+this cron last actually fired -- nothing else in this project could
+previously answer that, since this script runs entirely off AWS. No
+setup change needed on the Pi side; this just requires the admin API to
+already have migration 032 applied.
 """
 import json
 import logging
@@ -236,14 +244,44 @@ def submit_transcript(admin_api_url: str, token: str, video_id: str, transcript:
     resp.raise_for_status()
 
 
+def submit_heartbeat(admin_api_url: str, token: str, fetcher_name: str, summary: dict) -> None:
+    """POSTs this run's summary to /admin/transcript-fetcher-heartbeat so
+    admin-spa's Dashboard can show "last Pi run" (032_transcript_fetcher_
+    runs.sql, service.record_transcript_fetcher_run's docstring has the
+    full incident this answers: Al, "i can't remember how frequently that
+    wakes up... maybe suggest how we can expose that process in the ui").
+    Deliberately best-effort -- run() calls this in a try/except and logs
+    a warning rather than letting a heartbeat failure (a transient network
+    blip, an admin API redeploy mid-run, whatever) make an otherwise-
+    successful transcript-fetching run look like it failed. The real work
+    (submit_transcript per candidate, above) already happened by the time
+    this runs; losing one day's heartbeat is a cosmetic gap in the
+    Dashboard, not a lost transcript."""
+    import requests
+
+    resp = requests.post(
+        f"{admin_api_url.rstrip('/')}/admin/transcript-fetcher-heartbeat",
+        json={"fetcher_name": fetcher_name, **summary},
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+
+
 def run(admin_api_url: str, token: str, delay_between_videos: float = DEFAULT_DELAY_BETWEEN_VIDEOS_SECONDS,
-        get_transcript_fn=None) -> dict:
+        get_transcript_fn=None, fetcher_name: str = "plain") -> dict:
     """get_transcript_fn defaults to this module's own HTTP-based
     get_transcript, but callers can pass a different one -- see
     scripts/home_transcript_fetcher_browser.py, which imports this
     function and passes a Playwright-based fetcher instead. The admin-API
     listing/submission/filtering logic below doesn't care how a transcript
-    was obtained, so it's shared rather than duplicated."""
+    was obtained, so it's shared rather than duplicated.
+
+    fetcher_name identifies which Pi script called this in the heartbeat
+    POSTed at the end of the run (see submit_heartbeat above) --
+    home_transcript_fetcher_browser.py passes "browser"; this module's own
+    main() leaves the "plain" default. Purely a label for the Dashboard,
+    doesn't affect any fetching/filtering behavior above."""
     fetch = get_transcript_fn if get_transcript_fn is not None else get_transcript
 
     candidates = list_candidates_needing_transcripts(admin_api_url, token)
@@ -276,6 +314,15 @@ def run(admin_api_url: str, token: str, delay_between_videos: float = DEFAULT_DE
 
     summary = {"total": len(candidates), "got_transcript": got_transcript, "no_captions": no_captions, "errors": errors}
     logger.info("Done: %s", summary)
+
+    try:
+        submit_heartbeat(admin_api_url, token, fetcher_name, summary)
+    except Exception:
+        # Best-effort, see submit_heartbeat's own docstring -- never let a
+        # heartbeat failure make this function look like it raised.
+        logger.warning("Failed to POST heartbeat to admin API (non-fatal, transcript work above already happened)",
+                        exc_info=True)
+
     return summary
 
 

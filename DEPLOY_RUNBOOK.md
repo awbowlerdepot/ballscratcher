@@ -67,6 +67,7 @@ psql "$DATABASE_URL" -f db/migrations/028_product_articles_bigcommerce_sync.sql
 psql "$DATABASE_URL" -f db/migrations/029_product_articles_visual_theme.sql
 psql "$DATABASE_URL" -f db/migrations/030_materialized_product_scores.sql
 psql "$DATABASE_URL" -f db/migrations/031_content_categories_article_types.sql
+psql "$DATABASE_URL" -f db/migrations/032_transcript_fetcher_runs.sql
 ```
 
 (If you already ran an earlier subset in a prior deploy, just run whatever
@@ -12211,6 +12212,112 @@ psql "$DATABASE_URL" -f db/migrations/031_content_categories_article_types.sql
 sam build && sam deploy   # picks up product_article_generator/admin_api/public_api changes
 cd bowlerdepot-learn && npm run build   # then the usual GitHub Actions deploy (push to main)
 ```
+
+### 6ad. Pi transcript-fetcher heartbeat + Dashboard "awaiting transcript" backlog (migration 032)
+
+Al: "we are working to clean up the back log of getting articles... the
+one step that we cant force to happen is generating video summaries for
+a given video and that likely is gated by the transcript scraping that
+happens on the raspberry pi on my desktop. i can't remember how
+frequently that wakes up to attempt to get those. can you check on that
+and then maybe suggest how we can expose that process in the ui so we
+know when it might happen and how to get the summaries done for article
+generation."
+
+**Investigation, no code yet**: `scripts/home_transcript_fetcher.py` /
+`home_transcript_fetcher_browser.py` (6j/6k above) run off AWS, on the
+Pi, via a plain `0 7 * * *` cron -- once a day. Each run's shared `run()`
+only picks up `approved` `product_videos` rows with no `transcript_note`
+and no summary yet (`needs_transcript()`), and deliberately does NOT
+retry a row that already got a real attempt, even a failed one -- a
+video stuck on `no_captions_available` sits there until someone clears
+`transcript_note` via `psql` (see 6j's own docstring). Nothing in this
+project previously recorded WHEN that cron last actually fired, since
+the Pi's own log never left the Pi -- Al had to remember the schedule or
+SSH in to check.
+
+**Migration 032** (`db/migrations/032_transcript_fetcher_runs.sql`): new
+append-only `transcript_fetcher_runs` table (`fetcher_name`, `ran_at`,
+`total`, `got_transcript`, `no_captions`, `errors`) -- one row per Pi
+cron invocation, not a per-video record (that's what `product_videos`
+already is).
+
+**Wired end-to-end**:
+- `home_transcript_fetcher.py`: `run()` gained a `fetcher_name` param
+  (default `"plain"`) and now calls a new `submit_heartbeat()` at the
+  end of every run, POSTing the exact same summary dict it already logs
+  locally (`Done: {...}`) to the new endpoint below. Best-effort --
+  wrapped in try/except in `run()`, logs a warning and does NOT raise on
+  failure, since the real transcript-fetching work already happened by
+  the time the heartbeat POST runs; losing one day's heartbeat is a
+  cosmetic Dashboard gap, not a lost transcript.
+  `home_transcript_fetcher_browser.py` imports `run()` (same pattern as
+  its `get_transcript_fn` override) and passes `fetcher_name="browser"`
+  -- the one actually confirmed working per 6k's own docstring (6j's
+  plain-HTTP fetcher hits YouTube's PoToken wall on the content fetch).
+- `admin_api/service.py`: new `record_transcript_fetcher_run(conn,
+  fetcher_name, total, got_transcript, no_captions, errors)` -- a plain
+  insert, no dedupe/validation beyond the NOT NULL columns. `GET
+  /admin/dashboard`'s `get_dashboard_summary` gained two things in the
+  same single round trip the rest of the Dashboard already uses:
+  `kpis.videos_awaiting_transcript` (a `product_videos` count, same
+  `needs_transcript()` definition as the Pi script, always live/current
+  -- NOT read from the heartbeat table) and a 7th query reading the most
+  recent `transcript_fetcher_runs` row into
+  `transcript_fetcher_last_run` (`None` when the table is empty, e.g. a
+  fresh deploy before the Pi script picks up the heartbeat call).
+- `admin_api/app.py`: new `POST /admin/transcript-fetcher-heartbeat`
+  (`TranscriptFetcherHeartbeatRequest` body: `fetcher_name`, `total`,
+  `got_transcript`, `no_captions`, `errors`) -- the Pi script's own entry
+  point, same bearer-token gate as every other admin route.
+- admin-spa: `DashboardKpis`/`DashboardSummary`/new
+  `TranscriptFetcherLastRun` types extended to match (no client.ts
+  change needed -- `getDashboardSummary()` already fetches the whole
+  payload). `DashboardPage.tsx` gained an "Awaiting transcript" StatCard
+  (warn tone when nonzero) and a new "Home transcript fetcher (Raspberry
+  Pi)" card showing the last run's time/fetcher/counts, or an explicit
+  "No run reported yet" empty state.
+
+**What this doesn't do**: there's still no true on-demand trigger from
+admin-spa -- the AWS-side Lambda transcript path is dead (YouTube blocks
+Lambda IPs, see 6j/6k), so the only way to force progress off the 7am
+cadence is still to SSH into the Pi and rerun the script by hand. This
+feature is purely visibility (backlog size + last-run recency) so Al
+knows when that manual nudge is actually worth doing, not a way to
+trigger it remotely.
+
+**Tests**: `test_admin_api_service.py` -- new
+`videos_awaiting_transcript` KPI-query-shape test,
+`transcript_fetcher_last_run` query-shape test (index 6),
+`only_runs_seven_queries` (was six), `assembles_all_six_results`
+extended with the 7th sequenced result plus a new
+`transcript_fetcher_last_run_none_when_table_empty` test, and two new
+`record_transcript_fetcher_run` tests (via a new `FakeCursor` branch for
+`insert into transcript_fetcher_runs`). `test_home_transcript_fetcher.py`
+-- new `submit_heartbeat` test (POST body/URL/auth shape) and
+`run_tolerates_heartbeat_failure` (confirms a raising heartbeat doesn't
+propagate); both pre-existing `run()` tests updated to mock
+`submit_heartbeat` and assert it's called with the right
+`fetcher_name`/summary. **Full suite: 295/295**
+(`test_admin_api_service.py`), **14/14**
+(`test_home_transcript_fetcher.py`); repo-wide sweep across every other
+`tests/test_*.py` confirmed no regressions. `npx tsc -b` clean in
+`admin-spa/`.
+
+No `template.yaml` change (existing `AdminApiFunction`/`AdminHttpApi`
+only, no new resources). Deploy via:
+
+```bash
+psql "$DATABASE_URL" -f db/migrations/032_transcript_fetcher_runs.sql
+sam build && sam deploy   # picks up admin_api changes
+cd admin-spa && npm run build   # then the usual GitHub Actions deploy (push to main)
+```
+
+No change needed on the Pi itself beyond pulling the updated
+`home_transcript_fetcher.py`/`home_transcript_fetcher_browser.py` --
+same `ADMIN_API_URL`/`ADMIN_API_TOKEN` env vars, same cron entry, the
+heartbeat call is automatic once the admin API has migration 032
+applied.
 
 ## 7. Ongoing operations
 

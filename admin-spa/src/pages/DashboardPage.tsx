@@ -69,8 +69,44 @@ export default function DashboardPage() {
           <StatCard label="With video" value={kpis.products_with_video} />
           <StatCard label="With price tracking" value={kpis.products_with_price_tracking} />
           <StatCard label="Catalog Avg Daily Movement" value={kpis.total_catalog_daily_movement.toFixed(1)} />
+          <StatCard
+            label="Awaiting transcript"
+            value={kpis.videos_awaiting_transcript}
+            tone={kpis.videos_awaiting_transcript > 0 ? "warn" : "default"}
+          />
         </div>
       </div>
+
+      <Card title="Home transcript fetcher (Raspberry Pi)">
+        {/* Al: "i can't remember how frequently that wakes up to attempt
+            to get those [transcripts]... maybe suggest how we can expose
+            that process in the ui so we know when it might happen and
+            how to get the summaries done for article generation." Runs
+            once a day off AWS (DEPLOY_RUNBOOK.md 6j/6k, `0 7 * * *`) and
+            skips anything it's already tried, even failures -- so a
+            nonzero "Awaiting transcript" count above with a stale last
+            run below is the signal to either wait for the next 7am run
+            or SSH into the Pi and run it manually right now. */}
+        {data.transcript_fetcher_last_run ? (
+          <div className="flex flex-wrap items-baseline gap-x-6 gap-y-1 text-sm">
+            <span className="text-ink-800">
+              Last run {new Date(data.transcript_fetcher_last_run.ran_at).toLocaleString()} (
+              {data.transcript_fetcher_last_run.fetcher_name})
+            </span>
+            <span className="text-ink-500">
+              {data.transcript_fetcher_last_run.total} found &middot;{" "}
+              {data.transcript_fetcher_last_run.got_transcript} fetched &middot;{" "}
+              {data.transcript_fetcher_last_run.no_captions} no captions &middot;{" "}
+              {data.transcript_fetcher_last_run.errors} errors
+            </span>
+          </div>
+        ) : (
+          <div className="text-sm text-ink-500">
+            No run reported yet -- the Pi cron runs daily at 7am and reports in after each run (see
+            DEPLOY_RUNBOOK.md's Pi setup section).
+          </div>
+        )}
+      </Card>
 
       <Card title="Avg Daily Movement by brand">
         <div className="chart-wrap">

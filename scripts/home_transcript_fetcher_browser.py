@@ -243,6 +243,7 @@ def main():
             summary = _run_with_admin_api(
                 admin_api_url, token,
                 get_transcript_fn=lambda video_id: get_transcript_via_browser(video_id, browser),
+                fetcher_name="browser",
             )
         finally:
             browser.close()

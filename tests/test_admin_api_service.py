@@ -717,6 +717,25 @@ class FakeCursor:
                 self._last_result = (row["id"], row["channel_title"], row["note"], row["created_at"])
             self.description = [("id",), ("channel_title",), ("note",), ("created_at",)]
 
+        elif q.startswith("insert into transcript_fetcher_runs"):
+            # record_transcript_fetcher_run (032_transcript_fetcher_runs.sql)
+            # -- plain append, no dedupe/conflict handling (unlike blocked_
+            # video_channels above), see that function's own docstring.
+            fetcher_name, total, got_transcript, no_captions, errors = params
+            self.db.setdefault("_transcript_fetcher_run_id_seq", 0)
+            self.db["_transcript_fetcher_run_id_seq"] += 1
+            new_id = f"transcript-run-{self.db['_transcript_fetcher_run_id_seq']}"
+            row = {
+                "id": new_id, "fetcher_name": fetcher_name, "ran_at": "now",
+                "total": total, "got_transcript": got_transcript,
+                "no_captions": no_captions, "errors": errors,
+            }
+            self.db.setdefault("transcript_fetcher_runs", {})[new_id] = row
+            self._last_result = (row["id"], row["fetcher_name"], row["ran_at"],
+                                  row["total"], row["got_transcript"], row["no_captions"], row["errors"])
+            self.description = [("id",), ("fetcher_name",), ("ran_at",),
+                                 ("total",), ("got_transcript",), ("no_captions",), ("errors",)]
+
         elif q.startswith("select id, channel_title, note, created_at from blocked_video_channels where lower(channel_title)"):
             (channel_title,) = params
             row = next(
@@ -2365,6 +2384,23 @@ def test_get_dashboard_summary_kpi_query_reuses_total_daily_movement_sql():
     assert "(select coalesce(sum(total_daily_movement), 0) from products) as total_catalog_daily_movement" in kpi_query
 
 
+def test_get_dashboard_summary_kpi_query_counts_videos_awaiting_transcript():
+    """032_transcript_fetcher_runs.sql / Al: "the one step that we cant
+    force to happen is generating video summaries... can you check on
+    that and then maybe suggest how we can expose that process in the
+    ui". Same definition as needs_transcript() in scripts/home_
+    transcript_fetcher.py, just aggregated: approved, no transcript_note
+    yet, no summary yet."""
+    conn = _DashboardQueryCapturingConnection()
+    service.get_dashboard_summary(conn)
+
+    kpi_query = conn.cursor().queries[0]
+    assert (
+        "(select count(*) from product_videos pv where pv.status = 'approved' "
+        "and pv.transcript_note is null and pv.summary is null ) as videos_awaiting_transcript"
+    ) in kpi_query
+
+
 def test_get_dashboard_summary_top_popularity_query_shape():
     """As of migration 030, this reads the materialized
     products.popularity_score column directly -- no correlated subquery
@@ -2448,10 +2484,23 @@ def test_get_dashboard_summary_top_shrinking_daily_movement_query_shape():
     assert "order by (cw.daily_movement - pw.daily_movement) asc, sk.id asc limit 10" in query
 
 
-def test_get_dashboard_summary_only_runs_six_queries():
+def test_get_dashboard_summary_transcript_fetcher_last_run_query_shape():
+    """032_transcript_fetcher_runs.sql -- one extra query, run last, reading
+    the most recent Pi-cron heartbeat row (see record_transcript_fetcher_
+    run's docstring for how a row gets there)."""
     conn = _DashboardQueryCapturingConnection()
     service.get_dashboard_summary(conn)
-    assert len(conn.cursor().queries) == 6
+
+    query = conn.cursor().queries[6]
+    assert "from transcript_fetcher_runs" in query
+    assert "order by ran_at desc" in query
+    assert "limit 1" in query
+
+
+def test_get_dashboard_summary_only_runs_seven_queries():
+    conn = _DashboardQueryCapturingConnection()
+    service.get_dashboard_summary(conn)
+    assert len(conn.cursor().queries) == 7
 
 
 def test_get_dashboard_summary_assembles_all_six_results():
@@ -2461,9 +2510,9 @@ def test_get_dashboard_summary_assembles_all_six_results():
                 "total_products", "current_products", "retired_products",
                 "missing_core", "missing_coverstock", "missing_skus",
                 "products_with_video", "products_with_price_tracking",
-                "total_catalog_daily_movement",
+                "total_catalog_daily_movement", "videos_awaiting_transcript",
             ],
-            "one": (500, 350, 150, 12, 3, 7, 200, 180, "1234.5"),
+            "one": (500, 350, 150, 12, 3, 7, 200, 180, "1234.5", 9),
         },
         {  # top_popularity
             "columns": ["id", "name", "brand_name", "popularity_score"],
@@ -2498,6 +2547,10 @@ def test_get_dashboard_summary_assembles_all_six_results():
                 ("prod-6", "Bionic", "900 Global", 14, "6.00", "1.50", "-4.50"),
             ],
         },
+        {  # transcript_fetcher_last_run (032)
+            "columns": ["fetcher_name", "ran_at", "total", "got_transcript", "no_captions", "errors"],
+            "one": ("browser", "2026-09-08T07:00:00+00:00", 4, 3, 1, 0),
+        },
     ])
 
     result = service.get_dashboard_summary(conn)
@@ -2506,7 +2559,7 @@ def test_get_dashboard_summary_assembles_all_six_results():
         "total_products": 500, "current_products": 350, "retired_products": 150,
         "missing_core": 12, "missing_coverstock": 3, "missing_skus": 7,
         "products_with_video": 200, "products_with_price_tracking": 180,
-        "total_catalog_daily_movement": "1234.5",
+        "total_catalog_daily_movement": "1234.5", "videos_awaiting_transcript": 9,
     }
     assert result["top_popularity"] == [
         {"id": "prod-1", "name": "Absolute", "brand_name": "Storm", "popularity_score": "980.2"},
@@ -2529,6 +2582,35 @@ def test_get_dashboard_summary_assembles_all_six_results():
         {"product_id": "prod-6", "name": "Bionic", "brand_name": "900 Global", "weight_lbs": 14,
          "previous_daily_movement": "6.00", "current_daily_movement": "1.50", "delta_daily_movement": "-4.50"},
     ]
+    assert result["transcript_fetcher_last_run"] == {
+        "fetcher_name": "browser", "ran_at": "2026-09-08T07:00:00+00:00",
+        "total": 4, "got_transcript": 3, "no_captions": 1, "errors": 0,
+    }
+
+
+def test_get_dashboard_summary_transcript_fetcher_last_run_none_when_table_empty():
+    """No heartbeat has ever landed (fresh deploy, or the Pi hasn't run
+    since 032 shipped) -- admin-spa treats None as "never reported", not
+    a stale zero-value run."""
+    conn = _SequencedConnection([
+        {"columns": ["total_products", "current_products", "retired_products", "missing_core",
+                     "missing_coverstock", "missing_skus", "products_with_video",
+                     "products_with_price_tracking", "total_catalog_daily_movement",
+                     "videos_awaiting_transcript"],
+         "one": (0, 0, 0, 0, 0, 0, 0, 0, "0", 0)},
+        {"columns": ["id", "name", "brand_name", "popularity_score"], "all": []},
+        {"columns": ["id", "name", "brand_name", "total_daily_movement"], "all": []},
+        {"columns": ["brand_name", "total_daily_movement"], "all": []},
+        {"columns": ["product_id", "name", "brand_name", "weight_lbs", "previous_daily_movement",
+                     "current_daily_movement", "delta_daily_movement"], "all": []},
+        {"columns": ["product_id", "name", "brand_name", "weight_lbs", "previous_daily_movement",
+                     "current_daily_movement", "delta_daily_movement"], "all": []},
+        {"columns": ["fetcher_name", "ran_at", "total", "got_transcript", "no_captions", "errors"], "one": None},
+    ])
+
+    result = service.get_dashboard_summary(conn)
+
+    assert result["transcript_fetcher_last_run"] is None
 
 
 # --- get_top_days_of_supply / list_sku_weights: split out of
@@ -4133,6 +4215,37 @@ def test_list_blocked_channels_returns_all_most_recent_first():
 
     assert [r["id"] for r in result] == ["b2", "b1"]
     assert result[0] == {"id": "b2", "channel_title": "BowlingBall.com", "note": "competitor retailer", "created_at": "2026-02-01"}
+
+
+def test_record_transcript_fetcher_run_inserts_row():
+    """032_transcript_fetcher_runs.sql, backs POST /admin/transcript-
+    fetcher-heartbeat -- see the function's own docstring for the real
+    ask this answers (Al couldn't remember how often the Pi cron runs)."""
+    db = {"transcript_fetcher_runs": {}}
+    conn = FakeConnection(db)
+
+    result = service.record_transcript_fetcher_run(conn, "browser", 4, 3, 1, 0)
+
+    assert result["fetcher_name"] == "browser"
+    assert result["total"] == 4
+    assert result["got_transcript"] == 3
+    assert result["no_captions"] == 1
+    assert result["errors"] == 0
+    new_id = result["id"]
+    assert db["transcript_fetcher_runs"][new_id]["fetcher_name"] == "browser"
+    assert conn.committed is True
+
+
+def test_record_transcript_fetcher_run_accepts_zero_total():
+    """0 is a normal, healthy result (empty backlog), not something to
+    reject or special-case -- see 032's own column comment."""
+    db = {"transcript_fetcher_runs": {}}
+    conn = FakeConnection(db)
+
+    result = service.record_transcript_fetcher_run(conn, "plain", 0, 0, 0, 0)
+
+    assert result["total"] == 0
+    assert len(db["transcript_fetcher_runs"]) == 1
 
 
 def test_create_blocked_channel_inserts_row():

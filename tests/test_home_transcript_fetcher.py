@@ -192,6 +192,10 @@ def test_run_submits_transcripts_and_tolerates_per_video_errors(monkeypatch):
     monkeypatch.setattr(script, "submit_transcript", lambda url, token, vid, transcript, note: submitted.append(
         (vid, transcript, note)
     ))
+    heartbeats = []
+    monkeypatch.setattr(script, "submit_heartbeat", lambda url, token, fetcher_name, summary: heartbeats.append(
+        (fetcher_name, summary)
+    ))
 
     def flaky_fetch(video_id):
         if video_id == "boom":
@@ -208,6 +212,7 @@ def test_run_submits_transcripts_and_tolerates_per_video_errors(monkeypatch):
         assert summary == {"total": 3, "got_transcript": 2, "no_captions": 0, "errors": 1}
         submitted_ids = [s[0] for s in submitted]
         assert submitted_ids == ["vid-1", "vid-3"]  # vid-2 never got submitted, it errored before that point
+        assert heartbeats == [("plain", summary)]  # default fetcher_name, unchanged by this test's own call
     finally:
         script.fetch_watch_page = real_fetch
         script.fetch_transcript_xml = real_fetch_xml
@@ -226,6 +231,10 @@ def test_run_honors_get_transcript_fn_override(monkeypatch):
     monkeypatch.setattr(script, "submit_transcript", lambda url, token, vid, transcript, note: submitted.append(
         (vid, transcript, note)
     ))
+    heartbeats = []
+    monkeypatch.setattr(script, "submit_heartbeat", lambda url, token, fetcher_name, summary: heartbeats.append(
+        (fetcher_name, summary)
+    ))
 
     calls = []
 
@@ -233,11 +242,59 @@ def test_run_honors_get_transcript_fn_override(monkeypatch):
         calls.append(youtube_video_id)
         return "some transcript from a different fetch mechanism entirely", None
 
-    summary = script.run("https://admin.example", "tok", delay_between_videos=0, get_transcript_fn=fake_get_transcript)
+    summary = script.run(
+        "https://admin.example", "tok", delay_between_videos=0,
+        get_transcript_fn=fake_get_transcript, fetcher_name="browser",
+    )
 
     assert calls == ["abc123"]
     assert submitted == [("vid-1", "some transcript from a different fetch mechanism entirely", None)]
     assert summary == {"total": 1, "got_transcript": 1, "no_captions": 0, "errors": 0}
+    assert heartbeats == [("browser", summary)]  # home_transcript_fetcher_browser.py's own fetcher_name
+
+
+# --- submit_heartbeat: POST /admin/transcript-fetcher-heartbeat, and
+# run()'s best-effort (non-fatal) wrapping of it (032_transcript_fetcher_
+# runs.sql, Al: "i can't remember how frequently that wakes up... maybe
+# suggest how we can expose that process in the ui") ---
+
+def test_submit_heartbeat_posts_fetcher_name_and_summary():
+    import sys as _sys
+    real_requests = _sys.modules.get("requests")
+    fake = _FakeRequestsModule(pages=[])
+    _sys.modules["requests"] = fake
+    try:
+        script.submit_heartbeat(
+            "https://admin.example", "tok", "browser",
+            {"total": 4, "got_transcript": 3, "no_captions": 1, "errors": 0},
+        )
+        assert len(fake.post_calls) == 1
+        call = fake.post_calls[0]
+        assert call["url"] == "https://admin.example/admin/transcript-fetcher-heartbeat"
+        assert call["json"] == {"fetcher_name": "browser", "total": 4, "got_transcript": 3, "no_captions": 1, "errors": 0}
+        assert call["headers"]["Authorization"] == "Bearer tok"
+    finally:
+        if real_requests is not None:
+            _sys.modules["requests"] = real_requests
+        else:
+            del _sys.modules["requests"]
+
+
+def test_run_tolerates_heartbeat_failure(monkeypatch):
+    """A heartbeat POST failing (network blip, admin API redeploy mid-run,
+    whatever) must never make run() look like it failed -- the real
+    transcript-fetching work already happened by the time submit_heartbeat
+    is called. See submit_heartbeat's own docstring."""
+    monkeypatch.setattr(script, "list_candidates_needing_transcripts", lambda url, token: [])
+
+    def boom(url, token, fetcher_name, summary):
+        raise RuntimeError("simulated admin API outage")
+
+    monkeypatch.setattr(script, "submit_heartbeat", boom)
+
+    summary = script.run("https://admin.example", "tok", delay_between_videos=0)
+
+    assert summary == {"total": 0, "got_transcript": 0, "no_captions": 0, "errors": 0}
 
 
 if __name__ == "__main__":
