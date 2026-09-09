@@ -122,14 +122,52 @@ def execute_update_plan(cur, product_id: str, plan: dict) -> None:
 import json
 import os
 
+# Module-level cache, deliberately NOT function-local -- see get_db_
+# connection's own docstring for why this is the whole point. Same
+# pattern public_api/service.py's own get_db_connection already uses
+# (task #296, "the public site is pretty slow") -- this port was the
+# other half of that fix, never applied here at the time even though
+# this function had the exact same problem: Al, "admin spa is slow to
+# load... what can we do to speed that up."
+_cached_conn = None
+_cached_secret = None
 
-def get_db_connection():
-    import boto3
+
+class _PooledConnection:
+    """Thin proxy around the module-level cached psycopg2 connection.
+    Every one of admin_api's ~90 route handlers in app.py already ends
+    with `finally: conn.close()` -- rewriting all of them to stop
+    closing would be a much larger, riskier diff than wrapping the
+    connection once here instead. Delegates everything to the real
+    connection EXCEPT `close()`, which "closes" by returning the
+    connection to the cache rather than tearing down the TCP/TLS/
+    Postgres-auth session -- the whole point of reuse.
+
+    `close()` performs a rollback, not a no-op: every write path in
+    this module already calls conn.commit() itself before its route
+    handler returns, so rolling back here is a harmless no-op after a
+    successful commit -- but if an unhandled exception left the
+    transaction open (or aborted) between an execute() and its own
+    commit(), this is what resets the connection to a clean, reusable
+    state instead of leaving "current transaction is aborted, commands
+    ignored until end of transaction block" poisoning every subsequent
+    request on this same warm container until it happens to recycle."""
+
+    def __init__(self, conn):
+        object.__setattr__(self, "_conn", conn)
+
+    def close(self):
+        try:
+            self._conn.rollback()
+        except Exception:
+            pass
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+def _connect_with_secret(secret):
     import psycopg2
-
-    secret_arn = os.environ["DB_SECRET_ARN"]
-    client = boto3.client("secretsmanager")
-    secret = json.loads(client.get_secret_value(SecretId=secret_arn)["SecretString"])
 
     return psycopg2.connect(
         host=secret["host"],
@@ -138,6 +176,77 @@ def get_db_connection():
         user=secret["username"],
         password=secret["password"],
     )
+
+
+def _fetch_secret():
+    import boto3
+
+    secret_arn = os.environ["DB_SECRET_ARN"]
+    client = boto3.client("secretsmanager")
+    return json.loads(client.get_secret_value(SecretId=secret_arn)["SecretString"])
+
+
+def get_db_connection():
+    """Returns a connection REUSED across warm Lambda invocations instead
+    of opening a fresh one (plus a Secrets Manager round trip) on every
+    single request -- same fix, same reasoning as public_api's own
+    get_db_connection (task #296), just applied here too (REAL
+    PERFORMANCE INCIDENT, Al: "admin spa is slow to load... what can we
+    do to speed that up" -- this function had never gotten the same
+    treatment, so every admin-spa API call was paying a fresh Secrets
+    Manager call + Postgres handshake even on an already-warm container).
+
+    Unlike public_api's read-only version, this API does writes -- see
+    every service.py function that calls `conn.commit()` itself -- so
+    this deliberately does NOT set autocommit. The returned connection
+    keeps psycopg2's normal one-transaction-per-commit/rollback
+    semantics; see _PooledConnection's own docstring for how a caller's
+    existing `conn.close()` call becomes the thing that keeps the
+    connection usable across requests instead of tearing it down.
+
+    Caches both the resolved secret (host/port/dbname/user/password
+    don't change between requests -- Secrets Manager is only re-queried
+    if a connection attempt using the cached secret actually fails,
+    covering a real credential rotation) and the open connection itself
+    at MODULE level, which Lambda's execution-context reuse keeps alive
+    across invocations on the same warm container.
+
+    A cheap `select 1` health-checks the cached connection before
+    returning it -- `conn.closed == 0` alone only reflects whether THIS
+    process ever closed it, not whether the server or an intermediate
+    network hop dropped it (RDS failover, idle timeout, etc), so a real
+    round trip is the only reliable check. On any failure, discards the
+    cached connection and reconnects using the cached secret; if THAT
+    also fails, treats the secret itself as stale (a real rotation) and
+    re-fetches it from Secrets Manager exactly once before giving up."""
+    import psycopg2
+
+    global _cached_conn, _cached_secret
+
+    if _cached_conn is not None:
+        try:
+            with _cached_conn.cursor() as cur:
+                cur.execute("select 1")
+            return _PooledConnection(_cached_conn)
+        except Exception:
+            try:
+                _cached_conn.close()
+            except Exception:
+                pass
+            _cached_conn = None
+
+    if _cached_secret is None:
+        _cached_secret = _fetch_secret()
+
+    try:
+        _cached_conn = _connect_with_secret(_cached_secret)
+    except psycopg2.OperationalError:
+        # Cached secret might be stale (a real credential rotation) --
+        # force one fresh Secrets Manager read and retry once.
+        _cached_secret = _fetch_secret()
+        _cached_conn = _connect_with_secret(_cached_secret)
+
+    return _PooledConnection(_cached_conn)
 
 
 def resolve_caller_from_event(event: dict) -> dict:

@@ -1413,6 +1413,18 @@ Resources:
       # plain DB query; 30s leaves real headroom for that one call without
       # ballooning API Gateway's own timeout budget.
       Timeout: 30
+      # Bumped above the 256MB Globals default -- Al: "admin spa is slow
+      # to load... what can we do to speed that up" -- same fix, same
+      # reasoning as PublicApiFunction's own MemorySize: 1024 above (see
+      # that comment): Lambda allocates CPU proportional to memory, so
+      # 256MB was giving every cold AND warm invocation of this function
+      # (every single admin-spa API call) the slowest available CPU
+      # tier, on top of importing FastAPI/Mangum/psycopg2/boto3 at cold-
+      # init. This function never got the same bump PublicApiFunction did
+      # at the time -- unlike that one, it had no VPC/connection-reuse
+      # story yet either (see get_db_connection's own comment in
+      # admin_api/service.py, fixed alongside this).
+      MemorySize: 1024
       # Real, confirmed incident: running scripts/backfill_core_ids.py
       # (or the admin site's "Backfill missing core info" batch panel)
       # across the WHOLE catalog -- not just one brand -- started throwing

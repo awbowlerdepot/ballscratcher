@@ -21,6 +21,227 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src", "admin_a
 import service  # noqa: E402
 
 
+# --- get_db_connection / _PooledConnection: module-level connection reuse
+# across warm Lambda invocations -- REAL PERFORMANCE INCIDENT, Al: "admin
+# spa is slow to load... what can we do to speed that up", root-caused to
+# this function paying a fresh Secrets Manager call + Postgres handshake
+# on EVERY request, even on an already-warm container (this function never
+# got the same fix public_api's own get_db_connection got for task #296).
+# Same fake-boto3/psycopg2-via-sys.modules technique and _ConnCache*
+# naming-collision precaution as test_public_api_service.py's own version
+# of this test block (see that file's comment on why the prefix matters --
+# this file defines its own differently-shaped _FakeCursor/_FakeConn
+# fixtures elsewhere). Every test resets service._cached_conn/
+# _cached_secret first (module-level state persists across tests) and
+# restores the real sys.modules entries in a finally block.
+
+class _ConnCacheFakeCursor:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, query, params=None):
+        if self.conn.broken:
+            raise RuntimeError("simulated dropped connection")
+
+
+class _ConnCacheFakeConn:
+    def __init__(self, host, broken=False):
+        self.host = host
+        self.broken = broken
+        self.closed_flag = 0
+        self.rollback_calls = 0
+
+    def cursor(self):
+        return _ConnCacheFakeCursor(self)
+
+    def rollback(self):
+        self.rollback_calls += 1
+
+    def close(self):
+        self.closed_flag = 1
+
+
+class _ConnCacheFakePsycopg2:
+    class OperationalError(Exception):
+        pass
+
+    def __init__(self, fail_hosts=None):
+        self.fail_hosts = fail_hosts or set()
+        self.connect_calls = []
+
+    def connect(self, host, port, dbname, user, password):
+        self.connect_calls.append(host)
+        if host in self.fail_hosts:
+            raise self.OperationalError(f"could not connect to {host}")
+        return _ConnCacheFakeConn(host)
+
+
+class _ConnCacheFakeSecretsManagerClient:
+    def __init__(self, secrets_by_call):
+        self.secrets_by_call = list(secrets_by_call)
+        self.calls = 0
+
+    def get_secret_value(self, SecretId):
+        secret = self.secrets_by_call[min(self.calls, len(self.secrets_by_call) - 1)]
+        self.calls += 1
+        return {"SecretString": json.dumps(secret)}
+
+
+class _ConnCacheFakeBoto3:
+    def __init__(self, secretsmanager_client):
+        self._client = secretsmanager_client
+
+    def client(self, name):
+        assert name == "secretsmanager"
+        return self._client
+
+
+def _install_conn_cache_fakes(fake_boto3, fake_psycopg2):
+    real_boto3 = sys.modules.get("boto3")
+    real_psycopg2 = sys.modules.get("psycopg2")
+    sys.modules["boto3"] = fake_boto3
+    sys.modules["psycopg2"] = fake_psycopg2
+    os.environ["DB_SECRET_ARN"] = "arn:aws:secretsmanager:us-west-1:000000000000:secret:fake"
+
+    def _restore():
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+        if real_psycopg2 is not None:
+            sys.modules["psycopg2"] = real_psycopg2
+        else:
+            del sys.modules["psycopg2"]
+        del os.environ["DB_SECRET_ARN"]
+
+    return _restore
+
+
+def _reset_conn_cache():
+    service._cached_conn = None
+    service._cached_secret = None
+
+
+def test_get_db_connection_opens_once_then_reuses_across_calls():
+    _reset_conn_cache()
+    secret = {"host": "db.example.internal", "dbname": "bowling", "username": "app", "password": "pw"}
+    fake_psycopg2 = _ConnCacheFakePsycopg2()
+    fake_client = _ConnCacheFakeSecretsManagerClient([secret])
+    restore = _install_conn_cache_fakes(_ConnCacheFakeBoto3(fake_client), fake_psycopg2)
+    try:
+        conn1 = service.get_db_connection()
+        conn2 = service.get_db_connection()
+        conn3 = service.get_db_connection()
+
+        assert conn1._conn is conn2._conn is conn3._conn  # same underlying psycopg2 connection
+        assert len(fake_psycopg2.connect_calls) == 1  # only ONE real connect
+        assert fake_client.calls == 1  # only ONE Secrets Manager round trip
+    finally:
+        restore()
+        _reset_conn_cache()
+
+
+def test_get_db_connection_close_rolls_back_instead_of_disconnecting():
+    # The whole point of _PooledConnection: every one of app.py's ~90
+    # route handlers already ends with `finally: conn.close()` -- that
+    # must keep working unmodified, but "close" now means "release back
+    # to the cache" (a rollback, safe no-op after a handler's own
+    # conn.commit()), not "tear down the connection."
+    _reset_conn_cache()
+    secret = {"host": "db.example.internal", "dbname": "bowling", "username": "app", "password": "pw"}
+    restore = _install_conn_cache_fakes(_ConnCacheFakeBoto3(_ConnCacheFakeSecretsManagerClient([secret])), _ConnCacheFakePsycopg2())
+    try:
+        conn = service.get_db_connection()
+        conn.close()
+
+        assert conn._conn.rollback_calls == 1
+        assert conn._conn.closed_flag == 0  # NOT actually disconnected
+
+        # And the underlying connection is still the one handed out next time.
+        conn2 = service.get_db_connection()
+        assert conn2._conn is conn._conn
+    finally:
+        restore()
+        _reset_conn_cache()
+
+
+def test_get_db_connection_does_not_set_autocommit():
+    # Unlike public_api's read-only version, admin_api does writes --
+    # every write path in service.py calls conn.commit() itself (see
+    # e.g. approve_review_item), so forcing autocommit here would be
+    # wrong, not just unnecessary.
+    _reset_conn_cache()
+    secret = {"host": "db.example.internal", "dbname": "bowling", "username": "app", "password": "pw"}
+    restore = _install_conn_cache_fakes(_ConnCacheFakeBoto3(_ConnCacheFakeSecretsManagerClient([secret])), _ConnCacheFakePsycopg2())
+    try:
+        conn = service.get_db_connection()
+        assert not hasattr(conn._conn, "autocommit") or conn._conn.autocommit is False
+    finally:
+        restore()
+        _reset_conn_cache()
+
+
+def test_get_db_connection_reconnects_when_cached_connection_is_dead():
+    _reset_conn_cache()
+    secret = {"host": "db.example.internal", "dbname": "bowling", "username": "app", "password": "pw"}
+    fake_psycopg2 = _ConnCacheFakePsycopg2()
+    fake_client = _ConnCacheFakeSecretsManagerClient([secret])
+    restore = _install_conn_cache_fakes(_ConnCacheFakeBoto3(fake_client), fake_psycopg2)
+    try:
+        conn1 = service.get_db_connection()
+        conn1._conn.broken = True  # simulate the server/network dropping it silently
+
+        conn2 = service.get_db_connection()
+
+        assert conn2._conn is not conn1._conn
+        assert len(fake_psycopg2.connect_calls) == 2  # health check failed -- real reconnect
+        assert fake_client.calls == 1  # cached secret still reused
+    finally:
+        restore()
+        _reset_conn_cache()
+
+
+def test_get_db_connection_refetches_secret_when_cached_one_is_stale():
+    _reset_conn_cache()
+    old_secret = {"host": "old.example.internal", "dbname": "bowling", "username": "app", "password": "stale"}
+    new_secret = {"host": "new.example.internal", "dbname": "bowling", "username": "app", "password": "fresh"}
+    fake_psycopg2 = _ConnCacheFakePsycopg2(fail_hosts={"old.example.internal"})
+    fake_client = _ConnCacheFakeSecretsManagerClient([old_secret, new_secret])
+    restore = _install_conn_cache_fakes(_ConnCacheFakeBoto3(fake_client), fake_psycopg2)
+    try:
+        conn = service.get_db_connection()
+
+        assert conn._conn.host == "new.example.internal"
+        assert fake_client.calls == 2  # first (stale) + forced re-fetch
+        assert fake_psycopg2.connect_calls == ["old.example.internal", "new.example.internal"]
+    finally:
+        restore()
+        _reset_conn_cache()
+
+
+def test_pooled_connection_delegates_arbitrary_attributes_to_real_connection():
+    # cursor(), and anything else app.py/service.py might call on the
+    # connection, must pass through transparently -- close() is the
+    # only method _PooledConnection overrides.
+    _reset_conn_cache()
+    secret = {"host": "db.example.internal", "dbname": "bowling", "username": "app", "password": "pw"}
+    restore = _install_conn_cache_fakes(_ConnCacheFakeBoto3(_ConnCacheFakeSecretsManagerClient([secret])), _ConnCacheFakePsycopg2())
+    try:
+        conn = service.get_db_connection()
+        assert conn.host == "db.example.internal"
+        with conn.cursor() as cur:
+            cur.execute("select 1")  # doesn't raise
+    finally:
+        restore()
+        _reset_conn_cache()
+
+
 # --- resolve_caller_from_event (task #468, admin SPA users) ---
 
 def test_resolve_caller_from_event_extracts_cognito_user_context():

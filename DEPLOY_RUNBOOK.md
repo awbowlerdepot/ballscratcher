@@ -12628,6 +12628,113 @@ cd admin-spa && npm run build
 git push   # triggers the GitHub Actions deploy for admin-spa
 ```
 
+### 6ai. Admin SPA: four perf fixes for slow page loads
+
+Al: "admin spa is slow to load.... what can we do to speed that up a
+bit." Investigated (no single "it's this one thing" answer) and found
+four independent, concrete causes, each fixed:
+
+**1. AdminApiFunction was still on the 256MB Globals default.**
+PublicApiFunction got bumped to `MemorySize: 1024` back in task #310
+for the identical symptom on the consumer site ("im still seeing some
+performance issues... some early requests take quite some time") --
+AdminApiFunction never got the same treatment even though it has the
+exact same cold-init cost (importing FastAPI/Mangum/psycopg2/boto3).
+Lambda allocates CPU proportional to memory, so this was the slowest
+available CPU tier for literally every admin-spa API call, cold or
+warm. `template.yaml`: added `MemorySize: 1024` to AdminApiFunction.
+
+**2. `admin_api/service.py`'s `get_db_connection()` opened a brand
+new connection (plus a Secrets Manager round trip) on every single
+request.** public_api's own `get_db_connection()` got a module-level
+connection-reuse fix for this exact problem back in task #296 ("the
+public site is pretty slow") -- admin_api's version was never ported.
+Ported the same cached-secret/cached-connection/health-checked-via-
+`select 1` pattern here, with one real difference: public_api is
+read-only and sets `autocommit = True`; admin_api does writes (every
+write path already calls `conn.commit()` itself, confirmed via grep --
+38 call sites), so autocommit would be wrong here, not just
+unnecessary.
+
+The harder part: every one of admin_api's ~90 route handlers in
+`app.py` ends with `finally: conn.close()`, which would tear the
+reused connection down every single request and defeat the whole
+point -- rewriting all 90 call sites was the obvious approach but a
+much larger, riskier diff than necessary. Instead, `get_db_connection`
+now returns a `_PooledConnection` proxy that delegates everything to
+the real connection except `close()`, which does a `rollback()` (a
+harmless no-op after a handler's own successful `commit()`, but what
+resets the connection to a clean state if an unhandled exception left
+a transaction open or aborted between an `execute()` and its own
+`commit()` -- without this, "current transaction is aborted, commands
+ignored until end of transaction block" would poison every subsequent
+request on that same warm container). Zero changes needed to any of
+the 90 call sites in `app.py`.
+
+**3. No `Cache-Control` headers on the S3 sync deploying admin-spa's
+static assets** (pending task #572, now done for admin-spa -- not yet
+done for consumer-site/bowlerdepot-learn, which have the identical
+gap). `.github/workflows/deploy-admin-site.yml`'s old
+`aws s3 sync dist/ ... --delete` set no cache headers at all, so
+CloudFront's CachingOptimized policy (`AdminSiteDistribution`'s
+`CachePolicyId` in `template.yaml`) fell back to its 1-day default TTL
+for everything -- including Vite's content-hashed JS/CSS bundles,
+which are safe to cache for a full year since their filename changes
+whenever their content does. Split into two `s3 sync` passes:
+`assets/*` gets `public, max-age=31536000, immutable` (no `--delete`,
+deliberately -- see below); everything else (just `index.html`, no
+`public/` dir in this project) gets `no-cache` + `--delete`, since
+`index.html` is what references the current deploy's asset hashes and
+must never be served stale.
+
+The no-`--delete` choice on `assets/*` is deliberate, not an
+oversight: this same session's route-based code-splitting change
+(below) means a page's JS chunk is only fetched on first navigation to
+that route, not at initial load -- deleting the previous deploy's
+hashed files immediately would 404 that fetch for anyone who already
+had the SPA open in a tab from before the deploy. Old hashed files
+accumulate in the bucket as the accepted tradeoff (cheap S3 storage);
+add a lifecycle rule or do a periodic manual cleanup later if that
+ever actually matters.
+
+**4. No route-based code splitting -- every one of the 12 pages was a
+plain top-of-file import in `App.tsx`,** so the very first load
+shipped ALL twelve pages' code in one bundle regardless of which route
+was visited, including recharts + chart.js + react-chartjs-2 (only
+used by `DashboardPage`/`ProductDetailPage`'s charts). Wrapped every
+page except `LoginPage` (the first thing an unauthenticated visitor
+sees -- not worth trading a Suspense flash there for a small chunk)
+in `React.lazy()` + a single `<Suspense>` boundary around the whole
+`<Routes>` tree, with a generic `RouteFallback` (a plain centered
+"Loading…" -- deliberately not page-specific, since it only covers the
+brief window while a route's OWN chunk downloads, faster in practice
+than the `admin_api` call that page then makes; each page's own
+DataTable/Dashboard/ProductDetail skeleton from 6ah covers the data-
+loading wait that follows).
+
+**Tests**: `test_admin_api_service.py` -- 6 new tests for
+`get_db_connection`/`_PooledConnection` (opens once and reuses across
+calls, `close()` rolls back instead of disconnecting, no autocommit,
+reconnects when the cached connection is dead, re-fetches the secret
+when it's stale, arbitrary-attribute delegation), same fake-boto3/
+psycopg2-via-`sys.modules` technique and `_ConnCache*` naming-collision
+precaution as `test_public_api_service.py`'s own version of this test
+block. **Full suite: 305/305** (`test_admin_api_service.py`); repo-wide
+sweep confirmed no regressions (same two unrelated pre-existing sandbox
+`pytest`-missing failures noted throughout this file). `npx tsc -b`
+clean in `admin-spa/`. `template.yaml` re-verified via the CFN-tolerant
+YAML loader: 74 resources, `AdminApiFunction` `MemorySize: 1024`
+confirmed. `deploy-admin-site.yml` re-parsed as plain YAML to confirm
+the two-pass sync step is well-formed.
+
+Deploy via:
+
+```bash
+sam build && sam deploy   # picks up AdminApiFunction's MemorySize bump + connection-reuse fix
+cd admin-spa && npm run build   # tsc -b + vite build
+git push   # triggers the GitHub Actions deploy for admin-spa (now with the two-pass Cache-Control sync)
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

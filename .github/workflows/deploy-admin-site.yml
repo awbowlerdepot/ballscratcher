@@ -96,8 +96,46 @@ jobs:
           # policy for no benefit.
           role-skip-session-tagging: true
 
+      # Two passes with different Cache-Control values -- `aws s3 sync`
+      # only accepts one --cache-control per invocation, and hashed JS/
+      # CSS vs. index.html need opposite caching behavior. REAL PERF
+      # ISSUE, Al: "admin spa is slow to load... what can we do to speed
+      # that up" -- the old single `sync --delete` (no --cache-control
+      # at all) meant every asset was uploaded with no explicit header,
+      # so CachingOptimized (AdminSiteDistribution's CachePolicyId in
+      # template.yaml) fell back to its 1-day default TTL for
+      # EVERYTHING, including the content-hashed JS/CSS bundles that are
+      # safe to cache for a year since their filename changes whenever
+      # their content does.
+      #
+      # assets/* first, WITHOUT --delete: Vite hashes every filename in
+      # this folder by content (e.g. index-a1b2c3.js), so a given
+      # filename's bytes never change -- `public, max-age=31536000,
+      # immutable` tells both CloudFront and the browser to never
+      # revalidate it. Deliberately NOT using --delete here: this
+      # session's route-based code-splitting change means a page whose
+      # chunk hasn't been fetched yet lazy-loads it on navigation, and
+      # immediately deleting the previous deploy's hashed files would
+      # 404 that fetch for anyone with the SPA already open in a tab
+      # from before this deploy. Old hashed files accumulate in the
+      # bucket as a result -- an accepted tradeoff (cheap S3 storage) to
+      # avoid that race; add a lifecycle rule or periodic manual cleanup
+      # later if the bucket ever grows large enough to matter.
+      #
+      # Everything else (just index.html, no public/ dir in this
+      # project -- see admin-spa/index.html) second, WITH --delete and
+      # `no-cache`: index.html is what references THIS deploy's asset
+      # hashes by filename, so it must never be served stale -- every
+      # load has to revalidate (a 304 on no change costs one cheap round
+      # trip, not a full re-download).
       - name: Sync to S3
-        run: aws s3 sync dist/ "s3://${{ vars.ADMIN_SITE_BUCKET }}/" --delete
+        run: |
+          aws s3 sync dist/ "s3://${{ vars.ADMIN_SITE_BUCKET }}/" \
+            --cache-control "public, max-age=31536000, immutable" \
+            --exclude "*" --include "assets/*"
+          aws s3 sync dist/ "s3://${{ vars.ADMIN_SITE_BUCKET }}/" --delete \
+            --cache-control "no-cache" \
+            --exclude "assets/*"
 
       - name: Invalidate CloudFront cache
         run: aws cloudfront create-invalidation --distribution-id "${{ vars.ADMIN_SITE_DISTRIBUTION_ID }}" --paths "/*"
