@@ -12735,6 +12735,114 @@ cd admin-spa && npm run build   # tsc -b + vite build
 git push   # triggers the GitHub Actions deploy for admin-spa (now with the two-pass Cache-Control sync)
 ```
 
+### 6aj. On-demand image resizer/optimizer, ahead of the Learn site's release
+
+Al: "i think it is time to optimize the images... what is the best
+option for an on-demand image resizer and optimizer that has a cache
+layer so if the same image is asked for in the same size it will pull
+it from a cache instead of doing the resizing/optimizing... an endpoint
+that has the image path and then query params to tell the optimizer
+what to do for the particular placement." Then, once the shape was
+agreed: "lets just build it, that is exactly what i was thinking."
+
+**Shape**: CloudFront -> (OAC-signed) -> `ImageResizerFunction`'s own
+Lambda Function URL -> Pillow -> `ImageBucket`. The "cache layer" is
+CloudFront itself, not a separate service -- a new custom cache policy
+(`ImageResizerCachePolicy`) whitelists exactly `w`/`h`/`fit`/`fmt`/`q`
+into the cache key, so the same image at the same size is served
+straight from CloudFront's edge on every request after the first; the
+Lambda only runs on a genuine cache miss. Chose this over AWS's
+Serverless Image Handler solution (less control over the exact URL
+contract Al described) and over a SaaS like Cloudinary/imgix (a new
+recurring-cost vendor for something the existing S3/CloudFront/Lambda
+stack already has the pieces for) -- see the chat discussion this
+session for the fuller tradeoff writeup.
+
+**URL contract** (full detail in `src/image_resizer/app.py`'s own
+docstring): `<resizer-domain>/<s3-key>?w=&h=&fit=&fmt=&q=`.
+  - `<s3-key>` is the object's key inside `ImageBucket` (e.g.
+    `product-images/<uuid>/main.jpg`), scoped to exactly the
+    `product-images/`/`article-images/` prefixes that IMAGE_BUCKET's
+    other IAM policies already use elsewhere in `template.yaml` --
+    checked in `app.py` before ever calling S3, and mirrored in this
+    function's own scoped read-only S3 policy. Not a general-purpose
+    proxy for the rest of the bucket.
+  - `w`/`h`: target pixel dimensions, 16-2000, at least one required;
+    the other is derived to preserve aspect ratio if omitted.
+  - `fit`: `cover` (default, crop-to-fill) | `contain` (letterbox,
+    whole image visible) | `inside` (scale down to fit, never
+    upscales).
+  - `fmt`: `webp` (default) | `avif` | `jpeg` | `png`. `avif` silently
+    falls back to `webp` if this Lambda's Pillow build lacks libavif
+    (probed once at cold start, `AVIF_SUPPORTED` in `app.py`) rather
+    than 500ing -- every browser that would ask for avif also
+    understands webp.
+  - `q`: quality 1-100, default 82 (ignored for png).
+
+Every response sets `Cache-Control: public, max-age=31536000,
+immutable` on success (the full param set is baked into the output
+bytes -- same path+params always produces byte-identical output) or
+`no-store` on a 4xx/5xx, so CloudFront never caches an error response
+long-term. `ImageResizerCachePolicy`'s `MinTTL: 0` is what lets that
+origin header win rather than CloudFront forcing a floor on error
+responses too.
+
+**Auth**: `AuthType: AWS_IAM` on the function URL (not `NONE`) plus a
+new `ImageResizerOAC` (`OriginAccessControlOriginType: lambda`) --
+CloudFront signs its own requests to the function URl, and
+`ImageResizerFunctionUrlPermission` scopes invocation to exactly this
+distribution via a `SourceArn` condition, same pattern
+`ConsumerSiteBucketPolicy`/etc. already use for their own S3 origins.
+The function URL itself stays non-public.
+
+**Deliberately no second-tier cache** (e.g. writing resized output
+back to S3) in this first version -- CloudFront's own edge cache
+already satisfies the ask as stated. Revisit if a CloudFront
+invalidation ever needs to happen often enough that re-paying the
+Lambda cost on every size again becomes a real problem.
+
+**New template.yaml resources**: `ImageResizerFunction` (Python
+3.13, 1024MB/15s timeout -- single-image resize is CPU-bound and
+quick, same memory-to-CPU reasoning as PublicApiFunction/
+AdminApiFunction's own bumps this session), `ImageResizerFunctionUrlPermission`,
+`ImageResizerOAC`, `ImageResizerCachePolicy`, `ImageResizerDistribution`.
+Two new optional params, `ImageResizerDomainName`/
+`ImageResizerCertificateArn` -- same blank-means-default-`*.cloudfront.net`-
+domain convention as `ConsumerSiteDomainName`/etc.; set both together
+later if/when a custom subdomain (e.g. `img.bowlerdepot.com`) is
+wanted, same one-time ACM-cert-then-CNAME setup as the other sites'
+custom domains.
+
+**Tests**: `tests/test_image_resizer.py`, 23 tests -- param parsing/
+validation (dimension bounds, fit/fmt validation, quality bounds, avif-
+unsupported fallback), all three fit modes against known output
+dimensions, single-dimension aspect-ratio preservation, JPEG alpha-
+flatten-to-white (not black, confirming the mask is applied), and the
+full `handler()` path (prefix rejection, bad params, missing source,
+happy path, and a processing failure not leaking a 500's real
+exception). `fetch_source_bytes` is monkeypatched for the handler
+tests rather than faking boto3's S3 client shape -- `boto3` itself is
+imported lazily inside a `_get_s3_client()` accessor (same convention
+`image_processor/app.py` already uses) specifically so this module
+stays importable in a sandbox without boto3 installed. Full repo-wide
+sweep: no regressions (same two pre-existing, unrelated sandbox
+`pytest`-missing failures noted throughout this file).
+`template.yaml` re-verified via the CFN-tolerant YAML loader: 79
+resources, all five new resources plus both new params/the new
+condition present.
+
+Deploy via:
+
+```bash
+sam build && sam deploy   # creates ImageResizerFunction/Distribution/etc.
+```
+
+No frontend change bundled with this yet -- Learn/consumer-site still
+reference `primary_image_url`/`product_shot_image_url` (raw S3 URLs)
+directly. Next step, once this is live: point card/hero `<img src>`s
+at `<resizer-domain>/<key>?w=...&fmt=webp` for the sizes each
+placement actually needs, sized per breakpoint.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

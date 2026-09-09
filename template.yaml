@@ -638,6 +638,26 @@ Parameters:
       regardless-of-stack-region requirement as ConsumerSiteCertificateArn
       above (a hard CloudFront requirement) -- request/validate it
       yourself first, then pass the ARN here.
+  ImageResizerDomainName:
+    Type: String
+    Default: ""
+    Description: >
+      Custom domain for the on-demand image resizer's CloudFront
+      distribution (e.g. img.bowlerdepot.com), ahead of the Learn site's
+      release -- Al: "i think it is time to optimize the images... an
+      endpoint that has the image path and then query params to tell the
+      optimizer what to do." Same blank-param-means-CloudFront-default-
+      domain-only convention as ConsumerSiteDomainName above -- both this
+      AND ImageResizerCertificateArn have to be set together for
+      CloudFront to accept the alias. Perfectly usable at its default
+      *.cloudfront.net domain with no custom domain set up at all.
+  ImageResizerCertificateArn:
+    Type: String
+    Default: ""
+    Description: >
+      ACM certificate ARN covering ImageResizerDomainName. Same us-east-1-
+      regardless-of-stack-region requirement as ConsumerSiteCertificateArn
+      above -- request/validate it yourself first, then pass the ARN here.
   CreateGitHubOidcProvider:
     Type: String
     Default: "true"
@@ -682,6 +702,7 @@ Conditions:
   HasConsumerSiteDomain: !Not [!Equals [!Ref ConsumerSiteDomainName, ""]]
   HasLearnSiteDomain: !Not [!Equals [!Ref LearnSiteDomainName, ""]]
   HasAdminSiteDomain: !Not [!Equals [!Ref AdminSiteDomainName, ""]]
+  HasImageResizerDomain: !Not [!Equals [!Ref ImageResizerDomainName, ""]]
   HasGitHubRepo: !Not [!Equals [!Ref GitHubRepo, ""]]
   ShouldCreateGitHubOidcProvider: !And
     - !Condition HasGitHubRepo
@@ -3719,6 +3740,148 @@ Resources:
                   - cloudfront:CreateInvalidation
                 Resource: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${ConsumerSiteDistribution}
 
+  # --- On-demand image resizer (img endpoint, CloudFront-cached) --------
+  #
+  # Al, ahead of the Learn site's release: "i think it is time to optimize
+  # the images... what is the best option for an on-demand image resizer
+  # and optimizer that has a cache layer so if the same image is asked for
+  # in the same size it will pull it from a cache instead of doing the
+  # resizing/optimizing... an endpoint that has the image path and then
+  # query params to tell the optimizer what to do for the particular
+  # placement." See src/image_resizer/app.py's own module docstring for
+  # the full URL contract (w/h/fit/fmt/q).
+  #
+  # Shape: CloudFront -> (OAC-signed) -> ImageResizerFunction's own Lambda
+  # Function URL -> Pillow -> ImageBucket. The "cache layer" Al asked for
+  # is CloudFront itself, not a separate service -- ImageResizerCachePolicy
+  # below whitelists exactly the w/h/fit/fmt/q query params into the cache
+  # key, so identical path+params combinations are served straight from
+  # CloudFront's edge on every request after the first; this Lambda only
+  # runs on a genuine cache miss. No S3 write-back second cache tier in
+  # this first version -- see that module's docstring for why, and when
+  # that would be worth adding.
+  #
+  # AWS_IAM auth + CloudFront Origin Access Control (the Lambda-Function-
+  # URL equivalent of ConsumerSiteOAC/LearnSiteOAC/AdminSiteOAC's S3 OAC
+  # above) rather than AuthType: NONE -- keeps the function URL itself
+  # non-public; only this specific distribution can invoke it, enforced by
+  # ImageResizerFunctionUrlPermission's SourceArn condition below, the same
+  # scoping pattern ConsumerSiteBucketPolicy uses for its own origin.
+  ImageResizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-image-resizer
+      CodeUri: src/image_resizer/
+      Handler: app.handler
+      # Single-image resize/transcode is CPU-bound and quick -- 1024MB
+      # (same reasoning as PublicApiFunction/AdminApiFunction's own memory
+      # bumps this session: Lambda allocates CPU proportional to memory)
+      # keeps p99 well under a viewer's patience even on a cold start.
+      # Timeout is generous headroom over that, not the expected duration.
+      MemorySize: 1024
+      Timeout: 15
+      Environment:
+        Variables:
+          IMAGE_BUCKET: !Ref ImageBucket
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action: s3:GetObject
+              # Read-only, and scoped to the same two prefixes
+              # ALLOWED_PREFIXES enforces in app.py itself -- this function
+              # never writes to ImageBucket and has no business reading
+              # anything outside the prefixes it's meant to resize.
+              Resource:
+                - !Sub arn:aws:s3:::${ImageBucket}/product-images/*
+                - !Sub arn:aws:s3:::${ImageBucket}/article-images/*
+      FunctionUrlConfig:
+        AuthType: AWS_IAM
+        InvokeMode: BUFFERED
+
+  ImageResizerFunctionUrlPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunctionUrl
+      FunctionName: !Ref ImageResizerFunction
+      Principal: cloudfront.amazonaws.com
+      FunctionUrlAuthType: AWS_IAM
+      SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${ImageResizerDistribution}
+
+  ImageResizerOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub bowling-scraper-image-resizer-oac-${AWS::AccountId}
+        OriginAccessControlOriginType: lambda
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  # Custom cache policy, not a managed one -- CachingOptimized (used by the
+  # three site distributions above) deliberately excludes query strings
+  # from the cache key, which is exactly backwards for this origin: w/h/
+  # fit/fmt/q ARE the cache key here, that's the whole "same image, same
+  # size -> cache hit" ask. MinTTL: 0 rather than a positive floor because
+  # this function always sets its own explicit Cache-Control (a year for
+  # a successful resize, no-store for a 4xx/5xx) -- CloudFront honors that
+  # origin header directly; a positive MinTTL would incorrectly force
+  # error responses to be cached too. MaxTTL caps a successful resize's
+  # cache lifetime at the same year the function itself asks for.
+  ImageResizerCachePolicy:
+    Type: AWS::CloudFront::CachePolicy
+    Properties:
+      CachePolicyConfig:
+        Name: !Sub bowling-scraper-image-resizer-${AWS::AccountId}
+        MinTTL: 0
+        DefaultTTL: 86400
+        MaxTTL: 31536000
+        ParametersInCacheKeyAndForwardedToOrigin:
+          EnableAcceptEncodingGzip: true
+          EnableAcceptEncodingBrotli: true
+          CookiesConfig:
+            CookieBehavior: none
+          HeadersConfig:
+            HeaderBehavior: none
+          QueryStringsConfig:
+            QueryStringBehavior: whitelist
+            QueryStrings: [w, h, fit, fmt, q]
+
+  ImageResizerDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        PriceClass: PriceClass_100
+        HttpVersion: http2
+        Aliases: !If
+          - HasImageResizerDomain
+          - - !Ref ImageResizerDomainName
+          - !Ref AWS::NoValue
+        ViewerCertificate: !If
+          - HasImageResizerDomain
+          - AcmCertificateArn: !Ref ImageResizerCertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        Origins:
+          - Id: ImageResizerFunctionUrlOrigin
+            # A Lambda Function URL's own domain, extracted from its full
+            # https://<id>.lambda-url.<region>.on.aws/ value -- CloudFront
+            # origins want a bare hostname, not a scheme or trailing
+            # slash. Splitting on "/" and taking index 2 is the standard,
+            # AWS-documented way to get it out of the FunctionUrl
+            # attribute (index 0/1 are "https:"/"", index 3 is the empty
+            # string after the trailing slash).
+            DomainName: !Select [2, !Split ["/", !GetAtt ImageResizerFunction.FunctionUrl]]
+            OriginAccessControlId: !GetAtt ImageResizerOAC.Id
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: [TLSv1.2]
+        DefaultCacheBehavior:
+          TargetOriginId: ImageResizerFunctionUrlOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: !Ref ImageResizerCachePolicy
+
 Outputs:
   UrlDiscoveryFunctionArn:
     Value: !GetAtt UrlDiscoveryFunction.Arn
@@ -3736,6 +3899,12 @@ Outputs:
     Value: !GetAtt ImageProcessorFunction.Arn
   ImageBucketName:
     Value: !Ref ImageBucket
+  ImageResizerFunctionArn:
+    Value: !GetAtt ImageResizerFunction.Arn
+  ImageResizerDistributionId:
+    Value: !Ref ImageResizerDistribution
+  ImageResizerDistributionDomainName:
+    Value: !GetAtt ImageResizerDistribution.DomainName
   AdminApiUrl:
     Value: !Sub "https://${AdminHttpApi}.execute-api.${AWS::Region}.amazonaws.com/"
   PublicApiUrl:
