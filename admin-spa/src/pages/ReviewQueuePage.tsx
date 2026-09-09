@@ -228,7 +228,8 @@ export default function ReviewQueuePage() {
         selectedIds={selectedIds}
         onSelectionChange={setSelectedIds}
         bulkActions={bulkActions}
-        emptyMessage={loading ? "Loading…" : "Nothing here."}
+        emptyMessage="Nothing here."
+        loading={loading}
       />
 
       <Pagination offset={offset} limit={LIMIT} itemCount={items.length} onOffsetChange={setOffset} />

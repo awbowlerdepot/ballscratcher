@@ -501,7 +501,8 @@ export default function BatchJobsPage() {
           columns={seedUrlColumns}
           rows={seedUrls}
           getRowId={(s) => s.id}
-          emptyMessage={seedUrlsLoading ? "Loading…" : "No manual seed URLs yet."}
+          emptyMessage="No manual seed URLs yet."
+          loading={seedUrlsLoading}
         />
       </section>
 

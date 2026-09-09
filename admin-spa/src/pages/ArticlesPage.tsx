@@ -21,6 +21,7 @@ import type { Column } from "../components/DataTable";
 import DataTable from "../components/DataTable";
 import Modal from "../components/Modal";
 import Pagination from "../components/Pagination";
+import Skeleton from "../components/Skeleton";
 import { useToast } from "../components/Toast";
 
 const LIMIT = 50;
@@ -399,7 +400,8 @@ export default function ArticlesPage() {
         columns={columns}
         rows={items}
         getRowId={(a) => a.id}
-        emptyMessage={loading ? "Loading…" : "Nothing here."}
+        emptyMessage="Nothing here."
+        loading={loading}
       />
 
       <Pagination offset={offset} limit={LIMIT} itemCount={items.length} onOffsetChange={setOffset} />
@@ -429,7 +431,18 @@ export default function ArticlesPage() {
       </Modal>
 
       <Modal open={previewId !== null} onClose={() => setPreviewId(null)} title={previewArticle?.title || "Article preview"} wide>
-        {previewLoading && <p className="text-sm text-ink-500">Loading…</p>}
+        {previewLoading && (
+          <div className="flex flex-col gap-3">
+            <Skeleton className="h-6 w-2/3" />
+            <div className="flex gap-3">
+              <Skeleton className="h-32 w-32 shrink-0" />
+              <Skeleton className="h-32 w-32 shrink-0" />
+            </div>
+            <Skeleton className="h-4 w-full" />
+            <Skeleton className="h-4 w-full" />
+            <Skeleton className="h-4 w-5/6" />
+          </div>
+        )}
         {previewArticle && (
           <ArticlePreview
             article={previewArticle}

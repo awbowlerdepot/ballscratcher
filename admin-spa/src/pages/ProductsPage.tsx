@@ -7,6 +7,7 @@ import type { BulkAction, Column } from "../components/DataTable";
 import DataTable from "../components/DataTable";
 import { IconArticles, IconVideo } from "../components/icons";
 import Pagination from "../components/Pagination";
+import Skeleton from "../components/Skeleton";
 import { useToast } from "../components/Toast";
 
 const LIMIT = 50;
@@ -396,7 +397,8 @@ export default function ProductsPage() {
           selectedIds={selectedIds}
           onSelectionChange={setSelectedIds}
           bulkActions={bulkActions}
-          emptyMessage={loading ? "Loading…" : "No products match these filters."}
+          emptyMessage="No products match these filters."
+          loading={loading}
         />
       </div>
 
@@ -413,11 +415,19 @@ export default function ProductsPage() {
           tap away. No selection/bulk-rescrape here either, same
           simplification; that stays a desktop workflow. */}
       <div className="flex flex-col gap-2 md:hidden">
-        {loading && (
-          <div className="rounded-lg border border-ink-200 bg-ink-100 px-4 py-8 text-center text-sm text-ink-400">
-            Loading…
-          </div>
-        )}
+        {loading &&
+          Array.from({ length: 6 }).map((_, i) => (
+            <div key={`skeleton-${i}`} className="flex items-center gap-3 rounded-lg border border-ink-200 bg-ink-100 p-3">
+              <div className="min-w-0 flex-1">
+                <Skeleton className="mb-1.5 h-4 w-3/4" />
+                <Skeleton className="h-4 w-12" />
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <Skeleton className="h-6 w-6 rounded-full" />
+                <Skeleton className="h-6 w-6 rounded-full" />
+              </div>
+            </div>
+          ))}
         {!loading && products.length === 0 && (
           <div className="rounded-lg border border-ink-200 bg-ink-100 px-4 py-8 text-center text-sm text-ink-400">
             No products match these filters.

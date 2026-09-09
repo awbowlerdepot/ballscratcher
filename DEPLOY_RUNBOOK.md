@@ -12555,7 +12555,77 @@ Deploy via:
 
 ```bash
 sam build && sam deploy   # picks up admin_api's new routes + AdminApiFunction's new env vars/IAM
-cd admin-spa && npm run build   # tsc -b + vite build, then the usual GitHub Actions deploy (push to main)
+cd admin-spa && npm run build   # tsc -b + vite build
+git push   # triggers the GitHub Actions deploy for admin-spa
+```
+
+### 6ah. Admin SPA: skeleton loading UI
+
+Al: "can we add a skeleton UI to the admin spa" -- same motivation as
+the Learn site's own skeleton pass (6af): every list/detail page here
+used to render either bare "Loading…" text or nothing at all while its
+`admin_api` call was in flight, so the page would visibly snap into
+its final layout once data arrived instead of already occupying that
+space.
+
+**New `components/Skeleton.tsx`**: single shimmer-bar primitive
+(`animate-pulse` + `bg-ink-200`, matching the dense-dark theme) that
+every other piece below composes from -- deliberately not a family of
+shaped components, since every skeleton need here is just one or more
+rectangles sized to the real content.
+
+**`DataTable.tsx`**: new `loading`/`skeletonRowCount` props (default 6
+rows). While `loading`, the table renders that many shimmer rows
+instead of `rows`/`emptyMessage`, taking priority over both -- so a
+filter change that clears `rows` back to `[]` mid-fetch shows shimmer,
+not a flash of "No results." Every page that renders a `DataTable`
+(Products, Review Queue, Video Candidates, Articles, Price Sites' two
+tables, Cores, Coverstocks, Blocked Channels, Batch Jobs' seed URLs,
+Users) now passes `loading={loading}` instead of folding a "Loading…"
+string into `emptyMessage`.
+
+**`ProductsPage.tsx`**: the desktop table picks up the same
+`loading={loading}` prop; the separate from-scratch mobile card list
+(not `DataTable` -- see that page's own comment on why) gets its own
+6-card skeleton matching the real card's shape (title/badge bar + two
+icon placeholders).
+
+**Small popups**: `CoresPage`/`CoverstocksPage`'s detail modal and
+`ArticlesPage`'s preview modal swap their `detailLoading`/
+`previewLoading` "Loading…" text for a few `Skeleton` bars shaped
+roughly like what's about to render (a couple of text lines + a block
+for Cores/Coverstocks' product table, a title + two image placeholders
++ paragraph lines for the article preview).
+
+**New `components/DashboardSkeleton.tsx`**: `DashboardPage` is the
+app's landing page (its own top comment: "Elevated to the app's
+landing page per Al's 'dashboards more prominent' priority") so its
+"Loading dashboard…" text was the very first thing rendered after
+every sign-in. This mirrors the real layout section-for-section (10
+KPI tiles, the transcript-fetcher card, the brand chart, four Top 10
+tables) so the swap-in doesn't shift anything.
+
+**New `components/ProductDetailSkeleton.tsx`**: mirrors
+`ProductDetailPage`'s header (back link + title + status badge) and
+six-tab strip, which used to disappear entirely behind bare "Loading…"
+text -- disorienting on a page often reached by clicking straight to
+one tab (ProductsPage's Article/Video status icons link to
+`?tab=article`/`?tab=videos`).
+
+**Tests**: no new test file -- these are presentational-only React
+changes with no new `admin_api`/`public_api` logic, consistent with
+how the Learn site's skeleton pass (6af) was verified. `npx tsc -b`
+clean in `admin-spa/`; `npm run build`'s `vite build` step fails in
+this sandbox with the same pre-existing `@rollup/rollup-linux-arm64-gnu`
+platform-mismatch error noted elsewhere in this file (not a real
+regression -- GitHub Actions runs the actual build with correct native
+deps).
+
+Deploy via:
+
+```bash
+cd admin-spa && npm run build
+git push   # triggers the GitHub Actions deploy for admin-spa
 ```
 
 ## 7. Ongoing operations

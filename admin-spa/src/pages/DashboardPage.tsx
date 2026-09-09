@@ -12,6 +12,7 @@ import { getCatalogDailyMovementHistory, getDashboardSummary } from "../api/clie
 import type { CatalogDailyMovementHistoryPoint, DashboardSummary } from "../api/types";
 import Card from "../components/Card";
 import CatalogDailyMovementChart from "../components/charts/CatalogDailyMovementChart";
+import DashboardSkeleton from "../components/DashboardSkeleton";
 import DataTable from "../components/DataTable";
 import StatCard from "../components/StatCard";
 
@@ -46,7 +47,7 @@ export default function DashboardPage() {
     return <div className="rounded-md bg-danger-light px-4 py-3 text-sm text-danger">{error}</div>;
   }
   if (!data) {
-    return <div className="text-sm text-ink-500">Loading dashboard…</div>;
+    return <DashboardSkeleton />;
   }
 
   const { kpis } = data;

@@ -7,6 +7,7 @@ import type { Column } from "../components/DataTable";
 import DataTable from "../components/DataTable";
 import Modal from "../components/Modal";
 import Pagination from "../components/Pagination";
+import Skeleton from "../components/Skeleton";
 import { useToast } from "../components/Toast";
 
 const LIMIT = 50;
@@ -130,12 +131,18 @@ export default function CoresPage() {
 
       {error && <div className="rounded-md bg-danger-light px-4 py-3 text-sm text-danger">{error}</div>}
 
-      <DataTable columns={columns} rows={items} getRowId={(c) => c.id} emptyMessage={loading ? "Loading…" : "No cores match."} />
+      <DataTable columns={columns} rows={items} getRowId={(c) => c.id} emptyMessage="No cores match." loading={loading} />
 
       <Pagination offset={offset} limit={LIMIT} itemCount={items.length} onOffsetChange={setOffset} />
 
       <Modal open={detailId !== null} onClose={() => setDetailId(null)} title={detail ? `${detail.brand_name} ${detail.name}` : "Core"}>
-        {detailLoading && <p className="text-sm text-ink-500">Loading…</p>}
+        {detailLoading && (
+          <div className="flex flex-col gap-2">
+            <Skeleton className="h-4 w-3/4" />
+            <Skeleton className="h-4 w-1/2" />
+            <Skeleton className="h-24 w-full" />
+          </div>
+        )}
         {detail && (
           <div className="flex flex-col gap-3 text-sm">
             <p className="text-ink-600">

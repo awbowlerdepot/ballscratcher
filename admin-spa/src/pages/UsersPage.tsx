@@ -205,7 +205,7 @@ export default function UsersPage() {
 
       {error && <div className="rounded-md bg-danger-light px-4 py-3 text-sm text-danger">{error}</div>}
 
-      <DataTable columns={columns} rows={users} getRowId={(u) => u.username} emptyMessage={loading ? "Loading…" : "No users yet."} />
+      <DataTable columns={columns} rows={users} getRowId={(u) => u.username} emptyMessage="No users yet." loading={loading} />
 
       <Modal
         open={createdCredentials !== null}

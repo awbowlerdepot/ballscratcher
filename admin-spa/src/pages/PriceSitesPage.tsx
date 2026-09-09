@@ -421,7 +421,8 @@ export default function PriceSitesPage() {
           selectedIds={selectedSourceIds}
           onSelectionChange={setSelectedSourceIds}
           bulkActions={sourceBulkActions}
-          emptyMessage={sourcesLoading ? "Loading…" : "Nothing here."}
+          emptyMessage="Nothing here."
+          loading={sourcesLoading}
         />
 
         <Pagination offset={sourcesOffset} limit={LIMIT} itemCount={sources.length} onOffsetChange={setSourcesOffset} />
@@ -578,7 +579,8 @@ export default function PriceSitesPage() {
           ]}
           rows={sites}
           getRowId={(s) => s.id}
-          emptyMessage={sitesLoading ? "Loading…" : "No price sites configured yet -- add one above."}
+          emptyMessage="No price sites configured yet -- add one above."
+          loading={sitesLoading}
         />
       </section>
 

@@ -136,7 +136,8 @@ export default function BlockedChannelsPage() {
         columns={columns}
         rows={items}
         getRowId={(c) => c.id}
-        emptyMessage={loading ? "Loading…" : "No blocked channels yet."}
+        emptyMessage="No blocked channels yet."
+        loading={loading}
       />
 
       <Modal

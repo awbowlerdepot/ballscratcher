@@ -58,6 +58,7 @@ import SkuStockChart from "../components/charts/SkuStockChart";
 import type { Column } from "../components/DataTable";
 import DataTable from "../components/DataTable";
 import Modal from "../components/Modal";
+import ProductDetailSkeleton from "../components/ProductDetailSkeleton";
 import { useToast } from "../components/Toast";
 import { ArticlePreview } from "./ArticlesPage";
 
@@ -288,7 +289,7 @@ export default function ProductDetailPage() {
   }, [id]);
 
   if (loading && !product) {
-    return <p className="text-sm text-ink-500">Loading…</p>;
+    return <ProductDetailSkeleton />;
   }
   if (error) {
     return <div className="rounded-md bg-danger-light px-4 py-3 text-sm text-danger">{error}</div>;

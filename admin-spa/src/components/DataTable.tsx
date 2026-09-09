@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import Button from "./Button";
+import Skeleton from "./Skeleton";
 
 export interface Column<T> {
   key: string;
@@ -60,6 +61,19 @@ interface DataTableProps<T> {
   // "every column always shown" behavior even with this on. No effect
   // at `md:`+ either way -- desktop is a real table there regardless.
   mobileCollapsible?: boolean;
+  // Al: "can we add a skeleton UI to the admin spa" -- while true, every
+  // page using this table (every list tab except Dashboard/Product
+  // Detail, which render their own bespoke page-level skeletons) shows
+  // `skeletonRowCount` shimmer rows instead of `rows`/`emptyMessage`,
+  // regardless of whether `rows` is still `[]` or already has stale data
+  // in it from a previous filter change. Takes priority over both real
+  // rows and the empty-message branch below. Deliberately a simple
+  // "every cell is a shimmer bar" render, not primary/secondary-column-
+  // aware like the real rows -- it's a transient state, not something a
+  // user interacts with, so the collapsible-card mechanics in the rest
+  // of this file don't apply here.
+  loading?: boolean;
+  skeletonRowCount?: number;
 }
 
 export default function DataTable<T>({
@@ -75,6 +89,8 @@ export default function DataTable<T>({
   onSortChange,
   emptyMessage = "No results.",
   mobileCollapsible = false,
+  loading = false,
+  skeletonRowCount = 6,
 }: DataTableProps<T>) {
   const allIds = rows.map(getRowId);
   const allSelected = selectable && allIds.length > 0 && allIds.every((id) => selectedIds?.has(id));
@@ -204,7 +220,25 @@ export default function DataTable<T>({
             </tr>
           </thead>
           <tbody className="block md:table-row-group">
-            {rows.length === 0 && (
+            {loading &&
+              Array.from({ length: skeletonRowCount }).map((_, i) => (
+                <tr
+                  key={`skeleton-${i}`}
+                  className="mb-2 block rounded-md border border-ink-200 last:mb-0 md:mb-0 md:table-row md:rounded-none md:border-0 md:border-b md:last:border-0"
+                >
+                  {selectable && (
+                    <td className="px-2.5 py-1.5 md:table-cell">
+                      <Skeleton className="h-4 w-4" />
+                    </td>
+                  )}
+                  {columns.map((col) => (
+                    <td key={col.key} className={`px-2.5 py-1.5 md:table-cell ${col.className ?? ""}`}>
+                      <Skeleton className="h-4 w-full max-w-[10rem]" />
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            {!loading && rows.length === 0 && (
               <tr className="block md:table-row">
                 <td
                   colSpan={columns.length + (selectable ? 1 : 0)}
@@ -214,7 +248,7 @@ export default function DataTable<T>({
                 </td>
               </tr>
             )}
-            {rows.map((row) => {
+            {!loading && rows.map((row) => {
               const id = getRowId(row);
               return (
                 <tr
