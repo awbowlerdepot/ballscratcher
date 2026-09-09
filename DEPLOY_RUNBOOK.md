@@ -12379,6 +12379,108 @@ sam build && sam deploy   # picks up public_api's new p.status select
 cd bowlerdepot-learn && npm run build   # tsc -b + vite build + prerender, then the usual GitHub Actions deploy (push to main)
 ```
 
+### 6af. Learn site: skeleton loading screens, a client-side title-sync bug fix, and a "More from [brand]" carousel
+
+Three small, related Learn-frontend requests handled together in one
+pass (all `bowlerdepot-learn/`, no backend changes except the carousel's
+own data below).
+
+**Skeleton screens** (Al: "can we add a skeleton screen for all the
+pages so it has less shift when waiting for loads"). Two new components,
+each shaped to match the real layout it stands in for so the page
+doesn't jump once data arrives:
+- `src/components/ArticleCardSkeleton.tsx` -- mirrors `ArticleCard`'s
+  aspect-[4/3] image block + eyebrow/title/hook line heights.
+  `LearnIndexPage.tsx` renders 9 of these in its grid whenever
+  `loading && articles.length === 0` (first load or a filter/search/sort
+  change), replacing what used to be a blank grid area.
+- `src/components/ArticleDetailSkeleton.tsx` -- mirrors the hero band +
+  a few text sections. `ArticleDetailPage.tsx`'s `if (loading) return
+  ...` now renders this instead of a plain "Loading..." string.
+- `LearnIndexPage.tsx` also gained its own title-reset `useEffect`
+  (`document.title = "Learn | The Bowler Depot"`) so navigating back to
+  the index from an article doesn't leave the last article's title
+  stuck in the tab -- the natural other half of the client-side title
+  sync `ArticleDetailPage.tsx` already does per-article (see 6ae's own
+  session and the bug fix immediately below).
+
+**Real bug found and fixed while touching this file**: the previous
+session's `document.title` sync effect in `ArticleDetailPage.tsx` was
+placed AFTER the component's `if (loading)` / `if (notFound)` / `if
+(error)` / `if (!article)` early returns. React's Rules of Hooks require
+every render of a component to call the exact same hooks in the exact
+same order -- this component's very first render always has
+`loading=true` (so it returns before reaching that hook), but the next
+render (once data arrives) does NOT return early, so it reaches and
+calls that `useEffect` for the first time. That's "rendered more hooks
+than during the previous render," which React throws as a hard error at
+runtime, not something `tsc -b` can catch (it's a runtime hook-call-count
+invariant, not a type error). This had never actually been deployed yet,
+so it never surfaced. Fixed by moving `const article = data?.article`
+and the title-sync `useEffect` above all four early returns, with the
+effect body itself guarding on `if (!article) return;` -- the hook is
+now called unconditionally every render, only its *behavior* is
+conditional.
+
+**"More from [brand]" carousel** (Al: "can we add a other balls from
+the same manufacture carousel to the bottom of each article and include
+current balls sorted by price high to low"):
+- `public_api/service.py`'s `get_product_article` -- product spec-
+  highlight query now also selects `b.id as brand_id` (previously only
+  `b.name as brand_name`). New `brand_lineup` block runs a second query
+  scoped to that `brand_id`: every OTHER published, `status = 'current'`
+  product from the same brand (excluding the article's own product),
+  with the same real BowlerDepot price/url LATERAL-join shape
+  `comparison_table` already uses, ordered by `ecommerce_price desc
+  nulls last, p.name` (unpriced balls sort last, never first or
+  omitted), capped at 30. Deliberately a fresh `brand_id` query, NOT
+  reusing `sibling_product_ids` like `comparison_table`/`related_reviews`
+  do -- Al wants the WHOLE current lineup for the brand, not just the
+  heuristic handful of spec/core-family matches the article generator
+  picked when it was written.
+- `bowlerdepot-learn/src/api/types.ts`: new `BrandLineupItem` interface
+  (same shape as `ComparisonRow`) and `ArticleDetail.brand_lineup:
+  BrandLineupItem[]`.
+- `bowlerdepot-learn/src/pages/ArticleDetailPage.tsx`: new section at
+  the very bottom of the article (after Related Reviews), "More from
+  {brand_name}" heading + left/right scroll buttons over a native
+  `overflow-x-auto` snap strip (`w-48 shrink-0 snap-start` cards) -- no
+  carousel library, just a ref + `scrollBy()`. Cards reuse the same
+  image/name/core-coverstock/price layout as the Similar Balls
+  (`comparison_table`) cards, same ecommerce-link-or-search-fallback
+  behavior. Rendered only when `article.brand_lineup.length` is nonzero.
+- `bowlerdepot-learn/scripts/prerender.ts`: **deliberately NOT mirrored**
+  into static HTML -- same reasoning as the shop-this-ball CTA and
+  `comparison_table`'s own ecommerce links (external storefront links,
+  not crawl-relevant, and a sibling's price/status can change between
+  builds). This type doesn't even declare a `brand_lineup` field; a
+  comment at the CTA's existing omission note now covers this too so a
+  future reader isn't left guessing why two different fields are both
+  missing from the same function.
+
+**Tests**: `test_public_api_service.py` -- `_FakeCursor`'s product
+spec-highlight branch extended for `brand_id`; its comparison_table
+branch split in two (matched on `"p.brand_id = %s" in q` vs. the
+existing `p.id = any(...)` sibling-ids branch, same "look at the query
+text" technique `list_plotter_positions`' own fixture branch already
+uses) since both real queries happen to share the same SQL select-list
+prefix. Six new tests: sorted price high-to-low, unpriced-sorts-last,
+excludes-own-product, excludes-other-brands, excludes-retired-and-
+unpublished, empty-when-no-siblings. **Full suite: 114/114**
+(`test_public_api_service.py`); repo-wide sweep across every other
+`tests/test_*.py` confirmed no regressions (two unrelated pre-existing
+sandbox failures in `test_product_scraper.py`/`test_url_discovery.py`
+are a missing `pytest` module in this environment, not a real
+regression). `npx tsc -b` clean in `bowlerdepot-learn/` for all three
+changes above.
+
+No `template.yaml` change, no migration. Deploy via:
+
+```bash
+sam build && sam deploy   # picks up public_api's new brand_id select + brand_lineup query
+cd bowlerdepot-learn && npm run build   # tsc -b + vite build + prerender, then the usual GitHub Actions deploy (push to main)
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

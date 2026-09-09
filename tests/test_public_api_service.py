@@ -971,7 +971,7 @@ class _FakeCursor:
             p = self.db["products"].get(pid)
             self._description = [(c,) for c in (
                 "name", "url", "status", "core_name", "core_type", "coverstock_name", "coverstock_type",
-                "brand_name", "primary_image_url", "ecommerce_url",
+                "brand_id", "brand_name", "primary_image_url", "ecommerce_url",
                 "ecommerce_price", "ecommerce_price_currency", "ecommerce_in_stock",
             )]
             if p is None:
@@ -982,10 +982,44 @@ class _FakeCursor:
                 self._result_row = (
                     p["name"], p["url"], p["status"], core.get("name"), core.get("core_type"),
                     p.get("coverstock_name"), p.get("coverstock_type"),
-                    self.db["brands"].get(p.get("brand_id"), {}).get("name"),
+                    p.get("brand_id"), self.db["brands"].get(p.get("brand_id"), {}).get("name"),
                     _derive_primary_image_url(self.db, pid, p),
                     offer["product_url"], offer["price"], offer["currency"], offer["in_stock"],
                 )
+
+        elif q.startswith("select p.id, p.name, p.url, c.name as core_name, p.coverstock_name,") and "p.brand_id = %s" in q:
+            # Brand lineup carousel -- see service.get_product_article's
+            # own comment on why this is a fresh brand_id query rather
+            # than sibling_product_ids-based like comparison_table below
+            # (same select-list prefix, distinguished here by the brand_id
+            # WHERE clause, same "look at the query text" approach
+            # list_plotter_positions' own fixture branch above uses).
+            brand_id, exclude_id = params
+            self._description = [(c,) for c in (
+                "id", "name", "url", "core_name", "coverstock_name", "primary_image_url", "ecommerce_url",
+                "ecommerce_price", "ecommerce_price_currency", "ecommerce_in_stock",
+            )]
+            rows = []
+            for pid, p in self.db["products"].items():
+                if (
+                    p.get("brand_id") == brand_id
+                    and p["status"] == "current"
+                    and p["published"]
+                    and pid != exclude_id
+                ):
+                    core = self.db["cores"].get(p.get("core_id"), {})
+                    offer = _derive_bigcommerce_offer(self.db, pid)
+                    rows.append((
+                        pid, p["name"], p["url"], core.get("name"), p.get("coverstock_name"),
+                        _derive_primary_image_url(self.db, pid, p),
+                        offer["product_url"], offer["price"], offer["currency"], offer["in_stock"],
+                    ))
+            # order by ecom_price.price desc nulls last, p.name -- same
+            # two-pass stable-sort shape related_reviews' own branch below
+            # uses for its own nulls-last ordering.
+            rows.sort(key=lambda r: r[1])
+            rows.sort(key=lambda r: (r[7] is not None, r[7] if r[7] is not None else 0), reverse=True)
+            self._result_rows = rows[:30]
 
         elif q.startswith("select p.id, p.name, p.url, c.name as core_name, p.coverstock_name,"):
             wanted = set(params[0])
@@ -1990,6 +2024,93 @@ def test_get_product_article_related_reviews_empty_when_no_siblings():
     result = service.get_product_article(_FakeConnection(db), pid)
 
     assert result["article"]["related_reviews"] == []
+
+
+# --- get_product_article: brand_lineup carousel -- Al: "add a other
+# balls from the same manufacture carousel to the bottom of each article
+# and include current balls sorted by price high to low." Unlike
+# comparison_table/related_reviews above, this is a fresh brand_id query,
+# not sibling_product_ids-based -- see service.get_product_article's own
+# comment on that block for why.
+
+def test_get_product_article_brand_lineup_sorted_price_high_to_low():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1", brand_id="brand-1", name="Fury")
+    cheap = _seed_published_current_product(db, pid="sib-cheap", brand_id="brand-1", name="Cheap Ball")
+    _seed_bigcommerce_price_source(db, cheap, "https://bowlerdepot.com/cheap", price=99.99)
+    pricey = _seed_published_current_product(db, pid="sib-pricey", brand_id="brand-1", name="Pricey Ball")
+    _seed_bigcommerce_price_source(db, pricey, "https://bowlerdepot.com/pricey", price=249.99)
+    mid = _seed_published_current_product(db, pid="sib-mid", brand_id="brand-1", name="Mid Ball")
+    _seed_bigcommerce_price_source(db, mid, "https://bowlerdepot.com/mid", price=179.99)
+    _seed_approved_article(db, pid)
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    lineup = result["article"]["brand_lineup"]
+    assert [row["id"] for row in lineup] == [pricey, mid, cheap]
+    assert [row["ecommerce_price"] for row in lineup] == [249.99, 179.99, 99.99]
+
+
+def test_get_product_article_brand_lineup_unpriced_balls_sort_last():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1", brand_id="brand-1")
+    unpriced = _seed_published_current_product(db, pid="sib-unpriced", brand_id="brand-1", name="No Price Ball")
+    priced = _seed_published_current_product(db, pid="sib-priced", brand_id="brand-1", name="Priced Ball")
+    _seed_bigcommerce_price_source(db, priced, "https://bowlerdepot.com/priced", price=139.99)
+    _seed_approved_article(db, pid)
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    lineup = result["article"]["brand_lineup"]
+    assert [row["id"] for row in lineup] == [priced, unpriced]
+    assert lineup[1]["ecommerce_price"] is None
+
+
+def test_get_product_article_brand_lineup_excludes_own_product():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1", brand_id="brand-1")
+    _seed_approved_article(db, pid)
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert pid not in [row["id"] for row in result["article"]["brand_lineup"]]
+
+
+def test_get_product_article_brand_lineup_excludes_other_brands():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1", brand_id="brand-1")
+    other_brand = _seed_published_current_product(db, pid="sib-1", brand_id="brand-2", name="Other Brand Ball")
+    _seed_approved_article(db, pid)
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result["article"]["brand_lineup"] == []
+
+
+def test_get_product_article_brand_lineup_excludes_retired_and_unpublished():
+    """Al's ask was specifically 'current balls' -- a retired sibling
+    isn't for sale (same reasoning as the shop-this-ball CTA's own
+    product.status gate), and an unpublished one shouldn't be visible to
+    a public visitor at all."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1", brand_id="brand-1")
+    _seed_published_current_product(db, pid="sib-retired", brand_id="brand-1", status="retired")
+    _seed_published_current_product(db, pid="sib-unpublished", brand_id="brand-1", published=False)
+    _seed_approved_article(db, pid)
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result["article"]["brand_lineup"] == []
+
+
+def test_get_product_article_brand_lineup_empty_when_no_other_current_siblings():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid)
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result["article"]["brand_lineup"] == []
 
 
 # --- get_product_article: reviewed_at, brand_name, and real Offer data

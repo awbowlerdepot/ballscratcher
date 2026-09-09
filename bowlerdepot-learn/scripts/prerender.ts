@@ -399,6 +399,14 @@ function renderStructuredData(card: ArticleCard, article: ArticleDetail, heroIma
 // between builds, so a stale prerendered CTA could outlive the point it
 // should've stopped showing. ArticleDetailPage.tsx renders it
 // client-side instead, gated live on product.status.
+//
+// Same reasoning applies to brand_lineup (Al: "a other balls from the
+// same manufacture carousel ... include current balls sorted by price
+// high to low") -- also external ecommerce links/prices, also subject to
+// a sibling ball's status/price changing between builds, so this type
+// deliberately doesn't even declare a brand_lineup field and this
+// function never touches it. Rendered client-side only in
+// ArticleDetailPage.tsx.
 function renderArticlePage(baseHtml: string, card: ArticleCard, article: ArticleDetail): string {
   const metaDescription = escapeHtml((article.hook || card.hook || "").slice(0, 300));
   const heroImage = article.action_shot_image_url || article.product?.primary_image_url || card.primary_image_url;

@@ -799,7 +799,18 @@ def get_product_article(conn, product_id: str):
     wants that CTA to only render while the ball is still sold, and
     retired balls (which still keep their article, per this whole
     function's "never regenerate over a spec correction" posture) simply
-    shouldn't be pushed to an ecommerce page that no longer sells them."""
+    shouldn't be pushed to an ecommerce page that no longer sells them.
+
+    brand_lineup (Al: "a other balls from the same manufacture carousel
+    to the bottom of each article and include current balls sorted by
+    price high to low") -- every OTHER published, CURRENT product sharing
+    this article's product.brand_id, with the same real BowlerDepot
+    price/url fields as comparison_table, ordered by ecommerce_price
+    descending (unpriced balls sort last, never first or omitted). See
+    that block's own comment for why this is a fresh brand_id query
+    rather than reusing sibling_product_ids like comparison_table/
+    related_reviews. Empty list (not null) when the product has no
+    brand_id or no other current siblings."""
     with conn.cursor() as cur:
         cur.execute("select id from products where id = %s and published = true", (product_id,))
         if cur.fetchone() is None:
@@ -834,7 +845,7 @@ def get_product_article(conn, product_id: str):
         cur.execute(
             """
             select p.name, p.url, p.status, c.name as core_name, c.core_type,
-                   p.coverstock_name, p.coverstock_type, b.name as brand_name,
+                   p.coverstock_name, p.coverstock_type, b.id as brand_id, b.name as brand_name,
                    coalesce(
                        (
                            select pi.stored_url from product_images pi
@@ -987,6 +998,73 @@ def get_product_article(conn, product_id: str):
             rel_columns = [desc[0] for desc in cur.description]
             related_reviews = [dict(zip(rel_columns, r)) for r in cur.fetchall()]
         article["related_reviews"] = related_reviews
+
+        # Brand lineup carousel (Al: "add a other balls from the same
+        # manufacture carousel to the bottom of each article and include
+        # current balls sorted by price high to low"). Deliberately NOT
+        # sibling_product_ids-based like comparison_table/related_reviews
+        # above -- this is meant to be the WHOLE current lineup for the
+        # brand, not just the heuristic handful of specs/core-family
+        # matches product_article_generator picked when the article was
+        # written, so it's a fresh brand_id query instead. status =
+        # 'current' only (same reasoning as the shop-this-ball CTA's own
+        # product.status gate): a retired sibling isn't for sale, so it
+        # doesn't belong in a "shop more from this brand" rail. Same
+        # LATERAL price-join shape as comparison_table for the same
+        # consistency reason (a ball's ecommerce_url and its price must
+        # come from the SAME chosen price source). Ordered by price
+        # descending as asked, unpriced balls (price_checker hasn't
+        # matched/checked them yet) sort last rather than first or
+        # erroring the whole rail.
+        brand_lineup = []
+        brand_id = article["product"].get("brand_id") if article["product"] else None
+        if brand_id:
+            cur.execute(
+                """
+                select p.id, p.name, p.url, c.name as core_name,
+                       p.coverstock_name,
+                       coalesce(
+                           (
+                               select pi.stored_url from product_images pi
+                               where pi.product_id = p.id and pi.is_visible = true
+                               order by pi.is_thumbnail desc, pi.display_order, pi.id
+                               limit 1
+                           ),
+                           p.primary_image_url
+                       ) as primary_image_url,
+                       ecom_source.product_url as ecommerce_url,
+                       ecom_price.price as ecommerce_price,
+                       ecom_price.currency as ecommerce_price_currency,
+                       ecom_price.in_stock as ecommerce_in_stock
+                from products p
+                left join cores c on c.id = p.core_id
+                left join lateral (
+                    select pps.id, pps.product_url
+                    from product_price_sources pps
+                    join price_sites ps on ps.id = pps.price_site_id
+                    where pps.product_id = p.id
+                      and ps.api_provider = 'bigcommerce'
+                      and pps.status = 'approved'
+                      and pps.is_active = true
+                    order by pps.last_checked_at desc nulls last, pps.id
+                    limit 1
+                ) ecom_source on true
+                left join lateral (
+                    select price, currency, in_stock
+                    from product_price_history
+                    where price_source_id = ecom_source.id and price is not null
+                    order by checked_at desc
+                    limit 1
+                ) ecom_price on true
+                where p.brand_id = %s and p.status = 'current' and p.published = true and p.id != %s
+                order by ecom_price.price desc nulls last, p.name
+                limit 30
+                """,
+                (brand_id, product_id),
+            )
+            brand_columns = [desc[0] for desc in cur.description]
+            brand_lineup = [dict(zip(brand_columns, r)) for r in cur.fetchall()]
+        article["brand_lineup"] = brand_lineup
 
         return {"product_id": product_id, "article": article}
 

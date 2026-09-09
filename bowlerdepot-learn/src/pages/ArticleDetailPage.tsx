@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ApiError, bowlerDepotSearchUrl, getProductArticle } from "../api/client";
 import type { ProductArticleResponse } from "../api/types";
@@ -24,6 +24,11 @@ export default function ArticleDetailPage() {
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Brand lineup carousel's own scroll container (Al: "a other balls
+  // from the same manufacture carousel to the bottom of each article").
+  // A plain ref + scrollBy is enough here -- no need for a carousel
+  // library just to nudge a native overflow-x-auto strip left/right.
+  const brandLineupRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (!productId) return;
@@ -42,12 +47,7 @@ export default function ArticleDetailPage() {
       .finally(() => setLoading(false));
   }, [productId]);
 
-  if (loading) return <ArticleDetailSkeleton />;
-  if (notFound) return <p className="py-8 text-center text-muted">That ball isn't in our catalog.</p>;
-  if (error) return <p className="py-8 text-center text-alert">{error}</p>;
-
   const article = data?.article;
-  if (!article) return <p className="py-8 text-center text-muted">No review is published for this ball yet.</p>;
 
   // The prerendered static HTML (scripts/prerender.ts) already sets the
   // right <title> for whichever article a browser lands on directly,
@@ -55,13 +55,31 @@ export default function ArticleDetailPage() {
   // Reviews / Similar Balls links) never re-runs that build-time logic,
   // so the tab title used to stick on whatever page was first loaded.
   // Same title format prerender.ts already uses, kept in sync here for
-  // in-app navigation.
+  // in-app navigation. Deliberately declared BEFORE the loading/notFound/
+  // error/no-article early returns below (guarding on `article` inside
+  // the effect body instead) -- a hook can never be skipped on some
+  // renders and called on others (Rules of Hooks), and this component's
+  // very first render always has loading=true/article=undefined, so a
+  // hook placed after those early returns would only run on later
+  // renders and throw "Rendered more hooks than during the previous
+  // render" the first time data actually loaded.
   useEffect(() => {
+    if (!article) return;
     document.title = `${article.title} | Learn | The Bowler Depot`;
-  }, [article.title]);
+  }, [article]);
+
+  if (loading) return <ArticleDetailSkeleton />;
+  if (notFound) return <p className="py-8 text-center text-muted">That ball isn't in our catalog.</p>;
+  if (error) return <p className="py-8 text-center text-alert">{error}</p>;
+  if (!article) return <p className="py-8 text-center text-muted">No review is published for this ball yet.</p>;
 
   const product = article.product;
   const heroImage = article.action_shot_image_url || product?.primary_image_url;
+
+  function scrollBrandLineup(direction: -1 | 1) {
+    brandLineupRef.current?.scrollBy({ left: direction * 320, behavior: "smooth" });
+  }
+
   // Migration 031 -- "Bowling Balls · Ball Review" eyebrow, read straight
   // off the article row rather than hardcoded (see ArticleCard's own
   // comment on the same fields). Null for a pre-migration article.
@@ -307,6 +325,81 @@ export default function ArticleDetailPage() {
                 </div>
               </Link>
             ))}
+          </div>
+        </div>
+      ) : null}
+
+      {/* Al: "add a other balls from the same manufacture carousel to
+          the bottom of each article and include current balls sorted by
+          price high to low." brand_lineup is already sorted server-side
+          (see public_api's own comment on that query) -- this just
+          renders it, it doesn't re-sort. */}
+      {article.brand_lineup?.length ? (
+        <div className="mb-10">
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="font-display text-xl font-semibold text-ink">
+              More from {product?.brand_name || "this brand"}
+            </h2>
+            <div className="flex shrink-0 gap-2">
+              <button
+                type="button"
+                onClick={() => scrollBrandLineup(-1)}
+                aria-label="Scroll left"
+                className="rounded-full border border-paper-border px-3 py-1 text-sm text-ink hover:bg-ink hover:text-paper"
+              >
+                &larr;
+              </button>
+              <button
+                type="button"
+                onClick={() => scrollBrandLineup(1)}
+                aria-label="Scroll right"
+                className="rounded-full border border-paper-border px-3 py-1 text-sm text-ink hover:bg-ink hover:text-paper"
+              >
+                &rarr;
+              </button>
+            </div>
+          </div>
+          <div
+            ref={brandLineupRef}
+            className="flex snap-x snap-mandatory gap-6 overflow-x-auto pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          >
+            {article.brand_lineup.map((b) => {
+              const price = formatPrice(b.ecommerce_price, b.ecommerce_price_currency);
+              return (
+                <a
+                  key={b.id}
+                  className="group block w-48 shrink-0 snap-start"
+                  href={b.ecommerce_url || bowlerDepotSearchUrl(b.name)}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  <div className="aspect-[4/3] w-full overflow-hidden rounded-md bg-paper-border/40">
+                    {b.primary_image_url ? (
+                      <img
+                        src={b.primary_image_url}
+                        alt={b.name}
+                        loading="lazy"
+                        className="h-full w-full object-cover"
+                      />
+                    ) : null}
+                  </div>
+                  <div className="mt-3">
+                    <div className="font-display font-semibold text-ink group-hover:text-accent">{b.name}</div>
+                    <div className="text-xs text-muted">
+                      {[b.core_name, b.coverstock_name].filter(Boolean).join(" · ")}
+                    </div>
+                    {price ? (
+                      <div className="mt-1 text-sm font-semibold text-accent">
+                        {price}
+                        {b.ecommerce_in_stock === false ? (
+                          <span className="font-normal text-alert"> &middot; Out of stock</span>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                </a>
+              );
+            })}
           </div>
         </div>
       ) : null}
