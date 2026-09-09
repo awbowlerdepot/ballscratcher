@@ -12843,6 +12843,58 @@ directly. Next step, once this is live: point card/hero `<img src>`s
 at `<resizer-domain>/<key>?w=...&fmt=webp` for the sizes each
 placement actually needs, sized per breakpoint.
 
+Two real incidents hit deploying this, both fixed same-session:
+
+1. `sam build` failed with `Could not satisfy the requirement:
+   boto3>=1.34` -- pip inside the build container couldn't resolve it
+   from PyPI. boto3 ships preinstalled in every Lambda Python managed
+   runtime and `app.py` already imports it lazily
+   (`_get_s3_client()`), so it never needed to be a pip dependency at
+   all -- dropped from `src/image_resizer/requirements.txt`.
+2. `sam deploy` then failed with `Requested attribute FunctionUrl does
+   not exist in schema for AWS::Lambda::Function` on
+   `ImageResizerDistribution` (full stack rollback). SAM's
+   `FunctionUrlConfig` on `AWS::Serverless::Function` expands into a
+   *separate* `AWS::Lambda::Url` resource
+   (`ImageResizerFunctionUrl`), not an attribute on the function
+   itself -- fixed the Origin's `DomainName` to
+   `!GetAtt ImageResizerFunctionUrl.FunctionUrl`.
+
+### 6ak. Custom domain: img.bowleriq.io
+
+Al just acquired `bowleriq.io` for this specifically: "just acquired
+bowleriq.io for this so we can do img.bowleriq.io." Same
+`ImageResizerDomainName`/`ImageResizerCertificateArn`
+blank-param-means-CloudFront-default-domain-only mechanism as
+`data.bowleriq.com`/`admin.bowleriq.com` above -- already built into
+`template.yaml` from 6aj, nothing to change there. Cert requested and
+DNS-validated in `us-east-1` by hand (same CloudFront-requires-
+us-east-1 constraint), Al confirmed issued. Real ACM cert ARN:
+`arn:aws:acm:us-east-1:563981859606:certificate/e007ae2f-56f2-4cee-af8e-09699cf8a97b`.
+
+Both values baked into `samconfig.toml`'s `parameter_overrides`
+(not committed -- see `.gitignore` -- this file lives locally on Al's
+machine only, same as every other real secret/ARN already in that
+string): `ImageResizerDomainName="img.bowleriq.io"` and
+`ImageResizerCertificateArn="arn:aws:acm:us-east-1:563981859606:certificate/e007ae2f-56f2-4cee-af8e-09699cf8a97b"`.
+
+Still needs, same as 6n/6ab.18's own final steps: a real `sam deploy`
+to actually set `Aliases`/`ViewerCertificate` on
+`ImageResizerDistribution`, then a CNAME record at wherever
+`bowleriq.io` is registered -- `img.bowleriq.io` -> the
+`ImageResizerDistributionDomainName` stack output (already a bare
+CloudFront domain, no `https://` to strip):
+
+```bash
+sam deploy
+aws cloudformation describe-stacks --stack-name <your-stack-name> \
+  --query "Stacks[0].Outputs[?OutputKey=='ImageResizerDistributionDomainName'].OutputValue" --output text
+```
+
+Once that CNAME resolves, `https://img.bowleriq.io/<key>?w=...`
+serves resized images directly -- the `*.cloudfront.net` URL keeps
+working too.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
