@@ -3826,13 +3826,30 @@ Resources:
   # origin header directly; a positive MinTTL would incorrectly force
   # error responses to be cached too. MaxTTL caps a successful resize's
   # cache lifetime at the same year the function itself asks for.
+  #
+  # Real incident, Al: img.bowleriq.io returning a persistent 403
+  # "Forbidden" from Lambda's own IAM-auth layer on every retry, same
+  # exact response every time regardless of how long we waited --
+  # DefaultTTL was 86400 (a day) here, and DefaultTTL is what CloudFront
+  # falls back to for ANY origin response that carries no Cache-Control/
+  # Expires header at all. That describes exactly one response this
+  # origin can produce: Lambda's own function-URL IAM-authorizer
+  # rejection (a bare {"Message":"Forbidden..."} JSON body, returned
+  # before app.py -- and its careful Cache-Control: no-store logic --
+  # ever runs). If that rejection ever happens even once (e.g. during
+  # OAC/SigV4 propagation right after this distribution was first
+  # created), CloudFront would cache it at that edge location for a
+  # full day, masking whether the underlying auth issue had since
+  # resolved. DefaultTTL: 0 closes that gap -- an un-cache-controlled
+  # response now gets effectively no caching, same MinTTL: 0 floor
+  # already applied to explicit no-store responses.
   ImageResizerCachePolicy:
     Type: AWS::CloudFront::CachePolicy
     Properties:
       CachePolicyConfig:
         Name: !Sub bowling-scraper-image-resizer-${AWS::AccountId}
         MinTTL: 0
-        DefaultTTL: 86400
+        DefaultTTL: 0
         MaxTTL: 31536000
         ParametersInCacheKeyAndForwardedToOrigin:
           EnableAcceptEncodingGzip: true
