@@ -105,3 +105,43 @@ export function getProductArticle(productId: string): Promise<ProductArticleResp
 export function bowlerDepotSearchUrl(productName: string): string {
   return `https://bowlerdepot.com/search.php?search_query=${encodeURIComponent(productName)}`;
 }
+
+// On-demand image resizer/optimizer (src/image_resizer in the main repo,
+// fronted by CloudFront at img.bowleriq.io) -- Al: "with the learn site
+// nearing a release i think it is time to optimize the images." Every
+// image field this API returns (primary_image_url, product_shot_image_url,
+// action_shot_image_url, etc.) is a raw, full-resolution ImageBucket S3
+// URL of the form https://<bucket>.s3.amazonaws.com/product-images/...
+// or .../article-images/... -- exactly the two prefixes the resizer
+// accepts. This rewrites one of those raw URLs into a resized/optimized
+// one; returns the input UNCHANGED (not null) for anything that isn't a
+// recognizable ImageBucket URL, so a caller can always fall back to
+// rendering the original rather than losing the image entirely.
+const IMAGE_RESIZER_ORIGIN = "https://img.bowleriq.io";
+
+export interface ResizeOptions {
+  w?: number;
+  h?: number;
+  fit?: "cover" | "contain" | "inside";
+  fmt?: "webp" | "avif" | "jpeg" | "png";
+  q?: number;
+}
+
+export function resizedImageUrl(rawUrl: string, options: ResizeOptions): string {
+  let key: string;
+  try {
+    key = new URL(rawUrl).pathname.replace(/^\/+/, "");
+  } catch {
+    return rawUrl;
+  }
+  if (!key.startsWith("product-images/") && !key.startsWith("article-images/")) {
+    return rawUrl;
+  }
+  const url = new URL(`${IMAGE_RESIZER_ORIGIN}/${key}`);
+  if (options.w) url.searchParams.set("w", String(options.w));
+  if (options.h) url.searchParams.set("h", String(options.h));
+  if (options.fit) url.searchParams.set("fit", options.fit);
+  if (options.fmt) url.searchParams.set("fmt", options.fmt);
+  if (options.q) url.searchParams.set("q", String(options.q));
+  return url.toString();
+}

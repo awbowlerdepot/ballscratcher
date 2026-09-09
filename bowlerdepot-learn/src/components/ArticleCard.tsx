@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { resizedImageUrl } from "../api/client";
 import type { ArticleCard as ArticleCardType } from "../api/types";
 
 export default function ArticleCard({ article }: { article: ArticleCardType }) {
@@ -9,7 +10,12 @@ export default function ArticleCard({ article }: { article: ArticleCardType }) {
   // generation is independently-fallible and some articles will only
   // ever have the scraped photo (see get_product_article's/
   // list_articles' own docstrings).
-  const cardImage = article.product_shot_image_url || article.primary_image_url;
+  const rawCardImage = article.product_shot_image_url || article.primary_image_url;
+  // 640x480 (4:3, matching the aspect-[4/3] box below) -- 2x-retina-sized
+  // for this card's ~300-370px rendered width in the 2/3-col grid
+  // (LearnIndexPage.tsx), served via img.bowleriq.io instead of the raw
+  // full-resolution scraped/generated source.
+  const cardImage = rawCardImage ? resizedImageUrl(rawCardImage, { w: 640, h: 480, fit: "cover" }) : null;
   return (
     <div className="group">
       <Link to={`/articles/${article.product_id}`} className="block overflow-hidden rounded-md bg-paper-border/40">

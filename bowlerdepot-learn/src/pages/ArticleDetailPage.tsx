@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ApiError, bowlerDepotSearchUrl, getProductArticle } from "../api/client";
+import { ApiError, bowlerDepotSearchUrl, getProductArticle, resizedImageUrl } from "../api/client";
 import type { ProductArticleResponse } from "../api/types";
 import ArticleDetailSkeleton from "../components/ArticleDetailSkeleton";
 
@@ -74,7 +74,10 @@ export default function ArticleDetailPage() {
   if (!article) return <p className="py-8 text-center text-muted">No review is published for this ball yet.</p>;
 
   const product = article.product;
-  const heroImage = article.action_shot_image_url || product?.primary_image_url;
+  const rawHeroImage = article.action_shot_image_url || product?.primary_image_url;
+  // 700x525 (4:3) -- 2x-retina-sized for the hero box's ~325px rendered
+  // width (see the md:w-[325px] box below), served via img.bowleriq.io.
+  const heroImage = rawHeroImage ? resizedImageUrl(rawHeroImage, { w: 700, h: 525, fit: "cover" }) : null;
 
   function scrollBrandLineup(direction: -1 | 1) {
     brandLineupRef.current?.scrollBy({ left: direction * 320, behavior: "smooth" });
@@ -263,7 +266,7 @@ export default function ArticleDetailPage() {
                   <div className="aspect-[4/3] w-full overflow-hidden rounded-md bg-paper-border/40">
                     {c.primary_image_url ? (
                       <img
-                        src={c.primary_image_url}
+                        src={resizedImageUrl(c.primary_image_url, { w: 640, h: 480, fit: "cover" })}
                         alt={c.name}
                         loading="lazy"
                         className="h-full w-full object-cover"
@@ -312,7 +315,7 @@ export default function ArticleDetailPage() {
                 <div className="aspect-[4/3] w-full overflow-hidden rounded-md bg-paper-border/40">
                   {r.primary_image_url ? (
                     <img
-                      src={r.primary_image_url}
+                      src={resizedImageUrl(r.primary_image_url, { w: 640, h: 480, fit: "cover" })}
                       alt={r.product_name}
                       loading="lazy"
                       className="h-full w-full object-cover"
@@ -376,7 +379,7 @@ export default function ArticleDetailPage() {
                   <div className="aspect-[4/3] w-full overflow-hidden rounded-md bg-paper-border/40">
                     {b.primary_image_url ? (
                       <img
-                        src={b.primary_image_url}
+                        src={resizedImageUrl(b.primary_image_url, { w: 400, h: 300, fit: "cover" })}
                         alt={b.name}
                         loading="lazy"
                         className="h-full w-full object-cover"

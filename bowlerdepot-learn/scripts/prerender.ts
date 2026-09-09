@@ -164,6 +164,39 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
+// On-demand image resizer/optimizer (src/image_resizer in the main repo,
+// fronted by CloudFront at img.bowleriq.io) -- see src/api/client.ts's
+// resizedImageUrl for the browser-side twin of this; duplicated here
+// (not imported) rather than shared, same reason this file's
+// ArticleCard/ArticleDetail interfaces above are their own copies of
+// src/api/types.ts rather than imports -- this script runs standalone
+// via tsx outside the Vite app bundle. Every raw image field this
+// script touches (action_shot_image_url, product_shot_image_url,
+// primary_image_url) is a full-resolution ImageBucket S3 URL; this
+// rewrites one into a resized/optimized img.bowleriq.io URL, or returns
+// it unchanged if it isn't a recognizable ImageBucket URL.
+function resizedImageUrl(
+  rawUrl: string,
+  options: { w?: number; h?: number; fit?: "cover" | "contain" | "inside"; fmt?: "webp" | "avif" | "jpeg" | "png"; q?: number },
+): string {
+  let key: string;
+  try {
+    key = new URL(rawUrl).pathname.replace(/^\/+/, "");
+  } catch {
+    return rawUrl;
+  }
+  if (!key.startsWith("product-images/") && !key.startsWith("article-images/")) {
+    return rawUrl;
+  }
+  const url = new URL(`https://img.bowleriq.io/${key}`);
+  if (options.w) url.searchParams.set("w", String(options.w));
+  if (options.h) url.searchParams.set("h", String(options.h));
+  if (options.fit) url.searchParams.set("fit", options.fit);
+  if (options.fmt) url.searchParams.set("fmt", options.fmt);
+  if (options.q) url.searchParams.set("q", String(options.q));
+  return url.toString();
+}
+
 async function fetchAllArticles(): Promise<ArticleCard[]> {
   const all: ArticleCard[] = [];
   let offset = 0;
@@ -298,7 +331,18 @@ function buildArticleLd(card: ArticleCard, article: ArticleDetail, heroImage: st
 function buildProductLd(card: ArticleCard, article: ArticleDetail, heroImage: string | null | undefined) {
   const product = article.product;
   const name = product?.name ?? card.product_name;
-  const images = [...new Set([heroImage, product?.primary_image_url, card.primary_image_url].filter(Boolean))] as string[];
+  // heroImage arrives here already resized (see renderArticlePage) --
+  // the two fallback sources don't, so resize them the same way rather
+  // than mixing a full-resolution S3 URL into the same `image` array.
+  const images = [
+    ...new Set(
+      [
+        heroImage,
+        product?.primary_image_url ? resizedImageUrl(product.primary_image_url, { w: 1200, h: 630, fit: "cover", fmt: "jpeg", q: 85 }) : null,
+        card.primary_image_url ? resizedImageUrl(card.primary_image_url, { w: 1200, h: 630, fit: "cover", fmt: "jpeg", q: 85 }) : null,
+      ].filter(Boolean),
+    ),
+  ] as string[];
 
   const positiveNotes = article.pros?.length
     ? { "@type": "ItemList", itemListElement: article.pros.map((p, i) => ({ "@type": "ListItem", position: i + 1, name: p })) }
@@ -409,7 +453,16 @@ function renderStructuredData(card: ArticleCard, article: ArticleDetail, heroIma
 // ArticleDetailPage.tsx.
 function renderArticlePage(baseHtml: string, card: ArticleCard, article: ArticleDetail): string {
   const metaDescription = escapeHtml((article.hook || card.hook || "").slice(0, 300));
-  const heroImage = article.action_shot_image_url || article.product?.primary_image_url || card.primary_image_url;
+  const rawHeroImage = article.action_shot_image_url || article.product?.primary_image_url || card.primary_image_url;
+  // 1200x630 -- the standard Open Graph/Twitter Card social-preview
+  // dimensions, reused as-is for the no-JS body <img>, og:image, and the
+  // Article/Product JSON-LD image fields below (one resized URL, shared
+  // everywhere this page needs an image). fmt=jpeg rather than the
+  // resizer's webp default -- some link-unfurlers (Slack, older
+  // LinkedIn) still don't reliably render webp og:image previews, and
+  // jpeg is the safest universally-supported choice for this specific
+  // use.
+  const heroImage = rawHeroImage ? resizedImageUrl(rawHeroImage, { w: 1200, h: 630, fit: "cover", fmt: "jpeg", q: 85 }) : null;
   const pageTitle = `${article.title} | Learn | The Bowler Depot`;
   const canonicalUrl = `${SITE_URL}/articles/${card.product_id}/`;
 

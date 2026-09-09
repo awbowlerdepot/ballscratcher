@@ -12843,6 +12843,56 @@ directly. Next step, once this is live: point card/hero `<img src>`s
 at `<resizer-domain>/<key>?w=...&fmt=webp` for the sizes each
 placement actually needs, sized per breakpoint.
 
+**Update:** Learn site frontend now wired (consumer-site still isn't --
+not yet requested). Al, after the 403 incident above was resolved and
+the site was rebuilt: "no learn site build has happened so it still has
+the old image links" -- the resizer endpoint being live was never
+enough on its own; nothing in `bowlerdepot-learn/` actually called it
+until this change.
+
+Added `resizedImageUrl(rawUrl, {w, h, fit, fmt, q})` in two places --
+`bowlerdepot-learn/src/api/client.ts` (browser-side, used by the
+React components) and a duplicated standalone copy inside
+`scripts/prerender.ts` (that script runs standalone via `tsx` outside
+the Vite app bundle, same reason its `ArticleCard`/`ArticleDetail`
+interfaces are their own copies of `src/api/types.ts` rather than
+imports). Both take a raw ImageBucket S3 URL
+(`https://<bucket>.s3.amazonaws.com/product-images/...` or
+`.../article-images/...`, confirmed against how `image_processor/
+app.py` actually constructs these), extract the key via `new
+URL(rawUrl).pathname`, and rebuild it as an `img.bowleriq.io/<key>?...`
+URL -- returning the input unchanged for anything that isn't a
+recognizable ImageBucket URL, so a caller always has a safe fallback to
+the original rather than losing the image.
+
+Wired into every image spot in the React app: `ArticleCard.tsx`'s grid
+card (640x480, cover), `ArticleDetailPage.tsx`'s hero (700x525, cover),
+comparison_table/related_reviews cards (640x480, cover), and the
+brand_lineup carousel's smaller cards (400x300, cover) -- each sized
+~2x-retina for that placement's actual rendered width rather than one
+size everywhere. `prerender.ts`'s build-time script also updated: the
+shared `heroImage` (feeds the no-JS body `<img>`, `og:image`, and the
+Article/Product JSON-LD `image` fields all at once) now resizes to
+1200x630 -- the standard Open Graph/Twitter Card social-preview
+dimensions -- with `fmt=jpeg` specifically (not the resizer's webp
+default) since some link-unfurlers (Slack, older LinkedIn) still don't
+reliably render webp `og:image` previews; `buildProductLd`'s
+supplementary fallback image URLs get the same treatment for
+consistency.
+
+`tsc -b` passes clean (verified in-sandbox). Full `npm run build`
+(`tsc -b && vite build && npm run prerender`) could NOT be verified
+end-to-end in-sandbox -- `vite build` hit a sandbox-only missing
+`@rollup/rollup-linux-arm64-gnu` optional-dependency binary with no
+npm registry access to fetch it (a known npm optional-deps bug,
+unrelated to this change), and `prerender` needs a live
+`VITE_PUBLIC_API_URL` fetch this sandbox has no network path to
+anyway. Al should run the real `npm run build` (or just push and let
+the existing GitHub Actions deploy workflow build it) to confirm end to
+end, then load a few article pages and check that `<img>` `src`
+attributes now point at `img.bowleriq.io` instead of the raw S3
+bucket domain.
+
 Two real incidents hit deploying this, both fixed same-session:
 
 1. `sam build` failed with `Could not satisfy the requirement:
