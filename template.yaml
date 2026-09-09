@@ -3871,7 +3871,19 @@ Resources:
             # AWS-documented way to get it out of the FunctionUrl
             # attribute (index 0/1 are "https:"/"", index 3 is the empty
             # string after the trailing slash).
-            DomainName: !Select [2, !Split ["/", !GetAtt ImageResizerFunction.FunctionUrl]]
+            #
+            # Real deploy failure, Al: "Requested attribute FunctionUrl
+            # does not exist in schema for AWS::Lambda::Function" --
+            # SAM's FunctionUrlConfig on AWS::Serverless::Function does
+            # NOT add a FunctionUrl attribute to the function resource
+            # itself; it expands into a SEPARATE AWS::Lambda::Url
+            # resource, logical id <FunctionLogicalId>Url (confirmed by
+            # the CFN events log: "AWS::Lambda::Url
+            # ImageResizerFunctionUrl -- CREATE_COMPLETE" happened just
+            # fine, only the Distribution's own GetAtt was wrong). That
+            # separate resource is what actually carries the FunctionUrl
+            # attribute.
+            DomainName: !Select [2, !Split ["/", !GetAtt ImageResizerFunctionUrl.FunctionUrl]]
             OriginAccessControlId: !GetAtt ImageResizerOAC.Id
             CustomOriginConfig:
               OriginProtocolPolicy: https-only
