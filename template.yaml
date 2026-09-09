@@ -3794,8 +3794,40 @@ Resources:
               Resource:
                 - !Sub arn:aws:s3:::${ImageBucket}/product-images/*
                 - !Sub arn:aws:s3:::${ImageBucket}/article-images/*
+      # Real incident, Al: img.bowleriq.io returning a persistent 403
+      # AccessDeniedException from Lambda's own IAM-authorizer layer on
+      # every single request, unchanged across retries, a real time gap,
+      # and a fresh never-before-used cache key (ruling out CloudFront
+      # just serving a stale cached error). Verified layer by layer via
+      # AWS CLI that the OAC setup was configured exactly per AWS's
+      # documented pattern: Lambda resource policy correct (get-policy),
+      # CloudFront origin's OriginAccessControlId correctly bound
+      # (get-distribution-config), OAC's own config correct
+      # (get-origin-access-control: OriginAccessControlOriginType: lambda,
+      # SigningBehavior: always, SigningProtocol: sigv4), distribution
+      # Status: Deployed (not mid-propagation), and the resource policy's
+      # SourceArn matching the live distribution ID character for
+      # character. Conclusively isolated with one more test: a request
+      # signed directly with Al's own AWS credentials (bypassing
+      # CloudFront entirely) hit the Function URL successfully (200,
+      # correct image, correct Cache-Control) -- proving the function and
+      # its AWS_IAM auth type work fine, and that the failure is
+      # specifically CloudFront's OAC not successfully presenting a valid
+      # SigV4-signed request to this origin, despite every visible
+      # config knob being correct. Al: "lets go with the fall back."
+      #
+      # Falling back to AuthType: NONE (a public function URL) rather
+      # than keep chasing what looks like a CloudFront-side signing
+      # issue outside anything template.yaml controls. Same risk
+      # calculus as when this was first floated: ImageBucket is already
+      # public-read, so this doesn't expose anything that wasn't already
+      # reachable -- it just removes the auth layer between CloudFront
+      # and a Lambda that only ever reads from a public bucket and
+      # returns a resized copy. Revisit OAC later (worth an AWS Support
+      # case given how clean this evidence trail is) if it's worth
+      # circling back to.
       FunctionUrlConfig:
-        AuthType: AWS_IAM
+        AuthType: NONE
         InvokeMode: BUFFERED
 
   ImageResizerFunctionUrlPermission:
@@ -3803,18 +3835,13 @@ Resources:
     Properties:
       Action: lambda:InvokeFunctionUrl
       FunctionName: !Ref ImageResizerFunction
-      Principal: cloudfront.amazonaws.com
-      FunctionUrlAuthType: AWS_IAM
-      SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${ImageResizerDistribution}
-
-  ImageResizerOAC:
-    Type: AWS::CloudFront::OriginAccessControl
-    Properties:
-      OriginAccessControlConfig:
-        Name: !Sub bowling-scraper-image-resizer-oac-${AWS::AccountId}
-        OriginAccessControlOriginType: lambda
-        SigningBehavior: always
-        SigningProtocol: sigv4
+      # Principal "*" + FunctionUrlAuthType: NONE is the standard SAM/CFN
+      # pattern for a public function URL -- no SourceArn scoping is
+      # possible here (or meaningful) since the URL itself is now
+      # unauthenticated; anyone with the URL can invoke it directly,
+      # same as anyone can already read straight from ImageBucket.
+      Principal: "*"
+      FunctionUrlAuthType: NONE
 
   # Custom cache policy, not a managed one -- CachingOptimized (used by the
   # three site distributions above) deliberately excludes query strings
@@ -3901,7 +3928,9 @@ Resources:
             # separate resource is what actually carries the FunctionUrl
             # attribute.
             DomainName: !Select [2, !Split ["/", !GetAtt ImageResizerFunctionUrl.FunctionUrl]]
-            OriginAccessControlId: !GetAtt ImageResizerOAC.Id
+            # No OriginAccessControlId here -- see ImageResizerFunction's
+            # FunctionUrlConfig comment for why this fell back to a
+            # public (AuthType: NONE) function URL instead of OAC/SigV4.
             CustomOriginConfig:
               OriginProtocolPolicy: https-only
               OriginSSLProtocols: [TLSv1.2]
