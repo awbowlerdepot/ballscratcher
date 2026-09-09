@@ -12895,6 +12895,56 @@ Once that CNAME resolves, `https://img.bowleriq.io/<key>?w=...`
 serves resized images directly -- the `*.cloudfront.net` URL keeps
 working too.
 
+**Real incident, post-cutover: persistent 403 on every request.** Once
+the CNAME took, every `img.bowleriq.io/<key>?...` request came back
+`403`, `content-type: application/json`,
+`x-amzn-errortype: AccessDeniedException`, a body of
+`{"Message":"Forbidden. For troubleshooting Function URL authorization
+issues, see: ..."}` -- unchanged across retries and across a real time
+gap. That header/body shape is Lambda's own function-URL IAM-authorizer
+rejection, generated before `app.py` ever runs (not an app-level error,
+not S3 access-denied). Verified layer by layer via AWS CLI that the
+documented OAC pattern was configured exactly right: the Lambda
+resource policy (`aws lambda get-policy`) grants
+`lambda:InvokeFunctionUrl` to `cloudfront.amazonaws.com` scoped to this
+distribution's ARN; the CloudFront origin
+(`aws cloudfront get-distribution-config`) has
+`OriginAccessControlId` bound to `ImageResizerOAC`; the OAC itself
+(`aws cloudfront get-origin-access-control`) has
+`OriginAccessControlOriginType: lambda`, `SigningBehavior: always`,
+`SigningProtocol: sigv4`. All correct on paper -- still 403ing.
+
+Separately, while that's still being run down, found and fixed a real
+bug in `ImageResizerCachePolicy`: `DefaultTTL` was `86400` (a day).
+`DefaultTTL` is what CloudFront falls back to for any origin response
+carrying no `Cache-Control`/`Expires` header at all -- which describes
+exactly this Lambda's own IAM-rejection response, since it's generated
+by AWS's invoke-authorization layer before `app.py`'s own careful
+`Cache-Control` logic (see `_response()`) ever gets a chance to run. If
+that rejection happened even once anywhere in this incident -- e.g.
+during OAC/SigV4 propagation right after the distribution was first
+created -- CloudFront could have cached the 403 at that edge POP for a
+full day, which would make the symptom look identical to a still-broken
+signing config even after the real signing issue resolved. Changed
+`DefaultTTL: 86400 -> 0` regardless of whether this turns out to be the
+actual explanation for the current incident: `MinTTL: 0` already floors
+explicit `no-store` responses to effectively-no-caching, this just
+extends the same posture to header-less ones, which is the correct
+value for an origin that's supposed to be either a year-long-immutable
+resized image or a fresh error, never something in between. Commit
+`63bba31`.
+
+Redeploy to pick this up (same command as above, `sam deploy`), then
+retest `img.bowleriq.io` with a previously-untried `w=`/`h=` value (a
+fresh cache key, to rule out a stale cached 403 specifically) as well
+as a previously-tried one (to see whether the 403 itself is gone).
+Status as of this writing: **still unresolved, actively being
+debugged** -- do not fall back to `AuthType: NONE` on
+`ImageResizerFunction`'s `FunctionUrlConfig` without checking with Al
+first; `AuthType: NONE` was floated as a lower-risk alternative (source
+`ImageBucket` is already public-read) but Al explicitly said to keep
+debugging the OAC path first.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
