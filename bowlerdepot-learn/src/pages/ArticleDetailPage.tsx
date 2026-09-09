@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ApiError, bowlerDepotSearchUrl, getProductArticle } from "../api/client";
 import type { ProductArticleResponse } from "../api/types";
+import ArticleDetailSkeleton from "../components/ArticleDetailSkeleton";
 
 // Real BowlerDepot price for a Similar Balls card (Al: "include links
 // and pricing for it using the bowlerdepot.com pricing data") -- null
@@ -41,7 +42,7 @@ export default function ArticleDetailPage() {
       .finally(() => setLoading(false));
   }, [productId]);
 
-  if (loading) return <p className="py-8 text-center text-muted">Loading...</p>;
+  if (loading) return <ArticleDetailSkeleton />;
   if (notFound) return <p className="py-8 text-center text-muted">That ball isn't in our catalog.</p>;
   if (error) return <p className="py-8 text-center text-alert">{error}</p>;
 

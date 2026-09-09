@@ -3,6 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { getBrands, getCategories, listArticles } from "../api/client";
 import type { ArticleCard as ArticleCardType, Category } from "../api/types";
 import ArticleCard from "../components/ArticleCard";
+import ArticleCardSkeleton from "../components/ArticleCardSkeleton";
 
 const PAGE_SIZE = 24;
 
@@ -171,9 +172,15 @@ export default function LearnIndexPage() {
       {error && <p className="py-4 text-alert">{error}</p>}
 
       <div className="grid grid-cols-1 gap-x-8 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
-        {articles.map((a) => (
-          <ArticleCard key={a.article_id} article={a} />
-        ))}
+        {loading && articles.length === 0
+          ? // Filter/search/sort change (or first load) -- fill the grid
+            // with placeholders instead of leaving it blank, so the page
+            // doesn't jump from empty to full height once results land.
+            // PAGE_SIZE would overfill the viewport; one row-and-a-half
+            // worth is enough to read as "loading" without over-promising
+            // a full page of results.
+            Array.from({ length: 9 }).map((_, i) => <ArticleCardSkeleton key={i} />)
+          : articles.map((a) => <ArticleCard key={a.article_id} article={a} />)}
       </div>
 
       {!loading && articles.length === 0 && !error && (
