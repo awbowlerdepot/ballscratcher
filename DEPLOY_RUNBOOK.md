@@ -12934,16 +12934,53 @@ value for an origin that's supposed to be either a year-long-immutable
 resized image or a fresh error, never something in between. Commit
 `63bba31`.
 
-Redeploy to pick this up (same command as above, `sam deploy`), then
-retest `img.bowleriq.io` with a previously-untried `w=`/`h=` value (a
-fresh cache key, to rule out a stale cached 403 specifically) as well
-as a previously-tried one (to see whether the 403 itself is gone).
-Status as of this writing: **still unresolved, actively being
-debugged** -- do not fall back to `AuthType: NONE` on
-`ImageResizerFunction`'s `FunctionUrlConfig` without checking with Al
-first; `AuthType: NONE` was floated as a lower-risk alternative (source
-`ImageBucket` is already public-read) but Al explicitly said to keep
-debugging the OAC path first.
+Redeployed with that fix; retested with a fresh, never-before-used `w=`
+value -- still `403`, `x-cache: Error from cloudfront` (a real miss
+reaching the origin, not a stale cached error). That conclusively ruled
+out the caching theory as the cause of *this* incident (the `DefaultTTL`
+fix was still correct and worth keeping, just wasn't the culprit here).
+
+Went back through the OAC+SigV4 chain one more time via AWS CLI, this
+time checking things not yet checked: `aws cloudfront get-distribution
+--query Distribution.Status` came back `Deployed` (not stuck
+mid-propagation), and a full raw dump of `aws lambda get-policy`
+confirmed the resource policy's `SourceArn` matched the live
+distribution ID (`E2FXENFKXYESZD`) character for character. Every
+config knob checked out, yet the 403 persisted identically hitting
+both the `img.bowleriq.io` alias and the raw `*.cloudfront.net` domain
+directly (ruling out anything alias/cert-specific).
+
+Final, conclusive isolating test: signed a request directly with Al's
+own AWS credentials via `curl --aws-sigv4`, bypassing CloudFront
+entirely, straight to the Lambda Function URL. That succeeded --
+`200 OK`, correct resized WebP, correct `Cache-Control`. This proved
+the Lambda function itself and its `AWS_IAM` function-URL auth both
+work correctly for a validly-signed request. The failure was
+specifically CloudFront's OAC not successfully presenting a valid
+SigV4-signed request to the origin, despite every piece of its
+configuration matching AWS's documented pattern exactly -- nothing
+left to fix in `template.yaml` or IAM on our end. This looks like
+either an AWS platform-side inconsistency with OAC-for-Lambda in this
+account/region, or something outside what CloudFormation/CLI can see;
+worth an AWS Support case if it's ever worth revisiting.
+
+Al: "lets go with the fall back." Commit `5902220` switched
+`ImageResizerFunction`'s `FunctionUrlConfig.AuthType` from `AWS_IAM` to
+`NONE` (a public function URL), updated
+`ImageResizerFunctionUrlPermission` to the standard public-invoke
+pattern (`Principal: "*"`, `FunctionUrlAuthType: NONE`, no `SourceArn`),
+and removed the now-unused `ImageResizerOAC` resource and the origin's
+`OriginAccessControlId` reference entirely. Same risk calculus as when
+`AuthType: NONE` was first floated as an alternative: `ImageBucket` is
+already public-read, so this doesn't expose anything that wasn't
+already reachable -- it just removes an auth layer that was provably
+broken on CloudFront's side, not ours.
+
+Needs a `sam build && sam deploy` to take effect, then retest
+`img.bowleriq.io/<key>?w=...` -- expect a clean `200` this time. If it
+still fails after this fallback, the problem is somewhere else
+entirely (not auth-related), and worth a fresh look at the Lambda's own
+logs/CloudWatch for that invocation.
 
 ## 7. Ongoing operations
 
