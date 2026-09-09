@@ -48,6 +48,17 @@ export default function ArticleDetailPage() {
   const article = data?.article;
   if (!article) return <p className="py-8 text-center text-muted">No review is published for this ball yet.</p>;
 
+  // The prerendered static HTML (scripts/prerender.ts) already sets the
+  // right <title> for whichever article a browser lands on directly,
+  // but react-router client-side navigation between articles (Related
+  // Reviews / Similar Balls links) never re-runs that build-time logic,
+  // so the tab title used to stick on whatever page was first loaded.
+  // Same title format prerender.ts already uses, kept in sync here for
+  // in-app navigation.
+  useEffect(() => {
+    document.title = `${article.title} | Learn | The Bowler Depot`;
+  }, [article.title]);
+
   const product = article.product;
   const heroImage = article.action_shot_image_url || product?.primary_image_url;
   // Migration 031 -- "Bowling Balls · Ball Review" eyebrow, read straight

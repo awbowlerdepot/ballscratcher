@@ -49,6 +49,16 @@ export default function LearnIndexPage() {
       .catch(() => setCategory(null));
   }, []);
 
+  // ArticleDetailPage.tsx sets document.title to the article's own title on
+  // mount (client-side nav between articles never re-runs prerender.ts's
+  // build-time title logic). Navigating back to this index page via
+  // react-router (e.g. the header logo/nav link) doesn't reload index.html,
+  // so without this the tab would keep showing whatever article title was
+  // last set. Reset to the site default here.
+  useEffect(() => {
+    document.title = "Learn | The Bowler Depot";
+  }, []);
+
   useEffect(() => {
     setOffset(0);
     setArticles([]);
