@@ -5,8 +5,10 @@ import {
   listBrands,
   listManualSeedUrls,
   listProducts,
+  listUrlDiscoveryTargets,
   refreshVideoSummary,
   rescrapeProduct,
+  runUrlDiscovery,
 } from "../api/client";
 import type {
   Brand,
@@ -14,6 +16,7 @@ import type {
   ManualSeedUrl,
   RefreshRollupResult,
   RescrapeResult,
+  UrlDiscoveryTarget,
 } from "../api/types";
 import Button from "../components/Button";
 import type { Column } from "../components/DataTable";
@@ -167,6 +170,48 @@ function BatchRunner<T>({
   );
 }
 
+// One button per URL_DISCOVERY_TARGETS entry (Al: "add some buttons to
+// the batch jobs on for each of the url discovery lambdas that will
+// discover new balls on the manufactures sites") -- a single fire-and-
+// forget POST /url-discovery/{target}/run, not a list-then-loop like
+// BatchRunner above, since there's no per-product list to page through
+// here: the whole point is "run this brand's crawl again right now."
+// The Lambda itself takes anywhere from a few seconds (Brunswick's
+// sitemap diff) to a couple minutes (commercebuild's three-brand crawl,
+// 10s apart per robots.txt Crawl-delay) -- InvocationType='Event' means
+// this button's own response comes back immediately either way, well
+// before the crawl itself finishes, so "Started" is genuinely just
+// "queued," not "done."
+function DiscoveryButton({ target, label }: UrlDiscoveryTarget) {
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  async function run() {
+    setRunning(true);
+    setResult(null);
+    try {
+      const r = await runUrlDiscovery(target);
+      setResult(r.queued ? "Started -- check CloudWatch logs or the Products tab shortly." : (r.reason ?? "Not queued."));
+    } catch (err) {
+      setResult(`Error: ${err instanceof Error ? err.message : "failed"}`);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-1 rounded-lg border border-ink-200 bg-ink-100 p-3">
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-sm font-medium text-ink-800">{label}</span>
+        <Button variant="primary" size="sm" onClick={run} disabled={running}>
+          {running ? "Starting…" : "Run"}
+        </Button>
+      </div>
+      {result && <p className="text-xs text-ink-500">{result}</p>}
+    </div>
+  );
+}
+
 function describeRescrape(r: RescrapeResult): string {
   return r.queued ? "queued for rescrape" : (r.reason ?? "not queued");
 }
@@ -180,13 +225,20 @@ function fmtDate(iso: string): string {
 }
 
 // Ports admin-site/index.html's Batch Jobs tab -- the last remaining
-// admin-site tab (see README.md's "What's not here yet"). Three parts:
-// a single-product rollup refresh, six list-then-loop batch operations
+// admin-site tab (see README.md's "What's not here yet"). Four parts:
+// per-brand URL discovery triggers (DiscoveryButton above), a single-
+// product rollup refresh, six list-then-loop batch operations
 // (BatchRunner above), and the Manual Seed URLs panel (unrelated table,
 // but admin-site groups it here too since it's a small, occasionally-
 // used admin action rather than something worth its own top-level tab).
 export default function BatchJobsPage() {
   const { show } = useToast();
+
+  const [urlDiscoveryTargets, setUrlDiscoveryTargets] = useState<UrlDiscoveryTarget[]>([]);
+
+  useEffect(() => {
+    listUrlDiscoveryTargets().then(setUrlDiscoveryTargets).catch(() => undefined);
+  }, []);
 
   const [singleId, setSingleId] = useState("");
   const [singleResult, setSingleResult] = useState<string | null>(null);
@@ -301,6 +353,23 @@ export default function BatchJobsPage() {
   return (
     <div className="flex flex-col gap-8">
       <h1 className="text-xl font-semibold text-ink-800">Batch Jobs</h1>
+
+      <section className="flex flex-col gap-4">
+        <div>
+          <h2 className="text-lg font-semibold text-ink-800">Discover new balls</h2>
+          <p className="text-sm text-ink-500">
+            Runs that brand&rsquo;s URL-discovery crawl right now instead of waiting for its daily schedule -- for when a
+            manufacturer just announced or listed a new ball. Fire-and-forget: "Started" means the Lambda was invoked,
+            not that the crawl has finished (Brunswick's own sitemap diff takes seconds; commercebuild's three-brand
+            crawl, spaced 10s apart per robots.txt, can take a couple minutes).
+          </p>
+        </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {urlDiscoveryTargets.map((t) => (
+            <DiscoveryButton key={t.target} target={t.target} label={t.label} />
+          ))}
+        </div>
+      </section>
 
       <section className="flex flex-col gap-2 rounded-lg border border-ink-200 bg-ink-100 p-4">
         <h3 className="text-sm font-semibold text-ink-800">Refresh one product&rsquo;s rollup</h3>

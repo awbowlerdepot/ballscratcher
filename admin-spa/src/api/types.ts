@@ -201,6 +201,24 @@ export interface DiscoverVideosResult {
   product_id?: string;
 }
 
+// GET /url-discovery-targets -- static catalog backing the Batch Jobs
+// tab's "Discover new balls" buttons, one per *UrlDiscoveryFunction this
+// stack has deployed (see admin_api's URL_DISCOVERY_TARGETS). `target`
+// is the opaque key POST /url-discovery/{target}/run expects back.
+export interface UrlDiscoveryTarget {
+  target: string;
+  label: string;
+}
+
+// POST /url-discovery/{target}/run -- same soft-fail queued/reason shape
+// as RescrapeResult/DiscoverVideosResult above, just keyed by `target`
+// instead of `product_id` since this isn't scoped to any one product.
+export interface RunUrlDiscoveryResult {
+  queued: boolean;
+  reason?: string;
+  target?: string;
+}
+
 // One row of product_skus (GET /products/{id} -- select * so every
 // column rides through; typed loosely for the columns admin-spa
 // actually renders, see ProductDetail's own comment for why the rest

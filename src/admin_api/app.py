@@ -451,6 +451,30 @@ def discover_videos(product_id: str):
         conn.close()
 
 
+@app.get("/url-discovery-targets")
+def get_url_discovery_targets():
+    # Static catalog backing the Batch Jobs tab's "Discover new balls"
+    # buttons, one per URL_DISCOVERY_TARGETS entry -- see service.list_
+    # url_discovery_targets's docstring. No conn: this is a plain dict,
+    # not a DB read.
+    return {"items": service.list_url_discovery_targets()}
+
+
+@app.post("/url-discovery/{target}/run")
+def run_url_discovery(target: str):
+    # On-demand equivalent of a direct `aws lambda invoke
+    # bowling-scraper-<brand>-url-discovery` -- see service.queue_url_
+    # discovery's docstring. No request body: target is one of the keys
+    # GET /url-discovery-targets above already returned. Returns 200 with
+    # queued=False (not a 4xx/5xx) when that target's function-name env
+    # var isn't configured on this deployment -- an expected, non-error
+    # outcome, same convention as POST /products/{id}/discover-videos.
+    try:
+        return service.queue_url_discovery(target)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 @app.post("/admin/refresh-video-stats")
 def refresh_video_stats(limit: Optional[int] = Query(None, gt=0)):
     # On-demand equivalent of a direct `aws lambda invoke

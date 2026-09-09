@@ -12481,6 +12481,83 @@ sam build && sam deploy   # picks up public_api's new brand_id select + brand_li
 cd bowlerdepot-learn && npm run build   # tsc -b + vite build + prerender, then the usual GitHub Actions deploy (push to main)
 ```
 
+### 6ag. Admin SPA: "Discover new balls" buttons on the Batch Jobs tab
+
+Al: "can we some buttons to the batch jobs on for each of the url
+discovery lambdas that will discover new balls on the manufactures
+sites." All 10 `*UrlDiscoveryFunction` Lambdas (Brunswick, Brunswick
+Bags, Radical, DV8, SWAG/WooCommerce, MOTIV/Netsuite, Storm/Roto
+Grip/900 Global/commercebuild, Hammer/Shopify, Track, Ebonite) already
+run on their own `rate(1 day)` schedule in production; this just adds a
+manual "run it right now" trigger next to that schedule, for when a
+brand posts a new ball and Al doesn't want to wait for the next
+scheduled crawl. Confirmed via grep across every url_discovery
+handler's `app.py` that all 10 ignore their invocation `event` entirely
+(they read sitemap/category URLs and `BRAND_ID` from their own env
+vars), so the manual trigger invokes with an empty `{}` payload -- same
+direct `lambda:InvokeFunction`, `InvocationType='Event'`, soft-fail
+`{"queued": False, "reason": ...}` convention as
+`queue_video_discovery`/`queue_price_check` elsewhere in this file.
+
+**Backend (`admin_api/service.py`)**: new `URL_DISCOVERY_TARGETS` dict
+(target key -> (label, env var name)) -- its own registry, not reused
+from `SCRAPE_QUEUE_ENV_VAR_BY_PLATFORM`, because several brands share
+one platform's Lambda (Storm/Roto Grip/900 Global all run through the
+single `CommercebuildUrlDiscoveryFunction`) while others get their own
+dedicated deployment despite sharing platform code (Hammer/Track/
+Ebonite each have their own Shopify-family function). New
+`list_url_discovery_targets()` (plain dict-to-list read, no DB, no
+boto3) and `queue_url_discovery(target)` (raises `LookupError` for an
+unknown target; soft-fails when that target's function-name env var
+isn't configured on this deployment).
+
+**Routes (`admin_api/app.py`)**: `GET /url-discovery-targets` (backs
+the button grid) and `POST /url-discovery/{target}/run` (404 on
+unknown target via the `LookupError` above).
+
+**`template.yaml`**: 10 new env vars on `AdminApiFunction`
+(`URL_DISCOVERY_FUNCTION_NAME`, `BRUNSWICK_BAGS_URL_DISCOVERY_FUNCTION_NAME`,
+`RADICAL_URL_DISCOVERY_FUNCTION_NAME`, `DV8_URL_DISCOVERY_FUNCTION_NAME`,
+`WOOCOMMERCE_URL_DISCOVERY_FUNCTION_NAME`,
+`NETSUITE_URL_DISCOVERY_FUNCTION_NAME`,
+`COMMERCEBUILD_URL_DISCOVERY_FUNCTION_NAME`,
+`SHOPIFY_URL_DISCOVERY_FUNCTION_NAME`,
+`TRACK_URL_DISCOVERY_FUNCTION_NAME`,
+`EBONITE_URL_DISCOVERY_FUNCTION_NAME`), each `!Ref`ing its function
+resource, plus a new IAM statement granting `AdminApiFunction`
+`lambda:InvokeFunction` scoped to exactly those 10 functions'
+`!GetAtt ...Arn`s.
+
+**Admin SPA**: `UrlDiscoveryTarget`/`RunUrlDiscoveryResult` types,
+`listUrlDiscoveryTargets()`/`runUrlDiscovery(target)` client functions,
+and a new `DiscoveryButton` component in `BatchJobsPage.tsx` (a single
+fire-and-forget button per target, not the list-then-loop
+`BatchRunner<T>` pattern used elsewhere on that page, since there's no
+per-product list here). New "Discover new balls" section rendered at
+the top of the Batch Jobs tab, above the existing rollup-refresh/
+batch-operation sections, as a responsive grid of these buttons sourced
+from `GET /url-discovery-targets` on page load.
+
+**Tests**: `test_admin_api_service.py` -- 4 new tests using the same
+fake-boto3-via-`sys.modules` approach as `queue_video_discovery`'s own
+tests: `test_list_url_discovery_targets_returns_all_ten`,
+`test_queue_url_discovery_invokes_function_with_empty_payload`,
+`test_queue_url_discovery_missing_function_name_returns_not_queued`,
+`test_queue_url_discovery_unknown_target_raises`. **Full suite:
+299/299** (`test_admin_api_service.py`); repo-wide sweep across every
+other `tests/test_*.py` confirmed no regressions (same two unrelated
+pre-existing sandbox `pytest`-missing failures as 6af, not a real
+regression). `npx tsc -b` clean in `admin-spa/`. `template.yaml`
+re-verified via the CFN-tolerant YAML loader: 74 resources, all 10 env
+vars present on `AdminApiFunction`, 10-ARN invoke statement confirmed.
+
+Deploy via:
+
+```bash
+sam build && sam deploy   # picks up admin_api's new routes + AdminApiFunction's new env vars/IAM
+cd admin-spa && npm run build   # tsc -b + vite build, then the usual GitHub Actions deploy (push to main)
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

@@ -1539,6 +1539,27 @@ Resources:
           # Admin* Cognito API calls (list/create/delete users, change
           # group membership) against the right pool.
           COGNITO_USER_POOL_ID: !Ref AdminUserPool
+          # Read by service.py's queue_url_discovery (POST /url-discovery/
+          # {target}/run, URL_DISCOVERY_TARGETS) -- Al: "add some buttons
+          # to the batch jobs on for each of the url discovery lambdas
+          # that will discover new balls on the manufactures sites." Same
+          # "function NAME for a direct lambda:InvokeFunction call, no
+          # queue in front of it" shape as VIDEO_DISCOVERY_FUNCTION_NAME
+          # and friends above -- one env var per *UrlDiscoveryFunction
+          # this stack has deployed so far (ten; see that dict's own
+          # comment for why Storm/Roto Grip/900 Global share one entry
+          # while Hammer/Track/Ebonite each get their own despite also
+          # sharing a platform).
+          URL_DISCOVERY_FUNCTION_NAME: !Ref UrlDiscoveryFunction
+          BRUNSWICK_BAGS_URL_DISCOVERY_FUNCTION_NAME: !Ref BrunswickBagsUrlDiscoveryFunction
+          RADICAL_URL_DISCOVERY_FUNCTION_NAME: !Ref RadicalUrlDiscoveryFunction
+          DV8_URL_DISCOVERY_FUNCTION_NAME: !Ref Dv8UrlDiscoveryFunction
+          WOOCOMMERCE_URL_DISCOVERY_FUNCTION_NAME: !Ref WooCommerceUrlDiscoveryFunction
+          NETSUITE_URL_DISCOVERY_FUNCTION_NAME: !Ref NetsuiteUrlDiscoveryFunction
+          COMMERCEBUILD_URL_DISCOVERY_FUNCTION_NAME: !Ref CommercebuildUrlDiscoveryFunction
+          SHOPIFY_URL_DISCOVERY_FUNCTION_NAME: !Ref ShopifyUrlDiscoveryFunction
+          TRACK_URL_DISCOVERY_FUNCTION_NAME: !Ref TrackUrlDiscoveryFunction
+          EBONITE_URL_DISCOVERY_FUNCTION_NAME: !Ref EboniteUrlDiscoveryFunction
       Policies:
         - Statement:
             - Effect: Allow
@@ -1644,6 +1665,30 @@ Resources:
                 - cognito-idp:AdminDisableUser
                 - cognito-idp:AdminDeleteUser
               Resource: !GetAtt AdminUserPool.Arn
+        # For queue_url_discovery (POST /url-discovery/{target}/run) --
+        # one Resource entry per *UrlDiscoveryFunction this stack has
+        # deployed (see URL_DISCOVERY_FUNCTION_NAME and friends above),
+        # all ten grouped into a single Statement rather than one
+        # Statement per function like the grants above -- same action on
+        # the same route family for every one of them, so a single
+        # Resource list is simpler to read than ten near-identical
+        # blocks. Still scoped to exactly these ten ARNs, not a blanket
+        # lambda:InvokeFunction grant.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource:
+                - !GetAtt UrlDiscoveryFunction.Arn
+                - !GetAtt BrunswickBagsUrlDiscoveryFunction.Arn
+                - !GetAtt RadicalUrlDiscoveryFunction.Arn
+                - !GetAtt Dv8UrlDiscoveryFunction.Arn
+                - !GetAtt WooCommerceUrlDiscoveryFunction.Arn
+                - !GetAtt NetsuiteUrlDiscoveryFunction.Arn
+                - !GetAtt CommercebuildUrlDiscoveryFunction.Arn
+                - !GetAtt ShopifyUrlDiscoveryFunction.Arn
+                - !GetAtt TrackUrlDiscoveryFunction.Arn
+                - !GetAtt EboniteUrlDiscoveryFunction.Arn
       # Four explicit per-method routes instead of a single `Method: ANY`
       # -- found via a real live test (curl OPTIONS /health with no
       # Authorization header returned a bare 401 "Unauthorized" from API

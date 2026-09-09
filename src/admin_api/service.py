@@ -1649,6 +1649,92 @@ def queue_rescrape(conn, product_id: str) -> dict:
     return {"queued": True, "product_id": product_id, "url": url, "queue_env_var": env_var}
 
 
+# One entry per *UrlDiscoveryFunction this stack has deployed (Al: "add
+# some buttons to the batch jobs on for each of the url discovery
+# lambdas that will discover new balls on the manufactures sites").
+# Unlike SCRAPE_QUEUE_ENV_VAR_BY_PLATFORM above (keyed by source_
+# platform, since a scrape job is always about ONE already-known
+# product's own platform), these ten functions don't map 1:1 onto
+# source_platform -- several brands share one platform (Storm/Roto Grip/
+# 900 Global all run through the single CommercebuildUrlDiscoveryFunction;
+# Hammer/Track/Ebonite each get their OWN ShopifyUrlDiscoveryFunction-
+# family deployment despite sharing that platform's scraper code) -- so
+# this is its own registry, keyed by an arbitrary target string the
+# admin-spa buttons pass straight through. Every function here is
+# schedule-triggered in production (see each *UrlDiscoveryFunction's own
+# DailySchedule in template.yaml) and completely ignores its invocation
+# event/payload (reads sitemap/category URLs and brand_id from its own
+# env vars instead) -- these buttons exist purely to run that same daily
+# job on demand, not to pass it anything.
+URL_DISCOVERY_TARGETS = {
+    "brunswick": ("Brunswick", "URL_DISCOVERY_FUNCTION_NAME"),
+    "brunswick_bags": ("Brunswick (Bags)", "BRUNSWICK_BAGS_URL_DISCOVERY_FUNCTION_NAME"),
+    "radical": ("Radical", "RADICAL_URL_DISCOVERY_FUNCTION_NAME"),
+    "dv8": ("DV8", "DV8_URL_DISCOVERY_FUNCTION_NAME"),
+    "woocommerce": ("SWAG", "WOOCOMMERCE_URL_DISCOVERY_FUNCTION_NAME"),
+    "netsuite": ("MOTIV", "NETSUITE_URL_DISCOVERY_FUNCTION_NAME"),
+    "commercebuild": ("Storm / Roto Grip / 900 Global", "COMMERCEBUILD_URL_DISCOVERY_FUNCTION_NAME"),
+    "shopify_hammer": ("Hammer", "SHOPIFY_URL_DISCOVERY_FUNCTION_NAME"),
+    "track": ("Track", "TRACK_URL_DISCOVERY_FUNCTION_NAME"),
+    "ebonite": ("Ebonite", "EBONITE_URL_DISCOVERY_FUNCTION_NAME"),
+}
+
+
+def list_url_discovery_targets() -> list:
+    """Backs GET /url-discovery-targets -- the static catalog of "Discover
+    new balls" buttons the Batch Jobs tab renders, one per URL_DISCOVERY_
+    TARGETS entry above. Not DB-backed and takes no conn: this literally
+    IS the list (a plain dict), same reasoning SCRAPE_QUEUE_ENV_VAR_BY_
+    PLATFORM is a plain dict rather than a table. Order matches insertion
+    order above (Python dicts preserve it), grouped by platform family
+    the same way template.yaml itself groups these resources."""
+    return [{"target": target, "label": label} for target, (label, _env_var) in URL_DISCOVERY_TARGETS.items()]
+
+
+def queue_url_discovery(target: str) -> dict:
+    """On-demand "run this brand's URL discovery crawl right now" trigger
+    (POST /url-discovery/{target}/run) -- Al: "add some buttons to the
+    batch jobs ... that will discover new balls on the manufactures
+    sites," so a newly-announced ball doesn't have to wait for the next
+    `rate(1 day)` schedule to enter the pipeline.
+
+    Same direct lambda:InvokeFunction/InvocationType='Event' shape as
+    queue_video_discovery below (no queue in front of a *UrlDiscovery
+    Function to publish onto, and a real sitemap fetch + diff can take a
+    few seconds -- not something to block AdminApiFunction's own
+    request/response cycle on), and the same soft-fail convention:
+    returns {"queued": False, "reason"} -- not an exception -- when that
+    target's function-name env var isn't configured on this deployment,
+    same as VIDEO_DISCOVERY_FUNCTION_NAME missing does for queue_video_
+    discovery. Payload is always `{}` -- every *UrlDiscoveryFunction
+    ignores its event entirely (see this module's own URL_DISCOVERY_
+    TARGETS comment above), so there's nothing meaningful to send.
+
+    Raises LookupError for a target string not in URL_DISCOVERY_TARGETS
+    -- a caller error (an unrecognized target never reaches here from the
+    admin-spa's own buttons, which are built from list_url_discovery_
+    targets), not an expected outcome the way an unconfigured env var
+    is."""
+    entry = URL_DISCOVERY_TARGETS.get(target)
+    if entry is None:
+        raise LookupError(f"Unknown url discovery target: {target!r}")
+    _label, env_var = entry
+
+    function_name = os.environ.get(env_var)
+    if not function_name:
+        return {"queued": False, "reason": f"{env_var} is not configured on this deployment"}
+
+    import boto3
+
+    lambda_client = boto3.client("lambda")
+    lambda_client.invoke(
+        FunctionName=function_name,
+        InvocationType="Event",
+        Payload=json.dumps({}),
+    )
+    return {"queued": True, "target": target}
+
+
 def queue_video_discovery(conn, product_id: str) -> dict:
     """On-demand "search for videos again" trigger (POST
     /products/{id}/discover-videos), built for the product detail view's

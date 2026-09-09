@@ -49,9 +49,11 @@ import type {
   RejectReviewResult,
   RescrapeResult,
   ReviewQueueListResult,
+  RunUrlDiscoveryResult,
   SelectImageCandidateResult,
   SetPublishedResult,
   SkuStockHistoryResult,
+  UrlDiscoveryTarget,
   VideoCandidateListResult,
 } from "./types";
 
@@ -184,6 +186,18 @@ export function setProductPublished(id: string, published: boolean): Promise<Set
 // service.queue_video_discovery's docstring.
 export function discoverVideosForProduct(id: string): Promise<DiscoverVideosResult> {
   return apiPost<DiscoverVideosResult>(`/products/${encodeURIComponent(id)}/discover-videos`);
+}
+
+// Batch Jobs tab's "Discover new balls" buttons -- one per *UrlDiscovery
+// Function this stack has deployed. list first (renders the buttons),
+// run on click (fire-and-forget, same soft-fail queued/reason contract
+// as rescrapeProduct/discoverVideosForProduct above).
+export function listUrlDiscoveryTargets(): Promise<UrlDiscoveryTarget[]> {
+  return apiGet<{ items: UrlDiscoveryTarget[] }>("/url-discovery-targets").then((r) => r.items);
+}
+
+export function runUrlDiscovery(target: string): Promise<RunUrlDiscoveryResult> {
+  return apiPost<RunUrlDiscoveryResult>(`/url-discovery/${encodeURIComponent(target)}/run`);
 }
 
 // Per-image visibility/thumbnail toggles (migration 010) -- product

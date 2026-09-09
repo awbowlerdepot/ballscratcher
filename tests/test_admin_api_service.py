@@ -2224,6 +2224,82 @@ def test_queue_video_stats_refresh_missing_function_name_returns_not_queued():
     assert result == {"queued": False, "reason": "VIDEO_DISCOVERY_FUNCTION_NAME is not configured on this deployment"}
 
 
+# --- list_url_discovery_targets / queue_url_discovery (Batch Jobs tab's
+# "Discover new balls" buttons, Al: "add some buttons to the batch jobs on
+# for each of the url discovery lambdas that will discover new balls on the
+# manufactures sites"). list_url_discovery_targets is a plain dict-to-list
+# read (no conn, no boto3) -- queue_url_discovery is the same fake-boto3-via-
+# sys.modules approach as queue_video_discovery above, just with no conn/
+# product_id involved (target isn't scoped to any one product) and an empty
+# {} Payload (every *UrlDiscoveryFunction ignores its event entirely and
+# reads its own env vars instead -- see service.py's own comment on
+# URL_DISCOVERY_TARGETS for why this was confirmed via grep, not assumed).
+
+def test_list_url_discovery_targets_returns_all_ten():
+    targets = service.list_url_discovery_targets()
+
+    assert len(targets) == 10
+    assert {"target": "brunswick", "label": "Brunswick"} in targets
+    assert {"target": "commercebuild", "label": "Storm / Roto Grip / 900 Global"} in targets
+    assert all(set(t.keys()) == {"target", "label"} for t in targets)
+
+
+def test_queue_url_discovery_invokes_function_with_empty_payload():
+    fake_lambda = _FakeLambdaClient()
+
+    class _FakeBoto3:
+        def client(self, name):
+            assert name == "lambda"
+            return fake_lambda
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    os.environ["WOOCOMMERCE_URL_DISCOVERY_FUNCTION_NAME"] = "bowling-scraper-woocommerce-url-discovery"
+    try:
+        result = service.queue_url_discovery("woocommerce")
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+        del os.environ["WOOCOMMERCE_URL_DISCOVERY_FUNCTION_NAME"]
+
+    assert result == {"queued": True, "target": "woocommerce"}
+    assert len(fake_lambda.invocations) == 1
+    call = fake_lambda.invocations[0]
+    assert call["FunctionName"] == "bowling-scraper-woocommerce-url-discovery"
+    assert call["InvocationType"] == "Event"
+    assert json.loads(call["Payload"]) == {}
+
+
+def test_queue_url_discovery_missing_function_name_returns_not_queued():
+    os.environ.pop("RADICAL_URL_DISCOVERY_FUNCTION_NAME", None)  # confirm truly unset
+
+    class _ExplodingBoto3:
+        def client(self, name):
+            raise AssertionError("should never be called when the function name isn't configured")
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _ExplodingBoto3()
+    try:
+        result = service.queue_url_discovery("radical")
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+
+    assert result == {"queued": False, "reason": "RADICAL_URL_DISCOVERY_FUNCTION_NAME is not configured on this deployment"}
+
+
+def test_queue_url_discovery_unknown_target_raises():
+    try:
+        service.queue_url_discovery("not-a-real-target")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
 # --- list_products: needs_video_summary_refresh filter -- confirms the SQL
 # text is actually added when the flag is passed (real DB behavior of the
 # EXISTS/staleness-comparison subquery itself is untested here for the same
