@@ -13123,6 +13123,37 @@ No deploy-shape changes here (no new template.yaml resources) -- just
 and admin-spa's existing GitHub Actions workflow to ship the frontend
 changes.
 
+**Update (UI follow-up):** Al, after confirming the total/count fix
+worked: "can we improve the pagination ui.... 1-50 or n. and have the
+actual page numbers on the right where previous and next are.. also
+first and last page options when applicable." The First/Last-only
+version above still made you guess how many pages existed and click
+Next repeatedly to get anywhere in the middle. `Pagination.tsx`
+redesigned (still gated on the same optional `total` prop, so the 6
+other callers without one are untouched):
+
+- "Showing X-Y of N" text simplified -- dropped the "(page X of Y)"
+  suffix now that page-number buttons make that visible directly.
+  Callers without a `total` keep the old "(page X)" fallback text.
+- Real clickable page-number buttons added between Previous and Next,
+  current page highlighted with `variant="primary"` against
+  `variant="ghost"` for the rest. Windowed to 1 sibling on each side of
+  the current page plus page 1 and the last page always pinned, with a
+  "…" collapsing everything else -- same shape as GitHub's/Google's own
+  pagination -- so the control stays a fixed width even once the
+  Products catalog runs to dozens of pages, instead of one button per
+  page.
+- First/Last still only render when `total` is present (same
+  `hasTotal` gate as before) and stay disabled on the first/last page
+  respectively -- "when applicable" per Al's phrasing. The page-number
+  row itself only renders once there's more than one page; a single-
+  page result shows everything already, so First/Last/numbers would
+  all be no-ops.
+
+`admin-spa` `tsc -b` passes clean. No backend changes, no
+template.yaml changes -- ships via admin-spa's existing GitHub Actions
+workflow on push.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
