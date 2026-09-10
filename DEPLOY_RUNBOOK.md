@@ -13651,6 +13651,9 @@ bar. the font in the top bar is also a bit thin"):
 - Utility-bar link `font-semibold text-xs` -> `font-bold text-sm`.
 - `npx tsc -b` clean.
 
+**Logo left-justified** (Al: "can we left justify the logo") -- main
+masthead row `justify-center` -> `justify-start`. `npx tsc -b` clean.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

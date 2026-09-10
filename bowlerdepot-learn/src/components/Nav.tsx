@@ -64,7 +64,8 @@ export default function Nav() {
         </div>
       </div>
 
-      <div className="mx-auto flex max-w-[75rem] justify-center px-6 py-5 md:px-8">
+      {/* Al: "can we left justify the logo" -- was justify-center. */}
+      <div className="mx-auto flex max-w-[75rem] justify-start px-6 py-5 md:px-8">
         {/* Al: "logo is a bit small. learn should be the same height as
             the logo" -- bumped the logo from h-8 (32px) to h-11 (44px)
             and scaled "| LEARN" up from text-lg to text-2xl to match. */}
