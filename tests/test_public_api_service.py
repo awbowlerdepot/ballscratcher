@@ -833,6 +833,30 @@ class _FakeCursor:
                 for img in self.db["images"].get(pid, []) if img.get("is_visible", True)
             ]
 
+        elif q.startswith("select youtube_video_id, title, channel_title,") and "lower(channel_title) = 'brad and kyle'" in q:
+            # get_product_article's featured_video (Al: "add a hero
+            # section to the article if there is a Brad and Kyle
+            # youtube video approved for the ball the article is
+            # about") -- single-row shape, no summary requirement,
+            # channel_title matched case-insensitively. Checked BEFORE
+            # the more general get_product `videos` branch below since
+            # both queries share the same "select youtube_video_id,
+            # title, channel_title," prefix.
+            pid = params[0]
+            self._description = [("youtube_video_id",), ("title",), ("channel_title",), ("published_at",), ("thumbnail_url",), ("summary",)]
+            matches = [
+                v for v in self.db["videos"].get(pid, [])
+                if v.get("status") == "approved" and (v.get("channel_title") or "").lower() == "brad and kyle"
+            ]
+            matches.sort(key=lambda v: v.get("published_at") or "", reverse=True)
+            self._result_row = None
+            if matches:
+                v = matches[0]
+                self._result_row = (
+                    v["youtube_video_id"], v.get("title"), v.get("channel_title"),
+                    v.get("published_at"), v.get("thumbnail_url"), v.get("summary"),
+                )
+
         elif q.startswith("select youtube_video_id, title, channel_title,"):
             pid = params[0]
             self._description = [("youtube_video_id",), ("title",), ("channel_title",), ("published_at",), ("thumbnail_url",), ("summary",)]
@@ -2124,6 +2148,158 @@ def test_get_product_article_brand_lineup_image_falls_back_to_raw_photo():
 
     row = result["article"]["brand_lineup"][0]
     assert row["image_url"] == "https://s3/mate-raw-photo.png"
+
+
+# --- get_product_article: featured_video hero (Al: "add a hero section
+# to the article if there is a Brad and Kyle youtube video approved for
+# the ball the article is about") -- see get_product_article's own
+# docstring for why this is a single dict-or-null keyed on THIS
+# product's own videos (not siblings), why it doesn't require summary
+# is not null the way get_product's general `videos` field does, and
+# why channel_title is matched case-insensitively rather than via a
+# stable channel id (none is captured anywhere in this codebase).
+
+def test_get_product_article_featured_video_present_when_brad_and_kyle_approved():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid)
+    db["videos"][pid] = [
+        {"youtube_video_id": "yt-bk", "title": "Fury Review", "channel_title": "Brad and Kyle",
+         "published_at": "2026-01-01T00:00:00Z", "thumbnail_url": "https://img.youtube.com/vi/yt-bk/hq.jpg",
+         "status": "approved"},
+    ]
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    fv = result["article"]["featured_video"]
+    assert fv is not None
+    assert fv["youtube_video_id"] == "yt-bk"
+    assert fv["channel_title"] == "Brad and Kyle"
+
+
+def test_get_product_article_featured_video_includes_summary_when_present():
+    """Al, after seeing the first pass: 'with a headline ... and some
+    of the AI summary of the video' -- summary rides along on
+    featured_video the same way it already does on get_product's own
+    videos list, so the hero can show a blurb instead of just a title."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid)
+    db["videos"][pid] = [
+        {"youtube_video_id": "yt-bk", "title": "Fury Review", "channel_title": "Brad and Kyle",
+         "published_at": "2026-01-01T00:00:00Z", "status": "approved",
+         "summary": "Brad and Kyle put the Fury through a full arsenal test and break down its motion on medium oil."},
+    ]
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result["article"]["featured_video"]["summary"] == (
+        "Brad and Kyle put the Fury through a full arsenal test and break down its motion on medium oil."
+    )
+
+
+def test_get_product_article_featured_video_summary_null_when_not_yet_summarized():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid)
+    db["videos"][pid] = [
+        {"youtube_video_id": "yt-bk", "title": "Fury Review", "channel_title": "Brad and Kyle",
+         "published_at": "2026-01-01T00:00:00Z", "status": "approved"},  # no summary key
+    ]
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result["article"]["featured_video"]["summary"] is None
+
+
+def test_get_product_article_featured_video_matches_channel_case_insensitively():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid)
+    db["videos"][pid] = [
+        {"youtube_video_id": "yt-bk", "title": "Fury Review", "channel_title": "BRAD AND KYLE",
+         "published_at": "2026-01-01T00:00:00Z", "status": "approved"},
+    ]
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result["article"]["featured_video"]["youtube_video_id"] == "yt-bk"
+
+
+def test_get_product_article_featured_video_null_when_no_videos():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid)
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result["article"]["featured_video"] is None
+
+
+def test_get_product_article_featured_video_null_when_wrong_channel():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid)
+    db["videos"][pid] = [
+        {"youtube_video_id": "yt-other", "title": "Fury Review", "channel_title": "Some Other Bowling Channel",
+         "published_at": "2026-01-01T00:00:00Z", "status": "approved"},
+    ]
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result["article"]["featured_video"] is None
+
+
+def test_get_product_article_featured_video_null_when_pending_or_rejected():
+    """A pending or rejected Brad and Kyle video must not surface --
+    same review-gate posture as everything else this function exposes."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid)
+    db["videos"][pid] = [
+        {"youtube_video_id": "yt-pending", "title": "Fury Review (draft)", "channel_title": "Brad and Kyle",
+         "published_at": "2026-01-01T00:00:00Z", "status": "pending"},
+        {"youtube_video_id": "yt-rejected", "title": "Fury Review (old)", "channel_title": "Brad and Kyle",
+         "published_at": "2025-06-01T00:00:00Z", "status": "rejected"},
+    ]
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result["article"]["featured_video"] is None
+
+
+def test_get_product_article_featured_video_picks_newest_when_multiple_approved():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid)
+    db["videos"][pid] = [
+        {"youtube_video_id": "yt-old", "title": "Fury Review (2025)", "channel_title": "Brad and Kyle",
+         "published_at": "2025-01-01T00:00:00Z", "status": "approved"},
+        {"youtube_video_id": "yt-new", "title": "Fury Review (2026)", "channel_title": "Brad and Kyle",
+         "published_at": "2026-03-01T00:00:00Z", "status": "approved"},
+    ]
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result["article"]["featured_video"]["youtube_video_id"] == "yt-new"
+
+
+def test_get_product_article_featured_video_ignores_other_products_videos():
+    """product_id-scoped, not sibling_product_ids-based like related_
+    reviews -- a Brad and Kyle video approved for a DIFFERENT ball must
+    never surface on this one."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    other = _seed_published_current_product(db, pid="prod-2", name="Other Ball")
+    _seed_approved_article(db, pid)
+    db["videos"][other] = [
+        {"youtube_video_id": "yt-other-ball", "title": "Other Ball Review", "channel_title": "Brad and Kyle",
+         "published_at": "2026-01-01T00:00:00Z", "status": "approved"},
+    ]
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result["article"]["featured_video"] is None
 
 
 # --- get_product_article: reviewed_at, brand_name, and real Offer data

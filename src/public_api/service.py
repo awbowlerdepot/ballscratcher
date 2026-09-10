@@ -860,7 +860,33 @@ def get_product_article(conn, product_id: str):
     that block's own comment for why this is a fresh brand_id query
     rather than reusing sibling_product_ids like related_reviews does.
     Empty list (not null) when the product has no brand_id or no other
-    siblings with an approved article."""
+    siblings with an approved article.
+
+    featured_video (Al: "add a hero section to the article if there is
+    a Brad and Kyle youtube video approved for the ball the article is
+    about") -- single dict-or-null, not a list like the rails above:
+    the most recent product_videos row for THIS product (not siblings)
+    where status = 'approved' and channel_title matches "Brad and
+    Kyle" (YouTube handle @BradandKyleBowl), case-insensitively via
+    lower(channel_title) -- channel_title is free-text captured at
+    discovery time (004_product_videos.sql), not a stable channel id
+    (video_discovery never captures YouTube's own channelId, per
+    021_blocked_video_channels.sql's own note on this), so an exact
+    case-insensitive string match on the display name is the only
+    identification signal available, same limitation that table's own
+    channel_title blocklist lives with. Deliberately does NOT require
+    summary is not null the way get_product's own general `videos`
+    field does (see that function) -- a hero embed just needs the
+    video itself to exist and be approved, not its AI summary, so a
+    freshly-approved Brad and Kyle video can surface here immediately
+    rather than waiting on video_summarizer to finish; summary itself
+    IS still selected and passed through (Al, after seeing the first
+    build: "with a headline ... and some of the AI summary of the
+    video") so the hero can show a blurb when one exists, with the
+    frontend falling back to the video's own title when summary is
+    still null. null when no such video exists or hasn't been approved
+    yet -- the frontend should render nothing in that case, not an
+    empty/placeholder hero."""
     with conn.cursor() as cur:
         cur.execute("select id from products where id = %s and published = true", (product_id,))
         if cur.fetchone() is None:
@@ -1054,6 +1080,43 @@ def get_product_article(conn, product_id: str):
             brand_columns = [desc[0] for desc in cur.description]
             brand_lineup = [dict(zip(brand_columns, r)) for r in cur.fetchall()]
         article["brand_lineup"] = brand_lineup
+
+        # Featured video hero (Al: "add a hero section to the article if
+        # there is a Brad and Kyle youtube video approved for the ball
+        # the article is about") -- see this field's own docstring
+        # paragraph above for the full reasoning on the channel_title
+        # string-match limitation and why summary is not required here.
+        # THIS product's own videos only (product_id, not sibling_ids)
+        # -- unlike related_reviews/brand_lineup, a featured video isn't
+        # a cross-link rail, it's about the ball this article covers.
+        # order by published_at desc nulls last + limit 1: if Brad and
+        # Kyle somehow have more than one approved video for the same
+        # ball, the newest one wins rather than an arbitrary row.
+        # summary (Al, after seeing the first pass: "with a headline
+        # 'Watch what Brad & Kyle have to say!' and some of the AI
+        # summary of the video") -- the SAME video_summarizer-authored
+        # summary get_product's own `videos` field exposes, now also
+        # surfaced here so the Learn detail page's hero can show a
+        # blurb next to the embed instead of just a bare title. Can
+        # still be null (video approved but video_summarizer hasn't
+        # finished, or never successfully ran for it) -- the frontend
+        # falls back to the video's title in that case.
+        cur.execute(
+            """
+            select youtube_video_id, title, channel_title, published_at, thumbnail_url, summary
+            from product_videos
+            where product_id = %s and status = 'approved' and lower(channel_title) = 'brad and kyle'
+            order by published_at desc nulls last
+            limit 1
+            """,
+            (product_id,),
+        )
+        video_row = cur.fetchone()
+        featured_video = None
+        if video_row is not None:
+            video_columns = [desc[0] for desc in cur.description]
+            featured_video = dict(zip(video_columns, video_row))
+        article["featured_video"] = featured_video
 
         return {"product_id": product_id, "article": article}
 

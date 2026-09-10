@@ -212,6 +212,56 @@ export default function ArticleDetailPage() {
         </div>
       ) : null}
 
+      {/* Al: "add a hero section to the article if there is a Brad and
+          Kyle youtube video approved for the ball the article is
+          about... i was thinking something more like the hero at the
+          top, darker box with video right justified" -- then, after
+          seeing that first pass: "something like this with a headline
+          'Watch what Brad & Kyle have to say!' and some of the AI
+          summary of the video" / "Watch this review from Brad & Kyle."
+          Mirrors the page's own top hero banner's full-bleed treatment
+          (bg-neutral-900 breaking out of the article's max-width
+          column via the same relative/-mx-[50vw]/w-screen trick, same
+          max-w-5xl inner column, font-display heading) but adds a
+          distinct lighter panel (bg-white/5) behind the AI summary
+          blurb on the left, echoing the reference screenshot Al shared
+          -- video stays right-justified in its own black aspect-video
+          box. Falls back to the video's own title when summary is
+          still null (video approved but not yet summarized -- see
+          public_api's own comment on this field). Only ever renders
+          for the one specific channel (server-matched on channel_
+          title) -- most articles will have no featured_video and this
+          section simply won't appear. youtube.com/embed (not youtube-
+          nocookie.com -- no precedent for privacy-enhanced mode
+          anywhere in this codebase, matching the plain embed
+          consumer-site's own video grid already uses). */}
+      {article.featured_video ? (
+        <div className="relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-neutral-900 py-10">
+          <div className="mx-auto max-w-5xl px-6 md:px-8">
+            <h2 className="mb-4 font-display text-xl font-semibold text-white">
+              Watch this review from Brad &amp; Kyle
+            </h2>
+            <div className="grid grid-cols-1 overflow-hidden rounded-sm md:grid-cols-[1fr_360px]">
+              <div className="flex flex-col justify-center bg-white/5 p-6">
+                <p className="italic text-white/80">
+                  {article.featured_video.summary || article.featured_video.title}
+                </p>
+              </div>
+              <div className="aspect-video w-full bg-black">
+                <iframe
+                  className="h-full w-full"
+                  src={`https://www.youtube.com/embed/${article.featured_video.youtube_video_id}`}
+                  title={article.featured_video.title || "Featured video"}
+                  loading="lazy"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                  allowFullScreen
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {article.verdict ? (
         <div className="mb-10">
           <h2 className="mb-3 font-display text-xl font-semibold text-ink">Verdict</h2>

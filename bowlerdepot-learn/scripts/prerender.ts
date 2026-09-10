@@ -176,6 +176,20 @@ interface ArticleDetail {
   // this is internal article-to-article links instead of external,
   // price-bearing ecommerce links.
   brand_lineup?: { product_id: string; product_name: string; title: string }[] | null;
+  // Al: "add a hero section to the article if there is a Brad and Kyle
+  // youtube video approved for the ball the article is about" --
+  // rendered as a real <iframe> embed (renderFeaturedVideo below), same
+  // "real crawlable content, not client-only" posture as related_
+  // reviews/brand_lineup. Unlike the Shop CTA, this isn't excluded from
+  // static HTML: once a video is approved for a specific channel it
+  // doesn't flip back and forth the way price/stock status can, so
+  // there's no meaningful staleness risk in prerendering it.
+  // summary (Al, after seeing the first pass: "with a headline ... and
+  // some of the AI summary of the video") -- see public_api's own
+  // comment on this field for the full reasoning; may be null when the
+  // video is approved but not yet summarized, in which case
+  // renderFeaturedVideo below falls back to the video's own title.
+  featured_video?: { youtube_video_id: string; title?: string | null; channel_title?: string | null; summary?: string | null } | null;
 }
 
 function escapeHtml(value: string): string {
@@ -327,6 +341,41 @@ function renderBrandLineup(lineup: ArticleDetail["brand_lineup"]): string {
     )
     .join("");
   return `<h2>More from This Brand</h2><div class="article-grid">${cards}</div>`;
+}
+
+// Al: "add a hero section to the article if there is a Brad and Kyle
+// youtube video approved for the ball the article is about... i was
+// thinking something more like the hero at the top, darker box with
+// video right justified" -- then, after seeing that first pass:
+// "something like this with a headline 'Watch what Brad & Kyle have to
+// say!' and some of the AI summary of the video" / "Watch this review
+// from Brad & Kyle." Reuses the exact Tailwind utility classes
+// ArticleDetailPage.tsx's own featured_video block uses (see that
+// component's own comment on the full styling reasoning, including why
+// a headline plus a lighter bg-white/5 panel behind the summary blurb)
+// -- tailwind.config.js's content globs include scripts/**/*.ts
+// specifically so literal class="..." strings written here, not just
+// JSX, get scanned into the compiled CSS this static page shares with
+// the live app. Same youtube.com/embed pattern as the live page's
+// render too (not youtube-nocookie.com -- no precedent for privacy-
+// enhanced mode anywhere in this codebase).
+function renderFeaturedVideo(video: ArticleDetail["featured_video"]): string {
+  if (!video) return "";
+  const blurb = escapeHtml(video.summary || video.title || "");
+  return `
+    <div class="relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-neutral-900 py-10">
+      <div class="mx-auto max-w-5xl px-6 md:px-8">
+        <h2 class="mb-4 font-display text-xl font-semibold text-white">Watch this review from Brad &amp; Kyle</h2>
+        <div class="grid grid-cols-1 overflow-hidden rounded-sm md:grid-cols-[1fr_360px]">
+          <div class="flex flex-col justify-center bg-white/5 p-6">
+            <p class="italic text-white/80">${blurb}</p>
+          </div>
+          <div class="aspect-video w-full bg-black">
+            <iframe src="https://www.youtube.com/embed/${escapeHtml(video.youtube_video_id)}" title="${escapeHtml(video.title || "Featured video")}" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+          </div>
+        </div>
+      </div>
+    </div>`;
 }
 
 function renderFaq(faq: ArticleDetail["faq"]): string {
@@ -585,6 +634,7 @@ function renderArticlePage(baseHtml: string, card: ArticleCard, article: Article
       ${article.who_should_buy?.length ? `<h2>Who Should Buy This</h2>${renderList(article.who_should_buy)}` : ""}
       ${article.who_should_skip?.length ? `<h2>Who Should Skip This</h2>${renderList(article.who_should_skip)}` : ""}
       ${article.buying_tips ? `<h2>Buying Tips</h2><p>${escapeHtml(article.buying_tips)}</p>` : ""}
+      ${renderFeaturedVideo(article.featured_video)}
       ${article.verdict ? `<h2>Verdict</h2><p>${escapeHtml(article.verdict)}</p>` : ""}
       ${/* Al: "move the related reviews section up to just below the shop
            call to action." The live page now renders Related Reviews

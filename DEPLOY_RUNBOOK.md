@@ -13442,6 +13442,102 @@ cd bowlerdepot-learn && npm run build   # tsc -b + vite build + prerender, then 
 git push
 ```
 
+### 6aq. Featured video hero for Brad and Kyle reviews
+
+Al: "add a hero section to the article if there is a Brad and Kyle
+youtube video approved for the ball the article is about." Channel
+title confirmed by Al: display name "Brad and Kyle", handle
+@BradandKyleBowl. Placement confirmed by Al: "right above the Verdict
+section." Visual style went through three rounds: first, a plain
+heading above the embed -- Al: "none of those... i was thinking
+something more like the hero at the top, darker box with video right
+justified"; then a dark hero box with an uppercase eyebrow -- Al, after
+seeing that: "something like this with a headline 'Watch what Brad &
+Kyle have to say!' and some of the AI summary of the video" / "Watch
+this review from Brad & Kyle" (a reference screenshot showing a fixed
+headline above a dark two-panel box: an italic summary blurb on a
+lighter-panel left side, video right-justified).
+
+**`src/public_api/service.py`'s `get_product_article`**: new
+`featured_video` field, single dict-or-null (not a rail like
+related_reviews/brand_lineup -- there's only ever one video). Query:
+
+```sql
+select youtube_video_id, title, channel_title, published_at, thumbnail_url, summary
+from product_videos
+where product_id = %s and status = 'approved' and lower(channel_title) = 'brad and kyle'
+order by published_at desc nulls last
+limit 1
+```
+
+Scoped to THIS product's own videos (product_id, not sibling_product_ids
+-- this isn't a cross-link rail). Matched on `channel_title`
+case-insensitively because no stable YouTube channel id is captured
+anywhere in this codebase (video_discovery never stores
+`snippet.channelId`; `channel_title` is free text captured at discovery
+time, same limitation `blocked_video_channels`' own channel_title
+blocklist lives with -- see that migration's comment). Deliberately
+does NOT require `summary is not null` in the WHERE clause the way
+`get_product`'s general `videos` field does -- a freshly-approved video
+should surface immediately, not wait on video_summarizer -- but
+`summary` IS selected and passed through so the hero can show a blurb
+when one exists (falls back to the video's own `title` when it's still
+null). Picks the newest by published_at if more than one Brad and Kyle
+video is ever approved for the same ball.
+
+**`bowlerdepot-learn/src/api/types.ts`**: new `FeaturedVideo` interface
+(`youtube_video_id`, `title`, `channel_title`, `published_at`,
+`thumbnail_url`, `summary`, all but the id nullable) and
+`ArticleDetail.featured_video?: FeaturedVideo | null`.
+
+**`bowlerdepot-learn/src/pages/ArticleDetailPage.tsx`**: new section
+right above Verdict, rendered only when `article.featured_video` is
+present. Reuses the top hero banner's full-bleed break-out trick
+(`relative left-1/2 right-1/2 -mx-[50vw] w-screen bg-neutral-900 py-10`)
+and `font-display` heading styling, but is its own layout, not a
+straight copy: a fixed heading ("Watch this review from Brad & Kyle")
+sits above a two-column box (`md:grid-cols-[1fr_360px]`) -- a
+`bg-white/5` panel on the left holding the AI summary in italic
+(`article.featured_video.summary || article.featured_video.title`),
+and a plain `bg-black` `aspect-video` box on the right holding the
+`youtube.com/embed/<id>` iframe (not youtube-nocookie.com -- no
+precedent for privacy-enhanced embed mode anywhere in this codebase;
+matches consumer-site's own existing video grid).
+
+**`bowlerdepot-learn/scripts/prerender.ts`**: new `renderFeaturedVideo`
+function reproduces the identical Tailwind utility markup (literal
+class="..." strings, not JSX) so the static and client-rendered
+versions of this section look pixel-identical -- including an explicit
+`text-white` override on its own `<h2>` (the global `h2` base style is
+`text-ink`, invisible against this section's dark background; the live
+component's own `<h2 className="... text-white">` needed the same
+override). `tailwind.config.js`'s `content` globs already include
+`scripts/**/*.ts` specifically so literal classes written here get
+compiled in (see that file's own comment). Included in the static HTML
+(not excluded the way the Shop CTA is) -- once a video is approved for
+a fixed channel it doesn't flip back and forth the way price/stock
+status can, so there's no staleness risk worth trading away the SEO/
+no-JS content for. Called right above the Verdict paragraph in
+`renderArticlePage`'s template, matching the live page's placement.
+
+**Tests**: `test_public_api_service.py` -- 9 new tests covering: present
+when approved + exact channel match, case-insensitive channel match,
+null when no videos, null when wrong channel, null when
+pending/rejected (even if channel matches), picks newest when multiple
+approved, scoped to this product only (a sibling's Brad and Kyle video
+never leaks in), summary included when present, and summary null when
+not yet summarized. **125/125** passing (116 baseline + 9 new). `npx
+tsc -b` clean in `bowlerdepot-learn/`.
+
+No migration, no template.yaml change (product_videos/review_status
+already exist). Deploy via:
+
+```bash
+sam build && sam deploy   # picks up public_api's new featured_video query
+cd bowlerdepot-learn && npm run build   # tsc -b + vite build + prerender, then the usual GitHub Actions deploy (push to main)
+git push
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

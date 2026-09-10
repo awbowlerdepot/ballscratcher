@@ -160,6 +160,32 @@ export interface FaqItem {
   answer: string;
 }
 
+// Al: "add a hero section to the article if there is a Brad and Kyle
+// youtube video approved for the ball the article is about." Single
+// object, not a list -- unlike related_reviews/brand_lineup this isn't
+// a cross-link rail, it's the one (newest, if more than one exists)
+// approved product_videos row for THIS product from the "Brad and
+// Kyle" channel (YouTube handle @BradandKyleBowl), matched server-side
+// by channel_title since no stable channel id is captured anywhere in
+// this codebase (see service.get_product_article's own docstring on
+// this field for the full reasoning). Deliberately does NOT require an
+// AI summary to exist -- a freshly-approved video can surface here
+// immediately, ahead of video_summarizer finishing.
+export interface FeaturedVideo {
+  youtube_video_id: string;
+  title?: string | null;
+  channel_title?: string | null;
+  published_at?: string | null;
+  thumbnail_url?: string | null;
+  // video_summarizer's AI-generated review summary (same field
+  // get_product's own general `videos` list already exposes) -- Al,
+  // after seeing the first pass: "with a headline ... and some of the
+  // AI summary of the video." May be null (video approved but not yet
+  // summarized, or summarization never succeeded) -- the frontend
+  // falls back to `title` in that case.
+  summary?: string | null;
+}
+
 export interface ArticleDetail {
   id: string;
   title: string;
@@ -196,6 +222,12 @@ export interface ArticleDetail {
   article_type_name?: string | null;
   article_type_slug?: string | null;
   product: ArticleProductSpec | null;
+  // Al: "add a hero section to the article if there is a Brad and Kyle
+  // youtube video approved for the ball the article is about." See
+  // FeaturedVideo's own comment above. Null (not omitted) when no such
+  // video exists or has been approved yet -- the frontend should
+  // render nothing in that case, not a placeholder.
+  featured_video?: FeaturedVideo | null;
   related_reviews: RelatedReview[];
   // "More from [Brand]" rail -- every OTHER published product sharing
   // this article's brand that ALSO has its own approved article, ordered
