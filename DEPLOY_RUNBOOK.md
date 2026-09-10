@@ -13609,6 +13609,36 @@ the summary"):
   environment doesn't have this issue). No backend change, no new
   tests (pure layout/CSS).
 
+**Header redesign** (Al: "the current version just looks thrown
+together"). Shown 3 static-HTML mockups (minimal masthead, two-tier
+masthead, editorial tab style) -- Al picked two-tier masthead, then
+asked for 3 refinements:
+
+- Utility-bar link text changed from "Shop BowlerDepot" to "Shop
+  bowlerdepot.com".
+- The old separate "Learn" text wordmark next to the logo (redundant --
+  the logo already says BowlerDepot) is gone; the logo is now followed
+  by `| LEARN` in the same lockup.
+- The tab row (previously a single hardcoded "Ball Reviews" link) is
+  now built from `getCategories()` (migration 031) and only renders
+  when there are 2+ categories -- Al: "not sure having the tab row when
+  only one category make sense. could be conditional for when there
+  are more than one. It should also be the highest category" (i.e. the
+  top-level category name like "Bowling Balls", not the nested
+  article_type "Ball Review"). There's exactly one category in the DB
+  today, so **the tab row does not render at all right now** -- this is
+  expected, not a bug; it'll appear automatically once a second
+  category exists. Tab links point to `/?category_id=<id>`, matching
+  LearnIndexPage.tsx's own query-string-filter convention, but that
+  param isn't consumed by LearnIndexPage yet (same "seam, not a
+  finished feature" status as that page's own category fetch) -- wiring
+  actual category filtering is a separate follow-up.
+- All changes are in `Nav.tsx` only. Confirmed via `index.html` that
+  this is a pure client-side-rendered app (`<div id="root">` + a
+  script tag, no SSR) -- Nav is never present in prerender.ts's static
+  per-article HTML at all, so no prerender.ts change was needed here.
+- `npx tsc -b` clean.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
