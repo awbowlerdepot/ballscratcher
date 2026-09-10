@@ -49,23 +49,28 @@ export default function Nav() {
   return (
     <header className="sticky top-0 z-10 border-b border-paper-border bg-paper/95 backdrop-blur-sm">
       <div className="bg-secondary">
+        {/* Al: "the arrow is missing from the cta in the top bar. the font
+            in the top bar is also a bit thin" -- restored the trailing
+            arrow from the original mockup (dropped when the label
+            changed to "Shop bowlerdepot.com") and bumped font-semibold
+            to font-bold at a hair larger size. */}
         <div className="mx-auto max-w-[75rem] px-6 py-1.5 text-right md:px-8">
           <a
             href="https://bowlerdepot.com"
-            className="text-xs font-semibold tracking-wide text-white/85 hover:text-white hover:no-underline"
+            className="text-sm font-bold tracking-wide text-white/85 hover:text-white hover:no-underline"
           >
-            Shop bowlerdepot.com
+            Shop bowlerdepot.com &rarr;
           </a>
         </div>
       </div>
 
       <div className="mx-auto flex max-w-[75rem] justify-center px-6 py-5 md:px-8">
-        {/* Al: "can we have the logo then ' | LEARN' after it" -- replaces
-            the old separate "Learn" wordmark (redundant next to a logo
-            that already says BowlerDepot) with a single fused lockup. */}
+        {/* Al: "logo is a bit small. learn should be the same height as
+            the logo" -- bumped the logo from h-8 (32px) to h-11 (44px)
+            and scaled "| LEARN" up from text-lg to text-2xl to match. */}
         <a href="https://bowlerdepot.com" className="flex items-center gap-2 hover:no-underline">
-          <img src={LOGO_URL} alt="The Bowler Depot" className="h-8 w-auto" />
-          <span className="font-display text-lg font-semibold tracking-wide text-ink">
+          <img src={LOGO_URL} alt="The Bowler Depot" className="h-11 w-auto" />
+          <span className="font-display text-2xl font-semibold tracking-wide text-ink">
             | LEARN
           </span>
         </a>

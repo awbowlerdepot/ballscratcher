@@ -13639,6 +13639,18 @@ asked for 3 refinements:
   per-article HTML at all, so no prerender.ts change was needed here.
 - `npx tsc -b` clean.
 
+**Header polish pass** (Al: "logo is a bit small. learn should be the
+same height as the logo. the arrow is missing from the cta in the top
+bar. the font in the top bar is also a bit thin"):
+
+- Logo `h-8` (32px) -> `h-11` (44px); `| LEARN` `text-lg` -> `text-2xl`
+  to scale with it.
+- Utility-bar link regained its trailing arrow (`Shop bowlerdepot.com
+  &rarr;`) -- present in the original mockup, dropped when the label
+  text changed to "Shop bowlerdepot.com".
+- Utility-bar link `font-semibold text-xs` -> `font-bold text-sm`.
+- `npx tsc -b` clean.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
