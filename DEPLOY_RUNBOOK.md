@@ -13154,6 +13154,107 @@ other callers without one are untouched):
 template.yaml changes -- ships via admin-spa's existing GitHub Actions
 workflow on push.
 
+### 6am. Learn articles: real Published/Updated dates (migration 033) + byline (author, reading time, category tag)
+
+Al: "can we add published dates and last updated dates to the
+articles. can you research any other article type metadata that is
+usually exposed on typical sites."
+
+**The bug this closes:** `product_articles.reviewed_at` (022) already
+existed and was already returned by `get_product_article`/
+`list_articles` (Task #448, for Article JSON-LD), but it was the WRONG
+source for a "published" date specifically -- `approve_article` re-
+stamps `reviewed_at` on EVERY approval, including a re-approval after a
+`regenerate_text`/`regenerate_images` run puts the row back to
+`'pending'`. `prerender.ts`'s `buildArticleLd` was reading that same
+`reviewed_at` value for BOTH `datePublished` and `dateModified` -- fine
+for `dateModified`, silently wrong for `datePublished` the moment any
+article was ever regenerated and re-approved. The Learn site also never
+showed either date anywhere visible to a reader.
+
+**Migration 033** (`db/migrations/033_product_articles_first_published_at.sql`):
+adds `product_articles.first_published_at timestamptz`, backfilled to
+`reviewed_at` for every already-approved row (their true original
+publish date isn't recoverable; `reviewed_at` is the best honest
+estimate, same reasoning `products.first_seen_at` already gets used
+for elsewhere in this schema).
+
+`admin_api/service.py`'s `approve_article` now sets `first_published_at
+= coalesce(first_published_at, now())` alongside the existing `reviewed_at
+= now()` -- the FIRST approval writes it, every later regenerate+
+re-approve leaves it untouched. `reviewed_at` keeps doing exactly what
+it always did and is now cleanly the "Updated" signal.
+
+`public_api/service.py`'s `get_product_article`/`list_articles` both
+select the new column. `bowlerdepot-learn`: `types.ts` gained it on
+`ArticleCard`/`ArticleDetail`; new `client.ts` helpers `formatArticleDate`
+(human-readable "September 5, 2026" text, matching Google's own
+byline-date guidance) and `estimateReadingTimeMinutes` (plain word
+count across every prose field the page actually renders, /200wpm,
+floored at 1).
+
+**Visible byline** (Al's research ask -- checked Google's Article
+structured-data docs and its separate "Influence your byline dates"
+guide): a labeled, human-readable date near the byline is the
+recommended pattern ("Published Feb 4, 2019" / "Updated Feb 14, 2019"),
+kept consistent with whatever's in the page's own JSON-LD.
+`ArticleDetailPage.tsx` now renders "By BowlerDepot Team · N min read ·
+Published <date>" under the hook, with "· Updated <date>" appended only
+when it's actually a different date than Published (an article that's
+never been regenerated has the same value in both -- showing both would
+just be redundant). Author is an Organization, not a named person --
+this is AI-generated review content with no individual writer to
+credit, same author shape `buildArticleLd` already used in the JSON-LD.
+`ArticleCard.tsx` (Learn index) got a short Published-only date on each
+card. `prerender.ts` mirrors the exact same byline text into the static
+HTML (duplicated helpers, same "standalone script outside the Vite
+bundle" reason this file already duplicates `resizedImageUrl` and its
+own `ArticleCard`/`ArticleDetail` interfaces) so a crawler or no-JS
+visitor sees identical copy to a JS-enabled one. `buildArticleLd`'s
+`datePublished`/`dateModified` now read `first_published_at`/
+`reviewed_at` respectively instead of the same value twice.
+
+Category/article_type tag (the third piece of Al's research ask) was
+already rendered on both the article detail eyebrow and the index card
+(migration 031, Task #614) -- no new work needed there, just confirmed
+it's genuinely visible copy, not just JSON-LD.
+
+**Other typical article-page metadata researched but not built this
+round** (Al can request any of these next): canonical author bio/page
+per schema.org's `author.url` best practice (not applicable here --
+single AI "author," no individual bios to link); `wordCount`/`timeRequired`
+structured-data properties (schema.org supports both; skipped for now
+since Google's own Article guide doesn't list them among recommended
+properties and the visible reading-time text already covers the reader-
+facing need); social share buttons; a visible "last checked for price
+accuracy" note distinct from the review's own Updated date.
+
+Tests: `test_admin_api_service.py` -- `_fake_article_row` gained
+`first_published_at` (defaults `None`), `FakeCursor`'s `product_articles`
+approve branch mirrors the `coalesce()` semantics, new
+`test_approve_article_sets_first_published_at_on_first_approval`,
+`test_approve_article_never_overwrites_existing_first_published_at`
+(the regression this migration exists to prevent), and
+`test_get_article_includes_first_published_at`.
+`test_public_api_service.py` -- `test_list_articles_selects_first_published_at`,
+`test_get_product_article_returns_first_published_at` (and confirms
+it's distinct from `reviewed_at`), `test_get_product_article_first_published_at_null_for_pre_migration_article`.
+**316/316** (`test_admin_api_service.py`), **117/117**
+(`test_public_api_service.py`); full repo-wide sweep across every other
+`tests/test_*.py` file confirmed no regressions (same two pre-existing,
+unrelated sandbox `pytest`-missing gaps as always --
+`test_product_scraper.py`/`test_url_discovery.py`). `bowlerdepot-learn`:
+`npx tsc -b` clean (covers both `src/` and `scripts/prerender.ts`, per
+`tsconfig.node.json`'s own `include`).
+
+No `template.yaml` change. Deploy via:
+
+```bash
+psql "$DATABASE_URL" -f db/migrations/033_product_articles_first_published_at.sql
+sam build && sam deploy   # picks up admin_api/public_api changes
+cd bowlerdepot-learn && npm run build   # then the usual GitHub Actions deploy (push to main)
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

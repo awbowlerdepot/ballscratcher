@@ -1,4 +1,4 @@
-import type { ArticleCard, Category, ProductArticleResponse } from "./types";
+import type { ArticleCard, ArticleDetail, Category, ProductArticleResponse } from "./types";
 
 // Same unauthenticated-PublicApiFunction posture as consumer-site/src/
 // api/client.ts (see its own comments for the full "why no auth"
@@ -144,4 +144,45 @@ export function resizedImageUrl(rawUrl: string, options: ResizeOptions): string 
   if (options.fmt) url.searchParams.set("fmt", options.fmt);
   if (options.q) url.searchParams.set("q", String(options.q));
   return url.toString();
+}
+
+// Al: "can we add published dates and last updated dates to the
+// articles." Google's own byline-date guidance (Search Central,
+// "Influence your byline dates") is specific: show a labeled,
+// human-readable date near the byline ("Published Feb 4, 2019" /
+// "Updated Feb 14, 2019") and keep it consistent with whatever's in
+// the page's structured data (see prerender.ts's Article JSON-LD,
+// which reads the SAME first_published_at/reviewed_at fields this
+// formats). No time-of-day shown -- Google's guidance treats the date
+// itself as the useful part; a bare date also reads more naturally as
+// visible page copy than a full timestamp would.
+export function formatArticleDate(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return new Intl.DateTimeFormat("en-US", { year: "numeric", month: "long", day: "numeric" }).format(d);
+}
+
+// Plain-text word count across every prose field an article actually
+// renders (see ArticleDetailPage.tsx/prerender.ts's own section-by-
+// section rendering) -- deliberately NOT product.description or any
+// other non-article copy, since "reading time" should describe the
+// review itself. 200 wpm is the commonly-cited average adult silent
+// reading speed most sites (Medium, WordPress reading-time plugins,
+// etc.) already build their own estimates on; rounded up and floored
+// at 1 minute so a very short article never reads as "0 min read."
+export function estimateReadingTimeMinutes(article: ArticleDetail): number {
+  const parts: string[] = [
+    article.hook,
+    article.performance_summary,
+    article.buying_tips,
+    article.verdict,
+    ...(article.who_should_buy ?? []),
+    ...(article.who_should_skip ?? []),
+    ...(article.pros ?? []),
+    ...(article.cons ?? []),
+    ...(article.faq ?? []).flatMap((f) => [f.question, f.answer]),
+  ].filter((s): s is string => Boolean(s));
+  const wordCount = parts.join(" ").trim().split(/\s+/).filter(Boolean).length;
+  return Math.max(1, Math.ceil(wordCount / 200));
 }

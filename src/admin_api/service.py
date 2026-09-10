@@ -4183,7 +4183,18 @@ def get_article(conn, article_id: str):
 def approve_article(conn, article_id: str, resolved_by: str) -> dict:
     """Mirrors approve_price_source: only a pending article can be
     approved (fails closed with ValueError on an already-resolved row
-    rather than silently re-stamping reviewed_at/resolved_by)."""
+    rather than silently re-stamping reviewed_at/resolved_by).
+
+    reviewed_at is re-stamped to now() on every approval, same as
+    always -- it's the honest "last updated" signal (033_product_
+    articles_first_published_at.sql's docstring covers why). first_
+    published_at is set via coalesce(first_published_at, now()): the
+    FIRST approval this article ever gets sets it, and every later
+    approval (after a regenerate_text/regenerate_images run puts the
+    row back to 'pending' -- see product_article_generator/app.py)
+    leaves it untouched. Without the coalesce, Al's "published date"
+    ask would silently become "date of the most recent regenerate"
+    instead, which defeats the point of having a separate column."""
     with conn.cursor() as cur:
         cur.execute("select status from product_articles where id = %s", (article_id,))
         row = cur.fetchone()
@@ -4193,7 +4204,14 @@ def approve_article(conn, article_id: str, resolved_by: str) -> dict:
             raise ValueError(f"product_articles row {article_id} is already {row[0]}, not pending")
 
         cur.execute(
-            "update product_articles set status = 'approved', reviewed_at = now(), resolved_by = %s where id = %s",
+            """
+            update product_articles
+            set status = 'approved',
+                reviewed_at = now(),
+                first_published_at = coalesce(first_published_at, now()),
+                resolved_by = %s
+            where id = %s
+            """,
             (resolved_by, article_id),
         )
     conn.commit()

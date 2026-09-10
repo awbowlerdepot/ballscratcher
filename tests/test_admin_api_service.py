@@ -1092,11 +1092,20 @@ class FakeCursor:
             self.description = [("id",)]
 
         elif q.startswith("update product_articles set status = 'approved'"):
+            # 033_product_articles_first_published_at.sql -- reviewed_at
+            # is re-stamped every approval (unchanged); first_published_at
+            # is set via coalesce(first_published_at, now()) in the real
+            # SQL, so the fake mirrors that: only write it if the row
+            # doesn't already have one, so a second approve_article call
+            # (after a regenerate puts the row back to 'pending') never
+            # overwrites an already-set value.
             resolved_by, article_id = params
             row = self.db["product_articles"][article_id]
             row["status"] = "approved"
             row["resolved_by"] = resolved_by
             row["reviewed_at"] = "now"
+            if not row.get("first_published_at"):
+                row["first_published_at"] = "now"
             self._last_result = None
 
         elif q.startswith("update product_articles set status = 'rejected'"):
@@ -4840,6 +4849,11 @@ def _fake_article_row(**overrides):
         "comparison_table": [], "sibling_product_ids": [], "source_video_ids": ["vid-1"],
         "generated_at": "2026-08-01", "reviewed_at": None, "resolved_by": None,
         "created_at": "2026-08-01",
+        # 033_product_articles_first_published_at.sql -- default to "never
+        # approved yet" so existing tests that don't care about the
+        # published/updated-date distinction don't need to know this
+        # column exists.
+        "first_published_at": None,
         # 023_product_article_images.sql -- default to "not generated yet"
         # (all null) so existing tests that don't care about images don't
         # need to know these columns exist at all.
@@ -4964,6 +4978,41 @@ def test_approve_article_sets_status_and_resolved_by():
     assert conn.committed is True
 
 
+# --- 033_product_articles_first_published_at.sql -- Al: "can we add
+# published dates and last updated dates to the articles." reviewed_at
+# alone couldn't answer this once an article had ever been regenerated
+# and re-approved, since approve_article re-stamps it on EVERY approval.
+# first_published_at fixes that: set via coalesce(first_published_at,
+# now()), so only the article's FIRST-EVER approval writes it.
+
+def test_approve_article_sets_first_published_at_on_first_approval():
+    db = {"product_articles": {"art-1": _fake_article_row(status="pending", first_published_at=None)}}
+    conn = FakeConnection(db)
+
+    service.approve_article(conn, "art-1", "al@bringyourbest.co")
+
+    assert db["product_articles"]["art-1"]["first_published_at"] is not None
+
+
+def test_approve_article_never_overwrites_existing_first_published_at():
+    """The regenerate+re-approve case this column exists to fix: an
+    article that's already been published once, gets regenerated (which
+    puts it back to 'pending' -- see product_article_generator/app.py),
+    and is re-approved. reviewed_at moves forward (it's the "Updated"
+    signal); first_published_at must NOT -- it's the honest "Published"
+    date and this is exactly the scenario that used to silently corrupt
+    it before this migration."""
+    original_published_at = "2026-01-15T10:00:00"
+    db = {"product_articles": {
+        "art-1": _fake_article_row(status="pending", first_published_at=original_published_at),
+    }}
+    conn = FakeConnection(db)
+
+    service.approve_article(conn, "art-1", "al@bringyourbest.co")
+
+    assert db["product_articles"]["art-1"]["first_published_at"] == original_published_at
+
+
 def test_approve_article_missing_raises():
     db = {"product_articles": {}}
     conn = FakeConnection(db)
@@ -4972,6 +5021,18 @@ def test_approve_article_missing_raises():
         assert False, "expected LookupError"
     except LookupError:
         pass
+
+
+def test_get_article_includes_first_published_at():
+    """get_article's `select pa.*` picks up first_published_at with no
+    code change needed -- confirms it round-trips, including the "never
+    approved yet" null case."""
+    db = {"product_articles": {"art-1": _fake_article_row(first_published_at="2026-01-15T10:00:00")}}
+    conn = FakeConnection(db)
+
+    result = service.get_article(conn, "art-1")
+
+    assert result["first_published_at"] == "2026-01-15T10:00:00"
 
 
 def test_approve_article_already_resolved_raises():

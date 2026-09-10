@@ -203,6 +203,9 @@
   .article-detail-hook {
     @apply mt-2 text-base text-white/80;
   }
+  .article-detail-byline {
+    @apply mt-3 text-xs text-white/60;
+  }
   .article-grid {
     @apply grid grid-cols-1 gap-x-8 gap-y-10 sm:grid-cols-2 lg:grid-cols-3;
   }

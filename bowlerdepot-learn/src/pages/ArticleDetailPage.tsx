@@ -1,6 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { ApiError, bowlerDepotSearchUrl, getProductArticle, resizedImageUrl } from "../api/client";
+import {
+  ApiError,
+  bowlerDepotSearchUrl,
+  estimateReadingTimeMinutes,
+  formatArticleDate,
+  getProductArticle,
+  resizedImageUrl,
+} from "../api/client";
 import type { ProductArticleResponse } from "../api/types";
 import ArticleDetailSkeleton from "../components/ArticleDetailSkeleton";
 
@@ -88,6 +95,21 @@ export default function ArticleDetailPage() {
   // comment on the same fields). Null for a pre-migration article.
   const taxonomyLabel = [article.category_name, article.article_type_name].filter(Boolean).join(" · ");
 
+  // Al: "can we add published dates and last updated dates to the
+  // articles" -- publishedLabel from first_published_at (set once, ever
+  // -- see types.ts's own comment), updatedLabel from reviewed_at
+  // (re-stamped every approval). Only show "Updated" when it's actually
+  // a DIFFERENT date than "Published" -- an article that's never been
+  // regenerated has the same value in both fields, and showing "Published
+  // Sep 5, 2026 · Updated Sep 5, 2026" reads as redundant noise rather
+  // than useful information. Falls back to reviewed_at for "Published"
+  // on the rare pre-migration row where first_published_at is somehow
+  // still null (033_product_articles_first_published_at.sql's own
+  // backfill should prevent that in practice).
+  const publishedLabel = formatArticleDate(article.first_published_at ?? article.reviewed_at);
+  const updatedLabel = formatArticleDate(article.reviewed_at);
+  const readingTime = estimateReadingTimeMinutes(article);
+
   return (
     <div>
       <Link to="/" className="mb-6 inline-block text-sm font-medium text-muted hover:text-ink">
@@ -113,6 +135,33 @@ export default function ArticleDetailPage() {
             </p>
             <h1 className="font-display text-xl font-semibold text-white">{article.title}</h1>
             <p className="mt-2 text-base text-white/80">{article.hook}</p>
+            {/* Byline -- Al: "add published dates and last updated dates
+                to the articles." Author is an Organization, not a named
+                person (this is AI-generated review content, no individual
+                writer to credit) -- "By BowlerDepot Team" mirrors the same
+                Organization author this page's JSON-LD uses (see
+                prerender.ts). Text and order here intentionally match
+                what prerender.ts renders into the static HTML, since
+                Google's byline-date guidance calls for the visible date
+                to be consistent with whatever the page's structured data
+                says. */}
+            <p className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-white/60">
+              <span>By BowlerDepot Team</span>
+              <span aria-hidden="true">&middot;</span>
+              <span>{readingTime} min read</span>
+              {publishedLabel ? (
+                <>
+                  <span aria-hidden="true">&middot;</span>
+                  <span>Published {publishedLabel}</span>
+                </>
+              ) : null}
+              {updatedLabel && updatedLabel !== publishedLabel ? (
+                <>
+                  <span aria-hidden="true">&middot;</span>
+                  <span>Updated {updatedLabel}</span>
+                </>
+              ) : null}
+            </p>
           </div>
         </div>
       </div>

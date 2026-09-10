@@ -35,6 +35,13 @@ export interface ArticleCard {
   hook: string;
   generated_at?: string | null;
   reviewed_at?: string | null;
+  // Set once, on this article's first-ever approval, never touched by a
+  // later regenerate+re-approve (033_product_articles_first_published_at.sql)
+  // -- the honest "Published" date; reviewed_at is "Updated." See
+  // ArticleDetail's own comment for the full reasoning. Falls back to
+  // reviewed_at in display code for the rare pre-migration row where
+  // this somehow ended up null.
+  first_published_at?: string | null;
   product_id: string;
   product_name: string;
   product_url: string;
@@ -163,12 +170,21 @@ export interface ArticleDetail {
   verdict?: string | null;
   faq?: FaqItem[] | null;
   generated_at?: string | null;
-  // Date the review was actually written/finalized (distinct from
-  // generated_at, the draft-generation timestamp) -- used as Article
-  // JSON-LD's datePublished/dateModified (Task #448/#450) since it's
-  // the closer real-world analogue of "when this review went live."
-  // Null for articles never yet reviewed.
+  // Re-stamped on EVERY admin approval, including a re-approval after a
+  // regenerate run -- the honest "Updated" date (Article JSON-LD's
+  // dateModified). Null for articles never yet reviewed.
   reviewed_at?: string | null;
+  // Set once, on this article's first-ever approval, and never touched
+  // again by a later regenerate+re-approve
+  // (033_product_articles_first_published_at.sql) -- the honest
+  // "Published" date (Article JSON-LD's datePublished). Al: "add
+  // published dates and last updated dates to the articles" -- reviewed_at
+  // alone couldn't answer this once an article had ever been regenerated,
+  // since it gets overwritten every approval. Falls back to reviewed_at
+  // in display code for the rare pre-migration row where this somehow
+  // ended up null (the migration's own backfill should prevent that in
+  // practice).
+  first_published_at?: string | null;
   action_shot_image_url?: string | null;
   product_shot_image_url?: string | null;
   // Migration 031 -- see ArticleCard's own comment on these four fields.

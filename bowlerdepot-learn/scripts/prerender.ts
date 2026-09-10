@@ -96,6 +96,10 @@ interface ArticleCard {
   title: string;
   hook: string;
   reviewed_at?: string | null;
+  // Set once, on this article's first-ever approval, never touched again
+  // (033_product_articles_first_published_at.sql) -- see ArticleDetail's
+  // own comment for the full reasoning.
+  first_published_at?: string | null;
   product_id: string;
   product_name: string;
   brand_name: string;
@@ -122,10 +126,20 @@ interface ArticleDetail {
   verdict?: string | null;
   faq?: { question: string; answer: string }[] | null;
   // Task #448, Al: "add all the proper google structured data to the
-  // markup" -- the real admin-approval timestamp, used for Article's
-  // datePublished/dateModified below (see get_product_article's own
-  // docstring in the main repo on why this, not generated_at).
+  // markup" -- re-stamped on EVERY admin approval (including a
+  // re-approval after a regenerate run), so this is the honest "Updated"
+  // signal -- Article's dateModified below.
   reviewed_at?: string | null;
+  // Task #627/033_product_articles_first_published_at.sql, Al's later,
+  // more literal follow-up: "can we add published dates and last updated
+  // dates to the articles." Set once, on this article's first-ever
+  // approval, and never touched by a later regenerate+re-approve --
+  // Article's datePublished below. Before this field existed, datePublished
+  // and dateModified both read the same reviewed_at value, which was
+  // silently wrong for datePublished the moment an article was ever
+  // regenerated and re-approved (see get_product_article's docstring in
+  // the main repo for the full incident writeup).
+  first_published_at?: string | null;
   action_shot_image_url?: string | null;
   product_shot_image_url?: string | null;
   product: {
@@ -195,6 +209,39 @@ function resizedImageUrl(
   if (options.fmt) url.searchParams.set("fmt", options.fmt);
   if (options.q) url.searchParams.set("q", String(options.q));
   return url.toString();
+}
+
+// Duplicated (not imported) from src/api/client.ts's formatArticleDate/
+// estimateReadingTimeMinutes -- same "standalone script outside the Vite
+// bundle" reason this file already duplicates resizedImageUrl and the
+// ArticleCard/ArticleDetail interfaces above rather than importing them.
+// Kept byte-for-byte in sync by hand with client.ts's copies so the
+// static prerendered byline (renderArticlePage below) and the client-
+// rendered one (ArticleDetailPage.tsx) always show the identical text --
+// Google's byline-date guidance explicitly calls for the visible date to
+// match what's in the page's own structured data, and this page has
+// both a static and a client-rendered version of that visible text.
+function formatArticleDate(iso: string | null | undefined): string | null {
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return new Intl.DateTimeFormat("en-US", { year: "numeric", month: "long", day: "numeric" }).format(d);
+}
+
+function estimateReadingTimeMinutes(article: ArticleDetail): number {
+  const parts: string[] = [
+    article.hook,
+    article.performance_summary,
+    article.buying_tips,
+    article.verdict,
+    ...(article.who_should_buy ?? []),
+    ...(article.who_should_skip ?? []),
+    ...(article.pros ?? []),
+    ...(article.cons ?? []),
+    ...(article.faq ?? []).flatMap((f) => [f.question, f.answer]),
+  ].filter((s): s is string => Boolean(s));
+  const wordCount = parts.join(" ").trim().split(/\s+/).filter(Boolean).length;
+  return Math.max(1, Math.ceil(wordCount / 200));
 }
 
 async function fetchAllArticles(): Promise<ArticleCard[]> {
@@ -296,14 +343,23 @@ function renderFaq(faq: ArticleDetail["faq"]): string {
 // required properties per Google's own Article guide (unlike Review),
 // so this is straightforwardly compliant with real data alone.
 function buildArticleLd(card: ArticleCard, article: ArticleDetail, heroImage: string | null | undefined, canonicalUrl: string) {
-  const publishedAt = article.reviewed_at || undefined;
+  // Task #627/033_product_articles_first_published_at.sql -- these two
+  // USED to both read the same reviewed_at value (see ArticleDetail's
+  // own comment on that field), which was wrong for datePublished on any
+  // article that had ever been regenerated and re-approved. first_
+  // published_at is immutable after an article's first approval;
+  // reviewed_at is re-stamped every approval. Falls back to reviewed_at
+  // for datePublished only on the rare pre-migration row where first_
+  // published_at is somehow still null.
+  const datePublished = article.first_published_at || article.reviewed_at || undefined;
+  const dateModified = article.reviewed_at || undefined;
   return {
     "@context": "https://schema.org",
     "@type": "Article",
     headline: article.title,
     image: heroImage ? [heroImage] : undefined,
-    datePublished: publishedAt,
-    dateModified: publishedAt,
+    datePublished,
+    dateModified,
     mainEntityOfPage: { "@type": "WebPage", "@id": canonicalUrl },
     author: { "@type": "Organization", name: "The Bowler Depot", url: SITE_URL },
     publisher: {
@@ -466,6 +522,21 @@ function renderArticlePage(baseHtml: string, card: ArticleCard, article: Article
   const pageTitle = `${article.title} | Learn | The Bowler Depot`;
   const canonicalUrl = `${SITE_URL}/articles/${card.product_id}/`;
 
+  // Al: "add published dates and last updated dates to the articles" --
+  // text/order here intentionally matches ArticleDetailPage.tsx's own
+  // byline (see that component's comment) so the visible copy a crawler
+  // or no-JS visitor sees here is identical to what a JS-enabled visitor
+  // sees once the client app takes over, and both match the datePublished/
+  // dateModified values in buildArticleLd above (Google's byline-date
+  // guidance: keep visible and structured dates consistent).
+  const publishedLabel = formatArticleDate(article.first_published_at || article.reviewed_at);
+  const updatedLabel = formatArticleDate(article.reviewed_at);
+  const readingTime = estimateReadingTimeMinutes(article);
+  const bylineParts = ["By BowlerDepot Team", `${readingTime} min read`];
+  if (publishedLabel) bylineParts.push(`Published ${publishedLabel}`);
+  if (updatedLabel && updatedLabel !== publishedLabel) bylineParts.push(`Updated ${updatedLabel}`);
+  const byline = bylineParts.map(escapeHtml).join(" &middot; ");
+
   const content = `
     <div class="page">
       <a class="back-link" href="/">&larr; All reviews</a>
@@ -479,6 +550,7 @@ function renderArticlePage(baseHtml: string, card: ArticleCard, article: Article
           <div>
             <h1>${escapeHtml(article.title)}</h1>
             <p class="article-detail-hook">${escapeHtml(article.hook)}</p>
+            <p class="article-detail-byline">${byline}</p>
           </div>
         </div>
       </div>

@@ -431,7 +431,11 @@ def list_articles(conn, brand_id: str = None, coverstock_id: str = None, categor
     Card fields are deliberately narrow, same reasoning as list_products'
     own docstring: title/hook (not performance_summary/verdict/pros/cons/
     etc -- those are detail-page content, a card just needs a headline
-    and teaser), generated_at/reviewed_at, plus enough of the underlying
+    and teaser), generated_at/reviewed_at/first_published_at (Al: "add
+    published dates and last updated dates to the articles" --
+    first_published_at is the honest "Published" date, reviewed_at the
+    "Updated" date once they can actually differ post-regenerate; see
+    033_product_articles_first_published_at.sql), plus enough of the underlying
     product (id, name, url, brand_name, coverstock_name,
     primary_image_url -- same thumbnail-flag-then-fallback coalesce as
     every other card query in this module) for a Learn card to link to
@@ -469,6 +473,7 @@ def list_articles(conn, brand_id: str = None, coverstock_id: str = None, categor
     not a live join back through product_type)."""
     query = f"""
         select pa.id as article_id, pa.title, pa.hook, pa.generated_at, pa.reviewed_at,
+               pa.first_published_at,
                pa.product_shot_image_url,
                p.id as product_id, p.name as product_name, p.url as product_url,
                b.name as brand_name,
@@ -769,6 +774,25 @@ def get_product_article(conn, product_id: str):
     not `generated_at` (when the AI draft was first produced, which can
     sit for a while in 'pending' before an admin ever approves it).
 
+    first_published_at (033_product_articles_first_published_at.sql --
+    Al's later, more literal follow-up: "can we add published dates and
+    last updated dates to the articles") -- reviewed_at above turned out
+    to be the wrong source for a "published" date on its own, because
+    approve_article re-stamps it on EVERY approval, including a re-
+    approval after a regenerate_text/regenerate_images run. Without this
+    column, prerender.ts's datePublished and dateModified were both
+    reading the exact same reviewed_at value -- accurate for dateModified,
+    silently wrong for datePublished the moment an article is ever
+    regenerated and re-approved. first_published_at is set once, on an
+    article's first-ever approval, and never touched again (see
+    approve_article's coalesce()-based update) -- reviewed_at keeps its
+    existing job as the honest "last updated" value, now genuinely
+    distinct from this one. May be null only for an article that predates
+    this migration's own backfill somehow slipping through (shouldn't
+    happen in practice, since the backfill covers every already-approved
+    row) -- prerender.ts falls back to reviewed_at in that case, same
+    "never leave datePublished blank" posture as everything else here.
+
     ecommerce_price/ecommerce_price_currency/ecommerce_in_stock (same
     structured-data ask) -- real `Offer` data for `product`'s nested
     schema.org `Product`, pulled from the SAME price_checker BigCommerce
@@ -836,7 +860,7 @@ def get_product_article(conn, product_id: str):
             """
             select pa.id, pa.title, pa.hook, pa.performance_summary, pa.who_should_buy, pa.who_should_skip,
                    pa.pros, pa.cons, pa.buying_tips, pa.verdict, pa.faq, pa.sibling_product_ids,
-                   pa.source_video_ids, pa.generated_at, pa.reviewed_at,
+                   pa.source_video_ids, pa.generated_at, pa.reviewed_at, pa.first_published_at,
                    pa.action_shot_image_url, pa.product_shot_image_url,
                    cat.name as category_name, cat.slug as category_slug,
                    atype.name as article_type_name, atype.slug as article_type_slug

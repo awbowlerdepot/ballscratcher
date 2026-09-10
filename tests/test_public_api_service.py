@@ -536,6 +536,19 @@ def test_list_articles_selects_product_shot_image_url():
     assert "pa.product_shot_image_url" in query
 
 
+def test_list_articles_selects_first_published_at():
+    """033_product_articles_first_published_at.sql -- Al: 'add published
+    dates and last updated dates to the articles.' The Learn index card
+    needs this alongside reviewed_at (see ArticleCard's own docstring on
+    why generated_at/reviewed_at alone couldn't answer this once an
+    article's ever been regenerated)."""
+    conn = _QueryCapturingConnection()
+    service.list_articles(conn)
+
+    query = conn.cursor().queries[0]
+    assert "pa.first_published_at" in query
+
+
 def test_list_articles_default_sort_is_reviewed_at_desc():
     conn = _QueryCapturingConnection()
     service.list_articles(conn)
@@ -945,7 +958,7 @@ class _FakeCursor:
             self._description = [(c,) for c in (
                 "id", "title", "hook", "performance_summary", "who_should_buy", "who_should_skip",
                 "pros", "cons", "buying_tips", "verdict", "faq", "sibling_product_ids",
-                "source_video_ids", "generated_at", "reviewed_at",
+                "source_video_ids", "generated_at", "reviewed_at", "first_published_at",
                 "action_shot_image_url", "product_shot_image_url",
                 "category_name", "category_slug", "article_type_name", "article_type_slug",
             )]
@@ -957,13 +970,16 @@ class _FakeCursor:
                 # directly, same flat-dict-not-a-real-join simplification
                 # this whole fixture already uses elsewhere); None/absent
                 # is the normal pre-migration/not-yet-onboarded case.
+                # first_published_at (033_product_articles_first_published_
+                # at.sql) same treatment -- absent/None is the normal
+                # pre-migration case, a test that cares sets it directly.
                 self._result_row = (
                     article["id"], article.get("title"), article.get("hook"),
                     article.get("performance_summary"), article.get("who_should_buy", []),
                     article.get("who_should_skip", []), article.get("pros", []), article.get("cons", []),
                     article.get("buying_tips"), article.get("verdict"), article.get("faq", []),
                     article.get("sibling_product_ids", []), article.get("source_video_ids", []),
-                    article.get("generated_at"), article.get("reviewed_at"),
+                    article.get("generated_at"), article.get("reviewed_at"), article.get("first_published_at"),
                     article.get("action_shot_image_url"), article.get("product_shot_image_url"),
                     article.get("category_name"), article.get("category_slug"),
                     article.get("article_type_name"), article.get("article_type_slug"),
@@ -2132,6 +2148,40 @@ def test_get_product_article_returns_reviewed_at():
     result = service.get_product_article(_FakeConnection(db), pid)
 
     assert result["article"]["reviewed_at"] == "2026-08-15"
+
+
+# --- get_product_article: first_published_at (033_product_articles_
+# first_published_at.sql) -- Al's later, more literal follow-up: "can we
+# add published dates and last updated dates to the articles." reviewed_
+# at alone (above) turned out to be the wrong source for a "published"
+# date specifically, since approve_article re-stamps it on EVERY
+# approval -- see that migration's own header comment for the full
+# incident writeup this fixes.
+
+def test_get_product_article_returns_first_published_at():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid, first_published_at="2026-01-15", reviewed_at="2026-08-15")
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result["article"]["first_published_at"] == "2026-01-15"
+    # And distinct from reviewed_at -- the whole point of this column.
+    assert result["article"]["reviewed_at"] == "2026-08-15"
+
+
+def test_get_product_article_first_published_at_null_for_pre_migration_article():
+    """Every already-approved article gets backfilled by the migration
+    itself, but the API contract shouldn't assume that always holds --
+    a null here should behave the same "omit, don't error" way every
+    other optional field in this payload does."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid, first_published_at=None)
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result["article"]["first_published_at"] is None
 
 
 def test_get_product_article_reviewed_at_null_when_never_reviewed():

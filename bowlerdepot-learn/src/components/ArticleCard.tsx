@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { resizedImageUrl } from "../api/client";
+import { formatArticleDate, resizedImageUrl } from "../api/client";
 import type { ArticleCard as ArticleCardType } from "../api/types";
 
 export default function ArticleCard({ article }: { article: ArticleCardType }) {
@@ -16,6 +16,12 @@ export default function ArticleCard({ article }: { article: ArticleCardType }) {
   // (LearnIndexPage.tsx), served via img.bowleriq.io instead of the raw
   // full-resolution scraped/generated source.
   const cardImage = rawCardImage ? resizedImageUrl(rawCardImage, { w: 640, h: 480, fit: "cover" }) : null;
+  // Al: "add published dates ... to the articles" -- a short date on the
+  // index card, same "first_published_at, falling back to reviewed_at"
+  // reasoning ArticleDetailPage.tsx uses (see that page's own comment).
+  // No "Updated" on the card -- that distinction matters once a reader's
+  // already on the article, not while skimming the index.
+  const publishedLabel = formatArticleDate(article.first_published_at ?? article.reviewed_at);
   return (
     <div className="group">
       <Link to={`/articles/${article.product_id}`} className="block overflow-hidden rounded-md bg-paper-border/40">
@@ -53,6 +59,7 @@ export default function ArticleCard({ article }: { article: ArticleCardType }) {
         {article.coverstock_type ? (
           <div className="text-xs text-muted">{article.coverstock_type} coverstock</div>
         ) : null}
+        {publishedLabel ? <div className="text-xs text-muted">{publishedLabel}</div> : null}
       </div>
     </div>
   );
