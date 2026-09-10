@@ -11,6 +11,21 @@ import {
 import type { ProductArticleResponse } from "../api/types";
 import ArticleDetailSkeleton from "../components/ArticleDetailSkeleton";
 
+// video_summarizer's prompt sometimes prefixes its output with a plain
+// markdown heading line (e.g. "# Summary") before the actual prose --
+// harmless in the admin review tooling that already renders markdown,
+// but shows up as literal "# Summary" text here since this page (and
+// prerender.ts's own copy of this helper) render plain text, not
+// markdown. Stripped defensively on display rather than fixed upstream
+// in the summarizer prompt/backfilled in the DB, so this covers every
+// existing summary immediately, not just newly generated ones. Strips
+// ANY leading "#"-style heading line (not hardcoded to the word
+// "Summary" specifically), since that's the shape of the artifact, not
+// its exact wording.
+function stripLeadingMarkdownHeading(text: string): string {
+  return text.replace(/^#{1,6}\s+.*(\r?\n)+/, "").trim();
+}
+
 export default function ArticleDetailPage() {
   const { productId } = useParams<{ productId: string }>();
   const [data, setData] = useState<ProductArticleResponse | null>(null);
@@ -241,13 +256,15 @@ export default function ArticleDetailPage() {
             <h2 className="mb-4 font-display text-xl font-semibold text-white">
               Watch this review from Brad &amp; Kyle
             </h2>
-            <div className="grid grid-cols-1 overflow-hidden rounded-sm md:grid-cols-[1fr_360px]">
+            <div className="grid grid-cols-1 overflow-hidden rounded-sm md:grid-cols-[1fr_480px]">
               <div className="flex flex-col justify-center bg-white/5 p-6">
                 <p className="italic text-white/80">
-                  {article.featured_video.summary || article.featured_video.title}
+                  {stripLeadingMarkdownHeading(
+                    article.featured_video.summary || article.featured_video.title || "",
+                  )}
                 </p>
               </div>
-              <div className="aspect-video w-full bg-black">
+              <div className="aspect-video w-full bg-black md:aspect-auto md:h-full">
                 <iframe
                   className="h-full w-full"
                   src={`https://www.youtube.com/embed/${article.featured_video.youtube_video_id}`}

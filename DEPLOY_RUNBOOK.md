@@ -13538,6 +13538,33 @@ cd bowlerdepot-learn && npm run build   # tsc -b + vite build + prerender, then 
 git push
 ```
 
+**Follow-up styling fix** (Al, after seeing it live: "styling is a
+touch off. the video embed could be bigger"):
+
+- Widened the video column from `md:w-[360px]`/`md:grid-cols-[1fr_360px]`
+  to `md:grid-cols-[1fr_480px]`, and swapped the video box's fixed
+  `aspect-video` for `md:aspect-auto md:h-full` so it stretches to
+  match the summary panel's full height on desktop (CSS grid's default
+  `align-items: stretch`) instead of sitting short at a forced 16:9
+  ratio. `aspect-video` is kept as the mobile fallback (single-column
+  stack, where there's no sibling row height to stretch to). Changed
+  identically in both `ArticleDetailPage.tsx` and `prerender.ts`.
+- Fixed a data-display bug surfaced by the same screenshot:
+  `video_summarizer`'s prompt sometimes prefixes its output with a
+  literal markdown heading line (e.g. "# Summary") before the actual
+  prose, rendering as literal "# Summary" text on this page (which
+  renders summary as plain text, not markdown). Added a
+  `stripLeadingMarkdownHeading()` helper -- one standalone copy in each
+  of `ArticleDetailPage.tsx` and `prerender.ts` (same "duplicated, not
+  imported, script runs outside the Vite bundle" convention every other
+  helper in `prerender.ts` already follows) -- that strips any leading
+  `#`-style heading line via regex before display. Fixed on the display
+  side rather than in the summarizer prompt or via a DB backfill, so
+  every existing summary is fixed immediately rather than only newly
+  generated ones.
+- `npx tsc -b` clean. No backend change, no new tests (pure display
+  formatting, no new branching logic in `get_product_article`).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

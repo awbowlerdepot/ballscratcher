@@ -359,18 +359,29 @@ function renderBrandLineup(lineup: ArticleDetail["brand_lineup"]): string {
 // the live app. Same youtube.com/embed pattern as the live page's
 // render too (not youtube-nocookie.com -- no precedent for privacy-
 // enhanced mode anywhere in this codebase).
+// video_summarizer's prompt sometimes prefixes its output with a plain
+// markdown heading line (e.g. "# Summary") before the actual prose --
+// see ArticleDetailPage.tsx's own copy of this helper for the full
+// reasoning on why this is stripped on display rather than fixed
+// upstream. Kept as its own standalone copy (not imported) for the
+// same "this script runs outside the Vite app bundle" reason every
+// other duplicated helper in this file already is.
+function stripLeadingMarkdownHeading(text: string): string {
+  return text.replace(/^#{1,6}\s+.*(\r?\n)+/, "").trim();
+}
+
 function renderFeaturedVideo(video: ArticleDetail["featured_video"]): string {
   if (!video) return "";
-  const blurb = escapeHtml(video.summary || video.title || "");
+  const blurb = escapeHtml(stripLeadingMarkdownHeading(video.summary || video.title || ""));
   return `
     <div class="relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-neutral-900 py-10">
       <div class="mx-auto max-w-5xl px-6 md:px-8">
         <h2 class="mb-4 font-display text-xl font-semibold text-white">Watch this review from Brad &amp; Kyle</h2>
-        <div class="grid grid-cols-1 overflow-hidden rounded-sm md:grid-cols-[1fr_360px]">
+        <div class="grid grid-cols-1 overflow-hidden rounded-sm md:grid-cols-[1fr_480px]">
           <div class="flex flex-col justify-center bg-white/5 p-6">
             <p class="italic text-white/80">${blurb}</p>
           </div>
-          <div class="aspect-video w-full bg-black">
+          <div class="aspect-video w-full bg-black md:aspect-auto md:h-full">
             <iframe src="https://www.youtube.com/embed/${escapeHtml(video.youtube_video_id)}" title="${escapeHtml(video.title || "Featured video")}" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
           </div>
         </div>
