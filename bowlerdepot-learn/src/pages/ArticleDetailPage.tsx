@@ -118,7 +118,7 @@ export default function ArticleDetailPage() {
       </Link>
 
       <div className="relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-neutral-900 py-10">
-        <div className="mx-auto grid max-w-5xl grid-cols-1 gap-8 px-6 md:grid-cols-[320px_1fr] md:px-8">
+        <div className="mx-auto grid max-w-[75rem] grid-cols-1 gap-8 px-6 md:grid-cols-[320px_1fr] md:px-8">
           <div className="flex items-center justify-center overflow-visible px-2 md:relative md:px-4">
             <div className="mt-14 mb-0 aspect-[4/3] w-full rotate-0 md:-rotate-[8deg] rounded-sm bg-white p-2 shadow-[0_12px_24px_-6px_rgba(0,0,0,0.55)] md:absolute md:left-0 md:top-1/2 md:my-0 md:w-[325px] md:-translate-y-1/2">
               {heroImage ? (
@@ -252,19 +252,30 @@ export default function ArticleDetailPage() {
           consumer-site's own video grid already uses). */}
       {article.featured_video ? (
         <div className="relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-neutral-900 pb-10 pt-6">
-          <div className="mx-auto max-w-5xl px-6 md:px-8">
+          <div className="mx-auto max-w-[75rem] px-6 md:px-8">
             <h2 className="mb-4 font-display text-xl font-semibold text-white">
               Watch this review from Brad &amp; Kyle
             </h2>
-            <div className="grid grid-cols-1 overflow-hidden rounded-sm md:grid-cols-[1fr_480px]">
-              <div className="flex flex-col justify-center bg-white/5 p-6">
+            {/* md:grid-cols-2 (was a fixed 1fr_480px split) -- a 50/50
+                proportional split scales with the container instead of
+                needing a new hardcoded pixel value every time the page's
+                max-width changes (Al: "make the max-width on desktop
+                75rem as well... this might require a tweak to the brad
+                and kyle video embed style sheet"). Order swapped on
+                mobile only (Al: "on mobile can we move the brad and kyle
+                video embed above the summary") -- video first via
+                order-1, text second via order-2, both reset to DOM order
+                (text-then-video) at md: via order-none so desktop is
+                unchanged. */}
+            <div className="grid grid-cols-1 overflow-hidden rounded-sm md:grid-cols-2">
+              <div className="order-2 flex flex-col justify-center bg-white/5 p-6 md:order-none">
                 <p className="italic text-white/80">
                   {stripLeadingMarkdownHeading(
                     article.featured_video.summary || article.featured_video.title || "",
                   )}
                 </p>
               </div>
-              <div className="aspect-video w-full bg-black md:aspect-auto md:h-full">
+              <div className="order-1 aspect-video w-full bg-black md:order-none md:aspect-auto md:h-full">
                 <iframe
                   className="h-full w-full"
                   src={`https://www.youtube.com/embed/${article.featured_video.youtube_video_id}`}

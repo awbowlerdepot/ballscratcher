@@ -15,7 +15,7 @@ const LOGO_URL =
 export default function Nav() {
   return (
     <header className="sticky top-0 z-10 border-b border-paper-border bg-paper/95 backdrop-blur-sm">
-      <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-3 px-6 py-4">
+      <div className="mx-auto flex max-w-[75rem] flex-wrap items-center justify-between gap-3 px-6 py-4">
         <a href="https://bowlerdepot.com" className="flex items-center gap-2">
           <img src={LOGO_URL} alt="The Bowler Depot" className="h-8 w-auto" />
           <span className="font-display text-lg font-semibold text-ink">

@@ -375,13 +375,13 @@ function renderFeaturedVideo(video: ArticleDetail["featured_video"]): string {
   const blurb = escapeHtml(stripLeadingMarkdownHeading(video.summary || video.title || ""));
   return `
     <div class="relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-neutral-900 pb-10 pt-6">
-      <div class="mx-auto max-w-5xl px-6 md:px-8">
+      <div class="mx-auto max-w-[75rem] px-6 md:px-8">
         <h2 class="mb-4 font-display text-xl font-semibold text-white">Watch this review from Brad &amp; Kyle</h2>
-        <div class="grid grid-cols-1 overflow-hidden rounded-sm md:grid-cols-[1fr_480px]">
-          <div class="flex flex-col justify-center bg-white/5 p-6">
+        <div class="grid grid-cols-1 overflow-hidden rounded-sm md:grid-cols-2">
+          <div class="order-2 flex flex-col justify-center bg-white/5 p-6 md:order-none">
             <p class="italic text-white/80">${blurb}</p>
           </div>
-          <div class="aspect-video w-full bg-black md:aspect-auto md:h-full">
+          <div class="order-1 aspect-video w-full bg-black md:order-none md:aspect-auto md:h-full">
             <iframe src="https://www.youtube.com/embed/${escapeHtml(video.youtube_video_id)}" title="${escapeHtml(video.title || "Featured video")}" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
           </div>
         </div>

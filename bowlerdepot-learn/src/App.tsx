@@ -9,7 +9,7 @@ export default function App() {
   return (
     <>
       <Nav />
-      <main className="mx-auto min-h-[60vh] max-w-5xl px-6 py-10">
+      <main className="mx-auto min-h-[60vh] max-w-[75rem] px-6 py-10">
         <Outlet />
       </main>
       <footer className="border-t border-paper-border px-6 py-8 text-center text-sm text-muted">

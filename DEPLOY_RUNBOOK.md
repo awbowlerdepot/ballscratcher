@@ -13565,6 +13565,50 @@ touch off. the video embed could be bigger"):
 - `npx tsc -b` clean. No backend change, no new tests (pure display
   formatting, no new branching logic in `get_product_article`).
 
+**Second follow-up styling fix** (Al: "padding/margin on top is a bit
+much can we tighten that up a bit"):
+
+- Changed the hero wrapper's `py-10` to `pt-6 pb-10` in both
+  `ArticleDetailPage.tsx` and `prerender.ts` -- tightens the gap above
+  the headline, leaves the gap before Verdict unchanged. `npx tsc -b`
+  clean.
+
+**Third follow-up: site-wide max-width bump + video hero tweaks** (Al:
+"can we make the max-width on desktop 75rem as well. this might
+require a tweak to the brad and kyle video embed style sheet", then
+separately "on mobile can we move the brad and kyle video embed above
+the summary"):
+
+- The site's content width was `max-w-5xl` (64rem) everywhere -- Al
+  confirmed this should widen site-wide, not just on the video hero.
+  Changed to `max-w-[75rem]` in: `App.tsx`'s `<main>` (wraps every
+  route), `Nav.tsx`'s header container, `index.css`'s `.page` class
+  (prerender.ts's static-HTML equivalent of `<main>`) and
+  `.article-detail-hero-inner` class (prerender.ts's static-HTML
+  equivalent of the article's own top photo hero),
+  `ArticleDetailSkeleton.tsx`'s loading placeholder, and both the top
+  photo hero and the Brad & Kyle video hero in `ArticleDetailPage.tsx`
+  + `prerender.ts`. All of these previously shared the same 64rem
+  value so they'd visually align across live-React and prerendered
+  markup; kept that invariant at 75rem.
+- Video hero's column split changed from a fixed `md:grid-cols-[1fr_480px]`
+  to a proportional `md:grid-cols-2` (50/50) -- a fixed pixel column
+  would've needed a new hand-picked value every time the container's
+  max-width changes; a proportional split self-adjusts and happens to
+  land close to the same ratio as the deliberately-widened 480px
+  column did in the old 64rem container, so the video reads as at
+  least as large as before.
+- Mobile order: added `order-2 md:order-none` to the summary panel and
+  `order-1 md:order-none` to the video panel, so single-column mobile
+  shows the video first and the summary second, while `md:order-none`
+  resets both back to DOM order (summary-then-video, i.e. text on the
+  left) at the desktop breakpoint -- unchanged from before.
+- `npx tsc -b` clean. `vite build` couldn't be run in this sandbox
+  (pre-existing `@rollup/rollup-linux-arm64-gnu` native-module/platform
+  mismatch, unrelated to this change -- GitHub Actions' own build
+  environment doesn't have this issue). No backend change, no new
+  tests (pure layout/CSS).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

@@ -45,8 +45,16 @@
      crawler or a no-JS visitor sees this theme's real styling too,
      mirroring the equivalent utility classes used in the live
      components above closely enough to not look like a different site. */
+  /* Al: "can we make the max-width on desktop 75rem as well" (site-wide,
+     confirmed) -- was max-w-5xl (64rem) everywhere. Bumped here plus in
+     App.tsx's <main>, Nav.tsx, ArticleDetailPage.tsx's two full-bleed
+     hero inners (top photo hero + Brad & Kyle video hero), this file's
+     own .article-detail-hero-inner (prerender.ts's static-HTML mirror of
+     that same top hero), and ArticleDetailSkeleton.tsx, so every
+     section -- live React or prerendered, hero or body -- lines up at
+     the same new width. */
   .page {
-    @apply mx-auto max-w-5xl px-6 py-10;
+    @apply mx-auto max-w-[75rem] px-6 py-10;
   }
   .back-link {
     @apply mb-6 inline-block text-sm font-medium text-muted no-underline hover:text-ink;
@@ -186,7 +194,7 @@
     @apply relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-neutral-900 py-10;
   }
   .article-detail-hero-inner {
-    @apply mx-auto grid max-w-5xl grid-cols-1 gap-8 px-6 md:grid-cols-[320px_1fr] md:px-8;
+    @apply mx-auto grid max-w-[75rem] grid-cols-1 gap-8 px-6 md:grid-cols-[320px_1fr] md:px-8;
   }
   .article-detail-hero h1 {
     @apply text-xl text-white;
