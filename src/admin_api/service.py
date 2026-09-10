@@ -502,13 +502,40 @@ def _sku_daily_movement_cte(min_days_ago: int, max_days_ago: int = 0) -> str:
 # ask: "lets add some common sense sort options for both the admin and
 # consumer UIs". Identical to public_api/service.py's copy (kept in sync
 # by hand, same no-shared-module reasoning as POPULARITY_HALF_LIFE_DAYS
-# above) -- see that copy's comment for why 'newest'/'oldest' use
-# release_date (not created_at/updated_at) with an explicit `nulls last`
-# in both directions.
+# above).
+#
+# REAL BUG, Al: "sorted by oldest the newest aren't at the end." Root
+# cause: 'newest'/'oldest' originally sorted on release_date alone with
+# `nulls last` in both directions -- e.g. `p.release_date asc nulls last,
+# p.id asc`. release_date is manufacturer-published and sparse (most of
+# the catalog never had one to parse), so `nulls last` doesn't just push
+# a few stragglers to the end, it dumps the MAJORITY of the catalog into
+# one undifferentiated block after every dated row, tie-broken only by
+# `p.id` -- a random uuid_generate_v4() primary key (001_init_schema.sql),
+# not anything chronological. That block has zero real ordering inside
+# it: a product added to the catalog yesterday and one added a year ago
+# could land anywhere relative to each other, purely by UUID luck --
+# exactly the reported symptom, since most "newest" products (recently
+# scraped, no manufacturer release_date yet) live inside that randomly-
+# ordered block instead of trailing at the true end.
+#
+# Fixed by sorting on `coalesce(p.release_date, p.first_seen_at::date)`
+# instead of `p.release_date` alone. first_seen_at (003_date_tracking_
+# and_bowwwl.sql) is `not null default now()`, set the moment
+# product_scraper/commercebuild_product_scraper/woocommerce_product_
+# scraper/netsuite_product_scraper/shopify_product_scraper first INSERTs
+# a product row -- a genuine, always-populated timestamp for "when this
+# entry came into existence," even when no manufacturer date is known.
+# This gives every row in the catalog a single real position in one
+# unified chronological ordering (real release_date when we have it,
+# discovery date as an honest fallback when we don't) instead of two
+# blocks where the second is effectively unordered. `p.id asc` stays on
+# as the final tiebreaker for the now-rare case of two rows landing on
+# the exact same date.
 _SORT_ORDER_BY = {
     "popularity": "p.popularity_score desc, p.id asc",
-    "newest": "p.release_date desc nulls last, p.id asc",
-    "oldest": "p.release_date asc nulls last, p.id asc",
+    "newest": "coalesce(p.release_date, p.first_seen_at::date) desc, p.id asc",
+    "oldest": "coalesce(p.release_date, p.first_seen_at::date) asc, p.id asc",
     "name_asc": "p.name asc, p.id asc",
     "name_desc": "p.name desc, p.id asc",
     # Al: "can we add a sort to the admin ui products list for total
@@ -536,6 +563,77 @@ _DEFAULT_ORDER_BY = "p.updated_at desc, p.id asc"
 # incident that moved it there. Nothing here computes it anymore;
 # list_products/get_dashboard_summary below just read the materialized
 # products.demand_score column.
+
+
+def _build_products_where(published: bool = None, brand_id: str = None, search: str = None,
+                           needs_video_summary_refresh: bool = None, has_approved_video_summaries: bool = None,
+                           missing_core: bool = None, missing_coverstock: bool = None, missing_skus: bool = None,
+                           html_fallback_skus: bool = None,
+                           missing_video_candidates: bool = None,
+                           source_platform: str = None, status: str = None):
+    """Shared WHERE-clause + params builder for list_products/count_products
+    below -- extracted so the two filter sets can't drift apart (unlike
+    _SORT_ORDER_BY above, which genuinely can't be shared across admin_api/
+    public_api's separate modules, these two live in the same file, no
+    excuse to hand-duplicate 11 filter branches). Returns a (sql_fragment,
+    params) tuple; sql_fragment is a string of zero or more " and ..."
+    clauses (no leading "where", no trailing order/limit/offset) meant to
+    be appended straight after a "where 1=1" base. See list_products'
+    own docstring for what each filter actually means -- this function
+    only moved the SQL, it didn't change any of it."""
+    where = ""
+    params = []
+    if published is not None:
+        where += " and p.published = %s"
+        params.append(published)
+    if brand_id:
+        where += " and p.brand_id = %s"
+        params.append(brand_id)
+    if search:
+        where += " and p.name ilike %s"
+        params.append(f"%{search}%")
+    if needs_video_summary_refresh:
+        where += """
+            and exists (
+                select 1 from product_videos pv
+                where pv.product_id = p.id and pv.status = 'approved' and pv.summary is not null
+            )
+            and (
+                p.video_reviews_summary is null
+                or p.video_reviews_summary_video_count <> (
+                    select count(*) from product_videos pv2
+                    where pv2.product_id = p.id and pv2.status = 'approved' and pv2.summary is not null
+                )
+            )
+        """
+    if has_approved_video_summaries:
+        where += """
+            and exists (
+                select 1 from product_videos pv
+                where pv.product_id = p.id and pv.status = 'approved' and pv.summary is not null
+            )
+        """
+    if missing_core:
+        where += " and p.core_id is null"
+    if missing_coverstock:
+        where += " and p.coverstock_id is null"
+    if missing_skus:
+        where += " and not exists (select 1 from product_skus ps where ps.product_id = p.id)"
+    if html_fallback_skus:
+        where += """
+            and p.source_platform = 'commercebuild'
+            and exists (select 1 from product_skus ps3 where ps3.product_id = p.id)
+            and not exists (select 1 from product_skus ps4 where ps4.product_id = p.id and ps4.source <> 'html')
+        """
+    if missing_video_candidates:
+        where += " and not exists (select 1 from product_videos pv where pv.product_id = p.id)"
+    if source_platform:
+        where += " and p.source_platform = %s"
+        params.append(source_platform)
+    if status:
+        where += " and p.status = %s"
+        params.append(status)
+    return where, params
 
 
 def list_products(conn, published: bool = None, brand_id: str = None, search: str = None,
@@ -806,57 +904,15 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
         ) v on true
         where 1=1
     """
-    params = []
-    if published is not None:
-        query += " and p.published = %s"
-        params.append(published)
-    if brand_id:
-        query += " and p.brand_id = %s"
-        params.append(brand_id)
-    if search:
-        query += " and p.name ilike %s"
-        params.append(f"%{search}%")
-    if needs_video_summary_refresh:
-        query += """
-            and exists (
-                select 1 from product_videos pv
-                where pv.product_id = p.id and pv.status = 'approved' and pv.summary is not null
-            )
-            and (
-                p.video_reviews_summary is null
-                or p.video_reviews_summary_video_count <> (
-                    select count(*) from product_videos pv2
-                    where pv2.product_id = p.id and pv2.status = 'approved' and pv2.summary is not null
-                )
-            )
-        """
-    if has_approved_video_summaries:
-        query += """
-            and exists (
-                select 1 from product_videos pv
-                where pv.product_id = p.id and pv.status = 'approved' and pv.summary is not null
-            )
-        """
-    if missing_core:
-        query += " and p.core_id is null"
-    if missing_coverstock:
-        query += " and p.coverstock_id is null"
-    if missing_skus:
-        query += " and not exists (select 1 from product_skus ps where ps.product_id = p.id)"
-    if html_fallback_skus:
-        query += """
-            and p.source_platform = 'commercebuild'
-            and exists (select 1 from product_skus ps3 where ps3.product_id = p.id)
-            and not exists (select 1 from product_skus ps4 where ps4.product_id = p.id and ps4.source <> 'html')
-        """
-    if missing_video_candidates:
-        query += " and not exists (select 1 from product_videos pv where pv.product_id = p.id)"
-    if source_platform:
-        query += " and p.source_platform = %s"
-        params.append(source_platform)
-    if status:
-        query += " and p.status = %s"
-        params.append(status)
+    where_sql, params = _build_products_where(
+        published=published, brand_id=brand_id, search=search,
+        needs_video_summary_refresh=needs_video_summary_refresh,
+        has_approved_video_summaries=has_approved_video_summaries,
+        missing_core=missing_core, missing_coverstock=missing_coverstock, missing_skus=missing_skus,
+        html_fallback_skus=html_fallback_skus, missing_video_candidates=missing_video_candidates,
+        source_platform=source_platform, status=status,
+    )
+    query += where_sql
     # id as a final tiebreaker -- same reason list_video_candidates and
     # fetch_products_to_search needed one (see admin_api/service.py's own
     # earlier fix and video_discovery/app.py's ROTATION section): rows
@@ -865,12 +921,48 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     # paginated by a real consumer (the backfill script) as of this
     # filter's addition.
     query += " order by " + _SORT_ORDER_BY.get(sort, _DEFAULT_ORDER_BY) + " limit %s offset %s"
-    params += [limit, offset]
+    params = params + [limit, offset]
 
     with conn.cursor() as cur:
         cur.execute(query, params)
         columns = [desc[0] for desc in cur.description]
         return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
+def count_products(conn, published: bool = None, brand_id: str = None, search: str = None,
+                    needs_video_summary_refresh: bool = None, has_approved_video_summaries: bool = None,
+                    missing_core: bool = None, missing_coverstock: bool = None, missing_skus: bool = None,
+                    html_fallback_skus: bool = None,
+                    missing_video_candidates: bool = None,
+                    source_platform: str = None, status: str = None) -> int:
+    """Total row count for the exact filter set list_products accepts
+    (everything except sort/limit/offset, which can't change how many
+    rows match). Backs GET /products' `total` response field -- Al: "it
+    doesn't have number of pages and first and last buttons," direct
+    follow-up to the oldest/newest sort bug report above. admin-spa's
+    Pagination.tsx previously had no way to show a real page count or
+    jump to the last page at all, since list_products alone never told
+    it how many rows existed beyond the current page (see that
+    component's own now-updated comment). A separate count query (not a
+    `count(*) over()` window column folded into list_products' own
+    result set) on purpose: it needs to still return a sane answer when
+    the requested page comes back with zero rows (the last page, or a
+    filter combination matching nothing), which a window function
+    piggybacked on the main SELECT can't do since there'd be no rows to
+    carry it on. Shares _build_products_where with list_products so the
+    two filter sets can't drift out of sync."""
+    where_sql, params = _build_products_where(
+        published=published, brand_id=brand_id, search=search,
+        needs_video_summary_refresh=needs_video_summary_refresh,
+        has_approved_video_summaries=has_approved_video_summaries,
+        missing_core=missing_core, missing_coverstock=missing_coverstock, missing_skus=missing_skus,
+        html_fallback_skus=html_fallback_skus, missing_video_candidates=missing_video_candidates,
+        source_platform=source_platform, status=status,
+    )
+    query = "select count(*) from products p where 1=1" + where_sql
+    with conn.cursor() as cur:
+        cur.execute(query, params)
+        return cur.fetchone()[0]
 
 
 def list_sku_weights(conn) -> list:

@@ -3286,23 +3286,48 @@ def test_list_products_score_columns_still_present_alongside_filters():
 
 
 # --- common-sense sort options (Al's ask: "lets add some common sense
-# sort options for both the admin and consumer UIs") -- newest/oldest by
-# release_date, alphabetical by name. See service.py's _SORT_ORDER_BY.
+# sort options for both the admin and consumer UIs") -- newest/oldest,
+# alphabetical by name. See service.py's _SORT_ORDER_BY.
+#
+# REAL BUG, Al: "sorted by oldest the newest aren't at the end." newest/
+# oldest used to sort on `p.release_date` alone with `nulls last` in
+# both directions -- since release_date is sparse (most of the catalog
+# has none), that dumped the majority of the catalog into one block
+# after every dated row, tie-broken only by a random UUID (p.id), with
+# zero real chronological ordering inside that block. Fixed to sort on
+# `coalesce(p.release_date, p.first_seen_at::date)` instead -- see
+# _SORT_ORDER_BY's own comment in service.py for the full writeup. These
+# two tests now assert the fixed SQL text (they used to assert the buggy
+# `p.release_date ... nulls last` text directly, which is exactly what
+# let this bug ship unnoticed).
 
-def test_list_products_sort_newest_orders_by_release_date_desc_nulls_last():
+def test_list_products_sort_newest_orders_by_coalesced_release_date_desc():
     conn = _QueryCapturingConnection()
     service.list_products(conn, sort="newest", limit=50, offset=0)
 
     query = conn.cursor().queries[0]
-    assert "order by p.release_date desc nulls last, p.id asc limit %s offset %s" in query
+    assert "order by coalesce(p.release_date, p.first_seen_at::date) desc, p.id asc limit %s offset %s" in query
 
 
-def test_list_products_sort_oldest_orders_by_release_date_asc_nulls_last():
+def test_list_products_sort_oldest_orders_by_coalesced_release_date_asc():
     conn = _QueryCapturingConnection()
     service.list_products(conn, sort="oldest", limit=50, offset=0)
 
     query = conn.cursor().queries[0]
-    assert "order by p.release_date asc nulls last, p.id asc limit %s offset %s" in query
+    assert "order by coalesce(p.release_date, p.first_seen_at::date) asc, p.id asc limit %s offset %s" in query
+
+
+def test_list_products_sort_newest_no_longer_uses_bare_release_date_nulls_last():
+    """Regression guard for the bug itself: `nulls last` on bare
+    p.release_date is exactly the pattern that segregated undated rows
+    into one randomly-UUID-ordered block. Confirms the fix actually
+    replaced it rather than just adding coalesce() alongside the old
+    text somehow."""
+    conn = _QueryCapturingConnection()
+    service.list_products(conn, sort="newest", limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "p.release_date desc nulls last" not in query
 
 
 def test_list_products_sort_name_asc_orders_alphabetically():
@@ -3334,6 +3359,112 @@ def test_list_products_every_sort_option_keeps_id_tiebreaker():
         service.list_products(conn, sort=sort_value, limit=50, offset=0)
         query = conn.cursor().queries[0]
         assert ", p.id asc limit %s offset %s" in query, f"sort={sort_value!r} missing id tiebreaker"
+
+
+# --- count_products -- direct follow-up to the oldest/newest sort bug
+# report, Al: "it doesn't have number of pages and first and last
+# buttons." Backs GET /products' new `total` response field. Shares
+# _build_products_where with list_products (see that helper's own
+# docstring) rather than hand-duplicating the filter branches, so these
+# tests focus on the parts unique to count_products (the count(*) shape,
+# no order/limit/offset) plus a couple of representative filters to
+# confirm the shared helper actually got wired in on this side too --
+# full per-filter coverage already exists above for list_products,
+# and _build_products_where guarantees the two can't drift apart.
+
+class _CountQueryCapturingCursor:
+    def __init__(self):
+        self.queries = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, query, params=None):
+        self.queries.append(" ".join(query.split()))
+
+    def fetchone(self):
+        # (0,) rather than _QueryCapturingCursor's bare None -- unlike
+        # every other function reusing that fake, count_products
+        # unconditionally does cur.fetchone()[0], so the fake needs to be
+        # a real subscriptable single-row result, not "no row found".
+        return (0,)
+
+
+class _CountQueryCapturingConnection:
+    def __init__(self):
+        self._cursor = _CountQueryCapturingCursor()
+
+    def cursor(self):
+        return self._cursor
+
+
+def test_count_products_base_query_shape():
+    conn = _CountQueryCapturingConnection()
+    service.count_products(conn)
+
+    query = conn.cursor().queries[0]
+    assert query == "select count(*) from products p where 1=1"
+
+
+def test_count_products_returns_the_row_value():
+    conn = _CountQueryCapturingConnection()
+    result = service.count_products(conn)
+    assert result == 0
+
+
+def test_count_products_no_order_by_limit_or_offset():
+    """count_products never needs sort/limit/offset -- how many rows
+    match a filter set doesn't depend on how they're ordered or which
+    page is being viewed. Confirms the shared _build_products_where
+    fragment doesn't accidentally carry any of list_products' own
+    order-by/limit/offset suffix along with it."""
+    conn = _CountQueryCapturingConnection()
+    service.count_products(conn, status="current")
+
+    query = conn.cursor().queries[0]
+    assert "order by" not in query
+    assert "limit" not in query
+    assert "offset" not in query
+
+
+def test_count_products_applies_status_filter():
+    conn = _CountQueryCapturingConnection()
+    service.count_products(conn, status="retired")
+
+    query = conn.cursor().queries[0]
+    assert "and p.status = %s" in query
+
+
+def test_count_products_applies_missing_core_filter():
+    conn = _CountQueryCapturingConnection()
+    service.count_products(conn, missing_core=True)
+
+    query = conn.cursor().queries[0]
+    assert "and p.core_id is null" in query
+
+
+def test_count_products_applies_search_filter():
+    conn = _CountQueryCapturingConnection()
+    service.count_products(conn, search="Phaze")
+
+    query = conn.cursor().queries[0]
+    assert "and p.name ilike %s" in query
+
+
+def test_count_products_and_list_products_share_the_same_where_builder():
+    """Guards against the two filter sets drifting apart by hand --
+    directly confirms both call through _build_products_where rather
+    than each maintaining their own copy of the 11 filter branches."""
+    where_sql, params = service._build_products_where(
+        brand_id="some-brand-id", missing_core=True, status="current",
+    )
+    assert "and p.brand_id = %s" in where_sql
+    assert "and p.core_id is null" in where_sql
+    assert "and p.status = %s" in where_sql
+    assert params == ["some-brand-id", "current"]
 
 
 # --- list_products: p.release_date column -- real ask from Al ("can we

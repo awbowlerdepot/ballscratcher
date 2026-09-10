@@ -166,6 +166,24 @@ export function listProducts(params: ListProductsParams = {}): Promise<Product[]
   return apiGet<{ items: Product[] }>("/products", { ...params }).then((r) => r.items);
 }
 
+// Same GET /products as listProducts above, but surfaces the `total`
+// field (see admin_api's count_products) instead of discarding it --
+// built for ProductsPage.tsx's real page-count/First/Last controls (Al:
+// "it doesn't have number of pages and first and last buttons"). Kept
+// as a separate function rather than widening listProducts' own return
+// type: BatchJobsPage.tsx's whole-catalog paging loop only ever needs a
+// bare array (`page.length`, `.concat`) and every existing caller
+// already expects one -- no reason to touch a working, widely-used
+// function just to add a field only one caller needs.
+export interface ProductsPageResult {
+  items: Product[];
+  total: number;
+}
+
+export function listProductsPage(params: ListProductsParams = {}): Promise<ProductsPageResult> {
+  return apiGet<ProductsPageResult>("/products", { ...params });
+}
+
 export function rescrapeProduct(id: string): Promise<RescrapeResult> {
   return apiPost<RescrapeResult>(`/products/${encodeURIComponent(id)}/rescrape`);
 }

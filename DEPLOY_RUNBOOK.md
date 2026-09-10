@@ -13032,6 +13032,97 @@ still fails after this fallback, the problem is somewhere else
 entirely (not auth-related), and worth a fresh look at the Lambda's own
 logs/CloudWatch for that invocation.
 
+### 6al. Products tab: fixed oldest/newest sort bug + real page counts/First-Last pagination
+
+Al: "pagination on admin ui products page is a bit off.... sorted by
+oldest the newest aren't at the end. also it doesn't have number of
+pages and first and last buttons. can we see what is going on there
+and improve the feature set."
+
+**REAL BUG, sort:** `admin_api/service.py`'s `_SORT_ORDER_BY['newest'
+/'oldest']` sorted on `p.release_date` alone with `nulls last` in both
+directions. `release_date` is manufacturer-published and sparse --
+most of the catalog never had one to parse -- so `nulls last` didn't
+just push a handful of stragglers to the end, it dumped the MAJORITY
+of the catalog into one undifferentiated block after every dated row,
+tie-broken only by `p.id`: a random `uuid_generate_v4()` primary key
+(001_init_schema.sql), not anything chronological. That block had zero
+real ordering inside it -- a product added to the catalog yesterday
+and one added a year ago could land anywhere relative to each other,
+purely by UUID luck. That's exactly the reported symptom: most
+"newest" products (recently scraped, no manufacturer release_date yet)
+live inside that randomly-ordered block instead of trailing at the
+true end under "oldest."
+
+Fixed by sorting on `coalesce(p.release_date, p.first_seen_at::date)`
+instead of `p.release_date` alone. `first_seen_at`
+(003_date_tracking_and_bowwwl.sql) is `not null default now()`, set
+the moment a scraper first `INSERT`s a product row -- a genuine,
+always-populated timestamp for "when this entry came into existence,"
+even when no manufacturer date is known. Every row in the catalog now
+gets one real position in a single unified chronological ordering
+(real release_date when known, discovery date as an honest fallback
+when not), instead of a real-dates block followed by an effectively-
+unordered everything-else block. `p.id asc` stays on as the final
+tiebreaker for two rows landing on the same date. Applied to both
+`admin_api/service.py`'s `_SORT_ORDER_BY` and `public_api/service.py`'s
+identical copy (that dict's own comment already flags it's "kept in
+sync by hand" -- the consumer-site Browse page had the same latent
+bug, just never reported).
+
+**Pagination:** `GET /products` only ever returned `{"items": [...]}`
+-- no total count anywhere, so admin-spa's `Pagination.tsx` could only
+guess "has a next page" off whether the current page came back full,
+with no way to show a real page count or jump to the first/last page.
+Added `count_products(conn, **filters)` to `admin_api/service.py`,
+sharing a new `_build_products_where(...)` helper with `list_products`
+(extracted from what used to be 11 filter branches duplicated inline
+in `list_products` alone -- now built once, so the two functions'
+filter sets can't drift apart by hand the way `_SORT_ORDER_BY` across
+admin_api/public_api has to). A genuinely separate `select count(*)`
+query, not a `count(*) over()` window column folded into the main
+`list_products` SELECT -- a window function returns nothing when the
+requested page comes back with zero rows (the last page, or a filter
+combination matching nothing), which is exactly a case this needs to
+still report a real total for.
+
+`GET /products` (`admin_api/app.py`) now calls both and returns
+`{"items": [...], "total": N}` -- purely additive: every other caller
+of this endpoint (the rescrape/backfill scripts, `BatchJobsPage.tsx`'s
+whole-catalog paging loop) already only reads `items` and ignores
+unrecognized response keys.
+
+admin-spa: added `listProductsPage()` to `src/api/client.ts` as a
+*separate* function from the existing `listProducts()` (which stays a
+bare-array return, untouched) -- `BatchJobsPage.tsx`'s paging loop only
+ever needs `page.length`/`.concat` and every existing caller already
+expects a bare array, so there was no reason to widen a function seven
+other call sites depend on just to add a field only `ProductsPage.tsx`
+needs. `Pagination.tsx` gained an optional `total` prop: when present
+(now, only `ProductsPage.tsx` passes one), it shows a real "page N of
+M" count and adds First/Last buttons; when absent, every other
+existing caller (Review Queue, Video Candidates, Articles, Price
+Sites, Cores, Coverstocks) keeps exactly the old Prev/Next-only
+behavior, unchanged.
+
+Tests: two existing sort-order tests per module (admin_api + public_api)
+updated to assert the fixed `coalesce(...)` SQL text instead of the old
+buggy `nulls last` text they'd been asserting all along (which is
+exactly what let this ship unnoticed -- the tests were confirming the
+bug's own SQL, not catching it). Added a regression guard confirming
+the old bare `p.release_date ... nulls last` text is gone, plus new
+`count_products` tests (base query shape, no order/limit/offset ever
+appended, representative filters applied, and a direct check that
+`count_products`/`list_products` share `_build_products_where` rather
+than risking hand-duplicated drift). Full repo-wide sweep: 1533/1533
+passing (same two pre-existing, unrelated sandbox `pytest`-missing
+failures noted throughout this file). admin-spa `tsc -b` passes clean.
+
+No deploy-shape changes here (no new template.yaml resources) -- just
+`sam build && sam deploy` to ship the two service.py/app.py changes,
+and admin-spa's existing GitHub Actions workflow to ship the frontend
+changes.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

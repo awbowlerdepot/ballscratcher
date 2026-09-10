@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { listProducts, rescrapeProduct } from "../api/client";
+import { listProductsPage, rescrapeProduct } from "../api/client";
 import type { ListProductsParams, Product, ProductSort, SourcePlatform } from "../api/types";
 import Badge from "../components/Badge";
 import type { BulkAction, Column } from "../components/DataTable";
@@ -97,6 +97,12 @@ const DEFAULT_SORT: ProductSort = "popularity";
 export default function ProductsPage() {
   const { show } = useToast();
   const [products, setProducts] = useState<Product[]>([]);
+  // Total matching row count across every page, not just this one --
+  // Al: "it doesn't have number of pages and first and last buttons."
+  // null until the first response comes back (or on error), same
+  // "don't show a real number until we actually know one" convention
+  // this page already used before for products itself.
+  const [total, setTotal] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -141,8 +147,11 @@ export default function ProductsPage() {
   useEffect(() => {
     setLoading(true);
     setError(null);
-    listProducts(filters)
-      .then(setProducts)
+    listProductsPage(filters)
+      .then((r) => {
+        setProducts(r.items);
+        setTotal(r.total);
+      })
       .catch((err) => setError(err instanceof Error ? err.message : "Failed to load products."))
       .finally(() => setLoading(false));
     // Re-fetch whenever any filter or the page offset changes. Filters
@@ -468,7 +477,13 @@ export default function ProductsPage() {
         ))}
       </div>
 
-      <Pagination offset={offset} limit={LIMIT} itemCount={products.length} onOffsetChange={setOffset} />
+      <Pagination
+        offset={offset}
+        limit={LIMIT}
+        itemCount={products.length}
+        onOffsetChange={setOffset}
+        total={total ?? undefined}
+      />
     </div>
   );
 }

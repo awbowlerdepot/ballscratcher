@@ -204,10 +204,26 @@ def list_brands(conn) -> list:
 # date to the very top of "Newest". Kept in sync by hand with admin_api/
 # service.py's identical copy, same no-shared-module reasoning as this
 # project's other hand-synced per-Lambda constants.
+# REAL BUG, fixed alongside admin_api/service.py's identical copy of this
+# dict (kept in sync by hand): Al reported the admin Products tab's
+# "oldest" sort didn't put the newest products at the end. Root cause --
+# release_date is manufacturer-published and sparse (most of the catalog
+# never had one to parse), so the original `nulls last` ordering dumped
+# the majority of the catalog into one block after every dated row, tie-
+# broken only by p.id -- a random uuid_generate_v4() primary key, not
+# anything chronological. Fixed by sorting on `coalesce(p.release_date,
+# p.first_seen_at::date)` instead: first_seen_at (003_date_tracking_and_
+# bowwwl.sql) is `not null default now()`, set the moment a scraper first
+# INSERTs a product row, so every row now gets one real position in a
+# single unified chronological ordering (real release_date when known,
+# discovery date as an honest fallback when not) instead of a real-dates
+# block followed by an effectively-unordered everything-else block. See
+# admin_api/service.py's own copy of this comment for the fuller
+# writeup.
 _SORT_ORDER_BY = {
     "popularity": "p.popularity_score desc, p.id asc",
-    "newest": "p.release_date desc nulls last, p.id asc",
-    "oldest": "p.release_date asc nulls last, p.id asc",
+    "newest": "coalesce(p.release_date, p.first_seen_at::date) desc, p.id asc",
+    "oldest": "coalesce(p.release_date, p.first_seen_at::date) asc, p.id asc",
     "name_asc": "p.name asc, p.id asc",
     "name_desc": "p.name desc, p.id asc",
 }

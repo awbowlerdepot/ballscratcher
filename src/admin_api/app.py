@@ -378,7 +378,7 @@ def get_products(
 ):
     conn = service.get_db_connection()
     try:
-        return {"items": service.list_products(
+        items = service.list_products(
             conn, published=published, brand_id=brand_id, search=search,
             needs_video_summary_refresh=needs_video_summary_refresh,
             has_approved_video_summaries=has_approved_video_summaries,
@@ -387,7 +387,27 @@ def get_products(
             missing_video_candidates=missing_video_candidates,
             source_platform=source_platform, status=status, sort=sort,
             limit=limit, offset=offset,
-        )}
+        )
+        # total added alongside the oldest/newest sort fix -- Al: "it
+        # doesn't have number of pages and first and last buttons." A
+        # second query (see count_products' own docstring for why not a
+        # window function folded into the query above), same filters,
+        # no sort/limit/offset. admin-spa's Pagination.tsx uses this to
+        # show a real page count and jump to first/last; every other
+        # existing caller of this endpoint (the rescrape/backfill
+        # scripts, BatchJobsPage's whole-catalog paging loop) already
+        # only reads `items` and ignores unrecognized response keys, so
+        # this is a purely additive response-shape change.
+        total = service.count_products(
+            conn, published=published, brand_id=brand_id, search=search,
+            needs_video_summary_refresh=needs_video_summary_refresh,
+            has_approved_video_summaries=has_approved_video_summaries,
+            missing_core=missing_core, missing_coverstock=missing_coverstock,
+            missing_skus=missing_skus, html_fallback_skus=html_fallback_skus,
+            missing_video_candidates=missing_video_candidates,
+            source_platform=source_platform, status=status,
+        )
+        return {"items": items, "total": total}
     finally:
         conn.close()
 

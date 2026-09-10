@@ -421,20 +421,23 @@ def test_list_products_unrecognized_sort_value_falls_back_to_default_order():
 # sort options for both the admin and consumer UIs") -- newest/oldest by
 # release_date, alphabetical by name. See service.py's _SORT_ORDER_BY.
 
-def test_list_products_sort_newest_orders_by_release_date_desc_nulls_last():
+def test_list_products_sort_newest_orders_by_coalesced_release_date_desc():
+    """Was p.release_date alone with nulls last (see admin_api/service.py's
+    identical fix + writeup) -- fixed here too, same "kept in sync by
+    hand" copy this module's own _SORT_ORDER_BY comment already flags."""
     conn = _QueryCapturingConnection()
     service.list_products(conn, sort="newest")
 
     query = conn.cursor().queries[0]
-    assert "order by p.release_date desc nulls last, p.id asc limit %s offset %s" in query
+    assert "order by coalesce(p.release_date, p.first_seen_at::date) desc, p.id asc limit %s offset %s" in query
 
 
-def test_list_products_sort_oldest_orders_by_release_date_asc_nulls_last():
+def test_list_products_sort_oldest_orders_by_coalesced_release_date_asc():
     conn = _QueryCapturingConnection()
     service.list_products(conn, sort="oldest")
 
     query = conn.cursor().queries[0]
-    assert "order by p.release_date asc nulls last, p.id asc limit %s offset %s" in query
+    assert "order by coalesce(p.release_date, p.first_seen_at::date) asc, p.id asc limit %s offset %s" in query
 
 
 def test_list_products_sort_name_asc_orders_alphabetically():
