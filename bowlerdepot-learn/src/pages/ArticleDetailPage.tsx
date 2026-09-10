@@ -248,6 +248,47 @@ export default function ArticleDetailPage() {
         </div>
       ) : null}
 
+      {/* Al: "move the related reviews section up to just below the shop
+          call to action." Was originally down near the bottom, after FAQ
+          (see git history / DEPLOY_RUNBOOK.md 6ao for the Related
+          Reviews + Similar Balls merge that shaped this section) --
+          moved up here so it surfaces right after the CTA rather than
+          making readers scroll past Specs and FAQ first. Al: "how is
+          related reviews curated and how is similar balls curated... i
+          think they should both link to the articles and for all the
+          rails use the same style and the product shot image from the
+          article for its image." This section used to be two rails --
+          this one and a since-removed "Similar Balls" rail that linked
+          out to BowlerDepot instead of another Learn article. Once
+          Similar Balls was also going to link to articles, both rails
+          would have pulled the identical candidate list, so they're
+          merged here. */}
+      {article.related_reviews?.length ? (
+        <div className="mb-10">
+          <h2 className="mb-3 font-display text-xl font-semibold text-ink">Related Reviews</h2>
+          <div className="grid grid-cols-1 gap-x-8 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
+            {article.related_reviews.map((r) => (
+              <Link key={r.product_id} className="group block" to={`/articles/${r.product_id}`}>
+                <div className="aspect-[4/3] w-full overflow-hidden rounded-md bg-paper-border/40">
+                  {r.image_url ? (
+                    <img
+                      src={resizedImageUrl(r.image_url, { w: 640, h: 480, fit: "cover" })}
+                      alt={r.product_name}
+                      loading="lazy"
+                      className="h-full w-full object-cover"
+                    />
+                  ) : null}
+                </div>
+                <div className="mt-3">
+                  <div className="font-display font-semibold text-ink group-hover:text-accent">{r.title}</div>
+                  <div className="text-xs text-muted">{r.product_name}</div>
+                </div>
+              </Link>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
       {product?.skus?.length ? (
         <div className="mb-10">
           <h2 className="mb-3 font-display text-xl font-semibold text-ink">Specs</h2>
@@ -293,41 +334,6 @@ export default function ArticleDetailPage() {
               <p className="text-muted">{item.answer}</p>
             </div>
           ))}
-        </div>
-      ) : null}
-
-      {/* Al: "how is related reviews curated and how is similar balls
-          curated... i think they should both link to the articles and
-          for all the rails use the same style and the product shot
-          image from the article for its image." This section used to be
-          two rails -- this one and a since-removed "Similar Balls" rail
-          that linked out to BowlerDepot instead of another Learn
-          article. Once Similar Balls was also going to link to
-          articles, both rails would have pulled the identical candidate
-          list, so they're merged here. */}
-      {article.related_reviews?.length ? (
-        <div className="mb-10">
-          <h2 className="mb-3 font-display text-xl font-semibold text-ink">Related Reviews</h2>
-          <div className="grid grid-cols-1 gap-x-8 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
-            {article.related_reviews.map((r) => (
-              <Link key={r.product_id} className="group block" to={`/articles/${r.product_id}`}>
-                <div className="aspect-[4/3] w-full overflow-hidden rounded-md bg-paper-border/40">
-                  {r.image_url ? (
-                    <img
-                      src={resizedImageUrl(r.image_url, { w: 640, h: 480, fit: "cover" })}
-                      alt={r.product_name}
-                      loading="lazy"
-                      className="h-full w-full object-cover"
-                    />
-                  ) : null}
-                </div>
-                <div className="mt-3">
-                  <div className="font-display font-semibold text-ink group-hover:text-accent">{r.title}</div>
-                  <div className="text-xs text-muted">{r.product_name}</div>
-                </div>
-              </Link>
-            ))}
-          </div>
         </div>
       ) : null}
 

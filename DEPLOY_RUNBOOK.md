@@ -13412,6 +13412,36 @@ sam build && sam deploy   # picks up public_api's merged related_reviews query
 cd bowlerdepot-learn && npm run build   # tsc -b + vite build + prerender, then the usual GitHub Actions deploy (push to main)
 ```
 
+### 6ap. Moved Related Reviews up to right below the Shop CTA
+
+Al: "can you move the related reviews section up to just below the shop
+call to action."
+
+**`bowlerdepot-learn/src/pages/ArticleDetailPage.tsx`**: the "Related
+Reviews" section (unchanged in content/markup, still reads
+`r.image_url` per 6ao above) moved from after FAQ -- where it sat right
+before the "More from {brand}" carousel -- to immediately after the
+"Shop this ball" CTA block (`product && product.status === "current"`)
+and before the Specs table. New render order top to bottom: Verdict ->
+Shop CTA -> **Related Reviews** -> Specs -> FAQ -> More from {brand}.
+
+**`bowlerdepot-learn/scripts/prerender.ts`**: this static HTML has no
+Shop CTA to anchor "below" -- that CTA is deliberately excluded from
+prerendered output (external, volatile link; see the exclusion comment
+above `renderArticlePage`). Moved `renderRelatedReviews(...)` ahead of
+`renderSpecTable(...)`/`renderFaq(...)` anyway, so the prerendered
+content order keeps mirroring the live page's order as closely as this
+file's own stated design goal calls for, even without a literal CTA
+anchor.
+
+No backend change, no migration, no template.yaml change. `npx tsc -b`
+clean in `bowlerdepot-learn/`. Deploy via:
+
+```bash
+cd bowlerdepot-learn && npm run build   # tsc -b + vite build + prerender, then the usual GitHub Actions deploy (push to main)
+git push
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

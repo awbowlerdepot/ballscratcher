@@ -586,9 +586,16 @@ function renderArticlePage(baseHtml: string, card: ArticleCard, article: Article
       ${article.who_should_skip?.length ? `<h2>Who Should Skip This</h2>${renderList(article.who_should_skip)}` : ""}
       ${article.buying_tips ? `<h2>Buying Tips</h2><p>${escapeHtml(article.buying_tips)}</p>` : ""}
       ${article.verdict ? `<h2>Verdict</h2><p>${escapeHtml(article.verdict)}</p>` : ""}
+      ${/* Al: "move the related reviews section up to just below the shop
+           call to action." The live page now renders Related Reviews
+           right after the Shop CTA, ahead of Specs/FAQ -- this static
+           HTML has no CTA to anchor to (see the exclusion note above),
+           but moved Related Reviews ahead of Specs/FAQ here too so the
+           prerendered content order keeps mirroring the live page's
+           order as closely as this file's own stated goal calls for. */ ""}
+      ${renderRelatedReviews(article.related_reviews)}
       ${renderSpecTable(article.product)}
       ${renderFaq(article.faq)}
-      ${renderRelatedReviews(article.related_reviews)}
       ${renderBrandLineup(article.brand_lineup)}
     </div>`;
 
