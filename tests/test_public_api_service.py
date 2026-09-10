@@ -687,6 +687,18 @@ def _derive_primary_image_url(db, pid, p):
     return p.get("primary_image_url")
 
 
+def _derive_article_image_url(db, pid, p, pa):
+    """Mirrors related_reviews'/brand_lineup's own image_url coalesce
+    (see service.get_product_article's own comment on this field): the
+    SIBLING's own article's AI-generated product_shot_image_url first
+    (Al: "for all the rails use the same style and the product shot
+    image from the article for its image"), then the same real-photo
+    fallback chain _derive_primary_image_url already mirrors."""
+    if pa and pa.get("product_shot_image_url"):
+        return pa["product_shot_image_url"]
+    return _derive_primary_image_url(db, pid, p)
+
+
 def _derive_bigcommerce_offer(db, pid):
     """Mirrors get_product_article's ecom_source/ecom_price LATERAL joins:
     picks the most recently checked approved+active BigCommerce
@@ -1021,7 +1033,7 @@ class _FakeCursor:
             # article's heuristic sibling matches.
             brand_id, exclude_id = params
             self._description = [(c,) for c in (
-                "product_id", "product_name", "article_id", "title", "hook", "primary_image_url",
+                "product_id", "product_name", "article_id", "title", "hook", "image_url",
             )]
             rows = []
             for pid, p in self.db["products"].items():
@@ -1032,7 +1044,7 @@ class _FakeCursor:
                     continue
                 rows.append((
                     pid, p["name"], pa["id"], pa.get("title"), pa.get("hook"),
-                    _derive_primary_image_url(self.db, pid, p),
+                    _derive_article_image_url(self.db, pid, p, pa),
                     p.get("demand_score", 0),
                 ))
             # order by p.demand_score desc, p.name -- name-asc first
@@ -1042,37 +1054,18 @@ class _FakeCursor:
             rows.sort(key=lambda r: r[6], reverse=True)
             self._result_rows = [r[:6] for r in rows[:30]]
 
-        elif q.startswith("select p.id, p.name, p.url, c.name as core_name, p.coverstock_name,"):
-            wanted = set(params[0])
-            self._description = [(c,) for c in (
-                "id", "name", "url", "core_name", "coverstock_name", "primary_image_url", "ecommerce_url",
-                "ecommerce_price", "ecommerce_price_currency", "ecommerce_in_stock",
-            )]
-            rows = []
-            for pid in wanted:
-                p = self.db["products"].get(pid)
-                if p is None or not p["published"]:
-                    continue  # unpublished/deleted sibling silently drops out -- see service docstring
-                core = self.db["cores"].get(p.get("core_id"), {})
-                offer = _derive_bigcommerce_offer(self.db, pid)
-                rows.append((
-                    pid, p["name"], p["url"], core.get("name"), p.get("coverstock_name"),
-                    _derive_primary_image_url(self.db, pid, p),
-                    offer["product_url"], offer["price"], offer["currency"], offer["in_stock"],
-                ))
-            rows.sort(key=lambda r: r[1])  # order by p.name
-            self._result_rows = rows
-
         elif q.startswith("select p.id as product_id, p.name as product_name,"):
-            # related_reviews -- same sibling_product_ids source as
-            # comparison_table above, but narrowed (via the fixture's own
-            # db["product_articles"] lookup) to siblings with their OWN
-            # approved article, same "only 022 rows with status='approved'
-            # count" rule get_product_article's main article lookup uses.
+            # related_reviews (merged rail, formerly two separate rails --
+            # this one plus a since-removed "Similar Balls" -- see
+            # service.get_product_article's own comment) -- narrowed (via
+            # the fixture's own db["product_articles"] lookup) to siblings
+            # with their OWN approved article, same "only 022 rows with
+            # status='approved' count" rule get_product_article's main
+            # article lookup uses.
             wanted = set(params[0])
             self._description = [(c,) for c in (
                 "product_id", "product_name", "article_id", "title", "hook", "reviewed_at",
-                "primary_image_url",
+                "image_url",
             )]
             rows = []
             for pid in wanted:
@@ -1085,7 +1078,7 @@ class _FakeCursor:
                 rows.append((
                     pid, p["name"], sib_article["id"], sib_article.get("title"), sib_article.get("hook"),
                     sib_article.get("reviewed_at"),
-                    _derive_primary_image_url(self.db, pid, p),
+                    _derive_article_image_url(self.db, pid, p, sib_article),
                 ))
             # order by pa.reviewed_at desc nulls last, p.name -- name-asc
             # first (stable sort keeps it as the tie-break), then group/
@@ -1805,27 +1798,6 @@ def test_get_product_article_category_fields_null_for_pre_migration_article():
     assert article.get("article_type_name") is None
 
 
-def test_get_product_article_comparison_table_drops_unpublished_siblings():
-    """sibling_product_ids on the article row is a heuristic (see
-    022_product_articles.sql's own caveat) -- a sibling that's since been
-    unpublished or deleted must silently drop out of comparison_table
-    rather than breaking the whole article response."""
-    db = _fresh_db()
-    published_sibling = _seed_published_current_product(
-        db, pid="sib-published", name="Equinox Hybrid", url="https://storm.com/equinox-hybrid",
-    )
-    unpublished_sibling = _seed_published_current_product(
-        db, pid="sib-unpublished", name="Equinox Pearl", published=False,
-    )
-    pid = _seed_published_current_product(db, pid="prod-1", name="Equinox Solid")
-    _seed_approved_article(db, pid, sibling_product_ids=[published_sibling, unpublished_sibling, "sib-deleted"])
-
-    result = service.get_product_article(_FakeConnection(db), pid)
-
-    comparison_ids = [row["id"] for row in result["article"]["comparison_table"]]
-    assert comparison_ids == ["sib-published"]
-
-
 def test_get_product_article_includes_image_urls_when_present():
     """023_product_article_images.sql -- action_shot_image_url/product_
     shot_image_url are read straight off the article row (not live-joined
@@ -1917,81 +1889,10 @@ def test_get_product_article_ecommerce_url_picks_most_recently_checked_source():
     assert result["article"]["product"]["ecommerce_url"] == "https://bowlerdepot.com/newer"
 
 
-def test_get_product_article_comparison_table_includes_ecommerce_url():
-    db = _fresh_db()
-    sibling = _seed_published_current_product(db, pid="sib-1", name="Equinox Hybrid")
-    _seed_bigcommerce_price_source(db, sibling, "https://bowlerdepot.com/equinox-hybrid")
-    pid = _seed_published_current_product(db, pid="prod-1")
-    _seed_approved_article(db, pid, sibling_product_ids=[sibling])
-
-    result = service.get_product_article(_FakeConnection(db), pid)
-
-    assert result["article"]["comparison_table"][0]["ecommerce_url"] == "https://bowlerdepot.com/equinox-hybrid"
-
-
-def test_get_product_article_comparison_table_includes_pricing_when_checked():
-    """Al, on the Similar Balls list specifically: 'include links and
-    pricing for it using the bowlerdepot.com pricing data' -- comparison_
-    table rows now carry the same real Offer fields `product` already
-    does, sourced from the SAME chosen price source as that row's own
-    ecommerce_url (see this function's own docstring)."""
-    db = _fresh_db()
-    sibling = _seed_published_current_product(db, pid="sib-1", name="Equinox Hybrid")
-    _seed_bigcommerce_price_source(
-        db, sibling, "https://bowlerdepot.com/equinox-hybrid",
-        price=169.99, currency="USD", in_stock=True,
-    )
-    pid = _seed_published_current_product(db, pid="prod-1")
-    _seed_approved_article(db, pid, sibling_product_ids=[sibling])
-
-    result = service.get_product_article(_FakeConnection(db), pid)
-
-    row = result["article"]["comparison_table"][0]
-    assert row["ecommerce_price"] == 169.99
-    assert row["ecommerce_price_currency"] == "USD"
-    assert row["ecommerce_in_stock"] is True
-
-
-def test_get_product_article_comparison_table_pricing_null_when_never_checked():
-    """A real approved+active BigCommerce source existing doesn't imply
-    price_checker has ever successfully priced it -- same all-null-
-    together posture `product`'s own offer fields already have."""
-    db = _fresh_db()
-    sibling = _seed_published_current_product(db, pid="sib-1", name="Equinox Hybrid")
-    _seed_bigcommerce_price_source(db, sibling, "https://bowlerdepot.com/equinox-hybrid")
-    pid = _seed_published_current_product(db, pid="prod-1")
-    _seed_approved_article(db, pid, sibling_product_ids=[sibling])
-
-    result = service.get_product_article(_FakeConnection(db), pid)
-
-    row = result["article"]["comparison_table"][0]
-    assert row["ecommerce_price"] is None
-    assert row["ecommerce_price_currency"] is None
-    assert row["ecommerce_in_stock"] is None
-
-
-def test_get_product_article_comparison_table_pricing_null_when_no_bigcommerce_source():
-    """The normal case for most siblings today -- no price source at all,
-    not just an unchecked one."""
-    db = _fresh_db()
-    sibling = _seed_published_current_product(db, pid="sib-1", name="Equinox Hybrid")
-    pid = _seed_published_current_product(db, pid="prod-1")
-    _seed_approved_article(db, pid, sibling_product_ids=[sibling])
-
-    result = service.get_product_article(_FakeConnection(db), pid)
-
-    row = result["article"]["comparison_table"][0]
-    assert row["ecommerce_url"] is None
-    assert row["ecommerce_price"] is None
-    assert row["ecommerce_price_currency"] is None
-    assert row["ecommerce_in_stock"] is None
-
-
 def test_get_product_article_related_reviews_only_includes_siblings_with_approved_article():
-    """Unlike comparison_table (every published sibling), related_reviews
-    is narrowed to siblings that have their OWN approved article -- a
-    sibling with no article at all, or only a pending one, has nothing to
-    link to and must silently drop out."""
+    """related_reviews is narrowed to siblings that have their OWN
+    approved article -- a sibling with no article at all, or only a
+    pending one, has nothing to link to and must silently drop out."""
     db = _fresh_db()
     reviewed_sibling = _seed_published_current_product(db, pid="sib-reviewed", name="Equinox Hybrid")
     _seed_approved_article(db, reviewed_sibling, **{"id": "art-sib", "title": "Equinox Hybrid Review", "hook": "..."})
@@ -2045,6 +1946,48 @@ def test_get_product_article_related_reviews_empty_when_no_siblings():
     result = service.get_product_article(_FakeConnection(db), pid)
 
     assert result["article"]["related_reviews"] == []
+
+
+def test_get_product_article_related_reviews_image_prefers_sibling_own_product_shot():
+    """Al: 'for all the rails use the same style and the product shot
+    image from the article for its image' -- image_url should read the
+    SIBLING's own article's product_shot_image_url, not this article's
+    own, and not the sibling's raw scraped photo, when the sibling's
+    article has one."""
+    db = _fresh_db()
+    sibling = _seed_published_current_product(
+        db, pid="sib-1", name="Equinox Hybrid", primary_image_url="https://s3/equinox-raw-photo.png",
+    )
+    _seed_approved_article(
+        db, sibling, id="art-sib",
+        product_shot_image_url="https://bucket.s3.amazonaws.com/article-images/sib-1/product_shot.png",
+    )
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid, sibling_product_ids=[sibling])
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    row = result["article"]["related_reviews"][0]
+    assert row["image_url"] == "https://bucket.s3.amazonaws.com/article-images/sib-1/product_shot.png"
+
+
+def test_get_product_article_related_reviews_image_falls_back_to_raw_photo():
+    """A sibling whose article predates image generation (or whose image
+    generation never succeeded) still gets a usable image -- the same
+    visible-product-image/primary_image_url fallback chain every other
+    image field on this page already uses."""
+    db = _fresh_db()
+    sibling = _seed_published_current_product(
+        db, pid="sib-1", name="Equinox Hybrid", primary_image_url="https://s3/equinox-raw-photo.png",
+    )
+    _seed_approved_article(db, sibling, id="art-sib")  # no product_shot_image_url
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid, sibling_product_ids=[sibling])
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    row = result["article"]["related_reviews"][0]
+    assert row["image_url"] == "https://s3/equinox-raw-photo.png"
 
 
 # --- get_product_article: brand_lineup carousel ("More from [Brand]") --
@@ -2144,6 +2087,43 @@ def test_get_product_article_brand_lineup_empty_when_no_other_siblings_in_brand(
     result = service.get_product_article(_FakeConnection(db), pid)
 
     assert result["article"]["brand_lineup"] == []
+
+
+def test_get_product_article_brand_lineup_image_prefers_sibling_own_product_shot():
+    """Same image_url preference as related_reviews (Al: 'for all the
+    rails use the same style and the product shot image from the article
+    for its image') -- the brand-mate's OWN article's product_shot_
+    image_url, not its raw scraped photo."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1", brand_id="brand-1")
+    mate = _seed_published_current_product(
+        db, pid="sib-1", brand_id="brand-1", name="Mate", primary_image_url="https://s3/mate-raw-photo.png",
+    )
+    _seed_approved_article(
+        db, mate, id="art-mate",
+        product_shot_image_url="https://bucket.s3.amazonaws.com/article-images/sib-1/product_shot.png",
+    )
+    _seed_approved_article(db, pid)
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    row = result["article"]["brand_lineup"][0]
+    assert row["image_url"] == "https://bucket.s3.amazonaws.com/article-images/sib-1/product_shot.png"
+
+
+def test_get_product_article_brand_lineup_image_falls_back_to_raw_photo():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1", brand_id="brand-1")
+    mate = _seed_published_current_product(
+        db, pid="sib-1", brand_id="brand-1", name="Mate", primary_image_url="https://s3/mate-raw-photo.png",
+    )
+    _seed_approved_article(db, mate, id="art-mate")  # no product_shot_image_url
+    _seed_approved_article(db, pid)
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    row = result["article"]["brand_lineup"][0]
+    assert row["image_url"] == "https://s3/mate-raw-photo.png"
 
 
 # --- get_product_article: reviewed_at, brand_name, and real Offer data

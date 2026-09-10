@@ -515,14 +515,15 @@ function renderStructuredData(card: ArticleCard, article: ArticleDetail, heroIma
 // Note: the post-verdict "shop this ball" CTA (Al: "after the verdict in
 // each article can we include the call to action to shop for the ball
 // ... This should only show while the ball is current") is deliberately
-// NOT rendered into this function's static HTML -- same reasoning as
-// comparison_table's ecommerce_url/price fields staying out of the
-// prerendered markup (see get_product_article's docstring in the main
-// repo): it's an external BowlerDepot storefront link, not crawl-
-// relevant content, and product.status can flip current->retired
-// between builds, so a stale prerendered CTA could outlive the point it
-// should've stopped showing. ArticleDetailPage.tsx renders it
-// client-side instead, gated live on product.status.
+// NOT rendered into this function's static HTML: it's an external
+// BowlerDepot storefront link, not crawl-relevant content, and
+// product.status can flip current->retired between builds, so a stale
+// prerendered CTA could outlive the point it should've stopped showing.
+// ArticleDetailPage.tsx renders it client-side instead, gated live on
+// product.status. (The Learn site's OTHER cross-link rails -- Related
+// Reviews and brand_lineup, both below -- link internally to other
+// Learn articles instead of the storefront, so neither has this
+// go-stale-between-builds problem; both ARE prerendered.)
 //
 // brand_lineup used to get the same treatment (it was an external
 // ecommerce-links-and-prices rail, subject to a sibling ball's status/

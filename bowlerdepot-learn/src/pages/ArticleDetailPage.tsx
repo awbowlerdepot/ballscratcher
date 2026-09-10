@@ -11,20 +11,6 @@ import {
 import type { ProductArticleResponse } from "../api/types";
 import ArticleDetailSkeleton from "../components/ArticleDetailSkeleton";
 
-// Real BowlerDepot price for a Similar Balls card (Al: "include links
-// and pricing for it using the bowlerdepot.com pricing data") -- null
-// in, null out (no "$0.00"/"Call for price" placeholder); a sibling
-// price_checker hasn't priced yet just shows no price, same as every
-// other null-means-omit convention this page already follows.
-function formatPrice(price: number | null | undefined, currency: string | null | undefined): string | null {
-  if (price == null) return null;
-  try {
-    return new Intl.NumberFormat("en-US", { style: "currency", currency: currency || "USD" }).format(price);
-  } catch {
-    return `$${price.toFixed(2)}`;
-  }
-}
-
 export default function ArticleDetailPage() {
   const { productId } = useParams<{ productId: string }>();
   const [data, setData] = useState<ProductArticleResponse | null>(null);
@@ -298,51 +284,6 @@ export default function ArticleDetailPage() {
         </div>
       ) : null}
 
-      {article.comparison_table?.length ? (
-        <div className="mb-10">
-          <h2 className="mb-3 font-display text-xl font-semibold text-ink">Similar Balls</h2>
-          <div className="grid grid-cols-1 gap-x-8 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
-            {article.comparison_table.map((c) => {
-              const price = formatPrice(c.ecommerce_price, c.ecommerce_price_currency);
-              return (
-                <a
-                  key={c.id}
-                  className="group block"
-                  href={c.ecommerce_url || bowlerDepotSearchUrl(c.name)}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  <div className="aspect-[4/3] w-full overflow-hidden rounded-md bg-paper-border/40">
-                    {c.primary_image_url ? (
-                      <img
-                        src={resizedImageUrl(c.primary_image_url, { w: 640, h: 480, fit: "cover" })}
-                        alt={c.name}
-                        loading="lazy"
-                        className="h-full w-full object-cover"
-                      />
-                    ) : null}
-                  </div>
-                  <div className="mt-3">
-                    <div className="font-display font-semibold text-ink group-hover:text-accent">{c.name}</div>
-                    <div className="text-xs text-muted">
-                      {[c.core_name, c.coverstock_name].filter(Boolean).join(" · ")}
-                    </div>
-                    {price ? (
-                      <div className="mt-1 text-sm font-semibold text-accent">
-                        {price}
-                        {c.ecommerce_in_stock === false ? (
-                          <span className="font-normal text-alert"> &middot; Out of stock</span>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </div>
-                </a>
-              );
-            })}
-          </div>
-        </div>
-      ) : null}
-
       {article.faq?.length ? (
         <div className="mb-10">
           <h2 className="mb-3 font-display text-xl font-semibold text-ink">FAQ</h2>
@@ -355,6 +296,15 @@ export default function ArticleDetailPage() {
         </div>
       ) : null}
 
+      {/* Al: "how is related reviews curated and how is similar balls
+          curated... i think they should both link to the articles and
+          for all the rails use the same style and the product shot
+          image from the article for its image." This section used to be
+          two rails -- this one and a since-removed "Similar Balls" rail
+          that linked out to BowlerDepot instead of another Learn
+          article. Once Similar Balls was also going to link to
+          articles, both rails would have pulled the identical candidate
+          list, so they're merged here. */}
       {article.related_reviews?.length ? (
         <div className="mb-10">
           <h2 className="mb-3 font-display text-xl font-semibold text-ink">Related Reviews</h2>
@@ -362,9 +312,9 @@ export default function ArticleDetailPage() {
             {article.related_reviews.map((r) => (
               <Link key={r.product_id} className="group block" to={`/articles/${r.product_id}`}>
                 <div className="aspect-[4/3] w-full overflow-hidden rounded-md bg-paper-border/40">
-                  {r.primary_image_url ? (
+                  {r.image_url ? (
                     <img
-                      src={resizedImageUrl(r.primary_image_url, { w: 640, h: 480, fit: "cover" })}
+                      src={resizedImageUrl(r.image_url, { w: 640, h: 480, fit: "cover" })}
                       alt={r.product_name}
                       loading="lazy"
                       className="h-full w-full object-cover"
@@ -428,9 +378,9 @@ export default function ArticleDetailPage() {
                 to={`/articles/${b.product_id}`}
               >
                 <div className="aspect-[4/3] w-full overflow-hidden rounded-md bg-paper-border/40">
-                  {b.primary_image_url ? (
+                  {b.image_url ? (
                     <img
-                      src={resizedImageUrl(b.primary_image_url, { w: 400, h: 300, fit: "cover" })}
+                      src={resizedImageUrl(b.image_url, { w: 400, h: 300, fit: "cover" })}
                       alt={b.product_name}
                       loading="lazy"
                       className="h-full w-full object-cover"

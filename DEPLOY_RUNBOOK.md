@@ -13332,6 +13332,86 @@ sam build && sam deploy   # picks up public_api's rewritten brand_lineup query
 cd bowlerdepot-learn && npm run build   # tsc -b + vite build + prerender, then the usual GitHub Actions deploy (push to main)
 ```
 
+### 6ao. Merged "Similar Balls" into "Related Reviews"; every cross-link rail now uses the sibling's own article product shot
+
+Al asked how Related Reviews and Similar Balls were each curated, then:
+"i think they should both link to the articles and for all the rails
+use the same style and the product shot image from the article for its
+image."
+
+**What was curating what, before this:** Related Reviews and Similar
+Balls both pulled from the same source -- `sibling_product_ids`, a
+heuristic list `product_article_generator` picks when it writes an
+article (spec/core-family matches, not hand-curated). The only
+difference was narrowing and destination: Related Reviews required the
+sibling to have its own approved article and linked to `/articles/<id>`
+(text card: title + product name); Similar Balls didn't require an
+article at all and linked out to BowlerDepot's storefront (or a search
+fallback), showing core/coverstock/price instead. Once Similar Balls
+was also going to link to articles, both rails would pull the identical
+candidate list -- asked Al whether to merge into one section or keep two
+showing near-duplicate content; he chose merge.
+
+**public_api/service.py's `get_product_article`:**
+- The `comparison_table` query/field is deleted entirely (was Similar
+  Balls' backing data -- external ecommerce links/pricing, `p.name`
+  sort, no article requirement).
+- `related_reviews` is now the single merged rail: unchanged filter
+  (siblings from `sibling_product_ids` with their own approved article,
+  `p.published = true`) and unchanged sort (`pa.reviewed_at desc nulls
+  last, p.name`) -- it kept Related Reviews' own narrower/curated
+  behavior, not Similar Balls' looser one.
+- Both `related_reviews`' and `brand_lineup`'s image field is renamed
+  `primary_image_url` -> `image_url` and its coalesce now leads with
+  `pa.product_shot_image_url` (the SIBLING'S OWN article's AI-generated
+  hero shot, 023_product_article_images.sql) before falling back to the
+  existing visible-product-image/`products.primary_image_url` chain --
+  Al's "product shot image from the article for its image," applied
+  identically to both rails so a reader sees the same premium rendered
+  image style throughout every cross-link rail on the page, not a mix of
+  AI art and raw scraped photos.
+
+**bowlerdepot-learn:**
+- `types.ts`: `ComparisonRow` interface and `ArticleDetail.comparison_table`
+  deleted. `RelatedReview`/`BrandLineupItem` both gained the renamed
+  `image_url` field with a comment explaining the product-shot-first
+  preference.
+- `ArticleDetailPage.tsx`: the "Similar Balls" section (and its
+  now-unused local `formatPrice` helper) deleted outright. "Related
+  Reviews" section unchanged in shape/position, just reads `r.image_url`
+  now instead of `r.primary_image_url`. "More from {brand}" carousel
+  same, reads `b.image_url`. The two rails already shared the same card
+  markup (image box + title + subtitle, `font-display font-semibold
+  text-ink group-hover:text-accent` title style) before this change --
+  Al's "same style" ask was already satisfied by that existing
+  convention, this pass just makes sure both draw from the same
+  preferred image source too.
+- `scripts/prerender.ts`: only a comment fix -- the stale note near the
+  "shop this ball" CTA exclusion referenced `comparison_table` by name,
+  which no longer exists. No functional prerender change:
+  related_reviews'/brand_lineup's static-HTML rendering never included
+  images in the first place (text links only), so the image_url rename
+  doesn't touch it.
+
+**Tests**: `test_public_api_service.py` -- deleted 5 comparison_table
+tests (`_drops_unpublished_siblings`, `_includes_ecommerce_url`,
+`_includes_pricing_when_checked`, `_pricing_null_when_never_checked`,
+`_pricing_null_when_no_bigcommerce_source`); new `_derive_article_image_url`
+fixture helper (mirrors the new product-shot-first coalesce) wired into
+both the `related_reviews` and `brand_lineup` FakeCursor branches; 4 new
+tests (`related_reviews`/`brand_lineup` x `image_prefers_sibling_own_product_shot`/
+`image_falls_back_to_raw_photo`). **116/116** (`test_public_api_service.py`
+-- net -1 from 117 after removing 5 comparison_table tests and adding 4
+new ones); `test_admin_api_service.py` untouched, confirmed still
+**316/316**. `npx tsc -b` clean in `bowlerdepot-learn/`.
+
+No `template.yaml` change, no migration. Deploy via:
+
+```bash
+sam build && sam deploy   # picks up public_api's merged related_reviews query
+cd bowlerdepot-learn && npm run build   # tsc -b + vite build + prerender, then the usual GitHub Actions deploy (push to main)
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

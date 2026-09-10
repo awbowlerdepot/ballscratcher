@@ -725,14 +725,13 @@ def get_product_article(conn, product_id: str):
     against products/product_skus/cores here, exactly as migration 022's
     header comment describes, so a spec correction elsewhere never
     requires regenerating the article to stay accurate. Same reasoning
-    for comparison_table: sibling_product_ids on the article row is only
-    ever a heuristic id list (see that migration's own caveat on it not
-    being ground truth); the actual comparison_table rows returned here
-    are built fresh from each sibling's CURRENT live data, and any
-    sibling that's since been unpublished or deleted silently drops out
-    of the table rather than erroring the whole article -- a stale
-    heuristic reference shouldn't be able to break an otherwise-good,
-    already-approved article.
+    for related_reviews below: sibling_product_ids on the article row is
+    only ever a heuristic id list (see that migration's own caveat on it
+    not being ground truth); the actual rows returned here are built
+    fresh from each sibling's CURRENT live data, and any sibling that's
+    since been unpublished or deleted silently drops out rather than
+    erroring the whole article -- a stale heuristic reference shouldn't
+    be able to break an otherwise-good, already-approved article.
 
     action_shot_image_url/product_shot_image_url (023_product_article_
     images.sql) ARE read straight off the article row, unlike the spec
@@ -744,26 +743,50 @@ def get_product_article(conn, product_id: str):
     not an error.
 
     ecommerce_url (Al: "would it be possible to link to the ecommerce
-    product page for some balls inline too") -- on `product` and on each
-    `comparison_table` row, resolves to a REAL BowlerDepot storefront
-    product-page URL when one is known, else null. Deliberately reuses
-    014/016's existing price-tracking data instead of adding any new
-    migration/column: price_checker's BigCommerce ('api'/'bigcommerce')
-    source already resolves and stores exactly this (see price_checker.
-    extract_bigcommerce_price_fields's own docstring on custom_url.url +
-    base_url), once that product has an approved+active BowlerDepot price
-    source. "For some balls" in Al's own phrasing is exactly right: this
-    is null for any product price_checker hasn't matched/approved yet, and
-    the frontend is expected to fall back to bowlerDepotSearchUrl() in
-    that case, same as it already does for every ball today.
+    product page for some balls inline too") -- on `product`, resolves to
+    a REAL BowlerDepot storefront product-page URL when one is known,
+    else null. Deliberately reuses 014/016's existing price-tracking data
+    instead of adding any new migration/column: price_checker's
+    BigCommerce ('api'/'bigcommerce') source already resolves and stores
+    exactly this (see price_checker.extract_bigcommerce_price_fields's
+    own docstring on custom_url.url + base_url), once that product has an
+    approved+active BowlerDepot price source. "For some balls" in Al's
+    own phrasing is exactly right: this is null for any product
+    price_checker hasn't matched/approved yet, and the frontend is
+    expected to fall back to bowlerDepotSearchUrl() in that case (used
+    today only for `product`'s own post-verdict "shop this ball" CTA --
+    every cross-link rail below links to another Learn article instead,
+    never out to the storefront).
 
     related_reviews (Al: "add cross linking at the bottom to 'related'
-    ball reviews") -- unlike comparison_table (every published sibling,
-    regardless of whether it has its own article), this is filtered down
-    to siblings that have their OWN approved product_articles row, since
-    only those actually resolve to a real Learn article page to link to.
-    Same "silently drop, don't error" posture as comparison_table for a
-    sibling that's since been unpublished.
+    ball reviews", later merged with what was a separate "Similar Balls"
+    rail -- see below) -- filtered down to siblings (from
+    sibling_product_ids) that have their OWN approved product_articles
+    row, since only those actually resolve to a real Learn article page
+    to link to; a sibling that's since been unpublished silently drops
+    out rather than erroring the whole article. image_url prefers the
+    sibling's OWN article's product_shot_image_url (the AI-generated
+    hero shot, 023_product_article_images.sql) over its raw product
+    photo, falling back to a visible product_images row and then
+    products.primary_image_url in that order for a sibling whose article
+    predates image generation or whose image generation never succeeded
+    -- same fallback chain `product_shot_image_url` documents on
+    ArticleCard, now applied consistently to every article-linking rail
+    on this page (related_reviews and brand_lineup below) per Al's own
+    ask: "i think they should both link to the articles and for all the
+    rails use the same style and the product shot image from the article
+    for its image."
+
+    This field used to be two separate rails: this one, and a "Similar
+    Balls" rail (every published sibling regardless of whether it had its
+    own article, linking OUT to BowlerDepot's storefront instead of to
+    another Learn article, with core/coverstock/price shown instead of a
+    title). Once Similar Balls was also going to link to articles (this
+    same ask), it would have pulled the exact same candidate list as this
+    rail -- Al chose to merge them into this single rail rather than
+    render two sections of near-identical content. The merged rail kept
+    this one's narrower "has its own article" filter, its
+    newest-reviewed-first sort, and its article-title card style.
 
     reviewed_at (Al: "add all the proper google structured data to the
     markup" for the Learn article pages) -- newly selected here (was
@@ -807,24 +830,6 @@ def get_product_article(conn, product_id: str):
     or defaulted; the JSON-LD in prerender.ts omits the whole `offers`
     block rather than guess.
 
-    `comparison_table` rows now carry the SAME three fields (Al: "include
-    links and pricing for [similar balls] using the bowlerdepot.com
-    pricing data") -- originally scoped out of comparison_table (Al's
-    first ask there was just inline links), but the follow-up ask is
-    explicitly for real BowlerDepot pricing on that list too, not just a
-    link. Same LATERAL-join shape as `product`'s own price fields above
-    (a sibling's ecommerce_url and its price/currency/in_stock must come
-    from the SAME chosen price source, not two independent lookups that
-    could disagree), and the same all-null-together/never-fabricated
-    posture: a sibling price_checker hasn't matched or has never
-    successfully checked simply shows no price, same as `product` already
-    does. Still not rendered into scripts/prerender.ts's static HTML --
-    comparison_table's links are external BowlerDepot storefront links
-    (or search-page fallbacks), not internal review-to-review links, so
-    they stay out of the prerendered crawl-relevant markup for the same
-    reason related_reviews' own links ARE prerendered and these never
-    were (see that field's docstring).
-
     category_name/category_slug/article_type_name/article_type_slug
     (migration 031) -- left-joined off the article's own persisted
     category_id/article_type_id, same "Bowling Balls" / "Ball Review"
@@ -845,17 +850,17 @@ def get_product_article(conn, product_id: str):
     links to additional articles for the brand of the ball the current
     article is from and can we use the demand score to sort them") --
     every OTHER published product sharing this article's product.brand_id
-    that ALSO has its own approved article (same article-linking shape as
-    related_reviews: product_id, product_name, article_id, title, hook,
-    primary_image_url), ordered by products.demand_score descending. No
-    status = 'current' filter -- this rail reworked from its original
-    shop-the-lineup framing (external ecommerce links, price-sorted) into
-    an editorial cross-link rail, so a retired ball's article still
-    belongs here. See that block's own comment for why this is a fresh
-    brand_id query rather than reusing sibling_product_ids like
-    comparison_table/related_reviews. Empty list (not null) when the
-    product has no brand_id or no other siblings with an approved
-    article."""
+    that ALSO has its own approved article (same article-linking shape
+    AND same image_url product-shot-first preference as related_reviews
+    above: product_id, product_name, article_id, title, hook, image_url),
+    ordered by products.demand_score descending. No status = 'current'
+    filter -- this rail reworked from its original shop-the-lineup
+    framing (external ecommerce links, price-sorted) into an editorial
+    cross-link rail, so a retired ball's article still belongs here. See
+    that block's own comment for why this is a fresh brand_id query
+    rather than reusing sibling_product_ids like related_reviews does.
+    Empty list (not null) when the product has no brand_id or no other
+    siblings with an approved article."""
     with conn.cursor() as cur:
         cur.execute("select id from products where id = %s and published = true", (product_id,))
         if cur.fetchone() is None:
@@ -953,71 +958,26 @@ def get_product_article(conn, product_id: str):
         if article["product"] is not None:
             article["product"]["skus"] = skus
 
-        # Comparison table -- see this function's own docstring for why
-        # this is a fresh live join, not a stored blob. ::uuid[] cast is
-        # required (sibling_product_ids comes back from jsonb as a plain
-        # Python list of strings, and psycopg2's list->ARRAY adaptation
-        # defaults to text[], which won't compare against a uuid column
-        # without an explicit cast).
-        sibling_ids = article.get("sibling_product_ids") or []
-        comparison_table = []
-        if sibling_ids:
-            cur.execute(
-                """
-                select p.id, p.name, p.url, c.name as core_name,
-                       p.coverstock_name,
-                       coalesce(
-                           (
-                               select pi.stored_url from product_images pi
-                               where pi.product_id = p.id and pi.is_visible = true
-                               order by pi.is_thumbnail desc, pi.display_order, pi.id
-                               limit 1
-                           ),
-                           p.primary_image_url
-                       ) as primary_image_url,
-                       ecom_source.product_url as ecommerce_url,
-                       ecom_price.price as ecommerce_price,
-                       ecom_price.currency as ecommerce_price_currency,
-                       ecom_price.in_stock as ecommerce_in_stock
-                from products p
-                left join cores c on c.id = p.core_id
-                -- Same two-LATERAL shape as the `product` spec_row query
-                -- above (and same reasoning: ecom_price must read the
-                -- SAME price_source ecom_source picked for THIS sibling).
-                left join lateral (
-                    select pps.id, pps.product_url
-                    from product_price_sources pps
-                    join price_sites ps on ps.id = pps.price_site_id
-                    where pps.product_id = p.id
-                      and ps.api_provider = 'bigcommerce'
-                      and pps.status = 'approved'
-                      and pps.is_active = true
-                    order by pps.last_checked_at desc nulls last, pps.id
-                    limit 1
-                ) ecom_source on true
-                left join lateral (
-                    select price, currency, in_stock
-                    from product_price_history
-                    where price_source_id = ecom_source.id and price is not null
-                    order by checked_at desc
-                    limit 1
-                ) ecom_price on true
-                where p.id = any(%s::uuid[]) and p.published = true
-                order by p.name
-                """,
-                (sibling_ids,),
-            )
-            sib_columns = [desc[0] for desc in cur.description]
-            comparison_table = [dict(zip(sib_columns, r)) for r in cur.fetchall()]
-        article["comparison_table"] = comparison_table
-
         # Related reviews (Al: "cross linking at the bottom to 'related'
-        # ball reviews") -- same sibling_product_ids source as
-        # comparison_table above, but narrowed to siblings that have their
-        # OWN approved article to actually link to (an inner join on
-        # product_articles does this narrowing for free). Ordered
+        # ball reviews" -- and later, "how is related reviews curated and
+        # how is similar balls curated... i think they should both link
+        # to the articles and for all the rails use the same style and
+        # the product shot image from the article for its image"). This
+        # used to be two separate sibling_product_ids-based rails: this
+        # one (narrowed to siblings with their own approved article,
+        # linking to /articles/<id>) and a since-removed "Similar Balls"
+        # rail (every published sibling regardless of article, linking
+        # out to BowlerDepot). Once Similar Balls was also going to link
+        # to articles, the two rails would have pulled the exact same
+        # candidate list -- Al chose to merge them into this single rail
+        # rather than keep two sections showing near-identical content.
+        # ::uuid[] cast is required (sibling_product_ids comes back from
+        # jsonb as a plain Python list of strings, and psycopg2's
+        # list->ARRAY adaptation defaults to text[], which won't compare
+        # against a uuid column without an explicit cast). Ordered
         # newest-reviewed-first, same convention list_articles' default
         # sort uses, so the freshest related content surfaces first.
+        sibling_ids = article.get("sibling_product_ids") or []
         related_reviews = []
         if sibling_ids:
             cur.execute(
@@ -1025,6 +985,7 @@ def get_product_article(conn, product_id: str):
                 select p.id as product_id, p.name as product_name,
                        pa.id as article_id, pa.title, pa.hook, pa.reviewed_at,
                        coalesce(
+                           pa.product_shot_image_url,
                            (
                                select pi.stored_url from product_images pi
                                where pi.product_id = p.id and pi.is_visible = true
@@ -1032,7 +993,7 @@ def get_product_article(conn, product_id: str):
                                limit 1
                            ),
                            p.primary_image_url
-                       ) as primary_image_url
+                       ) as image_url
                 from products p
                 join product_articles pa on pa.product_id = p.id and pa.status = 'approved'
                 where p.id = any(%s::uuid[]) and p.published = true
@@ -1073,6 +1034,7 @@ def get_product_article(conn, product_id: str):
                 select p.id as product_id, p.name as product_name,
                        pa.id as article_id, pa.title, pa.hook,
                        coalesce(
+                           pa.product_shot_image_url,
                            (
                                select pi.stored_url from product_images pi
                                where pi.product_id = p.id and pi.is_visible = true
@@ -1080,7 +1042,7 @@ def get_product_article(conn, product_id: str):
                                limit 1
                            ),
                            p.primary_image_url
-                       ) as primary_image_url
+                       ) as image_url
                 from products p
                 join product_articles pa on pa.product_id = p.id and pa.status = 'approved'
                 where p.brand_id = %s and p.published = true and p.id != %s

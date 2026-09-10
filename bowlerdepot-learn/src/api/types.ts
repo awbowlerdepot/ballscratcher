@@ -106,25 +106,6 @@ export interface ArticleProductSpec {
   skus: ProductSku[];
 }
 
-export interface ComparisonRow {
-  id: string;
-  name: string;
-  url: string;
-  core_name?: string | null;
-  coverstock_name?: string | null;
-  primary_image_url?: string | null;
-  ecommerce_url?: string | null;
-  // Real, last-checked BowlerDepot price/currency/availability for this
-  // sibling (same product_price_sources row ecommerce_url resolves from)
-  // -- Al: "include links and pricing for it using the bowlerdepot.com
-  // pricing data" on the Similar Balls list. All three null together
-  // until price_checker has actually priced this sibling at least once;
-  // never fabricated/estimated.
-  ecommerce_price?: number | null;
-  ecommerce_price_currency?: string | null;
-  ecommerce_in_stock?: boolean | null;
-}
-
 // Al: "change the more from section at the bottom to be links to
 // additional articles for the brand of the ball the current article is
 // from and can we use the demand score to sort them." Same shape as
@@ -139,9 +120,24 @@ export interface BrandLineupItem {
   article_id: string;
   title: string;
   hook?: string | null;
-  primary_image_url?: string | null;
+  // The sibling's OWN article's AI-generated product shot, preferred
+  // over its raw product photo -- see RelatedReview's own comment on
+  // this field for the full fallback chain and reasoning (Al: "for all
+  // the rails use the same style and the product shot image from the
+  // article for its image").
+  image_url?: string | null;
 }
 
+// Al: "how is related reviews curated and how is similar balls
+// curated... i think they should both link to the articles and for all
+// the rails use the same style and the product shot image from the
+// article for its image." This used to be two separate rails -- this
+// one (siblings with their own approved article, linking to another
+// Learn article) and a "Similar Balls" rail (every published sibling
+// regardless of article, linking out to BowlerDepot with core/
+// coverstock/price shown). Once Similar Balls also needed to link to
+// articles, the two would have pulled the identical candidate list, so
+// they were merged into this single rail.
 export interface RelatedReview {
   product_id: string;
   product_name: string;
@@ -149,7 +145,14 @@ export interface RelatedReview {
   title: string;
   hook?: string | null;
   reviewed_at?: string | null;
-  primary_image_url?: string | null;
+  // Prefers the sibling's own article's AI-generated product shot
+  // (product_shot_image_url, 023_product_article_images.sql) over its
+  // raw scraped/generated product photo, falling back to that photo
+  // only when the sibling's article predates image generation or image
+  // generation never succeeded for it -- same preference ArticleCard's
+  // own product_shot_image_url field already documents, now applied
+  // consistently across every article-linking rail on the detail page.
+  image_url?: string | null;
 }
 
 export interface FaqItem {
@@ -193,7 +196,6 @@ export interface ArticleDetail {
   article_type_name?: string | null;
   article_type_slug?: string | null;
   product: ArticleProductSpec | null;
-  comparison_table: ComparisonRow[];
   related_reviews: RelatedReview[];
   // "More from [Brand]" rail -- every OTHER published product sharing
   // this article's brand that ALSO has its own approved article, ordered
