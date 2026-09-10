@@ -251,7 +251,7 @@ export default function ArticleDetailPage() {
           anywhere in this codebase, matching the plain embed
           consumer-site's own video grid already uses). */}
       {article.featured_video ? (
-        <div className="relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-neutral-900 py-10">
+        <div className="relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-neutral-900 pb-10 pt-6">
           <div className="mx-auto max-w-5xl px-6 md:px-8">
             <h2 className="mb-4 font-display text-xl font-semibold text-white">
               Watch this review from Brad &amp; Kyle
