@@ -554,7 +554,7 @@ def test_list_articles_default_sort_is_reviewed_at_desc():
     service.list_articles(conn)
 
     query = conn.cursor().queries[0]
-    assert "order by pa.reviewed_at desc nulls last, pa.id asc" in query
+    assert "order by (p.status = 'current') desc, pa.reviewed_at desc nulls last, pa.id asc" in query
 
 
 def test_list_articles_sort_oldest_orders_reviewed_at_asc():
@@ -562,7 +562,40 @@ def test_list_articles_sort_oldest_orders_reviewed_at_asc():
     service.list_articles(conn, sort="oldest")
 
     query = conn.cursor().queries[0]
-    assert "order by pa.reviewed_at asc nulls last, pa.id asc" in query
+    assert "order by (p.status = 'current') desc, pa.reviewed_at asc nulls last, pa.id asc" in query
+
+
+def test_list_articles_newest_and_oldest_sort_current_status_before_retired():
+    """Al: 'my concern is that when i finally get around to backfilling
+    the retired balls it will move those above the more current balls.
+    is there an eloquent way to avoid this?' -- (p.status = 'current')
+    must be the FIRST ORDER BY term (ahead of reviewed_at) for both
+    date-based sorts, so a late-approved retired-ball article can never
+    outrank an older current-ball one."""
+    conn = _QueryCapturingConnection()
+
+    service.list_articles(conn, sort="newest")
+    assert "order by (p.status = 'current') desc, pa.reviewed_at desc" in conn.cursor().queries[0]
+
+    conn.cursor().queries.clear()
+    service.list_articles(conn, sort="oldest")
+    assert "order by (p.status = 'current') desc, pa.reviewed_at asc" in conn.cursor().queries[0]
+
+
+def test_list_articles_title_sorts_do_not_prioritize_status():
+    """Al: 'Newest + Oldest only' -- title_asc/title_desc stay a single
+    flat alphabetical list across all articles regardless of the
+    underlying ball's status."""
+    conn = _QueryCapturingConnection()
+
+    # rsplit, not split: the primary_image_url subquery has its OWN
+    # "order by" (pi.is_thumbnail desc, ...) ahead of the real one.
+    service.list_articles(conn, sort="title_asc")
+    assert "status" not in conn.cursor().queries[0].rsplit("order by", 1)[1]
+
+    conn.cursor().queries.clear()
+    service.list_articles(conn, sort="title_desc")
+    assert "status" not in conn.cursor().queries[0].rsplit("order by", 1)[1]
 
 
 def test_list_articles_sort_title_asc_orders_alphabetically():
@@ -586,7 +619,7 @@ def test_list_articles_unrecognized_sort_falls_back_to_default():
     service.list_articles(conn, sort="not_a_real_sort")
 
     query = conn.cursor().queries[0]
-    assert "order by pa.reviewed_at desc nulls last, pa.id asc" in query
+    assert "order by (p.status = 'current') desc, pa.reviewed_at desc nulls last, pa.id asc" in query
 
 
 def test_list_articles_every_sort_option_keeps_id_tiebreaker():

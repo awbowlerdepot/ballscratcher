@@ -13654,6 +13654,42 @@ bar. the font in the top bar is also a bit thin"):
 **Logo left-justified** (Al: "can we left justify the logo") -- main
 masthead row `justify-center` -> `justify-start`. `npx tsc -b` clean.
 
+**Learn-site article sort: current balls before retired ones** (Al:
+"can we work on the sort order? my concern is that when i finally get
+around to backfilling the retired balls it will move those above the
+more current balls. is there an eloquent way to avoid this?"):
+
+- Root cause: `list_articles`'s default "Newest" sort orders by
+  `pa.reviewed_at desc`, and `admin_api`'s `approve_article` re-stamps
+  `reviewed_at = now()` on EVERY approval -- including a late
+  backfill/regenerate-and-reapprove cycle for a retired ball's article.
+  That would let a freshly-touched retired-ball article outrank
+  genuinely newer current-ball articles under "Newest."
+- Fix (`src/public_api/service.py`): rather than trying to stop
+  `reviewed_at` from legitimately changing (it should update on real
+  backfills), made `(p.status = 'current')` the PRIMARY `ORDER BY` term
+  for the `newest`/`oldest` sorts and the default (which mirrors
+  `newest`), with `pa.reviewed_at` as the secondary tiebreaker. Since a
+  boolean sorts true-before-false in Postgres, this structurally
+  guarantees no retired-ball article can ever outrank a current-ball
+  one under those sorts, with no ongoing maintenance burden.
+- Scope (confirmed via AskUserQuestion -- "Newest + Oldest only"): the
+  fix applies ONLY to the two date-based sorts. `title_asc`/`title_desc`
+  are deliberately untouched -- splitting a single A-Z list into a
+  current-block-then-retired-block would read as a broken alphabetical
+  sort, so those stay plain `pa.title asc/desc, pa.id asc`.
+- `_ARTICLE_SORT_ORDER_BY`/`_ARTICLE_DEFAULT_ORDER_BY` are isolated to
+  `service.py` (defined), `app.py` (pass-through only), and
+  `tests/test_public_api_service.py` -- confirmed via grep, no other
+  call sites.
+- Tests: updated 3 existing sort-order assertions, added 2 new tests
+  (current-before-retired on newest/oldest; title sorts stay
+  status-agnostic). Full `test_public_api_service.py` suite:
+  **127/127 passing** via the manual `importlib.util` runner.
+- Backend-only change (`src/public_api/service.py` +
+  `tests/test_public_api_service.py`) -- no migration, no
+  `template.yaml` change, no frontend/.tsx change.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

@@ -363,13 +363,31 @@ def list_products(conn, status: str = "current", brand_id: str = None, core_id: 
 # forever. Kept as its own dict (not merged into _SORT_ORDER_BY above)
 # since the column being sorted on lives on product_articles, not
 # products -- the alias prefix genuinely differs.
+#
+# Al: "my concern is that when i finally get around to backfilling the
+# retired balls it will move those above the more current balls. is
+# there an eloquent way to avoid this?" -- reviewed_at gets re-stamped
+# to now() on EVERY article approval (admin_api's approve_article), so
+# approving/regenerating a retired ball's article at some later date
+# would otherwise outrank an older but still-current ball's article
+# under plain "newest". Fixed by making `p.status = 'current'` the
+# PRIMARY sort key for newest/oldest (and the default, which mirrors
+# newest) -- true is sorted before false in Postgres boolean ordering,
+# so every current-ball article sorts ahead of every retired-ball
+# article no matter when either was approved, then reviewed_at breaks
+# ties within each status group as before. This is a structural
+# guarantee (no timestamp bookkeeping to get right, nothing to
+# maintain), not a timing workaround. Al: "Newest + Oldest only" --
+# title_asc/title_desc deliberately keep a single flat alphabetical
+# order across all articles regardless of status; splitting an A-Z list
+# into a current-then-retired block would read oddly for a name sort.
 _ARTICLE_SORT_ORDER_BY = {
-    "newest": "pa.reviewed_at desc nulls last, pa.id asc",
-    "oldest": "pa.reviewed_at asc nulls last, pa.id asc",
+    "newest": "(p.status = 'current') desc, pa.reviewed_at desc nulls last, pa.id asc",
+    "oldest": "(p.status = 'current') desc, pa.reviewed_at asc nulls last, pa.id asc",
     "title_asc": "pa.title asc, pa.id asc",
     "title_desc": "pa.title desc, pa.id asc",
 }
-_ARTICLE_DEFAULT_ORDER_BY = "pa.reviewed_at desc nulls last, pa.id asc"
+_ARTICLE_DEFAULT_ORDER_BY = "(p.status = 'current') desc, pa.reviewed_at desc nulls last, pa.id asc"
 
 
 def list_categories(conn) -> list:
@@ -456,12 +474,15 @@ def list_articles(conn, brand_id: str = None, coverstock_id: str = None, categor
     (e.g. a future admin view) still can.
 
     sort: None (default, see _ARTICLE_DEFAULT_ORDER_BY) is "most
-    recently approved/published first" -- the sensible default landing
-    order for a Learn index, mirroring list_products' own
-    most-recently-touched default. See _ARTICLE_SORT_ORDER_BY above for
-    the full accepted set; any other value (including None) falls back
-    to the default, same unrecognized-value-is-harmless convention
-    list_products already follows.
+    recently approved/published first, current balls before retired
+    ones" -- the sensible default landing order for a Learn index,
+    mirroring list_products' own most-recently-touched default. See
+    _ARTICLE_SORT_ORDER_BY above for the full accepted set (and its own
+    comment for why newest/oldest sort current-status articles ahead of
+    retired ones structurally, not by timestamp); any other value
+    (including None) falls back to the default, same
+    unrecognized-value-is-harmless convention list_products already
+    follows.
 
     category_name/category_slug/article_type_name/article_type_slug
     (migration 031) -- left-joined, so an older article row generated
