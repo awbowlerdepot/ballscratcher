@@ -167,6 +167,15 @@ interface ArticleDetail {
   // discovers/follows the internal link graph between review pages from
   // this build-time HTML, same reasoning this whole script exists for.
   related_reviews?: { product_id: string; product_name: string; title: string }[] | null;
+  // Al: "change the more from section at the bottom to be links to
+  // additional articles for the brand of the ball the current article
+  // is from and can we use the demand score to sort them." Now rendered
+  // in this build-time HTML too (renderBrandLineup), same as
+  // related_reviews above -- the old exclusion (see renderArticlePage's
+  // own comment, below the CTA-skip note) no longer applies now that
+  // this is internal article-to-article links instead of external,
+  // price-bearing ecommerce links.
+  brand_lineup?: { product_id: string; product_name: string; title: string }[] | null;
 }
 
 function escapeHtml(value: string): string {
@@ -303,6 +312,21 @@ function renderRelatedReviews(related: ArticleDetail["related_reviews"]): string
     )
     .join("");
   return `<h2>Related Reviews</h2><div class="article-grid">${cards}</div>`;
+}
+
+// Same real <a href="/articles/<id>/"> treatment as renderRelatedReviews
+// above, now that brand_lineup is an internal article-to-article rail
+// too (see this type's own field comment on the rework). Reuses the
+// exact same article-card markup/classes -- no separate CSS needed.
+function renderBrandLineup(lineup: ArticleDetail["brand_lineup"]): string {
+  if (!lineup?.length) return "";
+  const cards = lineup
+    .map(
+      (b) =>
+        `<a class="article-card" href="/articles/${escapeHtml(b.product_id)}/"><div class="article-card-body"><div class="article-card-title">${escapeHtml(b.title)}</div><div class="article-card-meta">${escapeHtml(b.product_name)}</div></div></a>`,
+    )
+    .join("");
+  return `<h2>More from This Brand</h2><div class="article-grid">${cards}</div>`;
 }
 
 function renderFaq(faq: ArticleDetail["faq"]): string {
@@ -500,13 +524,13 @@ function renderStructuredData(card: ArticleCard, article: ArticleDetail, heroIma
 // should've stopped showing. ArticleDetailPage.tsx renders it
 // client-side instead, gated live on product.status.
 //
-// Same reasoning applies to brand_lineup (Al: "a other balls from the
-// same manufacture carousel ... include current balls sorted by price
-// high to low") -- also external ecommerce links/prices, also subject to
-// a sibling ball's status/price changing between builds, so this type
-// deliberately doesn't even declare a brand_lineup field and this
-// function never touches it. Rendered client-side only in
-// ArticleDetailPage.tsx.
+// brand_lineup used to get the same treatment (it was an external
+// ecommerce-links-and-prices rail, subject to a sibling ball's status/
+// price changing between builds). Al reworked it into an internal
+// article-to-article rail sorted by demand_score ("change the more from
+// section ... to be links to additional articles for the brand"), which
+// is the same nature as related_reviews above -- so it's now rendered
+// here too, via renderBrandLineup, for the same crawlability reasoning.
 function renderArticlePage(baseHtml: string, card: ArticleCard, article: ArticleDetail): string {
   const metaDescription = escapeHtml((article.hook || card.hook || "").slice(0, 300));
   const rawHeroImage = article.action_shot_image_url || article.product?.primary_image_url || card.primary_image_url;
@@ -564,6 +588,7 @@ function renderArticlePage(baseHtml: string, card: ArticleCard, article: Article
       ${renderSpecTable(article.product)}
       ${renderFaq(article.faq)}
       ${renderRelatedReviews(article.related_reviews)}
+      ${renderBrandLineup(article.brand_lineup)}
     </div>`;
 
   let html = baseHtml;

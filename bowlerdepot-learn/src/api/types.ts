@@ -125,21 +125,21 @@ export interface ComparisonRow {
   ecommerce_in_stock?: boolean | null;
 }
 
+// Al: "change the more from section at the bottom to be links to
+// additional articles for the brand of the ball the current article is
+// from and can we use the demand score to sort them." Same shape as
+// RelatedReview below (this is now an editorial cross-link rail, not a
+// shop-the-lineup rail) -- server orders by products.demand_score
+// descending, so the array's own order already reflects that; no
+// demand_score field is exposed here since the frontend never needs to
+// re-sort or display it.
 export interface BrandLineupItem {
-  id: string;
-  name: string;
-  url: string;
-  core_name?: string | null;
-  coverstock_name?: string | null;
+  product_id: string;
+  product_name: string;
+  article_id: string;
+  title: string;
+  hook?: string | null;
   primary_image_url?: string | null;
-  // Real, last-checked BowlerDepot price/currency/availability -- same
-  // fields/reasoning as ComparisonRow's own (see that interface's
-  // comment): null together until price_checker has actually priced this
-  // ball, never fabricated.
-  ecommerce_url?: string | null;
-  ecommerce_price?: number | null;
-  ecommerce_price_currency?: string | null;
-  ecommerce_in_stock?: boolean | null;
 }
 
 export interface RelatedReview {
@@ -195,11 +195,12 @@ export interface ArticleDetail {
   product: ArticleProductSpec | null;
   comparison_table: ComparisonRow[];
   related_reviews: RelatedReview[];
-  // Al: "a other balls from the same manufacture carousel to the bottom
-  // of each article and include current balls sorted by price high to
-  // low." Every OTHER published, current product sharing this article's
-  // brand, ordered by ecommerce_price descending (unpriced balls last).
-  // Empty array (never null/undefined) when there are none.
+  // "More from [Brand]" rail -- every OTHER published product sharing
+  // this article's brand that ALSO has its own approved article, ordered
+  // by demand_score descending (see service.py's own comment for the
+  // full history: originally a shop-the-lineup rail sorted by price,
+  // reworked into this editorial cross-link rail per Al's ask). Empty
+  // array (never null/undefined) when there are none.
   brand_lineup: BrandLineupItem[];
 }
 

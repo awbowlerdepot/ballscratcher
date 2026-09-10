@@ -13255,6 +13255,83 @@ sam build && sam deploy   # picks up admin_api/public_api changes
 cd bowlerdepot-learn && npm run build   # then the usual GitHub Actions deploy (push to main)
 ```
 
+### 6an. "More from [Brand]" rail: reworked from shop-the-lineup into an editorial cross-link, sorted by Demand Score
+
+Al: "can we change the more from section at the bottom to be links to
+additional articles for the brand of the ball the current article is
+from and can we use the demand score to sort them."
+
+6af's original `brand_lineup` carousel was a shop-the-current-lineup
+rail: external BowlerDepot ecommerce links, `status = 'current'` only,
+sorted by `ecommerce_price desc nulls last`. This reworks it into an
+editorial cross-link rail matching `related_reviews`' own shape (Task
+#444) -- internal `/articles/{product_id}` links to OTHER articles for
+the same brand, sorted by `products.demand_score` (030) descending.
+
+`public_api/service.py`'s `get_product_article` -- `brand_lineup` block
+rewritten: inner `join product_articles pa on pa.product_id = p.id and
+pa.status = 'approved'` narrows to siblings that actually have
+something to link to (same narrowing `related_reviews` already does),
+select list swapped from the old price/core/coverstock/ecommerce
+columns to `product_id, product_name, article_id, title, hook,
+primary_image_url` (byte-for-byte the same shape as `related_reviews`),
+`order by p.demand_score desc, p.name` replaces the old price sort. The
+`p.status = 'current'` gate is GONE -- that was the old "for sale"
+framing's reason to exist; this rail is "more reading about this
+brand," and a retired ball can still have a perfectly good article
+worth reading. `p.published = true` stays a hard gate (an unpublished
+product is never visible to a public visitor, regardless of article
+status).
+
+`bowlerdepot-learn/src/api/types.ts`: `BrandLineupItem` rewritten to the
+new shape (was: `id, name, url, core_name, coverstock_name,
+primary_image_url, ecommerce_url, ecommerce_price,
+ecommerce_price_currency, ecommerce_in_stock`; now: `product_id,
+product_name, article_id, title, hook, primary_image_url`).
+
+`bowlerdepot-learn/src/pages/ArticleDetailPage.tsx`: the carousel's
+scroll-arrow shell (`brandLineupRef`, `scrollBrandLineup`, snap-scroll
+strip) is untouched; each card now renders as a `<Link
+to={`/articles/${b.product_id}`}>` instead of an external `<a
+href={b.ecommerce_url || bowlerDepotSearchUrl(...)} target="_blank">`,
+showing the sibling's article title/product name (same content as a
+Related Reviews card) instead of core/coverstock/price.
+
+`bowlerdepot-learn/scripts/prerender.ts`: 6af deliberately left
+`brand_lineup` OUT of the static HTML (external, price-bearing links
+that could go stale between builds). That reasoning no longer applies
+now that the rail is internal article-to-article links, same nature as
+`related_reviews` (which IS prerendered) -- so this rework ALSO adds a
+`renderBrandLineup` function (mirrors `renderRelatedReviews`) and wires
+it into `renderArticlePage`'s output, for the same crawlability reason
+`related_reviews` is prerendered. The `ArticleDetail` interface gained a
+`brand_lineup` field it didn't have before.
+
+**Tests**: `test_public_api_service.py` -- `_FakeCursor`'s brand_lineup
+branch rewritten to match the new select-list/join/sort (still
+distinguished from the `related_reviews` branch via `"p.brand_id = %s"
+in q`, same "look at the query text" technique used throughout this
+fixture). All 6 old tests replaced: `sorted_by_demand_score` (was
+`sorted_price_high_to_low`), `excludes_siblings_without_approved_article`
+(was `unpriced_balls_sort_last` -- no longer a meaningful case once
+price dropped out of the shape entirely), `excludes_own_product` (kept),
+`excludes_other_brands` (kept, now seeds an approved article on the
+other-brand sibling so the test still proves brand-scoping and not just
+"no article"), `includes_retired_excludes_unpublished` (was
+`excludes_retired_and_unpublished` -- inverted for retired now that the
+`status = 'current'` gate is gone, unpublished exclusion unchanged),
+`empty_when_no_other_siblings_in_brand` (renamed from
+`_no_other_current_siblings`, same case). **117/117**
+(`test_public_api_service.py`); `test_admin_api_service.py` untouched,
+confirmed still **316/316**. `npx tsc -b` clean in `bowlerdepot-learn/`.
+
+No `template.yaml` change, no migration. Deploy via:
+
+```bash
+sam build && sam deploy   # picks up public_api's rewritten brand_lineup query
+cd bowlerdepot-learn && npm run build   # tsc -b + vite build + prerender, then the usual GitHub Actions deploy (push to main)
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

@@ -381,11 +381,17 @@ export default function ArticleDetailPage() {
         </div>
       ) : null}
 
-      {/* Al: "add a other balls from the same manufacture carousel to
-          the bottom of each article and include current balls sorted by
-          price high to low." brand_lineup is already sorted server-side
-          (see public_api's own comment on that query) -- this just
-          renders it, it doesn't re-sort. */}
+      {/* Al: "change the more from section at the bottom to be links to
+          additional articles for the brand of the ball the current
+          article is from and can we use the demand score to sort them."
+          brand_lineup is already sorted server-side by demand_score
+          descending (see public_api's own comment on that query) -- this
+          just renders it, it doesn't re-sort. Reworked from the original
+          shop-the-lineup rail (external ecommerce links, price shown) to
+          an editorial cross-link rail: internal <Link>s to other
+          articles for this brand, same card content (title/hook) as the
+          Related Reviews section above, just in this section's existing
+          horizontal-scroll carousel shell instead of a grid. */}
       {article.brand_lineup?.length ? (
         <div className="mb-10">
           <div className="mb-3 flex items-center justify-between">
@@ -415,43 +421,28 @@ export default function ArticleDetailPage() {
             ref={brandLineupRef}
             className="flex snap-x snap-mandatory gap-6 overflow-x-auto pb-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           >
-            {article.brand_lineup.map((b) => {
-              const price = formatPrice(b.ecommerce_price, b.ecommerce_price_currency);
-              return (
-                <a
-                  key={b.id}
-                  className="group block w-48 shrink-0 snap-start"
-                  href={b.ecommerce_url || bowlerDepotSearchUrl(b.name)}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  <div className="aspect-[4/3] w-full overflow-hidden rounded-md bg-paper-border/40">
-                    {b.primary_image_url ? (
-                      <img
-                        src={resizedImageUrl(b.primary_image_url, { w: 400, h: 300, fit: "cover" })}
-                        alt={b.name}
-                        loading="lazy"
-                        className="h-full w-full object-cover"
-                      />
-                    ) : null}
-                  </div>
-                  <div className="mt-3">
-                    <div className="font-display font-semibold text-ink group-hover:text-accent">{b.name}</div>
-                    <div className="text-xs text-muted">
-                      {[b.core_name, b.coverstock_name].filter(Boolean).join(" · ")}
-                    </div>
-                    {price ? (
-                      <div className="mt-1 text-sm font-semibold text-accent">
-                        {price}
-                        {b.ecommerce_in_stock === false ? (
-                          <span className="font-normal text-alert"> &middot; Out of stock</span>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </div>
-                </a>
-              );
-            })}
+            {article.brand_lineup.map((b) => (
+              <Link
+                key={b.product_id}
+                className="group block w-48 shrink-0 snap-start"
+                to={`/articles/${b.product_id}`}
+              >
+                <div className="aspect-[4/3] w-full overflow-hidden rounded-md bg-paper-border/40">
+                  {b.primary_image_url ? (
+                    <img
+                      src={resizedImageUrl(b.primary_image_url, { w: 400, h: 300, fit: "cover" })}
+                      alt={b.product_name}
+                      loading="lazy"
+                      className="h-full w-full object-cover"
+                    />
+                  ) : null}
+                </div>
+                <div className="mt-3">
+                  <div className="font-display font-semibold text-ink group-hover:text-accent">{b.title}</div>
+                  <div className="text-xs text-muted">{b.product_name}</div>
+                </div>
+              </Link>
+            ))}
           </div>
         </div>
       ) : null}

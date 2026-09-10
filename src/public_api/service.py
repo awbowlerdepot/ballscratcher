@@ -841,16 +841,21 @@ def get_product_article(conn, product_id: str):
     function's "never regenerate over a spec correction" posture) simply
     shouldn't be pushed to an ecommerce page that no longer sells them.
 
-    brand_lineup (Al: "a other balls from the same manufacture carousel
-    to the bottom of each article and include current balls sorted by
-    price high to low") -- every OTHER published, CURRENT product sharing
-    this article's product.brand_id, with the same real BowlerDepot
-    price/url fields as comparison_table, ordered by ecommerce_price
-    descending (unpriced balls sort last, never first or omitted). See
-    that block's own comment for why this is a fresh brand_id query
-    rather than reusing sibling_product_ids like comparison_table/
-    related_reviews. Empty list (not null) when the product has no
-    brand_id or no other current siblings."""
+    brand_lineup (Al: "change the more from section at the bottom to be
+    links to additional articles for the brand of the ball the current
+    article is from and can we use the demand score to sort them") --
+    every OTHER published product sharing this article's product.brand_id
+    that ALSO has its own approved article (same article-linking shape as
+    related_reviews: product_id, product_name, article_id, title, hook,
+    primary_image_url), ordered by products.demand_score descending. No
+    status = 'current' filter -- this rail reworked from its original
+    shop-the-lineup framing (external ecommerce links, price-sorted) into
+    an editorial cross-link rail, so a retired ball's article still
+    belongs here. See that block's own comment for why this is a fresh
+    brand_id query rather than reusing sibling_product_ids like
+    comparison_table/related_reviews. Empty list (not null) when the
+    product has no brand_id or no other siblings with an approved
+    article."""
     with conn.cursor() as cur:
         cur.execute("select id from products where id = %s and published = true", (product_id,))
         if cur.fetchone() is None:
@@ -1039,30 +1044,34 @@ def get_product_article(conn, product_id: str):
             related_reviews = [dict(zip(rel_columns, r)) for r in cur.fetchall()]
         article["related_reviews"] = related_reviews
 
-        # Brand lineup carousel (Al: "add a other balls from the same
-        # manufacture carousel to the bottom of each article and include
-        # current balls sorted by price high to low"). Deliberately NOT
-        # sibling_product_ids-based like comparison_table/related_reviews
-        # above -- this is meant to be the WHOLE current lineup for the
-        # brand, not just the heuristic handful of specs/core-family
-        # matches product_article_generator picked when the article was
-        # written, so it's a fresh brand_id query instead. status =
-        # 'current' only (same reasoning as the shop-this-ball CTA's own
-        # product.status gate): a retired sibling isn't for sale, so it
-        # doesn't belong in a "shop more from this brand" rail. Same
-        # LATERAL price-join shape as comparison_table for the same
-        # consistency reason (a ball's ecommerce_url and its price must
-        # come from the SAME chosen price source). Ordered by price
-        # descending as asked, unpriced balls (price_checker hasn't
-        # matched/checked them yet) sort last rather than first or
-        # erroring the whole rail.
+        # Brand lineup carousel ("More from [Brand]") -- Al: "can we
+        # change the more from section at the bottom to be links to
+        # additional articles for the brand of the ball the current
+        # article is from and can we use the demand score to sort them."
+        # This reworks what was originally a shop-the-current-lineup rail
+        # (external ecommerce links, sorted by price) into an editorial
+        # cross-link rail matching related_reviews' own shape above --
+        # the only structural difference is this is a fresh brand_id
+        # query (the WHOLE brand's article catalog) rather than
+        # sibling_product_ids-based (the heuristic handful of spec/
+        # core-family matches product_article_generator picked when THIS
+        # article was written). Inner join on product_articles (status =
+        # 'approved') narrows to products that actually have an article
+        # to link to, same as related_reviews. No p.status = 'current'
+        # filter any more -- that was the old "for sale" framing's gate;
+        # this rail is "more reading about this brand," and a retired
+        # ball can still have a perfectly good article worth reading.
+        # Sorted by products.demand_score (030_materialized_product_
+        # scores.sql) descending as asked -- it's a materialized,
+        # not-null, indexed column (idx_products_demand_score), so unlike
+        # the old price sort there's no nulls-last case to handle.
         brand_lineup = []
         brand_id = article["product"].get("brand_id") if article["product"] else None
         if brand_id:
             cur.execute(
                 """
-                select p.id, p.name, p.url, c.name as core_name,
-                       p.coverstock_name,
+                select p.id as product_id, p.name as product_name,
+                       pa.id as article_id, pa.title, pa.hook,
                        coalesce(
                            (
                                select pi.stored_url from product_images pi
@@ -1071,33 +1080,11 @@ def get_product_article(conn, product_id: str):
                                limit 1
                            ),
                            p.primary_image_url
-                       ) as primary_image_url,
-                       ecom_source.product_url as ecommerce_url,
-                       ecom_price.price as ecommerce_price,
-                       ecom_price.currency as ecommerce_price_currency,
-                       ecom_price.in_stock as ecommerce_in_stock
+                       ) as primary_image_url
                 from products p
-                left join cores c on c.id = p.core_id
-                left join lateral (
-                    select pps.id, pps.product_url
-                    from product_price_sources pps
-                    join price_sites ps on ps.id = pps.price_site_id
-                    where pps.product_id = p.id
-                      and ps.api_provider = 'bigcommerce'
-                      and pps.status = 'approved'
-                      and pps.is_active = true
-                    order by pps.last_checked_at desc nulls last, pps.id
-                    limit 1
-                ) ecom_source on true
-                left join lateral (
-                    select price, currency, in_stock
-                    from product_price_history
-                    where price_source_id = ecom_source.id and price is not null
-                    order by checked_at desc
-                    limit 1
-                ) ecom_price on true
-                where p.brand_id = %s and p.status = 'current' and p.published = true and p.id != %s
-                order by ecom_price.price desc nulls last, p.name
+                join product_articles pa on pa.product_id = p.id and pa.status = 'approved'
+                where p.brand_id = %s and p.published = true and p.id != %s
+                order by p.demand_score desc, p.name
                 limit 30
                 """,
                 (brand_id, product_id),
