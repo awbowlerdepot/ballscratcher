@@ -731,6 +731,31 @@ Parameters:
       Not created by this template, same "DNS validation needs a CNAME this
       template can't reach" reasoning as the others -- request and validate
       it yourself first, then pass the resulting ARN here.
+  MarketingSiteDomainName:
+    Type: String
+    Default: ""
+    Description: >
+      Custom domain for the BowlerIQ marketing/landing page's CloudFront
+      distribution, e.g. bowleriq.com (the project's own root domain, not a
+      subdomain -- Al: "can we create a marking site for bowleriq.com").
+      Same blank-means-*.cloudfront.net-only convention as
+      ConsumerSiteDomainName/LearnSiteDomainName/AdminSiteDomainName above --
+      both this AND MarketingSiteCertificateArn must be set together.
+      Because this is an apex/root domain rather than a subdomain, pointing
+      DNS at the CloudFront distribution needs an ALIAS/ANAME-style record
+      (e.g. a Route 53 A-record Alias, or your DNS provider's equivalent)
+      rather than a plain CNAME -- a bare CNAME isn't valid at a zone apex.
+      That's a DNS-provider-side detail this template has no control over
+      either way.
+  MarketingSiteCertificateArn:
+    Type: String
+    Default: ""
+    Description: >
+      ACM certificate ARN covering MarketingSiteDomainName. Same us-east-1-
+      regardless-of-stack-region CloudFront requirement as the other site
+      certificate params (ConsumerSite/LearnSite/AdminSite above) -- NOT the
+      us-west-1 exception that only applies to PublicApiCertificateArn's
+      ApiGatewayV2-based domain.
 
 Conditions:
   HasBigCommerceSecret: !Not [!Equals [!Ref BigCommerceSecretArn, ""]]
@@ -742,6 +767,7 @@ Conditions:
   HasAdminSiteDomain: !Not [!Equals [!Ref AdminSiteDomainName, ""]]
   HasImageResizerDomain: !Not [!Equals [!Ref ImageResizerDomainName, ""]]
   HasPublicApiDomain: !Not [!Equals [!Ref PublicApiDomainName, ""]]
+  HasMarketingSiteDomain: !Not [!Equals [!Ref MarketingSiteDomainName, ""]]
   HasGitHubRepo: !Not [!Equals [!Ref GitHubRepo, ""]]
   ShouldCreateGitHubOidcProvider: !And
     - !Condition HasGitHubRepo
@@ -3696,6 +3722,92 @@ Resources:
                   - cloudfront:CreateInvalidation
                 Resource: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${AdminSiteDistribution}
 
+  # --- BowlerIQ marketing/landing site (bowleriq.com) --------------------
+  #
+  # Al: "can we create a marking site for bowleriq.com... very techy site
+  # that explains how BowlerIQ is a project that brings the powers of AI to
+  # the world of bowling... sections for each of the things we are working
+  # on and leave some mystery on how we do this." Built as a static mockup
+  # first (single self-contained HTML file, dark/technical aesthetic, six
+  # pillar cards mirroring the project's actual live features, tagged
+  # Live/In Progress) for Al to review before touching any infra. Al: "i
+  # love it. lets get that built."
+  #
+  # Same S3+CloudFront+OAC static-site pattern as ConsumerSite/LearnSite/
+  # AdminSite above -- but genuinely simpler than all three: this is one
+  # hand-written static HTML file (marketing-site/index.html), not a Vite/
+  # React app, so there's no build step and no SPA client-side routing to
+  # fall back for. No CustomErrorResponses rewrite (a bad path here really
+  # is a 404, nothing to reroute to a client router) and no CloudFront
+  # Function for pretty URLs (no prerendered sub-pages yet, unlike
+  # LearnSitePrettyUrlFunction). No GitHub Actions deploy role either, for
+  # the same reason the embed scripts don't have one -- a single static
+  # file is a plain `aws s3 cp` + CloudFront invalidation, not worth a CI
+  # pipeline until this grows into something with an actual build step.
+  MarketingSiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub bowling-scraper-marketing-site-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  MarketingSiteOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub bowling-scraper-marketing-site-oac-${AWS::AccountId}
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  MarketingSiteDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        DefaultRootObject: index.html
+        PriceClass: PriceClass_100
+        HttpVersion: http2
+        Aliases: !If
+          - HasMarketingSiteDomain
+          - - !Ref MarketingSiteDomainName
+          - !Ref AWS::NoValue
+        ViewerCertificate: !If
+          - HasMarketingSiteDomain
+          - AcmCertificateArn: !Ref MarketingSiteCertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        Origins:
+          - Id: MarketingSiteBucketOrigin
+            DomainName: !GetAtt MarketingSiteBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt MarketingSiteOAC.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: MarketingSiteBucketOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+
+  MarketingSiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref MarketingSiteBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub arn:aws:s3:::${MarketingSiteBucket}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${MarketingSiteDistribution}
+
   # --- GitHub Actions CI/CD for the consumer site -----------------------
   #
   # Al: "lets get back to the CI for the consumer-site" -- push-to-deploy
@@ -4075,6 +4187,12 @@ Outputs:
   AdminSiteDeployRoleArn:
     Condition: HasGitHubRepo
     Value: !GetAtt AdminSiteDeployRole.Arn
+  MarketingSiteBucketName:
+    Value: !Ref MarketingSiteBucket
+  MarketingSiteDistributionId:
+    Value: !Ref MarketingSiteDistribution
+  MarketingSiteUrl:
+    Value: !Sub "https://${MarketingSiteDistribution.DomainName}"
   # admin-spa/'s build needs these baked in at build time (VITE_* env vars,
   # same "Vite inlines import.meta.env.VITE_* at build time" mechanism
   # ConsumerSiteUrl/PublicApiUrl already rely on for those two sites) --

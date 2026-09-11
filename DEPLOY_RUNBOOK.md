@@ -14081,6 +14081,103 @@ No migration, no `template.yaml` change needed beyond what's already
 described above, no new tests (pure infra wiring, no new application
 logic to unit test).
 
+### 6at. BowlerIQ marketing/landing site (bowleriq.com)
+
+Al: "can we create a marking site for bowleriq.com. this should be a
+very techy site that explains how BowlerIQ is project that brings the
+powers of AI to the world of bowling. and have sections for each of
+the things we are working on and leave some mystery on how we do
+this." Built a static mockup first (single self-contained dark/
+technical-themed HTML file, six pillar cards mirroring the project's
+actual live features, an intentionally-vague 4-stage "how it works"
+flow with redacted phrases) for Al to review before touching any
+infra -- Al: "i love it. lets get that built. we can iron out the
+details later."
+
+**What it is:** `marketing-site/index.html` -- one hand-written,
+self-contained static HTML file (inline CSS, a small vanilla-JS
+count-up animation for the stats strip, Space Grotesk + JetBrains Mono
+loaded from Google Fonts). No build step, no framework, no dependency
+on this repo's Python backend or any of the public/admin APIs -- it's
+pure marketing copy, entirely decoupled from the rest of the stack.
+Content pulled from what's actually live in this project (AI-written
+reviews, video summary rollups, price/stock tracking, catalog sync,
+demand scoring -- tagged "Live"; oil pattern motion plotter integration
+-- tagged "In progress", matching task #193's still-`pending` status)
+rather than invented claims, while staying deliberately vague about
+the actual implementation (no AWS/Bedrock/Gemini/vendor names, no
+scraping-target specifics) per Al's "leave some mystery" ask.
+
+**Infra (`template.yaml`):** same `S3 + CloudFront + OAC` static-site
+pattern as `ConsumerSiteBucket`/`LearnSiteBucket`/`AdminSiteBucket`
+above, added as `MarketingSiteBucket`/`MarketingSiteOAC`/
+`MarketingSiteDistribution`/`MarketingSiteBucketPolicy`, gated on a new
+`HasMarketingSiteDomain` condition (`MarketingSiteDomainName`/
+`MarketingSiteCertificateArn` params, same blank-means-CloudFront-
+default-domain-only convention as the other sites). Deliberately
+simpler than all three of those: no `CustomErrorResponses` SPA rewrite
+(a bad path here really is a 404 -- there's no client-side router to
+fall back to) and no `LearnSitePrettyUrlFunction`-style CloudFront
+Function (no prerendered sub-pages yet, just the one `index.html`). No
+GitHub Actions deploy role either -- same reasoning as the embed
+scripts not having one: a single static file is a plain `aws s3 cp` +
+CloudFront invalidation, not worth standing up CI for until this site
+actually grows a build step. New outputs: `MarketingSiteBucketName`,
+`MarketingSiteDistributionId`, `MarketingSiteUrl`.
+
+**The domain is an apex/root domain, not a subdomain** -- `bowleriq.com`
+itself, unlike every other `*SiteDomainName` param in this template
+(`data.bowleriq.com`, `learn.bowlerdepot.com`, `admin.bowleriq.com`,
+all subdomains). That changes the DNS step specifically: a plain CNAME
+isn't valid at a zone apex, so pointing `bowleriq.com` at the
+CloudFront distribution needs an ALIAS/ANAME-style record (a Route 53
+A-record Alias if the zone is hosted there, or whatever equivalent
+your registrar/DNS provider offers) instead of the ordinary CNAME the
+subdomain-based sites use. The certificate rule is unchanged from the
+other CloudFront-based sites: **us-east-1, regardless of the stack's
+own region** (the same rule as Consumer/Learn/Admin -- NOT the
+us-west-1 exception that only applies to `PublicApiCertificateArn`'s
+ApiGatewayV2-based domain in 6as above).
+
+Verified via the same CFN-tolerant YAML parse this template's other
+changes get checked with: `MarketingSiteDomainName`/
+`MarketingSiteCertificateArn` params, `HasMarketingSiteDomain`
+condition, all four new resources, and all three new outputs present;
+`MarketingSiteDistribution`'s `Aliases`/`ViewerCertificate` `!If`
+structured the same way as the other three sites'.
+
+**Deploy mechanics (Al must do these himself):**
+
+1. (Optional, can be deferred) Request and DNS-validate an ACM cert
+   covering `bowleriq.com` in **`us-east-1`**. Until this is set, the
+   site is still reachable at its bare `*.cloudfront.net` URL
+   (`MarketingSiteUrl` output) -- a custom domain is a convenience
+   layered on top, not a blocker to shipping the site itself.
+2. `sam build && sam deploy` -- creates `MarketingSiteBucket`/
+   `MarketingSiteOAC`/`MarketingSiteDistribution`/
+   `MarketingSiteBucketPolicy` even with the domain params left blank.
+3. Upload the site:
+   `aws s3 cp marketing-site/index.html s3://<MarketingSiteBucketName>/index.html --cache-control "no-cache"`
+   -- `--cache-control` matters here for the same reason documented in
+   6as.1 for the embed scripts (no explicit header means browsers fall
+   back to their own heuristic caching against `Last-Modified`, which
+   can hold a stale copy well after a redeploy).
+4. If a custom domain was requested in step 1: set
+   `MarketingSiteDomainName="bowleriq.com"` and
+   `MarketingSiteCertificateArn="<the us-east-1 cert ARN>"` in
+   `samconfig.toml`'s `parameter_overrides`, `sam build && sam deploy`
+   again, then add the ALIAS/ANAME record described above pointing
+   `bowleriq.com` at `MarketingSiteDistribution`'s own domain name
+   (`aws cloudformation describe-stacks --stack-name <your-stack-name>
+   --query "Stacks[0].Outputs[?OutputKey=='MarketingSiteUrl'].OutputValue"
+   --output text` gives the CloudFront domain to point at).
+5. Any future content edit: re-run the `aws s3 cp` from step 3, then
+   invalidate CloudFront for that one path
+   (`aws cloudfront create-invalidation --distribution-id <MarketingSiteDistributionId> --paths "/index.html"`).
+
+No migration, no new backend code, no tests (a static marketing page
+has no application logic to unit test).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
