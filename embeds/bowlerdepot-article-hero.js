@@ -178,7 +178,17 @@
       html += '<div class="bd-review-body"><a class="bd-review-cta" href="' + escapeHtml(data.learn_url) +
         '" target="_blank" rel="noopener">Read the full review &rarr;</a></div>';
     }
-    content.innerHTML = html;
+    // Wrap in the theme's own .container, matching how every native tab
+    // (#tab-description, etc.) wraps its content -- confirmed live
+    // (Claude Browser DOM inspection, bowlerdepot.com/brunswick-combat-solid/)
+    // that .tab-content > .container is the theme's own pattern, not
+    // something specific to one tab. Reusing it means our hero picks up
+    // the theme's own responsive padding/max-width rules for free,
+    // including papathemes-section-inner's 1681px+ breakpoint
+    // (max-width: 86.5rem; padding: 0 4.5rem) that Al found by inspecting
+    // the live page -- rather than us re-deriving/hardcoding those values
+    // ourselves and risking drift from the theme.
+    content.innerHTML = '<div class="container">' + html + "</div>";
 
     var tabsContainer = tabsList.parentNode;
     tabsContainer.appendChild(content);
