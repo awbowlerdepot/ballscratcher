@@ -103,12 +103,26 @@
     // Color tokens straight from bowlerdepot-learn/tailwind.config.js's
     // "Editorial Magazine" theme: ink (hero background), accent (CTA),
     // paper/paper-border (body panel below the hero).
+    // Al: "styling is perfect on desktop now, not great on mobile yet"
+    // (screenshot showed the tilted photo card's corners bleeding past
+    // the dark hero background onto the page's white surroundings). Root
+    // cause: CSS transform:rotate doesn't expand an element's own layout
+    // box, so the padding/gap the hero was relying on for clearance
+    // wasn't actually reserving room for the rotated card's larger
+    // visual footprint. Fixed two ways: (1) a real margin on the photo
+    // element, which DOES affect layout, reserves genuine clearance
+    // sized to the rotation; (2) overflow:hidden on the hero itself as a
+    // hard backstop so nothing can ever visually escape the dark
+    // background regardless of viewport quirks. Mobile also switches to
+    // a centered stacked column (flex-direction:column) with a slightly
+    // gentler tilt, rather than reusing the desktop's wrapped-row layout.
     style.textContent =
       ".bd-review-hero{position:relative;background:#0f0f2d;color:#fff;" +
       "padding:32px 24px;display:flex;flex-wrap:wrap;align-items:center;" +
-      "gap:28px;font-family:'Cabin',sans-serif;box-sizing:border-box;}" +
+      "gap:28px;font-family:'Cabin',sans-serif;box-sizing:border-box;" +
+      "overflow:hidden;}" +
       ".bd-review-hero__photo{flex:0 0 200px;width:200px;background:#fff;" +
-      "padding:8px;border-radius:2px;transform:rotate(-6deg);" +
+      "padding:8px;border-radius:2px;transform:rotate(-6deg);margin:14px;" +
       "box-shadow:0 12px 24px -6px rgba(0,0,0,0.55);box-sizing:border-box;}" +
       ".bd-review-hero__photo img{display:block;width:100%;height:150px;" +
       "object-fit:cover;border-radius:1px;}" +
@@ -126,9 +140,12 @@
       ".bd-review-cta{display:inline-block;font-family:'Cabin',sans-serif;" +
       "font-size:15px;font-weight:600;color:#1f439e;text-decoration:none;}" +
       ".bd-review-cta:hover{text-decoration:underline;}" +
-      "@media (max-width:480px){.bd-review-hero{padding:24px 16px;}" +
-      ".bd-review-hero__photo{flex-basis:140px;width:140px;}" +
-      ".bd-review-hero__photo img{height:105px;}}";
+      "@media (max-width:480px){" +
+      ".bd-review-hero{padding:28px 16px;flex-direction:column;text-align:center;}" +
+      ".bd-review-hero__photo{flex-basis:140px;width:140px;margin:10px auto;" +
+      "transform:rotate(-4deg);}" +
+      ".bd-review-hero__photo img{height:105px;}" +
+      ".bd-review-hero__copy{flex-basis:auto;min-width:0;}}";
     document.head.appendChild(style);
   }
 
@@ -152,7 +169,20 @@
     tabLink.href = "#tab-review";
     tabLink.textContent = "Learn";
     tabLi.appendChild(tabLink);
-    tabsList.appendChild(tabLi);
+    // Al: "is there a way to inject after the description before the
+    // videos" -- confirmed live (Claude Browser DOM inspection,
+    // bowlerdepot.com/brunswick-combat-solid/) the native tab order is
+    // Description, Videos, Product Reviews, Reviews. Insert right after
+    // the Description <li> (i.e. right before whatever was originally
+    // second, normally Videos) instead of appending to the end. Falls
+    // back to appendChild if a theme variant doesn't have a
+    // tab--description li for some reason.
+    var descriptionLi = tabsList.querySelector(".tab--description");
+    if (descriptionLi && descriptionLi.nextSibling) {
+      tabsList.insertBefore(tabLi, descriptionLi.nextSibling);
+    } else {
+      tabsList.appendChild(tabLi);
+    }
 
     var content = document.createElement("div");
     content.className = "tab-content";
@@ -190,8 +220,17 @@
     // ourselves and risking drift from the theme.
     content.innerHTML = '<div class="container">' + html + "</div>";
 
+    // Content divs are siblings of ul.tabs (confirmed live: #tab-description,
+    // #tab-videos, etc. all live directly under the same wrapper the
+    // <ul class="tabs"> is in) -- mirror the same after-Description
+    // position here so the tab's content lands in the matching DOM slot.
     var tabsContainer = tabsList.parentNode;
-    tabsContainer.appendChild(content);
+    var descriptionContent = document.getElementById("tab-description");
+    if (descriptionContent && descriptionContent.nextSibling) {
+      tabsContainer.insertBefore(content, descriptionContent.nextSibling);
+    } else {
+      tabsContainer.appendChild(content);
+    }
   }
 
   function run() {
