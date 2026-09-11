@@ -7230,8 +7230,13 @@ directory):**
      `LearnSiteBucket` already has the identical S3+CloudFront+OAC setup
      `ConsumerSiteBucket` does, so there was no infra reason to reach for
      the other site's bucket) --
-     `aws s3 cp embeds/bowlerdepot-video-summary.js s3://<LearnSiteBucket>/embeds/bowlerdepot-video-summary.js`
-     -- then invalidate CloudFront for that path
+     `aws s3 cp embeds/bowlerdepot-video-summary.js s3://<LearnSiteBucket>/embeds/bowlerdepot-video-summary.js --cache-control "no-cache"`
+     -- **the `--cache-control "no-cache"` flag matters** (see 6as.1 for
+     why: without it, S3 objects carry no `Cache-Control` header at all,
+     and browsers apply their own heuristic caching against `Last-Modified`
+     -- CloudFront invalidation alone doesn't fix a copy a visitor's
+     browser already cached client-side) -- then invalidate CloudFront for
+     that path
      (`aws cloudfront create-invalidation --distribution-id <LearnSiteDistributionId> --paths "/embeds/bowlerdepot-video-summary.js"`).
   3. In BigCommerce's control panel: **Storefront > Script Manager >
      Create a Script**, scoped to Product Pages, pointing at
@@ -13933,9 +13938,38 @@ the other:**
    video-summary script -- `LearnSiteBucket`/`LearnSiteDistribution`, not
    `ConsumerSiteBucket` (see that script's own deploy-mechanics comment
    in 6q for why):
-   `aws s3 cp embeds/bowlerdepot-article-hero.js s3://<LearnSiteBucket>/embeds/bowlerdepot-article-hero.js`,
-   then invalidate CloudFront for that path:
+   `aws s3 cp embeds/bowlerdepot-article-hero.js s3://<LearnSiteBucket>/embeds/bowlerdepot-article-hero.js --cache-control "no-cache"`
+   (see new subsection 6as.1 below for why `--cache-control` is now
+   required on every re-upload of this file), then invalidate CloudFront
+   for that path:
    `aws cloudfront create-invalidation --distribution-id <LearnSiteDistributionId> --paths "/embeds/bowlerdepot-article-hero.js"`.
+
+**6as.1. Real incident: Al suspected "a BigCommerce cache" holding back
+updates.** Investigated live (fetched
+`https://learn.bowlerdepot.com/embeds/bowlerdepot-article-hero.js`
+directly and inspected response headers): CloudFront/S3 were in fact
+already serving the latest deployed content correctly (verified via
+distinctive markers from the most recent commit -- `x-cache: Hit from
+cloudfront`, `last-modified` matching the latest `aws s3 cp`). So the
+CloudFront invalidation step has been working. The real gap: every
+`aws s3 cp` command previously documented for both embed scripts (6q
+and this section) never set `--cache-control`, so the S3 objects carry
+no `Cache-Control`/`Expires` header at all. With no explicit directive,
+browsers fall back to RFC 7234 heuristic caching keyed off
+`Last-Modified` -- which can silently hold a visitor's (or Al's own)
+browser on a stale local copy well after a redeploy + CloudFront
+invalidation, since the browser never even asks the network for a
+fresh copy. Not actually "a BigCommerce cache" (Script Manager just
+emits a plain `<script src>` tag, nothing BigCommerce-side caches its
+contents) -- it's ordinary browser heuristic caching filling the gap
+S3's missing header left open. Fixed going forward by always passing
+`--cache-control "no-cache"` on these two `aws s3 cp` commands: forces
+browsers to revalidate (a conditional `If-None-Match` request) on every
+load rather than silently reusing a cached copy, while CloudFront's own
+edge cache (invalidated on every deploy) still does the actual byte
+transfer work on a 304. A hard-refresh (Cmd/Ctrl+Shift+R, or open in a
+private window) clears any already-stale client-side copy immediately
+without waiting on this fix.
 3. In BigCommerce's control panel: **Storefront > Script Manager >
    Create a Script**, scoped to Product Pages, pointing at
    `<script src="https://learn.bowlerdepot.com/embeds/bowlerdepot-article-hero.js"></script>`.
