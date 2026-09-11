@@ -31,13 +31,15 @@ import home_transcript_fetcher_browser as script  # noqa: E402
 # .count, .nth, and now .locator() for the span scoped inside a segment) ---
 
 class FakeLocator:
-    def __init__(self, visible=True, text="", segments=None, child_locator_map=None, raise_on_inner_text=False):
+    def __init__(self, visible=True, text="", segments=None, child_locator_map=None, raise_on_inner_text=False,
+                 attributes=None):
         self.visible = visible
         self.text = text
         self.segments = segments or []
         self.clicked = False
         self.child_locator_map = child_locator_map or {}
         self.raise_on_inner_text = raise_on_inner_text
+        self.attributes = attributes or {}
 
     @property
     def first(self):
@@ -49,6 +51,9 @@ class FakeLocator:
 
     def click(self):
         self.clicked = True
+
+    def get_attribute(self, name):
+        return self.attributes.get(name)
 
     def inner_text(self):
         if self.raise_on_inner_text:
@@ -143,6 +148,34 @@ def test_extract_transcript_text_raises_if_no_segments_ever_appear():
         pass
 
 
+# --- _select_transcript_tab_if_present -- real incident, 2026-09-10: a
+# real debug HTML dump (video WkULYHieh5s) showed the "In this video"
+# panel variant, where "Show transcript" opens a broader panel with an
+# unselected "Transcript" chip (role="tab", aria-selected="false") and an
+# empty content pane until that chip is actually clicked. ---
+
+def test_select_transcript_tab_clicks_when_present_and_unselected():
+    tab = FakeLocator(visible=True, attributes={"aria-selected": "false"})
+    page = FakePage({script._TRANSCRIPT_TAB_SELECTOR: tab})
+    script._select_transcript_tab_if_present(page, timeout_ms=1000)
+    assert tab.clicked is True
+
+
+def test_select_transcript_tab_does_not_reclick_when_already_selected():
+    tab = FakeLocator(visible=True, attributes={"aria-selected": "true"})
+    page = FakePage({script._TRANSCRIPT_TAB_SELECTOR: tab})
+    script._select_transcript_tab_if_present(page, timeout_ms=1000)
+    assert tab.clicked is False
+
+
+def test_select_transcript_tab_is_a_harmless_noop_when_absent():
+    """Classic direct-panel variant (no tab bar at all) -- must not raise,
+    since _extract_transcript_text is expected to just find the segments
+    directly in that case."""
+    page = FakePage({})  # _TRANSCRIPT_TAB_SELECTOR falls back to FakeLocator(visible=False)
+    script._select_transcript_tab_if_present(page, timeout_ms=1000)  # should not raise
+
+
 # --- _click_first_visible ---
 
 def test_click_first_visible_uses_first_matching_selector():
@@ -193,6 +226,40 @@ def test_get_transcript_via_browser_no_button_found(monkeypatch):
     assert note == "no_captions_available"
     assert dumps == ["no_button"]
     assert page.closed is True
+
+
+def test_get_transcript_via_browser_success_via_in_this_video_tab_variant(monkeypatch):
+    """End-to-end regression for the real 2026-09-10 incident: "Show
+    transcript" opens the "In this video" panel with an unselected
+    "Transcript" chip and an empty content pane -- the segments only
+    appear in this fake once the tab is actually clicked, modeling the
+    real fetcher's job of activating it before extraction can succeed."""
+    monkeypatch.setattr(script, "_dump_debug_evidence", lambda *a, **k: None)
+    segment = FakeLocator(child_locator_map={
+        ".ytAttributedStringHost": FakeLocator(text="Alright let's check out this ball"),
+    })
+    segments_locator = FakeLocator(visible=False, segments=[segment])
+    tab = FakeLocator(visible=True, attributes={"aria-selected": "false"})
+
+    def _click_tab():
+        tab.clicked = True
+        segments_locator.visible = True  # only now do segments become visible, same as the real panel
+
+    tab.click = _click_tab
+
+    locator_map = {
+        script._SHOW_TRANSCRIPT_SELECTORS[0]: FakeLocator(visible=True),
+        script._TRANSCRIPT_TAB_SELECTOR: tab,
+        "transcript-segment-view-model": segments_locator,
+    }
+    page = FakePage(locator_map)
+    browser = FakeBrowser(page)
+
+    transcript, note = script.get_transcript_via_browser("WkULYHieh5s", browser)
+
+    assert note is None
+    assert transcript == "Alright let's check out this ball"
+    assert tab.clicked is True
 
 
 def test_get_transcript_via_browser_panel_extraction_fails(monkeypatch):

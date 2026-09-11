@@ -90,7 +90,11 @@ logger = logging.getLogger("home_transcript_fetcher_browser")
 
 DEFAULT_PAGE_LOAD_TIMEOUT_MS = 30_000
 DEFAULT_TRANSCRIPT_BUTTON_TIMEOUT_MS = 8_000
-DEFAULT_TRANSCRIPT_PANEL_TIMEOUT_MS = 8_000
+# Bumped 8_000 -> 12_000, 2026-09-10: the "In this video"-panel variant
+# (see _TRANSCRIPT_TAB_SELECTOR's comment) adds an extra click-and-fetch
+# step before segments populate -- 8s was already borderline for the
+# classic direct-panel variant on a Pi's slower headless Chromium.
+DEFAULT_TRANSCRIPT_PANEL_TIMEOUT_MS = 12_000
 DEBUG_DIR = os.path.join(os.path.dirname(__file__), "debug")
 
 # Multiple fallback selector strategies for the "Show transcript" button --
@@ -114,6 +118,24 @@ _EXPAND_DESCRIPTION_SELECTORS = [
 
 _NOTE_NO_TRANSCRIPT_BUTTON = "no_captions_available"  # matches home_transcript_fetcher.py's convention
 _NOTE_PANEL_FOUND_BUT_EMPTY = "transcript_panel_found_but_text_extraction_returned_empty"
+
+# Real incident, 2026-09-10: Al reported videos failing with
+# no_captions_available/transcript_panel_found_but_text_extraction_returned_empty
+# that genuinely DO have a transcript (confirmed by hand). A real debug HTML
+# dump pulled off the Pi for video WkULYHieh5s showed the root cause: on this
+# UI variant, clicking "Show transcript" doesn't open a dedicated transcript
+# panel directly -- it opens YouTube's broader "In this video" engagement
+# panel (aria-label="In this video"), which has its own chip/tab bar with a
+# "Transcript" tab (`<button role="tab" aria-label="Transcript"
+# aria-selected="false">`) that starts UNselected, and an empty `#content`
+# div until that tab is actually activated. The dump showed exactly that:
+# panel open, "Transcript" chip present, aria-selected="false", zero
+# transcript-segment-view-model elements anywhere on the page. Clicking
+# "Show transcript" alone doesn't finish the job in this variant -- a
+# separate manual test against this same video also showed the OLDER,
+# classic variant (a dedicated panel with no tab bar at all) still exists,
+# so both have to be handled.
+_TRANSCRIPT_TAB_SELECTOR = 'button[role="tab"][aria-label="Transcript"]'
 
 
 def _dump_debug_evidence(page, video_id: str, tag: str) -> None:
@@ -143,6 +165,25 @@ def _click_first_visible(page, selectors: list, timeout_ms: int) -> bool:
         except Exception:
             continue
     return False
+
+
+def _select_transcript_tab_if_present(page, timeout_ms: int) -> None:
+    """Real incident fix, 2026-09-10 -- see _TRANSCRIPT_TAB_SELECTOR's
+    comment above for the full evidence. On the "In this video" panel
+    variant, the "Transcript" chip exists but starts unselected
+    (aria-selected="false") with an empty content pane -- clicking it is
+    the missing step. Deliberately swallows any failure: if this tab bar
+    isn't present at all (the classic direct-panel variant), or the chip
+    is already selected, there's nothing to do here and
+    _extract_transcript_text below should just find the segments
+    directly."""
+    try:
+        tab = page.locator(_TRANSCRIPT_TAB_SELECTOR).first
+        tab.wait_for(state="visible", timeout=timeout_ms)
+        if tab.get_attribute("aria-selected") != "true":
+            tab.click()
+    except Exception:
+        pass
 
 
 def _extract_transcript_text(page, timeout_ms: int) -> str:
@@ -203,6 +244,8 @@ def get_transcript_via_browser(video_id: str, browser) -> tuple:
             logger.info("video_id=%s: no 'Show transcript' button found -- treating as no captions", video_id)
             _dump_debug_evidence(page, video_id, "no_button")
             return "", _NOTE_NO_TRANSCRIPT_BUTTON
+
+        _select_transcript_tab_if_present(page, 3_000)
 
         try:
             transcript = _extract_transcript_text(page, DEFAULT_TRANSCRIPT_PANEL_TIMEOUT_MS)

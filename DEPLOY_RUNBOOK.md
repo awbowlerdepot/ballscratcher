@@ -4414,6 +4414,47 @@ those (or just describe what the screenshot shows near the "Show
 transcript" button/panel) so the selectors can be corrected against real
 evidence instead of another guess.
 
+**Real incident, 2026-09-10** (Al: "it looks like the transcript
+extraction is failing when there is actually transcripts that show when
+clicking the show transcript button. I just manually verified a few"):
+pulled the real debug screenshot + HTML dump off the Pi for video
+`WkULYHieh5s` (`transcript_panel_found_but_text_extraction_returned_empty`)
+and found the actual root cause -- on this UI variant, clicking "Show
+transcript" doesn't open a dedicated transcript panel directly. It opens
+YouTube's broader "In this video" engagement panel, which has its own
+chip/tab bar with a "Transcript" tab
+(`<button role="tab" aria-label="Transcript" aria-selected="false">`)
+that starts **unselected**, with an empty content pane, until that chip
+is actually clicked. The dump confirmed this exactly: panel open, chip
+present and unselected, zero `transcript-segment-view-model` elements
+anywhere on the page -- the click on "Show transcript" alone never
+finished the job here. A separate live test against the same video also
+confirmed the older, classic variant (no tab bar at all, transcript
+panel opens directly) still exists too, so both had to be handled.
+
+Fix in `scripts/home_transcript_fetcher_browser.py`: added
+`_select_transcript_tab_if_present()`, called right after the "Show
+transcript" click succeeds and before text extraction -- it looks for
+`button[role="tab"][aria-label="Transcript"]`, and clicks it only if
+`aria-selected` isn't already `"true"`. Harmless no-op on the classic
+variant (selector just isn't present, caught and ignored). Also bumped
+`DEFAULT_TRANSCRIPT_PANEL_TIMEOUT_MS` from 8s to 12s -- the tab variant
+adds an extra click-and-fetch round trip before segments populate, and
+8s was already borderline on the Pi's slower headless Chromium.
+
+Added 6 tests to `tests/test_home_transcript_fetcher_browser.py`: three
+for the new `_select_transcript_tab_if_present()` (clicks when present +
+unselected, doesn't re-click when already selected, no-op when the tab
+bar is absent entirely) plus one full end-to-end regression modeling the
+real "In this video" tab flow. `FakeLocator` gained a `get_attribute()`
+method to support this. Full suite: 12/12 passing.
+
+This is a plain Python script that runs on Al's Pi via cron, not a
+Lambda -- no `sam deploy` needed. Just `git pull` on the Pi so the next
+`0 7 * * *` cron run (or a manual
+`python3 scripts/home_transcript_fetcher_browser.py` run) picks up the
+fix.
+
 To watch it work instead of reading screenshots after the fact (useful
 for the first real run, e.g. over VNC with a desktop environment on the
 Pi):
