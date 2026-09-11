@@ -718,6 +718,89 @@ def get_video_summary_by_bigcommerce_product_id(conn, bigcommerce_product_id: st
         return {"video_reviews_summary": summary, "video_reviews_summary_video_count": video_count}
 
 
+def get_article_hero_by_bigcommerce_product_id(conn, bigcommerce_product_id: str) -> dict:
+    """Backs the embed script that adds a "Review" tab to live BowlerDepot
+    (BigCommerce) product pages, alongside the existing native Videos tab
+    -- Al: "what is the best way to embed the heros on the bowlerdepot.com
+    product pages for these balls," clarified afterward to mean the
+    article hero (title/hook/action_shot_image_url) built for
+    learn.bowlerdepot.com's ArticleDetailPage, NOT the separate
+    featured_video (Brad and Kyle YouTube) section on that same page --
+    this route deliberately does not touch featured_video at all, no
+    video embedding here.
+
+    Same bigcommerce_product_id -> internal product lookup as
+    get_video_summary_by_bigcommerce_product_id above (bowlerdepot_products
+    match_status='matched' + products.published=true) -- see that
+    function's own docstring for why the embed script hands over
+    BigCommerce's numeric product id rather than this project's own UUID
+    (it's the one identifier a storefront script can read straight off
+    the live page, via <input name="product_id">, with zero knowledge of
+    this project's own ids). Confirmed live this session (in-app browser,
+    against bowlerdepot.com/brunswick-combat-solid/, Supermarket theme):
+    the tab nav (<ul class="tabs">) and tab-switching JS use real event
+    delegation, not per-element binding at page-init -- a tab <li>/
+    tab-content pair appended after page load is genuinely clickable and
+    switches correctly, same as the theme's own native tabs. That's what
+    makes a whole new "Review" tab (rather than only injecting into an
+    existing one, the video-summary embed's more limited approach) a
+    safe, verified option here.
+
+    Deliberately always returns 200 with has_article: False rather than
+    404 when there's no confident BigCommerce match or no APPROVED
+    article yet -- that's the normal case for most of the catalog (only a
+    published, confidently-matched product that's also had an article
+    generated AND approved ever has one), not an error condition the
+    embed script needs to special-case, same always-200 contract as the
+    video-summary route above.
+
+    hero_image_url prefers action_shot_image_url (the 16:9 shot Learn's
+    own hero uses) over product_shot_image_url (1:1) when both exist,
+    falling back to the square shot only if the action shot hasn't
+    generated/succeeded for this article. Both may be null (image
+    generation hasn't run yet) -- the embed script is expected to render
+    the tab without an image in that case, not skip it entirely, since
+    the written review (title/hook/link) is still worth showing on its
+    own.
+
+    learn_url is built here (not left for the embed script to construct)
+    so the URL scheme -- /articles/<product_id>, see bowlerdepot-learn's
+    router -- only needs to be known in one place; a future change to
+    that scheme only requires touching this function, not also
+    redeploying the embed script."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select p.id as product_id, pa.title, pa.hook,
+                   pa.action_shot_image_url, pa.product_shot_image_url
+            from bowlerdepot_products bp
+            join products p on p.id = bp.product_id
+            join product_articles pa on pa.product_id = p.id
+            where bp.bigcommerce_product_id = %s
+              and bp.match_status = 'matched'
+              and p.published = true
+              and pa.status = 'approved'
+            """,
+            (bigcommerce_product_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return {
+                "has_article": False, "product_id": None, "title": None,
+                "hook": None, "hero_image_url": None, "learn_url": None,
+            }
+
+        product_id, title, hook, action_shot_image_url, product_shot_image_url = row
+        return {
+            "has_article": True,
+            "product_id": product_id,
+            "title": title,
+            "hook": hook,
+            "hero_image_url": action_shot_image_url or product_shot_image_url,
+            "learn_url": f"https://learn.bowlerdepot.com/articles/{product_id}",
+        }
+
+
 def get_product_article(conn, product_id: str):
     """Backs GET /products/{id}/article -- the read side of 022_product_
     articles.sql. Al: "this could be the backend that pulls together all

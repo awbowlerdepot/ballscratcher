@@ -13828,6 +13828,125 @@ more current balls. is there an eloquent way to avoid this?"):
   `tests/test_public_api_service.py`) -- no migration, no
   `template.yaml` change, no frontend/.tsx change.
 
+### 6ar. BowlerDepot article hero embed: a "Review" tab on live product pages
+
+Al's follow-up ask, right after the featured-video hero shipped on the
+Learn site (6aq): "what is the best way to embed the heros on the
+bowlerdepot.com product pages for these balls." Scoped down after a
+clarifying round-trip -- Al: "i never turned on the video-summary.js so
+there is that. on the fuller embed what do you mean the youtube video
+inline? we are talking about articles not youtube videos" -- to ONLY the
+article hero (image + title + hook), explicitly excluding
+`featured_video`/YouTube content. This is a sibling feature to 6q's
+video-summary embed, not an extension of it: **worth noting the
+video-summary embed script has never actually been activated in
+BigCommerce Script Manager**, so this is the first real activation of
+this class of feature, not a proven-live pattern being reused.
+
+**Investigation before writing any code:** the DOM/id-mapping facts from
+6q (`input[name="product_id"]` holding BigCommerce's numeric id,
+matching `bowlerdepot_products.bigcommerce_product_id`) still apply
+directly. What's new here is whether a brand-new tab, not just an insert
+into an existing one, would actually work on the live Supermarket theme.
+Verified live (Claude in Chrome, DOM manipulation against
+`bowlerdepot.com/brunswick-combat-solid/`): the theme's tab-switching JS
+binds via event delegation on the parent `<ul class="tabs" data-tab="">`
+container rather than per-`<li>` at page-init time -- a brand-new
+`<li>`/`tab-content` pair appended to the DOM after load and then
+`.click()`'d becomes correctly active
+(`probeLiIsActive: true, probeContentIsActive: true,
+probeContentDisplay: "block"`). That's the real evidence justifying a new
+"Review" tab rather than trying to shoehorn this into an existing one.
+
+**`src/public_api/service.py`**: new
+`get_article_hero_by_bigcommerce_product_id(conn, bigcommerce_product_id)`,
+placed right after `get_video_summary_by_bigcommerce_product_id`. Same
+`bowlerdepot_products.match_status = 'matched'` + `products.published =
+true` gating as that function, plus a join to `product_articles` scoped
+to `status = 'approved'` (never surface a pending/rejected draft to a
+storefront visitor). Returns:
+
+```python
+{
+    "has_article": bool,
+    "product_id": str | None,
+    "title": str | None,
+    "hook": str | None,
+    "hero_image_url": str | None,   # action_shot_image_url, falling back to product_shot_image_url
+    "learn_url": str | None,        # https://learn.bowlerdepot.com/articles/{product_id}
+}
+```
+
+Same always-200, never-404 contract as `video-summary` -- "no match, or
+matched but no approved article yet" is the normal case for most of the
+catalog, not an error the embed script needs to special-case.
+`hero_image_url` prefers `action_shot_image_url` and falls back to
+`product_shot_image_url` so a product still mid-generation (one variant
+done, one not) still gets a usable image rather than nothing.
+`learn_url` hardcodes `learn.bowlerdepot.com` the same way
+`bowlerDepotSearchUrl` in the Learn site's own `client.ts` hardcodes
+`bowlerdepot.com` -- confirmed via grep this is the real, live custom
+domain, not just a CloudFront default.
+
+**`src/public_api/app.py`**: new route,
+`GET /bowlerdepot/products/{bigcommerce_product_id}/article-hero`. No
+`template.yaml` change needed -- `PublicHttpApi`'s existing `/{proxy+}`
+GET catch-all already covers it, same as every other `public_api`
+addition.
+
+**`embeds/bowlerdepot-article-hero.js`** (new file, sibling to
+`bowlerdepot-video-summary.js`, same directory): dependency-free vanilla
+JS, no build step. Reads `input[name="product_id"]`, calls the new
+route, and on `has_article: true` appends a new
+`<li class="tab tab--review"><a class="tab-title" href="#tab-review">Review</a></li>`
+to the page's `ul.tabs[data-tab]` plus a matching
+`<div class="tab-content" id="tab-review">` containing the resized hero
+image, title, hook, and a "Read the full review" link to `learn_url`.
+Reimplements the Learn site's `resizedImageUrl` helper
+(`bowlerdepot-learn/src/api/client.ts`) in plain JS since this script
+runs standalone and can't import from that project -- same
+`product-images/`/`article-images/`-prefix check, same
+`img.bowleriq.io` resizer origin, same raw-URL-unchanged fallback.
+No-ops silently on every "nothing to show" case (no match, no approved
+article, missing `ul.tabs` markup, network error) -- a storefront
+visitor should never see an error from this, same principle
+`bowlerdepot-video-summary.js` follows. Guards against double-insertion
+via `document.getElementById("tab-review")` the same way the
+video-summary script guards on `.bd-video-summary`.
+
+**Deploy mechanics (Al must do these himself -- no live AWS/BigCommerce
+credentials in this sandbox), a SEPARATE Script Manager entry from
+`bowlerdepot-video-summary.js` -- either can be enabled independently of
+the other:**
+
+1. Edit `embeds/bowlerdepot-article-hero.js`'s `API_BASE_URL` constant to
+   this deployment's real `PublicApiUrl` (`template.yaml` Outputs).
+2. Upload it to the same reused S3 bucket/CloudFront distribution as the
+   video-summary script:
+   `aws s3 cp embeds/bowlerdepot-article-hero.js s3://<ConsumerSiteBucket>/embeds/bowlerdepot-article-hero.js`,
+   then invalidate CloudFront for that path:
+   `aws cloudfront create-invalidation --distribution-id <id> --paths "/embeds/bowlerdepot-article-hero.js"`.
+3. In BigCommerce's control panel: **Storefront > Script Manager >
+   Create a Script**, scoped to Product Pages, pointing at
+   `<script src="https://<your-cloudfront-domain>/embeds/bowlerdepot-article-hero.js"></script>`.
+   Updating the script's logic later only needs a re-upload + cache
+   invalidation, never touching Script Manager again.
+
+**Tests**: `tests/test_public_api_service.py` gained
+`test_get_article_hero_by_bigcommerce_product_id_*` covering matched +
+approved (full hero returned), fallback to `product_shot_image_url` when
+`action_shot_image_url` is still null, no `bowlerdepot_products` row at
+all, `match_status = 'unmatched'` (excluded), unpublished product
+(excluded), matched-but-no-article-yet, and an existing-but-`pending`
+article (excluded, same review-gate reasoning `get_product_article`
+already follows). Full non-pytest `test_*.py` sweep ran clean at
+**134/134** (127 baseline + 7 new) via the manual
+`if __name__ == "__main__"` runner in that file.
+
+**Redeploy:** `sam build PublicApiFunction && sam deploy`, then do the
+deploy mechanics above (embed script upload + Script Manager). No
+migration, no other `template.yaml` change.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

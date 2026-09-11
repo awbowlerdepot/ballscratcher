@@ -1006,6 +1006,26 @@ class _FakeCursor:
                     p.get("video_reviews_summary"), p.get("video_reviews_summary_video_count", 0),
                 )
 
+        elif q.startswith("select p.id as product_id, pa.title, pa.hook,"):
+            # get_article_hero_by_bigcommerce_product_id -- same
+            # bowlerdepot_products match_status='matched' +
+            # products.published gating as video-summary above, plus a
+            # product_articles row (keyed by product_id, see that dict's
+            # own header comment) that must be status='approved'.
+            bigcommerce_product_id = params[0]
+            match = self.db["bowlerdepot_products"].get(bigcommerce_product_id)
+            self._description = [("product_id",), ("title",), ("hook",),
+                                  ("action_shot_image_url",), ("product_shot_image_url",)]
+            self._result_row = None
+            if match is not None and match["match_status"] == "matched":
+                p = self.db["products"].get(match["product_id"])
+                article = self.db.get("product_articles", {}).get(match["product_id"])
+                if p and p.get("published") and article and article.get("status") == "approved":
+                    self._result_row = (
+                        match["product_id"], article.get("title"), article.get("hook"),
+                        article.get("action_shot_image_url"), article.get("product_shot_image_url"),
+                    )
+
         # --- get_product_article (GET /products/{id}/article) --
         # 022_product_articles.sql. Al: "this could be the backend that
         # pulls together all the creative and content for the frontend."
@@ -1715,6 +1735,109 @@ def test_get_video_summary_by_bigcommerce_product_id_matched_but_no_summary_yet(
     result = service.get_video_summary_by_bigcommerce_product_id(_FakeConnection(db), "4390")
 
     assert result == {"video_reviews_summary": None, "video_reviews_summary_video_count": 0}
+
+
+# --- get_article_hero_by_bigcommerce_product_id (GET /bowlerdepot/
+# products/{bigcommerce_product_id}/article-hero) -- same matched/
+# published gating as video-summary above, plus an approved
+# product_articles row. Al: "what is the best way to embed the heros on
+# the bowlerdepot.com product pages for these balls." ---
+
+def test_get_article_hero_by_bigcommerce_product_id_matched_and_approved():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_bowlerdepot_match(db, pid, "4390", match_status="matched")
+    db["product_articles"][pid] = {
+        "status": "approved", "title": "The Fury: A Heavy-Oil Workhorse",
+        "hook": "Picture this...", "action_shot_image_url": "https://img/action.png",
+        "product_shot_image_url": "https://img/product.png",
+    }
+
+    result = service.get_article_hero_by_bigcommerce_product_id(_FakeConnection(db), "4390")
+
+    assert result == {
+        "has_article": True,
+        "product_id": pid,
+        "title": "The Fury: A Heavy-Oil Workhorse",
+        "hook": "Picture this...",
+        "hero_image_url": "https://img/action.png",
+        "learn_url": f"https://learn.bowlerdepot.com/articles/{pid}",
+    }
+
+
+def test_get_article_hero_by_bigcommerce_product_id_falls_back_to_product_shot():
+    """No action_shot_image_url yet (image generation hasn't finished for
+    this variant) -- hero_image_url should fall back to the square shot
+    rather than come back null while a usable image exists."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_bowlerdepot_match(db, pid, "4390", match_status="matched")
+    db["product_articles"][pid] = {
+        "status": "approved", "title": "T", "hook": "H",
+        "action_shot_image_url": None, "product_shot_image_url": "https://img/product.png",
+    }
+
+    result = service.get_article_hero_by_bigcommerce_product_id(_FakeConnection(db), "4390")
+
+    assert result["hero_image_url"] == "https://img/product.png"
+
+
+def test_get_article_hero_by_bigcommerce_product_id_no_match_row():
+    db = _fresh_db()
+
+    result = service.get_article_hero_by_bigcommerce_product_id(_FakeConnection(db), "9999")
+
+    assert result == {
+        "has_article": False, "product_id": None, "title": None,
+        "hook": None, "hero_image_url": None, "learn_url": None,
+    }
+
+
+def test_get_article_hero_by_bigcommerce_product_id_unmatched_status_excluded():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_bowlerdepot_match(db, pid, "4390", match_status="unmatched")
+    db["product_articles"][pid] = {"status": "approved", "title": "T", "hook": "H"}
+
+    result = service.get_article_hero_by_bigcommerce_product_id(_FakeConnection(db), "4390")
+
+    assert result["has_article"] is False
+
+
+def test_get_article_hero_by_bigcommerce_product_id_unpublished_product_excluded():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1", published=False)
+    _seed_bowlerdepot_match(db, pid, "4390", match_status="matched")
+    db["product_articles"][pid] = {"status": "approved", "title": "T", "hook": "H"}
+
+    result = service.get_article_hero_by_bigcommerce_product_id(_FakeConnection(db), "4390")
+
+    assert result["has_article"] is False
+
+
+def test_get_article_hero_by_bigcommerce_product_id_matched_but_no_article_yet():
+    """Matched + published, but product_article_generator/an admin
+    approval hasn't happened yet -- also normal, not an error."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_bowlerdepot_match(db, pid, "4390", match_status="matched")
+
+    result = service.get_article_hero_by_bigcommerce_product_id(_FakeConnection(db), "4390")
+
+    assert result["has_article"] is False
+
+
+def test_get_article_hero_by_bigcommerce_product_id_pending_article_excluded():
+    """An article exists but hasn't cleared admin review yet -- same
+    review-gate reasoning get_product_article's own docstring covers."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_bowlerdepot_match(db, pid, "4390", match_status="matched")
+    db["product_articles"][pid] = {"status": "pending", "title": "T", "hook": "H"}
+
+    result = service.get_article_hero_by_bigcommerce_product_id(_FakeConnection(db), "4390")
+
+    assert result["has_article"] is False
 
 
 # --- get_product_article (GET /products/{id}/article) -- 022_product_

@@ -165,4 +165,14 @@ def get_bowlerdepot_video_summary(bigcommerce_product_id: str):
     return service.get_video_summary_by_bigcommerce_product_id(conn, bigcommerce_product_id)
 
 
+@app.get("/bowlerdepot/products/{bigcommerce_product_id}/article-hero")
+def get_bowlerdepot_article_hero(bigcommerce_product_id: str):
+    # Backs the sibling embed script adding a "Review" tab to live
+    # bowlerdepot.com product pages (see service.get_article_hero_by_
+    # bigcommerce_product_id's docstring) -- same always-200, never-404
+    # contract as video-summary above.
+    conn = service.get_db_connection()
+    return service.get_article_hero_by_bigcommerce_product_id(conn, bigcommerce_product_id)
+
+
 handler = Mangum(app)
