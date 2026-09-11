@@ -78,6 +78,60 @@
     return div.innerHTML;
   }
 
+  // Matches the Learn site's own "Editorial Magazine" hero treatment
+  // (bowlerdepot-learn/src/pages/ArticleDetailPage.tsx's hero section +
+  // tailwind.config.js's color tokens/fonts) as closely as reasonably
+  // possible from inside a vanilla-JS, no-build-step, inline-CSS embed --
+  // Al: "can we make the article hero styling look more like the learn
+  // site." BigCommerce's storefront doesn't load Cabin/Space Grotesk by
+  // default, so this injects the same Google Fonts stylesheet the Learn
+  // site's own src/index.css imports. Scoped to a one-time injection (id
+  // check) since insertReviewTab can theoretically run more than once.
+  function injectStyles() {
+    if (document.getElementById("bd-review-fonts")) {
+      return;
+    }
+
+    var fontLink = document.createElement("link");
+    fontLink.id = "bd-review-fonts";
+    fontLink.rel = "stylesheet";
+    fontLink.href = "https://fonts.googleapis.com/css2?family=Cabin:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap";
+    document.head.appendChild(fontLink);
+
+    var style = document.createElement("style");
+    style.id = "bd-review-styles";
+    // Color tokens straight from bowlerdepot-learn/tailwind.config.js's
+    // "Editorial Magazine" theme: ink (hero background), accent (CTA),
+    // paper/paper-border (body panel below the hero).
+    style.textContent =
+      ".bd-review-hero{position:relative;background:#0f0f2d;color:#fff;" +
+      "padding:32px 24px;display:flex;flex-wrap:wrap;align-items:center;" +
+      "gap:28px;font-family:'Cabin',sans-serif;box-sizing:border-box;}" +
+      ".bd-review-hero__photo{flex:0 0 200px;width:200px;background:#fff;" +
+      "padding:8px;border-radius:2px;transform:rotate(-6deg);" +
+      "box-shadow:0 12px 24px -6px rgba(0,0,0,0.55);box-sizing:border-box;}" +
+      ".bd-review-hero__photo img{display:block;width:100%;height:150px;" +
+      "object-fit:cover;border-radius:1px;}" +
+      ".bd-review-hero__copy{flex:1 1 260px;min-width:220px;}" +
+      ".bd-review-hero__eyebrow{font-family:'Cabin',sans-serif;" +
+      "font-size:11px;font-weight:600;text-transform:uppercase;" +
+      "letter-spacing:0.15em;color:rgba(255,255,255,0.6);margin:0 0 8px;}" +
+      ".bd-review-hero__title{font-family:'Space Grotesk',sans-serif;" +
+      "font-size:22px;font-weight:600;line-height:1.25;margin:0 0 10px;" +
+      "color:#fff;}" +
+      ".bd-review-hero__hook{font-family:'Cabin',sans-serif;font-size:15px;" +
+      "line-height:1.6;color:rgba(255,255,255,0.8);margin:0;}" +
+      ".bd-review-body{padding:18px 24px;background:#faf8f4;" +
+      "border:1px solid #e8e2d6;border-top:none;box-sizing:border-box;}" +
+      ".bd-review-cta{display:inline-block;font-family:'Cabin',sans-serif;" +
+      "font-size:15px;font-weight:600;color:#1f439e;text-decoration:none;}" +
+      ".bd-review-cta:hover{text-decoration:underline;}" +
+      "@media (max-width:480px){.bd-review-hero{padding:24px 16px;}" +
+      ".bd-review-hero__photo{flex-basis:140px;width:140px;}" +
+      ".bd-review-hero__photo img{height:105px;}}";
+    document.head.appendChild(style);
+  }
+
   function insertReviewTab(data) {
     var tabsList = document.querySelector("ul.tabs[data-tab]");
     if (!tabsList) {
@@ -89,12 +143,14 @@
       return;
     }
 
+    injectStyles();
+
     var tabLi = document.createElement("li");
     tabLi.className = "tab tab--review";
     var tabLink = document.createElement("a");
     tabLink.className = "tab-title";
     tabLink.href = "#tab-review";
-    tabLink.textContent = "Review";
+    tabLink.textContent = "Learn";
     tabLi.appendChild(tabLink);
     tabsList.appendChild(tabLi);
 
@@ -102,22 +158,25 @@
     content.className = "tab-content";
     content.id = "tab-review";
 
-    var html = "";
+    var heroHtml = "";
     if (data.hero_image_url) {
-      var imgUrl = resizedImageUrl(data.hero_image_url, { w: 800, fit: "inside", fmt: "webp", q: 80 });
-      html += '<img src="' + escapeHtml(imgUrl) + '" alt="' +
-        escapeHtml(data.title || "Ball review") +
-        '" style="max-width:100%;height:auto;display:block;margin:0 0 16px;">';
+      var imgUrl = resizedImageUrl(data.hero_image_url, { w: 400, h: 300, fit: "cover", fmt: "webp", q: 80 });
+      heroHtml += '<div class="bd-review-hero__photo"><img src="' + escapeHtml(imgUrl) + '" alt="' +
+        escapeHtml(data.title || "Ball review") + '"></div>';
     }
+    var copyHtml = '<div class="bd-review-hero__copy"><div class="bd-review-hero__eyebrow">Ball Review</div>';
     if (data.title) {
-      html += "<h3>" + escapeHtml(data.title) + "</h3>";
+      copyHtml += '<h3 class="bd-review-hero__title">' + escapeHtml(data.title) + "</h3>";
     }
     if (data.hook) {
-      html += '<p style="line-height:1.6;">' + escapeHtml(data.hook) + "</p>";
+      copyHtml += '<p class="bd-review-hero__hook">' + escapeHtml(data.hook) + "</p>";
     }
+    copyHtml += "</div>";
+
+    var html = '<div class="bd-review-hero">' + heroHtml + copyHtml + "</div>";
     if (data.learn_url) {
-      html += '<p><a href="' + escapeHtml(data.learn_url) +
-        '" target="_blank" rel="noopener">Read the full review &rarr;</a></p>';
+      html += '<div class="bd-review-body"><a class="bd-review-cta" href="' + escapeHtml(data.learn_url) +
+        '" target="_blank" rel="noopener">Read the full review &rarr;</a></div>';
     }
     content.innerHTML = html;
 
