@@ -7221,17 +7221,25 @@ directory):**
   1. Edit `embeds/bowlerdepot-video-summary.js`'s `API_BASE_URL` constant
      to this deployment's real `PublicApiUrl` (from `template.yaml`
      Outputs).
-  2. Upload it to the same S3 bucket/CloudFront distribution already
-     serving consumer-site (`ConsumerSiteBucket`/`ConsumerSiteDistribution`
-     -- reused, not a new bucket) --
-     `aws s3 cp embeds/bowlerdepot-video-summary.js s3://<ConsumerSiteBucket>/embeds/bowlerdepot-video-summary.js`
+  2. Upload it to the Learn site's S3 bucket/CloudFront distribution
+     (`LearnSiteBucket`/`LearnSiteDistribution` -- reused, not a new
+     bucket; corrected from an earlier draft of this section that used
+     `ConsumerSiteBucket` instead -- Al, on review: "why did we use
+     consumer site instead of learn site. feels like we are mixing some
+     things," and he's right: this is Learn-review content, and
+     `LearnSiteBucket` already has the identical S3+CloudFront+OAC setup
+     `ConsumerSiteBucket` does, so there was no infra reason to reach for
+     the other site's bucket) --
+     `aws s3 cp embeds/bowlerdepot-video-summary.js s3://<LearnSiteBucket>/embeds/bowlerdepot-video-summary.js`
      -- then invalidate CloudFront for that path
-     (`aws cloudfront create-invalidation --distribution-id <id> --paths "/embeds/bowlerdepot-video-summary.js"`).
+     (`aws cloudfront create-invalidation --distribution-id <LearnSiteDistributionId> --paths "/embeds/bowlerdepot-video-summary.js"`).
   3. In BigCommerce's control panel: **Storefront > Script Manager >
      Create a Script**, scoped to Product Pages, pointing at
-     `<script src="https://<your-cloudfront-domain>/embeds/bowlerdepot-video-summary.js"></script>`.
-     Updating the script's logic later only needs a re-upload + cache
-     invalidation, never touching Script Manager again.
+     `<script src="https://learn.bowlerdepot.com/embeds/bowlerdepot-video-summary.js"></script>`
+     (the Learn site's own real custom domain, not a bare CloudFront
+     domain -- already live per 6v). Updating the script's logic later
+     only needs a re-upload + cache invalidation, never touching Script
+     Manager again.
 
 **Tests:** `tests/test_bowlerdepot_video_sync.py` (new file) covers
 `build_bigcommerce_video_payload` (field mapping, title truncation,
@@ -13922,13 +13930,15 @@ the other:**
 1. Edit `embeds/bowlerdepot-article-hero.js`'s `API_BASE_URL` constant to
    this deployment's real `PublicApiUrl` (`template.yaml` Outputs).
 2. Upload it to the same reused S3 bucket/CloudFront distribution as the
-   video-summary script:
-   `aws s3 cp embeds/bowlerdepot-article-hero.js s3://<ConsumerSiteBucket>/embeds/bowlerdepot-article-hero.js`,
+   video-summary script -- `LearnSiteBucket`/`LearnSiteDistribution`, not
+   `ConsumerSiteBucket` (see that script's own deploy-mechanics comment
+   in 6q for why):
+   `aws s3 cp embeds/bowlerdepot-article-hero.js s3://<LearnSiteBucket>/embeds/bowlerdepot-article-hero.js`,
    then invalidate CloudFront for that path:
-   `aws cloudfront create-invalidation --distribution-id <id> --paths "/embeds/bowlerdepot-article-hero.js"`.
+   `aws cloudfront create-invalidation --distribution-id <LearnSiteDistributionId> --paths "/embeds/bowlerdepot-article-hero.js"`.
 3. In BigCommerce's control panel: **Storefront > Script Manager >
    Create a Script**, scoped to Product Pages, pointing at
-   `<script src="https://<your-cloudfront-domain>/embeds/bowlerdepot-article-hero.js"></script>`.
+   `<script src="https://learn.bowlerdepot.com/embeds/bowlerdepot-article-hero.js"></script>`.
    Updating the script's logic later only needs a re-upload + cache
    invalidation, never touching Script Manager again.
 

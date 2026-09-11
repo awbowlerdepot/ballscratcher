@@ -27,11 +27,13 @@
  *     "nothing to show" case below.
  *
  * Deploy: this file is a static asset uploaded to the same S3 bucket/
- * CloudFront distribution that already serves consumer-site (see
- * DEPLOY_RUNBOOK.md's "BowlerDepot video summary embed" section for the
- * exact aws s3 cp + cloudfront invalidation commands) -- NOT part of any
- * Lambda. BigCommerce loads it via a one-line loader snippet pasted into
- * Storefront > Script Manager, scoped to Product Pages. Updating this
+ * CloudFront distribution that already serves the Learn site
+ * (LearnSiteBucket/LearnSiteDistribution -- this is Learn-review
+ * content, so it belongs there rather than on consumer-site's bucket;
+ * see DEPLOY_RUNBOOK.md's "BowlerDepot video summary embed" section for
+ * the exact aws s3 cp + cloudfront invalidation commands) -- NOT part of
+ * any Lambda. BigCommerce loads it via a one-line loader snippet pasted
+ * into Storefront > Script Manager, scoped to Product Pages. Updating this
  * file's logic later only needs a re-upload + cache invalidation, never
  * touching Script Manager again.
  *
