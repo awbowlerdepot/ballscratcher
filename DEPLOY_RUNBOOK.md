@@ -4476,6 +4476,51 @@ constant bump doesn't change any test's pass/fail outcome). Same
 deploy: `git push` on Al's Mac, then `git pull` on the Pi -- no Lambda
 involved.
 
+**Second follow-up, same day**: even at 25s, video `LOzMGG5gbV8` (a past
+livestream/premiere replay) still failed with
+`transcript_panel_found_but_text_extraction_returned_empty`. A real debug
+HTML dump + screenshot showed a THIRD, genuinely different cause -- not a
+transcript-panel issue at all this time. The video PLAYER itself was
+showing YouTube's own playback error overlay:
+`<div class="ytp-error" role="alert" data-layer="4">...Something went
+wrong. Refresh or try again later.</div>`, confirmed actually visible (no
+`style="display: none"`, unlike the page's other overlay panels --
+share/playlist/overflow menus -- which really were hidden in the same
+dump). The watch page's own `playabilityStatus.status` was still `"OK"`
+server-side, so this isn't a dead/removed video, just a client-side player
+load glitch -- and YouTube's own error text literally suggests a refresh
+fixes it. The dump also showed the "In this video" panel HAD opened with
+the "Transcript" chip present, but `aria-selected` was still `"false"`
+even though `_select_transcript_tab_if_present` would already have run
+and clicked it earlier in that same request -- the click didn't throw,
+it just didn't take effect, presumably because the page's own JS wasn't
+reliably wiring up tab-switch handlers while the player was in this
+broken state. No amount of extra timeout was ever going to fix that.
+
+Fix in `scripts/home_transcript_fetcher_browser.py`: added
+`_player_has_error()`, checking `div.ytp-error[role="alert"]` for
+genuine visibility (not just DOM presence) right after `page.goto()`,
+before spending a full click/panel/tab/25s-timeout cycle on a page that
+can't finish it. If the error overlay is visible on load, the script now
+reloads the page once (mirroring YouTube's own suggested fix) and
+re-checks; if it's still there after the reload, the video is skipped
+with a new, distinct note -- `video_player_error_transcript_unavailable`
+-- instead of falling into the generic
+`transcript_panel_found_but_text_extraction_returned_empty` bucket
+(which would wrongly suggest another selector regression). If the error
+clears on reload, extraction proceeds normally.
+
+Added 4 tests to `tests/test_home_transcript_fetcher_browser.py`:
+`_player_has_error` true/false cases, plus two end-to-end
+`get_transcript_via_browser` cases (recovers after reload clears the
+error; gives up with the new note when the error persists through
+reload). `FakePage` gained a `reload()` method to support this. Full
+suite: 16/16 passing.
+
+Same deploy as the two fixes above: `git push` on Al's Mac, then
+`git pull` on the Pi -- still a plain script via cron, no Lambda
+involved.
+
 To watch it work instead of reading screenshots after the fact (useful
 for the first real run, e.g. over VNC with a desktop environment on the
 Pi):

@@ -83,6 +83,9 @@ class FakePage:
     def goto(self, url, timeout=None):
         self.goto_calls.append(url)
 
+    def reload(self, timeout=None):
+        self.goto_calls.append("__reload__")
+
     def locator(self, selector):
         return self.locator_map.get(selector, FakeLocator(visible=False))
 
@@ -174,6 +177,72 @@ def test_select_transcript_tab_is_a_harmless_noop_when_absent():
     directly in that case."""
     page = FakePage({})  # _TRANSCRIPT_TAB_SELECTOR falls back to FakeLocator(visible=False)
     script._select_transcript_tab_if_present(page, timeout_ms=1000)  # should not raise
+
+
+# --- _player_has_error -- real incident #3, 2026-09-10: video LOzMGG5gbV8's
+# debug dump showed YouTube's own player error overlay
+# (div.ytp-error[role="alert"]) genuinely visible (no display:none, unlike
+# the page's other overlay panels), with the "Transcript" tab click not
+# taking effect despite no exception -- see _PLAYER_ERROR_SELECTOR's
+# comment for the full evidence. ---
+
+def test_player_has_error_true_when_overlay_visible():
+    page = FakePage({script._PLAYER_ERROR_SELECTOR: FakeLocator(visible=True)})
+    assert script._player_has_error(page, timeout_ms=1000) is True
+
+
+def test_player_has_error_false_when_absent():
+    page = FakePage({})  # falls back to FakeLocator(visible=False)
+    assert script._player_has_error(page, timeout_ms=1000) is False
+
+
+# --- get_transcript_via_browser: player-error-on-load branching ---
+
+def test_get_transcript_via_browser_recovers_after_reload_clears_player_error(monkeypatch):
+    """Real incident: player error visible on initial load, but YouTube's
+    own suggested fix -- a refresh -- clears it, so extraction should
+    proceed normally afterward."""
+    monkeypatch.setattr(script, "_dump_debug_evidence", lambda *a, **k: None)
+    error_locator = FakeLocator(visible=True)
+    segment = FakeLocator(child_locator_map={
+        ".ytAttributedStringHost": FakeLocator(text="Alright let's check out this ball"),
+    })
+
+    class ReloadClearsError(FakePage):
+        def reload(self, timeout=None):
+            super().reload(timeout=timeout)
+            error_locator.visible = False
+
+    locator_map = {
+        script._PLAYER_ERROR_SELECTOR: error_locator,
+        script._SHOW_TRANSCRIPT_SELECTORS[0]: FakeLocator(visible=True),
+        "transcript-segment-view-model": FakeLocator(visible=True, segments=[segment]),
+    }
+    page = ReloadClearsError(locator_map)
+    browser = FakeBrowser(page)
+
+    transcript, note = script.get_transcript_via_browser("LOzMGG5gbV8", browser)
+
+    assert note is None
+    assert transcript == "Alright let's check out this ball"
+    assert "__reload__" in page.goto_calls
+
+
+def test_get_transcript_via_browser_gives_up_when_player_error_persists_after_reload(monkeypatch):
+    dumps = []
+    monkeypatch.setattr(script, "_dump_debug_evidence", lambda page, video_id, tag: dumps.append(tag))
+    locator_map = {
+        script._PLAYER_ERROR_SELECTOR: FakeLocator(visible=True),  # still visible even after reload
+    }
+    page = FakePage(locator_map)
+    browser = FakeBrowser(page)
+
+    transcript, note = script.get_transcript_via_browser("LOzMGG5gbV8", browser)
+
+    assert transcript == ""
+    assert note == script._NOTE_VIDEO_PLAYER_ERROR
+    assert dumps == ["player_error"]
+    assert page.closed is True
 
 
 # --- _click_first_visible ---

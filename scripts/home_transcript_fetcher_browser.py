@@ -147,6 +147,35 @@ _NOTE_PANEL_FOUND_BUT_EMPTY = "transcript_panel_found_but_text_extraction_return
 # so both have to be handled.
 _TRANSCRIPT_TAB_SELECTOR = 'button[role="tab"][aria-label="Transcript"]'
 
+_NOTE_VIDEO_PLAYER_ERROR = "video_player_error_transcript_unavailable"
+
+# Real incident #3, same day (2026-09-10): video LOzMGG5gbV8 (a past-
+# livestream/premiere replay) hit transcript_panel_found_but_text_extraction_
+# returned_empty even at the by-then-25s timeout. A real debug HTML dump +
+# screenshot showed something entirely different from incidents #1 and #2:
+# the video PLAYER itself was showing YouTube's own playback error overlay
+# -- `<div class="ytp-error" role="alert" data-layer="4">...Something went
+# wrong. Refresh or try again later.</div>` -- genuinely rendered (no
+# `style="display: none"`, unlike the other overlay panels on the same
+# page that really are hidden). The watch page's own
+# `playabilityStatus.status` was still "OK" server-side, so this isn't a
+# dead/removed video -- it's a client-side player load glitch, and
+# YouTube's own error text literally suggests a refresh fixes it. Crucially,
+# the dump also showed the "In this video" panel HAD opened and the
+# "Transcript" chip was present -- but aria-selected was still "false" even
+# though this same run would have already called
+# _select_transcript_tab_if_present. The click didn't fail (no exception),
+# it just didn't take effect: with the player in this broken state, the
+# page's own JS apparently isn't reliably wiring up tab-switch handlers, so
+# no amount of extra waiting was ever going to produce transcript segments.
+# Checking for this state up front (right after page load, before spending
+# a full click/panel/tab/25s-timeout cycle on a page that can't finish it)
+# and retrying once via reload -- per YouTube's own suggested fix -- is a
+# more targeted response than just waiting longer, and a distinct note here
+# means a future occurrence self-diagnoses instead of looking like another
+# selector regression.
+_PLAYER_ERROR_SELECTOR = 'div.ytp-error[role="alert"]'
+
 
 def _dump_debug_evidence(page, video_id: str, tag: str) -> None:
     """Screenshot + full page HTML, written to ./debug/ -- see module
@@ -196,6 +225,20 @@ def _select_transcript_tab_if_present(page, timeout_ms: int) -> None:
         pass
 
 
+def _player_has_error(page, timeout_ms: int) -> bool:
+    """Real incident fix, 2026-09-10 -- see _PLAYER_ERROR_SELECTOR's comment
+    above for the full evidence. Returns True only if YouTube's own player
+    error overlay is genuinely visible, not just present in the DOM (most of
+    the player's other overlay panels -- share, playlist menu, overflow --
+    exist in the markup at all times with style="display: none" until
+    triggered, so presence alone isn't evidence; visibility is)."""
+    try:
+        page.locator(_PLAYER_ERROR_SELECTOR).first.wait_for(state="visible", timeout=timeout_ms)
+        return True
+    except Exception:
+        return False
+
+
 def _extract_transcript_text(page, timeout_ms: int) -> str:
     """CONFIRMED against real markup via a live test's debug HTML dump
     (DcbP2eltVsE, see module docstring): each caption line is a
@@ -242,6 +285,19 @@ def get_transcript_via_browser(video_id: str, browser) -> tuple:
     page = browser.new_page()
     try:
         page.goto(f"https://www.youtube.com/watch?v={video_id}", timeout=DEFAULT_PAGE_LOAD_TIMEOUT_MS)
+
+        if _player_has_error(page, 3_000):
+            # Real incident, 2026-09-10 -- see _PLAYER_ERROR_SELECTOR's
+            # comment: YouTube's own error text suggests a refresh, and
+            # server-side playabilityStatus was OK in the real dump this
+            # was built from, so one retry via reload is worth it before
+            # giving up -- this isn't a dead video, just a glitchy load.
+            logger.info("video_id=%s: player error overlay visible on load -- reloading once", video_id)
+            page.reload(timeout=DEFAULT_PAGE_LOAD_TIMEOUT_MS)
+            if _player_has_error(page, 5_000):
+                logger.info("video_id=%s: player error persisted after reload -- giving up on this video", video_id)
+                _dump_debug_evidence(page, video_id, "player_error")
+                return "", _NOTE_VIDEO_PLAYER_ERROR
 
         clicked = _click_first_visible(page, _SHOW_TRANSCRIPT_SELECTORS, DEFAULT_TRANSCRIPT_BUTTON_TIMEOUT_MS)
         if not clicked:
