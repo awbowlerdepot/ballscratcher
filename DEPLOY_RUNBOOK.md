@@ -9276,6 +9276,64 @@ feature (`sam build && sam deploy`, unscoped, for `product_article_
 generator` and `admin_api`; `admin-spa`'s own S3+CloudFront deploy for
 the frontend half).
 
+### 6t.2 Stop altering the ball's surface finish (shine/reflection), 2026-09-11
+
+Al: "it keeps adjusting the visual surface of the ball and adding shine
+and other alterations. it should just add the depth and realistic look
+it is doing now. but not add reflection unless the ball already has
+that. the surface preparation is part of the ball and should not be
+altered."
+
+A new drift mode, distinct from the logo-size/proportion drift fixed in
+6t's main section: a bowling ball's surface finish (matte, dull, sanded,
+pearlized, glossy) is a real manufacturing property -- the "surface
+preparation" or "box finish" -- as fixed a physical fact about a specific
+ball as its color or printed logo. `build_gemini_scene_prompt`'s existing
+lighting instruction ("match the lighting and color grading of the new
+scene onto the ball naturally, with a realistic contact shadow and
+ambient light on its surface") was written to seat the ball into its new
+environment, but Gemini was apparently over-applying it -- adding glossy
+highlights/specular shine the reference photo doesn't actually have.
+
+Al's own line draws the distinction precisely: the DEPTH and realism of
+how the new scene's light falls across the ball (shading, contact
+shadow, ambient occlusion) is correct and should stay; the ball's own
+reflectivity should not change -- a matte ball must stay matte, a ball
+that's already glossy/pearlized can keep that shine, but nothing should
+gain shine or reflections it didn't already have in the reference image.
+
+**`src/product_article_generator/app.py`**: `build_gemini_scene_prompt`
+gained a new instruction, inserted immediately after the existing
+lighting/contact-shadow sentence (which is left unchanged) and before
+the people/pins/props exclusion list: an explicit "do not alter the
+ball's own surface finish" clause, framed as the same category of fixed
+physical fact as color/logo, forbidding new specular highlights, glossy
+sheen, or reflections beyond what the reference image's own finish
+shows, while explicitly re-affirming that ambient light falloff and
+contact shadow (the depth/realism Al wants kept) are still correct to
+add. Applies to both variants (`action_shot` and `product_shot`) -- Al's
+report wasn't scoped to one variant, and the shared lighting instruction
+this modifies is common to both.
+
+**Tests**: `tests/test_product_article_generator.py` --
+`test_build_gemini_scene_prompt_preserves_original_surface_finish`
+(new) confirms the pre-existing contact-shadow/ambient-light instruction
+survives untouched (this is a narrowing of what it's allowed to add, not
+a removal) and that the new surface-finish-preservation language is
+present for both variants. Verified via direct import (this sandbox has
+no `pytest` available, no network to install it) -- stubbed the heavy
+unavailable deps (`boto3`, `psycopg2`, `requests`, `google.*`,
+`urllib3.*`) since `build_gemini_scene_prompt` is a pure string-building
+function with no actual calls to any of them, then asserted all five new
+substrings appear in both variants' prompts, matching the new test's
+assertions exactly.
+
+No migration, no `template.yaml` change -- pure prompt-text addition,
+same deploy story as every other `build_gemini_scene_prompt` wording fix
+in this section (`sam build && sam deploy`, unscoped, for
+`product_article_generator`; existing article images are unaffected
+until their next regenerate).
+
 ### 6u. Article → BigCommerce sync: admin toggle (migration 028) + sync job design spec (job not yet built)
 
 Follow-up to 6s/6t (the ball-review article generator): Al asked how to get

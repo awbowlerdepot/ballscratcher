@@ -755,7 +755,16 @@ Parameters:
       regardless-of-stack-region CloudFront requirement as the other site
       certificate params (ConsumerSite/LearnSite/AdminSite above) -- NOT the
       us-west-1 exception that only applies to PublicApiCertificateArn's
-      ApiGatewayV2-based domain.
+      ApiGatewayV2-based domain. Real incident, later session: GoDaddy apex
+      HTTPS/SVCB AliasMode records aren't resolved by non-browser clients
+      (curl, most HTTP libraries -- confirmed via a live "Could not resolve
+      host" test), so the distribution's Aliases list now includes BOTH
+      bowleriq.com and www.bowleriq.com (apex forwarded to www via GoDaddy
+      Domain Forwarding, www served directly by this distribution). This
+      cert MUST therefore cover both names as SANs -- request it with both
+      as --domain-name/--subject-alternative-names together, not two
+      separate single-name certs (CloudFront only accepts one cert per
+      distribution, and every Alias must be covered by that one cert).
 
 Conditions:
   HasBigCommerceSecret: !Not [!Equals [!Ref BigCommerceSecretArn, ""]]
@@ -3774,6 +3783,7 @@ Resources:
         Aliases: !If
           - HasMarketingSiteDomain
           - - !Ref MarketingSiteDomainName
+            - !Sub "www.${MarketingSiteDomainName}"
           - !Ref AWS::NoValue
         ViewerCertificate: !If
           - HasMarketingSiteDomain

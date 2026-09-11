@@ -2124,6 +2124,32 @@ def test_build_gemini_scene_prompt_forbids_resizing_the_logo():
         assert "never redrawn larger, bolder, or more prominent" in prompt
 
 
+def test_build_gemini_scene_prompt_preserves_original_surface_finish():
+    """REAL INCIDENT (2026-09-11, Al): "it keeps adjusting the visual
+    surface of the ball and adding shine and other alterations. it should
+    just add the depth and realistic look it is doing now. but not add
+    reflection unless the ball already has that. the surface preparation
+    is part of the ball and should not be altered." A ball's surface
+    finish (matte, dull, sanded, pearlized, glossy) is a real
+    manufacturing property, same category of "fixed fact about the ball"
+    as its color/logo (already covered by the two tests above) -- this
+    fix adds the same kind of explicit preservation instruction for
+    reflectivity/shine specifically, while keeping the pre-existing
+    ambient-light/contact-shadow instruction intact (Al's own distinction:
+    new lighting/shadow from the scene is wanted, new shine/reflection on
+    the ball's own surface is not)."""
+    action_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "action_shot")
+    product_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "product_shot")
+    for prompt in (action_prompt, product_prompt):
+        # The pre-existing lighting/shadow instruction must survive --
+        # this fix narrows what it's allowed to add, it doesn't remove it.
+        assert "realistic contact shadow and ambient light on its" in prompt
+        assert "do not alter the ball's own surface finish" in prompt
+        assert "must match the reference image exactly" in prompt
+        assert "do not add" in prompt and "specular highlights, glossy sheen, or reflections" in prompt
+        assert "matte or dull-finish ball must stay matte and dull" in prompt
+
+
 class _FakeGeminiResponse:
     def __init__(self, payload: dict, status_ok: bool = True):
         self._payload = payload

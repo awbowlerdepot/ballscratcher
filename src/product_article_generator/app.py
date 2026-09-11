@@ -1339,7 +1339,32 @@ def build_gemini_scene_prompt(product: dict, article: dict, variant: str) -> str
     leave an obvious one out." This prompt (the image-generation step)
     carries the same soft preference forward, independently, in case a
     well-written theme description still gets diluted by Gemini during
-    generation."""
+    generation.
+
+    REAL INCIDENT (2026-09-11, Al): "it keeps adjusting the visual surface
+    of the ball and adding shine and other alterations. it should just add
+    the depth and realistic look it is doing now. but not add reflection
+    unless the ball already has that. the surface preparation is part of
+    the ball and should not be altered." A new drift mode, distinct from
+    the logo-size/proportion drift fixed above: a bowling ball's surface
+    finish (matte, dull, sanded, pearlized, glossy, etc.) is a deliberate
+    manufacturing property -- the "surface preparation" -- controlled by
+    the ball's box finish, exactly as fixed a physical fact about the ball
+    as its color or logo. The lighting instruction below ("match the
+    lighting and color grading... naturally, with a realistic contact
+    shadow and ambient light on its surface") was written to seat the ball
+    into its new scene, but Gemini was apparently over-applying it by
+    adding glossy highlights/specular shine the reference photo doesn't
+    actually have. Al's own line: the DEPTH and realism of how the new
+    scene's light falls across the ball (shading, contact shadow, ambient
+    occlusion) is correct and should stay; the ball's own reflectivity
+    should not change -- a matte ball must stay matte, a ball that's
+    already glossy/pearlized can keep that shine, but nothing should gain
+    shine or reflections it didn't already have in the reference. Fixed by
+    adding an explicit surface-finish preservation instruction alongside
+    the existing color/pattern/logo one, distinguishing "new ambient
+    lighting/shadow from the scene" (wanted) from "new reflectivity on the
+    ball's own surface" (not wanted)."""
     context = _resolve_visual_context(article)
     scene_desc = context or "an elevated, premium studio scene"
 
@@ -1394,7 +1419,18 @@ def build_gemini_scene_prompt(product: dict, article: dict, variant: str) -> str
         "than the reference -- this applies regardless of how the shot is framed. "
         "Match the lighting and color grading of the new scene onto the ball "
         "naturally, with a realistic contact shadow and ambient light on its "
-        "surface. This is a single-subject hero shot of the ball alone -- do not "
+        "surface. However, do not alter the ball's own surface finish: the "
+        "amount of shine, gloss, or reflectivity the ball's surface has is a "
+        "fixed manufacturing property (its factory surface preparation), exactly "
+        "like its color and logo, and must match the reference image exactly -- "
+        "a matte or dull-finish ball must stay matte and dull, and a glossy or "
+        "pearlized ball may keep the shine it already has, but do not add "
+        "specular highlights, glossy sheen, or reflections beyond what the "
+        "reference image's own finish shows. Only add the shading, ambient light "
+        "falloff, and contact shadow needed to seat the ball naturally into the "
+        "new environment -- that depth and realism is correct and should stay -- "
+        "without making the ball itself look shinier or more reflective than it "
+        "actually is. This is a single-subject hero shot of the ball alone -- do not "
         "include any people, hands, arms, legs, human figures, bowling shoes, "
         "scoreboards/monitors, or bowling pins anywhere in the frame, "
         "even blurred or in the background. The scene may still evoke a bowling lane "
