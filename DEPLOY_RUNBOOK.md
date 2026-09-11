@@ -4521,6 +4521,37 @@ Same deploy as the two fixes above: `git push` on Al's Mac, then
 `git pull` on the Pi -- still a plain script via cron, no Lambda
 involved.
 
+**Third follow-up, same day**: the player-error fix above only checked
+right after `page.goto()`. The very next real run, video `w8o3GymMa7U`
+still failed with `transcript_panel_found_but_text_extraction_returned_
+empty` at 25s -- a real debug dump + screenshot showed the on-load check
+had passed clean (no error yet at load time), but by the time extraction
+timed out, the SAME `div.ytp-error` overlay was visible again, and the
+transcript panel was sitting in exactly Round 2's "spinner still active"
+shape (panel `ENGAGEMENT_PANEL_VISIBILITY_EXPANDED`, an ACTIVE
+`tp-yt-paper-spinner` inside the `engagement-panel-searchable-transcript`
+continuation-item-renderer). So the player can apparently fail mid-wait,
+not just at initial page load -- a single check right after `goto()`
+isn't enough.
+
+Fix: in the `except` branch around `_extract_transcript_text` (where a
+timeout used to fall straight through to the generic
+`transcript_panel_found_but_text_extraction_returned_empty` note), added
+a second `_player_has_error()` check. If the overlay is visible right
+then, the failure is reclassified with the same
+`video_player_error_transcript_unavailable` note instead of the
+misleading generic one. Deliberately not reloading-and-retrying at this
+point -- that would mean redoing the whole click/tab-select flow from
+scratch after losing page state mid-function; tomorrow's cron run
+naturally gives the video a fresh attempt, on-load reload-recovery
+included.
+
+Added 1 test (`FlippingErrorLocator`, a fake that's invisible on its
+first `wait_for()` call and visible on every call after, modeling the
+error appearing between the on-load check and the extraction timeout).
+Full suite: 17/17 passing. Same deploy: `git push` (Mac) -> `git pull`
+(Pi).
+
 To watch it work instead of reading screenshots after the fact (useful
 for the first real run, e.g. over VNC with a desktop environment on the
 Pi):

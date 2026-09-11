@@ -316,6 +316,27 @@ def get_transcript_via_browser(video_id: str, browser) -> tuple:
         try:
             transcript = _extract_transcript_text(page, DEFAULT_TRANSCRIPT_PANEL_TIMEOUT_MS)
         except Exception:
+            if _player_has_error(page, 500):
+                # Real recurrence, 2026-09-10: video w8o3GymMa7U's debug
+                # dump showed the on-load check above passing clean (no
+                # error yet at page.goto time), but the SAME div.ytp-error
+                # overlay visible again at the moment extraction timed
+                # out -- the transcript panel itself was in exactly Round
+                # 2's "spinner still active" shape (panel EXPANDED, an
+                # ACTIVE tp-yt-paper-spinner inside the
+                # engagement-panel-searchable-transcript continuation-
+                # item-renderer), but with the player error also visible
+                # right then, attributing this to the same distinct
+                # player-error note is more honest than the generic
+                # empty-panel one, which would wrongly suggest yet
+                # another selector/timing regression. Deliberately not
+                # reloading again here -- that would mean redoing the
+                # whole click/tab-select flow from scratch after losing
+                # page state; tomorrow's cron run naturally gives this
+                # video a fresh attempt, on-load reload-recovery included.
+                logger.info("video_id=%s: player error visible at extraction timeout -- treating as player error, not a panel bug", video_id)
+                _dump_debug_evidence(page, video_id, "player_error")
+                return "", _NOTE_VIDEO_PLAYER_ERROR
             logger.exception("video_id=%s: transcript button clicked but panel/text extraction failed", video_id)
             _dump_debug_evidence(page, video_id, "panel_extraction_failed")
             return "", _NOTE_PANEL_FOUND_BUT_EMPTY

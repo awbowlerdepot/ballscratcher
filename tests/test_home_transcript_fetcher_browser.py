@@ -228,6 +228,45 @@ def test_get_transcript_via_browser_recovers_after_reload_clears_player_error(mo
     assert "__reload__" in page.goto_calls
 
 
+class FlippingErrorLocator(FakeLocator):
+    """Starts invisible (as at page load) then becomes visible from the
+    second wait_for() call onward -- models the real w8o3GymMa7U
+    recurrence, 2026-09-10: the on-load player-error check passed clean,
+    but the same ytp-error overlay was visible again by the time
+    extraction timed out. The player can apparently fail mid-wait too,
+    not just at initial load."""
+    def __init__(self):
+        super().__init__(visible=False)
+        self.calls = 0
+
+    def wait_for(self, state=None, timeout=None):
+        self.calls += 1
+        if self.calls == 1:
+            raise TimeoutError("not visible yet (on-load check)")
+        # visible on every check after the first
+
+
+def test_get_transcript_via_browser_reclassifies_as_player_error_when_it_appears_mid_wait(monkeypatch):
+    dumps = []
+    monkeypatch.setattr(script, "_dump_debug_evidence", lambda page, video_id, tag: dumps.append(tag))
+    error_locator = FlippingErrorLocator()
+    locator_map = {
+        script._PLAYER_ERROR_SELECTOR: error_locator,
+        script._SHOW_TRANSCRIPT_SELECTORS[0]: FakeLocator(visible=True),
+        "transcript-segment-view-model": FakeLocator(visible=False),  # never appears
+    }
+    page = FakePage(locator_map)
+    browser = FakeBrowser(page)
+
+    transcript, note = script.get_transcript_via_browser("w8o3GymMa7U", browser)
+
+    assert transcript == ""
+    assert note == script._NOTE_VIDEO_PLAYER_ERROR
+    assert dumps == ["player_error"]
+    assert page.closed is True
+    assert "__reload__" not in page.goto_calls  # on-load check passed clean, no reload attempted
+
+
 def test_get_transcript_via_browser_gives_up_when_player_error_persists_after_reload(monkeypatch):
     dumps = []
     monkeypatch.setattr(script, "_dump_debug_evidence", lambda page, video_id, tag: dumps.append(tag))
