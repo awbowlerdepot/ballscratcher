@@ -693,6 +693,44 @@ Parameters:
       ACM certificate ARN covering AdminSiteDomainName. Same us-east-1-
       regardless-of-stack-region CloudFront requirement as the other two
       sites' certificate params.
+  PublicApiDomainName:
+    Type: String
+    Default: ""
+    Description: >
+      Custom domain for PublicHttpApi (e.g. api.bowleriq.io), Al: "can we
+      put the public api url behind api.public.bowleriq.io or whatever you
+      think is best" -- picked api.bowleriq.io to match img.bowleriq.io's
+      existing one-word-subdomain convention on the same bowleriq.io
+      domain Al already owns, rather than the deeper api.public.bowleriq.io
+      suggestion. Same blank-param-means-feature-off convention as the
+      other *DomainName params, but a GENUINELY DIFFERENT mechanism
+      underneath: this is a real API Gateway HTTP API, not CloudFront, so
+      it's wired via AWS::ApiGatewayV2::DomainName/ApiMapping below rather
+      than a Distribution's Aliases/ViewerCertificate. Both this AND
+      PublicApiCertificateArn have to be set together. Once set, PublicApiUrl
+      below automatically reflects the custom domain -- which flows straight
+      into consumer-site's and the Learn site's build-time VITE_PUBLIC_API_URL
+      (see AdminSiteUrl's own comment on that baking mechanism) and into the
+      API_BASE_URL Al hand-edits in embeds/bowlerdepot-video-summary.js and
+      embeds/bowlerdepot-article-hero.js -- so setting this once tidies up
+      every one of those call sites at once, not just direct browser hits.
+  PublicApiCertificateArn:
+    Type: String
+    Default: ""
+    Description: >
+      ACM certificate ARN covering PublicApiDomainName. IMPORTANT, and the
+      opposite of every other *CertificateArn param in this template: this
+      cert must be requested in THIS STACK'S OWN REGION (us-west-1, per
+      DEPLOY_RUNBOOK.md's own ADMIN_API_URL examples), NOT us-east-1. The
+      us-east-1-regardless-of-region rule the other certs follow is a
+      CloudFront-specific requirement; API Gateway's own REGIONAL custom
+      domain (what AWS::ApiGatewayV2::DomainName creates by default, and
+      the only endpoint type HTTP APIs support) needs a cert in the same
+      region as the API itself. Requesting this one in us-east-1 by habit,
+      matching the other custom-domain params, will fail validation here.
+      Not created by this template, same "DNS validation needs a CNAME this
+      template can't reach" reasoning as the others -- request and validate
+      it yourself first, then pass the resulting ARN here.
 
 Conditions:
   HasBigCommerceSecret: !Not [!Equals [!Ref BigCommerceSecretArn, ""]]
@@ -703,6 +741,7 @@ Conditions:
   HasLearnSiteDomain: !Not [!Equals [!Ref LearnSiteDomainName, ""]]
   HasAdminSiteDomain: !Not [!Equals [!Ref AdminSiteDomainName, ""]]
   HasImageResizerDomain: !Not [!Equals [!Ref ImageResizerDomainName, ""]]
+  HasPublicApiDomain: !Not [!Equals [!Ref PublicApiDomainName, ""]]
   HasGitHubRepo: !Not [!Equals [!Ref GitHubRepo, ""]]
   ShouldCreateGitHubOidcProvider: !And
     - !Condition HasGitHubRepo
@@ -1812,6 +1851,31 @@ Resources:
       # consistency with AdminHttpApi and so PublicApiUrl below has a
       # stable logical id to reference -- no authorizer requires this the
       # way it did for AdminHttpApi.
+
+  PublicApiCustomDomain:
+    Type: AWS::ApiGatewayV2::DomainName
+    Condition: HasPublicApiDomain
+    Properties:
+      DomainName: !Ref PublicApiDomainName
+      DomainNameConfigurations:
+        # EndpointType: REGIONAL is the only option HTTP APIs support (no
+        # EDGE the way REST APIs/CloudFront can do) -- which is exactly
+        # why PublicApiCertificateArn's own description warns this cert
+        # must be requested in THIS stack's region, not us-east-1 like
+        # every CloudFront-fronted *CertificateArn param above.
+        - CertificateArn: !Ref PublicApiCertificateArn
+          EndpointType: REGIONAL
+
+  PublicApiMapping:
+    Type: AWS::ApiGatewayV2::ApiMapping
+    Condition: HasPublicApiDomain
+    Properties:
+      ApiId: !Ref PublicHttpApi
+      DomainName: !Ref PublicApiCustomDomain
+      # AWS::Serverless::HttpApi auto-deploys to the implicit $default
+      # stage -- same stage PublicApiUrl's own execute-api URL below
+      # already targets without ever naming it.
+      Stage: $default
 
   PublicApiFunction:
     Type: AWS::Serverless::Function
@@ -3966,7 +4030,24 @@ Outputs:
   AdminApiUrl:
     Value: !Sub "https://${AdminHttpApi}.execute-api.${AWS::Region}.amazonaws.com/"
   PublicApiUrl:
-    Value: !Sub "https://${PublicHttpApi}.execute-api.${AWS::Region}.amazonaws.com/"
+    # Automatically switches to the custom domain once PublicApiDomainName
+    # is set -- every consumer that reads this output (consumer-site's and
+    # the Learn site's build-time VITE_PUBLIC_API_URL baking, plus the
+    # API_BASE_URL Al hand-edits into embeds/bowlerdepot-video-summary.js
+    # and embeds/bowlerdepot-article-hero.js) picks up the custom domain
+    # for free on the next build/deploy, no separate output to remember to
+    # switch over to.
+    Value: !If
+      - HasPublicApiDomain
+      - !Sub "https://${PublicApiDomainName}/"
+      - !Sub "https://${PublicHttpApi}.execute-api.${AWS::Region}.amazonaws.com/"
+  PublicApiCustomDomainTarget:
+    # The value Al's registrar CNAME for PublicApiDomainName needs to
+    # point at -- same role ImageResizerDistributionDomainName plays for
+    # img.bowleriq.io, just a regional API Gateway domain instead of a
+    # CloudFront one. Only meaningful once PublicApiDomainName is set.
+    Condition: HasPublicApiDomain
+    Value: !GetAtt PublicApiCustomDomain.RegionalDomainName
   ConsumerSiteBucketName:
     Value: !Ref ConsumerSiteBucket
   ConsumerSiteDistributionId:

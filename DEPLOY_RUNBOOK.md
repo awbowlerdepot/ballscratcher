@@ -13947,6 +13947,96 @@ already follows). Full non-pytest `test_*.py` sweep ran clean at
 deploy mechanics above (embed script upload + Script Manager). No
 migration, no other `template.yaml` change.
 
+### 6as. Custom domain: api.bowleriq.io (PublicHttpApi)
+
+Al: "can we put the public api url behind api.public.bowleriq.io or
+whatever you think is best for the name." Picked `api.bowleriq.io` --
+matches `img.bowleriq.io`'s existing one-word-subdomain convention on the
+same `bowleriq.io` domain Al already owns (6ak), rather than the deeper
+three-level `api.public.bowleriq.io` he floated.
+
+**A genuinely different mechanism from every other custom domain in this
+template.** `data.bowleriq.com`, `admin.bowleriq.com`,
+`learn.bowlerdepot.com`, and `img.bowleriq.io` are all CloudFront
+distributions (static S3 sites, or CloudFront-in-front-of-a-Function-URL
+for the image resizer) -- their custom domain is just
+`Aliases`/`ViewerCertificate` on the `Distribution` resource, and their
+certs must be requested in `us-east-1` regardless of the stack's own
+region (a hard CloudFront requirement). `PublicHttpApi` is a real API
+Gateway HTTP API with no CloudFront in front of it, so this needed
+`AWS::ApiGatewayV2::DomainName` + `AWS::ApiGatewayV2::ApiMapping`
+instead -- new resource types, not previously used anywhere in this
+template.
+
+**The one detail that will trip up a copy-paste from 6ak/6ab.18: the
+cert region is the OPPOSITE of the CloudFront ones.** HTTP APIs only
+support `EndpointType: REGIONAL` custom domains (no `EDGE` option the
+way REST APIs/CloudFront can do) -- which means the ACM certificate for
+`PublicApiCertificateArn` must be requested in **this stack's own
+region** (`us-west-1`, confirmed via every `ADMIN_API_URL` example
+already in this doc), NOT `us-east-1`. Requesting it in `us-east-1` out
+of habit, matching every other `*CertificateArn` param, will issue a
+cert that `AWS::ApiGatewayV2::DomainName` simply can't use.
+
+**`template.yaml` changes:**
+
+- Two new params, `PublicApiDomainName`/`PublicApiCertificateArn`, same
+  blank-means-feature-off convention as the others, condition
+  `HasPublicApiDomain`.
+- `PublicApiCustomDomain` (`AWS::ApiGatewayV2::DomainName`,
+  `EndpointType: REGIONAL`) + `PublicApiMapping`
+  (`AWS::ApiGatewayV2::ApiMapping`, `Stage: $default` -- the implicit
+  stage `AWS::Serverless::HttpApi` already auto-deploys to, same stage
+  `PublicApiUrl`'s bare execute-api URL always targeted without ever
+  naming it), both conditional on `HasPublicApiDomain`.
+- `PublicApiUrl`'s Value became an `!If` on `HasPublicApiDomain`,
+  switching from the raw `*.execute-api.*.amazonaws.com/` URL to
+  `https://api.bowleriq.io/` once the custom domain is set. This is
+  deliberately NOT a separate output to remember to switch over to --
+  `PublicApiUrl` is already what consumer-site's and the Learn site's
+  build-time `VITE_PUBLIC_API_URL` bake in (see AdminSiteUrl's own
+  comment on that mechanism), and what Al hand-edits into
+  `embeds/bowlerdepot-video-summary.js`'s and
+  `embeds/bowlerdepot-article-hero.js`'s `API_BASE_URL` constant, so
+  reading the custom domain from this one output updates every one of
+  those call sites the next time each is built/edited, with nothing
+  else in the codebase needing to change.
+- New output `PublicApiCustomDomainTarget`
+  (`PublicApiCustomDomain.RegionalDomainName`) -- the value Al's
+  registrar CNAME needs to point `api.bowleriq.io` at, same role
+  `ImageResizerDistributionDomainName` plays for `img.bowleriq.io`.
+
+Verified via the same CFN-tolerant YAML parse this template's other
+intrinsic-tag-heavy changes get checked with: all new params/condition/
+resources/outputs present, `PublicApiUrl`'s `!If` structured correctly.
+
+**Deploy mechanics (Al must do these himself):**
+
+1. Request and DNS-validate an ACM cert covering `api.bowleriq.io` in
+   **`us-west-1`** (not `us-east-1` -- see above).
+2. Set `PublicApiDomainName="api.bowleriq.io"` and
+   `PublicApiCertificateArn="<the us-west-1 cert ARN>"` in
+   `samconfig.toml`'s `parameter_overrides`, same place every other real
+   domain/cert pair already lives.
+3. `sam build && sam deploy` -- creates `PublicApiCustomDomain`/
+   `PublicApiMapping` and flips `PublicApiUrl`'s output over.
+4. Read the new `PublicApiCustomDomainTarget` output
+   (`aws cloudformation describe-stacks --stack-name <your-stack-name>
+   --query "Stacks[0].Outputs[?OutputKey=='PublicApiCustomDomainTarget'].OutputValue"
+   --output text`) and add a CNAME record at wherever `bowleriq.io` is
+   registered: `api.bowleriq.io` -> that value.
+5. Once the CNAME resolves, `https://api.bowleriq.io/` serves
+   `PublicApiFunction` directly -- the bare execute-api URL keeps working
+   too. Rebuild consumer-site and the Learn site (`npm run build` in
+   each) to pick up the new `VITE_PUBLIC_API_URL`, and re-edit
+   `API_BASE_URL` in both embed scripts (only relevant once
+   `bowlerdepot-video-summary.js` and/or `bowlerdepot-article-hero.js`
+   are actually activated in Script Manager -- see 6q/6ar).
+
+No migration, no `template.yaml` change needed beyond what's already
+described above, no new tests (pure infra wiring, no new application
+logic to unit test).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
