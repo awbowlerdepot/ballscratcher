@@ -116,6 +116,16 @@
     // background regardless of viewport quirks. Mobile also switches to
     // a centered stacked column (flex-direction:column) with a slightly
     // gentler tilt, rather than reusing the desktop's wrapped-row layout.
+    //
+    // Follow-up, Al: "image is still small on mobile" -- the first mobile
+    // pass additionally shrank the photo to 140x105 on top of the layout
+    // fix, which was overcorrecting. Mobile now keeps the SAME 200x150
+    // card size as desktop (plenty of clearance: even a narrow 320px-wide
+    // phone has ~240px of width left inside the theme's own container
+    // padding + this hero's own padding, comfortably more than the
+    // ~228px the 200px card + its rotation margin needs) -- only the
+    // layout (stacked/centered) and tilt angle change for mobile, not the
+    // image's actual size.
     style.textContent =
       ".bd-review-hero{position:relative;background:#0f0f2d;color:#fff;" +
       "padding:32px 24px;display:flex;flex-wrap:wrap;align-items:center;" +
@@ -142,9 +152,7 @@
       ".bd-review-cta:hover{text-decoration:underline;}" +
       "@media (max-width:480px){" +
       ".bd-review-hero{padding:28px 16px;flex-direction:column;text-align:center;}" +
-      ".bd-review-hero__photo{flex-basis:140px;width:140px;margin:10px auto;" +
-      "transform:rotate(-4deg);}" +
-      ".bd-review-hero__photo img{height:105px;}" +
+      ".bd-review-hero__photo{margin:12px auto;transform:rotate(-4deg);}" +
       ".bd-review-hero__copy{flex-basis:auto;min-width:0;}}";
     document.head.appendChild(style);
   }
