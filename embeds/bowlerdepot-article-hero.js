@@ -119,13 +119,20 @@
     //
     // Follow-up, Al: "image is still small on mobile" -- the first mobile
     // pass additionally shrank the photo to 140x105 on top of the layout
-    // fix, which was overcorrecting. Mobile now keeps the SAME 200x150
-    // card size as desktop (plenty of clearance: even a narrow 320px-wide
-    // phone has ~240px of width left inside the theme's own container
-    // padding + this hero's own padding, comfortably more than the
-    // ~228px the 200px card + its rotation margin needs) -- only the
-    // layout (stacked/centered) and tilt angle change for mobile, not the
-    // image's actual size.
+    // fix, which was overcorrecting. Mobile briefly kept the same 200x150
+    // card as desktop instead.
+    //
+    // Follow-up, Al: "on mobile we were squaring up the image and making
+    // it look like this" (screenshot: a full-width, straight/un-tilted
+    // 4:3 image, not a small tilted thumbnail). Checked the Learn site's
+    // own source for how IT handles this -- ArticleDetailPage.tsx's hero
+    // image div is literally `aspect-[4/3] w-full rotate-0 ... md:-rotate-[8deg]
+    // md:w-[325px]`: the tilt and fixed width are md:-breakpoint-only
+    // (desktop) overrides: on mobile the Learn site's own hero image is
+    // always straight and full-width, not a shrunk tilted card. Matching
+    // that exactly: mobile drops the rotation and margin entirely and
+    // makes the photo fill the hero's content width at a 4:3 aspect
+    // ratio, same as the real site.
     style.textContent =
       ".bd-review-hero{position:relative;background:#0f0f2d;color:#fff;" +
       "padding:32px 24px;display:flex;flex-wrap:wrap;align-items:center;" +
@@ -151,8 +158,10 @@
       "font-size:15px;font-weight:600;color:#1f439e;text-decoration:none;}" +
       ".bd-review-cta:hover{text-decoration:underline;}" +
       "@media (max-width:480px){" +
-      ".bd-review-hero{padding:28px 16px;flex-direction:column;text-align:center;}" +
-      ".bd-review-hero__photo{margin:12px auto;transform:rotate(-4deg);}" +
+      ".bd-review-hero{padding:24px 16px;flex-direction:column;}" +
+      ".bd-review-hero__photo{flex:0 0 auto;width:100%;margin:0 0 18px;" +
+      "transform:none;}" +
+      ".bd-review-hero__photo img{height:auto;aspect-ratio:4/3;}" +
       ".bd-review-hero__copy{flex-basis:auto;min-width:0;}}";
     document.head.appendChild(style);
   }
