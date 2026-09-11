@@ -90,11 +90,21 @@ logger = logging.getLogger("home_transcript_fetcher_browser")
 
 DEFAULT_PAGE_LOAD_TIMEOUT_MS = 30_000
 DEFAULT_TRANSCRIPT_BUTTON_TIMEOUT_MS = 8_000
-# Bumped 8_000 -> 12_000, 2026-09-10: the "In this video"-panel variant
-# (see _TRANSCRIPT_TAB_SELECTOR's comment) adds an extra click-and-fetch
-# step before segments populate -- 8s was already borderline for the
-# classic direct-panel variant on a Pi's slower headless Chromium.
-DEFAULT_TRANSCRIPT_PANEL_TIMEOUT_MS = 12_000
+# Bumped 8_000 -> 12_000 -> 25_000, 2026-09-10, both times off real debug
+# evidence pulled from the Pi (see _TRANSCRIPT_TAB_SELECTOR's comment for
+# the first bump). The second failure at 12s was a genuinely different
+# case, confirmed via a real HTML dump for video 0m_aSA1Xe_k: the
+# "Transcript" chip WAS already aria-selected="true" (the tab-click fix
+# worked), but the content pane still held an ACTIVE
+# `tp-yt-paper-spinner` inside a `panel-target-id=
+# "engagement-panel-searchable-transcript"` continuation-item-renderer --
+# YouTube's own Innertube fetch for the transcript data genuinely hadn't
+# finished yet. Not a wrong-selector bug this time, just real fetch
+# latency (longer videos, a Pi's home connection, YouTube backend
+# variance) that 12s wasn't always enough headroom for. 25s costs
+# nothing on the videos that already succeed in a few seconds -- it only
+# matters for the slow-fetching minority this was written for.
+DEFAULT_TRANSCRIPT_PANEL_TIMEOUT_MS = 25_000
 DEBUG_DIR = os.path.join(os.path.dirname(__file__), "debug")
 
 # Multiple fallback selector strategies for the "Show transcript" button --

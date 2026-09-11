@@ -4455,6 +4455,27 @@ Lambda -- no `sam deploy` needed. Just `git pull` on the Pi so the next
 `python3 scripts/home_transcript_fetcher_browser.py` run) picks up the
 fix.
 
+**Follow-up, same day**: after deploying the tab-click fix above, Al ran
+it live and most videos started succeeding -- but a handful still hit
+`transcript_panel_found_but_text_extraction_returned_empty` at the (by
+then bumped) 12s timeout. Pulled a fresh debug HTML dump for one of
+those (video `0m_aSA1Xe_k`) and found a genuinely different cause this
+time: the "Transcript" chip WAS already `aria-selected="true"` (the
+tab-click fix worked correctly), but the content pane still held an
+ACTIVE `tp-yt-paper-spinner` inside a
+`panel-target-id="engagement-panel-searchable-transcript"`
+continuation-item-renderer -- YouTube's own Innertube fetch for the
+transcript data simply hadn't finished within 12s. Not a selector bug,
+just real fetch latency (longer videos, the Pi's home connection,
+YouTube backend variance). Bumped
+`DEFAULT_TRANSCRIPT_PANEL_TIMEOUT_MS` again, 12s -> 25s -- costs nothing
+on the majority of videos that already succeed in a few seconds, only
+matters for the slow-fetching minority. Suite re-verified: 12/12
+passing (the fake locators don't simulate real elapsed time, so this
+constant bump doesn't change any test's pass/fail outcome). Same
+deploy: `git push` on Al's Mac, then `git pull` on the Pi -- no Lambda
+involved.
+
 To watch it work instead of reading screenshots after the fact (useful
 for the first real run, e.g. over VNC with a desktop environment on the
 Pi):
