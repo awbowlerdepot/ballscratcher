@@ -43,10 +43,10 @@
 (function () {
   "use strict";
 
-  // Replace with this deployment's real PublicApiUrl (template.yaml
-  // Outputs -- see DEPLOY_RUNBOOK.md) before uploading. Trailing slash
-  // intentionally stripped so the path below can always start with "/".
-  var API_BASE_URL = "https://REPLACE_WITH_PUBLIC_API_URL".replace(/\/$/, "");
+  // PublicApiUrl (template.yaml Outputs) -- now api.bowleriq.io (6as).
+  // Trailing slash intentionally stripped so the path below can always
+  // start with "/".
+  var API_BASE_URL = "https://api.bowleriq.io".replace(/\/$/, "");
 
   // Same on-demand resizer this project's Learn site uses
   // (bowlerdepot-learn/src/api/client.ts's resizedImageUrl) -- reimplemented
