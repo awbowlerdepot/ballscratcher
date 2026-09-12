@@ -590,6 +590,25 @@ def backfill_last_video_discovery_at():
         conn.close()
 
 
+@app.post("/admin/backfill-finish-categories")
+def backfill_finish_categories():
+    # Populates products.finish_category (migration 035) from the raw
+    # factory_finish text every scraper already captures -- see
+    # service.backfill_finish_categories and service.classify_factory_
+    # finish's docstrings, and migration 035's header comment, for the
+    # full "are we capturing the finish for these balls?" story (Al,
+    # 2026-09-12). No request body, no path param: catalog-wide by
+    # design, same shape as backfill-last-video-discovery-at above.
+    # Safe to call more than once -- re-running after a classifier logic
+    # change intentionally re-classifies every row (see that function's
+    # docstring for why this one doesn't use a NULL-only guard).
+    conn = service.get_db_connection()
+    try:
+        return service.backfill_finish_categories(conn)
+    finally:
+        conn.close()
+
+
 @app.post("/admin/dedupe-price-sources")
 def dedupe_price_sources():
     # One-off cleanup for a real duplication bug -- Al: "there are

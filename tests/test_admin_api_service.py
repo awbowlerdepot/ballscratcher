@@ -1161,6 +1161,23 @@ class FakeCursor:
             self.db.get("product_article_generation_status", {}).pop(product_id, None)
             self._last_result = None
 
+        # --- 035_products_finish_category.sql -- backfill_finish_
+        # categories' scan (see that function's own docstring in
+        # service.py and classify_factory_finish's docstring for the
+        # bucket-derivation logic under test). Its UPDATE is a plain
+        # single-column "update products set finish_category = %s where
+        # id = %s" -- already handled by the generic "update products
+        # set" branch above, no dedicated branch needed for it.
+
+        elif q.startswith("select id, factory_finish, finish_category from products where factory_finish is not null"):
+            rows = [
+                (pid, row.get("factory_finish"), row.get("finish_category"))
+                for pid, row in self.db["products"].items()
+                if row.get("factory_finish") is not None
+            ]
+            self._rows = rows
+            self.description = [("id",), ("factory_finish",), ("finish_category",)]
+
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
 
@@ -2058,6 +2075,126 @@ def test_backfill_last_video_discovery_at_handles_multiple_products_independentl
     assert result == {"products_with_video_history": 2, "products_updated": 1}
     assert db["products"]["prod-1"]["last_video_discovery_at"] == "2026-01-05"
     assert db["products"]["prod-2"]["last_video_discovery_at"] == "2026-02-15"  # untouched
+
+
+# --- classify_factory_finish: pure bucket-derivation logic, see migration
+# 035's header comment and the function's own docstring for the domain
+# research (Abralon/Siaair Micro Pad/Abranet are mechanical sanding pads,
+# not polishes; a genuine polish/compound step is a distinct, meaningfully
+# glossier finish; very fine grit alone (>=3000) can read as a mild sheen
+# without any polish step) grounding these bucket definitions.
+
+def test_classify_factory_finish_dull_below_satin_threshold():
+    assert service.classify_factory_finish("500/1000/2000 Siaair Micro Pad") == "dull"
+
+
+def test_classify_factory_finish_satin_at_or_above_grit_threshold():
+    assert service.classify_factory_finish("5000 Grit LSS") == "satin"
+
+
+def test_classify_factory_finish_uses_highest_grit_in_a_progression():
+    # A progression that crosses the threshold should classify off the
+    # FINEST (highest) grit reached, not the first/lowest one listed.
+    assert service.classify_factory_finish("500, 1000, 3000 Abralon") == "satin"
+
+
+def test_classify_factory_finish_polish_keyword_wins_over_grit_number():
+    # Real factory_finish shape from production: a polish/compound step
+    # mentioned alongside a grit number that would otherwise read 'dull'
+    # on its own -- the keyword must win, since a genuine polish step is
+    # more finish-determinative than the grit number underneath it.
+    assert service.classify_factory_finish(
+        "800 Abranet(R), 1000, 2000 Abralon(R) Power House Factory Finish Polish"
+    ) == "polished"
+    assert service.classify_factory_finish("Royal Compound") == "polished"
+
+
+def test_classify_factory_finish_none_for_missing_or_empty():
+    assert service.classify_factory_finish(None) is None
+    assert service.classify_factory_finish("") is None
+    assert service.classify_factory_finish("   ") is None
+
+
+def test_classify_factory_finish_none_for_unparseable_text():
+    # No grit number and no polish keyword -- nothing to classify from,
+    # same NULL-means-unknown convention as core_id/coverstock_id, not a
+    # guessed default bucket.
+    assert service.classify_factory_finish("Sanded finish") is None
+
+
+# --- backfill_finish_categories: migration-035 backfill, see that
+# function's own docstring for why it intentionally OVERWRITES an
+# existing finish_category on every re-run (unlike backfill_last_video_
+# discovery_at's NULL-only guard) rather than skipping already-set rows.
+
+def test_backfill_finish_categories_classifies_unset_rows():
+    db = {
+        "products": {
+            "prod-1": {"factory_finish": "500/1000/2000 Siaair Micro Pad", "finish_category": None},
+            "prod-2": {"factory_finish": "5000 Grit LSS", "finish_category": None},
+            "prod-3": {"factory_finish": None, "finish_category": None},
+        },
+    }
+    conn = FakeConnection(db)
+
+    result = service.backfill_finish_categories(conn)
+
+    assert result == {"products_with_factory_finish": 2, "products_updated": 2}
+    assert db["products"]["prod-1"]["finish_category"] == "dull"
+    assert db["products"]["prod-2"]["finish_category"] == "satin"
+    assert db["products"]["prod-3"]["finish_category"] is None  # no factory_finish, left alone
+    assert conn.committed is True
+
+
+def test_backfill_finish_categories_skips_rows_already_matching_computed_value():
+    db = {
+        "products": {
+            "prod-1": {"factory_finish": "5000 Grit LSS", "finish_category": "satin"},
+        },
+    }
+    conn = FakeConnection(db)
+
+    result = service.backfill_finish_categories(conn)
+
+    assert result == {"products_with_factory_finish": 1, "products_updated": 0}
+    assert db["products"]["prod-1"]["finish_category"] == "satin"
+
+
+def test_backfill_finish_categories_overwrites_stale_classification():
+    # Unlike backfill_last_video_discovery_at, this backfill is meant to
+    # be safely re-run after classify_factory_finish's own logic changes
+    # -- a row whose stored bucket no longer matches the current
+    # classifier output should be corrected, not left stale.
+    db = {
+        "products": {
+            "prod-1": {"factory_finish": "Royal Compound", "finish_category": "dull"},
+        },
+    }
+    conn = FakeConnection(db)
+
+    result = service.backfill_finish_categories(conn)
+
+    assert result == {"products_with_factory_finish": 1, "products_updated": 1}
+    assert db["products"]["prod-1"]["finish_category"] == "polished"
+
+
+def test_backfill_finish_categories_leaves_unparseable_finish_untouched():
+    # A factory_finish value that classify_factory_finish can't parse
+    # (no grit number, no polish keyword) returns None -- this must NOT
+    # overwrite an existing category with None, and must not count as an
+    # update, matching classify_factory_finish's own "no false negatives"
+    # NULL-means-unknown contract.
+    db = {
+        "products": {
+            "prod-1": {"factory_finish": "Sanded finish", "finish_category": "dull"},
+        },
+    }
+    conn = FakeConnection(db)
+
+    result = service.backfill_finish_categories(conn)
+
+    assert result == {"products_with_factory_finish": 1, "products_updated": 0}
+    assert db["products"]["prod-1"]["finish_category"] == "dull"  # untouched, not cleared
 
 
 # --- backfill_netsuite_status: one-off MOTIV status-clobber correction --

@@ -14546,6 +14546,123 @@ no pytest in this sandbox, per this doc's own recurring note). No
 already a dependency of this Lambda for the reference-image PNG
 re-encode step, and no new environment variables or IAM were required.
 
+### 6aw. Structured ball surface-finish classification (2026-09-12)
+
+Al, right after the logo-scale-factor fix above (same conversation, same
+surface-finish-preservation clause context): "are we capturing the finish
+for these balls?" Investigation found `products.factory_finish` (migration
+001) IS captured by every scraper already, but only as a raw
+manufacturer-specific text string ("500/1000/2000 Siaair Micro Pad",
+"5000 Grit LSS", "800 Abranet(R), 1000, 2000 Abralon(R) Power House Factory
+Finish Polish") -- never normalized into a matte/satin/glossy sheen
+category, and (before this feature) never fed into the article image
+generator's prompt at all. Al's own framing when asked whether structured
+data was feasible: "if you think we can get that as structured that would
+be great but no all manufactures use the same surfacing pads or
+polishes... they could be mapped as similar but they are not 100% the
+same" -- an explicit ask for an approximate, honestly-caveated bucketing,
+not false precision.
+
+**Domain research** (bowling-industry sources -- Storm, Brunswick,
+ball-maintenance retailers): Abralon, Siaair Micro Pad, and Abranet are
+all foam-backed mechanical sanding pads/discs, not liquids, ranging
+roughly 180-4000+ grit. Grit alone does affect apparent sheen: low/mid
+grit (up to ~2000) reads dull/hazy, while very fine grit (3000-4000+) can
+read as a mild sheen/satin surface on its own, with no separate polish
+step. A genuinely distinct polish/compound step (Royal Shine, Royal
+Compound, "Factory Finish Polish") is a meaningfully glossier finish than
+sanding alone produces. Known, deliberately-unaddressed caveat: a pearl
+coverstock's own mica-like additive can make a ball look shinier than its
+finish classification alone would suggest, independent of the sanding/
+polish step -- surfaced directly in the image prompt (see below) rather
+than silently ignored.
+
+**Migration 035** (`db/migrations/035_products_finish_category.sql`) adds
+`products.finish_category text` with a CHECK constraint limiting it to
+`'dull'`, `'satin'`, or `'polished'` (or NULL, meaning "no factory_finish
+captured to classify from" -- same NULL-means-unknown convention as
+core_id/coverstock_id). No backfill in the migration itself, matching this
+project's established "migration adds the column, a separate one-shot
+admin-triggered backfill fills it" split (005/last_video_discovery_at is
+the precedent).
+
+**`classify_factory_finish(raw_finish)`** (added to
+`src/admin_api/service.py`, and duplicated locally in
+`src/product_article_generator/app.py` per this project's established
+convention of reimplementing small logic across Lambda boundaries rather
+than sharing a package): checks for a polish/compound/shine/buff keyword
+FIRST (wins over any grit number in the same string -- a polish step is
+more finish-determinative than the grit underneath it), then falls back to
+the HIGHEST grit number found in the string (a progression like
+"500, 1000, 3000" classifies off the finest grit reached) against a
+3000-grit threshold (`>=3000` -> `'satin'`, else `'dull'`). Returns `None`
+for missing/empty/unparseable input -- never a guessed default bucket.
+Deliberately the same keyword list and threshold for every manufacturer,
+since a coarser "mapped as similar" bucket is exactly what Al asked for,
+not a per-manufacturer model this project has no data to build responsibly.
+
+**`backfill_finish_categories(conn)`** (admin_api/service.py) + **`POST
+/admin/backfill-finish-categories`** (admin_api/app.py): same single-pass,
+no-pagination shape as `backfill_last_video_discovery_at`, but with one
+deliberate difference -- it OVERWRITES an existing `finish_category` any
+time the freshly-computed bucket differs from what's stored, rather than
+only ever setting a NULL column. This makes it safe (and expected) to
+re-run after `classify_factory_finish`'s own logic changes (e.g. a keyword
+list correction), since `finish_category` is a fully-derived value with no
+independent source of truth to protect -- unlike `last_video_discovery_at`,
+which preserves real search history. `scripts/backfill_finish_categories.py`
+is the same thin one-shot-POST wrapper shape as
+`scripts/backfill_last_video_discovery_at.py`.
+
+**`PRODUCT_UPDATABLE_FIELDS`** now includes `finish_category` (so it's
+correctable through the normal review/edit path if the classifier gets a
+specific ball wrong -- there's no "rescrape" to fall back on for a derived
+column). **`list_products`**'s SELECT now includes `p.factory_finish` and
+`p.finish_category` (previously only `get_product`'s `select p.*` exposed
+`factory_finish`, via the Raw Data tab's generic key-value dump -- neither
+was visible on the Products list view before this).
+
+**Image-prompt wiring** (`src/product_article_generator/app.py`,
+`build_gemini_scene_prompt`): when `product.get('factory_finish')`
+classifies to a known bucket, a new sentence is appended to the existing
+surface-finish-preservation clause, explicitly framed as supporting
+context -- "not a substitute for the reference photo itself, which is
+always the final authority" -- naming the bucket and cautioning that
+different manufacturers' pads/polishes aren't all identical, per Al's own
+"mapped as similar... not 100% the same" framing. When
+`product.get('coverstock_type') == 'pearl'`, an additional sentence notes
+the mica-like shimmer caveat from the domain research above, so Gemini
+doesn't mistake a pearl ball's natural sparkle for an instruction
+violation. Omitted entirely (not stated as "unknown") when
+`factory_finish` is missing or unclassifiable, matching
+`classify_factory_finish`'s own None-means-unknown contract.
+
+**Tests**: `tests/test_admin_api_service.py` -- 6 new tests for
+`classify_factory_finish` (dull below threshold, satin at/above threshold,
+highest-grit-in-a-progression, polish keyword wins over grit, None for
+missing/empty, None for unparseable text) and 4 new tests for
+`backfill_finish_categories` (classifies unset rows, skips rows already
+matching, overwrites a stale classification, leaves an unparseable
+`factory_finish` untouched rather than clearing the stored value). A new
+FakeCursor branch was added for the backfill's SELECT; its UPDATE needed
+no new branch (already covered by the existing generic single-column
+"update products set" fake). `tests/test_product_article_generator.py` --
+4 new tests confirming the local duplicate classifier agrees with
+admin_api's on the cases that matter, the finish hint appears with the
+correct bucket and reference-photo-authority language when
+`factory_finish` is known, the hint is omitted entirely when unknown, and
+the pearl-shimmer caveat appears only for `coverstock_type='pearl'`. Full
+regression: `test_admin_api_service.py`'s own runner hits a pre-existing,
+unrelated crash at `test_get_product_assembles_all_related_data` (a stale
+fixed-query-sequence fixture that predates the 034 generation-status
+feature and never got updated for its extra query -- confirmed via a
+side-by-side run against the pre-this-feature `git show HEAD:...` copy of
+the file, same crash, so not a regression introduced here); every test
+defined before that point in the file, including all 10 new ones, passes.
+`test_product_article_generator.py`: 151/151 (up from 147 -- 4 new tests).
+No `template.yaml` changes needed -- confirmed it still parses via the
+project's usual CFN-tolerant YAML loader check.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

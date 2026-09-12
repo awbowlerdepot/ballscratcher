@@ -1160,6 +1160,40 @@ def estimate_ball_frame_fill_ratio(raw_bytes: bytes):
     return round(fill_ratio, 3)
 
 
+# classify_factory_finish's keyword list and grit threshold -- deliberately
+# duplicated from admin_api/service.py's own copy rather than shared as a
+# package import (this project's established convention across Lambda
+# boundaries -- see e.g. get_requests_session being reimplemented in every
+# backfill script). Keep the two in sync by hand if either ever changes;
+# see admin_api/service.py's classify_factory_finish docstring and
+# migration 035's header comment for the full research writeup behind
+# these values.
+_FINISH_POLISH_KEYWORDS_RE = re.compile(r"polish|compound|shine|buff", re.IGNORECASE)
+_FINISH_SATIN_GRIT_THRESHOLD = 3000
+
+
+def classify_factory_finish(raw_finish: str) -> str:
+    """Local duplicate of admin_api.service.classify_factory_finish --
+    buckets a raw products.factory_finish string into 'dull', 'satin', or
+    'polished', or returns None if there's nothing to classify. Used only
+    to build a supporting-context hint for Gemini alongside the reference
+    photo (see build_gemini_scene_prompt's own finish-preservation clause)
+    -- never as a replacement for looking at the actual photo, per Al's
+    explicit caution that different manufacturers' finishing processes
+    "could be mapped as similar but they are not 100% the same.\""""
+    if not raw_finish or not raw_finish.strip():
+        return None
+
+    if _FINISH_POLISH_KEYWORDS_RE.search(raw_finish):
+        return "polished"
+
+    grit_numbers = [int(n) for n in re.findall(r"\d{3,5}", raw_finish)]
+    if not grit_numbers:
+        return None
+
+    return "satin" if max(grit_numbers) >= _FINISH_SATIN_GRIT_THRESHOLD else "dull"
+
+
 def _resolve_visual_context(article: dict) -> str:
     """Shared fallback chain used by every image prompt builder below
     (Stability's background-only prompt and Gemini's integrated scene
@@ -1587,6 +1621,47 @@ def build_gemini_scene_prompt(product: dict, article: dict, variant: str,
     else:
         scale_awareness_clause = generic_scale_awareness
 
+    # REAL ASK (2026-09-12, Al): "are we capturing the finish for these
+    # balls?" -- a direct follow-up to the surface-finish-preservation
+    # clause below (2026-09-11 incident), asking whether anything more
+    # specific than "match the reference photo" could be told to Gemini.
+    # See classify_factory_finish's own docstring and migration 035's
+    # header comment for the bucket definitions and the full research
+    # writeup. This is supporting context ONLY, stated as such to Gemini:
+    # per Al's explicit caution ("all manufactures use the same surfacing
+    # pads or polishes... they could be mapped as similar but they are
+    # not 100% the same"), the classification is deliberately named as
+    # approximate, and the reference photo is named as the tiebreaker --
+    # never a replacement for the existing "match the reference image
+    # exactly" instruction, only a same-direction hint for cases where a
+    # subtle sheen might otherwise be hard for the model to read from the
+    # photo alone. Omitted entirely when there's nothing to classify
+    # (unknown factory_finish) rather than stating a category that isn't
+    # actually known.
+    finish_category = classify_factory_finish(product.get("factory_finish"))
+    if finish_category:
+        finish_hint_clause = (
+            f" As additional context (not a substitute for the reference photo "
+            f"itself, which is always the final authority): this ball's factory "
+            f"surface preparation is classified as '{finish_category}' "
+            f"({'a distinct polish/compound step producing real gloss' if finish_category == 'polished' else 'fine sanding alone, no separate polish step'}), "
+            "an approximate bucket derived from the manufacturer's own finish "
+            "description and not a precise measurement -- different manufacturers' "
+            "sanding pads and polishes are not all identical, so treat this as a "
+            "loose sanity check on the sheen level, not a hard rule. "
+            + (
+                "This coverstock is also a pearl finish, which can look shinier "
+                "than the factory-finish classification alone would suggest due to "
+                "its mica-like additive -- some visible shimmer or sparkle beyond "
+                "a plain matte/satin surface is expected and correct for a pearl "
+                "ball, and should be preserved from the reference photo. "
+                if product.get("coverstock_type") == "pearl"
+                else ""
+            )
+        )
+    else:
+        finish_hint_clause = ""
+
     if variant == "action_shot":
         framing = "a dynamic hero shot conveying motion and energy, with the ball large and prominent in the frame"
         size_clause = (
@@ -1650,7 +1725,7 @@ def build_gemini_scene_prompt(product: dict, article: dict, variant: str,
         "falloff, and contact shadow needed to seat the ball naturally into the "
         "new environment -- that depth and realism is correct and should stay -- "
         "without making the ball itself look shinier or more reflective than it "
-        "actually is. This is a single-subject hero shot of the ball alone -- do not "
+        f"actually is.{finish_hint_clause} This is a single-subject hero shot of the ball alone -- do not "
         "include any people, hands, arms, legs, human figures, bowling shoes, "
         "scoreboards/monitors, or bowling pins anywhere in the frame, "
         "even blurred or in the background. The scene may still evoke a bowling lane "

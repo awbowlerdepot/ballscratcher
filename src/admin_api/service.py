@@ -28,6 +28,7 @@ SKU_FIELD_NAME_RE = re.compile(r"^(rg|differential|mass_bias)_(\d{1,2})lb$")
 PRODUCT_UPDATABLE_FIELDS = {
     "name", "color", "coverstock_material", "coverstock_type",
     "coverstock_name", "factory_finish", "part_number", "published",
+    "finish_category",
 }
 # core_name removed (migration 007): it was never actually a products
 # column -- only ball_families (now cores) ever had it, and that table was
@@ -42,6 +43,67 @@ PRODUCT_UPDATABLE_FIELDS = {
 # text on review_queue (it has to represent values from multiple sources
 # uniformly), so these need casting before being written back.
 NUMERIC_SKU_FIELDS = {"rg", "differential", "mass_bias"}
+
+# classify_factory_finish's keyword list -- see that function's own
+# docstring and 035_products_finish_category.sql's header comment for the
+# full research writeup. Checked BEFORE any grit-number logic: a raw
+# factory_finish string naming one of these is doing a genuinely distinct
+# liquid-finishing step (not just fine sanding), regardless of what grit
+# number also appears in the same string (e.g. "1000, 2000 Abralon(R)
+# Power House Factory Finish Polish" is 'polished', not 'satin', even
+# though 2000 alone would read as 'dull').
+FINISH_POLISH_KEYWORDS_RE = re.compile(r"polish|compound|shine|buff", re.IGNORECASE)
+
+# Grit-number threshold separating 'dull' (hazy, common "box finish" range)
+# from 'satin' (fine-enough sanding alone starts producing visible sheen) --
+# see migration 035's header comment for the bowling-industry research this
+# threshold is grounded in. Applied to the HIGHEST grit number found in the
+# string, since factory_finish values commonly list a whole progression
+# ("500/1000/2000 Siaair Micro Pad") and the finest grit used is what
+# actually determines the final surface.
+FINISH_SATIN_GRIT_THRESHOLD = 3000
+
+
+def classify_factory_finish(raw_finish: str) -> str:
+    """Buckets a products.factory_finish raw string into a coarse sheen
+    category: 'dull', 'satin', or 'polished' -- see migration 035's header
+    comment for the full domain research (Abralon/Siaair Micro Pad/Abranet
+    are mechanical sanding pads, not polishes; a genuine polish/compound
+    step produces meaningfully more gloss than sanding alone; very fine
+    grit alone (>=3000) can still read as a mild sheen without any polish
+    step). Returns None for a missing/empty/unparseable input -- 'unknown'
+    is not itself a category (see migration 035's NULL convention, same as
+    core_id/coverstock_id).
+
+    Deliberately approximate, per Al's own framing when he asked for this:
+    "if you think we can get that as structured that would be great but no
+    all manufactures use the same surfacing pads or polishes... they could
+    be mapped as similar but they are not 100% the same." This function
+    buckets the STATED FINISHING PROCESS as described by each
+    manufacturer's own text, not a verified physical measurement -- two
+    balls in the same bucket are being treated as roughly comparable, not
+    identical. Callers that use this for anything visual (see
+    product_article_generator's own duplicate of this function) must still
+    treat the reference photo as the authoritative source when the two
+    disagree, and separately account for coverstock_type='pearl' balls
+    looking shinier than their finish_category alone would suggest (a
+    mica-like additive effect, independent of the sanding/polish step).
+
+    No manufacturer-specific logic: same grit threshold and keyword list
+    regardless of brand, since a coarser "mapped as similar" bucket is
+    explicitly what was asked for here, not a per-manufacturer model this
+    project has no data to build responsibly."""
+    if not raw_finish or not raw_finish.strip():
+        return None
+
+    if FINISH_POLISH_KEYWORDS_RE.search(raw_finish):
+        return "polished"
+
+    grit_numbers = [int(n) for n in re.findall(r"\d{3,5}", raw_finish)]
+    if not grit_numbers:
+        return None
+
+    return "satin" if max(grit_numbers) >= FINISH_SATIN_GRIT_THRESHOLD else "dull"
 
 
 def parse_review_field_name(field_name: str) -> dict:
@@ -885,6 +947,7 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
     query = f"""
         select p.id, p.brand_id, b.name as brand_name, p.name, p.url, p.status, p.published, p.updated_at,
                p.core_id, c.name as core_name, p.release_date, p.coverstock_id, p.coverstock_name,
+               p.factory_finish, p.finish_category,
                p.popularity_score, p.total_daily_movement, p.demand_score,
                pa.id as article_id, pa.status as article_status,
                coalesce(v.video_count, 0) as video_count,
@@ -3080,6 +3143,56 @@ def backfill_last_video_discovery_at(conn) -> dict:
                 updated += 1
     conn.commit()
     return {"products_with_video_history": len(earliest_by_product), "products_updated": updated}
+
+
+def backfill_finish_categories(conn) -> dict:
+    """Populates products.finish_category (migration 035) from the raw
+    products.factory_finish text every scraper already captures, via
+    classify_factory_finish() above -- see that function's docstring and
+    035_products_finish_category.sql's header comment for the full
+    "are we capturing the finish for these balls?" backstory (Al, 2026-09-
+    12) and the bucket definitions.
+
+    Same idempotent, single-pass, no-pagination shape as
+    backfill_last_video_discovery_at above: reads every row with a non-
+    null factory_finish, classifies it in Python (not SQL -- the keyword/
+    grit logic needs a real regex engine, not a big CASE expression), and
+    writes back only where the computed bucket differs from what's
+    already stored. Safe to re-run at any time, including after
+    classify_factory_finish's own logic changes (e.g. a keyword list
+    correction) -- unlike backfill_last_video_discovery_at's NULL-only
+    guard, this one intentionally OVERWRITES an existing finish_category
+    if the classifier's output has changed, since 'finish_category' is a
+    fully-derived value with no independent source of truth to preserve
+    (contrast factory_finish itself, which upsert_product coalesces to
+    protect against a scrape returning less than it found before).
+
+    Does NOT touch a product that has been manually corrected via the
+    review-queue mechanism and then re-backfilled with a since-changed
+    classifier -- there's no way to distinguish "an operator's deliberate
+    override" from "an earlier backfill run's output" once both are just
+    a value sitting in the same column, same limitation admin_api already
+    accepts for every other PRODUCT_UPDATABLE_FIELDS column. Al can always
+    fix an individual product's bucket through the normal edit path if a
+    backfill overwrites a correction he made by hand."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "select id, factory_finish, finish_category from products where factory_finish is not null"
+        )
+        rows = cur.fetchall()
+
+    updated = 0
+    with conn.cursor() as cur:
+        for product_id, raw_finish, current_category in rows:
+            computed = classify_factory_finish(raw_finish)
+            if computed is not None and computed != current_category:
+                cur.execute(
+                    "update products set finish_category = %s where id = %s",
+                    (computed, product_id),
+                )
+                updated += 1
+    conn.commit()
+    return {"products_with_factory_finish": len(rows), "products_updated": updated}
 
 
 # ---------------------------------------------------------------------

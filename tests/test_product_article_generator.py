@@ -2213,6 +2213,65 @@ def test_build_gemini_scene_prompt_preserves_original_surface_finish():
         assert "matte or dull-finish ball must stay matte and dull" in prompt
 
 
+def test_classify_factory_finish_matches_admin_api_service_duplicate():
+    """This module's classify_factory_finish is a deliberate duplicate of
+    admin_api.service.classify_factory_finish (see this project's
+    established convention of reimplementing small logic across Lambda
+    boundaries rather than sharing a package) -- confirms the three
+    buckets and the None/unparseable case all agree with that module's
+    own test coverage, so the two can't silently drift apart on the
+    cases that matter for the image prompt."""
+    assert app.classify_factory_finish("500/1000/2000 Siaair Micro Pad") == "dull"
+    assert app.classify_factory_finish("5000 Grit LSS") == "satin"
+    assert app.classify_factory_finish(
+        "800 Abranet(R), 1000, 2000 Abralon(R) Power House Factory Finish Polish"
+    ) == "polished"
+    assert app.classify_factory_finish(None) is None
+    assert app.classify_factory_finish("") is None
+    assert app.classify_factory_finish("Sanded finish") is None
+
+
+def test_build_gemini_scene_prompt_includes_finish_hint_when_factory_finish_known():
+    """REAL ASK (2026-09-12, Al): "are we capturing the finish for these
+    balls?" -- a direct follow-up to the surface-finish-preservation
+    clause tested above. When product.factory_finish is present and
+    classifiable, the prompt states the derived bucket as supporting
+    context alongside the (already-present) reference-photo instruction
+    -- confirms the hint appears, names the reference photo as the final
+    authority, and states the specific bucket computed."""
+    product = {"color": "Blue", "factory_finish": "5000 Grit LSS"}
+    prompt = app.build_gemini_scene_prompt(product, _SAMPLE_ARTICLE, "product_shot")
+    assert "classified as 'satin'" in prompt
+    assert "not a substitute for the reference photo itself, which is always the final authority" in prompt
+
+
+def test_build_gemini_scene_prompt_omits_finish_hint_when_factory_finish_unknown():
+    """No factory_finish (or one classify_factory_finish can't parse)
+    means nothing to state -- the hint must be omitted entirely rather
+    than asserting an unknown category, matching classify_factory_
+    finish's own None-means-unknown contract."""
+    for factory_finish in (None, "", "Sanded finish"):
+        product = {"color": "Blue", "factory_finish": factory_finish}
+        prompt = app.build_gemini_scene_prompt(product, _SAMPLE_ARTICLE, "product_shot")
+        assert "factory surface preparation is classified as" not in prompt
+
+
+def test_build_gemini_scene_prompt_notes_pearl_shimmer_caveat():
+    """Al's explicit caution when asking for this feature: different
+    manufacturers' finishing processes "could be mapped as similar but
+    they are not 100% the same" -- the pearl-coverstock caveat is the
+    concrete case of that (a mica-like additive can make a pearl ball
+    look shinier than its finish_category alone would suggest). Must
+    only appear for coverstock_type='pearl', not for every product with
+    a known finish_category."""
+    pearl_product = {"color": "Blue", "factory_finish": "5000 Grit LSS", "coverstock_type": "pearl"}
+    solid_product = {"color": "Blue", "factory_finish": "5000 Grit LSS", "coverstock_type": "solid"}
+    pearl_prompt = app.build_gemini_scene_prompt(pearl_product, _SAMPLE_ARTICLE, "product_shot")
+    solid_prompt = app.build_gemini_scene_prompt(solid_product, _SAMPLE_ARTICLE, "product_shot")
+    assert "pearl finish" in pearl_prompt and "mica-like additive" in pearl_prompt
+    assert "mica-like additive" not in solid_prompt
+
+
 def test_build_gemini_scene_prompt_states_measured_scale_factor_for_product_shot():
     """REAL INCIDENT (2026-09-12, Al): "the logos on balls are getting
     changed again" -- a real generated product_shot screenshot compared
