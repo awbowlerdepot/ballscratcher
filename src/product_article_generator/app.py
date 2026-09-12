@@ -1032,6 +1032,134 @@ def _reference_image_to_base64_png(raw_bytes: bytes) -> str:
     return base64.b64encode(buf.getvalue()).decode("ascii")
 
 
+def estimate_ball_frame_fill_ratio(raw_bytes: bytes):
+    """REAL INCIDENT (2026-09-12, Al): screenshots of a real generated
+    product_shot alongside its true reference photo, measured directly
+    (bounding box of the green logo outline vs. bounding box of the
+    ball's own silhouette, in this sandbox, via Pillow) showed the logo
+    occupying ~46% of the ball's width in the reference photo but ~62%
+    in the generated image -- a real, ~1.34x relative enlargement, not
+    just something that looked subjectively "off." This is the same
+    failure mode as the 2026-09-06 and 2026-09-07 incidents documented
+    on build_gemini_scene_prompt, recurring despite two prior rounds of
+    progressively stronger wording in that prompt telling Gemini not to
+    resize the logo. A third round of purely-worded "don't do that" is
+    unlikely to move the needle much further on its own -- Al's own
+    call, when offered a choice between another wording attempt, a
+    return to a masked/composite pipeline (rejected twice before for
+    looking pasted-in, see migration 025's history), or just living with
+    it: try one more, but a MECHANICAL one this time. The theory: models
+    resist shrinking fine text/graphics proportionally with their
+    carrier object because doing so would make the text less legible --
+    they have an implicit bias toward keeping printed detail "readable,"
+    which fights against literal proportional scaling. product_shot asks
+    Gemini to re-render the ball SMALLER than it appears in most
+    manufacturer catalog photos (which tend to crop tight, ball filling
+    most of the frame) to hit the 60-65%-of-frame spec below -- exactly
+    the situation where that legibility bias would show up as a
+    disproportionately large logo.
+
+    This function turns that theory into a number instead of another
+    adjective: a best-effort measurement of how much of the REFERENCE
+    photo's frame the ball itself already occupies, so build_gemini_
+    scene_prompt (product_shot only) can tell Gemini the exact scale
+    factor being asked for ("you're rendering this ~1.3x smaller than
+    the reference -- shrink the logo by that same 1.3x") rather than a
+    vague "keep the same proportion" the model has already shown it
+    won't reliably honor. Deliberately does NOT attempt to detect the
+    logo itself -- unlike the incident's own green-outline analysis,
+    logos vary in color/style across products and a fragile per-product
+    color-based detector risks a confidently wrong measurement feeding
+    a confidently wrong instruction into the prompt. Detecting just the
+    BALL's own silhouette against its (near-always plain studio/white)
+    background is a much more tractable, generic problem, and it's
+    exactly the number needed to compute the scale factor.
+
+    Pure Pillow (no numpy -- not a dependency of this Lambda and not
+    worth adding for one best-effort measurement): estimate the
+    background color from the four corner patches (a real product photo
+    background is expected to be a uniform, unbranded backdrop there),
+    bail out to None if the corners don't agree with each other (not a
+    clean plain background this function can trust), then take the
+    bounding box of every pixel that differs from that background color
+    beyond a threshold -- that bounding box is the ball (plus whatever
+    shadow/reflection touches the backdrop, which is fine; it's a soft
+    prompt hint, not a measurement anything else depends on). Returns
+    None on any failure or out-of-range result rather than raising --
+    the caller (generate_article_image_candidates) treats None exactly
+    like "couldn't measure it," and build_gemini_scene_prompt falls back
+    to the pre-existing purely-worded instruction when it gets None,
+    so a bad/unmeasurable reference photo never breaks generation, it
+    just loses this one extra hint."""
+    import io
+
+    from PIL import Image, ImageChops
+
+    try:
+        image = Image.open(io.BytesIO(raw_bytes)).convert("RGB")
+    except Exception:
+        return None
+
+    w, h = image.size
+    if w < 20 or h < 20:
+        return None
+
+    # Downsample for speed -- exact pixel precision buys nothing for a
+    # soft prompt hint, and this keeps the Pillow ops cheap even on a
+    # full-resolution manufacturer photo.
+    scale = 400 / max(w, h)
+    if scale < 1:
+        image = image.resize((max(1, round(w * scale)), max(1, round(h * scale))))
+    sw, sh = image.size
+
+    patch = max(2, min(sw, sh) // 20)
+    corner_boxes = [
+        (0, 0, patch, patch),
+        (sw - patch, 0, sw, patch),
+        (0, sh - patch, patch, sh),
+        (sw - patch, sh - patch, sw, sh),
+    ]
+    # Each corner's average color, via Pillow's own box-filter resize
+    # down to a single pixel -- cheaper and less noise-prone than
+    # averaging raw pixel values by hand.
+    corner_colors = [image.crop(box).resize((1, 1)).getpixel((0, 0)) for box in corner_boxes]
+    for channel in range(3):
+        values = [c[channel] for c in corner_colors]
+        if max(values) - min(values) > 30:
+            # Corners disagree -- not a clean plain background this
+            # function can trust as "everything else is the ball."
+            return None
+    bg_color = tuple(sum(c[ch] for c in corner_colors) // 4 for ch in range(3))
+
+    bg_layer = Image.new("RGB", (sw, sh), bg_color)
+    diff = ImageChops.difference(image, bg_layer)
+    diff_r, diff_g, diff_b = diff.split()
+    # Max across channels, not luminance -- a color-only difference from
+    # the background (common with a colored ball against a neutral
+    # backdrop) shouldn't get diluted the way converting straight to
+    # grayscale would dilute it.
+    combined = ImageChops.lighter(ImageChops.lighter(diff_r, diff_g), diff_b)
+    mask = combined.point(lambda p: 255 if p > 30 else 0)
+    bbox = mask.getbbox()
+    if not bbox:
+        return None
+
+    x0, y0, x1, y1 = bbox
+    shorter_dim = min(sw, sh)
+    if shorter_dim <= 0:
+        return None
+    fill_ratio = max(x1 - x0, y1 - y0) / shorter_dim
+    # Sanity bounds: near-zero means the "difference from background"
+    # threshold caught noise, not a ball; near-1 means either the ball
+    # fills essentially the whole frame edge-to-edge (unlikely for a
+    # real catalog photo, more likely a background this function failed
+    # to recognize as background) -- either way, not a number worth
+    # trusting enough to put in a prompt.
+    if fill_ratio < 0.15 or fill_ratio > 0.98:
+        return None
+    return round(fill_ratio, 3)
+
+
 def _resolve_visual_context(article: dict) -> str:
     """Shared fallback chain used by every image prompt builder below
     (Stability's background-only prompt and Gemini's integrated scene
@@ -1231,7 +1359,8 @@ def composite_ball_on_background(cutout_png_bytes: bytes, background_png_bytes: 
     return buf.getvalue()
 
 
-def build_gemini_scene_prompt(product: dict, article: dict, variant: str) -> str:
+def build_gemini_scene_prompt(product: dict, article: dict, variant: str,
+                               source_ball_fill_ratio=None) -> str:
     """The single integrated prompt Gemini gets, per variant -- unlike
     Stability's split "cutout here, background prompt there" approach,
     Gemini does the placement AND generation in one call, so the prompt
@@ -1391,9 +1520,72 @@ def build_gemini_scene_prompt(product: dict, article: dict, variant: str) -> str
     adding an explicit surface-finish preservation instruction alongside
     the existing color/pattern/logo one, distinguishing "new ambient
     lighting/shadow from the scene" (wanted) from "new reflectivity on the
-    ball's own surface" (not wanted)."""
+    ball's own surface" (not wanted).
+
+    REAL INCIDENT (2026-09-12, Al): "the logos on balls are getting
+    changed again," with a real generated product_shot screenshot plus,
+    moments later, the true reference photo for the same product for
+    comparison. Measured directly (see estimate_ball_frame_fill_ratio's
+    own docstring for the full writeup): the logo occupied ~46% of the
+    ball's width in the reference photo, ~62% in the generated one -- a
+    real ~1.34x relative enlargement, the same failure this docstring's
+    2026-09-06 and 2026-09-07 incidents already targeted, recurring
+    despite the "do not enlarge, shrink, stretch..." and "must scale and
+    rotate together with it as one rigid, unmodified object" language
+    already above. Offered Al three options: word the preservation
+    instruction even more strongly again (a fourth round of the same
+    category of fix that's had two prior rounds with only partial
+    effect), revisit a masked/composite pipeline (rejected twice before,
+    migration 025's history), or accept the current behavior. Al's call:
+    one more prompt attempt, but this time backed by an actual
+    measurement instead of another adjective -- see source_ball_
+    fill_ratio (computed once per product by estimate_ball_frame_
+    fill_ratio and threaded in from generate_article_image_candidates).
+    When present (product_shot only -- action_shot has no fixed target
+    ratio to compute against, see its own size_clause below), the scale
+    factor between the reference photo's own ball-to-frame ratio and
+    this shot's fixed 60-65% target is computed and stated to Gemini as
+    an explicit number, alongside naming the suspected actual mechanism
+    (a legibility bias that resists shrinking printed text/graphics
+    proportionally with their carrier object) rather than only
+    restating the "keep it the same" rule the model has already shown
+    it won't reliably honor on its own."""
     context = _resolve_visual_context(article)
     scene_desc = context or "an elevated, premium studio scene"
+
+    # See this function's own 2026-09-12 REAL INCIDENT note above and
+    # estimate_ball_frame_fill_ratio's docstring for the full mechanism.
+    # TARGET_PRODUCT_SHOT_BALL_FILL_RATIO is the midpoint of the 60-65%
+    # catalog-framing spec in product_shot's own size_clause below --
+    # kept as one named constant so the two stay in sync if that spec
+    # ever changes.
+    TARGET_PRODUCT_SHOT_BALL_FILL_RATIO = 0.625
+    generic_scale_awareness = (
+        " A common failure mode when the ball ends up smaller on-screen than it is "
+        "in the reference photo: image models tend to keep printed text and "
+        "graphics close to their original size anyway, so they stay easily "
+        "legible -- this is exactly what causes a logo to look enlarged relative "
+        "to the ball. Resist that bias. The logo must shrink by the same factor "
+        "as the ball itself, even if that makes it noticeably smaller and less "
+        "crisp or legible than in the reference -- a smaller, harder-to-read logo "
+        "on a smaller ball is correct; a fully legible, full-size-looking logo on "
+        "a smaller ball is the mistake to avoid."
+    )
+    if variant == "product_shot" and source_ball_fill_ratio:
+        scale_factor = TARGET_PRODUCT_SHOT_BALL_FILL_RATIO / source_ball_fill_ratio
+        direction = "smaller" if scale_factor < 1 else "larger"
+        scale_awareness_clause = (
+            f" Measured directly from the reference photo: the ball itself fills "
+            f"about {source_ball_fill_ratio * 100:.0f}% of that photo's own frame. "
+            f"This shot asks you to render it filling about "
+            f"{TARGET_PRODUCT_SHOT_BALL_FILL_RATIO * 100:.0f}% of the new frame -- "
+            f"roughly {scale_factor:.2f}x {direction} than it appears in the "
+            f"reference. Every printed feature on the ball's surface, especially "
+            f"the logo, must scale by that exact same {scale_factor:.2f}x factor, "
+            f"no more and no less." + generic_scale_awareness
+        )
+    else:
+        scale_awareness_clause = generic_scale_awareness
 
     if variant == "action_shot":
         framing = "a dynamic hero shot conveying motion and energy, with the ball large and prominent in the frame"
@@ -1443,7 +1635,8 @@ def build_gemini_scene_prompt(product: dict, article: dict, variant: str) -> str
         "angle, but its logo and graphics must scale and rotate together with it "
         "as one rigid, unmodified object, matching the manufacturer's actual "
         "printed design exactly, never redrawn larger, bolder, or more prominent "
-        "than the reference -- this applies regardless of how the shot is framed. "
+        "than the reference -- this applies regardless of how the shot is framed."
+        f"{scale_awareness_clause} "
         "Match the lighting and color grading of the new scene onto the ball "
         "naturally, with a realistic contact shadow and ambient light on its "
         "surface. However, do not alter the ball's own surface finish: the "
@@ -1802,6 +1995,18 @@ def generate_article_image_candidates(conn, bedrock_image_client, bedrock_remove
         logger.exception("Failed to fetch/prepare reference image for product_id=%s", product["id"])
         return {}
 
+    # 2026-09-12 REAL INCIDENT fix (see build_gemini_scene_prompt's own
+    # docstring): best-effort only -- a measurement failure here must
+    # never abort image generation, it just means build_gemini_scene_
+    # prompt falls back to its pre-existing, purely-worded instruction
+    # for this product instead of the newer measured-scale-factor one.
+    try:
+        source_ball_fill_ratio = estimate_ball_frame_fill_ratio(reference_bytes)
+    except Exception:
+        logger.exception("Failed to estimate ball frame-fill ratio for product_id=%s -- continuing without it",
+                          product["id"])
+        source_ball_fill_ratio = None
+
     cutout_png_bytes = None
     if ENABLE_STABILITY_CANDIDATES:
         try:
@@ -1839,7 +2044,8 @@ def generate_article_image_candidates(conn, bedrock_image_client, bedrock_remove
         for variant in variants:
             aspect_ratio = _VARIANT_ASPECT_RATIOS[variant]
             try:
-                prompt = build_gemini_scene_prompt(product, article, variant)
+                prompt = build_gemini_scene_prompt(product, article, variant,
+                                                    source_ball_fill_ratio=source_ball_fill_ratio)
                 if i == 1:
                     prompt += " (Generate a distinct alternate composition/angle from the previous attempt.)"
                 elif i > 1:

@@ -2213,6 +2213,150 @@ def test_build_gemini_scene_prompt_preserves_original_surface_finish():
         assert "matte or dull-finish ball must stay matte and dull" in prompt
 
 
+def test_build_gemini_scene_prompt_states_measured_scale_factor_for_product_shot():
+    """REAL INCIDENT (2026-09-12, Al): "the logos on balls are getting
+    changed again" -- a real generated product_shot screenshot compared
+    directly against the true reference photo measured out to a ~1.34x
+    relative logo enlargement, the same failure the two tests above
+    already targeted with purely-worded instructions, recurring despite
+    them. Al's own call, offered a choice of another wording pass, a
+    masked/composite pipeline, or living with it: one more prompt
+    attempt, but backed by an actual number this time. Confirms
+    product_shot states the measured source ratio, the fixed 62% target,
+    and the resulting scale factor explicitly when source_ball_fill_
+    ratio is supplied."""
+    prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "product_shot",
+                                            source_ball_fill_ratio=0.8)
+    assert "Measured directly from the reference photo" in prompt
+    assert "fills about 80%" in prompt
+    assert "about 62%" in prompt
+    assert "0.78x smaller" in prompt
+    assert "must scale by that exact same 0.78x factor" in prompt
+
+
+def test_build_gemini_scene_prompt_scale_factor_states_larger_when_source_smaller_than_target():
+    """The reference photo won't always crop tighter than the target (the
+    common case, per the incident above) -- when the source ratio is
+    already below the 62% target, the factor is > 1 and the wording must
+    say "larger," not always "smaller."""
+    prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "product_shot",
+                                            source_ball_fill_ratio=0.4)
+    assert "1.56x larger than it appears" in prompt
+
+
+def test_build_gemini_scene_prompt_falls_back_to_generic_scale_language_when_ratio_missing():
+    """estimate_ball_frame_fill_ratio is best-effort and returns None for
+    plenty of real reference photos (non-plain backgrounds, degenerate
+    measurements, fetch failures) -- product_shot must still get useful
+    guidance in that case, just without the numeric specifics it can't
+    back up."""
+    prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "product_shot",
+                                            source_ball_fill_ratio=None)
+    assert "Measured directly from the reference photo" not in prompt
+    assert "common failure mode when the ball ends up smaller on-screen" in prompt
+
+
+def test_build_gemini_scene_prompt_action_shot_never_gets_numeric_scale_factor():
+    """action_shot has no fixed target ball-to-frame ratio -- its own
+    size_clause deliberately lets the ball's on-screen size vary shot to
+    shot for a dynamic composition -- so there's no target to compute a
+    scale factor against. Even when a measured source_ball_fill_ratio IS
+    available, action_shot must fall back to the generic wording, never
+    the numeric one that only makes sense against product_shot's fixed
+    62% spec."""
+    prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "action_shot",
+                                            source_ball_fill_ratio=0.8)
+    assert "Measured directly from the reference photo" not in prompt
+    assert "common failure mode when the ball ends up smaller on-screen" in prompt
+
+
+def test_build_gemini_scene_prompt_generic_scale_language_present_in_every_variant():
+    for variant in ("action_shot", "product_shot"):
+        prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, variant)
+        assert "resist that bias" in prompt.lower()
+
+
+# --- estimate_ball_frame_fill_ratio: pure Pillow, no DB/network ---
+
+
+def test_estimate_ball_frame_fill_ratio_measures_synthetic_clean_background():
+    """A plain white background with a centered circle covering 60% of
+    the frame's shorter dimension -- confirms the corner-based background
+    detection plus difference-bbox measurement lands close to the known
+    true value for a case this function is designed to handle well."""
+    import io
+
+    from PIL import Image, ImageDraw
+
+    size = 200
+    img = Image.new("RGB", (size, size), color=(255, 255, 255))
+    draw = ImageDraw.Draw(img)
+    diameter = int(size * 0.6)
+    offset = (size - diameter) // 2
+    draw.ellipse([offset, offset, offset + diameter, offset + diameter], fill=(40, 40, 120))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+
+    ratio = app.estimate_ball_frame_fill_ratio(buf.getvalue())
+    assert ratio is not None
+    assert 0.55 <= ratio <= 0.65
+
+
+def test_estimate_ball_frame_fill_ratio_returns_none_for_non_uniform_background():
+    """A busy/non-plain background (four corners painted different colors
+    from each other) gives this function no reliable 'everything else is
+    the ball' baseline -- it must return None rather than guess, so a
+    bad guess never makes it into the prompt as a confidently-wrong
+    number."""
+    import io
+
+    from PIL import Image
+
+    img = Image.new("RGB", (100, 100), color=(255, 255, 255))
+    for (x, y), color in [((0, 0), (255, 0, 0)), ((90, 0), (0, 255, 0)),
+                           ((0, 90), (0, 0, 255)), ((90, 90), (255, 255, 0))]:
+        img.paste(Image.new("RGB", (10, 10), color=color), (x, y))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+
+    assert app.estimate_ball_frame_fill_ratio(buf.getvalue()) is None
+
+
+def test_estimate_ball_frame_fill_ratio_returns_none_for_blank_image():
+    """No foreground at all -- a uniform-color image has no bounding box
+    to find, and this must propagate as None rather than raising or
+    returning a bogus 0."""
+    import io
+
+    from PIL import Image
+
+    img = Image.new("RGB", (100, 100), color=(255, 255, 255))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+
+    assert app.estimate_ball_frame_fill_ratio(buf.getvalue()) is None
+
+
+def test_estimate_ball_frame_fill_ratio_returns_none_for_tiny_image():
+    import io
+
+    from PIL import Image
+
+    img = Image.new("RGB", (10, 10), color=(255, 255, 255))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+
+    assert app.estimate_ball_frame_fill_ratio(buf.getvalue()) is None
+
+
+def test_estimate_ball_frame_fill_ratio_returns_none_for_garbage_bytes():
+    """Not a real image at all -- Pillow raises opening it; this function
+    is best-effort (called from generate_article_image_candidates, which
+    must never let a measurement failure abort image generation) so it
+    must catch that and return None, never raise."""
+    assert app.estimate_ball_frame_fill_ratio(b"not an image") is None
+
+
 class _FakeGeminiResponse:
     def __init__(self, payload: dict, status_ok: bool = True):
         self._payload = payload

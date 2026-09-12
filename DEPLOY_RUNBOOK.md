@@ -14429,6 +14429,123 @@ validates these changes). `template.yaml` re-verified via the same
 CFN-tolerant YAML parser (84 resources, unchanged -- no template edits
 were needed for this feature).
 
+### 6av. Measured logo-scale-factor fix for product_shot image generation (2026-09-12)
+
+Al: "the logos on balls are getting changed again," with a real
+generated product_shot screenshot, followed moments later by the true
+reference photo for the same product for comparison. This is the same
+underlying failure this doc's own history already covers twice: the
+2026-09-06 incident ("the logos are being enlarged so that they are no
+longer proportial... the balls can be rotated and just about anything
+else but the logos can not be resized") and its 2026-09-07 follow-up
+("the ai image drift i just went over is still there for the product
+shot images"). Both of those shipped progressively stronger WORDED
+instructions in build_gemini_scene_prompt telling Gemini not to resize
+the logo relative to the ball. This incident is proof those wordings
+didn't hold: measuring the two screenshots directly (bounding box of
+the green logo outline vs. bounding box of the ball's own silhouette,
+done in this sandbox via Pillow) showed the logo occupying ~46% of the
+ball's width in the true reference photo but ~62% in the generated
+image -- a real, ~1.34x relative enlargement, not just something that
+looked subjectively off.
+
+**Investigation, not just another wording pass.** Told Al plainly: this
+is now the third round of the same category of fix (worded harder each
+time) with diminishing returns, and a fourth round of adjectives is
+unlikely to move the needle much further on its own -- text
+instructions telling an image model "don't resize this specific detail"
+are a soft constraint; the model has no way to actually measure and
+match proportions, it's approximating from the reference pixels.
+Offered three real options: another wording attempt, but backed by an
+actual computed number this time; revisit a masked/composite pipeline
+(pasting the real ball pixels in instead of letting Gemini regenerate
+the whole ball) -- rejected twice before for looking pasted-in (see
+migration 025's own history) but potentially worth another look now
+that logo fidelity matters more than that earlier edge-blending
+complaint did; or just accept the current behavior. Al chose the first,
+mechanical option.
+
+**The theory, not just "try harder."** product_shot asks Gemini to
+render the ball at a fixed 60-65%-of-frame size (see the 2026-09-07
+fix), while most manufacturer catalog photos crop tight -- ball filling
+most of the frame already (the true reference photo here measured
+~80%). That's exactly the situation where a specific, known bias in
+image models would show up: they tend to resist shrinking printed
+text/graphics proportionally with their carrier object, because doing
+so would make the text less legible -- an implicit "keep it readable"
+pull that fights literal proportional scaling. This names an actual
+mechanism, not just "it's still happening."
+
+**estimate_ball_frame_fill_ratio()** (new function,
+product_article_generator/app.py): a best-effort, pure-Pillow (no
+numpy -- not a dependency of this Lambda) measurement of how much of
+the REFERENCE photo's own frame the ball already occupies. Deliberately
+does NOT try to detect the logo itself the way this incident's own
+sandbox analysis did (color-based, green-outline detection) -- logos
+vary in color/style across products, and a fragile per-product
+color-based detector risks a confidently wrong measurement feeding a
+confidently wrong instruction into the prompt. Detecting just the
+ball's own silhouette against its near-always-plain studio/white
+background is a far more tractable, generic problem, and it's exactly
+the number needed. Method: estimate the background color from the four
+corner patches, bail to `None` if the corners don't agree with each
+other (not a clean plain background this function can trust), then
+take the bounding box of every pixel that differs from that background
+color beyond a threshold. Returns `None` on any failure, disagreement,
+or out-of-range result (near-0 or near-1 fill ratio) rather than
+raising or guessing -- generate_article_image_candidates treats `None`
+exactly like "couldn't measure it," and build_gemini_scene_prompt falls
+back to the pre-existing purely-worded instruction when it gets `None`,
+so a bad/unmeasurable reference photo never breaks generation, it just
+loses this one extra hint.
+
+**build_gemini_scene_prompt** now accepts an optional
+`source_ball_fill_ratio` parameter. For product_shot, when a
+measurement is available, the prompt states the actual numbers instead
+of a vague "keep the same proportion": the reference photo's own
+measured fill ratio, the fixed 62% target, and the resulting scale
+factor (e.g. "the ball itself fills about 80% of that photo's own
+frame... render it filling about 62%... roughly 0.78x smaller... every
+printed feature on the ball's surface, especially the logo, must scale
+by that exact same 0.78x factor"). Alongside the number, the prompt
+also now names the suspected mechanism directly ("image models tend to
+keep printed text and graphics close to their original size anyway, so
+they stay easily legible -- resist that bias") rather than only
+repeating the preservation rule the model has already shown it won't
+reliably honor on its own. action_shot has no fixed target ball-to-frame
+ratio (its own framing deliberately lets ball size vary shot to shot
+for a dynamic composition), so it never gets the numeric variant even
+when a measurement is available -- both variants still get the generic,
+non-numeric version of the "resist the legibility bias" instruction,
+since the mechanism itself isn't product_shot-specific, only the fixed
+target needed to compute an exact factor is.
+
+**generate_article_image_candidates** computes
+`source_ball_fill_ratio` once per product, immediately after fetching
+the reference image bytes, wrapped in its own try/except (best-effort,
+same posture as every other step in this function -- a measurement
+failure must never abort image generation) and threads it into every
+`build_gemini_scene_prompt` call for that product's candidates.
+
+**Tests** (tests/test_product_article_generator.py): 5 new tests for
+`estimate_ball_frame_fill_ratio` against synthetic Pillow-generated
+images (a clean plain-background circle measures within the expected
+range; disagreeing corners, a blank/no-foreground image, a too-small
+image, and outright garbage bytes all correctly return `None` rather
+than raising or guessing), plus 4 new tests for
+`build_gemini_scene_prompt` confirming: product_shot states the
+measured scale factor and correct direction (smaller vs. larger)
+when a ratio is supplied; product_shot falls back to the generic
+wording when the ratio is `None`; action_shot never gets the numeric
+variant even with a ratio supplied; and the generic "resist that bias"
+language is present in both variants regardless. Full suite verified:
+147/147 (up from the pre-existing 138 -- 9 new tests) via this file's
+own manual test runner (`python3 tests/test_product_article_generator.py`,
+no pytest in this sandbox, per this doc's own recurring note). No
+`template.yaml` or `requirements.txt` changes needed -- Pillow was
+already a dependency of this Lambda for the reference-image PNG
+re-encode step, and no new environment variables or IAM were required.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
