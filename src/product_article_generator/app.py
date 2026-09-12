@@ -564,6 +564,33 @@ def get_db_connection():
     )
 
 
+def clear_article_generation_status(conn, product_id: str) -> None:
+    """034_product_article_generation_status.sql -- Al: "images take
+    forever to get generated... is there a way to show the status in
+    the UI." admin_api.queue_article_generation upserts a row into
+    product_article_generation_status right when it invokes this
+    Lambda; handler()'s on-demand {"product_id": ...} path calls this in
+    a try/finally around its actual work so the row is cleared whether
+    generate_article_for_product succeeds OR raises an exception.
+
+    Caveat worth knowing: try/finally does NOT cover the case where AWS
+    kills this invocation for exceeding its own 600s Timeout -- that's a
+    hard runtime freeze/kill, not a Python exception, so no application
+    code (this included) runs afterward. A genuinely timed-out run will
+    leave this row in place. admin-spa's polling handles that case on
+    the read side instead (see get_article_generation_status's own
+    comment in admin_api/service.py): elapsed time well past 600s is
+    treated as "likely stuck/failed," not trusted as still-genuinely-
+    running forever. delete rather than an update-a-completed_at column,
+    matching this table's own "live marker, not a history log" design.
+    Not called from the batch-sweep path (event with no "product_id") --
+    that path never had a status row to begin with, since only the
+    on-demand admin-triggered path sets one."""
+    with conn.cursor() as cur:
+        cur.execute("delete from product_article_generation_status where product_id = %s", (product_id,))
+    conn.commit()
+
+
 def list_products_needing_article(conn, max_products: int = None) -> list:
     """Products that clear the generation gate (>=1 approved, non-
     blocked-channel, summarized video -- same bar 022_product_articles.
@@ -2484,16 +2511,27 @@ def handler(event, context):
             image_variants = tuple(event["image_variants"]) if event.get("image_variants") else (
                 "action_shot", "product_shot",
             )
-            result = generate_article_for_product(
-                conn, bedrock_client, model_id, event["product_id"],
-                s3_client=s3_client, bedrock_image_client=bedrock_image_client,
-                bedrock_removebg_client=bedrock_removebg_client, gemini_auth=gemini_auth,
-                image_model_id=image_model_id, removebg_model_id=removebg_model_id,
-                gemini_model_id=gemini_model_id, image_bucket=image_bucket, force=True,
-                regenerate_text=event.get("regenerate_text", True),
-                regenerate_images=event.get("regenerate_images", True),
-                image_variants=image_variants,
-            )
+            # 034_product_article_generation_status.sql -- clear the
+            # "generating" marker admin_api.queue_article_generation set
+            # right before invoking us, whether this call succeeds,
+            # raises, or the whole invocation is about to time out. See
+            # clear_article_generation_status's own docstring for why
+            # this MUST be try/finally, not a plain call after the
+            # generate step: a crash here is exactly the case where the
+            # UI otherwise gets stuck showing "Generating..." forever.
+            try:
+                result = generate_article_for_product(
+                    conn, bedrock_client, model_id, event["product_id"],
+                    s3_client=s3_client, bedrock_image_client=bedrock_image_client,
+                    bedrock_removebg_client=bedrock_removebg_client, gemini_auth=gemini_auth,
+                    image_model_id=image_model_id, removebg_model_id=removebg_model_id,
+                    gemini_model_id=gemini_model_id, image_bucket=image_bucket, force=True,
+                    regenerate_text=event.get("regenerate_text", True),
+                    regenerate_images=event.get("regenerate_images", True),
+                    image_variants=image_variants,
+                )
+            finally:
+                clear_article_generation_status(conn, event["product_id"])
             return {"statusCode": 200, "body": json.dumps({"results": [result]})}
 
         max_products = int(

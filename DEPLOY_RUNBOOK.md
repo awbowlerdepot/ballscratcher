@@ -14236,6 +14236,199 @@ structured the same way as the other three sites'.
 No migration, no new backend code, no tests (a static marketing page
 has no application logic to unit test).
 
+### 6au. Article image generation: a live "Generating..." status in admin-spa (migration 034)
+
+Al: "i have noticed that images take forever to get generated. not sure
+what is causing this but is there a way to show the status in the UI?
+is it in the queue how many ahead etc."
+
+**Investigation first, before building anything.** There is no literal
+FIFO queue for an on-demand single-product generate/regenerate --
+`admin_api.queue_article_generation` does a direct, immediate
+`lambda:InvokeFunction` (`InvocationType="Event"`) against
+`ProductArticleGeneratorFunction`, the same "no queue in front"
+convention `queue_video_discovery`/`queue_rescrape` already use. It
+starts right away; the one invocation just legitimately takes a long
+time -- `NUM_GEMINI_CANDIDATES_PER_VARIANT` (3) candidates x 2 shot
+variants = up to 6 sequential/interleaved Gemini image-generation
+calls, each independently eligible for `GEMINI_RETRY_TOTAL` (4) retries
+with exponential backoff (2s/4s/8s/16s) if Vertex AI rate-limits it (see
+`build_gemini_scene_prompt`'s and `get_gemini_requests_session`'s own
+docstrings for that history). `ProductArticleGeneratorFunction`'s
+600-second Lambda timeout exists for exactly this reason. None of that
+was ever visible to admin-spa: `queue_article_generation` returns
+`{"queued": true}` immediately and the UI had no idea whether/when the
+invocation actually finished short of a manual refresh.
+
+Also confirmed before designing anything: no `ReservedConcurrentExecutions`
+on `ProductArticleGeneratorFunction` (no Lambda-level throttling/queuing
+either), and no bulk/batch "generate articles" trigger anywhere in
+admin-spa (`BatchJobsPage.tsx` has zero article-related code) --
+generation is always single-product, on-demand. The separate scheduled
+catalog-wide sweep (`handler()`'s `{}`/`{"batch": true}` shape, capped at
+`MAX_PRODUCTS_PER_INVOCATION`, see 6ab.23) is the closer analog to "how
+many ahead," but Al's own scoping answer (below) explicitly excluded
+building visibility for that path.
+
+**Scope decision.** Presented Al two options via a scoped question:
+per-product progress only, vs. that plus a Dashboard-level catalog
+backlog card (the scheduled-sweep analog). Al chose **per-product
+progress only** -- this section covers exactly that.
+
+**034_product_article_generation_status.sql.** A live,
+single-row-per-in-flight-generation marker table, deliberately NOT an
+append-only history log like `transcript_fetcher_runs` (032, see 6ad):
+that table logs a heartbeat for a process with no other completion
+signal; this one only needs to answer "is a generation for this product
+in flight right now, and since when," which a single upserted-then-
+deleted row answers more simply than a history-plus-"no completed_at
+yet" query would.
+
+```sql
+create table product_article_generation_status (
+    product_id uuid primary key references products(id) on delete cascade,
+    started_at timestamptz not null default now(),
+    mode text not null
+);
+```
+
+One row per `product_id` (not per article) so a first-time
+"Generate article" click -- before any `product_articles` row exists --
+is just as visible as a regenerate of an existing article. `mode` is the
+same string `queue_article_generation` already accepts
+(`"both"`/`"text"`/`"images"`/`"action_shot"`/`"product_shot"`), so the
+UI can say "Generating (images)..." rather than a generic "Generating...".
+
+Deliberately did NOT add a `'generating'` value to `product_articles`'s
+existing `status` CHECK constraint (`'pending'`/`'approved'`/`'rejected'`,
+022) -- touching that enum for a value that only ever applies while no
+article row may even exist yet would have been the wrong shape. A
+separate table sidesteps that entirely.
+
+**admin_api/service.py:**
+
+- `get_article_generation_status(conn, product_id)` -- returns
+  `{"generating": False}` when no row exists (the normal case), or
+  `{"generating": True, "started_at": ..., "mode": ...}` when one does.
+- `set_article_generation_status(conn, product_id, mode)` -- upserts
+  (`insert ... on conflict (product_id) do update`), not inserts; a
+  second regenerate call on a product already mid-generation (shouldn't
+  normally happen since the UI disables the buttons, but the backend
+  doesn't rely on that) replaces the row rather than erroring on a
+  duplicate key.
+- `clear_article_generation_status(conn, product_id)` -- plain delete.
+- `queue_article_generation` -- now calls `set_article_generation_status`
+  **before** the `lambda:invoke`, not after: `InvocationType="Event"`
+  returns as soon as Lambda has accepted the event, so ordering barely
+  matters in practice, but if the invoke call itself raises (a
+  boto3/IAM/throttling error, not a failure inside the generator Lambda),
+  a try/except around just that call clears the row right back out so a
+  generation that never actually started doesn't leave a stale
+  "generating" row behind.
+- `get_product` -- now embeds `article_generation_status` on its
+  response (via `get_article_generation_status`) so a first page load
+  of `ProductDetailPage` already shows a genuine "Generating..." state
+  without a second round-trip.
+- `list_articles` -- SELECT extended with
+  `left join product_article_generation_status pags on pags.product_id = pa.product_id`
+  and two new columns, `generation_started_at`/`generation_mode`, so the
+  Articles tab's list rows get the same visibility without a per-row
+  fetch.
+
+**admin_api/app.py:** new `GET /products/{product_id}/article-generation-status`
+route -- a lightweight sibling of `GET /products/{id}` for
+`ProductDetailPage` to poll every few seconds while a generation is in
+flight, without re-fetching the whole multi-join product blob on every
+tick. No existence check on `product_id` (unlike `generate-article`) --
+a status poll for a bogus id just returns `{"generating": false}`, same
+as a real product with nothing in flight; there's no meaningful 404 case
+worth the extra query. No `template.yaml` change needed -- `AdminHttpApi`'s
+existing `/{proxy+}` catch-all route already covers it (same precedent as
+6ab.5's Cores endpoint).
+
+**product_article_generator/app.py:** `clear_article_generation_status`
+mirrors the admin_api version (same delete, own connection/cursor). Wired
+into `handler()`'s on-demand (`{"product_id": ...}`) branch in a
+try/finally around the actual `generate_article_for_product` call, so the
+row is cleared whether that call succeeds OR raises. Caveat documented in
+that function's own docstring: try/finally does NOT cover the case where
+AWS kills the invocation for exceeding its own 600s timeout -- that's a
+hard runtime freeze, not a Python exception, so no application code runs
+afterward, and a genuinely timed-out run leaves the row in place. This is
+handled on the read side instead: admin-spa treats a generation running
+well past 600s as "likely stuck/failed," not as still-genuinely-running
+forever (see below). Not called from the batch-sweep path (`event` with
+no `"product_id"`) -- that path never had a status row to begin with,
+since only the on-demand admin-triggered path sets one.
+
+**admin-spa frontend.** `ArticleListItem` gains
+`generation_started_at`/`generation_mode`; new `ArticleGenerationStatus`
+type (`{generating, started_at?, mode?}`) for the new endpoint's
+response shape; `ProductDetail` gains `article_generation_status`. New
+`getArticleGenerationStatus(productId)` client function.
+
+`ProductDetailPage.tsx`'s Article tab: `generationStatus` state seeded
+from `product.article_generation_status` on load, then polled every 3s
+via the new endpoint while `generating` is true (stopping and reloading
+the article/candidates once it flips back to false). Generate/Regenerate/
+per-variant-regenerate buttons all get `markGenerating(mode)` called
+immediately on a successful queue response (accurate, not just
+optimistic, since `queue_article_generation` sets the row synchronously
+before returning) and are disabled while a generation is in flight. A
+"Generating (mode)... Xs" badge renders next to the status badge, with
+its elapsed-time text ticking once a second off a separate render-pulse
+counter (no extra network calls for the ticking itself).
+
+`ArticlesPage.tsx`: list rows show a "Generating (mode)..." badge and
+disable that row's Regen buttons using the `generation_started_at`/
+`generation_mode` fields `list_articles` now returns -- no per-row
+polling; instead a single light re-`load()` every 5s while ANY visible
+row has `generation_started_at` set. The preview modal's per-variant
+regenerate buttons are disabled the same way via a new optional
+`regenerateDisabled` prop on the shared `ArticlePreview` component
+(`ProductDetailPage.tsx` passes its own `generationStatus.generating`
+through the same prop).
+
+**Tests.** `tests/test_admin_api_service.py`: `get_article_generation_status`
+returns `{"generating": false}`/`{"generating": true, ...}` correctly;
+`set_article_generation_status` upserts and overwrites an existing row;
+`clear_article_generation_status` deletes (and is a no-op when nothing's
+there); `list_articles` surfaces `generation_started_at`/`generation_mode`
+from the new left join, and both are `None` when nothing's generating;
+`queue_article_generation` sets the status row **before** invoking (a fake
+Lambda client asserts the row already exists at invoke-time) and clears it
+if the invoke call raises. `FakeCursor` extended with three new query
+branches for the table; `FakeConnection`'s `product_articles` fake-select
+branch extended to also read a `product_article_generation_status` fixture
+dict and append the two new columns.
+
+`tests/test_product_article_generator.py`: `FakeCursor` extended with a
+branch for `delete from product_article_generation_status` (this file's
+own manual-runner suite briefly broke on this -- `test_handler_on_demand_product_id_forces_single_generation`
+started raising `NotImplementedError` the moment the try/finally started
+calling `clear_article_generation_status` for real, a good sign the fix
+was actually wired in). Two new tests: the on-demand handler path clears
+the status row on a successful generation, and separately clears it even
+when `generate_article_for_product` raises (confirming the try/finally
+actually protects against exactly the failure mode it exists for).
+
+Full suite verified (135 pre-existing + 2 new = 137/137,
+`tests/test_product_article_generator.py`'s own manual runner). No
+pytest in this sandbox (see this doc's own recurring note); admin_api
+service functions and the `list_articles` join were additionally
+exercised directly via a stubbed-import script (`boto3`/`psycopg2`/
+`requests` stubbed via `sys.modules`) calling
+`get_article_generation_status`/`set_article_generation_status`/
+`clear_article_generation_status`/`queue_article_generation`/
+`list_articles` and asserting on their return values, matching the
+corresponding test assertions. `admin-spa`: `tsc --noEmit` clean (the
+sandbox's `vite build` step itself fails on an unrelated pre-existing
+`@rollup/rollup-linux-arm64-gnu` native-module/architecture mismatch,
+not anything from this feature -- type-checking is what actually
+validates these changes). `template.yaml` re-verified via the same
+CFN-tolerant YAML parser (84 resources, unchanged -- no template edits
+were needed for this feature).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

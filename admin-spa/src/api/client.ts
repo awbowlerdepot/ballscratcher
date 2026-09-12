@@ -3,6 +3,7 @@ import type {
   AdminUser,
   Article,
   ArticleListItem,
+  ArticleGenerationStatus,
   ArticleImageCandidate,
   ArticleRegenerateMode,
   ApproveReviewResult,
@@ -454,6 +455,15 @@ export function regenerateArticleProductShot(productId: string): Promise<QueueAr
 // Kept as a re-export purely so callers importing from client.ts don't
 // also need a separate import from types.ts just for this one type.
 export type { ArticleRegenerateMode };
+
+// 034_product_article_generation_status.sql -- poll target for
+// ProductDetailPage/ArticlesPage while a generation is in flight. Cheap
+// on purpose: a single-row lookup, not the full product/article blob
+// (see get_product's own comment on why it embeds this same status
+// instead of making every page load pay for a second query up front).
+export function getArticleGenerationStatus(productId: string): Promise<ArticleGenerationStatus> {
+  return apiGet<ArticleGenerationStatus>(`/products/${encodeURIComponent(productId)}/article-generation-status`);
+}
 
 // Price Sources -- the discovered-match review queue (product_price_
 // sources). Same approve/reject/restore shape as Review Queue/Video

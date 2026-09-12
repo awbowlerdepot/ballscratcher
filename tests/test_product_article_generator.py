@@ -413,6 +413,15 @@ class _FakeCursor:
             self.description = [("coalesce",)]
             self._rows = [(self.reference_image_url,)]
 
+        elif q.startswith("delete from product_article_generation_status"):
+            # 034_product_article_generation_status.sql -- clear_article_
+            # generation_status, called from handler()'s on-demand path
+            # in a try/finally (see that function's own docstring). This
+            # fake doesn't model the table's contents at all -- nothing
+            # in this file's tests asserts on it -- it just needs to not
+            # blow up with NotImplementedError when handler() calls it.
+            self._rows = []
+
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
 
@@ -1177,6 +1186,60 @@ def test_handler_on_demand_product_id_forces_single_generation():
     assert body["results"] == [{"product_id": "prod-1", "generated": True, "article_id": "a1",
                                  "video_count": 1, "sibling_count": 0}]
     assert conn.closed is True
+
+
+# --- 034_product_article_generation_status.sql -- handler()'s on-demand
+# path wraps generate_article_for_product in a try/finally so the status
+# row queue_article_generation set is cleared whether the call succeeds
+# or raises (a genuine Lambda timeout kill is the one case this can't
+# cover -- see clear_article_generation_status's own docstring in
+# app.py).
+
+def test_handler_on_demand_clears_generation_status_on_success():
+    conn = _FakeConnection()
+
+    def _fake_generate(conn_, bedrock, model_id, product_id, force=False, **kwargs):
+        return {"product_id": product_id, "generated": True, "article_id": "a1",
+                "video_count": 1, "sibling_count": 0}
+
+    guard = _HandlerPatchGuard()
+    try:
+        guard.set_module("boto3", _fake_boto3_module(_FakeBedrockClient("{}")))
+        guard.set(app, "get_db_connection", lambda: conn)
+        guard.set(app, "generate_article_for_product", _fake_generate)
+        app.handler({"product_id": "prod-1"}, None)
+    finally:
+        guard.restore()
+
+    delete_queries = [q for q, params in conn._cursor.executed if q.startswith("delete from product_article_generation_status")]
+    assert len(delete_queries) == 1
+
+
+def test_handler_on_demand_clears_generation_status_even_when_generation_raises():
+    """The try/finally's whole reason to exist: a raise from
+    generate_article_for_product (a bad Bedrock/Gemini response, a DB
+    error, anything short of AWS killing the invocation outright) must
+    not leave a stale "generating" row behind forever."""
+    conn = _FakeConnection()
+
+    def _fake_generate_raises(conn_, bedrock, model_id, product_id, force=False, **kwargs):
+        raise RuntimeError("boom")
+
+    guard = _HandlerPatchGuard()
+    try:
+        guard.set_module("boto3", _fake_boto3_module(_FakeBedrockClient("{}")))
+        guard.set(app, "get_db_connection", lambda: conn)
+        guard.set(app, "generate_article_for_product", _fake_generate_raises)
+        try:
+            app.handler({"product_id": "prod-1"}, None)
+            assert False, "expected the generation error to propagate"
+        except RuntimeError:
+            pass
+    finally:
+        guard.restore()
+
+    delete_queries = [q for q, params in conn._cursor.executed if q.startswith("delete from product_article_generation_status")]
+    assert len(delete_queries) == 1
 
 
 def test_handler_on_demand_product_id_reads_regenerate_flags_from_event():

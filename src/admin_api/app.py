@@ -1376,6 +1376,26 @@ def select_article_image_candidate(candidate_id: str, body: SelectImageCandidate
         conn.close()
 
 
+@app.get("/products/{product_id}/article-generation-status")
+def article_generation_status(product_id: str):
+    # 034_product_article_generation_status.sql -- Al: "images take
+    # forever to get generated... is there a way to show the status in
+    # the UI." Lightweight sibling of GET /products/{id} (which also
+    # embeds this same status, see get_product's own comment) for
+    # ProductDetailPage/ArticlesPage to poll every few seconds WHILE a
+    # generation is in flight, without re-fetching that whole multi-join
+    # product blob on every poll tick. No existence check on product_id
+    # (unlike generate-article below) -- a status poll for a bogus id
+    # just returns {"generating": false}, same as a real product with
+    # nothing in flight; there's no meaningful 404 case here worth the
+    # extra query.
+    conn = service.get_db_connection()
+    try:
+        return service.get_article_generation_status(conn, product_id)
+    finally:
+        conn.close()
+
+
 @app.post("/products/{product_id}/generate-article")
 def generate_article(product_id: str):
     # On-demand "generate/regenerate article" trigger, mirroring discover-

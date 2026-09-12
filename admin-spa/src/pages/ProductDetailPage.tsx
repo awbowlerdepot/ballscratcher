@@ -11,6 +11,7 @@ import {
   discoverVideosForProduct,
   generateArticle,
   getArticle,
+  getArticleGenerationStatus,
   getPriceHistory,
   getProduct,
   getSkuStockHistory,
@@ -41,6 +42,7 @@ import {
 } from "../api/client";
 import type {
   Article,
+  ArticleGenerationStatus,
   ArticleImageCandidate,
   ArticleListItem,
   PriceHistoryResult,
@@ -171,6 +173,15 @@ export default function ProductDetailPage() {
   const [priceHistory, setPriceHistory] = useState<PriceHistoryResult | null>(null);
   const [skuStockHistory, setSkuStockHistory] = useState<SkuStockHistoryResult | null>(null);
   const [priceSites, setPriceSites] = useState<PriceSite[]>([]);
+  // 034_product_article_generation_status.sql -- Al: "images take
+  // forever to get generated... is there a way to show the status in
+  // the UI." Seeded from product.article_generation_status on load()
+  // (so a first render already knows if a generation is in flight),
+  // then kept fresh by the polling effect below while generating=true.
+  // tick is a plain re-render pulse (not itself the elapsed value) so
+  // the "Xs ago" text updates once a second without re-fetching status.
+  const [generationStatus, setGenerationStatus] = useState<ArticleGenerationStatus>({ generating: false });
+  const [tick, setTick] = useState(0);
 
   const [rejectVideoTarget, setRejectVideoTarget] = useState<VideoCandidate | null>(null);
   const [rejectVideoReason, setRejectVideoReason] = useState("");
@@ -216,6 +227,7 @@ export default function ProductDetailPage() {
     try {
       const p = await getProduct(id);
       setProduct(p);
+      setGenerationStatus(p.article_generation_status ?? { generating: false });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load product.");
       setLoading(false);
@@ -287,6 +299,56 @@ export default function ProductDetailPage() {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
+
+  // 034_product_article_generation_status.sql -- Al: "images take
+  // forever to get generated... is there a way to show the status in
+  // the UI." Two effects: this one polls the lightweight status
+  // endpoint every 3s while generating=true (cheaper than re-fetching
+  // the whole product/article on every tick); the one below just ticks
+  // a counter every second so the "Xs ago" text stays live between
+  // polls without any network calls.
+  useEffect(() => {
+    if (!id || !generationStatus.generating) return;
+    let cancelled = false;
+    const interval = setInterval(async () => {
+      try {
+        const status = await getArticleGenerationStatus(id);
+        if (cancelled) return;
+        setGenerationStatus(status);
+        // Generation just finished (successfully, failed, or timed out
+        // and got cleaned up client-side) -- reload so articleItem/
+        // article/candidates reflect whatever the Lambda actually
+        // produced, instead of waiting for the user to navigate away
+        // and back.
+        if (!status.generating) load();
+      } catch {
+        // A transient poll failure isn't worth surfacing as a toast --
+        // it'll just retry in 3s. Leave the current status as-is.
+      }
+    }, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, generationStatus.generating]);
+
+  useEffect(() => {
+    if (!generationStatus.generating) return;
+    const interval = setInterval(() => setTick((t) => t + 1), 1000);
+    return () => clearInterval(interval);
+  }, [generationStatus.generating]);
+
+  // Plain "Xs"/"Xm Ys" elapsed text off generationStatus.started_at --
+  // tick (above) is read here purely to force a re-render each second;
+  // its own value is unused.
+  function generationElapsedText(): string {
+    void tick;
+    if (!generationStatus.started_at) return "";
+    const elapsedMs = Date.now() - new Date(generationStatus.started_at).getTime();
+    const s = Math.max(0, Math.floor(elapsedMs / 1000));
+    return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
+  }
 
   if (loading && !product) {
     return <ProductDetailSkeleton />;
@@ -436,10 +498,20 @@ export default function ProductDetailPage() {
 
   // --- Article --------------------------------------------------------
 
+  // 034_product_article_generation_status.sql -- queue_article_generation
+  // upserts the status row synchronously before returning {queued:true},
+  // so setting generationStatus here immediately (rather than waiting for
+  // the next 3s poll tick) is accurate, not just optimistic -- it just
+  // saves the user one poll interval of the button not yet looking busy.
+  function markGenerating(mode?: string) {
+    setGenerationStatus({ generating: true, started_at: new Date().toISOString(), mode });
+  }
+
   async function handleGenerateArticle() {
     try {
       const result = await generateArticle(id!);
       show(result.queued ? "Queued -- reopen this tab in a bit." : (result.reason ?? "Not queued."), result.queued ? "ok" : "danger");
+      if (result.queued) markGenerating(result.mode);
       load();
     } catch (err) {
       show(err instanceof Error ? err.message : "Failed to queue generation.", "danger");
@@ -450,6 +522,7 @@ export default function ProductDetailPage() {
     try {
       const result = await regenerateArticleText(id!);
       show(result.queued ? "Queued." : (result.reason ?? "Not queued."), result.queued ? "ok" : "danger");
+      if (result.queued) markGenerating(result.mode);
     } catch (err) {
       show(err instanceof Error ? err.message : "Regenerate failed.", "danger");
     }
@@ -459,6 +532,7 @@ export default function ProductDetailPage() {
     try {
       const result = await regenerateArticleImages(id!);
       show(result.queued ? "Queued." : (result.reason ?? "Not queued."), result.queued ? "ok" : "danger");
+      if (result.queued) markGenerating(result.mode);
     } catch (err) {
       show(err instanceof Error ? err.message : "Regenerate failed.", "danger");
     }
@@ -471,6 +545,7 @@ export default function ProductDetailPage() {
     try {
       const result = variant === "action_shot" ? await regenerateArticleActionShot(id!) : await regenerateArticleProductShot(id!);
       show(result.queued ? "Queued." : (result.reason ?? "Not queued."), result.queued ? "ok" : "danger");
+      if (result.queued) markGenerating(result.mode);
     } catch (err) {
       show(err instanceof Error ? err.message : "Regenerate failed.", "danger");
     }
@@ -944,17 +1019,22 @@ export default function ProductDetailPage() {
               <span className="font-semibold text-ink-800">Ball review article:</span>{" "}
               {articleItem ? <Badge tone={articleItem.status === "approved" ? "ok" : articleItem.status === "rejected" ? "danger" : "pending"}>{articleItem.status}</Badge> : <span className="text-ink-500">not generated yet</span>}
             </p>
+            {generationStatus.generating && (
+              <Badge tone="pending">
+                Generating{generationStatus.mode ? ` (${generationStatus.mode})` : ""}... {generationElapsedText()}
+              </Badge>
+            )}
             {articleItem ? (
               <>
-                <Button size="sm" variant="secondary" onClick={handleRegenerateText}>
+                <Button size="sm" variant="secondary" onClick={handleRegenerateText} disabled={generationStatus.generating}>
                   Regen text
                 </Button>
-                <Button size="sm" variant="secondary" onClick={handleRegenerateImages}>
+                <Button size="sm" variant="secondary" onClick={handleRegenerateImages} disabled={generationStatus.generating}>
                   Regen images
                 </Button>
               </>
             ) : (
-              <Button size="sm" variant="primary" onClick={handleGenerateArticle}>
+              <Button size="sm" variant="primary" onClick={handleGenerateArticle} disabled={generationStatus.generating}>
                 Generate article
               </Button>
             )}
@@ -997,6 +1077,7 @@ export default function ProductDetailPage() {
               candidates={articleCandidates}
               onSelectCandidate={handleSelectCandidate}
               onRegenerateVariant={handleRegenerateVariant}
+              regenerateDisabled={generationStatus.generating}
             />
           )}
         </div>

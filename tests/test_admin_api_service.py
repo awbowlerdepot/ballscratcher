@@ -1049,12 +1049,19 @@ class FakeCursor:
                 product_id = remaining.pop(0)
                 rows = [r for r in rows if r["product_id"] == product_id]
             rows.sort(key=lambda r: (r.get("created_at") or "", r["id"]), reverse=True)
+            # 034_product_article_generation_status.sql -- left join onto
+            # the live generation-status marker table, keyed by product_id
+            # (not article id -- a first-time generate-article has no
+            # product_articles row yet but can still be "generating").
+            gen_status = self.db.get("product_article_generation_status", {})
             self._rows = [
                 (r["id"], r["product_id"], r["product_name"], r["brand_name"], r["status"],
                  r.get("title"), r.get("generated_at"), r.get("reviewed_at"), r.get("resolved_by"),
                  r.get("created_at"), r.get("action_shot_image_url"), r.get("product_shot_image_url"),
                  r.get("images_generated_at"), r.get("sync_to_bigcommerce"), r.get("bigcommerce_post_id"),
-                 r.get("bowlerdepot_synced_at"))
+                 r.get("bowlerdepot_synced_at"),
+                 gen_status.get(r["product_id"], {}).get("started_at"),
+                 gen_status.get(r["product_id"], {}).get("mode"))
                 for r in rows
             ]
             self.description = [
@@ -1062,6 +1069,7 @@ class FakeCursor:
                 ("title",), ("generated_at",), ("reviewed_at",), ("resolved_by",), ("created_at",),
                 ("action_shot_image_url",), ("product_shot_image_url",), ("images_generated_at",),
                 ("sync_to_bigcommerce",), ("bigcommerce_post_id",), ("bowlerdepot_synced_at",),
+                ("generation_started_at",), ("generation_mode",),
             ]
 
         elif q.startswith("select pa.*, p.name as product_name, b.name as brand_name"):
@@ -1129,6 +1137,29 @@ class FakeCursor:
                 row["sync_to_bigcommerce"] = sync_to_bigcommerce
                 self._last_result = (article_id,)
             self.description = [("id",)]
+
+        # --- 034_product_article_generation_status.sql -- live "is a
+        # generation in flight" marker, keyed by product_id (see that
+        # migration's own header comment and get/set/clear_article_
+        # generation_status's docstrings in service.py).
+
+        elif q.startswith("select started_at, mode from product_article_generation_status"):
+            (product_id,) = params
+            row = self.db.get("product_article_generation_status", {}).get(product_id)
+            self._last_result = (row["started_at"], row["mode"]) if row else None
+            self.description = [("started_at",), ("mode",)]
+
+        elif q.startswith("insert into product_article_generation_status"):
+            product_id, mode = params
+            self.db.setdefault("product_article_generation_status", {})[product_id] = {
+                "started_at": "now", "mode": mode,
+            }
+            self._last_result = None
+
+        elif q.startswith("delete from product_article_generation_status"):
+            (product_id,) = params
+            self.db.get("product_article_generation_status", {}).pop(product_id, None)
+            self._last_result = None
 
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
@@ -5090,6 +5121,179 @@ def test_list_articles_includes_bigcommerce_sync_fields():
     assert result[0]["sync_to_bigcommerce"] is True
     assert result[0]["bigcommerce_post_id"] == "789"
     assert result[0]["bowlerdepot_synced_at"] == "2026-09-04"
+
+
+
+# --- 034_product_article_generation_status.sql -- Al: "images take
+# forever to get generated... is there a way to show the status in the
+# UI? is it in the queue how many ahead etc." No literal queue exists
+# (queue_article_generation does a direct lambda:InvokeFunction); this
+# table is a live "is a generation in flight right now" marker, upserted
+# by queue_article_generation and cleared by product_article_generator's
+# handler() in a try/finally.
+
+def test_list_articles_includes_generation_status_fields():
+    """list_articles' LEFT JOIN onto product_article_generation_status
+    surfaces the live marker per-row so ArticlesPage can show a
+    "Generating..." badge without a second round-trip per article."""
+    db = {
+        "product_articles": {"art-1": _fake_article_row(id="art-1", product_id="prod-1")},
+        "product_article_generation_status": {"prod-1": {"started_at": "2026-09-11T18:00:00", "mode": "images"}},
+    }
+    conn = FakeConnection(db)
+
+    result = service.list_articles(conn, status="pending")
+
+    assert result[0]["generation_started_at"] == "2026-09-11T18:00:00"
+    assert result[0]["generation_mode"] == "images"
+
+
+def test_list_articles_generation_status_none_when_not_generating():
+    db = {"product_articles": {"art-1": _fake_article_row(id="art-1", product_id="prod-1")}}
+    conn = FakeConnection(db)
+
+    result = service.list_articles(conn, status="pending")
+
+    assert result[0]["generation_started_at"] is None
+    assert result[0]["generation_mode"] is None
+
+
+def test_get_article_generation_status_returns_generating_false_when_no_row():
+    db = {"product_article_generation_status": {}}
+    conn = FakeConnection(db)
+
+    result = service.get_article_generation_status(conn, "prod-1")
+
+    assert result == {"generating": False}
+
+
+def test_get_article_generation_status_returns_generating_true_with_row():
+    db = {"product_article_generation_status": {"prod-1": {"started_at": "2026-09-11T18:00:00", "mode": "both"}}}
+    conn = FakeConnection(db)
+
+    result = service.get_article_generation_status(conn, "prod-1")
+
+    assert result == {"generating": True, "started_at": "2026-09-11T18:00:00", "mode": "both"}
+
+
+def test_set_article_generation_status_upserts_row():
+    db = {"product_article_generation_status": {}}
+    conn = FakeConnection(db)
+
+    service.set_article_generation_status(conn, "prod-1", "images")
+
+    assert db["product_article_generation_status"]["prod-1"]["mode"] == "images"
+    assert conn.committed is True
+
+
+def test_set_article_generation_status_overwrites_existing_row():
+    """Upsert, not insert -- a second regenerate call on a product that's
+    already mid-generation (shouldn't normally happen since the UI
+    disables the buttons, but the backend doesn't rely on that) replaces
+    the row's mode/started_at rather than erroring on a duplicate key."""
+    db = {"product_article_generation_status": {"prod-1": {"started_at": "old", "mode": "text"}}}
+    conn = FakeConnection(db)
+
+    service.set_article_generation_status(conn, "prod-1", "images")
+
+    assert db["product_article_generation_status"]["prod-1"]["mode"] == "images"
+    assert db["product_article_generation_status"]["prod-1"]["started_at"] != "old"
+
+
+def test_clear_article_generation_status_deletes_row():
+    db = {"product_article_generation_status": {"prod-1": {"started_at": "now", "mode": "images"}}}
+    conn = FakeConnection(db)
+
+    service.clear_article_generation_status(conn, "prod-1")
+
+    assert "prod-1" not in db["product_article_generation_status"]
+    assert conn.committed is True
+
+
+def test_clear_article_generation_status_missing_row_is_a_no_op():
+    db = {"product_article_generation_status": {}}
+    conn = FakeConnection(db)
+
+    service.clear_article_generation_status(conn, "prod-1")  # should not raise
+
+
+def test_queue_article_generation_sets_status_before_invoking():
+    """set_article_generation_status is called before the lambda:Invoke,
+    not after -- see that function's own comment in service.py on why
+    ordering barely matters for InvocationType="Event" but the try/except
+    around the invoke call still needs the row to already exist so it has
+    something to clean up if the invoke itself raises. Follows this
+    file's own sys.modules["boto3"] patching convention (see
+    test_queue_article_generation_invokes_function_with_singular_product_id
+    above) since queue_article_generation does `import boto3` locally,
+    not at module scope.
+    """
+    db = _fake_db_with_product()
+    db["product_article_generation_status"] = {}
+    conn = FakeConnection(db)
+
+    class _FakeLambdaClientChecksOrdering:
+        def invoke(self, **kwargs):
+            # By the time invoke() is called, the status row must already
+            # be set -- confirms set-before-invoke ordering.
+            assert db["product_article_generation_status"]["prod-1"]["mode"] == "both"
+            return {}
+
+    class _FakeBoto3:
+        def client(self, name):
+            assert name == "lambda"
+            return _FakeLambdaClientChecksOrdering()
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    os.environ["PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME"] = "fn-name"
+    try:
+        result = service.queue_article_generation(conn, "prod-1", mode="both")
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+        del os.environ["PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME"]
+
+    assert result["queued"] is True
+    assert db["product_article_generation_status"]["prod-1"]["mode"] == "both"
+
+
+def test_queue_article_generation_clears_status_if_invoke_raises():
+    """A boto3/IAM/throttling failure on the invoke call itself (not a
+    failure inside the generator Lambda, which this function never waits
+    for) must not leave a stale "generating" row behind for a generation
+    that never actually started."""
+    db = _fake_db_with_product()
+    db["product_article_generation_status"] = {}
+    conn = FakeConnection(db)
+
+    class _FailingLambdaClient:
+        def invoke(self, **kwargs):
+            raise RuntimeError("boto3 explosion")
+
+    class _FakeBoto3:
+        def client(self, name):
+            return _FailingLambdaClient()
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    os.environ["PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME"] = "fn-name"
+    try:
+        try:
+            service.queue_article_generation(conn, "prod-1", mode="both")
+            assert False, "expected the invoke's RuntimeError to propagate"
+        except RuntimeError:
+            pass
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+        del os.environ["PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME"]
+
+    assert "prod-1" not in db["product_article_generation_status"]
 
 
 def test_get_article_includes_bigcommerce_sync_columns():

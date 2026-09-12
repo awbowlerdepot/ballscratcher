@@ -307,6 +307,10 @@ export interface ProductDetail {
   discovered_url: Record<string, unknown> | null;
   bowlerdepot_matches: Record<string, unknown>[];
   bowwwl_matches: Record<string, unknown>[];
+  // 034_product_article_generation_status.sql -- embedded by get_product
+  // so a first page load already reflects an in-flight generation
+  // without a second round-trip; see ArticleGenerationStatus above.
+  article_generation_status: ArticleGenerationStatus;
   [key: string]: unknown;
 }
 
@@ -573,6 +577,23 @@ export interface ArticleListItem {
   sync_to_bigcommerce: boolean;
   bigcommerce_post_id: string | null;
   bowlerdepot_synced_at: string | null;
+  // 034_product_article_generation_status.sql -- Al: "images take
+  // forever to get generated... is there a way to show the status in
+  // the UI." Non-null exactly while product_article_generator is
+  // actively working on this article's product_id.
+  generation_started_at: string | null;
+  generation_mode: string | null;
+}
+
+// GET /products/{id}/article-generation-status -- lightweight poll
+// target (see admin_api/app.py's own comment on why this is separate
+// from the full GET /products/{id} response) for ProductDetailPage,
+// which needs this even before any product_articles row exists (a
+// first-time "Generate article" click has nothing else to poll).
+export interface ArticleGenerationStatus {
+  generating: boolean;
+  started_at?: string;
+  mode?: string;
 }
 
 export interface ArticleFaqItem {

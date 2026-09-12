@@ -76,6 +76,21 @@ export default function ArticlesPage() {
 
   useEffect(load, [status, productId, offset]);
 
+  // 034_product_article_generation_status.sql -- Al: "images take
+  // forever to get generated... is there a way to show the status in
+  // the UI." list_articles' LEFT JOIN already puts generation_started_at
+  // on each row for free, so this list view just needs a light re-poll
+  // (not per-row, like ProductDetailPage's single-product view) while
+  // any visible row is generating -- catches the row disappearing off
+  // "generating" once the Lambda actually finishes.
+  const anyGenerating = items.some((a) => a.generation_started_at);
+  useEffect(() => {
+    if (!anyGenerating) return;
+    const interval = setInterval(load, 5000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anyGenerating]);
+
   function resetAndSet<T>(setter: (v: T) => void) {
     return (value: T) => {
       setOffset(0);
@@ -154,6 +169,10 @@ export default function ArticlesPage() {
         result.queued ? "Queued -- reopen this article in a bit to see the regenerated text." : (result.reason ?? "Not queued."),
         result.queued ? "ok" : "danger",
       );
+      // 034_product_article_generation_status.sql -- reload right away so
+      // this row's Generating badge appears immediately instead of
+      // waiting for the next 5s poll tick (see anyGenerating effect above).
+      if (result.queued) load();
     } catch (err) {
       show(err instanceof Error ? err.message : "Regenerate failed.", "danger");
     }
@@ -166,6 +185,7 @@ export default function ArticlesPage() {
         result.queued ? "Queued -- reopen this article in a bit to see the new candidates." : (result.reason ?? "Not queued."),
         result.queued ? "ok" : "danger",
       );
+      if (result.queued) load();
     } catch (err) {
       show(err instanceof Error ? err.message : "Regenerate failed.", "danger");
     }
@@ -188,6 +208,7 @@ export default function ArticlesPage() {
           : (result.reason ?? "Not queued."),
         result.queued ? "ok" : "danger",
       );
+      if (result.queued) load();
     } catch (err) {
       show(err instanceof Error ? err.message : "Regenerate failed.", "danger");
     }
@@ -350,11 +371,19 @@ export default function ArticlesPage() {
               <Badge tone={a.status === "approved" ? "ok" : "danger"}>{a.status}</Badge>
             )}
           </div>
+          {/* 034_product_article_generation_status.sql -- Al: "images
+              take forever to get generated... is there a way to show
+              the status in the UI." a.generation_started_at comes from
+              list_articles' LEFT JOIN onto the live status marker table
+              (see that function's own comment in admin_api/service.py). */}
+          {a.generation_started_at && (
+            <Badge tone="pending">Generating{a.generation_mode ? ` (${a.generation_mode})` : ""}...</Badge>
+          )}
           <div className="flex flex-wrap gap-1.5">
-            <Button size="sm" variant="secondary" onClick={() => handleRegenerateText(a.product_id)}>
+            <Button size="sm" variant="secondary" onClick={() => handleRegenerateText(a.product_id)} disabled={!!a.generation_started_at}>
               Regen text
             </Button>
-            <Button size="sm" variant="secondary" onClick={() => handleRegenerateImages(a.product_id)}>
+            <Button size="sm" variant="secondary" onClick={() => handleRegenerateImages(a.product_id)} disabled={!!a.generation_started_at}>
               Regen images
             </Button>
             <Button size="sm" variant="ghost" onClick={() => openPreview(a.id)}>
@@ -449,6 +478,7 @@ export default function ArticlesPage() {
             candidates={previewCandidates}
             onSelectCandidate={handleSelectCandidate}
             onRegenerateVariant={(variant) => handleRegenerateVariant(previewArticle.product_id, variant)}
+            regenerateDisabled={!!items.find((a) => a.id === previewArticle.id)?.generation_started_at}
           />
         )}
       </Modal>
@@ -467,6 +497,7 @@ export function ArticlePreview({
   candidates,
   onSelectCandidate,
   onRegenerateVariant,
+  regenerateDisabled,
 }: {
   article: Article;
   candidates: ArticleImageCandidate[];
@@ -475,6 +506,10 @@ export function ArticlePreview({
   // component read-only-ish (see that page's own comment on why it
   // shares this JSX) and may not wire a regenerate action through.
   onRegenerateVariant?: (variant: "action_shot" | "product_shot") => void;
+  // 034_product_article_generation_status.sql -- ProductDetailPage sets
+  // this while a generation is already in flight for this product, so
+  // the per-variant buttons don't fire a second overlapping invocation.
+  regenerateDisabled?: boolean;
 }) {
   const listBlock = (label: string, items: string[]) =>
     items.length ? (
@@ -517,7 +552,7 @@ export function ArticlePreview({
       {onRegenerateVariant && (
         <div className="flex flex-wrap gap-2">
           {(["action_shot", "product_shot"] as const).map((variant) => (
-            <Button key={variant} size="sm" variant="secondary" onClick={() => onRegenerateVariant(variant)}>
+            <Button key={variant} size="sm" variant="secondary" onClick={() => onRegenerateVariant(variant)} disabled={regenerateDisabled}>
               Regenerate {VARIANT_LABELS[variant].toLowerCase()}
             </Button>
           ))}

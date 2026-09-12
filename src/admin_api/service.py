@@ -1539,6 +1539,17 @@ def get_product(conn, product_id: str):
         bowwwl_columns = [desc[0] for desc in cur.description]
         product["bowwwl_matches"] = [dict(zip(bowwwl_columns, row)) for row in cur.fetchall()]
 
+        # 034_product_article_generation_status.sql -- Al: "images take
+        # forever to get generated... is there a way to show the status
+        # in the UI." None if no generation is currently in flight for
+        # this product (the normal case), so a first-page-load already
+        # shows a genuine "Generating..." state without a second
+        # round-trip -- get_article_generation_status below is the
+        # lighter-weight sibling ProductDetailPage polls afterward
+        # instead of re-fetching this whole multi-join blob every few
+        # seconds.
+        product["article_generation_status"] = get_article_generation_status(conn, product_id)
+
         return product
 
 
@@ -4126,16 +4137,25 @@ def list_articles(conn, status: str = "pending", product_id: str = None, limit: 
     Articles tab list row can show/toggle the sync flag without a second
     round-trip per row -- same "columns the list view needs come along in
     this same select" reasoning the action_shot_image_url/
-    images_generated_at columns above already follow."""
+    images_generated_at columns above already follow.
+
+    generation_started_at/generation_mode (034_product_article_
+    generation_status.sql) are left-joined for the same reason -- non-
+    null exactly while product_article_generator is actively working on
+    that row's product_id, letting the Articles tab show a real
+    "Generating..." badge next to the Regenerate buttons instead of Al
+    having to refresh and guess whether anything actually happened yet."""
     query = """
         select pa.id, pa.product_id, p.name as product_name, b.name as brand_name,
                pa.status, pa.title, pa.generated_at, pa.reviewed_at,
                pa.resolved_by, pa.created_at,
                pa.action_shot_image_url, pa.product_shot_image_url, pa.images_generated_at,
-               pa.sync_to_bigcommerce, pa.bigcommerce_post_id, pa.bowlerdepot_synced_at
+               pa.sync_to_bigcommerce, pa.bigcommerce_post_id, pa.bowlerdepot_synced_at,
+               pags.started_at as generation_started_at, pags.mode as generation_mode
         from product_articles pa
         join products p on p.id = pa.product_id
         join brands b on b.id = p.brand_id
+        left join product_article_generation_status pags on pags.product_id = pa.product_id
     """
     params = []
     conditions = []
@@ -4437,6 +4457,73 @@ def select_article_image_candidate(conn, candidate_id: str, resolved_by: str = N
             "image_key": image_key, "image_url": image_url}
 
 
+def get_article_generation_status(conn, product_id: str) -> dict:
+    """034_product_article_generation_status.sql -- Al: "images take
+    forever to get generated... is there a way to show the status in
+    the UI? is it in the queue how many ahead etc." Investigation found
+    there's no literal FIFO queue for an on-demand single-product
+    generate (queue_article_generation below invokes the Lambda
+    immediately, InvocationType="Event") -- the real cause of the
+    perceived slowness is that ONE invocation legitimately takes minutes
+    (up to 6 sequential/interleaved Gemini image calls, each eligible
+    for its own retry-with-backoff on a 429 -- see build_gemini_scene_
+    prompt's own docstring), with zero visibility into that from the
+    admin UI beforehand. This is the read side of the fix: returns
+    {"generating": True, "started_at": ..., "mode": ...} while a
+    generation is in flight for this product, or {"generating": False}
+    once product_article_generator's handler() clears the row (success
+    or failure -- see that module's own try/finally).
+
+    Returns a plain dict, not None, on the "nothing in flight" case
+    (unlike get_product/get_article's None-means-404 convention) --
+    this is a status poll, not a resource lookup, so "no generation
+    running" is a normal, positive answer, not a 404."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "select started_at, mode from product_article_generation_status where product_id = %s",
+            (product_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return {"generating": False}
+        started_at, mode = row
+        return {"generating": True, "started_at": started_at, "mode": mode}
+
+
+def set_article_generation_status(conn, product_id: str, mode: str) -> None:
+    """Upserted (not inserted) so a regenerate click fired while a
+    previous one for the SAME product is somehow still marked in-flight
+    (e.g. the earlier clear_article_generation_status call failed to
+    run for some reason) just refreshes started_at/mode instead of
+    raising a duplicate-key error -- this status row is a best-effort UI
+    convenience, not a lock, so it should never be the thing that makes
+    a regenerate request itself fail."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into product_article_generation_status (product_id, started_at, mode)
+            values (%s, now(), %s)
+            on conflict (product_id) do update
+                set started_at = excluded.started_at, mode = excluded.mode
+            """,
+            (product_id, mode),
+        )
+    conn.commit()
+
+
+def clear_article_generation_status(conn, product_id: str) -> None:
+    """Called from product_article_generator/app.py's handler(), in a
+    try/finally around the on-demand generate/regenerate call, so this
+    row is cleared whether that call succeeds, raises, or times out --
+    a crashed invocation must not leave the UI showing "Generating..."
+    forever. delete rather than update-a-completed_at column, matching
+    this table's own "live marker, not a history log" design (see
+    034_product_article_generation_status.sql's header comment)."""
+    with conn.cursor() as cur:
+        cur.execute("delete from product_article_generation_status where product_id = %s", (product_id,))
+    conn.commit()
+
+
 def queue_article_generation(conn, product_id: str, mode: str = "both") -> dict:
     """Direct lambda:InvokeFunction, no queue in front -- same convention
     as queue_video_discovery, invoked from POST /products/{id}/generate-
@@ -4510,14 +4597,28 @@ def queue_article_generation(conn, product_id: str, mode: str = "both") -> dict:
         payload["regenerate_images"] = True
         payload["image_variants"] = ["product_shot"]
 
+    # 034_product_article_generation_status.sql -- set the "generating"
+    # marker BEFORE the invoke, not after: InvocationType="Event" returns
+    # as soon as Lambda has accepted the event, so ordering barely
+    # matters in practice, but if the invoke call itself raises (a
+    # boto3/IAM/throttling error, not a failure inside the generator
+    # Lambda), we don't want a stale "generating" row left behind for a
+    # generation that never actually started -- hence the try/except
+    # that clears it right back out on that specific failure path.
+    set_article_generation_status(conn, product_id, mode)
+
     import boto3
 
-    lambda_client = boto3.client("lambda")
-    lambda_client.invoke(
-        FunctionName=function_name,
-        InvocationType="Event",
-        Payload=json.dumps(payload),
-    )
+    try:
+        lambda_client = boto3.client("lambda")
+        lambda_client.invoke(
+            FunctionName=function_name,
+            InvocationType="Event",
+            Payload=json.dumps(payload),
+        )
+    except Exception:
+        clear_article_generation_status(conn, product_id)
+        raise
     return {"queued": True, "product_id": product_id, "mode": mode}
 
 
