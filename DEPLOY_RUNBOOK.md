@@ -14842,6 +14842,111 @@ sam build && sam deploy
 (a real deploy is required, not just a push -- this ships a new IAM
 policy and env var on `AdminApiFunction`).
 
+### 6az. Human-figure drift persisted after 6ax: visual_theme caching + a too-loose exception (2026-09-13)
+
+Al, after regenerating images for an "Infinity Quest" ball multiple times
+following 6ax's fix: one candidate still a fully photorealistic human
+bowler, another an illustrated/comic-style ordinary bowler (not a
+Viking/knight/creature at all) with the logo still restyled. His own
+question: "are we feeding it any context from the previous generations.
+i feel like it made a version that is animated and called it good."
+
+Investigated whether prior generated images or Gemini conversation state
+leak into new calls -- they don't. Every candidate, for both variants,
+uses the SAME single reference image fetched once at the top of
+`generate_article_image_candidates` (`fetch_reference_image_url`/
+`fetch_reference_image_bytes`, always the product's own catalog photo,
+never a previously-generated candidate or a `product_article_image_
+candidates` row). `call_gemini_for_image` sends exactly one `contents`
+entry per call -- no chat history, no cached content, no session state
+beyond a plain HTTP connection pool (`gemini_session`). Image-level and
+conversation-level context leakage are both ruled out.
+
+The real finding, matching Al's instinct at the text level instead: two
+compounding causes.
+
+1. **`visual_theme` is cached, not regenerated, on every "Regenerate
+   images" click.** `generate_article_for_product`'s `regenerate_text=
+   False` branch (its own v7 docstring already documents this) reuses
+   `fetch_existing_article`'s stored `visual_theme` unchanged instead of
+   calling Bedrock again -- by design, so an images-only regenerate
+   doesn't also rewrite the article copy. But `visual_theme` is written
+   ONCE, by `build_article_prompt`'s own separate Bedrock/Claude prompt,
+   which (before this fix) had **zero instructions about avoiding human
+   figures**. If that one persisted theme string names a person/warrior/
+   hero, every subsequent images-only regenerate keeps re-submitting the
+   same person-describing theme to Gemini -- a real, if less obvious,
+   form of "context from a previous generation" leaking forward, just at
+   the text-theme layer rather than the image layer Al initially
+   suspected.
+
+2. **The 6ax exception ("if the scene concept clearly evokes a
+   fantastical/mythical figure") was a soft, subjective bar the model
+   applied far too loosely** -- it was treating an illustrated ART STYLE
+   as satisfying the exception by itself, independent of whether the
+   ball's name actually names a mythical being. Compounded by the
+   exclusion clause sitting ~2,400 characters into the prompt, after the
+   logo/finish/lighting instructions -- the exact "buried instruction"
+   failure mode already documented in 6ax's own incident history for the
+   original 2026-09-06 all-or-nothing ban, just not fixed by 6ax's
+   rewrite (which changed the clause's content, not its position).
+
+Asked Al how to handle the unreliable exception: remove it entirely, keep
+it as-is and only patch `visual_theme`, or keep it but tighten the
+wording/position AND patch `visual_theme`. He chose the third, most
+thorough option.
+
+**`src/product_article_generator/app.py`**:
+
+- `build_article_prompt`'s `visual_theme` field instructions
+  (previously silent on people entirely) now explicitly ban describing a
+  human/humanoid/costumed character UNLESS the ball's own name literally
+  names a specific mythical/legendary being (`Viking`, `Knight`,
+  `Dragon`, `Phoenix`, or similar appearing in the name itself) --
+  matching the exact bar now given to the image prompt below, so the two
+  prompts can't disagree with each other about whether a given ball
+  "deserves" a character. A name that merely evokes a mood, journey, or
+  abstract concept ("Quest", "Infinity", "Momentum") does not clear that
+  bar.
+- `build_gemini_scene_prompt`'s human-figure exclusion clause
+  (`human_exclusion_clause`) is REPOSITIONED to immediately follow the
+  opening framing sentence, before the logo/finish/lighting instructions
+  it previously came after -- no longer the second-to-last substantive
+  instruction in the prompt. Its wording is TIGHTENED from "if the scene
+  concept clearly evokes a fantastical/mythical figure" to an objective,
+  name-level test identical to the one now given to `visual_theme`:
+  the exception only applies when the ball's own name literally names a
+  specific mythical/legendary being. Also explicitly states that
+  rendering the scene in an illustrated/comic/animated art style does
+  NOT by itself satisfy the exception ("an illustrated ordinary bowler
+  is still a banned human figure, just drawn instead of photographed")
+  -- closing the exact loophole Al hit.
+
+Both changes apply to every product regardless of whether it's ever hit
+this bug before -- there's no per-product flag or migration needed. A
+product whose `visual_theme` was already generated under the OLD,
+unconstrained prompt (like "Infinity Quest") keeps that stale theme text
+until its article TEXT is regenerated (`mode="both"` or `mode="text"`,
+not `mode="images"`) -- an images-only regenerate alone will keep
+resubmitting the same old theme string even after this fix ships, since
+that's precisely the caching behavior described above. Al will need to
+regenerate the article text (not just images) for any product already
+showing this drift to pick up the new visual_theme instructions.
+
+**Tests**: `tests/test_product_article_generator.py` -- added
+`test_build_article_prompt_visual_theme_excludes_human_characters_unless_named_being`
+(confirms the new exclusion/name-based bar is present in the visual_theme
+instructions), replaced `test_build_gemini_scene_prompt_allows_stylized_
+theme_character` with `test_build_gemini_scene_prompt_allows_named_
+mythical_being` (confirms the tightened, name-based exception wording,
+the "illustrated style alone doesn't satisfy it" language, and the
+mood/concept-name-doesn't-qualify default), and added
+`test_build_gemini_scene_prompt_human_exclusion_is_positioned_early`
+(confirms the exclusion clause now appears before the logo-fidelity
+clause, not after it). Full regression: 155/155 (up from 153 -- one test
+replaced, two new tests added). No `template.yaml` or database changes
+needed -- prompt-text-only fix, same as 6ax.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

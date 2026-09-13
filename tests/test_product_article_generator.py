@@ -229,6 +229,29 @@ def test_build_article_prompt_visual_theme_nudges_toward_literal_iconography():
     assert "isn't a rule to force a literal creature into every image" in theme_section
 
 
+def test_build_article_prompt_visual_theme_excludes_human_characters_unless_named_being():
+    """REAL INCIDENT, follow-up (2026-09-13, Al): after build_gemini_
+    scene_prompt's human-figure exclusion was tightened to only allow a
+    character when the ball's own NAME literally names a mythical being
+    (see test_build_gemini_scene_prompt_allows_stylized_theme_character),
+    this upstream visual_theme instruction -- which the image prompt's
+    scene_desc is built from via _resolve_visual_context -- still had NO
+    exclusion of its own, so a theme description naming a person/warrior/
+    hero could get generated here and then survive into every subsequent
+    images-only regenerate untouched (visual_theme is cached, not
+    regenerated per image request -- see fetch_existing_article/
+    generate_article_for_product's own docstring). Confirms the same
+    name-based bar is now stated here too, so the two prompts can't
+    disagree about whether a given ball "deserves" a character."""
+    prompt = app.build_article_prompt(_SAMPLE_PRODUCT, siblings=[])
+    theme_section = prompt.split("visual_theme")[1]
+    assert "Do NOT describe a human, humanoid, or costumed person/character" in theme_section
+    assert "Viking" in theme_section and "Knight" in theme_section
+    assert "Dragon" in theme_section and "Phoenix" in theme_section
+    assert "does NOT clear that bar" in theme_section
+    assert "must NOT be described with a person, warrior, hero, athlete, or any other human/humanoid figure" in theme_section
+
+
 def test_build_article_prompt_warns_against_borrowing_a_different_editions_name():
     """Real, confirmed incident (Al, 2026-09-06): a non-Pearl product's
     article came back naming/describing the Pearl edition, traced to a
@@ -2149,12 +2172,12 @@ def test_build_gemini_scene_prompt_excludes_people_and_bowling_venue_props():
     subject (wanted) vs. a photograph of a person mid-delivery with
     bowling shoes and scattered pins (not wanted, "hallucinations that
     just feel phony"). Confirms the exclusion list (rewritten by the
-    2026-09-13 incident below to carve out a themed-character exception,
-    see test_build_gemini_scene_prompt_allows_stylized_theme_character)
-    is present for both variants, that realistic humans/shoes/pins/
-    scoreboards are still banned, and that a themed lane/alley backdrop
-    itself is still explicitly allowed -- Al's own distinction was
-    people/pins/props, not the lane setting itself."""
+    2026-09-13 incidents below to carve out, then tighten, a themed-
+    character exception, see test_build_gemini_scene_prompt_allows_
+    named_mythical_being) is present for both variants, that realistic
+    humans/shoes/pins/scoreboards are still banned, and that a themed
+    lane/alley backdrop itself is still explicitly allowed -- Al's own
+    distinction was people/pins/props, not the lane setting itself."""
     action_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "action_shot")
     product_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "product_shot")
     for prompt in (action_prompt, product_prompt):
@@ -2169,28 +2192,54 @@ def test_build_gemini_scene_prompt_excludes_people_and_bowling_venue_props():
         assert "may still evoke a bowling lane or alley setting" in prompt
 
 
-def test_build_gemini_scene_prompt_allows_stylized_theme_character():
-    """REAL INCIDENT (2026-09-13, Al): "we are starting to get non
-    character humans, aka not vikings or similar" -- a real generated
-    action_shot showed two photorealistic human bowlers despite the
-    2026-09-06 "no people" exclusion above already being present in the
-    prompt verbatim. Asked Al directly whether to ban every human figure
-    outright or carve out an exception for a theme-appropriate stylized
-    character (his own "vikings" example); his call: stylized/costumed
-    characters that clearly belong to the theme are fine, ordinary
-    photorealistic people are not. Confirms the prompt states that exact
-    exception -- a themed character is allowed but must read as
-    illustrated/non-photorealistic, must not be an ordinary person/
-    athlete/bowler in real attire, and must not interact with a bowling
-    ball or stand on a lane -- and that the default (no clear character
-    concept) is still no figures at all."""
+def test_build_gemini_scene_prompt_human_exclusion_is_positioned_early():
+    """REAL INCIDENT, follow-up (2026-09-13, Al): after the 2026-09-13
+    exception-carveout fix shipped, Al kept getting humans -- confirmed
+    (see the human_exclusion_clause docstring comment in app.py) that the
+    exclusion sat ~2,400 characters into the prompt, after the logo/
+    finish/lighting instructions, the same "buried instruction" failure
+    mode already documented for the original 2026-09-06 all-or-nothing
+    ban. Confirms the exclusion now appears immediately after the opening
+    framing sentence, before the logo-fidelity instructions, rather than
+    after them."""
     action_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "action_shot")
-    assert "fantastical, mythical, or costumed figure" in action_prompt
-    assert "Viking warrior" in action_prompt
+    human_clause_pos = action_prompt.index("do not include any realistic, photographic-looking human being")
+    logo_clause_pos = action_prompt.index("printed logo, graphics, and text must occupy")
+    assert human_clause_pos < logo_clause_pos
+
+
+def test_build_gemini_scene_prompt_allows_named_mythical_being():
+    """REAL INCIDENT, follow-up (2026-09-13, Al): after the 2026-09-13
+    exception-carveout fix shipped ("if the scene concept above clearly
+    evokes a fantastical/mythical figure"), Al kept getting humans on
+    repeated regenerates of an "Infinity Quest" ball -- one candidate a
+    fully photorealistic bowler, another an illustrated/comic-style
+    ordinary bowler that isn't a Viking/knight/creature at all, just
+    drawn instead of photographed. Root cause: "clearly evokes" was a
+    soft, subjective bar the model applied far too loosely, treating an
+    illustrated ART STYLE as satisfying it regardless of whether the
+    ball's name actually names a mythical being. Rewritten to an
+    objective, name-level test: the exception only applies when the
+    ball's own NAME literally names a specific mythical/legendary being,
+    matching the same bar given to build_article_prompt's visual_theme
+    instructions (see that test). Also explicitly closes the "animated
+    art style alone satisfies it" loophole Al hit, and confirms a name
+    that merely evokes a mood/concept (like "Infinity Quest" itself)
+    does not qualify and must default to no figures at all."""
+    action_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "action_shot")
+    assert "unambiguously names a specific mythical, legendary, or fantastical being" in action_prompt
+    assert "\"Viking\"" in action_prompt and "\"Knight\"" in action_prompt
+    assert "\"Dragon\"" in action_prompt and "\"Phoenix\"" in action_prompt
     assert "obviously stylized, illustrated, non-photorealistic figure" in action_prompt
-    assert "never as an ordinary person, athlete, or bowler in real-world bowling attire" in action_prompt
-    assert "must not be shown holding, throwing, or otherwise interacting with a bowling ball" in action_prompt
-    assert "default to no figures of any kind" in action_prompt
+    assert "never an ordinary person, athlete, or bowler in real-world bowling attire" in action_prompt
+    assert "never shown holding, throwing, or otherwise interacting with a bowling ball" in action_prompt
+    # Closes the exact loophole Al hit: an illustrated/comic art style
+    # alone doesn't satisfy the exception.
+    assert "does NOT by itself satisfy this exception" in action_prompt
+    assert "an illustrated ordinary bowler is still a banned human figure" in action_prompt
+    # A mood/concept name like "adventure" or "infinity" doesn't clear
+    # the bar -- must default to no figures.
+    assert "does not clear this bar and must default to NO figures of any kind" in action_prompt
 
 
 def test_build_gemini_scene_prompt_forbids_resizing_the_logo():

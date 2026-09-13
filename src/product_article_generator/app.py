@@ -917,7 +917,20 @@ def build_article_prompt(product: dict, siblings: list) -> str:
         "leave an obvious one out. Be specific and creative, not generic "
         "bowling-alley imagery, UNLESS the name genuinely has no strong "
         "thematic connotation on its own -- in that case describe an "
-        "elevated, premium scene instead. This field is purely for "
+        "elevated, premium scene instead. Do NOT describe a human, "
+        "humanoid, or costumed person/character as part of this scene -- "
+        "the artwork this feeds into (see build_gemini_scene_prompt) bans "
+        "human figures by default and only allows one under a narrow "
+        "exception: the ball's own NAME must unambiguously name a specific "
+        "mythical, legendary, or fantastical being (the word \"Viking\", "
+        "\"Knight\", \"Dragon\", \"Phoenix\", or similar literally appearing "
+        "in the name) -- only then may this field name that exact being as "
+        "part of the scene. A name that merely evokes a mood, journey, or "
+        "abstract concept (\"Quest\", \"Infinity\", \"Momentum\", \"Origin\") "
+        "does NOT clear that bar and must NOT be described with a person, "
+        "warrior, hero, athlete, or any other human/humanoid figure -- "
+        "describe the object, creature, energy, or environment itself "
+        "instead, with no figure present at all. This field is purely for "
         "generating article artwork; it is never shown to readers.\n"
     )
 
@@ -1699,6 +1712,66 @@ def build_gemini_scene_prompt(product: dict, article: dict, variant: str,
     else:
         finish_hint_clause = ""
 
+    # REAL INCIDENT, follow-up (2026-09-13, Al): the 2026-09-13 rewrite
+    # above (see this function's own docstring) carved out a "clearly
+    # evokes a fantastical/mythical figure" exception, but Al kept
+    # getting humans after the fix shipped -- both a fully photorealistic
+    # one AND, separately, an illustrated/comic-style ordinary bowler
+    # that isn't a Viking/knight/creature at all, just drawn instead of
+    # photographed. Two root causes found: (a) this clause was buried
+    # ~2,400 characters into the prompt, after the logo/finish/lighting
+    # instructions, competing for attention exactly the way the original
+    # 2026-09-06 all-or-nothing ban already did -- moved to right after
+    # the opening framing sentence below, before anything else. (b) "the
+    # scene concept clearly evokes a fantastical figure" is a soft,
+    # subjective bar the model was applying far too loosely (treating an
+    # illustrated art STYLE as satisfying it, independent of whether the
+    # ball's own name actually names a mythical being) -- replaced with
+    # an objective, name-level test: the exception only applies when the
+    # ball's own name literally names a specific mythical/legendary being
+    # (Viking, Knight, Dragon, Phoenix, and similar), matching the same
+    # bar now given to the upstream visual_theme prompt in
+    # build_article_prompt (see that function's own comment) so the two
+    # prompts can't disagree with each other about whether a given ball
+    # "deserves" a character. Also explicitly states that an illustrated/
+    # comic/animated art style does NOT by itself satisfy the exception,
+    # closing the specific loophole Al hit ("made a version that is
+    # animated and called it good").
+    human_exclusion_clause = (
+        " This is a hero shot built around the ball, not a photograph or "
+        "illustration of a person -- do not include any realistic, "
+        "photographic-looking human being anywhere in the frame, even "
+        "blurred or in the background: no real bowlers, athletes, or "
+        "models, no bowling shoes, no scoreboards/monitors, and no bowling "
+        "pins. The scene must never read as an actual photograph of "
+        "someone in the act of bowling. The bar for the one narrow "
+        "exception is intentionally high and objective, not a matter of "
+        "interpretation: a human or humanoid figure may appear ONLY if "
+        "the ball's own name (given above) unambiguously names a "
+        "specific mythical, legendary, or fantastical being -- the word "
+        "\"Viking\", \"Knight\", \"Dragon\", \"Phoenix\", or similar "
+        "literally appearing in the name -- and even then it must read as "
+        "an obviously stylized, illustrated, non-photorealistic figure "
+        "belonging to that being's fantasy world, never an ordinary "
+        "person, athlete, or bowler in real-world bowling attire, and "
+        "never shown holding, throwing, or otherwise interacting with a "
+        "bowling ball or standing on a bowling lane -- the ball itself is "
+        "the only bowling-related subject in the frame. Rendering the "
+        "scene in an illustrated, comic, or animated art style does NOT "
+        "by itself satisfy this exception -- an illustrated ordinary "
+        "bowler is still a banned human figure, just drawn instead of "
+        "photographed. A name that merely evokes a mood, journey, or "
+        "abstract concept (adventure, energy, infinity, momentum, and "
+        "similar) does not clear this bar and must default to NO figures "
+        "of any kind. The scene may still evoke a bowling lane or alley "
+        "setting where the theme calls for it, but outside of that one "
+        "narrow named-being exception it must read as an empty, stylized "
+        "environment built around the ball. Photorealistic rendering "
+        "applies to the ball and its environment, not to any named being "
+        "present, which should look illustrated or fantastical by "
+        "contrast rather than blending in as a real photographed person."
+    )
+
     if variant == "action_shot":
         framing = "a dynamic hero shot conveying motion and energy, with the ball large and prominent in the frame"
         size_clause = (
@@ -1730,7 +1803,7 @@ def build_gemini_scene_prompt(product: dict, article: dict, variant: str,
         f"ball shown in the reference image into that scene as {framing}. "
         f"{size_clause} The ball is the hero subject of the image -- clearly the "
         "focus of the shot, framed per the sizing instruction above rather than "
-        "small or distant within the scene. If the scene concept above references "
+        f"small or distant within the scene.{human_exclusion_clause} If the scene concept above references "
         "a specific creature, object, or symbol (a spider and its web, a snake, "
         "flames, ice, machinery, a specific artifact, etc.), it's a strong, "
         "encouraged choice to make that element visible somewhere in the "
@@ -1767,28 +1840,7 @@ def build_gemini_scene_prompt(product: dict, article: dict, variant: str,
         "falloff, and contact shadow needed to seat the ball naturally into the "
         "new environment -- that depth and realism is correct and should stay -- "
         "without making the ball itself look shinier or more reflective than it "
-        f"actually is.{finish_hint_clause} This is a hero shot built around the ball -- do not "
-        "include any realistic, photographic-looking human being anywhere in the "
-        "frame, even blurred or in the background: no real bowlers, athletes, or "
-        "models, no bowling shoes, no scoreboards/monitors, and no bowling pins. "
-        "The scene must never read as an actual photograph of someone in the act of "
-        "bowling. The one exception: if the scene concept above clearly evokes a "
-        "fantastical, mythical, or costumed figure (a Viking warrior, an armored "
-        "knight, a mythical creature in humanoid form, and similar), that character "
-        "may appear -- but it must read as an obviously stylized, illustrated, "
-        "non-photorealistic figure belonging to the theme's fantasy world, never as "
-        "an ordinary person, athlete, or bowler in real-world bowling attire, and it "
-        "must not be shown holding, throwing, or otherwise interacting with a "
-        "bowling ball or standing on a bowling lane -- the ball itself is the only "
-        "bowling-related subject in the frame. When the theme doesn't clearly call "
-        "for a character at all, default to no figures of any kind. The scene may "
-        "still evoke a bowling lane or alley setting where the theme calls for it, "
-        "but outside of that one allowed themed-character exception it must read as "
-        "an empty, stylized environment built around the ball. Photorealistic "
-        "rendering applies to the ball and its environment, not to any themed "
-        "character present, which should look illustrated or fantastical by "
-        "contrast rather than blending in as a real photographed person. High "
-        "quality, no text overlays, no watermark."
+        f"actually is.{finish_hint_clause} High quality, no text overlays, no watermark."
     )
 
 
