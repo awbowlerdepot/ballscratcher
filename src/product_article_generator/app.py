@@ -1633,7 +1633,39 @@ def build_gemini_scene_prompt(product: dict, article: dict, variant: str,
     proportion/size instructions (2026-09-06/07/12 incidents above) never
     said anything about typography or artistic style, only size -- fixed
     by adding an explicit, standalone "reproduce as a faithful copy, do
-    not re-typeset/re-style/embellish" instruction alongside them."""
+    not re-typeset/re-style/embellish" instruction alongside them.
+
+    REAL INCIDENT (2026-09-13, Al): "we are still changing the logos, this
+    is the warning alert," with a real generated image attached: a ball
+    with a hazard-triangle icon and the words "WARNING ALERT" printed
+    directly on its surface in place of the manufacturer's actual logo,
+    against a hazard-tape/warning-light backdrop. A new, distinct failure
+    mode from every prior logo incident above (which were all about SIZE
+    or STYLE drift of the real logo) -- here the model didn't distort the
+    real logo at all, it substituted the visual_theme's own literal
+    iconography (a warning/hazard motif, from the 2026-09-07 "literal
+    iconography" preference above -- "make that element visible somewhere
+    in the generated scene") directly onto the ball's surface as if it
+    were the printed graphic. Root cause: that literal-iconography
+    instruction only ever said the element should appear "in the
+    generated scene," never explicitly excluding the ball's own surface
+    as a place to put it, and the logo-fidelity instructions that follow
+    never said the reverse either -- that nothing from the theme is
+    allowed to occupy that space at all. With both instructions individually
+    satisfiable by painting the theme's icon onto the ball (it IS "in the
+    generated scene," and the model may not have registered that as
+    altering the "logo" if it read the icon as new content rather than a
+    modification of the existing one), the model found a literal
+    interpretation neither instruction was written to rule out. Fixed by
+    adding an explicit standalone clause immediately after the literal-
+    iconography encouragement: that iconography belongs in the scene/
+    environment around the ball ONLY, must never be painted or overlaid
+    onto the ball's own surface, and must never replace, obscure, or be
+    confused with the ball's actual printed logo -- the ball's surface is
+    explicitly named as off-limits real estate for theme iconography,
+    independent of the pre-existing "keep the logo unchanged" language
+    that was never going to catch a case where the model wasn't trying to
+    modify the logo, just add something new next to/over it."""
     context = _resolve_visual_context(article)
     scene_desc = context or "an elevated, premium studio scene"
 
@@ -1810,7 +1842,15 @@ def build_gemini_scene_prompt(product: dict, article: dict, variant: str,
         "generated scene, not just implied through color grading or mood "
         "lighting -- don't leave an obvious one out. That's a preference, not a "
         "hard rule: a well-executed mood/color treatment of the concept is also "
-        "a fine result. Keep the ball "
+        "a fine result. This creature, object, or symbol belongs in the SCENE or "
+        "ENVIRONMENT around the ball only -- on a backdrop, in the lighting, as an "
+        "environmental prop or set piece. It must never be painted, printed, or "
+        "overlaid onto the ball's own surface, and it must never replace, "
+        "obscure, merge with, or be mistaken for the ball's actual printed logo. "
+        "The ball's surface carries only the manufacturer's real printed design, "
+        "nothing else added -- treat the ball as off-limits real estate for any "
+        "part of the theme's iconography, no matter how well it might seem to "
+        "fit thematically. Keep the ball "
         "itself completely unchanged -- the same colors, surface pattern, and "
         "logo/text exactly as shown in the reference image -- only change what's "
         "around it. The ball's printed logo, graphics, and text must occupy "

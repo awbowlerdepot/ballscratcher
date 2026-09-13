@@ -15091,6 +15091,54 @@ doc's own notes on the manual test-runner workaround). No `template.
 yaml` or database changes needed -- prompt/scoring-logic-only fix in
 `src/price_checker/app.py`.
 
+### 6bc. Logos still changing: literal theme iconography painted onto the ball itself (2026-09-13)
+
+**Report**: Al, with a real generated image attached: "we are still
+changing the logos, this is the warning alert." The image showed a
+hazard-triangle icon and the words "WARNING ALERT" printed directly
+onto the ball's surface, in place of the manufacturer's actual printed
+logo, against a matching hazard-tape/warning-light backdrop.
+
+**This is a new, distinct failure mode from every prior logo incident**
+(6t and earlier: logo enlarged, skewed, or restyled -- always a
+distortion of the REAL logo). Here the real logo wasn't distorted at
+all -- the model instead painted the visual_theme's own literal
+iconography (a warning/hazard motif, from the "literal theme
+iconography" preference added 2026-09-07 -- "make that element visible
+somewhere in the generated scene") directly onto the ball's surface, as
+if it were the printed graphic.
+
+**Root cause**: that literal-iconography instruction in
+`build_gemini_scene_prompt` only ever said the theme's creature/object/
+symbol should appear "in the generated scene" -- it never excluded the
+ball's own surface as a place to put it. The pre-existing logo-fidelity
+instructions immediately after it (keep the logo unchanged, don't
+resize/restyle it) never said the reverse either: that nothing from the
+theme is allowed to occupy that space at all. Both instructions were
+individually satisfiable by painting the warning icon onto the ball --
+it genuinely is "in the generated scene," and the model likely didn't
+register this as "changing the logo" since it read as adding new
+content rather than modifying the existing graphic.
+
+**Fix**: added an explicit, standalone clause immediately after the
+literal-iconography encouragement in `build_gemini_scene_prompt`: that
+iconography belongs in the scene/environment around the ball ONLY (a
+backdrop, lighting, an environmental prop or set piece), must never be
+painted, printed, or overlaid onto the ball's own surface, and must
+never replace, obscure, merge with, or be mistaken for the ball's
+actual printed logo -- the ball's surface is explicitly named as
+off-limits real estate for any part of the theme's iconography,
+independent of the existing "keep the logo unchanged" language, which
+was never going to catch a case where the model wasn't trying to modify
+the logo at all.
+
+**Tests**: `tests/test_product_article_generator.py` -- added
+`test_build_gemini_scene_prompt_keeps_literal_iconography_off_the_ball_
+and_logo` (asserts the new clause's key phrases are present for both
+action_shot and product_shot). Full regression: 156/156 (up from 155).
+No `template.yaml` or database changes needed -- prompt-text-only fix,
+same shape as every other entry in this section.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

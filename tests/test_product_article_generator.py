@@ -2163,6 +2163,27 @@ def test_build_gemini_scene_prompt_nudges_toward_literal_theme_iconography():
         assert "That's a preference, not a hard rule" in prompt
 
 
+def test_build_gemini_scene_prompt_keeps_literal_iconography_off_the_ball_and_logo():
+    """REAL INCIDENT (2026-09-13, Al): "we are still changing the logos,
+    this is the warning alert," with a real generated image showing a
+    hazard-triangle icon and the words "WARNING ALERT" printed directly
+    onto the ball's surface in place of the manufacturer's actual logo.
+    The literal-iconography encouragement above (2026-09-07) only ever
+    said the theme's creature/object/symbol should appear "in the
+    generated scene," never excluding the ball's own surface as a place
+    to put it -- confirms the fix: an explicit, standalone instruction
+    that this iconography belongs in the scene/environment only, must
+    never be painted/overlaid onto the ball, and must never replace,
+    obscure, or be confused with the ball's actual printed logo."""
+    action_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "action_shot")
+    product_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "product_shot")
+    for prompt in (action_prompt, product_prompt):
+        assert "belongs in the SCENE or" in prompt
+        assert "must never be painted, printed, or overlaid onto the ball's own surface" in prompt
+        assert "must never replace, obscure, merge with, or be mistaken for the ball's actual printed logo" in prompt
+        assert "off-limits real estate for any part of the theme's iconography" in prompt
+
+
 def test_build_gemini_scene_prompt_excludes_people_and_bowling_venue_props():
     """REAL INCIDENT (2026-09-06, Al): with Stability disabled by default,
     every candidate now comes from this prompt alone -- and it had NEVER
