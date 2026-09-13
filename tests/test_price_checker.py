@@ -547,6 +547,30 @@ def test_score_match_low_when_title_blank():
     assert app.score_match("", "Storm", "Absolute") == "low"
 
 
+# Real incident, Al (2026-09-13): "the hustle vp 'shop this ball' link
+# does not go to the correct ball it goes to the hustle 3tp". A Roto Grip
+# Hustle-series sibling ("Hustle 3TP") shares the "hustle" token with
+# "Hustle VP" but is a genuinely different product -- score_match must
+# not call this a 'high' match just because the shared core-name token
+# was present, since 'high' rows sort first in the admin review queue.
+def test_score_match_low_on_suffix_collision_within_product_family():
+    assert app.score_match("Roto Grip Hustle 3TP | The Bowler Depot", "Roto Grip", "Hustle VP") == "low"
+
+
+def test_score_match_high_when_every_significant_product_token_present():
+    assert app.score_match("Roto Grip Hustle VP Bowling Ball Review", "Roto Grip", "Hustle VP") == "high"
+
+
+def test_score_match_high_when_title_uses_punctuation_variant_of_product_name():
+    assert app.score_match("Roto Grip Hustle VP - The Bowler Depot", "Roto Grip", "Hustle VP") == "high"
+
+
+def test_score_match_high_when_only_generic_filler_token_is_missing():
+    # "Edition" is generic filler (_GENERIC_QUALIFIER_WORDS) -- its
+    # absence from the title alone must not trigger a suffix collision.
+    assert app.score_match("Roto Grip Hustle VP Bowling Ball", "Roto Grip", "Hustle VP Edition") == "high"
+
+
 def test_build_search_query_combines_brand_and_product():
     assert app.build_search_query("Storm", "Absolute") == "Storm Absolute"
 

@@ -15012,6 +15012,85 @@ database changes in this entry; admin-spa-only.
 (`cacheBustedImageUrl` helper + 3 `<img>` render sites). Verified via
 `npx tsc -b` (admin-spa) -- clean build, no other files needed changes.
 
+### 6bb. "Shop This Ball" pointed at the wrong product: score_match suffix-collision (2026-09-13)
+
+**Report**: Al: "the hustle vp 'shop this ball' link does not go to the
+correct ball it goes to the hustle 3tp". Confirmed live: `GET /products/
+{hustle-vp-id}/article`'s `ecommerce_url` was `https://bowlerdepot.com/
+roto-grip-hustle-3tp/` -- a real, different, live BowlerDepot product
+page (Roto Grip's Hustle Series ships many siblings sharing one core
+name: Hustle VP, Hustle SOS, Hustle EARTH, Hustle M-M, Hustle X-RAY,
+Hustle GLOW, Hustle B/R/Y, Hustle 3TP, Hustle USA -- each a genuinely
+different SKU).
+
+**Root cause**: `price_checker/app.py`'s `score_match()` (the confidence
+heuristic for the generic site-search price-source discovery path)
+scored 'high' if a search result's title contained the brand name AND
+*any one* significant token from the product name -- deliberately
+permissive, same tolerance as `video_discovery.score_match`. For "Hustle
+VP", `significant_tokens` = `{hustle, vp}`; a result titled "Roto Grip
+Hustle 3TP" shares only "hustle" but that alone was enough to score
+'high'. `match_confidence` sorts 'high' rows first in the admin Price
+Sites review queue (`admin_api.service.list_product_price_sources`'s
+`order by pps.match_confidence asc`), so this false 'high' put the wrong
+candidate at the top of the queue looking trustworthy, and it got
+approved -- `public_api.get_product_article`'s `ecom_source` subquery
+then just serves whichever approved+active row exists, with no
+re-verification. This is the exact same bug class the BigCommerce-API
+matching path already had a fix for (`bowlerdepot_reconciliation.
+fuzzy_match_product`'s `_names_token_compatible` suffix-collision gate,
+added for the earlier "Hustle"-class incident -- see this doc's fuzzy_
+match_product suffix collision entry) -- it just was never ported to
+this Lambda's separate, duplicated `score_match` copy.
+
+**Fix**: `score_match` now also requires that every significant token of
+`product_name` appears as a token in the title, unless the only missing
+ones are generic filler (`_GENERIC_QUALIFIER_WORDS` -- the same
+`{"bowling", "ball", "balls", "edition"}` set `strip_generic_qualifiers`
+already uses). This mirrors `_names_token_compatible`'s one-directional
+equivalent (there's no second known candidate name here to diff
+against, only free-text search-result title, so the check only looks at
+whether the *product's own* distinguishing tokens are present). Nothing
+is hidden from the review queue by this change -- `match_confidence` is
+sort/display only, every candidate still appears -- it just stops a
+false 'high' from jumping the queue and reading as trustworthy.
+`video_discovery.score_match` (identical duplicated logic, different
+Lambda, used for YouTube review-video matching) is deliberately left
+unchanged: no bug was reported there, and that tolerance exists for a
+different, still-valid reason (review-video titles routinely drop a
+product's suffix word entirely, e.g. "Storm Absolute Power" reviewed as
+just "Storm Absolute").
+
+**Immediate correction (manual, requires Al's admin login)**: this fix
+only prevents *future* false 'high' scores -- it does not retroactively
+correct the already-approved wrong row for Hustle VP. Al: open the
+Price Sites tab, find the BowlerDepot row for Hustle VP (or the product
+detail page's Pricing tab), and either (a) edit its `product_url` in
+place via the existing quick-edit (prefilled, per the 2026 Price Sites
+quick-edit feature) to the correct `bowlerdepot.com/roto-grip-hustle-vp*`
+URL, or (b) reject it and let a fresh "Find price sources" discovery run
+(now carrying the fixed `score_match`) surface the correct candidate for
+approval. If this row's `source` turns out to be `bigcommerce_api`
+rather than `site_search`, a fresh reconciliation run alone should
+self-correct it in place (`upsert_bigcommerce_price_source_candidate`
+UPDATEs an existing row's `product_url` when reconciliation resolves a
+different value) without needing a manual edit at all -- check via the
+row's `source` field first.
+
+**Tests**: `tests/test_price_checker.py` -- added `test_score_match_
+low_on_suffix_collision_within_product_family` (the real Hustle VP /
+Hustle 3TP pair), `test_score_match_high_when_every_significant_
+product_token_present`, `test_score_match_high_when_title_uses_
+punctuation_variant_of_product_name`, and `test_score_match_high_when_
+only_generic_filler_token_is_missing`. All pure-function `score_match`/
+`significant_tokens`/`build_search_query`/`strip_generic_qualifiers`
+tests (16 total) pass under the manual test runner; the other 35
+failures in this file are pre-existing `monkeypatch`-fixture
+limitations of that runner (not related to this change -- see this
+doc's own notes on the manual test-runner workaround). No `template.
+yaml` or database changes needed -- prompt/scoring-logic-only fix in
+`src/price_checker/app.py`.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

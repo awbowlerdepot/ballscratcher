@@ -152,16 +152,54 @@ def significant_tokens(name: str) -> set:
 
 def score_match(title: str, brand_name: str, product_name: str) -> str:
     """Returns 'high' if the search-result link text contains the brand
-    name AND at least one significant token from the product name; 'low'
-    otherwise. Deliberately permissive (any one product-name token, not
-    all of them), same reasoning and same known tradeoff as video_
-    discovery.score_match (e.g. "Storm Absolute Power" review-video titles
-    scoring 'high' for the "Storm Absolute" product too) -- this is
-    exactly what the admin approval step exists to catch, not something
-    this heuristic tries to eliminate on its own."""
+    name, at least one significant token from the product name, AND no
+    suffix collision (see below); 'low' otherwise.
+
+    REAL INCIDENT (2026-09-13, Al): "the hustle vp 'shop this ball' link
+    does not go to the correct ball it goes to the hustle 3tp". Roto
+    Grip's Hustle Series ships many siblings sharing one core name --
+    Hustle VP, Hustle SOS, Hustle EARTH, Hustle M-M, Hustle X-RAY, Hustle
+    GLOW, Hustle B/R/Y, Hustle 3TP, Hustle USA -- each a genuinely
+    different SKU. Before this fix, "any one significant token" meant the
+    shared "hustle" token alone was enough for brand_hit+product_hit to
+    both fire, so a site-search result titled "Roto Grip Hustle 3TP" (a
+    real, live BowlerDepot product page) scored 'high' as a match for
+    "Hustle VP" -- Al approved what the admin queue showed him as a
+    confident match (match_confidence sorts 'high' rows first in the
+    Price Sites review queue, see admin_api.service.list_product_price_
+    sources' `order by pps.match_confidence asc`), and the wrong URL went
+    live as the product's ecommerce_url (public_api.get_product_article's
+    ecom_source subquery just takes whichever approved+active row
+    exists, no re-verification).
+
+    FIX: applies the exact same suffix-collision gate bowlerdepot_
+    reconciliation.fuzzy_match_product already uses for the BigCommerce-
+    API matching path (_names_token_compatible / _GENERIC_NAME_SUFFIX_
+    TOKENS, added for this same "Hustle"-class bug -- see fuzzy_match_
+    product suffix collision bug in this project's history) -- but this
+    function only ever sees free-text search-result title, not a second
+    known candidate name, so the check here is one-directional: every
+    significant token of product_name must appear as a token in title,
+    UNLESS the only missing ones are generic filler
+    (_GENERIC_QUALIFIER_WORDS, same set strip_generic_qualifiers already
+    uses below). This deliberately tightens the "any one token" tolerance
+    this function used to share with video_discovery.score_match (kept
+    permissive there for a different reason -- YouTube review titles
+    routinely drop a product's suffix word entirely, e.g. "Storm Absolute
+    Power" reviewed as "Storm Absolute") -- but price-source matches
+    resolve directly to a public-facing "Shop This Ball" link with no
+    further verification step, so a stricter bar here is the correct
+    trade: nothing is hidden from the admin queue by scoring 'low'
+    instead of 'high' (match_confidence is a sort/display field only,
+    every candidate still appears for review), it just stops a false
+    'high' from jumping the queue and reading as trustworthy. video_
+    discovery.score_match is intentionally left as-is -- no bug was
+    reported there, and video candidates go through a similar review gate
+    with a different risk profile."""
     if not title:
         return "low"
     title_lower = title.lower()
+    title_tokens = significant_tokens(title)
 
     brand_tokens = significant_tokens(brand_name)
     brand_hit = bool(brand_tokens) and any(tok in title_lower for tok in brand_tokens)
@@ -169,7 +207,10 @@ def score_match(title: str, brand_name: str, product_name: str) -> str:
     product_tokens = significant_tokens(product_name)
     product_hit = bool(product_tokens) and any(tok in title_lower for tok in product_tokens)
 
-    return "high" if (brand_hit and product_hit) else "low"
+    missing_product_tokens = product_tokens - title_tokens
+    suffix_collision = bool(missing_product_tokens) and not missing_product_tokens.issubset(_GENERIC_QUALIFIER_WORDS)
+
+    return "high" if (brand_hit and product_hit and not suffix_collision) else "low"
 
 
 def build_search_query(brand_name: str, product_name: str) -> str:
