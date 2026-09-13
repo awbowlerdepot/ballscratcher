@@ -15212,6 +15212,72 @@ overwritten before this fix shipped will keep showing the wrong
 recover the original bytes after the fact, since the overwrite itself
 left no trace in the database.
 
+### 6be. Logo icon redrawn to match its own theme: theme/logo subject collision (2026-09-13)
+
+**Report**: Al: "still doing it to the logos," with a real generated
+product_shot of the "Evil Eye" ball attached next to its true reference
+photo. The real logo is a shield containing a stylized eye icon, with
+"EVIL EYE" printed below it. The generated image kept that general
+layout (icon-in-a-shape above "EVIL EYE" text) but redrew the icon
+itself as an eye-outline containing a skull, in different linework, and
+reflowed the typography to match.
+
+**A new, distinct failure mode from every prior logo incident**,
+including 6bc just above. 6bc was a foreign icon (a warning triangle)
+painted ONTO the ball, next to/over an otherwise-untouched logo. Here
+the model didn't add anything foreign next to the logo -- it
+reinterpreted the logo's own content, in what still reads as roughly
+the same layout, so it doesn't visually register as "adding a new
+icon" the way 6bc's incident did.
+
+**Root cause**: this ball's name ("Evil Eye") makes the visual_theme
+literal-iconography instruction (2026-09-07, "make that element
+visible somewhere in the generated scene") call for "an eye" as the
+scene's literal icon -- and the real logo ALSO already depicts an eye.
+Every prior fix to this instruction (6bc included) only ever told the
+model the theme's icon and the logo were different things that must
+never touch or be confused with each other; none of them anticipated
+the case where the two are the *same kind of subject*. Faced with an
+instruction to make an eye visible on a ball whose logo already IS an
+eye, the model apparently treated redrawing that already-present eye
+(in a more dramatic style, with a skull added for "evil" flavor) as
+satisfying the instruction, rather than recognizing the logo's eye and
+the theme's eye as two unrelated graphics that both need to
+independently exist.
+
+**Fix**: added an explicit clause to `build_gemini_scene_prompt`
+(`src/product_article_generator/app.py`) immediately after the existing
+"off-limits real estate" sentence: even when the theme's icon shares a
+subject with something already present in the real logo (an eye theme
+on an eye-logo ball, a skull theme on a skull-logo ball, etc.), the two
+remain unrelated graphics, not the same thing satisfied twice.
+Redrawing or embellishing the logo's own icon in the theme's style is
+named as the same class of violation as replacing the logo outright --
+explicitly calling out and forbidding the "resist the impulse to make
+the logo itself more thematically on-brand" failure mode -- and the
+theme's icon must always be its own separate piece of scene/environment
+artwork placed elsewhere in the frame, with the logo staying the
+unmodified reference-image graphic regardless of how thematically
+redundant that may seem.
+
+**Tests**: `tests/test_product_article_generator.py` -- added
+`test_build_gemini_scene_prompt_keeps_theme_icon_separate_when_it_
+shares_a_subject_with_the_logo` (asserts the new clause's key phrases
+are present for both action_shot and product_shot). Full regression:
+158/158 (up from 157). No `template.yaml` or database changes needed --
+prompt-text-only fix, same shape as every other entry in this section.
+
+**Worth watching**: this is the sixth-plus prompt-only round targeting
+logo fidelity in this general area (585, 597-601, 718-723, 741-745,
+754-758, 766-768, this one). Each has closed a genuinely distinct,
+previously-uncovered failure mode rather than repeating the same fix,
+but if a new distinct mechanism keeps surfacing, it may be worth
+considering a non-prompt approach (e.g., compositing the reference
+photo's actual logo pixels onto the generated scene via image
+processing after generation, rather than relying on the generative
+model for logo fidelity at all) instead of continuing to patch prompt
+language incident by incident.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

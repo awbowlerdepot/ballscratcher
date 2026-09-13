@@ -2184,6 +2184,34 @@ def test_build_gemini_scene_prompt_keeps_literal_iconography_off_the_ball_and_lo
         assert "off-limits real estate for any part of the theme's iconography" in prompt
 
 
+def test_build_gemini_scene_prompt_keeps_theme_icon_separate_when_it_shares_a_subject_with_the_logo():
+    """REAL INCIDENT (2026-09-13, Al): "still doing it to the logos," with
+    a real generated product_shot of the "Evil Eye" ball attached next to
+    its true reference photo. The real logo is a shield containing a
+    stylized eye icon above "EVIL EYE" text; the generated image kept
+    that layout but redrew the icon itself as an eye-outline-with-skull
+    in a different style -- distinct from the WARNING ALERT incident
+    (an unrelated icon painted ONTO the ball) because here the model
+    reinterpreted the logo's own content rather than adding something
+    foreign next to it. Root cause: the ball's name ("Evil Eye") makes
+    the visual_theme's literal-icon instruction call for "an eye" -- the
+    same subject the real logo already depicts -- so the model treated
+    redrawing the logo's existing eye (embellished with a skull) as
+    satisfying that instruction. Confirms the fix: an explicit clause
+    saying the theme's icon and the logo's icon remain unrelated graphics
+    even when they share a subject, that redrawing/embellishing the
+    logo's own icon in the theme's style is the same violation as
+    replacing the logo outright, and that the theme's icon must always be
+    its own separate piece of scene artwork placed elsewhere in frame."""
+    action_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "action_shot")
+    product_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "product_shot")
+    for prompt in (action_prompt, product_prompt):
+        assert "the two are unrelated graphics, not the same thing satisfied twice" in prompt
+        assert "Redrawing the logo's own icon in the theme's style" in prompt
+        assert "the same violation as replacing the logo outright" in prompt
+        assert "its own separate piece of scene/environment artwork placed elsewhere in the frame" in prompt
+
+
 def test_build_gemini_scene_prompt_excludes_people_and_bowling_venue_props():
     """REAL INCIDENT (2026-09-06, Al): with Stability disabled by default,
     every candidate now comes from this prompt alone -- and it had NEVER

@@ -1665,7 +1665,38 @@ def build_gemini_scene_prompt(product: dict, article: dict, variant: str,
     explicitly named as off-limits real estate for theme iconography,
     independent of the pre-existing "keep the logo unchanged" language
     that was never going to catch a case where the model wasn't trying to
-    modify the logo, just add something new next to/over it."""
+    modify the logo, just add something new next to/over it.
+
+    REAL INCIDENT (2026-09-13, Al): "still doing it to the logos," with a
+    real generated product_shot of the "Evil Eye" ball attached, next to
+    the true reference photo. The real logo is a shield containing a
+    stylized eye icon, with "EVIL EYE" printed below it. The generated
+    image kept that general layout (icon-in-a-shape above "EVIL EYE"
+    text) but redrew the icon itself as an eye-outline containing a
+    skull, in a different linework style, and reflowed the typography to
+    match -- a different failure from the WARNING ALERT incident just
+    above (an unrelated icon painted ONTO the ball) and from every SIZE/
+    STYLE drift incident before it: here the model didn't add a foreign
+    element next to the logo, it reinterpreted the logo's own content.
+    Root cause: this ball's name ("Evil Eye") makes the visual_theme's
+    literal-iconography instruction call for "an eye" as the scene's
+    literal icon -- and the real logo ALSO already depicts an eye. The
+    two prior fixes only ever told the model the theme's icon and the
+    logo were different things that must not touch or be confused with
+    each other; neither anticipated the case where they're the SAME kind
+    of subject. Faced with an instruction to "make the eye visible" on a
+    ball whose logo already IS an eye, the model apparently treated
+    redrawing that already-present eye (in its own more dramatic style,
+    with an added skull for "evil" flavor) as satisfying the instruction,
+    rather than recognizing the logo's eye and the theme's eye as two
+    unrelated graphics that both need to independently exist. Fixed by
+    adding an explicit clause covering this exact collision case: even
+    when the theme's icon shares a subject with something already in the
+    logo, they remain unrelated graphics, redrawing/embellishing the
+    logo's own icon in the theme's style is the same class of violation
+    as replacing the logo outright, and the theme's icon must always be
+    its own separate piece of scene artwork placed elsewhere in the
+    frame."""
     context = _resolve_visual_context(article)
     scene_desc = context or "an elevated, premium studio scene"
 
@@ -1850,7 +1881,21 @@ def build_gemini_scene_prompt(product: dict, article: dict, variant: str,
         "The ball's surface carries only the manufacturer's real printed design, "
         "nothing else added -- treat the ball as off-limits real estate for any "
         "part of the theme's iconography, no matter how well it might seem to "
-        "fit thematically. Keep the ball "
+        "fit thematically. This holds even when the theme's own icon happens to "
+        "depict the same general kind of subject as something already present in "
+        "the ball's real logo (for example, a ball named for an eye, a skull, an "
+        "animal, or similar, whose real printed logo already contains that exact "
+        "kind of icon) -- the two are unrelated graphics, not the same thing "
+        "satisfied twice. Redrawing the logo's own icon in the theme's style, "
+        "adding thematic embellishments to it, or treating the logo's existing "
+        "icon as if it already fulfills the \"place the theme's icon in the "
+        "scene\" instruction are all forms of the same violation as replacing "
+        "the logo outright -- resist the impulse to make the logo itself more "
+        "thematically on-brand. The theme's icon, however similar in subject to "
+        "the logo's, must be its own separate piece of scene/environment "
+        "artwork placed elsewhere in the frame, and the logo must stay the "
+        "unmodified reference-image graphic regardless of how thematically "
+        "redundant that may seem. Keep the ball "
         "itself completely unchanged -- the same colors, surface pattern, and "
         "logo/text exactly as shown in the reference image -- only change what's "
         "around it. The ball's printed logo, graphics, and text must occupy "
