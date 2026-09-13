@@ -36,6 +36,32 @@ function fmtDate(iso: string | null): string {
   return iso ? new Date(iso).toLocaleString() : "—";
 }
 
+// REAL INCIDENT (2026-09-13, Al): "i have just generated the same image
+// a few times... i think" -- both action_shot and product_shot AI-image
+// S3 keys/URLs (store_article_image in product_article_generator/app.py,
+// and every product_article_image_candidates row) are fixed and
+// unversioned -- article-images/{product_id}/{variant}_{n}.png, same
+// exact URL every single regenerate. The backend genuinely uploads fresh
+// bytes on each regenerate, but the browser has no signal the object at
+// that URL changed, so it keeps serving whatever it cached from the
+// previous view -- pixel-identical "new" images. This helper is local
+// to this file (not exported) but ProductDetailPage's Article sub-tab
+// gets the same fix for free, since it reuses the exported
+// ArticlePreview component below rather than its own JSX. version
+// should be the most
+// recent timestamp available for that image (a candidate's own
+// created_at, or the article's images_generated_at for the flat-column
+// fallback figures/list thumbnail) -- appending it as a query param
+// forces the browser to treat a regenerated image as a new resource
+// without touching the S3 key itself (which other consumers -- the
+// Learn site, embeds, BowlerDepot sync -- still read unversioned; this
+// is an admin-preview-only fix, not a system-wide one).
+function cacheBustedImageUrl(url: string, version: string | null): string {
+  if (!version) return url;
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}v=${encodeURIComponent(version)}`;
+}
+
 // Ports admin-site/index.html's Articles tab -- AI-generated ball-review
 // articles (022_product_articles.sql), reviewed the same pending/
 // approved/rejected way as everything else, plus a BigCommerce sync
@@ -277,7 +303,7 @@ export default function ArticlesPage() {
         <div className="flex items-start gap-2">
           {a.action_shot_image_url ? (
             <img
-              src={a.action_shot_image_url}
+              src={cacheBustedImageUrl(a.action_shot_image_url, a.images_generated_at)}
               alt=""
               title="Action shot"
               className="h-20 w-20 shrink-0 rounded object-cover"
@@ -607,7 +633,12 @@ export function ArticlePreview({
                     key={c.id}
                     className={`flex w-40 flex-col rounded-md border p-2 ${c.is_selected ? "border-primary" : "border-ink-200"}`}
                   >
-                    <img src={c.image_url} alt="" loading="lazy" className="mb-1.5 h-28 w-full rounded object-cover" />
+                    <img
+                      src={cacheBustedImageUrl(c.image_url, c.created_at)}
+                      alt=""
+                      loading="lazy"
+                      className="mb-1.5 h-28 w-full rounded object-cover"
+                    />
                     <div className="mb-1.5 truncate text-xs text-ink-500" title={c.model_id}>
                       {c.model_id}
                     </div>
@@ -645,13 +676,21 @@ export function ArticlePreview({
         <div className="flex flex-wrap gap-3">
           {article.action_shot_image_url && (
             <figure className="w-40">
-              <img src={article.action_shot_image_url} alt="Action shot" className="h-28 w-full rounded object-cover" />
+              <img
+                src={cacheBustedImageUrl(article.action_shot_image_url, article.images_generated_at)}
+                alt="Action shot"
+                className="h-28 w-full rounded object-cover"
+              />
               <figcaption className="text-center text-xs text-ink-500">Action shot</figcaption>
             </figure>
           )}
           {article.product_shot_image_url && (
             <figure className="w-40">
-              <img src={article.product_shot_image_url} alt="Product shot" className="h-28 w-full rounded object-cover" />
+              <img
+                src={cacheBustedImageUrl(article.product_shot_image_url, article.images_generated_at)}
+                alt="Product shot"
+                className="h-28 w-full rounded object-cover"
+              />
               <figcaption className="text-center text-xs text-ink-500">Product shot</figcaption>
             </figure>
           )}

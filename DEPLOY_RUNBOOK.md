@@ -14947,6 +14947,71 @@ clause, not after it). Full regression: 155/155 (up from 153 -- one test
 replaced, two new tests added). No `template.yaml` or database changes
 needed -- prompt-text-only fix, same as 6ax.
 
+### 6ba. "Exact same image" report resolved as locked_variants working as designed, plus admin-spa cache-busting (2026-09-13)
+
+**Report**: Al regenerated images for Infinity Quest and, separately,
+HypedUp, and reported getting back what looked like the exact same
+image both times -- "not sure what is going on but it literally
+generated the exact same images i think... or the UI is broken and
+showing me the same image for both when that is not correct" -- then,
+mid-investigation, added "it also should be generating all new
+images...".
+
+**Two things were true at once here, and only one was a bug.**
+
+1. **Real (but secondary) bug: unversioned S3 image URLs.**
+   `store_article_image` (`src/product_article_generator/app.py`) and
+   `image_processor/app.py`'s `upload_variants` both build S3 keys with
+   no timestamp/version/random suffix --
+   `article-images/{product_id}/{variant}_{n}.png` every time. A
+   regenerate genuinely uploads fresh bytes to that exact key, but the
+   browser has no signal the object changed and can serve a stale
+   cached copy at the same URL. Fixed for the admin-spa preview only
+   (per Al's choice -- see below): a new `cacheBustedImageUrl(url,
+   version)` helper in `admin-spa/src/pages/ArticlesPage.tsx` appends
+   `?v=<created_at or images_generated_at>` to every AI-image `<img>`
+   src (list-row thumbnail, candidate-card image, and both flat-image
+   fallback figures for pre-v4 articles). This does not touch the S3
+   key itself, so the Learn site, embeds, and BowlerDepot sync remain
+   unversioned and can still serve a stale copy briefly after a
+   regenerate -- out of scope for this fix, since Al explicitly chose
+   "Admin-spa preview only" over a system-wide S3-key-versioning fix
+   when asked.
+
+2. **The actual, complete explanation: `locked_variants` working exactly
+   as designed.** `store_article_image_candidates` (same file, ~line
+   2493) computes, for each run, which variants already have an
+   `is_selected=true` candidate row *before* writing the new run's
+   candidates. For any such variant -- true for essentially every
+   live/published article, including Infinity Quest and HypedUp -- the
+   existing selected row is left **completely untouched**: no delete,
+   no replacement. The new run's candidates are inserted as additional,
+   unselected options only. This is not new or accidental behavior --
+   it's exactly what Al asked for in an earlier incident ("I am seeing
+   article images get regenerated after I have already selected one
+   that I like... lock that down once we have selected one. Maybe bring
+   in new images but never remove the existing ones"), implemented and
+   already shipped as of the 2026-09-06 image-lock fix (see the
+   `locked_variants` entry earlier in this doc).
+
+   So "regenerate" on an already-selected variant was always going to
+   leave the *displayed* image looking unchanged -- it was doing exactly
+   what it should: adding fresh candidates to the picker below the
+   locked selection, not replacing what's shown. Al confirmed after
+   this was explained that yes, new unselected candidates were in fact
+   showing up in the picker each time; he just hadn't reviewed/selected
+   from them yet. No code change was needed for this half of the
+   report.
+
+**Net effect**: the cache-busting fix (#1) is still worth keeping since
+it's a real, independent issue, but it was never going to fully explain
+what Al was seeing -- #2 is the complete explanation. No backend or
+database changes in this entry; admin-spa-only.
+
+**Files touched**: `admin-spa/src/pages/ArticlesPage.tsx` only
+(`cacheBustedImageUrl` helper + 3 `<img>` render sites). Verified via
+`npx tsc -b` (admin-spa) -- clean build, no other files needed changes.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
