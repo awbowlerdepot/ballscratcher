@@ -2913,8 +2913,10 @@ def test_generate_article_image_candidates_default_is_three_gemini_no_stability(
 
     original_get = requests.get
     original_get_session = app.get_gemini_requests_session
+    original_run_id = app._new_image_generation_run_id
     requests.get = lambda url, timeout=None: _fake_reference_photo_response()
     app.get_gemini_requests_session = lambda: _FakeGeminiSession(fake_post)
+    app._new_image_generation_run_id = lambda: "testrun"
     try:
         result = app.generate_article_image_candidates(
             conn, bedrock_image_client=bg_client, bedrock_removebg_client=removebg_client,
@@ -2925,6 +2927,7 @@ def test_generate_article_image_candidates_default_is_three_gemini_no_stability(
     finally:
         requests.get = original_get
         app.get_gemini_requests_session = original_get_session
+        app._new_image_generation_run_id = original_run_id
 
     assert set(result.keys()) == {"action_shot", "product_shot"}
     for variant in ("action_shot", "product_shot"):
@@ -2932,9 +2935,18 @@ def test_generate_article_image_candidates_default_is_three_gemini_no_stability(
         assert len(candidates) == 3
         assert all(c["model_id"] == "gemini-model-id" for c in candidates)
         assert all(c["seed"] is None for c in candidates)
-        assert candidates[0]["key"] == f"article-images/prod-1/{variant}_gemini_1.png"
-        assert candidates[1]["key"] == f"article-images/prod-1/{variant}_gemini_2.png"
-        assert candidates[2]["key"] == f"article-images/prod-1/{variant}_gemini_3.png"
+        # REAL INCIDENT (2026-09-13, Al): "we are still seeing multiple of
+        # the same images" -- these keys used to be fully deterministic
+        # ({variant}_gemini_{n}.png, no run-scoped component), so a
+        # regenerate always wrote to the exact same S3 keys a prior run
+        # already used, silently overwriting that old object's bytes even
+        # when the old candidate's DB row was a locked/selected one left
+        # untouched. Confirms the fix: every key now carries the run-id
+        # _new_image_generation_run_id returns (monkeypatched above to a
+        # fixed value so this stays a precise, deterministic assertion).
+        assert candidates[0]["key"] == f"article-images/prod-1/{variant}_gemini_1_testrun.png"
+        assert candidates[1]["key"] == f"article-images/prod-1/{variant}_gemini_2_testrun.png"
+        assert candidates[2]["key"] == f"article-images/prod-1/{variant}_gemini_3_testrun.png"
     # Stability disabled -- Remove Background and background-generation
     # are BOTH never even attempted.
     assert len(removebg_client.calls) == 0
@@ -3009,8 +3021,10 @@ def test_generate_article_image_candidates_stability_enabled_adds_fourth_candida
 
     original_get = requests.get
     original_get_session = app.get_gemini_requests_session
+    original_run_id = app._new_image_generation_run_id
     requests.get = lambda url, timeout=None: _fake_reference_photo_response()
     app.get_gemini_requests_session = lambda: _FakeGeminiSession(fake_post)
+    app._new_image_generation_run_id = lambda: "testrun"
     app.ENABLE_STABILITY_CANDIDATES = True
     try:
         result = app.generate_article_image_candidates(
@@ -3022,6 +3036,7 @@ def test_generate_article_image_candidates_stability_enabled_adds_fourth_candida
     finally:
         requests.get = original_get
         app.get_gemini_requests_session = original_get_session
+        app._new_image_generation_run_id = original_run_id
         app.ENABLE_STABILITY_CANDIDATES = False
 
     for variant in ("action_shot", "product_shot"):
@@ -3032,7 +3047,10 @@ def test_generate_article_image_candidates_stability_enabled_adds_fourth_candida
         assert candidates[2]["model_id"] == "gemini-model-id"
         assert candidates[3]["model_id"] == "model-id"
         assert isinstance(candidates[3]["seed"], int)
-        assert candidates[3]["key"] == f"article-images/prod-1/{variant}_stability.png"
+        # Run-id suffix (see the analogous assertion + comment in
+        # test_generate_article_image_candidates_default_is_three_gemini_
+        # no_stability above) applies to the Stability key too.
+        assert candidates[3]["key"] == f"article-images/prod-1/{variant}_stability_testrun.png"
     # Remove Background is only called ONCE -- the cutout is shared across
     # both variants (same source photo).
     assert len(removebg_client.calls) == 1
@@ -3139,6 +3157,68 @@ def test_generate_article_image_candidates_one_gemini_call_fails_others_still_su
     # product_shot's own three calls were unaffected.
     assert len(result["product_shot"]) == 3
     assert len(flaky_post.calls) == 6
+
+
+def test_generate_article_image_candidates_two_runs_for_same_product_never_collide():
+    """REAL INCIDENT (2026-09-13, Al): 'and we are still seeing multiple of
+    the same images' -- Al sent a screenshot of the 'Evil Eye' ball showing
+    a new 'Use this one' product_shot candidate that was pixel-identical to
+    the already-selected/locked candidate next to it. Root cause: S3 keys
+    were built as f"{variant}_gemini_{i+1}.png" / f"{variant}_stability.png"
+    -- fully deterministic across runs, with no run-scoped uniqueness. A
+    regenerate for the same product/variant silently overwrote the S3 bytes
+    behind ANY prior run's identical key -- including a locked/selected
+    candidate's key -- even though that candidate's DB row (and its
+    image_key/URL) was never touched. This is worse than a cosmetic
+    duplicate: it can silently change what a locked/selected candidate
+    actually displays, without approval, defeating the entire point of
+    locked_variants (see store_article_image_candidates). Fix: every S3 key
+    now includes a random per-invocation run id from
+    _new_image_generation_run_id(), so two separate calls to
+    generate_article_image_candidates for the same product/variant can
+    never collide on a key, even though `_new_image_generation_run_id` is
+    NOT monkeypatched here -- the whole point of this test is to prove real,
+    un-faked run ids never repeat."""
+    import requests
+
+    def _run_once():
+        conn = _FakeConnection(reference_image_url="https://example.com/ball.jpg")
+        gemini_calls = []
+
+        def fake_post(url, headers=None, json=None, timeout=None):
+            import base64
+
+            gemini_calls.append(json)
+            data = base64.b64encode(b"gemini-bytes").decode("ascii")
+            return _FakeGeminiResponse({"candidates": [{"content": {"parts": [{"inlineData": {"data": data}}]}}]})
+
+        s3 = _FakeS3Client()
+        original_get = requests.get
+        original_get_session = app.get_gemini_requests_session
+        requests.get = lambda url, timeout=None: _fake_reference_photo_response()
+        app.get_gemini_requests_session = lambda: _FakeGeminiSession(fake_post)
+        try:
+            return app.generate_article_image_candidates(
+                conn, bedrock_image_client=object(), bedrock_removebg_client=_RaisingRemoveBgClient(),
+                gemini_auth=_FAKE_GEMINI_AUTH, s3_client=s3, image_model_id="model-id",
+                removebg_model_id="removebg-model-id", gemini_model_id="gemini-model-id", image_bucket="bucket",
+                product={"id": "prod-1", "color": "Blue"}, article=_SAMPLE_ARTICLE,
+            )
+        finally:
+            requests.get = original_get
+            app.get_gemini_requests_session = original_get_session
+
+    result_1 = _run_once()
+    result_2 = _run_once()
+
+    keys_1 = {c["key"] for variant in result_1.values() for c in variant}
+    keys_2 = {c["key"] for variant in result_2.values() for c in variant}
+    assert len(keys_1) == 6
+    assert len(keys_2) == 6
+    # The two runs' key sets must be completely disjoint -- a regenerate for
+    # the same product must never be able to overwrite a prior run's (and
+    # therefore possibly a locked/selected candidate's) S3 object.
+    assert keys_1.isdisjoint(keys_2)
 
 
 class _RaisingRemoveBgClient:

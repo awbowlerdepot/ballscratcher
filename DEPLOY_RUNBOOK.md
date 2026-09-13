@@ -15139,6 +15139,79 @@ action_shot and product_shot). Full regression: 156/156 (up from 155).
 No `template.yaml` or database changes needed -- prompt-text-only fix,
 same shape as every other entry in this section.
 
+### 6bd. Regenerate silently overwrote a locked/selected candidate's actual image bytes: deterministic S3 keys (2026-09-13)
+
+**Report**: Al: "and we are still seeing multiple of the same images,"
+with a screenshot of the "Evil Eye" product's product_shot candidates
+showing an already-`selected` candidate and a brand-new "Use this one"
+candidate that were pixel-identical.
+
+**This looked at first like a repeat of 6ba** (the "exact same image"
+cache-busting/`locked_variants` report), but it isn't -- 6ba's fix
+covered stale browser/admin-spa previews of already-correct data, and
+6ba's own follow-up confirmed `locked_variants` was otherwise working
+exactly as designed (new unselected candidates get inserted alongside
+a locked one, untouched). This report is a genuinely new, more serious
+bug: the *actual bytes at the locked candidate's own S3 key* had
+changed, not just what the UI happened to be showing.
+
+**Root cause**: `store_article_image` builds S3 keys from a name like
+`f"{variant}_gemini_{i + 1}"` or `f"{variant}_stability"` --
+deterministic and identical on every single invocation for a given
+product/variant. `locked_variants` (6ba/524) correctly leaves a
+selected candidate's *database row* untouched on a regenerate, but it
+never had to think about the *S3 object* that row's `image_key`/`url`
+points at, because until now every run's `put_object` calls used keys
+scoped only by product/variant/index -- with no run-scoped uniqueness
+at all. A regenerate for the same product therefore called
+`put_object` with the exact same key(s) a prior run had already used,
+silently overwriting whatever bytes lived there -- including, when the
+index happened to line up, the key behind an already-`selected`,
+supposedly-locked candidate. The DB row (key, URL, `is_selected`) never
+changed; the picture it pointed to did. This is strictly worse than a
+cosmetic duplicate-thumbnail bug: it can silently change what a locked,
+approved candidate actually displays, with no new row, no approval,
+and no way to tell from the database that it happened -- which defeats
+the entire purpose `locked_variants` was built for (see 524's original
+ask: "lock that down once we have selected one... never remove the
+existing ones").
+
+**Fix**: added `_new_image_generation_run_id()` to
+`src/product_article_generator/app.py` -- a small helper returning
+`uuid.uuid4().hex[:8]`, called once per `generate_article_image_
+candidates` invocation and appended to every S3 key that invocation
+writes, for both the Gemini candidate loop and the Stability candidate
+loop (e.g. `action_shot_gemini_1_a1b2c3d4.png`,
+`product_shot_stability_a1b2c3d4.png`). Two separate runs for the same
+product/variant now always land on disjoint keys, so a regenerate can
+never again overwrite a prior run's object regardless of what got
+selected/locked. Implemented as a plain monkeypatchable module-level
+function (mirroring the existing `get_gemini_requests_session`
+convention in this module) specifically so tests needing exact key
+strings can pin it to a fixed value rather than asserting against
+random output.
+
+**Tests**: `tests/test_product_article_generator.py` --
+`test_generate_article_image_candidates_default_is_three_gemini_no_
+stability` and `test_generate_article_image_candidates_stability_
+enabled_adds_fourth_candidate` updated to monkeypatch `_new_image_
+generation_run_id` to `"testrun"` and assert the new `_testrun`-suffixed
+key format. Added new
+`test_generate_article_image_candidates_two_runs_for_same_product_
+never_collide`, which deliberately does NOT monkeypatch the run id --
+it calls `generate_article_image_candidates` twice for the same
+product and asserts the two runs' key sets are completely disjoint,
+proving real (non-faked) run ids never collide. Full regression: 157/157
+(up from 156). No `template.yaml` or database changes needed --
+`src/product_article_generator/app.py` only.
+
+**Not covered by this fix**: this only prevents *future* collisions.
+Any product whose locked/selected candidate was already silently
+overwritten before this fix shipped will keep showing the wrong
+(overwritten) image until it's regenerated again -- there's no way to
+recover the original bytes after the fact, since the overwrite itself
+left no trace in the database.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

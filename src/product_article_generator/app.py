@@ -2110,6 +2110,19 @@ def call_gemini_for_image(gemini_auth: dict, model_id: str, prompt: str,
     raise RuntimeError(f"Gemini response contained no image data (finishReason={finish_reason})")
 
 
+def _new_image_generation_run_id() -> str:
+    """Short random identifier, unique per call to generate_article_image_
+    candidates, appended to every S3 key that invocation writes -- see
+    that function's own REAL INCIDENT (2026-09-13) note for why. A plain
+    module-level function (not `uuid.uuid4()` inlined at each call site)
+    so tests can monkeypatch it to a fixed value and keep asserting exact
+    key/URL strings -- the same established convention this module
+    already uses for get_gemini_requests_session."""
+    import uuid
+
+    return uuid.uuid4().hex[:8]
+
+
 def store_article_image(s3_client, bucket: str, product_id: str, name: str, png_bytes: bytes) -> dict:
     """Mirrors image_processor.upload_variants' exact key/URL convention
     -- raw https://{bucket}.s3.amazonaws.com/{key} PNG URLs on the same
@@ -2118,11 +2131,13 @@ def store_article_image(s3_client, bucket: str, product_id: str, name: str, png_
     023_product_article_images.sql's header comment: these aren't a
     product's real photos and shouldn't be swept up in product_scraper's
     product-images/* orphan-cleanup listing). `name` is the full per-
-    candidate filename stem (e.g. "action_shot_gemini_1" or
-    "product_shot_stability"), not just the bare variant -- v4 stores
-    multiple candidates per variant (see 026_product_article_image_
-    candidates.sql), so the un-suffixed "{variant}.png" key v1-v3 used
-    would collide across candidates."""
+    candidate filename stem (e.g. "action_shot_gemini_1_a1b2c3d4" or
+    "product_shot_stability_a1b2c3d4" -- see generate_article_image_
+    candidates' own REAL INCIDENT (2026-09-13) note for the trailing
+    run-id piece), not just the bare variant -- v4 stores multiple
+    candidates per variant (see 026_product_article_image_candidates.
+    sql), so the un-suffixed "{variant}.png" key v1-v3 used would
+    collide across candidates."""
     key = f"article-images/{product_id}/{name}.png"
     s3_client.put_object(Bucket=bucket, Key=key, Body=png_bytes, ContentType="image/png")
     return {"key": key, "url": f"https://{bucket}.s3.amazonaws.com/{key}"}
@@ -2254,6 +2269,37 @@ def generate_article_image_candidates(conn, bedrock_image_client, bedrock_remove
     # build a fresh Session (and a fresh urllib3 Retry/adapter) per call.
     gemini_session = get_gemini_requests_session()
 
+    # REAL INCIDENT (2026-09-13, Al): "and we are still seeing multiple
+    # of the same images," with a real admin-spa screenshot showing an
+    # already-selected product_shot candidate and a brand-new "Use this
+    # one" candidate as pixel-identical images. Root cause: every S3 key
+    # this function writes was fully deterministic and stateless across
+    # runs -- f"{variant}_gemini_{i + 1}" always produces the exact same
+    # three keys (article-images/{product_id}/action_shot_gemini_1.png,
+    # _2.png, _3.png) no matter how many prior runs already generated
+    # images for this product. For a LOCKED variant (store_article_image_
+    # candidates deliberately leaves the old, currently-selected DB row
+    # untouched on a regenerate -- see that function's own docstring),
+    # this meant a regenerate's fresh put_object calls silently
+    # overwrote the S3 OBJECT BYTES behind the old row's still-unchanged
+    # image_key/image_url in place. The old row's DB fields never
+    # changed, but the pixels they point to did -- and the new run then
+    # inserted its own rows referencing those exact same now-shared keys/
+    # URLs, so two (or three) product_article_image_candidates rows ended
+    # up pointing at byte-identical content. This is worse than a mere
+    # display bug: the actual live/selected image's rendered content
+    # could silently change on a regenerate with no admin approval at
+    # all, which is precisely what locked_variants (2026-09-06, "never
+    # remove the existing ones") was built to prevent -- overwriting the
+    # bytes in place is functionally the same violation as replacing the
+    # row. Fixed by giving every call to this function its own random
+    # run_id (_new_image_generation_run_id), appended to every S3 key it
+    # writes this run -- Gemini and Stability candidates alike -- so a
+    # regenerate can never reuse a key any previous run (locked or not)
+    # already wrote to, regardless of how many candidates already exist
+    # for that variant.
+    run_id = _new_image_generation_run_id()
+
     results = {variant: [] for variant in variants}
 
     # v6: interleaved (action_shot #1, product_shot #1, action_shot #2,
@@ -2278,8 +2324,8 @@ def generate_article_image_candidates(conn, bedrock_image_client, bedrock_remove
                     )
                 png_bytes = call_gemini_for_image(gemini_auth, gemini_model_id, prompt, reference_b64, aspect_ratio,
                                                    session=gemini_session)
-                stored = store_article_image(s3_client, image_bucket, product["id"], f"{variant}_gemini_{i + 1}",
-                                              png_bytes)
+                stored = store_article_image(s3_client, image_bucket, product["id"],
+                                              f"{variant}_gemini_{i + 1}_{run_id}", png_bytes)
                 results[variant].append({"key": stored["key"], "url": stored["url"],
                                           "model_id": gemini_model_id, "seed": None})
             except Exception:
@@ -2297,8 +2343,8 @@ def generate_article_image_candidates(conn, bedrock_image_client, bedrock_remove
                     bedrock_image_client, image_model_id, background_prompts[variant], aspect_ratio, seed=seed,
                 )
                 composited_png_bytes = composite_ball_on_background(cutout_png_bytes, background_png_bytes)
-                stored = store_article_image(s3_client, image_bucket, product["id"], f"{variant}_stability",
-                                              composited_png_bytes)
+                stored = store_article_image(s3_client, image_bucket, product["id"],
+                                              f"{variant}_stability_{run_id}", composited_png_bytes)
                 results[variant].append({"key": stored["key"], "url": stored["url"],
                                           "model_id": image_model_id, "seed": seed})
             except Exception:
