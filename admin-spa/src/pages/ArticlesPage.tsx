@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   approveArticle,
+  deleteArticleImageCandidate,
   getArticle,
   listArticleImageCandidates,
   listArticles,
@@ -237,6 +238,24 @@ export default function ArticlesPage() {
       load();
     } catch (err) {
       show(err instanceof Error ? err.message : "Failed to select image.", "danger");
+    }
+  }
+
+  // Al: "can we add support to delete unwanted ai generated images." The
+  // backend already rejects (422) a delete on the currently-selected
+  // candidate -- see delete_article_image_candidate's docstring -- but
+  // ArticlePreview also hides the Delete button for that candidate below,
+  // so this catch path is really just a backstop against a race (e.g. two
+  // admin tabs open at once) rather than the normal path.
+  async function handleDeleteCandidate(candidateId: string) {
+    if (!previewId) return;
+    if (!window.confirm("Delete this image candidate? This can't be undone.")) return;
+    try {
+      await deleteArticleImageCandidate(candidateId);
+      show("Candidate deleted.", "ok");
+      openPreview(previewId);
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Failed to delete candidate.", "danger");
     }
   }
 
@@ -477,6 +496,7 @@ export default function ArticlesPage() {
             article={previewArticle}
             candidates={previewCandidates}
             onSelectCandidate={handleSelectCandidate}
+            onDeleteCandidate={handleDeleteCandidate}
             onRegenerateVariant={(variant) => handleRegenerateVariant(previewArticle.product_id, variant)}
             regenerateDisabled={!!items.find((a) => a.id === previewArticle.id)?.generation_started_at}
           />
@@ -496,12 +516,17 @@ export function ArticlePreview({
   article,
   candidates,
   onSelectCandidate,
+  onDeleteCandidate,
   onRegenerateVariant,
   regenerateDisabled,
 }: {
   article: Article;
   candidates: ArticleImageCandidate[];
   onSelectCandidate: (candidateId: string) => void;
+  // Optional, same reasoning as onRegenerateVariant below -- a caller
+  // that doesn't wire this through just doesn't get a Delete button
+  // rendered on the candidate cards (see the render below).
+  onDeleteCandidate?: (candidateId: string) => void;
   // Optional -- ProductDetailPage's Article sub-tab reuses this same
   // component read-only-ish (see that page's own comment on why it
   // shares this JSX) and may not wire a regenerate action through.
@@ -586,13 +611,26 @@ export function ArticlePreview({
                     <div className="mb-1.5 truncate text-xs text-ink-500" title={c.model_id}>
                       {c.model_id}
                     </div>
-                    <div className="mt-auto flex justify-center">
+                    <div className="mt-auto flex flex-col items-center gap-1">
                       {c.is_selected ? (
+                        // No Delete button here at all -- Al: "make it so
+                        // you cant delete the one currently being used."
+                        // The backend also rejects this (422, see
+                        // delete_article_image_candidate's docstring), but
+                        // not offering the control at all is clearer than
+                        // showing it disabled or letting it fail.
                         <Badge tone="ok">selected</Badge>
                       ) : (
-                        <Button size="sm" variant="ghost" className="w-full" onClick={() => onSelectCandidate(c.id)}>
-                          Use this one
-                        </Button>
+                        <>
+                          <Button size="sm" variant="ghost" className="w-full" onClick={() => onSelectCandidate(c.id)}>
+                            Use this one
+                          </Button>
+                          {onDeleteCandidate && (
+                            <Button size="sm" variant="danger" className="w-full" onClick={() => onDeleteCandidate(c.id)}>
+                              Delete
+                            </Button>
+                          )}
+                        </>
                       )}
                     </div>
                   </div>

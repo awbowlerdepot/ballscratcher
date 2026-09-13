@@ -30,6 +30,7 @@ import {
   rejectVideoCandidate,
   rescrapeProduct,
   resyncArticleNow,
+  deleteArticleImageCandidate,
   restorePriceSource,
   restoreVideoCandidate,
   reorderProductImages,
@@ -618,6 +619,20 @@ export default function ProductDetailPage() {
     }
   }
 
+  // Same feature as ArticlesPage's own handleDeleteCandidate -- kept here
+  // too since this page renders the same ArticlePreview candidate picker
+  // (see the ArticlePreview import comment above).
+  async function handleDeleteCandidate(candidateId: string) {
+    if (!window.confirm("Delete this image candidate? This can't be undone.")) return;
+    try {
+      await deleteArticleImageCandidate(candidateId);
+      show("Candidate deleted.", "ok");
+      load();
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Failed to delete candidate.", "danger");
+    }
+  }
+
   // --- Pricing ------------------------------------------------------------
   // Ported from admin-site's buildPriceTrackingSection -- the buttons Al
   // noticed missing (approve/reject/undo/delete per source, "Find price
@@ -1076,6 +1091,7 @@ export default function ProductDetailPage() {
               article={article}
               candidates={articleCandidates}
               onSelectCandidate={handleSelectCandidate}
+              onDeleteCandidate={handleDeleteCandidate}
               onRegenerateVariant={handleRegenerateVariant}
               regenerateDisabled={generationStatus.generating}
             />

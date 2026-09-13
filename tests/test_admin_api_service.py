@@ -1178,6 +1178,28 @@ class FakeCursor:
             self._rows = rows
             self.description = [("id",), ("factory_finish",), ("finish_category",)]
 
+        # --- delete_article_image_candidate (Al: "can we add support to
+        # delete unwanted ai generated images") -- these two are the only
+        # queries that function issues against this table. list_article_
+        # image_candidates/select_article_image_candidate have no test
+        # coverage as of this addition and aren't given branches here
+        # since nothing under test calls them.
+
+        elif q.startswith("select article_id, variant, image_key, is_selected from product_article_image_candidates"):
+            (candidate_id,) = params
+            row = self.db.get("product_article_image_candidates", {}).get(candidate_id)
+            self._last_result = (
+                (row["article_id"], row["variant"], row["image_key"], row["is_selected"]) if row else None
+            )
+            self.description = [("article_id",), ("variant",), ("image_key",), ("is_selected",)]
+
+        elif q.startswith("delete from product_article_image_candidates where id = %s"):
+            (candidate_id,) = params
+            existed = candidate_id in self.db.get("product_article_image_candidates", {})
+            self.db.get("product_article_image_candidates", {}).pop(candidate_id, None)
+            self._last_result = (candidate_id,) if existed else None
+            self.description = [("id",)]
+
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
 
@@ -6765,6 +6787,135 @@ def test_delete_user_allows_deleting_a_non_admin():
 
     assert result["deleted"] is True
     assert "editor@example.com" not in client.users
+
+
+# --- delete_article_image_candidate (Al: "can we add support to delete
+# unwanted ai generated images", immediately followed by "make it so you
+# cant delete the one currently being used") -- no prior test coverage
+# existed for this table at all (list_article_image_candidates/select_
+# article_image_candidate are untested too, see the FakeCursor branches
+# added above), so the fixture below is new, not an extension of one.
+
+def _fake_db_with_image_candidate(is_selected=False, image_key="article-images/prod-1/action_shot_1.png"):
+    return {
+        "product_article_image_candidates": {
+            "cand-1": {
+                "article_id": "art-1",
+                "variant": "action_shot",
+                "image_key": image_key,
+                "is_selected": is_selected,
+            },
+        },
+    }
+
+
+def test_delete_article_image_candidate_raises_lookuperror_when_missing():
+    conn = FakeConnection({"product_article_image_candidates": {}})
+    try:
+        service.delete_article_image_candidate(conn, "nope")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def test_delete_article_image_candidate_blocks_deleting_the_selected_one():
+    # Al's own immediate follow-up constraint -- this is the case it exists
+    # for. Confirms both the raise AND that the row survives untouched
+    # (no partial delete before the guard).
+    db = _fake_db_with_image_candidate(is_selected=True)
+    conn = FakeConnection(db)
+    try:
+        service.delete_article_image_candidate(conn, "cand-1")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "select a different candidate first" in str(e)
+    assert "cand-1" in db["product_article_image_candidates"]
+
+
+def test_delete_article_image_candidate_deletes_row_and_s3_object():
+    # Same fake-boto3-via-sys.modules technique as queue_video_discovery's
+    # own tests above, adapted for an s3 client instead of lambda/bedrock.
+    db = _fake_db_with_image_candidate(is_selected=False)
+    conn = FakeConnection(db)
+
+    class _FakeS3Client:
+        def __init__(self):
+            self.deleted = []
+
+        def delete_object(self, Bucket, Key):
+            self.deleted.append((Bucket, Key))
+
+    fake_s3 = _FakeS3Client()
+
+    class _FakeBoto3:
+        def client(self, name):
+            assert name == "s3"
+            return fake_s3
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    os.environ["IMAGE_BUCKET"] = "bowleriq-images"
+    try:
+        result = service.delete_article_image_candidate(conn, "cand-1")
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+        del os.environ["IMAGE_BUCKET"]
+
+    assert result == {
+        "candidate_id": "cand-1", "article_id": "art-1", "variant": "action_shot",
+        "image_key": "article-images/prod-1/action_shot_1.png", "s3_object_deleted": True,
+    }
+    assert "cand-1" not in db["product_article_image_candidates"]
+    assert conn.committed is True
+    assert fake_s3.deleted == [("bowleriq-images", "article-images/prod-1/action_shot_1.png")]
+
+
+def test_delete_article_image_candidate_still_deletes_row_when_s3_delete_fails():
+    # Best-effort posture (mirrors product_scraper's delete_orphaned_image_
+    # objects) -- a real S3 failure shouldn't leave the DB row (and the
+    # admin's delete click) stuck in limbo.
+    db = _fake_db_with_image_candidate(is_selected=False)
+    conn = FakeConnection(db)
+
+    class _FakeS3Client:
+        def delete_object(self, Bucket, Key):
+            raise RuntimeError("simulated S3 outage")
+
+    class _FakeBoto3:
+        def client(self, name):
+            return _FakeS3Client()
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    os.environ["IMAGE_BUCKET"] = "bowleriq-images"
+    try:
+        result = service.delete_article_image_candidate(conn, "cand-1")
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+        del os.environ["IMAGE_BUCKET"]
+
+    assert result["s3_object_deleted"] is False
+    assert "cand-1" not in db["product_article_image_candidates"]
+
+
+def test_delete_article_image_candidate_skips_s3_when_bucket_not_configured():
+    # No IMAGE_BUCKET at all (matches AdminApiFunction's state before this
+    # feature's own template.yaml wiring) -- DB delete still succeeds,
+    # s3_object_deleted comes back False, and boto3 is never even touched.
+    db = _fake_db_with_image_candidate(is_selected=False)
+    conn = FakeConnection(db)
+    assert "IMAGE_BUCKET" not in os.environ
+
+    result = service.delete_article_image_candidate(conn, "cand-1")
+
+    assert result["s3_object_deleted"] is False
+    assert "cand-1" not in db["product_article_image_candidates"]
 
 
 if __name__ == "__main__":

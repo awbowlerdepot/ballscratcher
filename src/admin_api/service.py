@@ -14,8 +14,19 @@ reconciliation are meant to write into the same table later, not built
 yet). Approving a review_queue row applies its proposed_value to the real
 column it describes; rejecting leaves the stored value untouched.
 """
+import logging
 import re
 from urllib.parse import urlparse
+
+# No prior module-level logger existed in this file (unlike the Lambda-
+# handler modules, e.g. product_scraper/app.py's own `logging.getLogger()`)
+# -- every AWS-calling function here has so far either raised outright or
+# returned a {"queued": False, "reason": ...} shape on a soft-fail. Added
+# for delete_article_image_candidate below, whose S3 cleanup step is the
+# first genuinely best-effort (log-and-continue) AWS call in this file --
+# see that function's own docstring for why it can't just raise on an S3
+# failure the way everything else here does.
+logger = logging.getLogger()
 
 # review_queue.field_name convention, established by pdf_parser.sync_pdf_skus:
 # a per-weight SKU field looks like "rg_16lb" / "differential_15lb" /
@@ -4568,6 +4579,91 @@ def select_article_image_candidate(conn, candidate_id: str, resolved_by: str = N
     conn.commit()
     return {"candidate_id": candidate_id, "article_id": article_id, "variant": variant,
             "image_key": image_key, "image_url": image_url}
+
+
+def delete_article_image_candidate(conn, candidate_id: str) -> dict:
+    """Al: "can we add support to delete unwanted ai generated images" --
+    the candidate picker (list_article_image_candidates/select_article_
+    image_candidate above) lets an admin pick the best of up to 3 Gemini/
+    Stability candidates per shot, but never had a way to get rid of the
+    ones that AREN'T worth keeping around -- every candidate ever
+    generated just accumulates in this table (and in S3) forever,
+    including obviously-bad ones an admin would never want to see again
+    in a future "generate more options" pass.
+
+    Hard delete, mirroring delete_video_candidate's posture (a true
+    removal, not a status flag) -- there's no review/audit workflow on
+    this table to preserve a record for (see 026_product_article_image_
+    candidates.sql's own header comment: picking a candidate is already a
+    lightweight action, not an approve/reject queue).
+
+    Al's own follow-up, immediately: "make it so you cant delete the one
+    currently being used" -- raises ValueError (422, same convention as
+    every other guarded admin_api mutation) when is_selected is true for
+    this row, rather than silently deleting it and leaving product_
+    articles' own action_shot_image_key/url (or product_shot_*) pointing
+    at an S3 object that no longer exists. An admin has to select a
+    different candidate first (see select_article_image_candidate above)
+    before the one they're replacing can be deleted -- the same
+    "reassign before delete" shape reassign_video_candidate/delete_video_
+    candidate already established for a different table.
+
+    S3 cleanup is best-effort, not transactional with the DB delete --
+    same posture as product_scraper's delete_orphaned_image_objects (see
+    that function's own docstring): the DB row disappearing from the
+    picker is what actually matters to an admin using this feature, and a
+    real, permanent AWS outage or a missing IMAGE_BUCKET/IAM grant on this
+    function shouldn't block that. Builds its own boto3 s3 client inline
+    (same deferred-import convention as every other AWS call in this
+    file) only when IMAGE_BUCKET is configured; logs a warning and still
+    returns success (with s3_object_deleted: False) if the bucket isn't
+    configured or the delete call itself fails, rather than raising and
+    leaving the DB row (and the admin's delete click) in limbo."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "select article_id, variant, image_key, is_selected from product_article_image_candidates where id = %s",
+            (candidate_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError(f"No product_article_image_candidates row with id {candidate_id}")
+        article_id, variant, image_key, is_selected = row
+
+        if is_selected:
+            raise ValueError(
+                "Cannot delete the candidate currently in use for this variant -- "
+                "select a different candidate first."
+            )
+
+        cur.execute("delete from product_article_image_candidates where id = %s", (candidate_id,))
+    conn.commit()
+
+    s3_object_deleted = False
+    image_bucket = os.environ.get("IMAGE_BUCKET")
+    if image_bucket:
+        import boto3
+
+        try:
+            s3_client = boto3.client("s3")
+            s3_client.delete_object(Bucket=image_bucket, Key=image_key)
+            s3_object_deleted = True
+        except Exception:
+            logger.warning(
+                "Deleted product_article_image_candidates row %s but failed to delete its "
+                "S3 object (bucket=%s, key=%s) -- object is now orphaned",
+                candidate_id, image_bucket, image_key, exc_info=True,
+            )
+    else:
+        logger.warning(
+            "Deleted product_article_image_candidates row %s but IMAGE_BUCKET isn't "
+            "configured on this deployment -- its S3 object (key=%s) was not cleaned up",
+            candidate_id, image_key,
+        )
+
+    return {
+        "candidate_id": candidate_id, "article_id": article_id, "variant": variant,
+        "image_key": image_key, "s3_object_deleted": s3_object_deleted,
+    }
 
 
 def get_article_generation_status(conn, product_id: str) -> dict:

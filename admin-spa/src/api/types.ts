@@ -700,6 +700,21 @@ export interface SelectImageCandidateResult {
   image_url: string;
 }
 
+// DELETE /article-image-candidates/{id} -- Al: "can we add support to
+// delete unwanted ai generated images." No image_url here (unlike
+// SelectImageCandidateResult above) because the S3 object is gone or
+// going away, not something to display -- see delete_article_image_
+// candidate's own docstring in admin_api/service.py for why
+// s3_object_deleted can be false (IMAGE_BUCKET unset, or a best-effort
+// S3 delete_object call that failed) even though the DB row was removed.
+export interface DeleteImageCandidateResult {
+  candidate_id: string;
+  article_id: string;
+  variant: ArticleImageVariant;
+  image_key: string;
+  s3_object_deleted: boolean;
+}
+
 // Price tracking (014_price_tracking.sql onward). Al asked whether it
 // makes sense to combine admin-site's two separate top-level tabs here
 // -- "Price Sources" (the discovered-match review queue, product_price_

@@ -1667,6 +1667,17 @@ Resources:
           SHOPIFY_URL_DISCOVERY_FUNCTION_NAME: !Ref ShopifyUrlDiscoveryFunction
           TRACK_URL_DISCOVERY_FUNCTION_NAME: !Ref TrackUrlDiscoveryFunction
           EBONITE_URL_DISCOVERY_FUNCTION_NAME: !Ref EboniteUrlDiscoveryFunction
+          # Read by service.py's delete_article_image_candidate (DELETE
+          # /article-image-candidates/{id}) -- Al: "can we add support to
+          # delete unwanted ai generated images." This function had no
+          # IMAGE_BUCKET at all before this -- unlike ProductScraperFunction/
+          # ImageProcessorFunction/ProductArticleGeneratorFunction/
+          # ImageResizerFunction above, it never needed to touch S3 directly
+          # until now. Same optional/soft-fail convention as those: if this
+          # were ever unset, the function just logs a warning and skips the
+          # S3 delete rather than failing the request (the DB row delete is
+          # the authoritative part; see that function's own docstring).
+          IMAGE_BUCKET: !Ref ImageBucket
       Policies:
         - Statement:
             - Effect: Allow
@@ -1796,6 +1807,21 @@ Resources:
                 - !GetAtt ShopifyUrlDiscoveryFunction.Arn
                 - !GetAtt TrackUrlDiscoveryFunction.Arn
                 - !GetAtt EboniteUrlDiscoveryFunction.Arn
+        # For delete_article_image_candidate (DELETE /article-image-
+        # candidates/{id}) -- Al: "can we add support to delete unwanted
+        # ai generated images." This function never had any S3 permission
+        # at all before this (unlike ProductArticleGeneratorFunction's own
+        # s3:PutObject-only grant on this same prefix, see that function's
+        # own comment) -- scoped to just s3:DeleteObject, and just the
+        # article-images/ prefix ProductArticleGeneratorFunction's own
+        # store_article_image writes candidates under (026_product_
+        # article_image_candidates.sql's image_key convention), not
+        # product-images/ or anything else in this bucket.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:DeleteObject
+              Resource: !Sub arn:aws:s3:::${ImageBucket}/article-images/*
       # Four explicit per-method routes instead of a single `Method: ANY`
       # -- found via a real live test (curl OPTIONS /health with no
       # Authorization header returned a bare 401 "Unauthorized" from API

@@ -52,6 +52,7 @@ import type {
   ReviewQueueListResult,
   RunUrlDiscoveryResult,
   SelectImageCandidateResult,
+  DeleteImageCandidateResult,
   SetPublishedResult,
   SkuStockHistoryResult,
   UrlDiscoveryTarget,
@@ -410,6 +411,17 @@ export function listArticleImageCandidates(articleId: string): Promise<ArticleIm
 // anywhere (see select_article_image_candidate's own docstring).
 export function selectArticleImageCandidate(candidateId: string): Promise<SelectImageCandidateResult> {
   return apiPost<SelectImageCandidateResult>(`/article-image-candidates/${encodeURIComponent(candidateId)}/select`, {});
+}
+
+// Al: "can we add support to delete unwanted ai generated images" --
+// backend rejects (422) deleting the currently-selected candidate for
+// its (article_id, variant) pair, per Al's own immediate follow-up
+// ("make it so you cant delete the one currently being used") -- see
+// delete_article_image_candidate's docstring in admin_api/service.py.
+// Callers should disable/hide the delete action for is_selected
+// candidates rather than relying on this rejection at click-time.
+export function deleteArticleImageCandidate(candidateId: string): Promise<DeleteImageCandidateResult> {
+  return apiDelete<DeleteImageCandidateResult>(`/article-image-candidates/${encodeURIComponent(candidateId)}`);
 }
 
 // The original combined "Generate article" trigger -- only path for a

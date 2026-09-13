@@ -1395,6 +1395,24 @@ def select_article_image_candidate(candidate_id: str, body: SelectImageCandidate
         conn.close()
 
 
+@app.delete("/article-image-candidates/{candidate_id}")
+def delete_article_image_candidate(candidate_id: str):
+    # Al: "can we add support to delete unwanted ai generated images" --
+    # see service.delete_article_image_candidate's own docstring for the
+    # full story, including Al's own immediate follow-up ("make it so you
+    # cant delete the one currently being used"), which is why is_selected
+    # raises ValueError (422) here rather than this route succeeding.
+    conn = service.get_db_connection()
+    try:
+        return service.delete_article_image_candidate(conn, candidate_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        conn.close()
+
+
 @app.get("/products/{product_id}/article-generation-status")
 def article_generation_status(product_id: str):
     # 034_product_article_generation_status.sql -- Al: "images take

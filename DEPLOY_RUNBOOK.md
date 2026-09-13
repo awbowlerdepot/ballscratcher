@@ -14738,6 +14738,110 @@ its pre-existing `test_get_product_assembles_all_related_data` crash
 (documented in 6aw above) is unaffected either way. No `template.yaml`
 changes needed.
 
+### 6ay. Delete unwanted AI-generated image candidates (2026-09-13)
+
+Al: "can we add support to delete unwanted ai generated images" --
+`product_article_image_candidates` (026_product_article_image_
+candidates.sql) accumulates every Gemini candidate ever generated for
+an article's action_shot/product_shot, forever, in both the DB and S3,
+with no way to prune the obviously-bad ones out of the picker. Al's own
+immediate follow-up, before any code was written: "make it so you cant
+delete the one currently being used" -- the hard constraint this
+feature is built around.
+
+**`src/admin_api/service.py`**: added `delete_article_image_candidate(conn,
+candidate_id)`. Looks up the row; raises `LookupError` if missing.
+Raises `ValueError` ("Cannot delete the candidate currently in use for
+this variant -- select a different candidate first.") if `is_selected`
+is true -- the same "reassign/select before delete" shape
+`reassign_video_candidate`/`delete_video_candidate` already established
+for video candidates, just enforced as an outright block here since
+there's nothing to reassign to (an admin just picks a different
+existing candidate via `select_article_image_candidate` first). Hard
+delete otherwise (no audit/review workflow on this table to preserve a
+record for, same as `delete_video_candidate`'s own reasoning). S3
+cleanup is best-effort, mirroring `product_scraper`'s
+`delete_orphaned_image_objects`: builds its own boto3 s3 client inline
+only when `IMAGE_BUCKET` is set, and logs a warning (returning
+`s3_object_deleted: False`) rather than raising if the bucket isn't
+configured or the delete call fails -- the DB row disappearing from the
+picker is what actually matters to the admin, not a guaranteed S3
+cleanup. Added a module-level `logger = logging.getLogger()` to this
+file for that warning path -- the first genuinely best-effort
+(log-and-continue) AWS call `admin_api/service.py` has; everything
+else here either raises outright or returns an explicit `{"queued":
+False, ...}` shape.
+
+**`src/admin_api/app.py`**: added `DELETE /article-image-candidates/{id}`,
+mapping `LookupError` -> 404 and `ValueError` -> 422 (this project's
+standard convention throughout this file).
+
+**`template.yaml`**: `AdminApiFunction` had zero S3 permissions or
+`IMAGE_BUCKET` wiring at all before this feature (unlike
+`ProductScraperFunction`/`ImageProcessorFunction`/
+`ProductArticleGeneratorFunction`/`ImageResizerFunction`, which all
+already had it) -- added `IMAGE_BUCKET: !Ref ImageBucket` to its
+`Environment.Variables` and a new `s3:DeleteObject` policy statement
+scoped to `arn:aws:s3:::${ImageBucket}/article-images/*` (the same
+prefix `ProductArticleGeneratorFunction`'s own `s3:PutObject` grant
+covers -- no existing `s3:DeleteObject` grant on this prefix existed
+anywhere in the stack to copy verbatim, so this is a genuinely new IAM
+statement, not a copy-paste). No new `Events:` block needed --
+`AdminApiFunction` already has an explicit `AdminApiDelete` event
+(`Method: DELETE`, `Path: /{proxy+}`) that already covers this route.
+Verified via the CFN-tolerant YAML loader: 84 resources (unchanged
+count), `IMAGE_BUCKET` present on `AdminApiFunction`, and the new
+`s3:DeleteObject` statement present.
+
+**`admin-spa`**: added `DeleteImageCandidateResult` type
+(`{candidate_id, article_id, variant, image_key, s3_object_deleted}`,
+mirroring the Python return shape -- no `image_url` since the object is
+gone or going) and `deleteArticleImageCandidate(candidateId)` using the
+existing `apiDelete<T>` helper. `ArticlePreview` (shared by
+`ArticlesPage.tsx`'s own preview modal and `ProductDetailPage.tsx`'s
+Article sub-tab) gained an optional `onDeleteCandidate` prop -- a
+Delete button now renders on every non-selected candidate card, with a
+`window.confirm` guard (same lightweight-destructive-action pattern as
+this app's other delete buttons: price sources, blocked channels,
+manual seed URLs). The selected candidate's card renders no Delete
+button at all -- not disabled, not hidden-on-hover, simply absent --
+per Al's constraint; the backend's own 422 is a backstop against a race
+(e.g. two admin tabs open at once), not the expected path. Both
+`ArticlesPage.tsx` and `ProductDetailPage.tsx` wire their own
+`handleDeleteCandidate` through to reload the candidate list on
+success.
+
+**Tests**: `tests/test_admin_api_service.py` had zero prior coverage of
+`product_article_image_candidates` at all (neither this new function
+nor the pre-existing `list_article_image_candidates`/
+`select_article_image_candidate`) -- added two new `FakeCursor`
+branches (`select article_id, variant, image_key, is_selected from
+product_article_image_candidates...` and `delete from
+product_article_image_candidates...`) and four new tests: not-found
+(`LookupError`), blocked delete of the selected candidate (`ValueError`,
+confirms the row survives untouched), a successful delete with S3
+mocked via the same `sys.modules["boto3"]` faking convention
+`queue_video_discovery`'s own tests use (confirms `s3_object_deleted:
+True` and the exact `Bucket`/`Key` passed to `delete_object`), and
+`IMAGE_BUCKET` unset (confirms the DB delete still succeeds with
+`s3_object_deleted: False` and boto3 never touched). Also confirmed a
+simulated S3 failure still lets the DB delete through. Full regression:
+339/341 in `test_admin_api_service.py` -- the only 2 failures are the
+pre-existing, unrelated `test_get_product_assembles_all_related_data`/
+`test_get_product_discovered_url_is_none_when_never_crawled` crash
+documented in 6aw above (confirmed via `git diff --stat`: this
+feature's diff to the test file is purely additive, 151 insertions, 0
+deletions, touching only the `FakeCursor` class and the tail of the
+file -- nowhere near `get_product`'s own fixtures). `npx tsc -b` clean
+in `admin-spa/`.
+
+Deploy via:
+```bash
+sam build && sam deploy
+```
+(a real deploy is required, not just a push -- this ships a new IAM
+policy and env var on `AdminApiFunction`).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
