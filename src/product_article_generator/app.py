@@ -1583,7 +1583,44 @@ def build_gemini_scene_prompt(product: dict, article: dict, variant: str,
     (a legibility bias that resists shrinking printed text/graphics
     proportionally with their carrier object) rather than only
     restating the "keep it the same" rule the model has already shown
-    it won't reliably honor on its own."""
+    it won't reliably honor on its own.
+
+    REAL INCIDENT (2026-09-13, Al): "we are starting to get non character
+    humans, aka not vikings or similar. Also it took creative liberty on
+    the logo on the ball," with a real generated action_shot attached (a
+    polished dual-bowler marketing-style hero shot, neon motion trails,
+    two photorealistic human figures mid-delivery) next to the actual
+    product photo for comparison. Two distinct findings:
+
+    1. The "no people" exclusion above (2026-09-06 incident) was still
+    present verbatim in the prompt and still didn't hold for this
+    product -- action_shot's own "dynamic hero shot conveying motion and
+    energy" framing apparently pulls Gemini toward literal action/
+    marketing photography (complete with photographed-looking human
+    models) strongly enough to override a same-prompt exclusion buried
+    ~600 words later. Asked Al directly whether the fix should ban EVERY
+    human figure outright or only realistic/photographic ones (a themed,
+    illustrated character -- his own example, "vikings" -- being a
+    separate, sometimes-desired case tied to the visual_theme's literal-
+    iconography preference above). Al's call: stylized/costumed
+    characters that clearly belong to the theme's fantasy concept are
+    fine; ordinary-looking, photographically-rendered people are not.
+    Rewritten below to draw that exact line -- an explicit exception for
+    a theme-appropriate illustrated/fantastical figure, carved out of an
+    otherwise-unchanged blanket ban on realistic humans, bowling shoes,
+    scoreboards, and pins -- rather than only re-emphasizing the same
+    all-or-nothing wording that already failed once.
+
+    2. Separate from any scale/size issue: Al's "creative liberty" framing
+    describes the logo itself being redrawn in a different style (not just
+    a different size) once the surrounding scene turns into an elaborate,
+    professional-marketing-style composition -- consistent with a model
+    that treats a highly stylized/dramatic hero scene as license to
+    restyle everything in it, logo included, to match. The existing
+    proportion/size instructions (2026-09-06/07/12 incidents above) never
+    said anything about typography or artistic style, only size -- fixed
+    by adding an explicit, standalone "reproduce as a faithful copy, do
+    not re-typeset/re-style/embellish" instruction alongside them."""
     context = _resolve_visual_context(article)
     scene_desc = context or "an elevated, premium studio scene"
 
@@ -1710,7 +1747,12 @@ def build_gemini_scene_prompt(product: dict, article: dict, variant: str,
         "angle, but its logo and graphics must scale and rotate together with it "
         "as one rigid, unmodified object, matching the manufacturer's actual "
         "printed design exactly, never redrawn larger, bolder, or more prominent "
-        "than the reference -- this applies regardless of how the shot is framed."
+        "than the reference -- this applies regardless of how the shot is framed. "
+        "Its exact typography, icon shape, colors, and artistic style must be "
+        "reproduced as a faithful copy of the reference image -- do not re-typeset, "
+        "re-style, embellish, or artistically reinterpret the logo to better match "
+        "a more dramatic or stylized scene; it is a fixed printed graphic being "
+        "carried over unchanged, not redesigned to fit the new composition."
         f"{scale_awareness_clause} "
         "Match the lighting and color grading of the new scene onto the ball "
         "naturally, with a realistic contact shadow and ambient light on its "
@@ -1725,14 +1767,28 @@ def build_gemini_scene_prompt(product: dict, article: dict, variant: str,
         "falloff, and contact shadow needed to seat the ball naturally into the "
         "new environment -- that depth and realism is correct and should stay -- "
         "without making the ball itself look shinier or more reflective than it "
-        f"actually is.{finish_hint_clause} This is a single-subject hero shot of the ball alone -- do not "
-        "include any people, hands, arms, legs, human figures, bowling shoes, "
-        "scoreboards/monitors, or bowling pins anywhere in the frame, "
-        "even blurred or in the background. The scene may still evoke a bowling lane "
-        "or alley setting where the theme calls for it, but it must read as an "
-        "empty, stylized environment built around the ball -- not a photograph of "
-        "someone in the act of bowling. Photorealistic, high quality, no text "
-        "overlays, no watermark."
+        f"actually is.{finish_hint_clause} This is a hero shot built around the ball -- do not "
+        "include any realistic, photographic-looking human being anywhere in the "
+        "frame, even blurred or in the background: no real bowlers, athletes, or "
+        "models, no bowling shoes, no scoreboards/monitors, and no bowling pins. "
+        "The scene must never read as an actual photograph of someone in the act of "
+        "bowling. The one exception: if the scene concept above clearly evokes a "
+        "fantastical, mythical, or costumed figure (a Viking warrior, an armored "
+        "knight, a mythical creature in humanoid form, and similar), that character "
+        "may appear -- but it must read as an obviously stylized, illustrated, "
+        "non-photorealistic figure belonging to the theme's fantasy world, never as "
+        "an ordinary person, athlete, or bowler in real-world bowling attire, and it "
+        "must not be shown holding, throwing, or otherwise interacting with a "
+        "bowling ball or standing on a bowling lane -- the ball itself is the only "
+        "bowling-related subject in the frame. When the theme doesn't clearly call "
+        "for a character at all, default to no figures of any kind. The scene may "
+        "still evoke a bowling lane or alley setting where the theme calls for it, "
+        "but outside of that one allowed themed-character exception it must read as "
+        "an empty, stylized environment built around the ball. Photorealistic "
+        "rendering applies to the ball and its environment, not to any themed "
+        "character present, which should look illustrated or fantastical by "
+        "contrast rather than blending in as a real photographed person. High "
+        "quality, no text overlays, no watermark."
     )
 
 

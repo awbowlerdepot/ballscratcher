@@ -2148,20 +2148,49 @@ def test_build_gemini_scene_prompt_excludes_people_and_bowling_venue_props():
     same product: a themed neon-lane BACKDROP with the ball as the sole
     subject (wanted) vs. a photograph of a person mid-delivery with
     bowling shoes and scattered pins (not wanted, "hallucinations that
-    just feel phony"). Confirms the new exclusion list is present for
-    both variants, and that a themed lane/alley backdrop itself is still
-    explicitly allowed -- Al's own distinction was people/pins/props, not
-    the lane setting itself."""
+    just feel phony"). Confirms the exclusion list (rewritten by the
+    2026-09-13 incident below to carve out a themed-character exception,
+    see test_build_gemini_scene_prompt_allows_stylized_theme_character)
+    is present for both variants, that realistic humans/shoes/pins/
+    scoreboards are still banned, and that a themed lane/alley backdrop
+    itself is still explicitly allowed -- Al's own distinction was
+    people/pins/props, not the lane setting itself."""
     action_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "action_shot")
     product_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "product_shot")
     for prompt in (action_prompt, product_prompt):
-        assert "do not include any people, hands, arms, legs, human figures" in prompt
+        assert "do not include any realistic, photographic-looking human being" in prompt
+        assert "no real bowlers, athletes, or models" in prompt
         assert "bowling shoes" in prompt
         assert "bowling pins" in prompt
-        assert "not a photograph of someone in the act of bowling" in prompt
+        assert "must never read as an actual photograph of someone in the act of bowling" in prompt
         # The lane/alley setting itself is still explicitly permitted --
-        # this is a "no people/props" fix, not a "no bowling lane" one.
+        # this is a "no realistic people/props" fix, not a "no bowling
+        # lane" one.
         assert "may still evoke a bowling lane or alley setting" in prompt
+
+
+def test_build_gemini_scene_prompt_allows_stylized_theme_character():
+    """REAL INCIDENT (2026-09-13, Al): "we are starting to get non
+    character humans, aka not vikings or similar" -- a real generated
+    action_shot showed two photorealistic human bowlers despite the
+    2026-09-06 "no people" exclusion above already being present in the
+    prompt verbatim. Asked Al directly whether to ban every human figure
+    outright or carve out an exception for a theme-appropriate stylized
+    character (his own "vikings" example); his call: stylized/costumed
+    characters that clearly belong to the theme are fine, ordinary
+    photorealistic people are not. Confirms the prompt states that exact
+    exception -- a themed character is allowed but must read as
+    illustrated/non-photorealistic, must not be an ordinary person/
+    athlete/bowler in real attire, and must not interact with a bowling
+    ball or stand on a lane -- and that the default (no clear character
+    concept) is still no figures at all."""
+    action_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "action_shot")
+    assert "fantastical, mythical, or costumed figure" in action_prompt
+    assert "Viking warrior" in action_prompt
+    assert "obviously stylized, illustrated, non-photorealistic figure" in action_prompt
+    assert "never as an ordinary person, athlete, or bowler in real-world bowling attire" in action_prompt
+    assert "must not be shown holding, throwing, or otherwise interacting with a bowling ball" in action_prompt
+    assert "default to no figures of any kind" in action_prompt
 
 
 def test_build_gemini_scene_prompt_forbids_resizing_the_logo():
@@ -2185,6 +2214,26 @@ def test_build_gemini_scene_prompt_forbids_resizing_the_logo():
         assert "do not enlarge, shrink, stretch, or otherwise" in prompt
         assert "may be rotated or tilted to any angle" in prompt
         assert "never redrawn larger, bolder, or more prominent" in prompt
+
+
+def test_build_gemini_scene_prompt_forbids_restyling_the_logo():
+    """REAL INCIDENT (2026-09-13, Al): "it took creative liberty on the
+    logo on the ball" -- distinct from the SIZE drift covered by the test
+    above. The attached generated image showed the logo's typography/icon
+    redrawn in a different artistic style once the surrounding scene
+    became an elaborate marketing-style hero composition, not merely
+    resized. The pre-existing size/proportion instruction never addressed
+    style/typography at all. Confirms a standalone instruction requiring
+    the logo to be reproduced as a faithful copy of the reference --
+    banning re-typesetting, re-styling, or embellishment -- is present
+    for both variants, alongside (not replacing) the size instruction."""
+    action_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "action_shot")
+    product_prompt = app.build_gemini_scene_prompt({"color": "Blue"}, _SAMPLE_ARTICLE, "product_shot")
+    for prompt in (action_prompt, product_prompt):
+        assert "reproduced as a faithful copy of the reference image" in prompt
+        assert "do not re-typeset, re-style, embellish, or artistically reinterpret" in prompt
+        # The size instruction must still be present alongside this one.
+        assert "same proportion of the ball's surface" in prompt
 
 
 def test_build_gemini_scene_prompt_preserves_original_surface_finish():

@@ -14663,6 +14663,81 @@ defined before that point in the file, including all 10 new ones, passes.
 No `template.yaml` changes needed -- confirmed it still parses via the
 project's usual CFN-tolerant YAML loader check.
 
+### 6ax. Real-humans and logo-restyling drift in action_shot hero images (2026-09-13)
+
+Al: "we are starting to get non character humans, aka not vikings or
+similar. Also it took creative liberty on the logo on the ball," with a
+real generated action_shot attached (a polished dual-bowler marketing-
+style hero shot, neon motion trails, two photorealistic human figures
+mid-delivery) next to the actual product photo for comparison. Two
+distinct bugs in `build_gemini_scene_prompt`
+(`src/product_article_generator/app.py`):
+
+1. **Photorealistic humans slipping past an exclusion that was already
+   there.** The "no people/hands/human figures... even blurred or in the
+   background" exclusion added by the 2026-09-06 incident (see 6ab's
+   predecessor entries / that function's own docstring) was still present
+   verbatim, but action_shot's own "dynamic hero shot conveying motion and
+   energy" framing apparently pulls Gemini toward literal action/marketing
+   photography -- complete with photographed-looking human models --
+   strongly enough to override a same-prompt exclusion stated ~600 words
+   later. Asked Al directly whether the fix should ban every human figure
+   outright or only realistic/photographic ones, since a themed/
+   illustrated character (his own example, "vikings") is a separate,
+   sometimes-desired case tied to the visual_theme literal-iconography
+   preference (6ab's `597`/`601` history). Al's call: stylized/costumed
+   characters that clearly belong to the theme's fantasy concept are fine;
+   ordinary-looking, photographically-rendered people are not. Rewrote the
+   exclusion to draw that exact line: real bowlers/athletes/models,
+   bowling shoes, scoreboards, and pins remain banned outright; a
+   theme-appropriate illustrated/fantastical character (a Viking warrior,
+   an armored knight, a mythical creature in humanoid form) is now an
+   explicit, narrow exception, but it must read as obviously stylized/
+   non-photorealistic, must not be an ordinary person/athlete/bowler in
+   real attire, and must not be shown holding, throwing, or otherwise
+   interacting with a bowling ball or standing on a lane -- the ball
+   itself stays the only bowling-related subject in frame. When the theme
+   doesn't clearly call for a character, the default is still no figures
+   of any kind.
+
+2. **Logo restyling, not just resizing.** Separate from the
+   already-addressed size/proportion drift (2026-09-06/07/12 incidents),
+   Al's "creative liberty" framing describes the logo's actual typography/
+   icon artwork being redrawn in a different style once the surrounding
+   scene turns into an elaborate, professional-marketing-style
+   composition -- consistent with a model that treats a highly stylized
+   hero scene as license to restyle everything in it, logo included, to
+   match. The existing proportion instructions never said anything about
+   typography or artistic style, only size. Added a standalone
+   instruction requiring the logo to be reproduced as a faithful copy of
+   the reference image -- no re-typesetting, re-styling, embellishing, or
+   artistic reinterpretation -- alongside (not replacing) the existing
+   size/proportion language.
+
+Both fixes apply to both variants (the exclusion and logo instructions
+are shared prompt text), though the human-figure drift was specific to
+action_shot in the reported incident, consistent with product_shot having
+no equivalent "dynamic hero" framing pulling it toward photography.
+
+**Tests**: `tests/test_product_article_generator.py` -- rewrote
+`test_build_gemini_scene_prompt_excludes_people_and_bowling_venue_props`
+for the updated wording (still confirms realistic humans/shoes/pins/
+scoreboards are banned and the lane/alley setting itself remains
+allowed), added `test_build_gemini_scene_prompt_allows_stylized_theme_character`
+(confirms the Viking-style exception language, the "must not interact
+with a bowling ball" carve-out, and the no-character default), and added
+`test_build_gemini_scene_prompt_forbids_restyling_the_logo` (confirms the
+new faithful-copy/no-re-typesetting instruction is present alongside the
+pre-existing size instruction, for both variants). Full regression:
+153/153 in `test_product_article_generator.py` (up from 151 -- one
+existing test rewritten for the new wording, two new tests added). Ran
+`test_admin_api_service.py` too since it shares this project's Gemini-
+prompt conventions -- untouched by this change (only
+`product_article_generator/app.py` and its own test file were edited);
+its pre-existing `test_get_product_assembles_all_related_data` crash
+(documented in 6aw above) is unaffected either way. No `template.yaml`
+changes needed.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
