@@ -592,8 +592,14 @@ function renderStructuredData(card: ArticleCard, article: ArticleDetail, heroIma
 // section ... to be links to additional articles for the brand"), which
 // is the same nature as related_reviews above -- so it's now rendered
 // here too, via renderBrandLineup, for the same crawlability reasoning.
-function renderArticlePage(baseHtml: string, card: ArticleCard, article: ArticleDetail): string {
-  const metaDescription = escapeHtml((article.hook || card.hook || "").slice(0, 300));
+// Extracted out of renderArticlePage so main()'s sitemap.xml build (image
+// sitemap entries, Al: "google search console specifics... especially the
+// sitemap") can reuse the EXACT same image this page actually displays
+// (og:image, the no-JS body <img>, the Article/Product JSON-LD) rather
+// than recomputing its own fallback chain that could silently drift out
+// of sync with what the page really shows -- Google's image-sitemap
+// guidance expects the listed image to genuinely appear on that URL.
+function computeHeroImage(card: ArticleCard, article: ArticleDetail): string | null {
   const rawHeroImage = article.action_shot_image_url || article.product?.primary_image_url || card.primary_image_url;
   // 1200x630 -- the standard Open Graph/Twitter Card social-preview
   // dimensions, reused as-is for the no-JS body <img>, og:image, and the
@@ -603,7 +609,12 @@ function renderArticlePage(baseHtml: string, card: ArticleCard, article: Article
   // LinkedIn) still don't reliably render webp og:image previews, and
   // jpeg is the safest universally-supported choice for this specific
   // use.
-  const heroImage = rawHeroImage ? resizedImageUrl(rawHeroImage, { w: 1200, h: 630, fit: "cover", fmt: "jpeg", q: 85 }) : null;
+  return rawHeroImage ? resizedImageUrl(rawHeroImage, { w: 1200, h: 630, fit: "cover", fmt: "jpeg", q: 85 }) : null;
+}
+
+function renderArticlePage(baseHtml: string, card: ArticleCard, article: ArticleDetail): string {
+  const metaDescription = escapeHtml((article.hook || card.hook || "").slice(0, 300));
+  const heroImage = computeHeroImage(card, article);
   const pageTitle = `${article.title} | Learn | The Bowler Depot`;
   const canonicalUrl = `${SITE_URL}/articles/${card.product_id}/`;
 
@@ -677,6 +688,45 @@ function renderArticlePage(baseHtml: string, card: ArticleCard, article: Article
   return html;
 }
 
+// REAL REQUEST (2026-09-13, Al): "can we work on some google search
+// console specifics. especially the sitemap and how that gets delivered
+// to search console." Asked which site + what kind of improvement;
+// Al: learn.bowlerdepot.com, richer sitemap content over first-time
+// setup. Two gaps closed below -- both zero-schema-change, pure build-
+// script changes:
+//
+// 1. No <image:image> entries at all, despite every article page having
+//    a real, on-page hero photo -- Google's image-sitemap extension is
+//    the cheapest way to get that image indexed by Google Images
+//    alongside the article itself, and this site is genuinely photo-
+//    driven (AI-generated action/product shots) product content, exactly
+//    the kind of page image search sends traffic to. Reuses
+//    computeHeroImage (extracted from renderArticlePage above) so the
+//    sitemap entry is guaranteed to be the SAME image the page actually
+//    displays, per Google's own image-sitemap guidance.
+// 2. The homepage ("/") entry had no <lastmod> at all, even though the
+//    index page's own content (which articles are listed, in what order)
+//    changes every time a new article is approved -- now set to the most
+//    recently reviewed article's timestamp.
+//
+// Deliberately NOT done here, and why:
+// - Splitting into multiple sitemap files / a sitemap index: Google's
+//   limits are 50,000 URLs and 50MB uncompressed per file -- this site
+//   is nowhere close on either axis with articles numbering in the tens
+//   to low hundreds. Revisit if that ever changes, not preemptively.
+// - A fully accurate lastmod for every possible content change: this
+//   uses card.reviewed_at, which admin_api's approve_article docstring
+//   confirms is re-stamped on every approval, INCLUDING re-approvals
+//   after a regenerate_text/regenerate_images run (those flip status
+//   back to 'pending' first, so by the time an article is live/approved
+//   again reviewed_at has always caught up). The one known gap: admin_api's
+//   select_article_image_candidate (switching WHICH already-generated
+//   candidate is live, in the ArticlesPage/ProductDetailPage picker) can
+//   change an already-approved article's displayed image without going
+//   through that pending/re-approve cycle at all, so lastmod won't move
+//   for that specific action. Narrow and low-frequency enough not to
+//   chase here, but worth knowing about if a picked-image change doesn't
+//   seem to get re-crawled promptly.
 async function main() {
   if (!API_BASE) {
     throw new Error("VITE_PUBLIC_API_URL is not set -- prerender needs it to fetch articles at build time.");
@@ -685,7 +735,8 @@ async function main() {
   const baseHtml = await readFile(join(DIST_DIR, "index.html"), "utf-8");
   const cards = await fetchAllArticles();
 
-  const sitemapUrls: { loc: string; lastmod?: string }[] = [{ loc: `${SITE_URL}/` }];
+  const sitemapUrls: { loc: string; lastmod?: string; image?: string }[] = [{ loc: `${SITE_URL}/` }];
+  let mostRecentReviewedAt: string | undefined;
   let written = 0;
 
   for (const card of cards) {
@@ -702,16 +753,28 @@ async function main() {
     const outDir = join(DIST_DIR, "articles", card.product_id);
     await mkdir(outDir, { recursive: true });
     await writeFile(join(outDir, "index.html"), renderArticlePage(baseHtml, card, article), "utf-8");
-    sitemapUrls.push({ loc: `${SITE_URL}/articles/${card.product_id}/`, lastmod: card.reviewed_at ?? undefined });
+    const lastmod = card.reviewed_at ?? undefined;
+    if (lastmod && (!mostRecentReviewedAt || lastmod > mostRecentReviewedAt)) mostRecentReviewedAt = lastmod;
+    sitemapUrls.push({
+      loc: `${SITE_URL}/articles/${card.product_id}/`,
+      lastmod,
+      image: computeHeroImage(card, article) ?? undefined,
+    });
     written += 1;
   }
 
+  // Homepage lastmod: set now that the loop above has seen every
+  // article's reviewed_at (see this function's own header comment).
+  sitemapUrls[0].lastmod = mostRecentReviewedAt;
+
   const sitemapXml = `<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
 ${sitemapUrls
   .map(
     (u) =>
-      `  <url><loc>${escapeHtml(u.loc)}</loc>${u.lastmod ? `<lastmod>${u.lastmod.slice(0, 10)}</lastmod>` : ""}</url>`,
+      `  <url><loc>${escapeHtml(u.loc)}</loc>${u.lastmod ? `<lastmod>${u.lastmod.slice(0, 10)}</lastmod>` : ""}${
+        u.image ? `<image:image><image:loc>${escapeHtml(u.image)}</image:loc></image:image>` : ""
+      }</url>`,
   )
   .join("\n")}
 </urlset>

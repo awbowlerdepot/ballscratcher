@@ -15369,6 +15369,87 @@ processing after generation, rather than relying on the generative
 model for logo fidelity at all) instead of continuing to patch prompt
 language incident by incident.
 
+### 6bf. Learn site sitemap.xml: image sitemap entries + homepage lastmod
+
+Al: "can we work on some google search console specifics. especially
+the sitemap and how that gets delivered to search console." Asked
+which site and what kind of work; scoped to learn.bowlerdepot.com (the
+only site in this repo with any sitemap/robots.txt at all -- consumer-
+site has neither) and to improving the existing sitemap rather than
+first-time GSC setup or diagnosing a reported problem.
+
+**Gap 1 -- no image sitemap entries.** Every article page has a real,
+on-page hero photo (an AI-generated action/product shot), but
+`bowlerdepot-learn/scripts/prerender.ts`'s `sitemap.xml` generator
+never told Google about it -- just `<loc>`/`<lastmod>` per URL. Google's
+image-sitemap extension (`xmlns:image`) is the cheapest way to get that
+photo indexed by Google Images alongside the article; this is
+genuinely photo-driven product content, exactly what image search
+sends traffic to.
+
+Fixed by extracting the hero-image computation already used for
+`og:image` and the Article/Product JSON-LD (previously inline in
+`renderArticlePage`) into a standalone `computeHeroImage(card,
+article)`, and calling it again in `main()`'s sitemap loop to add an
+`<image:image><image:loc>` entry per article URL. Reusing the exact
+same function (not a second, similar-but-separate computation)
+guarantees the sitemap's image is the SAME one the page actually
+displays, which is what Google's own image-sitemap guidance expects.
+
+**Gap 2 -- no lastmod on the homepage.** The `/` entry had no
+`<lastmod>` at all, even though its own content (which articles are
+listed, in what order) changes every time a new article is approved.
+Fixed by tracking the most recent `reviewed_at` seen across all cards
+during the per-article loop and setting it on the homepage entry
+afterward.
+
+**Deliberately NOT done, and why:**
+
+- **Splitting into multiple sitemap files / a sitemap index.** Google's
+  limits are 50,000 URLs and 50MB uncompressed per file. This site's
+  article count is in the tens to low hundreds -- nowhere close on
+  either axis. Revisit if that ever changes; building it preemptively
+  would just be unused complexity today.
+- **A lastmod that's accurate for every possible content change.**
+  `card.reviewed_at` (re-stamped on every `approve_article` call,
+  including a re-approval after a `regenerate_text`/`regenerate_images`
+  run -- both of those flip `status` back to `'pending'` first, so by
+  the time an article is live again `reviewed_at` has always caught up)
+  covers the vast majority of real content changes. The one known gap:
+  `admin_api`'s `select_article_image_candidate` -- switching WHICH
+  already-generated candidate is the live image, from the
+  ArticlesPage/ProductDetailPage picker -- can change an already-
+  approved article's displayed image without going through that
+  pending/re-approve cycle at all, so `reviewed_at`/`sitemap.xml`'s
+  `lastmod` won't move for that specific action alone. Narrow (it only
+  matters when an admin swaps images on an article that needs no text
+  changes) and low-frequency enough not to chase with a schema change
+  here, but worth knowing if a picked-image swap doesn't seem to get
+  re-crawled promptly -- flag it and we can add a dedicated
+  last-image-changed timestamp then.
+
+`npx tsc -b` clean in `bowlerdepot-learn/` (prerender.ts is covered by
+`tsconfig.node.json`'s `scripts` include). No new automated tests --
+this script has no existing test coverage to extend (no fixture/mock
+harness for its public_api HTTP calls), consistent with every other
+prerender.ts-only entry in this section. No migration, no
+`template.yaml` change. Deploy via:
+
+```bash
+cd bowlerdepot-learn && npm run build   # tsc -b + vite build + prerender (regenerates sitemap.xml), then the usual GitHub Actions deploy (push to main)
+git push
+```
+
+After that deploy, resubmit `https://learn.bowlerdepot.com/sitemap.xml`
+in Search Console (Sitemaps report) if it isn't already listed there,
+or just wait for Google's normal re-crawl -- an already-submitted
+sitemap URL doesn't need re-submitting for content changes, only for a
+URL that's never been added before. Google retired the old
+`google.com/ping?sitemap=` endpoint in 2023, so there's no fetch-and-
+ping command to run here anymore; Search Console's own "Sitemaps" page
+(or the Search Console API) is the only way to check whether Google
+has fetched/processed a given sitemap file.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
