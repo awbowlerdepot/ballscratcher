@@ -15647,6 +15647,78 @@ No action needed for NEW articles approved after this deploy --
 deploy's `sync-slug-redirects.mjs` step (which only ever pushes rows
 that HAVE a slug) picks it up as a matter of course.
 
+### 6bh. Fix two real deploy-time failures from 6bg's first deploy attempt
+
+Al's first `sam deploy` of 6bg failed immediately:
+
+```
+CREATE_FAILED  AWS::CloudFront::KeyValueStore  LearnArticleSlugRedirectsStore
+Resource handler returned message: "Invalid request provided: 1 validation
+error detected: Value '...' at 'comment' failed to satisfy constraint:
+Member must have length less than or equal to 128
+```
+
+Both `LearnArticleSlugRedirectsStore`'s `Comment` (158 chars) and
+`LearnSitePrettyUrlFunction`'s `FunctionConfig.Comment` (177 chars) --
+which happened to still be under CloudFormation's YAML line width but
+not under CloudFront's own 128-character `Comment` field limit (true
+for both `AWS::CloudFront::KeyValueStore` and
+`AWS::CloudFront::Function`'s `FunctionConfig.Comment`, confirmed
+against AWS's own CloudFormation docs) -- were written at explanatory
+length rather than as short labels. Shortened both to fit (88 and 102
+chars respectively); the longer explanations that used to live in
+those `Comment` fields are still fully covered by the resources' own
+inline `#` comments in `template.yaml` immediately above them, so
+nothing was lost, just moved to where it belonged in the first place.
+
+CloudFormation rolled the stack back cleanly on its own
+(`UPDATE_ROLLBACK_COMPLETE`) -- `PublicApiFunction`'s in-flight code
+update rolled back with it, so this was a no-op from a runtime
+standpoint, not a partial-deploy hazard.
+
+Separately, and only reachable once the KVS resource above deploys
+successfully: the next `bowlerdepot-learn/` push ran
+`deploy-learn-site.yml`'s new "Sync article slug redirects" step before
+Al had set the `LEARN_ARTICLE_SLUG_KVS_ARN` repo variable (expected --
+he hadn't done the one-time setup yet), and the step failed the whole
+workflow:
+
+```
+LEARN_ARTICLE_SLUG_KVS_ARN is not set -- ...
+Error: Process completed with exit code 1.
+```
+
+This contradicted this runbook's own 6bg text ("the sync step no-ops
+... rather than failing outright if this is unset") -- the docs
+described the intended bootstrapping behavior, but
+`sync-slug-redirects.mjs`'s `main()` actually called `process.exit(1)`
+in that branch, which is a real code bug, not a docs bug: the
+whole point of a soft no-op here is that a push to `bowlerdepot-learn/`
+in the window between merging this feature and doing the one-time repo
+variable setup shouldn't break the S3 sync + CloudFront invalidation
+steps that already ran successfully earlier in the same job. Fixed by
+changing that branch to `console.log(...)` + `return` instead of
+`console.error(...)` + `process.exit(1)` -- now genuinely a no-op, log
+line and all, matching what this runbook already told Al to expect.
+
+**Tests.** No Python logic changed by this section -- both fixes are a
+`template.yaml` YAML edit and a small JS control-flow change. Re-ran
+`tests/test_admin_api_service.py` (350/350) and
+`tests/test_public_api_service.py` (141/141) anyway as a regression
+check (unaffected, as expected). Re-verified `template.yaml` via the
+CFN-tolerant YAML parser (still 85 resources, both `Comment` values
+now under 128 chars).
+
+**Redeploy**:
+
+```bash
+sam build && sam deploy
+```
+
+Once this succeeds, resume 6bg's setup instructions from "read
+`LearnArticleSlugRedirectsStoreArn` from the stack Outputs" onward --
+nothing else about that section's deploy sequence changed.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

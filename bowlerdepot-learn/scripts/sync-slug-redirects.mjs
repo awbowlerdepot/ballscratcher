@@ -82,10 +82,16 @@ function chunk(items, size) {
 function main() {
   const kvsArn = process.env.LEARN_ARTICLE_SLUG_KVS_ARN;
   if (!kvsArn) {
-    console.error(
-      "LEARN_ARTICLE_SLUG_KVS_ARN is not set -- see template.yaml's LearnArticleSlugRedirectsStoreArn output for the value to put in this GitHub Actions repo variable.",
+    // Deliberately a no-op, not a failure: this is the expected state
+    // between merging this feature and Al's one-time setup step (deploy
+    // the SAM stack, read LearnArticleSlugRedirectsStoreArn from its
+    // Outputs, set it as this GitHub Actions repo variable) -- a push
+    // to bowlerdepot-learn/ in that window shouldn't fail the whole
+    // deploy just because redirects can't sync yet.
+    console.log(
+      "LEARN_ARTICLE_SLUG_KVS_ARN is not set -- skipping redirect sync. See template.yaml's LearnArticleSlugRedirectsStoreArn output for the value to put in this GitHub Actions repo variable.",
     );
-    process.exit(1);
+    return;
   }
 
   let entries;

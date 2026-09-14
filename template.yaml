@@ -3516,14 +3516,14 @@ Resources:
     Type: AWS::CloudFront::KeyValueStore
     Properties:
       Name: !Sub bowling-scraper-learn-slug-redirects-${AWS::AccountId}
-      Comment: product_id (key) -> slug (value) for old-uuid -> new-slug 301 redirects, synced by bowlerdepot-learn/scripts/sync-slug-redirects.mjs
+      Comment: product_id -> slug map for old-uuid -> new-slug 301s (synced by sync-slug-redirects.mjs)
 
   LearnSitePrettyUrlFunction:
     Type: AWS::CloudFront::Function
     Properties:
       Name: !Sub bowling-scraper-learn-pretty-url-${AWS::AccountId}
       FunctionConfig:
-        Comment: Append /index.html to directory-shaped requests (prerendered article pages + SPA root); 301-redirect old bare-uuid article URLs to their new slug (036_product_articles_slug.sql)
+        Comment: Append /index.html to directory paths; 301-redirect old bare-uuid article URLs to their new slug (036)
         Runtime: cloudfront-js-2.0
         KeyValueStoreAssociations:
           - KeyValueStoreARN: !GetAtt LearnArticleSlugRedirectsStore.Arn
