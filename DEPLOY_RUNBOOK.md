@@ -12291,6 +12291,97 @@ No migration, no `template.yaml` change. Deploy via:
 cd admin-spa && npm run build   # then the usual S3/CloudFront admin-spa deploy step
 ```
 
+### 6ab.29. Article image-candidate picker: full-reload feel on select/delete, and cropped thumbnails
+
+Al: "can we make the ui/ux around the ai generated images better? they
+are constantly displayed incorrectly and when i click use this one it
+requires a full page refresh. deleting them also requires a full page
+refresh." Asked what "displayed incorrectly" meant specifically; Al
+flagged wrong/stale image as the leading theory but wasn't fully sure.
+Two real, independent bugs found and fixed; the wrong/stale-image
+symptom is most likely already covered by 6bd/6be's backend fixes (see
+note at the end).
+
+**Bug 1 -- select/delete felt like a full page reload.** Neither
+handler actually reloaded the browser, but both effectively behaved
+like one:
+
+- `ArticlesPage.tsx`'s `handleSelectCandidate`/`handleDeleteCandidate`
+  called `openPreview(previewId)` to refresh the candidate picker --
+  which blanks `previewArticle`/`previewCandidates` to `null`/`[]` and
+  flips `previewLoading` back to `true` *before* refetching. The entire
+  preview modal (hook, performance summary, FAQ, every candidate card,
+  not just the one image that changed) disappeared behind a loading
+  spinner and popped back in a moment later.
+- `ProductDetailPage.tsx`'s versions of the same two handlers called
+  this page's own `load()`, which sets `setLoading(true)` and refetches
+  SIX sections in parallel (product, videos, article, price sources,
+  price history, SKU stock history) -- every sub-tab on the page
+  flashed to its own loading skeleton just to update one image
+  candidate.
+
+Fixed by pulling the fetch-and-set logic out into a narrowly-scoped
+`refreshPreview`/`refreshArticleDetail` helper on each page (just
+`getArticle` + `listArticleImageCandidates`, writing straight into
+state with no intermediate blank-to-null/loading step), and pointing
+both handlers at that instead of the heavier existing reload path.
+`ArticlesPage.tsx`'s `handleSelectCandidate` still calls the list's own
+`load()` too, since the list-row thumbnail genuinely needs the
+article's updated flat `action_shot`/`product_shot` URL and only that
+fetch has it -- but that's the row list behind the modal, not the
+modal the admin is actively looking at, so it no longer reads as "the
+thing I'm using just vanished." `handleDeleteCandidate` drops `load()`
+entirely -- deleting a non-selected candidate (the only kind the UI
+lets you delete) never changes the article's flat columns, so the list
+row can't go stale from it.
+
+**Bug 2 -- candidate thumbnails were cropped.** `product_article_
+generator` generates `action_shot` at 16:9 and `product_shot` at 1:1
+(`_VARIANT_ASPECT_RATIOS` in `app.py`), but every candidate card and
+preview figure in `ArticlePreview` (`ArticlesPage.tsx`, shared by
+`ProductDetailPage.tsx`) force-fit BOTH into the same fixed `h-28`
+(112px tall) box with `object-cover`. That crops whichever dimension
+overflows the mismatched box: roughly 22% off the top/bottom of every
+product_shot (a square image squeezed into a wider box), and a smaller
+but real slice off the sides of every action_shot. Both crops are
+centered, not random, but product_shot's own framing spec
+(`build_gemini_scene_prompt`'s `size_clause`: ball fills 60-65% of the
+frame's *shorter* dimension, centered, even margin on all sides)
+assumes that shorter dimension stays fully visible -- top/bottom
+cropping quietly violates exactly that. Fixed by giving each variant's
+box the aspect ratio it was actually generated at (`aspect-video` for
+action_shot, `aspect-square` for product_shot, both core Tailwind 3
+utilities already available in this project) instead of one fixed
+height shared by both, so `object-cover` has nothing left to crop.
+
+**On "wrong/stale image shown"**: Al's leading theory for "displayed
+incorrectly." The two most likely root causes for that exact symptom
+were already fixed earlier the same day -- 6bd (S3 keys were
+deterministic across runs, so a regenerate could silently overwrite
+the bytes behind a prior, possibly-selected candidate's still-unchanged
+URL) and 6ba (the admin-spa preview itself wasn't cache-busting
+regenerated images, so the browser kept serving an old cached copy at
+an unversioned URL). Both require the corresponding backend/frontend
+deploys to actually be live to take effect -- if Al still sees a
+wrong/stale image after confirming both are deployed, that would mean
+a third, still-undiscovered mechanism and is worth a fresh report with
+a screenshot.
+
+`admin-spa` verified via `npx tsc -b` (clean, zero errors) -- `vite
+build`'s bundling step could not be verified in this sandbox (blocked
+package registry access prevented fetching the sandbox's own
+`@rollup/rollup-linux-arm64-gnu` optional native binary, an environment
+limitation unrelated to this change; the actual GitHub Actions deploy
+runs on its own runner and is unaffected). No new automated tests --
+same as 6ab.28, this is UI-state/layout-only with no new
+backend/logic branch to unit test.
+
+No migration, no `template.yaml` change. Deploy via:
+
+```bash
+cd admin-spa && npm run build   # then the usual S3/CloudFront admin-spa deploy step
+```
+
 ### 6ac. Learn-site restyle (Editorial Magazine + Space Grotesk) + a real Categories/article-types backend taxonomy (migration 031)
 
 Al, asked to add style options to the plain Learn site: "can we add

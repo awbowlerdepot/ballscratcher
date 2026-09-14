@@ -62,6 +62,26 @@ function cacheBustedImageUrl(url: string, version: string | null): string {
   return `${url}${sep}v=${encodeURIComponent(version)}`;
 }
 
+// REAL INCIDENT (2026-09-13, Al): "they are constantly displayed
+// incorrectly" -- product_article_generator generates action_shot at
+// 16:9 and product_shot at 1:1 (_VARIANT_ASPECT_RATIOS in app.py), but
+// every candidate card and preview figure below force-fit BOTH into the
+// same fixed h-28 (112px tall) box with object-cover, which crops
+// whichever dimension overflows: ~22% off the top/bottom of every
+// product_shot (a 1:1 image squeezed into a wider box) and a smaller but
+// real slice off the sides of every action_shot (a 16:9 image squeezed
+// into a narrower one). Neither crop is random -- it's centered -- but
+// product_shot's whole framing spec (build_gemini_scene_prompt's
+// size_clause: ball fills 60-65% of the frame's SHORTER dimension,
+// centered, even margin on all sides) assumes the shorter dimension is
+// still visible, which top/bottom cropping quietly violates. Fix: give
+// each variant's box the SAME aspect ratio it was actually generated at
+// (aspect-video for action_shot, aspect-square for product_shot) instead
+// of one fixed height for both, so object-cover has nothing left to crop.
+function aspectClassForVariant(variant: string): string {
+  return variant === "product_shot" ? "aspect-square" : "aspect-video";
+}
+
 // Ports admin-site/index.html's Articles tab -- AI-generated ball-review
 // articles (022_product_articles.sql), reviewed the same pending/
 // approved/rejected way as everything else, plus a BigCommerce sync
@@ -255,12 +275,39 @@ export default function ArticlesPage() {
       .finally(() => setPreviewLoading(false));
   }
 
+  // REAL INCIDENT (2026-09-13, Al): "when i click use this one it requires
+  // a full page refresh. deleting them also requires a full page refresh."
+  // Neither handler below actually reloaded the browser page, but
+  // openPreview blanks previewArticle/previewCandidates to null/[] and
+  // flips previewLoading back to true before refetching -- so the entire
+  // preview modal (hook, performance summary, FAQ, every candidate card,
+  // not just the one image that changed) disappears behind a full loading
+  // spinner and pops back in a moment later, which reads exactly like a
+  // page reload even though it's just this one modal. This helper is
+  // openPreview's fetch half without the blank-to-null/loading part: it
+  // overwrites previewArticle/previewCandidates in place once the fresh
+  // data arrives, so React only re-renders what actually changed (the
+  // updated candidate's "selected" badge, or one fewer card after a
+  // delete) instead of the whole modal flickering through empty state.
+  function refreshPreview(id: string) {
+    return Promise.all([getArticle(id), listArticleImageCandidates(id)]).then(([article, candidates]) => {
+      setPreviewArticle(article);
+      setPreviewCandidates(candidates);
+    });
+  }
+
   async function handleSelectCandidate(candidateId: string) {
     if (!previewId) return;
     try {
       await selectArticleImageCandidate(candidateId);
       show("Image updated.", "ok");
-      openPreview(previewId);
+      await refreshPreview(previewId);
+      // This list-row thumbnail genuinely does need the article's flat
+      // action_shot/product_shot URL, which only this refetch has --
+      // still a full list reload (DataTable's own loading state), but
+      // that's the row list behind the modal, not the modal the admin is
+      // actually looking at, so it doesn't carry the same "the thing I'm
+      // using just vanished" feeling the modal blanking did.
       load();
     } catch (err) {
       show(err instanceof Error ? err.message : "Failed to select image.", "danger");
@@ -279,7 +326,11 @@ export default function ArticlesPage() {
     try {
       await deleteArticleImageCandidate(candidateId);
       show("Candidate deleted.", "ok");
-      openPreview(previewId);
+      // No load() here, same as before this fix -- deleting a non-selected
+      // candidate never changes the article's flat action_shot/
+      // product_shot columns (the backend rejects deleting the selected
+      // one outright), so the list row's own thumbnail can't be stale.
+      await refreshPreview(previewId);
     } catch (err) {
       show(err instanceof Error ? err.message : "Failed to delete candidate.", "danger");
     }
@@ -637,7 +688,7 @@ export function ArticlePreview({
                       src={cacheBustedImageUrl(c.image_url, c.created_at)}
                       alt=""
                       loading="lazy"
-                      className="mb-1.5 h-28 w-full rounded object-cover"
+                      className={`mb-1.5 w-full rounded object-cover ${aspectClassForVariant(variant)}`}
                     />
                     <div className="mb-1.5 truncate text-xs text-ink-500" title={c.model_id}>
                       {c.model_id}
@@ -679,7 +730,7 @@ export function ArticlePreview({
               <img
                 src={cacheBustedImageUrl(article.action_shot_image_url, article.images_generated_at)}
                 alt="Action shot"
-                className="h-28 w-full rounded object-cover"
+                className={`w-full rounded object-cover ${aspectClassForVariant("action_shot")}`}
               />
               <figcaption className="text-center text-xs text-ink-500">Action shot</figcaption>
             </figure>
@@ -689,7 +740,7 @@ export function ArticlePreview({
               <img
                 src={cacheBustedImageUrl(article.product_shot_image_url, article.images_generated_at)}
                 alt="Product shot"
-                className="h-28 w-full rounded object-cover"
+                className={`w-full rounded object-cover ${aspectClassForVariant("product_shot")}`}
               />
               <figcaption className="text-center text-xs text-ink-500">Product shot</figcaption>
             </figure>

@@ -270,6 +270,38 @@ export default function ProductDetailPage() {
   // result feeds the other) -- fired via Promise.all now that this
   // account isn't concurrency-constrained (see 6ab.27 in DEPLOY_RUNBOOK.md
   // and load()'s own comment above).
+  //
+  // REAL INCIDENT (2026-09-13, Al): "when i click use this one it requires
+  // a full page refresh. deleting them also requires a full page refresh."
+  // handleSelectCandidate/handleDeleteCandidate below used to call this
+  // page's own load(), which sets setLoading(true) and refetches SIX
+  // sections (product, videos, article, price sources, price history, SKU
+  // stock history) -- every sub-tab on the page flashes to its loading
+  // skeleton just to update one image candidate. Pulled the fetch itself
+  // out into refreshArticleDetail so both this effect and those two
+  // handlers can call the same narrowly-scoped refresh (article +
+  // candidates only, no page-wide setLoading), instead of each handler
+  // reaching for the sledgehammer load().
+  // Fetch-only (no state writes) so both the effect below (which needs to
+  // guard against a stale response landing after articleItem.id has
+  // already changed again) and the two handlers further down (which don't
+  // need that guard -- they're one-off user actions, not a reaction to a
+  // changing dependency) can each decide when it's safe to apply the
+  // result.
+  function fetchArticleDetail(articleId: string) {
+    return Promise.all([getArticle(articleId), listArticleImageCandidates(articleId)]).then(([full, candidates]) => ({
+      full,
+      candidates,
+    }));
+  }
+
+  function refreshArticleDetail(articleId: string) {
+    return fetchArticleDetail(articleId).then(({ full, candidates }) => {
+      setArticle(full);
+      setArticleCandidates(candidates);
+    });
+  }
+
   useEffect(() => {
     if (!articleItem) {
       setArticle(null);
@@ -277,19 +309,15 @@ export default function ProductDetailPage() {
       return;
     }
     let cancelled = false;
-    (async () => {
-      try {
-        const [full, candidates] = await Promise.all([
-          getArticle(articleItem.id),
-          listArticleImageCandidates(articleItem.id),
-        ]);
+    fetchArticleDetail(articleItem.id)
+      .then(({ full, candidates }) => {
         if (cancelled) return;
         setArticle(full);
         setArticleCandidates(candidates);
-      } catch (err) {
+      })
+      .catch((err) => {
         if (!cancelled) show(err instanceof Error ? `article detail: ${err.message}` : "Failed to load article detail.", "danger");
-      }
-    })();
+      });
     return () => {
       cancelled = true;
     };
@@ -609,11 +637,19 @@ export default function ProductDetailPage() {
     }
   }
 
+  // REAL INCIDENT (2026-09-13, Al): "when i click use this one it requires
+  // a full page refresh" -- this used to call load(), which reloads all
+  // six sections of this page (see load()'s own comment) just to update
+  // one image candidate. refreshArticleDetail (defined above, next to the
+  // effect that also uses it) only touches article/articleCandidates
+  // state, so the rest of the page -- product overview, videos, pricing,
+  // SKU stock -- never flashes to its own loading skeleton for this.
   async function handleSelectCandidate(candidateId: string) {
+    if (!articleItem) return;
     try {
       await selectArticleImageCandidate(candidateId);
       show("Image updated.", "ok");
-      load();
+      await refreshArticleDetail(articleItem.id);
     } catch (err) {
       show(err instanceof Error ? err.message : "Failed to select image.", "danger");
     }
@@ -621,13 +657,15 @@ export default function ProductDetailPage() {
 
   // Same feature as ArticlesPage's own handleDeleteCandidate -- kept here
   // too since this page renders the same ArticlePreview candidate picker
-  // (see the ArticlePreview import comment above).
+  // (see the ArticlePreview import comment above). Same full-page-refresh
+  // fix as handleSelectCandidate just above.
   async function handleDeleteCandidate(candidateId: string) {
+    if (!articleItem) return;
     if (!window.confirm("Delete this image candidate? This can't be undone.")) return;
     try {
       await deleteArticleImageCandidate(candidateId);
       show("Candidate deleted.", "ok");
-      load();
+      await refreshArticleDetail(articleItem.id);
     } catch (err) {
       show(err instanceof Error ? err.message : "Failed to delete candidate.", "danger");
     }
