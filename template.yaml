@@ -3497,18 +3497,73 @@ Resources:
   # CustomErrorResponses below still catches and rewrites to the SPA
   # shell -- this function only ever ADDS a suffix, it can't hide a page
   # that doesn't otherwise 404.
+  # 036_product_articles_slug.sql / Al: "can we make the slugs for the
+  # pages more human readable... " with the follow-up choice "301
+  # redirect old -> new (Recommended)" for what happens to the OLD bare-
+  # uuid /articles/<product_id>/ URLs once slugs exist (they may already
+  # be indexed by Google or linked externally). A CloudFront Function
+  # has no database access, so the product_id -> slug mapping this
+  # redirect needs lives in a CloudFront KeyValueStore instead -- a
+  # small, fast, edge-readable key/value store built exactly for this
+  # kind of per-request lookup inside a Function (unlike Lambda@Edge,
+  # no extra latency/cost tier). Populated by bowlerdepot-learn/scripts/
+  # sync-slug-redirects.mjs, run as a step of .github/workflows/deploy-
+  # learn-site.yml right after prerender.ts writes redirect-map.json
+  # (product_id -> slug for every article that currently has one) --
+  # see that script's own header comment for the sync mechanics
+  # (DescribeKeyValueStore for the ETag, batched UpdateKeys calls).
+  LearnArticleSlugRedirectsStore:
+    Type: AWS::CloudFront::KeyValueStore
+    Properties:
+      Name: !Sub bowling-scraper-learn-slug-redirects-${AWS::AccountId}
+      Comment: product_id (key) -> slug (value) for old-uuid -> new-slug 301 redirects, synced by bowlerdepot-learn/scripts/sync-slug-redirects.mjs
+
   LearnSitePrettyUrlFunction:
     Type: AWS::CloudFront::Function
     Properties:
       Name: !Sub bowling-scraper-learn-pretty-url-${AWS::AccountId}
       FunctionConfig:
-        Comment: Append /index.html to directory-shaped requests (prerendered article pages + SPA root)
+        Comment: Append /index.html to directory-shaped requests (prerendered article pages + SPA root); 301-redirect old bare-uuid article URLs to their new slug (036_product_articles_slug.sql)
         Runtime: cloudfront-js-2.0
+        KeyValueStoreAssociations:
+          - KeyValueStoreARN: !GetAtt LearnArticleSlugRedirectsStore.Arn
       AutoPublish: true
       FunctionCode: |
-        function handler(event) {
+        import cf from 'cloudfront';
+
+        var UUID_ARTICLE_RE = /^\/articles\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/?$/i;
+
+        async function handler(event) {
             var request = event.request;
             var uri = request.uri;
+
+            // 036_product_articles_slug.sql: an old bare-uuid article
+            // URL gets a real 301 to its new /articles/<slug>/ URL when
+            // the KeyValueStore has that mapping (see this resource's
+            // own comment for how it gets populated). No match in the
+            // store (not yet synced for this article, or genuinely
+            // unknown) falls through to the normal handling below --
+            // NOT a broken link, just not redirected yet.
+            var uuidMatch = uri.match(UUID_ARTICLE_RE);
+            if (uuidMatch) {
+                try {
+                    var kvsHandle = cf.kvs();
+                    var slug = await kvsHandle.get(uuidMatch[1].toLowerCase());
+                    if (slug) {
+                        return {
+                            statusCode: 301,
+                            statusDescription: 'Moved Permanently',
+                            headers: {
+                                location: { value: '/articles/' + slug + '/' }
+                            }
+                        };
+                    }
+                } catch (e) {
+                    // Key not found (ParameterNotFound) or any other KVS
+                    // error -- fall through to normal handling, same as
+                    // a genuine cache miss.
+                }
+            }
 
             // Already a real asset request (hashed JS/CSS, images,
             // /robots.txt, /sitemap.xml, ...) -- leave it alone.
@@ -3626,6 +3681,17 @@ Resources:
                 Action:
                   - cloudfront:CreateInvalidation
                 Resource: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${LearnSiteDistribution}
+              # 036_product_articles_slug.sql -- lets scripts/sync-slug-
+              # redirects.mjs (a step of deploy-learn-site.yml, right
+              # after `npm run build`) push the current product_id ->
+              # slug mapping into LearnArticleSlugRedirectsStore above.
+              # DescribeKeyValueStore is needed first to read the ETag
+              # UpdateKeys' own optimistic-concurrency If-Match requires.
+              - Effect: Allow
+                Action:
+                  - cloudfront-keyvaluestore:DescribeKeyValueStore
+                  - cloudfront-keyvaluestore:UpdateKeys
+                Resource: !GetAtt LearnArticleSlugRedirectsStore.Arn
 
   # --- Admin SPA hosting (task #465-473) ----------------------------------
   #
@@ -4214,6 +4280,12 @@ Outputs:
   LearnSiteDeployRoleArn:
     Condition: HasGitHubRepo
     Value: !GetAtt LearnSiteDeployRole.Arn
+  LearnArticleSlugRedirectsStoreArn:
+    # Al needs this to set the LEARN_ARTICLE_SLUG_KVS_ARN GitHub Actions
+    # repo variable deploy-learn-site.yml reads (see that workflow's own
+    # comment) -- scripts/sync-slug-redirects.mjs uses it to push the
+    # product_id -> slug mapping into this KeyValueStore.
+    Value: !GetAtt LearnArticleSlugRedirectsStore.Arn
   AdminSiteBucketName:
     Value: !Ref AdminSiteBucket
   AdminSiteDistributionId:

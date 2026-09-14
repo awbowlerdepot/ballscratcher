@@ -120,6 +120,27 @@ def get_categories():
     return {"items": service.list_categories(conn)}
 
 
+@app.get("/articles/{slug}")
+def get_article_by_slug(slug: str):
+    # Human-readable-slug counterpart to GET /products/{product_id}/
+    # article below (036_product_articles_slug.sql -- Al: "can we make
+    # the slugs for the pages more human readable"). Resolves slug ->
+    # product_id via service.resolve_product_id_by_slug, then defers
+    # entirely to get_product_article for the actual payload -- see
+    # both functions' docstrings. Declared here (grouped with /articles
+    # and /categories above) rather than right before /products/
+    # {product_id} below since this is its own "/articles/..." path,
+    # not a "/products/..." one -- no route-ordering hazard either way.
+    conn = service.get_db_connection()
+    product_id = service.resolve_product_id_by_slug(conn, slug)
+    if product_id is None:
+        raise HTTPException(status_code=404, detail="Article not found")
+    result = service.get_product_article(conn, product_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Product not found")
+    return result
+
+
 @app.get("/products/{product_id}")
 def get_product(product_id: str):
     conn = service.get_db_connection()

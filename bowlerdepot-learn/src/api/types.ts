@@ -31,6 +31,12 @@ export interface Category {
 
 export interface ArticleCard {
   article_id: string;
+  // Human-readable URL slug (036_product_articles_slug.sql), e.g.
+  // "storm-phaze-ii-pearl" -- see client.ts's articleHref() for the
+  // slug-then-product_id fallback every link in this app should use
+  // (null only for an approved article that predates that migration
+  // and hasn't been through scripts/backfill_article_slugs.py yet).
+  slug?: string | null;
   title: string;
   hook: string;
   generated_at?: string | null;
@@ -118,6 +124,9 @@ export interface BrandLineupItem {
   product_id: string;
   product_name: string;
   article_id: string;
+  // See ArticleCard.slug's own comment -- client.ts's articleHref()
+  // handles the null-fallback for every rail consistently.
+  slug?: string | null;
   title: string;
   hook?: string | null;
   // The sibling's OWN article's AI-generated product shot, preferred
@@ -142,6 +151,9 @@ export interface RelatedReview {
   product_id: string;
   product_name: string;
   article_id: string;
+  // See ArticleCard.slug's own comment -- client.ts's articleHref()
+  // handles the null-fallback for every rail consistently.
+  slug?: string | null;
   title: string;
   hook?: string | null;
   reviewed_at?: string | null;
@@ -188,6 +200,11 @@ export interface FeaturedVideo {
 
 export interface ArticleDetail {
   id: string;
+  // See ArticleCard.slug's own comment. The detail page uses this (via
+  // client.ts's articleHref()) to canonicalize the URL bar to the slug
+  // path when a reader lands on the old bare-product_id route -- see
+  // ArticleDetailPage.tsx's fetch logic.
+  slug?: string | null;
   title: string;
   hook: string;
   performance_summary?: string | null;

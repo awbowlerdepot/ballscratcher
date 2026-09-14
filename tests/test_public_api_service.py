@@ -536,6 +536,17 @@ def test_list_articles_selects_product_shot_image_url():
     assert "pa.product_shot_image_url" in query
 
 
+def test_list_articles_selects_slug():
+    """036_product_articles_slug.sql -- the Learn index card needs this to
+    link to the human-readable article URL (see client.ts's articleHref())
+    rather than falling back to the bare product_id."""
+    conn = _QueryCapturingConnection()
+    service.list_articles(conn)
+
+    query = conn.cursor().queries[0]
+    assert "pa.slug" in query
+
+
 def test_list_articles_selects_first_published_at():
     """033_product_articles_first_published_at.sql -- Al: 'add published
     dates and last updated dates to the articles.' The Learn index card
@@ -1006,15 +1017,18 @@ class _FakeCursor:
                     p.get("video_reviews_summary"), p.get("video_reviews_summary_video_count", 0),
                 )
 
-        elif q.startswith("select p.id as product_id, pa.title, pa.hook,"):
+        elif q.startswith("select p.id as product_id, pa.slug, pa.title, pa.hook,"):
             # get_article_hero_by_bigcommerce_product_id -- same
             # bowlerdepot_products match_status='matched' +
             # products.published gating as video-summary above, plus a
             # product_articles row (keyed by product_id, see that dict's
             # own header comment) that must be status='approved'.
+            # 036_product_articles_slug.sql added pa.slug to this select
+            # (learn_url is built from it, falling back to the bare
+            # product_id -- see this function's own docstring).
             bigcommerce_product_id = params[0]
             match = self.db["bowlerdepot_products"].get(bigcommerce_product_id)
-            self._description = [("product_id",), ("title",), ("hook",),
+            self._description = [("product_id",), ("slug",), ("title",), ("hook",),
                                   ("action_shot_image_url",), ("product_shot_image_url",)]
             self._result_row = None
             if match is not None and match["match_status"] == "matched":
@@ -1022,7 +1036,7 @@ class _FakeCursor:
                 article = self.db.get("product_articles", {}).get(match["product_id"])
                 if p and p.get("published") and article and article.get("status") == "approved":
                     self._result_row = (
-                        match["product_id"], article.get("title"), article.get("hook"),
+                        match["product_id"], article.get("slug"), article.get("title"), article.get("hook"),
                         article.get("action_shot_image_url"), article.get("product_shot_image_url"),
                     )
 
@@ -1041,11 +1055,11 @@ class _FakeCursor:
             self._description = [("id",)]
             self._result_row = (pid,) if (p is not None and p["published"]) else None
 
-        elif q.startswith("select pa.id, pa.title, pa.hook, pa.performance_summary, pa.who_should_buy, pa.who_should_skip,"):
+        elif q.startswith("select pa.id, pa.slug, pa.title, pa.hook, pa.performance_summary, pa.who_should_buy, pa.who_should_skip,"):
             pid = params[0]
             article = self.db.get("product_articles", {}).get(pid)
             self._description = [(c,) for c in (
-                "id", "title", "hook", "performance_summary", "who_should_buy", "who_should_skip",
+                "id", "slug", "title", "hook", "performance_summary", "who_should_buy", "who_should_skip",
                 "pros", "cons", "buying_tips", "verdict", "faq", "sibling_product_ids",
                 "source_video_ids", "generated_at", "reviewed_at", "first_published_at",
                 "action_shot_image_url", "product_shot_image_url",
@@ -1062,8 +1076,9 @@ class _FakeCursor:
                 # first_published_at (033_product_articles_first_published_
                 # at.sql) same treatment -- absent/None is the normal
                 # pre-migration case, a test that cares sets it directly.
+                # slug (036_product_articles_slug.sql) same treatment too.
                 self._result_row = (
-                    article["id"], article.get("title"), article.get("hook"),
+                    article["id"], article.get("slug"), article.get("title"), article.get("hook"),
                     article.get("performance_summary"), article.get("who_should_buy", []),
                     article.get("who_should_skip", []), article.get("pros", []), article.get("cons", []),
                     article.get("buying_tips"), article.get("verdict"), article.get("faq", []),
@@ -1110,7 +1125,7 @@ class _FakeCursor:
             # article's heuristic sibling matches.
             brand_id, exclude_id = params
             self._description = [(c,) for c in (
-                "product_id", "product_name", "article_id", "title", "hook", "image_url",
+                "product_id", "product_name", "article_id", "slug", "title", "hook", "image_url",
             )]
             rows = []
             for pid, p in self.db["products"].items():
@@ -1120,7 +1135,7 @@ class _FakeCursor:
                 if pa is None or pa.get("status") != "approved":
                     continue
                 rows.append((
-                    pid, p["name"], pa["id"], pa.get("title"), pa.get("hook"),
+                    pid, p["name"], pa["id"], pa.get("slug"), pa.get("title"), pa.get("hook"),
                     _derive_article_image_url(self.db, pid, p, pa),
                     p.get("demand_score", 0),
                 ))
@@ -1128,8 +1143,8 @@ class _FakeCursor:
             # (stable sort keeps it as the tie-break), then sorted by
             # demand_score descending.
             rows.sort(key=lambda r: r[1])
-            rows.sort(key=lambda r: r[6], reverse=True)
-            self._result_rows = [r[:6] for r in rows[:30]]
+            rows.sort(key=lambda r: r[7], reverse=True)
+            self._result_rows = [r[:7] for r in rows[:30]]
 
         elif q.startswith("select p.id as product_id, p.name as product_name,"):
             # related_reviews (merged rail, formerly two separate rails --
@@ -1141,7 +1156,7 @@ class _FakeCursor:
             # article lookup uses.
             wanted = set(params[0])
             self._description = [(c,) for c in (
-                "product_id", "product_name", "article_id", "title", "hook", "reviewed_at",
+                "product_id", "product_name", "article_id", "slug", "title", "hook", "reviewed_at",
                 "image_url",
             )]
             rows = []
@@ -1153,7 +1168,7 @@ class _FakeCursor:
                 if sib_article is None or sib_article.get("status") != "approved":
                     continue
                 rows.append((
-                    pid, p["name"], sib_article["id"], sib_article.get("title"), sib_article.get("hook"),
+                    pid, p["name"], sib_article["id"], sib_article.get("slug"), sib_article.get("title"), sib_article.get("hook"),
                     sib_article.get("reviewed_at"),
                     _derive_article_image_url(self.db, pid, p, sib_article),
                 ))
@@ -1161,8 +1176,22 @@ class _FakeCursor:
             # first (stable sort keeps it as the tie-break), then group/
             # order by reviewed_at descending with None pushed last.
             rows.sort(key=lambda r: r[1])
-            rows.sort(key=lambda r: (r[5] is not None, r[5] or ""), reverse=True)
+            rows.sort(key=lambda r: (r[6] is not None, r[6] or ""), reverse=True)
             self._result_rows = rows
+
+        elif q == "select product_id from product_articles where slug = %s and status = 'approved'":
+            # resolve_product_id_by_slug (036_product_articles_slug.sql) --
+            # a slug is unique across product_articles (migration adds a
+            # unique constraint), so this fixture just linear-scans the
+            # same flat db["product_articles"] dict every other article
+            # branch here uses (keyed by product_id).
+            (slug,) = params
+            self._description = [("product_id",)]
+            self._result_row = None
+            for pid, article in self.db.get("product_articles", {}).items():
+                if article.get("slug") == slug and article.get("status") == "approved":
+                    self._result_row = (pid,)
+                    break
 
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
@@ -1744,6 +1773,9 @@ def test_get_video_summary_by_bigcommerce_product_id_matched_but_no_summary_yet(
 # the bowlerdepot.com product pages for these balls." ---
 
 def test_get_article_hero_by_bigcommerce_product_id_matched_and_approved():
+    """No slug yet (pre-036_product_articles_slug.sql backfill window) --
+    learn_url falls back to the bare product_id, same as before that
+    migration."""
     db = _fresh_db()
     pid = _seed_published_current_product(db, pid="prod-1")
     _seed_bowlerdepot_match(db, pid, "4390", match_status="matched")
@@ -1763,6 +1795,23 @@ def test_get_article_hero_by_bigcommerce_product_id_matched_and_approved():
         "hero_image_url": "https://img/action.png",
         "learn_url": f"https://learn.bowlerdepot.com/articles/{pid}",
     }
+
+
+def test_get_article_hero_by_bigcommerce_product_id_uses_slug_when_present():
+    """036_product_articles_slug.sql -- once an article has a slug,
+    learn_url must use it instead of the bare product_id."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_bowlerdepot_match(db, pid, "4390", match_status="matched")
+    db["product_articles"][pid] = {
+        "status": "approved", "slug": "storm-fury-solid", "title": "The Fury: A Heavy-Oil Workhorse",
+        "hook": "Picture this...", "action_shot_image_url": "https://img/action.png",
+        "product_shot_image_url": "https://img/product.png",
+    }
+
+    result = service.get_article_hero_by_bigcommerce_product_id(_FakeConnection(db), "4390")
+
+    assert result["learn_url"] == "https://learn.bowlerdepot.com/articles/storm-fury-solid"
 
 
 def test_get_article_hero_by_bigcommerce_product_id_falls_back_to_product_shot():
@@ -1939,6 +1988,71 @@ def test_get_product_article_product_status_reflects_retired_ball():
     result = service.get_product_article(_FakeConnection(db), pid)
 
     assert result["article"]["product"]["status"] == "retired"
+
+
+def test_get_product_article_includes_slug():
+    """036_product_articles_slug.sql -- included alongside everything
+    else here so the Learn frontend can canonicalize the URL bar (see
+    resolve_product_id_by_slug's own docstring for the pairing route)."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid, slug="storm-fury-solid")
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result["article"]["slug"] == "storm-fury-solid"
+
+
+def test_get_product_article_slug_null_for_pre_migration_article():
+    """An approved article that predates 036_product_articles_slug.sql
+    and hasn't been through scripts/backfill_article_slugs.py yet --
+    must come back None, not KeyError."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid)
+
+    result = service.get_product_article(_FakeConnection(db), pid)
+
+    assert result["article"]["slug"] is None
+
+
+# --- resolve_product_id_by_slug (036_product_articles_slug.sql) -- backs
+# GET /articles/{slug}, the slug-based counterpart to GET /products/{id}/
+# article above. Thin lookup: resolves a slug to a product_id, delegating
+# everything else to get_product_article (see that function's own tests
+# above for the full response shape once resolved).
+
+def test_resolve_product_id_by_slug_returns_matching_product_id():
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid, slug="storm-fury-solid")
+
+    result = service.resolve_product_id_by_slug(_FakeConnection(db), "storm-fury-solid")
+
+    assert result == pid
+
+
+def test_resolve_product_id_by_slug_returns_none_for_unknown_slug():
+    db = _fresh_db()
+
+    result = service.resolve_product_id_by_slug(_FakeConnection(db), "does-not-exist")
+
+    assert result is None
+
+
+def test_resolve_product_id_by_slug_returns_none_for_pending_articles_slug():
+    """A slug is only ever set on approval (see admin_api.approve_
+    article's docstring) so this shouldn't normally happen, but the
+    query's own status='approved' gate is tested directly here anyway --
+    same 'don't let a visitor distinguish not-found from not-yet-
+    approved' posture as everywhere else in this module."""
+    db = _fresh_db()
+    pid = _seed_published_current_product(db, pid="prod-1")
+    _seed_approved_article(db, pid, slug="storm-fury-solid", status="pending")
+
+    result = service.resolve_product_id_by_slug(_FakeConnection(db), "storm-fury-solid")
+
+    assert result is None
 
 
 def test_get_product_article_includes_category_and_article_type_when_mapped():

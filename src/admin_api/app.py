@@ -609,6 +609,26 @@ def backfill_finish_categories():
         conn.close()
 
 
+@app.post("/admin/backfill-article-slugs")
+def backfill_article_slugs():
+    # Populates product_articles.slug (migration 036) for already-
+    # approved rows that predate that migration -- see service.
+    # backfill_article_slugs/generate_unique_article_slug's docstrings
+    # and 036_product_articles_slug.sql's header comment for the full
+    # "make the slugs human readable" story (Al, 2026-09-13). No
+    # request body, no path param: catalog-wide by design, same shape
+    # as backfill-finish-categories above. Unlike that one, THIS is
+    # NULL-only and safe to re-run purely because each run only shrinks
+    # the backlog -- a slug, once set, is never overwritten (see that
+    # function's docstring on why a changing slug would break external
+    # links/the 301-redirect mapping).
+    conn = service.get_db_connection()
+    try:
+        return service.backfill_article_slugs(conn)
+    finally:
+        conn.close()
+
+
 @app.post("/admin/dedupe-price-sources")
 def dedupe_price_sources():
     # One-off cleanup for a real duplication bug -- Al: "there are

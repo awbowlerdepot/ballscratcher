@@ -91,6 +91,28 @@ export function getProductArticle(productId: string): Promise<ProductArticleResp
   return apiGet<ProductArticleResponse>(`/products/${encodeURIComponent(productId)}/article`);
 }
 
+// Human-readable-slug counterpart (036_product_articles_slug.sql -- Al:
+// "can we make the slugs for the pages more human readable"). Used by
+// the article route going forward; ArticleDetailPage.tsx falls back to
+// getProductArticle above (treating the URL param as a bare product_id)
+// when this 404s, so an old bookmark/external link still resolves
+// client-side even ahead of/independent from the CloudFront 301
+// redirect (see template.yaml's LearnArticleSlugRedirectsStore).
+export function getArticleBySlug(slug: string): Promise<ProductArticleResponse> {
+  return apiGet<ProductArticleResponse>(`/articles/${encodeURIComponent(slug)}`);
+}
+
+// Every article link in this app should go through here rather than
+// building `/articles/${x}` inline -- picks the human-readable slug
+// when present (036_product_articles_slug.sql), falling back to the
+// bare product_id only for an approved article that predates that
+// migration and hasn't been through scripts/backfill_article_slugs.py
+// yet (see ArticleCard.slug's own comment). One place to change if the
+// URL scheme ever changes again.
+export function articleHref(article: { slug?: string | null; product_id: string }): string {
+  return `/articles/${encodeURIComponent(article.slug || article.product_id)}`;
+}
+
 // BowlerDepot's storefront doesn't expose a stable per-product URL from
 // this project's data (bowlerdepot_products only stores the BigCommerce
 // numeric product id/SKU -- see 001_init_schema.sql -- not a resolvable

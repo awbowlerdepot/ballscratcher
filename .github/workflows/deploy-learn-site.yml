@@ -70,3 +70,19 @@ jobs:
 
       - name: Invalidate CloudFront cache
         run: aws cloudfront create-invalidation --distribution-id "${{ vars.LEARN_SITE_DISTRIBUTION_ID }}" --paths "/*"
+
+      # 036_product_articles_slug.sql / Al: "301 redirect old -> new
+      # (Recommended)" -- pushes redirect-map.json (written by the
+      # prerender step above, at the project root, NOT inside dist/ so
+      # the S3 sync above never uploads it as a public file) into the
+      # CloudFront KeyValueStore template.yaml's
+      # LearnArticleSlugRedirectsStore resource creates. See that
+      # script's own header comment for the batching/ETag mechanics.
+      # LEARN_ARTICLE_SLUG_KVS_ARN is template.yaml's
+      # LearnArticleSlugRedirectsStoreArn output -- Al needs to add it as
+      # a repo variable once, the same way every other vars.* value in
+      # this file already was.
+      - name: Sync article slug redirects to CloudFront KeyValueStore
+        env:
+          LEARN_ARTICLE_SLUG_KVS_ARN: ${{ vars.LEARN_ARTICLE_SLUG_KVS_ARN }}
+        run: node scripts/sync-slug-redirects.mjs

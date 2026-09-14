@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { formatArticleDate, resizedImageUrl } from "../api/client";
+import { articleHref, formatArticleDate, resizedImageUrl } from "../api/client";
 import type { ArticleCard as ArticleCardType } from "../api/types";
 
 export default function ArticleCard({ article }: { article: ArticleCardType }) {
@@ -22,9 +22,10 @@ export default function ArticleCard({ article }: { article: ArticleCardType }) {
   // No "Updated" on the card -- that distinction matters once a reader's
   // already on the article, not while skimming the index.
   const publishedLabel = formatArticleDate(article.first_published_at ?? article.reviewed_at);
+  const href = articleHref(article);
   return (
     <div className="group">
-      <Link to={`/articles/${article.product_id}`} className="block overflow-hidden rounded-md bg-paper-border/40">
+      <Link to={href} className="block overflow-hidden rounded-md bg-paper-border/40">
         {cardImage ? (
           <img
             src={cardImage}
@@ -50,7 +51,7 @@ export default function ArticleCard({ article }: { article: ArticleCardType }) {
           ) : null}
         </div>
         <Link
-          to={`/articles/${article.product_id}`}
+          to={href}
           className="font-display text-lg font-semibold leading-snug text-ink no-underline group-hover:text-accent"
         >
           {article.title}

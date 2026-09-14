@@ -15450,6 +15450,203 @@ ping command to run here anymore; Search Console's own "Sitemaps" page
 (or the Search Console API) is the only way to check whether Google
 has fetched/processed a given sitemap file.
 
+### 6bg. Human-readable article slugs + a CloudFront 301 for old bare-uuid URLs (migration 036)
+
+Al: "can we make the slugs for the pages more human readable, does
+google still prefer that?" Confirmed via a web search that Google's own
+guidance still recommends descriptive URL paths over opaque
+IDs -- `/articles/<uuid>/` (the URL shape since 6.viii) genuinely was
+working against SEO, not just cosmetically ugly.
+
+Two design forks, both resolved by Al via explicit choice before any
+code was written:
+
+- **Slug format: brand + full product name** (e.g.
+  `/articles/storm-phaze-ii-pearl/`), over a shorter name-only slug or
+  an id-suffixed one. Deliberately keeps finish/color qualifier words
+  (Solid/Pearl/Hybrid) IN the slug rather than stripping them the way
+  022's sibling-grouping heuristic does -- this catalog has real
+  same-name-different-finish collisions (e.g. multiple "Phaze II"
+  variants), and dropping the qualifier would make brand+name alone
+  collide constantly. `generate_unique_article_slug` (below) still
+  backstops the rare case brand+full-name+qualifier isn't unique either.
+- **Old-URL handling: 301 redirect old to new**, not a cold switch. The
+  bare-uuid URLs may already be indexed by Google or linked externally
+  (the BowlerDepot article-hero embed, 6ar, stores `learn_url` values
+  read live off `get_article_hero_by_bigcommerce_product_id` rather than
+  a hardcoded template, so it self-heals on next page load, but a
+  third-party bookmark or an already-crawled Google result won't).
+
+**036_product_articles_slug.sql**: `alter table product_articles add
+column slug text unique` -- nullable (existing approved rows don't get
+one until backfilled, see below) with a unique constraint (not just an
+index) so two articles can never collide at the database level even if
+application logic somehow let them try.
+
+**Slug generation (`admin_api/service.py`)**:
+
+- `slugify_product_name(brand_name, product_name)` -- lowercases
+  `f"{brand_name} {product_name}"`, collapses any run of non-alphanumeric
+  characters into a single hyphen, strips leading/trailing hyphens. Pure
+  string logic, e.g. `"Storm", "Phaze II Pearl"` -> `"storm-phaze-ii-pearl"`;
+  an apostrophe or any other punctuation just collapses into the
+  surrounding hyphen run, no special-casing needed.
+- `generate_unique_article_slug(conn, brand_name, product_name)` --
+  wraps the above with a collision-safety loop: on an actual DB
+  collision (`select 1 from product_articles where slug = %s`), appends
+  `-2`, `-3`, etc. until it finds a free one. No visible suffix in the
+  normal case.
+- `approve_article` -- slug gets the EXACT same "set once, on first
+  approval, never touched again" treatment `first_published_at` already
+  gets (033): the initial select now also fetches the article's current
+  slug (joined to `products`/`brands` for the name), and the UPDATE only
+  computes+writes a NEW slug when the existing one is null. A
+  regenerate-then-re-approve cycle (which flips `status` back to
+  `'pending'`) never changes an already-set slug -- changing it later
+  would silently break any external link, bookmark, or search-index
+  entry already pointing at the old one, and orphan the 301-redirect
+  mapping below.
+- `backfill_article_slugs(conn)` -- one-shot (and safely re-runnable)
+  catalog-wide pass for already-'approved' rows that predate this
+  migration, same "single bulk server-side pass" shape as
+  `backfill_finish_categories`/`backfill_last_video_discovery_at`.
+  NULL-only guard (never overwrites an existing slug, unlike
+  `backfill_finish_categories`'s intentional always-reclassify posture).
+  New route: `POST /admin/backfill-article-slugs`, no body/path param --
+  mirrors `/admin/backfill-finish-categories` exactly, including no
+  admin-spa UI button (same "single bulk-POST endpoint" precedent as
+  that migration's own 6aw writeup). `scripts/backfill_article_slugs.py`
+  is the standalone runner, same retry/logging shape as
+  `scripts/backfill_finish_categories.py`.
+
+**public_api**: new `GET /articles/{slug}` route, backed by
+`resolve_product_id_by_slug(conn, slug)` (`select product_id from
+product_articles where slug = %s and status = 'approved'`) which then
+delegates entirely to the EXISTING `get_product_article(conn,
+product_id)` rather than duplicating its large query -- an additive
+route, not a change to `GET /products/{id}/article`'s existing contract,
+so the BowlerDepot article-hero embed and any other product_id-keyed
+consumer are unaffected. `slug` is now also included on
+`get_product_article`'s response, `list_articles`' cards, and the
+`related_reviews`/`brand_lineup` cross-link rails -- all nullable, since
+a pre-migration article that hasn't been through the backfill script yet
+still needs to render with the old bare-product_id fallback.
+
+**Learn frontend (`bowlerdepot-learn/`)**: `client.ts` gets
+`articleHref({slug, product_id})` (`/articles/${slug || product_id}`)
+and `getArticleBySlug(slug)`; every place that built an article link
+(`ArticleCard.tsx`, `ArticleDetailPage.tsx`'s related-reviews/
+brand-lineup rails, `scripts/prerender.ts`'s own duplicate
+`articleHref`) now goes through this helper instead of a raw
+`/articles/${product_id}` template. The router (`main.tsx`) changed from
+`articles/:productId` to `articles/:slug`, but the param is still
+generically accepted either way -- `ArticleDetailPage.tsx`'s fetch effect
+tries `getArticleBySlug(routeParam)` first, and on a 404 falls back to
+treating the param as a bare product_id via the existing
+`getProductArticle`, then (if that resolves and the article now has a
+slug) calls `navigate(articleHref(...), {replace: true})` to rewrite the
+URL bar to the canonical slug -- client-side defense-in-depth for the
+narrow window between an article's first approval and the next Learn
+deploy's CloudFront-KVS sync (below) catching up.
+
+**CloudFront 301 for old bare-uuid URLs.** `template.yaml` adds a new
+`AWS::CloudFront::KeyValueStore` resource
+(`LearnArticleSlugRedirectsStore`) -- chosen over Lambda@Edge because
+CloudFront Functions can do a fast in-region key lookup against a KVS
+with no extra invocation latency/cost, and this is exactly the "small
+edge-readable key/value map" case KVS exists for; a Lambda@Edge origin
+lookup would be slower and pricier for zero added capability here.
+`LearnSitePrettyUrlFunction` (the existing CloudFront Function that
+appends `index.html` to extension-less paths) is extended: on a request
+matching `/articles/<uuid>/`, it now looks the uuid up in the KVS and,
+if found, returns a real `301 Moved Permanently` to `/articles/<slug>/`
+instead of falling through to the normal pretty-URL rewrite. A uuid with
+no KVS entry (pre-backfill, or a stale/bad link) falls through
+unchanged -- CloudFront Functions have no database access, so a miss is
+just "nothing to redirect," not an error.
+
+`bowlerdepot-learn/scripts/prerender.ts` now also writes
+`redirect-map.json` (at the project ROOT, sibling to `dist/`, NOT inside
+it -- specifically so the existing `aws s3 sync dist/ ... --delete` step
+never uploads it as a public file) -- an array of `{"Key": "<product_id>",
+"Value": "<slug>"}` pairs for every article that currently has a slug.
+`bowlerdepot-learn/scripts/sync-slug-redirects.mjs` (new, zero new npm
+dependencies -- shells out to the `aws` CLI already installed and
+already authenticated on the GitHub Actions runner via the existing
+`Configure AWS credentials` step) pushes that map into the KVS via
+`cloudfront-keyvaluestore update-keys`, batched at 50 puts per call
+(CloudFront KVS's documented per-call cap) with a fresh `--if-match`
+ETag fetched before every batch (a successful call always advances the
+ETag, so reusing a stale one 412s). Wired into
+`.github/workflows/deploy-learn-site.yml` as a new step immediately
+after the existing CloudFront invalidation step.
+
+`LearnSiteDeployRole`'s IAM policy gains
+`cloudfront-keyvaluestore:DescribeKeyValueStore`/`:UpdateKeys`, scoped to
+the new KVS's own ARN. `template.yaml`'s Outputs section gains
+`LearnArticleSlugRedirectsStoreArn`.
+
+**Setup Al needs to do once, after deploying this template.yaml
+change**: read the `LearnArticleSlugRedirectsStoreArn` value from the
+stack's Outputs (`aws cloudformation describe-stacks --stack-name
+<your-stack> --query "Stacks[0].Outputs"`), then add it as a new GitHub
+Actions repo variable named `LEARN_ARTICLE_SLUG_KVS_ARN` (Settings ->
+Secrets and variables -> Actions -> Variables, same place every other
+`vars.*` value `deploy-learn-site.yml` reads already lives) -- the sync
+step no-ops with a clear log message rather than failing outright if
+this is unset, so a deploy won't break before that one-time setup is
+done, it just won't push any redirects yet.
+
+**Tests.** `tests/test_admin_api_service.py`: `slugify_product_name`
+(lowercase+hyphenate, punctuation-collapse), `generate_unique_article_slug`
+(no-collision base case, single collision appends `-2`, multiple
+collisions keep incrementing), `approve_article` (generates a slug on
+first approval, never changes an existing one on a later approval --
+mirroring `first_published_at`'s own two tests), `backfill_article_slugs`
+(fills in only approved+null-slug rows, leaves already-slugged and
+non-approved rows untouched, no-ops cleanly when nothing's missing).
+`FakeCursor` extended with branches for the new join-select, the
+uniqueness-check select, the backfill select, and the backfill's
+per-row update; the existing approve-article update branch extended for
+the new `slug` param. Also fixed two pre-existing, unrelated test
+fixtures (`test_get_product_assembles_all_related_data`,
+`test_get_product_discovered_url_is_none_when_never_crawled`) that were
+one sequenced-result short of `get_product`'s trailing
+`get_article_generation_status` call (034) -- a gap from that earlier
+migration's own test update, caught by this session's full regression
+sweep, not something this feature introduced. Full suite: 350/350 (up
+from 339 pre-existing, accounting for the two fixture fixes).
+
+`tests/test_public_api_service.py`: `resolve_product_id_by_slug`
+(resolves a matching slug, returns None for an unknown slug, returns
+None for a slug on a still-pending article), `get_product_article`
+includes `slug` (and is null for a pre-migration article),
+`get_article_hero_by_bigcommerce_product_id` prefers the slug over the
+bare product_id in `learn_url` once one exists. `_FakeCursor` extended
+for the new `pa.slug` column across the main article select, the
+related_reviews/brand_lineup rail selects, and the new slug-lookup
+query. Full suite: 141/141 (up from 138 pre-existing).
+
+`template.yaml` re-verified via the CFN-tolerant YAML parser (85
+resources, up from 84 -- the one new KVS resource). `npx tsc -b` clean
+in `bowlerdepot-learn/`.
+
+**Deploy**:
+
+```bash
+psql "$DATABASE_URL" -f db/migrations/036_product_articles_slug.sql
+sam build && sam deploy   # new KVS resource + updated CloudFront Function + IAM + Output
+# Read LearnArticleSlugRedirectsStoreArn from the stack Outputs and set it
+# as the LEARN_ARTICLE_SLUG_KVS_ARN GitHub Actions repo variable (one-time).
+python scripts/backfill_article_slugs.py   # slugs for already-approved pre-migration articles
+git push   # bowlerdepot-learn's own build+prerender+deploy workflow picks up the redirect-map sync
+```
+
+No action needed for NEW articles approved after this deploy --
+`approve_article` sets their slug automatically, and the next Learn
+deploy's `sync-slug-redirects.mjs` step (which only ever pushes rows
+that HAVE a slug) picks it up as a matter of course.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

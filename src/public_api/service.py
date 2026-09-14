@@ -493,7 +493,7 @@ def list_articles(conn, brand_id: str = None, coverstock_id: str = None, categor
     do, scoped to pa.category_id (the article's own persisted category,
     not a live join back through product_type)."""
     query = f"""
-        select pa.id as article_id, pa.title, pa.hook, pa.generated_at, pa.reviewed_at,
+        select pa.id as article_id, pa.slug, pa.title, pa.hook, pa.generated_at, pa.reviewed_at,
                pa.first_published_at,
                pa.product_shot_image_url,
                p.id as product_id, p.name as product_name, p.url as product_url,
@@ -764,14 +764,16 @@ def get_article_hero_by_bigcommerce_product_id(conn, bigcommerce_product_id: str
     own.
 
     learn_url is built here (not left for the embed script to construct)
-    so the URL scheme -- /articles/<product_id>, see bowlerdepot-learn's
-    router -- only needs to be known in one place; a future change to
-    that scheme only requires touching this function, not also
-    redeploying the embed script."""
+    so the URL scheme -- /articles/<slug> (036_product_articles_slug.sql;
+    was the bare product_id before that migration), see bowlerdepot-
+    learn's router -- only needs to be known in one place; a future
+    change to that scheme only requires touching this function, not
+    also redeploying the embed script. Falls back to the bare product_id
+    for a not-yet-backfilled pre-migration article (see below)."""
     with conn.cursor() as cur:
         cur.execute(
             """
-            select p.id as product_id, pa.title, pa.hook,
+            select p.id as product_id, pa.slug, pa.title, pa.hook,
                    pa.action_shot_image_url, pa.product_shot_image_url
             from bowlerdepot_products bp
             join products p on p.id = bp.product_id
@@ -790,15 +792,42 @@ def get_article_hero_by_bigcommerce_product_id(conn, bigcommerce_product_id: str
                 "hook": None, "hero_image_url": None, "learn_url": None,
             }
 
-        product_id, title, hook, action_shot_image_url, product_shot_image_url = row
+        product_id, slug, title, hook, action_shot_image_url, product_shot_image_url = row
+        # slug (036_product_articles_slug.sql) may still be null for an
+        # approved pre-migration article that hasn't been through
+        # scripts/backfill_article_slugs.py yet -- fall back to the old
+        # bare-product_id URL shape in that narrow window rather than
+        # ever emitting a broken /articles/None link (this route has no
+        # deploy step of its own to time against the backfill).
         return {
             "has_article": True,
             "product_id": product_id,
             "title": title,
             "hook": hook,
             "hero_image_url": action_shot_image_url or product_shot_image_url,
-            "learn_url": f"https://learn.bowlerdepot.com/articles/{product_id}",
+            "learn_url": f"https://learn.bowlerdepot.com/articles/{slug or product_id}",
         }
+
+
+def resolve_product_id_by_slug(conn, slug: str):
+    """Backs GET /articles/{slug} -- the slug-based counterpart to GET
+    /products/{id}/article below (Al: "can we make the slugs for the
+    pages more human readable" -- 036_product_articles_slug.sql). A
+    thin lookup only: resolves a human-readable slug to the product_id
+    get_product_article already knows how to fully answer for, rather
+    than duplicating that function's entire query/docstring under a
+    different key. Returns None for an unknown slug OR a slug whose
+    article isn't (or is no longer) approved -- app.py maps either to
+    the same 404 get_product_article's own product_id lookup already
+    uses, same "don't let a visitor distinguish not-found from not-
+    yet-approved" posture as everywhere else in this module."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "select product_id from product_articles where slug = %s and status = 'approved'",
+            (slug,),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
 
 
 def get_product_article(conn, product_id: str):
@@ -806,6 +835,15 @@ def get_product_article(conn, product_id: str):
     articles.sql. Al: "this could be the backend that pulls together all
     the creative and content for the frontend" for a bowling.com-style
     ball review article on bowlerdepot.com.
+
+    slug (036_product_articles_slug.sql) is included in the returned
+    article dict alongside everything else here -- see resolve_product_
+    id_by_slug above for the slug-based lookup route this pairs with,
+    and admin_api.approve_article's docstring for how/when it's set.
+    May be null for an approved article that predates that migration
+    and hasn't been through scripts/backfill_article_slugs.py yet; the
+    Learn frontend falls back to the bare product_id in that narrow
+    window (see ArticleCard.tsx/ArticleDetailPage.tsx).
 
     Returns None only when product_id doesn't resolve to a real,
     published product -- app.py maps that to 404, same as get_product's
@@ -998,7 +1036,7 @@ def get_product_article(conn, product_id: str):
 
         cur.execute(
             """
-            select pa.id, pa.title, pa.hook, pa.performance_summary, pa.who_should_buy, pa.who_should_skip,
+            select pa.id, pa.slug, pa.title, pa.hook, pa.performance_summary, pa.who_should_buy, pa.who_should_skip,
                    pa.pros, pa.cons, pa.buying_tips, pa.verdict, pa.faq, pa.sibling_product_ids,
                    pa.source_video_ids, pa.generated_at, pa.reviewed_at, pa.first_published_at,
                    pa.action_shot_image_url, pa.product_shot_image_url,
@@ -1113,7 +1151,7 @@ def get_product_article(conn, product_id: str):
             cur.execute(
                 """
                 select p.id as product_id, p.name as product_name,
-                       pa.id as article_id, pa.title, pa.hook, pa.reviewed_at,
+                       pa.id as article_id, pa.slug, pa.title, pa.hook, pa.reviewed_at,
                        coalesce(
                            pa.product_shot_image_url,
                            (
@@ -1162,7 +1200,7 @@ def get_product_article(conn, product_id: str):
             cur.execute(
                 """
                 select p.id as product_id, p.name as product_name,
-                       pa.id as article_id, pa.title, pa.hook,
+                       pa.id as article_id, pa.slug, pa.title, pa.hook,
                        coalesce(
                            pa.product_shot_image_url,
                            (

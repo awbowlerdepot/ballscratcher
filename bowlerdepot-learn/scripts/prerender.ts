@@ -15,12 +15,21 @@
 // This script runs as the LAST step of `npm run build` (see
 // package.json), after `vite build` has already produced dist/ (the
 // real index.html + hashed JS/CSS bundles). For every APPROVED article
-// (GET /articles, paginated), it writes dist/articles/<product_id>/
-// index.html -- a copy of the built index.html with the SPA's empty
-// root div replaced by real, crawlable server-rendered-ish markup for
-// that specific article (title/meta description/Open Graph tags/
-// JSON-LD Review structured data, plus the actual visible content:
-// hook, performance summary, pros/cons, verdict, spec table, FAQ).
+// (GET /articles, paginated), it writes dist/articles/<slug>/index.html
+// (036_product_articles_slug.sql -- Al: "can we make the slugs for the
+// pages more human readable"; falls back to the bare product_id for an
+// article that predates that migration and hasn't been through
+// scripts/backfill_article_slugs.py yet -- see articleHref() below) --
+// a copy of the built index.html with the SPA's empty root div replaced
+// by real, crawlable server-rendered-ish markup for that specific
+// article (title/meta description/Open Graph tags/JSON-LD Review
+// structured data, plus the actual visible content: hook, performance
+// summary, pros/cons, verdict, spec table, FAQ). Also writes redirect-
+// map.json (product_id -> slug, for every article that has one) OUTSIDE
+// dist/ -- see main()'s own comment -- consumed by scripts/sync-slug-
+// redirects.mjs to push old-uuid -> new-slug 301 redirects into the
+// CloudFront KeyValueStore template.yaml's LearnSitePrettyUrlFunction
+// reads at the edge (Al's "301 redirect old -> new" choice).
 //
 // Deliberately NOT real React SSR (no react-dom/server, no
 // ReactDOMServer.renderToString, no hydrateRoot on the client side) --
@@ -93,6 +102,13 @@ const PUBLISHER_LOGO_URL =
 
 interface ArticleCard {
   article_id: string;
+  // Human-readable URL slug (036_product_articles_slug.sql) -- Al: "can
+  // we make the slugs for the pages more human readable." May be null
+  // for an approved article that predates that migration and hasn't
+  // been through scripts/backfill_article_slugs.py yet; articleHref()
+  // below falls back to the bare product_id in that narrow window, same
+  // as the live client-rendered app's own fallback (client.ts).
+  slug?: string | null;
   title: string;
   hook: string;
   reviewed_at?: string | null;
@@ -115,6 +131,8 @@ interface ArticleCard {
 }
 
 interface ArticleDetail {
+  // See ArticleCard.slug's own comment above.
+  slug?: string | null;
   title: string;
   hook: string;
   performance_summary?: string | null;
@@ -166,7 +184,7 @@ interface ArticleDetail {
   // not just left for the client bundle, specifically so a crawler
   // discovers/follows the internal link graph between review pages from
   // this build-time HTML, same reasoning this whole script exists for.
-  related_reviews?: { product_id: string; product_name: string; title: string }[] | null;
+  related_reviews?: { product_id: string; slug?: string | null; product_name: string; title: string }[] | null;
   // Al: "change the more from section at the bottom to be links to
   // additional articles for the brand of the ball the current article
   // is from and can we use the demand score to sort them." Now rendered
@@ -175,7 +193,7 @@ interface ArticleDetail {
   // own comment, below the CTA-skip note) no longer applies now that
   // this is internal article-to-article links instead of external,
   // price-bearing ecommerce links.
-  brand_lineup?: { product_id: string; product_name: string; title: string }[] | null;
+  brand_lineup?: { product_id: string; slug?: string | null; product_name: string; title: string }[] | null;
   // Al: "add a hero section to the article if there is a Brad and Kyle
   // youtube video approved for the ball the article is about" --
   // rendered as a real <iframe> embed (renderFeaturedVideo below), same
@@ -251,6 +269,18 @@ function formatArticleDate(iso: string | null | undefined): string | null {
   return new Intl.DateTimeFormat("en-US", { year: "numeric", month: "long", day: "numeric" }).format(d);
 }
 
+// Duplicated (not imported) from src/api/client.ts's articleHref -- same
+// "standalone script outside the Vite bundle" reason every other helper
+// in this file is its own copy. Every internal article link this script
+// writes (canonicalUrl, renderRelatedReviews, renderBrandLineup, and the
+// sitemap's <loc> entries in main() below) goes through this so the URL
+// scheme only needs to be known in one place; falls back to the bare
+// product_id for a not-yet-backfilled pre-036 article, same as the
+// client-rendered app.
+function articleHref(item: { slug?: string | null; product_id: string }): string {
+  return `/articles/${item.slug || item.product_id}/`;
+}
+
 function estimateReadingTimeMinutes(article: ArticleDetail): number {
   const parts: string[] = [
     article.hook,
@@ -322,7 +352,7 @@ function renderRelatedReviews(related: ArticleDetail["related_reviews"]): string
   const cards = related
     .map(
       (r) =>
-        `<a class="article-card" href="/articles/${escapeHtml(r.product_id)}/"><div class="article-card-body"><div class="article-card-title">${escapeHtml(r.title)}</div><div class="article-card-meta">${escapeHtml(r.product_name)}</div></div></a>`,
+        `<a class="article-card" href="${escapeHtml(articleHref(r))}"><div class="article-card-body"><div class="article-card-title">${escapeHtml(r.title)}</div><div class="article-card-meta">${escapeHtml(r.product_name)}</div></div></a>`,
     )
     .join("");
   return `<h2>Related Reviews</h2><div class="article-grid">${cards}</div>`;
@@ -337,7 +367,7 @@ function renderBrandLineup(lineup: ArticleDetail["brand_lineup"]): string {
   const cards = lineup
     .map(
       (b) =>
-        `<a class="article-card" href="/articles/${escapeHtml(b.product_id)}/"><div class="article-card-body"><div class="article-card-title">${escapeHtml(b.title)}</div><div class="article-card-meta">${escapeHtml(b.product_name)}</div></div></a>`,
+        `<a class="article-card" href="${escapeHtml(articleHref(b))}"><div class="article-card-body"><div class="article-card-title">${escapeHtml(b.title)}</div><div class="article-card-meta">${escapeHtml(b.product_name)}</div></div></a>`,
     )
     .join("");
   return `<h2>More from This Brand</h2><div class="article-grid">${cards}</div>`;
@@ -616,7 +646,7 @@ function renderArticlePage(baseHtml: string, card: ArticleCard, article: Article
   const metaDescription = escapeHtml((article.hook || card.hook || "").slice(0, 300));
   const heroImage = computeHeroImage(card, article);
   const pageTitle = `${article.title} | Learn | The Bowler Depot`;
-  const canonicalUrl = `${SITE_URL}/articles/${card.product_id}/`;
+  const canonicalUrl = `${SITE_URL}${articleHref(card)}`;
 
   // Al: "add published dates and last updated dates to the articles" --
   // text/order here intentionally matches ArticleDetailPage.tsx's own
@@ -736,6 +766,18 @@ async function main() {
   const cards = await fetchAllArticles();
 
   const sitemapUrls: { loc: string; lastmod?: string; image?: string }[] = [{ loc: `${SITE_URL}/` }];
+  // product_id -> slug, for every article that HAS a slug -- consumed by
+  // scripts/sync-slug-redirects.mjs (run as a later step of the GitHub
+  // Actions deploy, .github/workflows/deploy-learn-site.yml) to push
+  // old-uuid -> new-slug redirect entries into the CloudFront
+  // KeyValueStore template.yaml's LearnSitePrettyUrlFunction reads at the
+  // edge (036_product_articles_slug.sql -- Al's "301 redirect old -> new"
+  // choice). Written OUTSIDE dist/ (see main()'s writeFile call below) so
+  // `aws s3 sync dist/` never uploads it as a public file. An article
+  // still missing a slug (not yet through scripts/backfill_article_
+  // slugs.py) simply has no redirect entry yet -- nothing to redirect
+  // FROM until it has a slug to redirect TO.
+  const redirectMapEntries: { Key: string; Value: string }[] = [];
   let mostRecentReviewedAt: string | undefined;
   let written = 0;
 
@@ -750,22 +792,29 @@ async function main() {
       console.warn(`Skipping prerender for ${card.product_id}: no article returned`);
       continue;
     }
-    const outDir = join(DIST_DIR, "articles", card.product_id);
+    const outDir = join(DIST_DIR, "articles", card.slug || card.product_id);
     await mkdir(outDir, { recursive: true });
     await writeFile(join(outDir, "index.html"), renderArticlePage(baseHtml, card, article), "utf-8");
     const lastmod = card.reviewed_at ?? undefined;
     if (lastmod && (!mostRecentReviewedAt || lastmod > mostRecentReviewedAt)) mostRecentReviewedAt = lastmod;
     sitemapUrls.push({
-      loc: `${SITE_URL}/articles/${card.product_id}/`,
+      loc: `${SITE_URL}${articleHref(card)}`,
       lastmod,
       image: computeHeroImage(card, article) ?? undefined,
     });
+    if (card.slug) redirectMapEntries.push({ Key: card.product_id, Value: card.slug });
     written += 1;
   }
 
   // Homepage lastmod: set now that the loop above has seen every
   // article's reviewed_at (see this function's own header comment).
   sitemapUrls[0].lastmod = mostRecentReviewedAt;
+
+  await writeFile(
+    join(__dirname, "..", "redirect-map.json"),
+    JSON.stringify(redirectMapEntries, null, 2),
+    "utf-8",
+  );
 
   const sitemapXml = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
@@ -782,7 +831,9 @@ ${sitemapUrls
   await writeFile(join(DIST_DIR, "sitemap.xml"), sitemapXml, "utf-8");
 
   // eslint-disable-next-line no-console
-  console.log(`Prerendered ${written}/${cards.length} article page(s) + sitemap.xml.`);
+  console.log(
+    `Prerendered ${written}/${cards.length} article page(s) + sitemap.xml + redirect-map.json (${redirectMapEntries.length} slug entries).`,
+  );
 }
 
 main().catch((err) => {

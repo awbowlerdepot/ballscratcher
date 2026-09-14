@@ -4324,6 +4324,61 @@ def get_article(conn, article_id: str):
         return dict(zip(columns, row))
 
 
+# ---------------------------------------------------------------------
+# Human-readable article slugs (036_product_articles_slug.sql) -- Al:
+# "can we make the slugs for the pages more human readable, does google
+# still prefer that?" See that migration's header comment for the full
+# "brand + full product name, qualifier words included on purpose"
+# design (his own explicit choice, over a shorter name-only slug or an
+# id-suffixed one) and why it sidesteps this catalog's known Solid/
+# Pearl/Hybrid naming-collision problem.
+# ---------------------------------------------------------------------
+
+# Collapses anything that isn't a-z/0-9 into a single hyphen, then trims
+# leading/trailing hyphens -- same "good enough for a URL path segment"
+# normalization every slug library does, no need for a dependency. Runs
+# on brand + product name AFTER lowercasing, so e.g. "Storm Phaze II
+# Pearl" -> "storm-phaze-ii-pearl", "900 Global's Freeze!" ->
+# "900-global-s-freeze" (an apostrophe collapses into the surrounding
+# hyphen run same as any other non-alphanumeric character -- no special
+# case needed).
+_SLUG_NON_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+
+
+def slugify_product_name(brand_name: str, product_name: str) -> str:
+    """Builds the base (pre-uniqueness-check) slug for one article --
+    "brand + full product name" per Al's own chosen format, qualifier
+    words (Solid/Pearl/Hybrid/etc.) deliberately left IN rather than
+    stripped the way 022_product_articles.sql's sibling-grouping
+    heuristic strips them -- see 036_product_articles_slug.sql's header
+    comment for why that's what avoids most real-world collisions here.
+    Pure string logic, no DB access -- generate_unique_article_slug
+    below is what actually checks/dedupes against existing rows."""
+    raw = f"{brand_name} {product_name}".lower()
+    return _SLUG_NON_ALNUM_RE.sub("-", raw).strip("-")
+
+
+def generate_unique_article_slug(conn, brand_name: str, product_name: str) -> str:
+    """Wraps slugify_product_name with a collision-safety net: brand +
+    full product name (this catalog's actual real-world product names)
+    is expected to already be unique in the overwhelming majority of
+    cases -- see 036_product_articles_slug.sql's header comment -- but
+    nothing guarantees it (e.g. two genuinely identically-named listings
+    from different scrape sources), so this appends "-2", "-3", etc.
+    on an actual collision rather than trusting the format to never
+    collide. No visible suffix in the normal (non-colliding) case."""
+    base = slugify_product_name(brand_name, product_name)
+    candidate = base
+    suffix = 2
+    with conn.cursor() as cur:
+        while True:
+            cur.execute("select 1 from product_articles where slug = %s", (candidate,))
+            if cur.fetchone() is None:
+                return candidate
+            candidate = f"{base}-{suffix}"
+            suffix += 1
+
+
 def approve_article(conn, article_id: str, resolved_by: str) -> dict:
     """Mirrors approve_price_source: only a pending article can be
     approved (fails closed with ValueError on an already-resolved row
@@ -4338,14 +4393,40 @@ def approve_article(conn, article_id: str, resolved_by: str) -> dict:
     row back to 'pending' -- see product_article_generator/app.py)
     leaves it untouched. Without the coalesce, Al's "published date"
     ask would silently become "date of the most recent regenerate"
-    instead, which defeats the point of having a separate column."""
+    instead, which defeats the point of having a separate column.
+
+    slug (036_product_articles_slug.sql) gets the exact same "only
+    ever set once" treatment, for the exact same reason: a slug that
+    changed on every regenerate+re-approve would break any external
+    link/bookmark/search-index entry pointing at the OLD slug, and
+    silently orphan the 301-redirect mapping (see template.yaml's
+    LearnArticleSlugRedirectsStore) the moment it changed. Unlike
+    first_published_at's coalesce(existing, now()) (both sides are
+    plain SQL), computing a NEW slug needs a DB round-trip of its own
+    (generate_unique_article_slug's uniqueness loop) and Python's brand-
+    name join, so this fetches the article's current slug alongside its
+    status in the same initial select and only calls that generator
+    when slug is still null -- an already-slugged article (any
+    approval after its first) is left completely untouched here."""
     with conn.cursor() as cur:
-        cur.execute("select status from product_articles where id = %s", (article_id,))
+        cur.execute(
+            """
+            select pa.status, pa.slug, b.name, p.name
+            from product_articles pa
+            join products p on p.id = pa.product_id
+            join brands b on b.id = p.brand_id
+            where pa.id = %s
+            """,
+            (article_id,),
+        )
         row = cur.fetchone()
         if row is None:
             raise LookupError(f"No product_articles row with id {article_id}")
-        if row[0] != "pending":
-            raise ValueError(f"product_articles row {article_id} is already {row[0]}, not pending")
+        status, existing_slug, brand_name, product_name = row
+        if status != "pending":
+            raise ValueError(f"product_articles row {article_id} is already {status}, not pending")
+
+        slug = existing_slug or generate_unique_article_slug(conn, brand_name, product_name)
 
         cur.execute(
             """
@@ -4353,13 +4434,55 @@ def approve_article(conn, article_id: str, resolved_by: str) -> dict:
             set status = 'approved',
                 reviewed_at = now(),
                 first_published_at = coalesce(first_published_at, now()),
+                slug = %s,
                 resolved_by = %s
             where id = %s
             """,
-            (resolved_by, article_id),
+            (slug, resolved_by, article_id),
         )
     conn.commit()
-    return {"article_id": article_id, "status": "approved"}
+    return {"article_id": article_id, "status": "approved", "slug": slug}
+
+
+def backfill_article_slugs(conn) -> dict:
+    """One-shot (and safely re-runnable) catalog-wide backfill for
+    already-approved product_articles rows that predate 036_product_
+    articles_slug.sql -- same "single bulk server-side pass, not a
+    per-product loop" shape as backfill_finish_categories/backfill_
+    last_video_discovery_at above. approve_article (see its own
+    docstring) already covers every article approved AFTER this
+    migration; this exists purely to catch the rows that were already
+    'approved' with slug still null the moment the column landed.
+
+    NULL-only guard (unlike backfill_finish_categories' intentional
+    re-classify-every-row posture): a slug, once set, must never change
+    from under an already-published article -- see 036_product_
+    articles_slug.sql's header comment on why a changing slug would
+    orphan external links/the 301-redirect mapping -- so this only ever
+    fills in a currently-null slug, never overwrites an existing one,
+    and is safe to run as many times as needed (each run only shrinks
+    the null-slug backlog)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select pa.id, b.name, p.name
+            from product_articles pa
+            join products p on p.id = pa.product_id
+            join brands b on b.id = p.brand_id
+            where pa.status = 'approved' and pa.slug is null
+            order by pa.id
+            """
+        )
+        rows = cur.fetchall()
+
+    updated = 0
+    with conn.cursor() as cur:
+        for article_id, brand_name, product_name in rows:
+            slug = generate_unique_article_slug(conn, brand_name, product_name)
+            cur.execute("update product_articles set slug = %s where id = %s", (slug, article_id))
+            updated += 1
+    conn.commit()
+    return {"approved_articles_missing_slug": len(rows), "articles_updated": updated}
 
 
 def reject_article(conn, article_id: str, resolved_by: str, reason: str = None) -> dict:

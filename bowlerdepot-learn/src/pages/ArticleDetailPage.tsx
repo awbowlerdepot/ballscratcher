@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ApiError,
+  articleHref,
   bowlerDepotSearchUrl,
   estimateReadingTimeMinutes,
   formatArticleDate,
+  getArticleBySlug,
   getProductArticle,
   resizedImageUrl,
 } from "../api/client";
@@ -27,7 +29,16 @@ function stripLeadingMarkdownHeading(text: string): string {
 }
 
 export default function ArticleDetailPage() {
-  const { productId } = useParams<{ productId: string }>();
+  // Route param is named :slug (main.tsx) -- 036_product_articles_slug.sql
+  // (Al: "can we make the slugs for the pages more human readable").
+  // Read generically since an OLD bare-uuid URL routes here too (same
+  // param, react-router doesn't distinguish the two shapes) -- the
+  // fetch logic below tries the slug lookup first, then falls back to
+  // treating the param as a product_id, independent of/ahead of the
+  // CloudFront 301 redirect (template.yaml's
+  // LearnArticleSlugRedirectsStore) ever having synced this article.
+  const { slug: routeParam } = useParams<{ slug: string }>();
+  const navigate = useNavigate();
   const [data, setData] = useState<ProductArticleResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [notFound, setNotFound] = useState(false);
@@ -39,21 +50,59 @@ export default function ArticleDetailPage() {
   const brandLineupRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!productId) return;
+    if (!routeParam) return;
+    let cancelled = false;
     setLoading(true);
     setNotFound(false);
     setError(null);
-    getProductArticle(productId)
-      .then(setData)
-      .catch((err) => {
-        if (err instanceof ApiError && err.status === 404) {
-          setNotFound(true);
-        } else {
-          setError("Couldn't load this review right now -- try again in a moment.");
-        }
+
+    getArticleBySlug(routeParam)
+      .then((result) => {
+        if (cancelled) return;
+        setData(result);
       })
-      .finally(() => setLoading(false));
-  }, [productId]);
+      .catch((slugErr) => {
+        if (cancelled) return;
+        if (!(slugErr instanceof ApiError && slugErr.status === 404)) {
+          setError("Couldn't load this review right now -- try again in a moment.");
+          return;
+        }
+        // Not a known slug -- fall back to the pre-036 bare-product_id
+        // route shape so an old bookmark/external link (or a visitor
+        // who hits this before scripts/backfill_article_slugs.py has
+        // run for this particular article) still resolves client-side.
+        // Returned (not fire-and-forget) so the .finally() below waits
+        // for this second request too, instead of flipping loading off
+        // while it's still in flight.
+        return getProductArticle(routeParam)
+          .then((result) => {
+            if (cancelled) return;
+            setData(result);
+            // Canonicalize the URL bar to the real slug once we know it,
+            // so the address bar/any copy-paste/share from here on uses
+            // the human-readable URL -- replace (not push) so Back
+            // doesn't bounce through the old uuid path.
+            if (result.article?.slug) {
+              navigate(articleHref({ slug: result.article.slug, product_id: result.product_id }), { replace: true });
+            }
+          })
+          .catch((idErr) => {
+            if (cancelled) return;
+            if (idErr instanceof ApiError && idErr.status === 404) {
+              setNotFound(true);
+            } else {
+              setError("Couldn't load this review right now -- try again in a moment.");
+            }
+          });
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [routeParam, navigate]);
 
   const article = data?.article;
 
@@ -346,7 +395,7 @@ export default function ArticleDetailPage() {
           <h2 className="mb-3 font-display text-xl font-semibold text-ink">Related Reviews</h2>
           <div className="grid grid-cols-1 gap-x-8 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
             {article.related_reviews.map((r) => (
-              <Link key={r.product_id} className="group block" to={`/articles/${r.product_id}`}>
+              <Link key={r.product_id} className="group block" to={articleHref(r)}>
                 <div className="aspect-[4/3] w-full overflow-hidden rounded-md bg-paper-border/40">
                   {r.image_url ? (
                     <img
@@ -459,7 +508,7 @@ export default function ArticleDetailPage() {
               <Link
                 key={b.product_id}
                 className="group block w-48 shrink-0 snap-start"
-                to={`/articles/${b.product_id}`}
+                to={articleHref(b)}
               >
                 <div className="aspect-[4/3] w-full overflow-hidden rounded-md bg-paper-border/40">
                   {b.image_url ? (

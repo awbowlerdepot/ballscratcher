@@ -1072,6 +1072,49 @@ class FakeCursor:
                 ("generation_started_at",), ("generation_mode",),
             ]
 
+        elif q.startswith("select pa.status, pa.slug, b.name, p.name"):
+            # 036_product_articles_slug.sql -- approve_article's own initial
+            # fetch (status + existing slug + brand/product name, joined).
+            # Same "flat dict, no real join" simplification as the rest of
+            # this section: db["product_articles"] rows carry brand_name/
+            # product_name directly, so this just reads them straight off
+            # the row instead of actually joining separate products/brands
+            # tables.
+            (article_id,) = params
+            row = self.db.get("product_articles", {}).get(article_id)
+            if row is None:
+                self._last_result = None
+            else:
+                self._last_result = (row["status"], row.get("slug"), row["brand_name"], row["product_name"])
+            self.description = [("status",), ("slug",), ("name",), ("name",)]
+
+        elif q.startswith("select 1 from product_articles where slug = %s"):
+            # generate_unique_article_slug's collision-check loop.
+            (slug,) = params
+            existing_slugs = {r.get("slug") for r in self.db.get("product_articles", {}).values()}
+            self._last_result = (1,) if slug in existing_slugs else None
+
+        elif q.startswith("select pa.id, b.name, p.name"):
+            # backfill_article_slugs -- every approved row still missing a
+            # slug, oldest-id-first (order by pa.id) same as this fake's
+            # other backfill selects.
+            rows = [
+                r for r in self.db.get("product_articles", {}).values()
+                if r["status"] == "approved" and not r.get("slug")
+            ]
+            rows.sort(key=lambda r: r["id"])
+            self._rows = [(r["id"], r["brand_name"], r["product_name"]) for r in rows]
+            self.description = [("id",), ("name",), ("name",)]
+
+        elif q.startswith("update product_articles set slug = %s where id = %s"):
+            # backfill_article_slugs' per-row write -- NULL-only by
+            # construction (the select above only ever returns rows
+            # without a slug yet), so this never needs an overwrite guard
+            # of its own.
+            slug, article_id = params
+            self.db["product_articles"][article_id]["slug"] = slug
+            self._last_result = None
+
         elif q.startswith("select pa.*, p.name as product_name, b.name as brand_name"):
             (article_id,) = params
             row = self.db.get("product_articles", {}).get(article_id)
@@ -1107,9 +1150,16 @@ class FakeCursor:
             # doesn't already have one, so a second approve_article call
             # (after a regenerate puts the row back to 'pending') never
             # overwrites an already-set value.
-            resolved_by, article_id = params
+            #
+            # 036_product_articles_slug.sql added a third param (slug) --
+            # the real SQL always writes it (approve_article's Python side
+            # already resolved it to either the existing slug or a freshly
+            # generated one before this UPDATE runs), so the fake just
+            # writes whatever it's given, same as any other column here.
+            slug, resolved_by, article_id = params
             row = self.db["product_articles"][article_id]
             row["status"] = "approved"
+            row["slug"] = slug
             row["resolved_by"] = resolved_by
             row["reviewed_at"] = "now"
             if not row.get("first_published_at"):
@@ -4145,6 +4195,13 @@ def test_get_product_assembles_all_related_data():
                         "last_checked_at", "created_at"],
             "all": [],
         },
+        {  # 034_product_article_generation_status.sql -- get_product's
+           # trailing get_article_generation_status(conn, product_id) call,
+           # reusing this same fake cursor for its own query. "one": None
+           # here is the normal "nothing in flight" case.
+            "columns": ["started_at", "mode"],
+            "one": None,
+        },
     ])
 
     result = service.get_product(conn, "prod-1")
@@ -4175,6 +4232,7 @@ def test_get_product_discovered_url_is_none_when_never_crawled():
         {"columns": ["id"], "one": None},
         {"columns": ["id"], "all": []},
         {"columns": ["id"], "all": []},
+        {"columns": ["started_at", "mode"], "one": None},
     ])
 
     result = service.get_product(conn, "prod-1")
@@ -5054,6 +5112,10 @@ def _fake_article_row(**overrides):
         # opted in, never synced" so existing tests that don't care about
         # BigCommerce sync don't need to know these columns exist.
         "sync_to_bigcommerce": False, "bigcommerce_post_id": None, "bowlerdepot_synced_at": None,
+        # 036_product_articles_slug.sql -- default to "no slug yet" so
+        # existing tests that don't care about slugs don't need to know
+        # this column exists.
+        "slug": None,
     }
     row.update(overrides)
     return row
@@ -5162,10 +5224,99 @@ def test_approve_article_sets_status_and_resolved_by():
 
     result = service.approve_article(conn, "art-1", "al@bringyourbest.co")
 
-    assert result == {"article_id": "art-1", "status": "approved"}
+    assert result == {"article_id": "art-1", "status": "approved", "slug": "storm-equinox-solid"}
     assert db["product_articles"]["art-1"]["status"] == "approved"
     assert db["product_articles"]["art-1"]["resolved_by"] == "al@bringyourbest.co"
     assert conn.committed is True
+
+
+# --- 036_product_articles_slug.sql -- Al: "can we make the slugs for the
+# pages more human readable, does google still prefer that?" Brand + full
+# product name format (his own explicit choice, qualifier words like
+# Solid/Pearl/Hybrid deliberately kept in), set once on an article's
+# first-ever approval and never touched again -- see approve_article's own
+# docstring for the full reasoning (same coalesce-once posture as
+# first_published_at, but needing a DB round-trip of its own).
+
+def test_slugify_product_name_lowercases_and_hyphenates():
+    assert service.slugify_product_name("Storm", "Phaze II Pearl") == "storm-phaze-ii-pearl"
+
+
+def test_slugify_product_name_collapses_non_alphanumeric_runs():
+    # An apostrophe (or any other punctuation) collapses into the
+    # surrounding hyphen run same as any other non-alphanumeric character --
+    # no special-casing needed.
+    assert service.slugify_product_name("900 Global", "Freeze!") == "900-global-freeze"
+
+
+def test_generate_unique_article_slug_no_collision_returns_base():
+    db = {"product_articles": {}}
+    conn = FakeConnection(db)
+    assert service.generate_unique_article_slug(conn, "Storm", "Equinox Solid") == "storm-equinox-solid"
+
+
+def test_generate_unique_article_slug_appends_suffix_on_collision():
+    db = {"product_articles": {"art-existing": _fake_article_row(id="art-existing", slug="storm-equinox-solid")}}
+    conn = FakeConnection(db)
+    assert service.generate_unique_article_slug(conn, "Storm", "Equinox Solid") == "storm-equinox-solid-2"
+
+
+def test_generate_unique_article_slug_keeps_incrementing_past_multiple_collisions():
+    db = {"product_articles": {
+        "art-1": _fake_article_row(id="art-1", slug="storm-equinox-solid"),
+        "art-2": _fake_article_row(id="art-2", slug="storm-equinox-solid-2"),
+    }}
+    conn = FakeConnection(db)
+    assert service.generate_unique_article_slug(conn, "Storm", "Equinox Solid") == "storm-equinox-solid-3"
+
+
+def test_approve_article_generates_slug_on_first_approval():
+    db = {"product_articles": {"art-1": _fake_article_row(status="pending", slug=None)}}
+    conn = FakeConnection(db)
+
+    service.approve_article(conn, "art-1", "al@bringyourbest.co")
+
+    assert db["product_articles"]["art-1"]["slug"] == "storm-equinox-solid"
+
+
+def test_approve_article_never_changes_existing_slug():
+    """The regenerate+re-approve case -- same reasoning as first_published_
+    at's own equivalent test: a second approval must never recompute or
+    overwrite a slug an article already has, or it would orphan any
+    external link/bookmark/search-index entry/301-redirect-mapping entry
+    already pointing at the old one."""
+    db = {"product_articles": {"art-1": _fake_article_row(status="pending", slug="storm-equinox-solid-original")}}
+    conn = FakeConnection(db)
+
+    service.approve_article(conn, "art-1", "al@bringyourbest.co")
+
+    assert db["product_articles"]["art-1"]["slug"] == "storm-equinox-solid-original"
+
+
+def test_backfill_article_slugs_fills_in_missing_slugs_on_approved_rows_only():
+    db = {"product_articles": {
+        "art-1": _fake_article_row(id="art-1", status="approved", slug=None, brand_name="Storm", product_name="Equinox Solid"),
+        "art-2": _fake_article_row(id="art-2", status="pending", slug=None, brand_name="Storm", product_name="Phaze II Pearl"),
+        "art-3": _fake_article_row(id="art-3", status="approved", slug="already-set", brand_name="Storm", product_name="Something Else"),
+    }}
+    conn = FakeConnection(db)
+
+    result = service.backfill_article_slugs(conn)
+
+    assert result == {"approved_articles_missing_slug": 1, "articles_updated": 1}
+    assert db["product_articles"]["art-1"]["slug"] == "storm-equinox-solid"
+    assert db["product_articles"]["art-2"]["slug"] is None  # not approved, untouched
+    assert db["product_articles"]["art-3"]["slug"] == "already-set"  # already had one, untouched
+    assert conn.committed is True
+
+
+def test_backfill_article_slugs_no_missing_rows_is_a_no_op():
+    db = {"product_articles": {"art-1": _fake_article_row(id="art-1", status="approved", slug="already-set")}}
+    conn = FakeConnection(db)
+
+    result = service.backfill_article_slugs(conn)
+
+    assert result == {"approved_articles_missing_slug": 0, "articles_updated": 0}
 
 
 # --- 033_product_articles_first_published_at.sql -- Al: "can we add
