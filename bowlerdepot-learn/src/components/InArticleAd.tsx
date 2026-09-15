@@ -43,12 +43,24 @@ import { useEffect, useRef, useState } from "react";
 // throttled in-feed slots on the same page, see InFeedAd.tsx -- the
 // NO_STATUS_TIMEOUT_MS fallback below collapses it too rather than
 // leaving that label stranded indefinitely.
+//
+// Bounded-height-while-pending (Al: "it 100% looked off when 3 wide"):
+// the collapse above only fires once AdSense resolves the slot, but
+// AdSense pre-reserves a fluid-layout placeholder sized off the
+// CONTAINER'S WIDTH before it knows whether it can fill -- on a wide
+// desktop viewport (3-column grid, full-width row) that reservation
+// scales up into a genuinely huge blank block, confirmed live at
+// 1600px. PENDING_MAX_HEIGHT_PX caps the wrapper itself while still
+// "pending" so that reservation can never render larger than a small,
+// unobtrusive box no matter how wide the page is; the cap lifts the
+// moment a real ad actually fills the slot.
 const NO_STATUS_TIMEOUT_MS = 4000;
+const PENDING_MAX_HEIGHT_PX = 90;
 
 export default function InArticleAd() {
   const pushedRef = useRef(false);
   const insRef = useRef<HTMLModElement>(null);
-  const [unfilled, setUnfilled] = useState(false);
+  const [status, setStatus] = useState<"pending" | "filled" | "collapsed">("pending");
 
   useEffect(() => {
     // Guards against React StrictMode's dev-only double-invoke (mount ->
@@ -63,12 +75,14 @@ export default function InArticleAd() {
 
     if (insEl) {
       observer = new MutationObserver(() => {
-        if (insEl.getAttribute("data-ad-status") === "unfilled") setUnfilled(true);
+        const adStatus = insEl.getAttribute("data-ad-status");
+        if (adStatus === "filled") setStatus("filled");
+        else if (adStatus === "unfilled") setStatus("collapsed");
       });
       observer.observe(insEl, { attributes: true, attributeFilter: ["data-ad-status"] });
 
       timeoutId = setTimeout(() => {
-        if (!insEl.getAttribute("data-ad-status")) setUnfilled(true);
+        if (!insEl.getAttribute("data-ad-status")) setStatus("collapsed");
       }, NO_STATUS_TIMEOUT_MS);
     }
 
@@ -77,7 +91,7 @@ export default function InArticleAd() {
     } catch {
       // adsbygoogle.js didn't load (network hiccup, ad blocker, offline)
       // -- fail silently rather than break the article around it.
-      setUnfilled(true);
+      setStatus("collapsed");
     }
 
     return () => {
@@ -86,10 +100,13 @@ export default function InArticleAd() {
     };
   }, []);
 
-  if (unfilled) return null;
+  if (status === "collapsed") return null;
 
   return (
-    <div className="my-10">
+    <div
+      className="my-10"
+      style={status === "pending" ? { maxHeight: PENDING_MAX_HEIGHT_PX, overflow: "hidden" } : undefined}
+    >
       <div className="mb-2 text-center text-[10px] uppercase tracking-widest text-muted">Advertisement</div>
       {/* eslint-disable-next-line react/no-unknown-property -- data-ad-*
           are AdSense's own attributes, not standard DOM/React props. */}

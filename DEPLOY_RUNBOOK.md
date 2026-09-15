@@ -15820,6 +15820,35 @@ effect's cleanup. Each component returns `null` as soon as `unfilled`
 is true, collapsing the whole unit -- label div included, not just the
 ad slot -- rather than leaving disclosure copy stranded over nothing.
 
+**Bounded-height-while-pending.** Al, live on `learn.bowlerdepot.com`:
+"it 100% looked off when 3 wide" -- a real, confirmed desktop layout
+regression, not a hypothetical, and worse than the same page at
+narrower/2-column width. Live-debugging found the collapse fix above
+wasn't sufficient on its own: it only removes the gap once AdSense
+*resolves* a slot, but before that, AdSense's fluid ad layout
+pre-reserves placeholder space sized off the ad unit's own CONTAINER
+width, before it even knows whether it can fill the slot. InFeedAd.tsx's
+wrapper is `col-span-full` (spans the entire grid row), so a wider
+viewport with more grid columns means a wider row, which means AdSense
+reserves a proportionally taller placeholder block while "pending" --
+and for slots AdSense never resolves at all (the duplicate/throttled
+in-feed slots from the paragraph above), that oversized reservation
+just sits there indefinitely. Confirmed via live browser measurement at
+1600px/3-column: ~600px+ blank blocks. Fixed in both `InArticleAd.tsx`
+and `InFeedAd.tsx` by replacing the old boolean `unfilled` state with a
+3-value `status` state (`"pending" | "filled" | "collapsed"`, initial
+`"pending"`) -- the `MutationObserver` callback now also handles the
+`"filled"` case (`setStatus("filled")`), not just `"unfilled"`. A new
+module-level `PENDING_MAX_HEIGHT_PX` constant (90, alongside the
+existing `NO_STATUS_TIMEOUT_MS`) caps the OUTER wrapper div with a
+conditional inline `style` -- `maxHeight: PENDING_MAX_HEIGHT_PX,
+overflow: "hidden"` -- applied only while `status === "pending"`. That
+caps how tall AdSense's placeholder reservation can visually render
+inside the wrapper regardless of viewport width or column count. Once a
+slot resolves to `"filled"`, the cap is removed and the ad renders at
+its natural size; once it resolves to `"collapsed"`, the component
+returns `null` as before.
+
 **Consent (EEA/UK/Switzerland).** Al also set up AdSense's built-in
 Privacy & messaging consent tool (Google's own certified CMP, not a
 third-party one) per AdSense's own "Create a consent message" prompt --
@@ -15835,7 +15864,10 @@ added to this codebase**; add it once Al has the generated snippet
 Learn-site frontend addition. `npx tsc -b --force` in
 `bowlerdepot-learn/` exits clean, re-verified again after the
 collapse-on-no-fill fix above (`InArticleAd.tsx`/`InFeedAd.tsx`'s new
-`useState`/`insRef`/`MutationObserver` types included). `npx vite
+`useState`/`insRef`/`MutationObserver` types included), and re-verified
+clean once more after the bounded-height-while-pending fix above (the
+3-value `status` state and `PENDING_MAX_HEIGHT_PX`-driven inline
+`style` prop included). `npx vite
 build` still fails in this sandbox on the same pre-existing, unrelated
 `@rollup/rollup-linux-arm64-gnu` native-module architecture mismatch
 noted in earlier sections (not caused by this change) -- `tsc -b` is

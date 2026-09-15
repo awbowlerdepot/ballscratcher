@@ -30,12 +30,22 @@ import { useEffect, useRef, useState } from "react";
 // full mechanism -- so a skipped/unfilled in-feed row disappears
 // entirely (including the "Advertisement" label) rather than leaving a
 // labeled empty gap in the article grid.
+// Bounded-height-while-pending (Al: "it 100% looked off when 3 wide"):
+// confirmed live -- AdSense's fluid-layout placeholder reservation
+// scales off this unit's own width, and col-span-full makes that width
+// the FULL grid row, so on a wide desktop 3-column layout the blank
+// reserved block before a status ever lands is dramatically taller
+// than on a narrow one. See InArticleAd.tsx's matching comment for the
+// full mechanism; PENDING_MAX_HEIGHT_PX caps it here too so the pending
+// placeholder never renders larger than a small box regardless of grid
+// width, and the cap lifts the moment a real ad fills the slot.
 const NO_STATUS_TIMEOUT_MS = 4000;
+const PENDING_MAX_HEIGHT_PX = 90;
 
 export default function InFeedAd() {
   const pushedRef = useRef(false);
   const insRef = useRef<HTMLModElement>(null);
-  const [unfilled, setUnfilled] = useState(false);
+  const [status, setStatus] = useState<"pending" | "filled" | "collapsed">("pending");
 
   useEffect(() => {
     if (pushedRef.current) return;
@@ -47,12 +57,14 @@ export default function InFeedAd() {
 
     if (insEl) {
       observer = new MutationObserver(() => {
-        if (insEl.getAttribute("data-ad-status") === "unfilled") setUnfilled(true);
+        const adStatus = insEl.getAttribute("data-ad-status");
+        if (adStatus === "filled") setStatus("filled");
+        else if (adStatus === "unfilled") setStatus("collapsed");
       });
       observer.observe(insEl, { attributes: true, attributeFilter: ["data-ad-status"] });
 
       timeoutId = setTimeout(() => {
-        if (!insEl.getAttribute("data-ad-status")) setUnfilled(true);
+        if (!insEl.getAttribute("data-ad-status")) setStatus("collapsed");
       }, NO_STATUS_TIMEOUT_MS);
     }
 
@@ -60,7 +72,7 @@ export default function InFeedAd() {
       (window.adsbygoogle = window.adsbygoogle || []).push({});
     } catch {
       // adsbygoogle.js didn't load -- fail silently, same as InArticleAd.tsx.
-      setUnfilled(true);
+      setStatus("collapsed");
     }
 
     return () => {
@@ -69,13 +81,16 @@ export default function InFeedAd() {
     };
   }, []);
 
-  if (unfilled) return null;
+  if (status === "collapsed") return null;
 
   return (
     // col-span-full -- LearnIndexPage.tsx's grid is 1/2/3 columns
     // (sm:grid-cols-2 lg:grid-cols-3); an in-feed ad reads as a native
     // row break in the list, not another card squeezed into one column.
-    <div className="col-span-full">
+    <div
+      className="col-span-full"
+      style={status === "pending" ? { maxHeight: PENDING_MAX_HEIGHT_PX, overflow: "hidden" } : undefined}
+    >
       <div className="mb-2 text-center text-[10px] uppercase tracking-widest text-muted">Advertisement</div>
       {/* eslint-disable-next-line react/no-unknown-property -- data-ad-*
           are AdSense's own attributes, not standard DOM/React props. */}
