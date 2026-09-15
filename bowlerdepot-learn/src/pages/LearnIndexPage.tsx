@@ -1,9 +1,16 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { getBrands, getCategories, listArticles } from "../api/client";
 import type { ArticleCard as ArticleCardType, Category } from "../api/types";
 import ArticleCard from "../components/ArticleCard";
 import ArticleCardSkeleton from "../components/ArticleCardSkeleton";
+import InFeedAd from "../components/InFeedAd";
+
+// One in-feed ad row per this many article cards (Al: "can we do in feed
+// ads for the article list?") -- 8 keeps it well short of one per page
+// of PAGE_SIZE (24) results while still being non-trivial revenue,
+// matching the "not disruptive" bar Al set for the in-article units.
+const IN_FEED_AD_INTERVAL = 8;
 
 const PAGE_SIZE = 24;
 
@@ -180,7 +187,20 @@ export default function LearnIndexPage() {
             // worth is enough to read as "loading" without over-promising
             // a full page of results.
             Array.from({ length: 9 }).map((_, i) => <ArticleCardSkeleton key={i} />)
-          : articles.map((a) => <ArticleCard key={a.article_id} article={a} />)}
+          : // In-feed ad every IN_FEED_AD_INTERVAL cards (Al: "can we do in
+            // feed ads for the article list?") -- inserted AFTER a card at
+            // that position, never before the first one. Appending more
+            // results via loadMore() only adds new entries past whatever
+            // was already rendered, so earlier ad placements never remount.
+            articles.map((a, i) => (
+              // The fragment itself (not just ArticleCard inside it) needs
+              // the stable key -- react-router/React reconciles this
+              // .map() output as one flat list of top-level elements.
+              <Fragment key={a.article_id}>
+                <ArticleCard article={a} />
+                {(i + 1) % IN_FEED_AD_INTERVAL === 0 ? <InFeedAd key={`ad-${i}`} /> : null}
+              </Fragment>
+            ))}
       </div>
 
       {!loading && articles.length === 0 && !error && (

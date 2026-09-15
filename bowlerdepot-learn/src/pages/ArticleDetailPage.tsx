@@ -12,6 +12,7 @@ import {
 } from "../api/client";
 import type { ProductArticleResponse } from "../api/types";
 import ArticleDetailSkeleton from "../components/ArticleDetailSkeleton";
+import InArticleAd from "../components/InArticleAd";
 
 // video_summarizer's prompt sometimes prefixes its output with a plain
 // markdown heading line (e.g. "# Summary") before the actual prose --
@@ -222,6 +223,16 @@ export default function ArticleDetailPage() {
           <p className="text-ink/90">{article.performance_summary}</p>
         </div>
       ) : null}
+
+      {/* Al: "would love to have some inline ads to generate some
+          revenue... don't want popups or anything that is disruptive" --
+          one slot here (after Performance, before Pros & Cons) and a
+          second before FAQ near the bottom, matching the "one or two
+          units per article" placement we settled on. Keyed on the
+          article's own id so client-side navigation between articles
+          (Related Reviews/More from this Brand) remounts the ad rather
+          than reusing a stale slot -- see InArticleAd.tsx's own comment. */}
+      {article.performance_summary ? <InArticleAd key={`${article.id}-1`} /> : null}
 
       {article.pros?.length || article.cons?.length ? (
         <div className="mb-10">
@@ -453,15 +464,18 @@ export default function ArticleDetailPage() {
       ) : null}
 
       {article.faq?.length ? (
-        <div className="mb-10">
-          <h2 className="mb-3 font-display text-xl font-semibold text-ink">FAQ</h2>
-          {article.faq.map((item, i) => (
-            <div className="border-t border-paper-border py-4" key={i}>
-              <p className="mb-1 font-medium text-ink">{item.question}</p>
-              <p className="text-muted">{item.answer}</p>
-            </div>
-          ))}
-        </div>
+        <>
+          <InArticleAd key={`${article.id}-2`} />
+          <div className="mb-10">
+            <h2 className="mb-3 font-display text-xl font-semibold text-ink">FAQ</h2>
+            {article.faq.map((item, i) => (
+              <div className="border-t border-paper-border py-4" key={i}>
+                <p className="mb-1 font-medium text-ink">{item.question}</p>
+                <p className="text-muted">{item.answer}</p>
+              </div>
+            ))}
+          </div>
+        </>
       ) : null}
 
       {/* Al: "change the more from section at the bottom to be links to

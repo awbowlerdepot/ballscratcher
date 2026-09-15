@@ -15719,6 +15719,111 @@ Once this succeeds, resume 6bg's setup instructions from "read
 `LearnArticleSlugRedirectsStoreArn` from the stack Outputs" onward --
 nothing else about that section's deploy sequence changed.
 
+### 6bi. Google AdSense in-article ads on the Learn site
+
+Al: "can we make the slugs... would love to have some inline ads to
+generate some revenue" -> "don't want popups or anything that is
+disruptive." Ruled out AdSense Auto ads (can insert anchor/vignette
+interstitials -- exactly the disruptive formats Al asked to avoid) in
+favor of manual **in-article** ad units, Google's own format built to
+sit inline in body text and read as part of the page.
+
+Publisher account (`pub-9681652990338336`) was originally created via
+YouTube monetization -- same account works for website ads, but AdSense
+only lets you register a site's ROOT domain, not a subdomain, so
+`bowlerdepot.com` (not `learn.bowlerdepot.com`) had to be added and
+approved in AdSense first; once approved, every subdomain (including
+this Learn site) is automatically covered, no separate per-subdomain
+review. `bowlerdepot.com/ads.txt` already existed with the correct
+`google.com, pub-9681652990338336, DIRECT, f08c47fec0942fa0` line
+(pre-dating this feature, cause unknown -- possibly BigCommerce/a prior
+AdSense setup), so no BigCommerce-side redirect workaround was needed
+for ads.txt (BigCommerce doesn't support uploading arbitrary root
+files, so the fallback would have been a 301 from `bowlerdepot.com/
+ads.txt` to `learn.bowlerdepot.com/ads.txt` -- the ads.txt spec
+explicitly permits following one such redirect).
+
+**`bowlerdepot-learn/public/ads.txt`** (new): same line, so the Learn
+subdomain also serves its own copy -- redundant with the root domain's
+file but recommended practice per the ads.txt spec (crawlers check
+whichever hostname actually served the ad).
+
+**`bowlerdepot-learn/index.html`**: added the `adsbygoogle.js` loader
+script (`client=ca-pub-9681652990338336`) to `<head>`, loaded on every
+page. This is the SAME base HTML `scripts/prerender.ts` reads and
+reuses for every static article page (see that script's own header
+comment), so the loader is present site-wide with one edit.
+
+**`bowlerdepot-learn/src/components/InArticleAd.tsx`** (new): renders
+the in-article ad unit (slot `2430978321`, `data-ad-layout="in-article"`,
+`data-ad-format="fluid"`) with a small "Advertisement" label above it
+for clear disclosure. Client-side only -- deliberately NOT rendered
+into `prerender.ts`'s static HTML, so crawlers/search results still see
+clean, fast, ad-free article content (consistent with why prerendering
+exists at all -- SEO). Pushes to `window.adsbygoogle` exactly once per
+mount (a `useRef` guard, since React `StrictMode`'s dev-only double-
+invoke would otherwise push twice and AdSense logs that as an error).
+
+**`bowlerdepot-learn/src/pages/ArticleDetailPage.tsx`**: renders
+`<InArticleAd>` twice -- once after the Performance section (before
+Pros & Cons), once before FAQ -- matching the "one or two units per
+article" placement Al and Claude settled on. Each instance is `key`ed
+on the article's own `id` (e.g. `` `${article.id}-1` ``): react-router
+client-side navigation between two articles (Related Reviews/More from
+this Brand links) reuses the same `ArticleDetailPage` component
+instance rather than remounting it, so without a fresh key the
+`adsbygoogle.push()` would only ever fire for the FIRST article a
+visitor landed on and every article navigated to afterward would show a
+blank slot.
+
+**`bowlerdepot-learn/src/components/InFeedAd.tsx`** (new) +
+**`LearnIndexPage.tsx`**: in-feed ads for the article list -- Al asked
+about these too ("can we do in feed ads for the article list?"). Same
+reasoning as in-article, but this is Google's format for sitting as a
+native row inside a list/grid rather than mid-paragraph. Own separate
+ad unit (slot `8299838940`, `data-ad-layout-key="-6f+cd+1b-14+b1"`),
+created the same way as the in-article unit (Ads > By ad unit >
+In-feed ad). Rendered every `IN_FEED_AD_INTERVAL` (8) article cards via
+a `Fragment`-per-item map over the grid, spanning the full grid width
+(`col-span-full`) so it reads as a row break rather than being squeezed
+into one card's column. `LearnIndexPage.tsx` is a pure client-rendered
+SPA view (unlike individual article pages, it's not prerendered by
+`scripts/prerender.ts`), so there's no static-HTML/SEO concern for this
+one the way there is for `InArticleAd.tsx`. Same once-per-mount
+`adsbygoogle.push()` guard as the in-article component.
+
+**Consent (EEA/UK/Switzerland).** Al also set up AdSense's built-in
+Privacy & messaging consent tool (Google's own certified CMP, not a
+third-party one) per AdSense's own "Create a consent message" prompt --
+required for GDPR/UK-GDPR compliance, integrates automatically with
+AdSense's ad-serving so it knows whether to serve personalized vs.
+limited ads based on what a given visitor consents to. That tool
+generates its own account/message-specific script snippet to add to
+`index.html` alongside the `adsbygoogle.js` loader above -- **not yet
+added to this codebase**; add it once Al has the generated snippet
+(same one-file edit as the loader script, right below it).
+
+**Tests.** No Python backend changed by this feature -- purely a
+Learn-site frontend addition. `npx tsc -b --force` in
+`bowlerdepot-learn/` exits clean. `npx vite build` still fails in this
+sandbox on the same pre-existing, unrelated
+`@rollup/rollup-linux-arm64-gnu` native-module architecture mismatch
+noted in earlier sections (not caused by this change) -- `tsc -b` is
+this sandbox's established substitute verification for that build
+step.
+
+**Deploy**: no backend/infra changes, so a normal `bowlerdepot-learn/`
+push is enough:
+
+```bash
+git push   # deploy-learn-site.yml builds, prerenders, and deploys as usual
+```
+
+Nothing to set up on AWS/GitHub Actions for this feature -- the
+publisher ID and slot ID are baked into the committed source (they're
+not secrets; AdSense identifiers are meant to be public, same as any
+other client-side analytics/ad tag).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
