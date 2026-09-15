@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 // Google AdSense in-article ad unit (Al: "would love to have some inline
 // ads to generate some revenue" / "don't want popups or anything that is
@@ -31,8 +31,24 @@ import { useEffect, useRef } from "react";
 // below would only ever fire once, for the FIRST article a visitor
 // lands on, and every article navigated to afterward would show a
 // blank slot.
+//
+// Collapse-on-no-fill (Al: "what can we do about formatting when there
+// is no ad?"): AdSense sets data-ad-status="unfilled" on the <ins>
+// itself once it decides it has no ad to serve for this request (and
+// leaves the slot at 0x0) -- confirmed live on learn.bowlerdepot.com.
+// Watched here via MutationObserver so the WHOLE unit, including the
+// "Advertisement" label above it, disappears instead of leaving a
+// labeled empty gap in the article. If AdSense never gets around to
+// setting any status at all -- observed in practice for duplicate/
+// throttled in-feed slots on the same page, see InFeedAd.tsx -- the
+// NO_STATUS_TIMEOUT_MS fallback below collapses it too rather than
+// leaving that label stranded indefinitely.
+const NO_STATUS_TIMEOUT_MS = 4000;
+
 export default function InArticleAd() {
   const pushedRef = useRef(false);
+  const insRef = useRef<HTMLModElement>(null);
+  const [unfilled, setUnfilled] = useState(false);
 
   useEffect(() => {
     // Guards against React StrictMode's dev-only double-invoke (mount ->
@@ -40,13 +56,37 @@ export default function InArticleAd() {
     // one real mount, which AdSense logs as an error.
     if (pushedRef.current) return;
     pushedRef.current = true;
+
+    const insEl = insRef.current;
+    let observer: MutationObserver | undefined;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+    if (insEl) {
+      observer = new MutationObserver(() => {
+        if (insEl.getAttribute("data-ad-status") === "unfilled") setUnfilled(true);
+      });
+      observer.observe(insEl, { attributes: true, attributeFilter: ["data-ad-status"] });
+
+      timeoutId = setTimeout(() => {
+        if (!insEl.getAttribute("data-ad-status")) setUnfilled(true);
+      }, NO_STATUS_TIMEOUT_MS);
+    }
+
     try {
       (window.adsbygoogle = window.adsbygoogle || []).push({});
     } catch {
       // adsbygoogle.js didn't load (network hiccup, ad blocker, offline)
       // -- fail silently rather than break the article around it.
+      setUnfilled(true);
     }
+
+    return () => {
+      observer?.disconnect();
+      if (timeoutId) clearTimeout(timeoutId);
+    };
   }, []);
+
+  if (unfilled) return null;
 
   return (
     <div className="my-10">
@@ -54,6 +94,7 @@ export default function InArticleAd() {
       {/* eslint-disable-next-line react/no-unknown-property -- data-ad-*
           are AdSense's own attributes, not standard DOM/React props. */}
       <ins
+        ref={insRef}
         className="adsbygoogle"
         style={{ display: "block", textAlign: "center" }}
         data-ad-layout="in-article"

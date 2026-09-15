@@ -15792,6 +15792,34 @@ SPA view (unlike individual article pages, it's not prerendered by
 one the way there is for `InArticleAd.tsx`. Same once-per-mount
 `adsbygoogle.push()` guard as the in-article component.
 
+**Collapse-on-no-fill.** Al reported ad slots showing on the live site
+but staying blank -- the "Advertisement" label and its wrapper div were
+rendering above an empty 0-height `<ins>`, leaving a labeled empty gap
+in the layout, and asked "what can we do about formatting when there
+is no ad?" Live-checking `learn.bowlerdepot.com` with browser dev
+tools found `adsbygoogle.js` itself loading fine (no console errors)
+but AdSense's own per-slot status telling a different story: one
+in-article slot got `data-ad-status="unfilled"` (Google processed the
+request but had no ad to serve -- normal ramp-up behavior for a
+brand-new site/ad unit, not a bug), while 3 duplicate in-feed slots on
+the same `LearnIndexPage.tsx` grid never got any `data-ad-status`
+attribute at all (AdSense appears to throttle/skip processing repeated
+copies of the same in-feed unit on one page). Fixed in both
+`InArticleAd.tsx` and `InFeedAd.tsx`: an `insRef` (`useRef<HTMLModElement>`)
+on the `<ins>` plus an `unfilled` state flag, set by whichever of two
+watchers fires first inside the existing push-once effect -- a
+`MutationObserver` on the `<ins>`'s `data-ad-status` attribute that
+flips `unfilled` true the moment it becomes `"unfilled"`, and a
+`NO_STATUS_TIMEOUT_MS` (4000ms, module-level constant in each file)
+`setTimeout` fallback that flips it true if the element never gets any
+`data-ad-status` at all -- covering the duplicate-in-feed-slot case
+observed live, which the status-value watcher alone wouldn't catch.
+The existing `catch` around `adsbygoogle.push({})` (loader failing to
+load) now also sets `unfilled`. Both watchers are torn down in the
+effect's cleanup. Each component returns `null` as soon as `unfilled`
+is true, collapsing the whole unit -- label div included, not just the
+ad slot -- rather than leaving disclosure copy stranded over nothing.
+
 **Consent (EEA/UK/Switzerland).** Al also set up AdSense's built-in
 Privacy & messaging consent tool (Google's own certified CMP, not a
 third-party one) per AdSense's own "Create a consent message" prompt --
@@ -15805,8 +15833,10 @@ added to this codebase**; add it once Al has the generated snippet
 
 **Tests.** No Python backend changed by this feature -- purely a
 Learn-site frontend addition. `npx tsc -b --force` in
-`bowlerdepot-learn/` exits clean. `npx vite build` still fails in this
-sandbox on the same pre-existing, unrelated
+`bowlerdepot-learn/` exits clean, re-verified again after the
+collapse-on-no-fill fix above (`InArticleAd.tsx`/`InFeedAd.tsx`'s new
+`useState`/`insRef`/`MutationObserver` types included). `npx vite
+build` still fails in this sandbox on the same pre-existing, unrelated
 `@rollup/rollup-linux-arm64-gnu` native-module architecture mismatch
 noted in earlier sections (not caused by this change) -- `tsc -b` is
 this sandbox's established substitute verification for that build
