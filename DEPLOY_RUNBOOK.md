@@ -15849,6 +15849,29 @@ slot resolves to `"filled"`, the cap is removed and the ad renders at
 its natural size; once it resolves to `"collapsed"`, the component
 returns `null` as before.
 
+**Row-alignment fix (in-feed interval).** Al, on the article grid: "the
+8th ball is the last and the 9th gets moved down. In rows of 3 that
+causes an issue because there is a row of 2 then one missing then an
+entire row missing" -- a real, structural layout bug distinct from the
+collapse and bounded-height fixes above. Root cause: `LearnIndexPage.tsx`'s
+article grid is responsive (`grid grid-cols-1 sm:grid-cols-2
+lg:grid-cols-3` -- 1 column on mobile, 2 at `sm`, 3 at `lg`), and
+`InFeedAd.tsx` was inserted every `IN_FEED_AD_INTERVAL` (8) cards via a
+`col-span-full` wrapper that forces a full row break wherever it lands.
+8 isn't a multiple of 3 (or evenly compatible with a 3-column grid), so
+at the 3-column breakpoint the ad landed mid-row: the row before it
+only got 2 of its 3 slots filled (a visibly short row with a blank gap
+in the 3rd column), and the row after was pushed down awkwardly. This
+is a structural CSS grid issue independent of whether the ad itself is
+filled, unfilled, or still pending -- it would happen even with a
+perfectly-behaving ad, since `col-span-full` always forces a row break
+at whatever position it's placed. Fixed by changing
+`IN_FEED_AD_INTERVAL` from 8 to 6 in `LearnIndexPage.tsx`: 6 is the
+least common multiple of the grid's column counts (1, 2, and 3), so a
+`col-span-full` item placed every 6 cards always lands exactly on a row
+boundary at every breakpoint -- no more short/broken rows, regardless
+of ad fill state.
+
 **Consent (EEA/UK/Switzerland).** Al also set up AdSense's built-in
 Privacy & messaging consent tool (Google's own certified CMP, not a
 third-party one) per AdSense's own "Create a consent message" prompt --
@@ -15867,7 +15890,9 @@ collapse-on-no-fill fix above (`InArticleAd.tsx`/`InFeedAd.tsx`'s new
 `useState`/`insRef`/`MutationObserver` types included), and re-verified
 clean once more after the bounded-height-while-pending fix above (the
 3-value `status` state and `PENDING_MAX_HEIGHT_PX`-driven inline
-`style` prop included). `npx vite
+`style` prop included), and re-verified clean once more after the
+row-alignment fix above (`LearnIndexPage.tsx`'s `IN_FEED_AD_INTERVAL`
+change from 8 to 6). `npx vite
 build` still fails in this sandbox on the same pre-existing, unrelated
 `@rollup/rollup-linux-arm64-gnu` native-module architecture mismatch
 noted in earlier sections (not caused by this change) -- `tsc -b` is

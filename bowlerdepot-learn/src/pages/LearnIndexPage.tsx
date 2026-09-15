@@ -7,10 +7,18 @@ import ArticleCardSkeleton from "../components/ArticleCardSkeleton";
 import InFeedAd from "../components/InFeedAd";
 
 // One in-feed ad row per this many article cards (Al: "can we do in feed
-// ads for the article list?") -- 8 keeps it well short of one per page
-// of PAGE_SIZE (24) results while still being non-trivial revenue,
-// matching the "not disruptive" bar Al set for the in-article units.
-const IN_FEED_AD_INTERVAL = 8;
+// ads for the article list?"). MUST be a multiple of both 2 and 3 (i.e.
+// of their LCM, 6) -- the grid below is 1/2/3 columns depending on
+// viewport (sm:grid-cols-2 lg:grid-cols-3), and the ad's col-span-full
+// wrapper forces a row break wherever it lands. Al: "the 8th ball is
+// the last and the 9th gets moved down ... in rows of 3 that causes an
+// issue because there is a row of 2 then one missing then an entire
+// row missing" -- confirmed live: 8 isn't a multiple of 3, so the ad
+// landed mid-row, leaving the preceding row short and visually broken
+// regardless of whether the ad itself ends up filled, collapsed, or
+// still pending. 6 is the smallest interval that always lands exactly
+// on a row boundary at every breakpoint.
+const IN_FEED_AD_INTERVAL = 6;
 
 const PAGE_SIZE = 24;
 
