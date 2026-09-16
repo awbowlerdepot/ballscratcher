@@ -15911,6 +15911,72 @@ publisher ID and slot ID are baked into the committed source (they're
 not secrets; AdSense identifiers are meant to be public, same as any
 other client-side analytics/ad tag).
 
+### 6bj. Real incident: embed scripts wiped by an ordinary Learn-site deploy (2026-09-16)
+
+Al: "the article and video embeds are not working on the site." Confirmed
+live: `https://learn.bowlerdepot.com/embeds/bowlerdepot-article-hero.js`
+was 404ing through to the SPA's `index.html` fallback (wrong
+`Content-Type: text/html`, not JS); `bowlerdepot-video-summary.js`
+happened to still be present on the bucket, but only by luck, and was
+exposed to the exact same risk on the next deploy. The backend routes
+these scripts call (`api.bowleriq.io/bowlerdepot/products/{id}/
+article-hero` and `/video-summary`, see 6ar/6q) were checked directly
+and confirmed working correctly -- this was purely a static-asset
+deployment bug, not a data or backend regression.
+
+**Root cause.** Both embed scripts lived at the repo-root `embeds/`
+directory (see 6ar's and 6q's original deploy-mechanics steps: `aws s3
+cp embeds/bowlerdepot-article-hero.js s3://<LearnSiteBucket>/embeds/...`,
+a manual, one-off upload run by hand at the time each script was
+activated). `.github/workflows/deploy-learn-site.yml`'s deploy step runs
+`aws s3 sync dist/ "s3://${{ vars.LEARN_SITE_BUCKET }}/" --delete` on
+every push to `bowlerdepot-learn/**` -- the `--delete` flag removes
+anything already on the bucket that isn't part of that build's `dist/`
+output. Since repo-root `embeds/` was never part of the Vite build
+(`bowlerdepot-learn`'s own project root is `bowlerdepot-learn/`, not the
+repo root), the next ordinary Learn-site deploy silently wiped whatever
+had been manually uploaded there -- exactly the mechanism that already
+bit `bowlerdepot-article-hero.js` and was one deploy away from also
+biting `bowlerdepot-video-summary.js`.
+
+**Fix: moved both files into `bowlerdepot-learn/public/embeds/`**
+(`git mv`-equivalent -- `git status` shows clean renames, not a
+delete+add). This is the exact same pattern already relied on for
+`bowlerdepot-learn/public/ads.txt` and `robots.txt` (see 6bi): Vite
+copies everything under a project's `public/` directory into `dist/`
+verbatim on every `npm run build`, so these two files now redeploy
+automatically with every ordinary `git push` to `bowlerdepot-learn/**`
+and survive `--delete` because they're genuinely part of that build's
+`dist/` output -- no separate manual `aws s3 cp`/CloudFront-invalidation
+step ever needed again, and no more risk of the next deploy quietly
+erasing them. Each file's own header "Deploy:" comment was rewritten in
+place to describe this new automatic mechanism and this incident, so
+the fix is documented at the point of use, not just here.
+
+**Tests.** No application logic changed -- purely relocating two static
+files Vite already knows how to serve. `npx tsc -b --force` in
+`bowlerdepot-learn/` exits clean. A full `npm run build`/`vite build`
+could not be run in this sandbox (`@rollup/rollup-linux-arm64-gnu`
+fails to install -- npm's documented arm64/optional-dependency bug,
+https://github.com/npm/cli/issues/4828 -- the same pre-existing,
+unrelated sandbox limitation noted in 6bi's Tests section); GitHub
+Actions runs a fresh `npm ci` on its own `ubuntu-latest` runner and
+won't hit this, and since `public/`'s copy-through behavior is already
+proven live by the `ads.txt`/`robots.txt` precedent, this doesn't put
+the fix itself in doubt.
+
+**Deploy**: no backend/infra changes, so a normal `bowlerdepot-learn/`
+push is enough:
+
+```bash
+git push   # deploy-learn-site.yml builds and deploys as usual; both
+           # embed scripts now come along automatically as part of dist/
+```
+
+Nothing left to do in BigCommerce Script Manager -- both scripts still
+point at the same `learn.bowlerdepot.com/embeds/...` URLs as before,
+only their origin on disk (and in S3/CloudFront) changed.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

@@ -29,13 +29,18 @@
  * public_api's service.get_article_hero_by_bigcommerce_product_id
  * docstring.
  *
- * Deploy: static asset on the same S3 bucket/CloudFront distribution as
- * bowlerdepot-video-summary.js (see DEPLOY_RUNBOOK.md's "BowlerDepot
- * article hero embed" section for the exact aws s3 cp + cloudfront
- * invalidation commands + Script Manager setup) -- NOT part of any
- * Lambda. This is a SEPARATE Script Manager entry from the video-summary
- * script; the two are independent and either can be enabled without the
- * other.
+ * Deploy: lives at bowlerdepot-learn/public/embeds/ (NOT the old
+ * repo-root embeds/ -- see bowlerdepot-video-summary.js's own Deploy
+ * comment for the real incident that moved both files here: a manually
+ * `aws s3 cp`'d file outside bowlerdepot-learn/ was never part of Vite's
+ * dist/ output, so deploy-learn-site.yml's `aws s3 sync dist/ ...
+ * --delete` step silently wiped it on the next ordinary Learn-site
+ * deploy -- confirmed live, this exact file 404'd through to the SPA's
+ * index.html). Redeploys automatically with every ordinary Learn-site
+ * push now, same as ads.txt/robots.txt already did -- no separate
+ * manual upload step. NOT part of any Lambda. This is a SEPARATE Script
+ * Manager entry from the video-summary script; the two are independent
+ * and either can be enabled without the other.
  *
  * Deliberately vanilla JS, no build step, no dependencies -- runs
  * standalone inside BigCommerce's storefront.

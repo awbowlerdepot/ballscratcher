@@ -26,16 +26,24 @@
  *     script no-ops in that case, same as it does for any other
  *     "nothing to show" case below.
  *
- * Deploy: this file is a static asset uploaded to the same S3 bucket/
- * CloudFront distribution that already serves the Learn site
- * (LearnSiteBucket/LearnSiteDistribution -- this is Learn-review
- * content, so it belongs there rather than on consumer-site's bucket;
- * see DEPLOY_RUNBOOK.md's "BowlerDepot video summary embed" section for
- * the exact aws s3 cp + cloudfront invalidation commands) -- NOT part of
- * any Lambda. BigCommerce loads it via a one-line loader snippet pasted
- * into Storefront > Script Manager, scoped to Product Pages. Updating this
- * file's logic later only needs a re-upload + cache invalidation, never
- * touching Script Manager again.
+ * Deploy: lives at bowlerdepot-learn/public/embeds/ (NOT the old
+ * repo-root embeds/ -- moved here after a real incident: deploy-learn-
+ * site.yml's `aws s3 sync dist/ ... --delete` step wipes anything on
+ * LearnSiteBucket that isn't part of that build's dist/ output, and a
+ * manually `aws s3 cp`'d file living outside bowlerdepot-learn/ was
+ * never part of dist/ -- so it silently vanished on the next ordinary
+ * Learn-site deploy (confirmed live: this exact file 404'd through to
+ * the SPA's index.html on learn.bowlerdepot.com, Al: "article and video
+ * embeds are not working on the site"). Vite copies everything under
+ * public/ into dist/ verbatim on every build (same mechanism ads.txt/
+ * robots.txt already rely on), so this file now redeploys automatically
+ * with every ordinary `git push` to bowlerdepot-learn/ -- no separate
+ * manual upload step to forget, and no longer at risk of the next
+ * deploy's --delete silently removing it again. NOT part of any Lambda.
+ * BigCommerce loads it via a one-line loader snippet pasted into
+ * Storefront > Script Manager, scoped to Product Pages -- that part is
+ * unchanged; only where this file itself gets hosted/deployed from
+ * changed.
  *
  * Deliberately vanilla JS, no build step, no dependencies -- this has to
  * run standalone inside BigCommerce's storefront, which has no awareness
