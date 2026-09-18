@@ -1,5 +1,6 @@
 import { Outlet } from "react-router-dom";
 import Nav from "./components/Nav";
+import ScrollToTop from "./components/ScrollToTop";
 
 // Shell only, same reasoning as consumer-site/src/App.tsx -- <Outlet>
 // does the actual page swap. No CompareProvider/similar here -- Learn
@@ -8,6 +9,7 @@ import Nav from "./components/Nav";
 export default function App() {
   return (
     <>
+      <ScrollToTop />
       <Nav />
       <main className="mx-auto min-h-[60vh] max-w-[75rem] px-6 py-10">
         <Outlet />

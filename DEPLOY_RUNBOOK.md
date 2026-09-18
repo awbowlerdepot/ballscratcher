@@ -15977,6 +15977,47 @@ Nothing left to do in BigCommerce Script Manager -- both scripts still
 point at the same `learn.bowlerdepot.com/embeds/...` URLs as before,
 only their origin on disk (and in S3/CloudFront) changed.
 
+### 6bk. Learn site: article pages didn't scroll to top on navigation (2026-09-18)
+
+Al: "when selecting an article it doesn't start at the top. often you
+will have to scroll back to the top before you can read it." Reproduced:
+clicking into an article from the grid on `LearnIndexPage` -- which is
+routinely scrolled deep into, since it's a long list -- landed on
+`ArticleDetailPage` at whatever scroll position the index page had been
+at, not at the top of the new article. Al's phrasing ("when selecting
+an article") also covers article-to-article navigation, e.g. clicking a
+"Related Reviews" link from `ArticleDetailPage`, which hits the same bug.
+
+**Root cause.** Classic React Router SPA gotcha: client-side navigation
+goes through `pushState`/`history` under the hood, not a real page
+load, so the browser never gets the fresh-load scroll reset it would
+get from a normal `<a href>` navigation. Every route swap just leaves
+the viewport wherever it already was.
+
+**Fix.** New `bowlerdepot-learn/src/components/ScrollToTop.tsx`: a
+small location-aware component that calls `useLocation()` from
+`react-router-dom` and runs `useEffect(() => window.scrollTo(0, 0),
+[pathname])` -- it renders no UI, just resets scroll on every pathname
+change. Mounted once in `bowlerdepot-learn/src/App.tsx`, inside
+`<BrowserRouter>` but above `<Outlet>`, so it's active for every route
+swap the app has: index -> article, and article -> article.
+
+**Tests.** No visible UI or data changes -- purely a navigation-behavior
+fix. `npx tsc -b --force` in `bowlerdepot-learn/` exits clean, no other
+changes made. A full `npm run build`/`vite build` was not attempted this
+time; this sandbox still can't run it (`@rollup/rollup-linux-arm64-gnu`
+fails to install -- npm's documented arm64/optional-dependency bug,
+https://github.com/npm/cli/issues/4828 -- the same pre-existing,
+unrelated limitation noted in 6bi/6bj), and GitHub Actions runs a fresh
+`npm ci` on its own `ubuntu-latest` runner and won't hit it.
+
+**Deploy**: no backend/infra changes, so a normal `bowlerdepot-learn/`
+push is enough:
+
+```bash
+git push   # deploy-learn-site.yml builds and deploys as usual
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
