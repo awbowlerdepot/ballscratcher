@@ -7,7 +7,7 @@ import {
   rejectVideoCandidate,
   restoreVideoCandidate,
 } from "../api/client";
-import type { ListVideoCandidatesParams, VideoCandidate, VideoCandidateStatus } from "../api/types";
+import type { ListVideoCandidatesParams, VideoCandidate, VideoCandidateSort, VideoCandidateStatus } from "../api/types";
 import Badge from "../components/Badge";
 import Button from "../components/Button";
 import type { BulkAction, Column } from "../components/DataTable";
@@ -67,6 +67,12 @@ export default function VideoCandidatesPage() {
 
   const [status, setStatus] = useState<VideoCandidateStatus>("pending");
   const [productId, setProductId] = useState("");
+  // Al: "can we make the video candidates tab sortable by published,
+  // ascending and descending." "" (unselected) keeps the original
+  // match-confidence ordering -- see ListVideoCandidatesParams.sort's own
+  // comment for why undefined/omitted is the server-side default rather
+  // than a third real sort value.
+  const [sort, setSort] = useState<VideoCandidateSort | "">("");
 
   const [rejectTarget, setRejectTarget] = useState<VideoCandidate[] | null>(null);
   const [rejectReason, setRejectReason] = useState("");
@@ -80,6 +86,7 @@ export default function VideoCandidatesPage() {
     const params: ListVideoCandidatesParams = {
       status,
       product_id: productId || undefined,
+      sort: sort || undefined,
       limit: LIMIT,
       offset,
     };
@@ -94,7 +101,7 @@ export default function VideoCandidatesPage() {
       .finally(() => setLoading(false));
   }
 
-  useEffect(load, [status, productId, offset]);
+  useEffect(load, [status, productId, sort, offset]);
 
   function resetAndSet<T>(setter: (v: T) => void) {
     return (value: T) => {
@@ -225,10 +232,27 @@ export default function VideoCandidatesPage() {
     {
       key: "product_name",
       header: "Product",
+      // Al: "it would be helpful to be able to see the product from that
+      // same video candidates list so we can easily see the ball to
+      // verify that it is the ball in the video." product_image_url is
+      // the PRODUCT's own thumbnail (falls back to its first visible
+      // image), distinct from the video's own thumbnail_url shown in the
+      // Video column -- see VideoCandidate's own comment in api/types.ts.
       render: (r) => (
-        <span>
-          {r.brand_name} {r.product_name}
-        </span>
+        <div className="flex items-center gap-2">
+          {r.product_image_url ? (
+            <img
+              src={r.product_image_url}
+              alt=""
+              className="h-10 w-10 shrink-0 rounded object-contain bg-ink-100"
+            />
+          ) : (
+            <div className="h-10 w-10 shrink-0 rounded bg-ink-100" />
+          )}
+          <span>
+            {r.brand_name} {r.product_name}
+          </span>
+        </div>
       ),
     },
     {
@@ -328,6 +352,18 @@ export default function VideoCandidatesPage() {
             placeholder="uuid"
             className="w-full rounded-md border border-ink-300 px-2 py-1.5 text-sm sm:w-64"
           />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-ink-600">Sort</label>
+          <select
+            value={sort}
+            onChange={(e) => resetAndSet(setSort)(e.target.value as VideoCandidateSort | "")}
+            className="rounded-md border border-ink-300 px-2 py-1.5 text-sm"
+          >
+            <option value="">Match confidence (default)</option>
+            <option value="published_asc">Published (oldest first)</option>
+            <option value="published_desc">Published (newest first)</option>
+          </select>
         </div>
       </div>
 

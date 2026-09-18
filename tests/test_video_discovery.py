@@ -650,12 +650,40 @@ def test_fetch_products_to_search_default_scope_rotates_never_searched_first():
     nulls first is what actually rotates: never-searched products (null)
     always sort ahead of any previously-searched one, and p.id is the
     final deterministic tiebreaker (same discipline as the pv.id fix in
-    list_video_candidates)."""
+    list_video_candidates). This ordering is now the SECOND sort key,
+    behind the NEW-BALL PRIORITY WINDOW tier -- see the dedicated
+    new_ball_priority test below."""
     conn = _FakeConn(products=[{"id": "p1", "name": "Absolute", "brand_name": "Storm"}])
     app.fetch_products_to_search(conn, {}, max_products=90)
 
-    query, _ = conn.cursor().executed[0]
-    assert "order by p.last_video_discovery_at asc nulls first, p.id asc limit %s" in query
+    query, params = conn.cursor().executed[0]
+    normalized = " ".join(query.split())
+    assert "order by (p.created_at >= now() - make_interval(days => %s)) desc, " \
+        "p.last_video_discovery_at asc nulls first, p.id asc limit %s" in normalized
+    assert params[-2] == app.NEW_BALL_PRIORITY_WINDOW_DAYS
+    assert params[-1] == 90
+
+
+def test_fetch_products_to_search_prioritizes_recently_discovered_products():
+    """Al: 'for the first period of time, 30 days from a ball being
+    discovered can we prioritize that ball to have its videos searched
+    for. the videos for a ball are most often published in those first 30
+    days.' fetch_products_to_search doesn't evaluate created_at itself
+    (that's Postgres's job against the real column at query time) -- this
+    test just guards that the query text/params actually carry the
+    NEW_BALL_PRIORITY_WINDOW_DAYS-day window as the FIRST sort key, ahead
+    of the existing last_video_discovery_at rotation, for both the default
+    and brand_id scopes."""
+    conn = _FakeConn(products=[{"id": "p1", "name": "Absolute", "brand_name": "Storm"}])
+    app.fetch_products_to_search(conn, {}, max_products=70)
+
+    query, params = conn.cursor().executed[0]
+    normalized = " ".join(query.split())
+    created_at_clause_pos = normalized.index("p.created_at >= now() - make_interval(days => %s)) desc")
+    last_discovery_clause_pos = normalized.index("p.last_video_discovery_at asc nulls first")
+    assert created_at_clause_pos < last_discovery_clause_pos
+    assert app.NEW_BALL_PRIORITY_WINDOW_DAYS == 30
+    assert params == [app.NEW_BALL_PRIORITY_WINDOW_DAYS, 70]
 
 
 def test_fetch_products_to_search_explicit_product_ids_skips_status_filter():
@@ -687,11 +715,15 @@ def test_fetch_products_to_search_brand_id_scope_also_skips_published():
     app.fetch_products_to_search(conn, {"brand_id": "brand-1"}, max_products=90)
 
     query, params = conn.cursor().executed[0]
-    assert "p.published = true" not in query
-    assert "p.status = 'current'" in query
-    assert "p.brand_id = %s" in query
+    normalized = " ".join(query.split())
+    assert "p.published = true" not in normalized
+    assert "p.status = 'current'" in normalized
+    assert "p.brand_id = %s" in normalized
     assert params[0] == "brand-1"
-    assert "order by p.last_video_discovery_at asc nulls first, p.id asc limit %s" in query
+    assert "order by (p.created_at >= now() - make_interval(days => %s)) desc, " \
+        "p.last_video_discovery_at asc nulls first, p.id asc limit %s" in normalized
+    assert params[-2] == app.NEW_BALL_PRIORITY_WINDOW_DAYS
+    assert params[-1] == 90
 
 
 def test_fetch_products_to_search_casts_product_ids_to_uuid_array():

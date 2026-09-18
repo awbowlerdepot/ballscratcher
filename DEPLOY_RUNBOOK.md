@@ -16018,6 +16018,127 @@ push is enough:
 git push   # deploy-learn-site.yml builds and deploys as usual
 ```
 
+### 6bl. New-ball video-discovery priority window + Video Candidates published sort + product thumbnail (2026-09-18)
+
+Three related asks from Al in the same conversation -- two in one message,
+a third moments later once he saw the Video Candidates tab open. Grouped
+into one dated entry since they touch the same two features
+(`video_discovery`'s rotation, 6i/6i.6/ROTATION section above; and
+`list_video_candidates`/the Video Candidates tab, 6ab.2 above) and shipped
+together.
+
+**1. New-ball priority window.** Al: "for the first period of time, 30
+days from a ball being discovered can we prioritize that ball to have its
+videos searched for. the videos for a ball are most often published in
+those first 30 days." The existing ROTATION fix (see 6i above,
+`last_video_discovery_at asc nulls first`) treats every product
+identically regardless of age -- once the catalog is fully searched at
+least once (the common case now), a brand-new product's first search
+could end up waiting behind the entire rotation, past the exact window
+when its videos are actually likely to appear. `src/video_discovery/
+app.py` gained `NEW_BALL_PRIORITY_WINDOW_DAYS = 30` and a new first-tier
+ORDER BY key ahead of the existing rotation, on the default/brand_id
+scopes only (the explicit `product_ids` scope is untouched, same as the
+existing rotation carve-out for it):
+```sql
+order by (p.created_at >= now() - make_interval(days => %s)) desc,
+         p.last_video_discovery_at asc nulls first, p.id asc
+```
+Every product discovered (via `products.created_at`) within the last 30
+days now sorts as a group ahead of every older product, on *every* `{}`/
+brand_id invocation -- not a one-time head start. That's deliberate: a new
+ball re-sorts to the front tier even after being searched once, so it
+gets picked on essentially every invocation for its first 30 days
+(matching Al's "most often published in those first 30 days" observation
+-- a single search near discovery would likely miss videos posted a week
+or two later). Once a product ages past 30 days it falls back into the
+same `last_video_discovery_at` rotation every established product already
+uses. See the new "NEW-BALL PRIORITY WINDOW (2026-09-18)" section in
+`app.py`'s module docstring (right after the existing ROTATION section)
+for the full reasoning.
+
+**2. Video Candidates published-date sort.** Al: "can we make the video
+candidates tab sortable by published, ascending and descending." Added a
+`sort` param to `list_video_candidates` (`src/admin_api/service.py`) and
+`GET /video-candidates` (`app.py`), mirroring `list_products`'
+`_SORT_ORDER_BY`/`_DEFAULT_ORDER_BY` pattern: `_VIDEO_CANDIDATE_SORT_ORDER_BY`
+maps `"published_asc"`/`"published_desc"` to `pv.published_at asc/desc
+nulls last, pv.id asc` (nulls last on both directions -- an unknown
+publish date isn't meaningfully "earliest", it just shouldn't crowd out
+rows that actually have one); anything else, including the old default,
+falls back to `_DEFAULT_VIDEO_CANDIDATE_ORDER_BY` (unchanged:
+`pv.match_confidence asc, pv.created_at asc, pv.id asc`). `pv.published_at`
+is YouTube's own `snippet.publishedAt` for the candidate video, distinct
+from `pv.created_at` (when this project discovered/inserted the row).
+admin-spa: `VideoCandidateSort` type + `sort?` field on
+`ListVideoCandidatesParams` (`admin-spa/src/api/types.ts`), and a new
+"Sort" `<select>` in `VideoCandidatesPage.tsx`'s filter bar ("Match
+confidence (default)" / "Published (oldest first)" / "Published (newest
+first)"), wired into `load()`'s params and the page's `useEffect` deps.
+
+**3. Product image + name on Video Candidates rows.** Al, moments later,
+same conversation: "it would be helpful to be able to see the product
+from that same video candidates list so we can easily see the ball to
+verify that it is the ball in the video." `product_name`/`brand_name`
+were already selected, but text alone doesn't let an admin eyeball-verify
+a candidate against the real ball without navigating to the product
+detail page. `list_video_candidates`'s SELECT gained `pimg.image_url as
+product_image_url` via a new `left join lateral` against
+`product_images`, picking the product's thumbnail row (`is_thumbnail`,
+falling back to the first visible image by `display_order` when none is
+flagged as thumbnail) and filtering on `pi.is_visible`:
+```sql
+left join lateral (
+    select coalesce(pi.stored_url, pi.source_url) as image_url
+    from product_images pi
+    where pi.product_id = p.id and pi.is_visible
+    order by pi.is_thumbnail desc, pi.display_order asc, pi.id asc
+    limit 1
+) pimg on true
+```
+Same `coalesce(stored_url, source_url)` URL preference admin-spa's own
+`ProductDetailPage.tsx` image cards already use (`stored_url` is the
+processed/centered variant, `source_url` the always-present scraped
+fallback). Returns `null` for a product with no visible images -- the
+frontend already handles a missing image (the candidate's own
+`thumbnail_url` can be null too). `admin-spa/src/api/types.ts` gained
+`product_image_url: string | null` on `VideoCandidate`; the Product
+column in `VideoCandidatesPage.tsx` now renders a 40x40px thumbnail (gray
+placeholder box when null) next to the brand/product name.
+
+**Tests.** `tests/test_video_discovery.py`: updated
+`test_fetch_products_to_search_default_scope_rotates_never_searched_first`
+and `test_fetch_products_to_search_brand_id_scope_also_skips_published`
+for the new two-tier ORDER BY text, plus a new
+`test_fetch_products_to_search_prioritizes_recently_discovered_products`.
+`tests/test_admin_api_service.py`: new
+`test_list_video_candidates_default_sort_unchanged`,
+`test_list_video_candidates_sort_published_asc`,
+`test_list_video_candidates_sort_published_desc`,
+`test_list_video_candidates_unrecognized_sort_falls_back_to_default`,
+`test_list_video_candidates_selects_product_image_url`; also fixed
+`test_list_video_candidates_status_none_without_product_id_omits_where_
+entirely`, which previously asserted `"where" not in query` against the
+whole query text -- the new lateral join legitimately has its own `WHERE`
+for correlation/visibility filtering, so that test now splits the query
+on `"left join lateral"` and only asserts `"where" not in` the outer
+portion. All verified passing by manually invoking each test function
+directly with `python3 -c "..."` -- no `pytest` binary available in this
+sandbox and no network to install it, the same pre-existing sandbox
+limitation noted in several recent entries (e.g. 6bk), not a gap in this
+feature's testing. `npx tsc -b --force` in `admin-spa/` exits clean.
+
+**Deploy.** No `template.yaml` changes for any of these three --
+`GET /video-candidates` already existed and just gained a query param,
+`VideoDiscoveryFunction`'s scope handling is pure application logic, and
+the admin-spa proxy+ catch-all already covers everything:
+
+```bash
+sam build && sam deploy   # video_discovery + admin_api (no scoped sam build -- see 6a.5)
+cd admin-spa && npm run build   # tsc -b + vite build
+git push   # triggers the GitHub Actions deploy for admin-spa
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

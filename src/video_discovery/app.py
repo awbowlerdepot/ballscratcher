@@ -143,6 +143,33 @@ least once, this naturally cycles back to the least-recently-searched
 products, which is also correct behavior long-term (new review videos get
 posted well after a ball's release).
 
+NEW-BALL PRIORITY WINDOW (2026-09-18): Al: "for the first period of time,
+30 days from a ball being discovered can we prioritize that ball to have
+its videos searched for. the videos for a ball are most often published
+in those first 30 days." Plain last_video_discovery_at rotation treats
+every product identically regardless of age -- a ball discovered
+yesterday and a ball discovered two years ago compete for the same
+70-searches/day budget on equal footing, and once the catalog is fully
+searched at least once (the common case now), a brand-new product's
+FIRST search can end up waiting behind the entire rest of the rotation
+before it's ever picked, well past the exact window (the first 30 days
+after discovery) when its videos are actually most likely to appear.
+Fixed by adding a first-tier sort key ahead of the existing rotation:
+default/brand_id scopes now order by `(p.created_at >= now() -
+NEW_BALL_PRIORITY_WINDOW_DAYS) desc` FIRST, so every product discovered
+within the last 30 days sorts as a group ahead of every older product,
+with the existing last_video_discovery_at/id ordering still deciding
+order within each group. This means a new ball gets searched on
+essentially every invocation for its first 30 days (since it keeps
+re-sorting into the front tier even after being searched once), not just
+once during that window -- matching Al's "most often published in those
+first 30 days" observation, where a single search near discovery time
+would likely miss videos posted a week or two later. product_ids scope is
+unaffected (an explicit list is already a deliberate choice, same
+reasoning as the existing rotation carve-out for it), and once a product
+ages past 30 days it simply falls back into the same rotation every other
+established product already uses.
+
 HARD QUOTA CONSTRAINT (real, CONFIRMED by the user directly in Google Cloud
 console -- not a units-math estimate -- same discipline as this project's
 other real, disclosed constraints like the AWS account's 10-execution
@@ -329,6 +356,14 @@ SHORT_REJECTED_BY = f"video_discovery (duration < {MIN_VIDEO_DURATION_SECONDS}s,
 PRE_ANNOUNCEMENT_BUFFER_DAYS = 45
 
 PRE_RELEASE_REJECTED_BY = "video_discovery (published before product's announcement/pre-release window)"
+
+# NEW-BALL PRIORITY WINDOW (see module docstring) -- Al: "for the first
+# period of time, 30 days from a ball being discovered can we prioritize
+# that ball to have its videos searched for. the videos for a ball are
+# most often published in those first 30 days." Products with
+# products.created_at inside this window sort ahead of every older
+# product in fetch_products_to_search's default/brand_id ordering.
+NEW_BALL_PRIORITY_WINDOW_DAYS = 30
 
 # Retried status codes: 429 is the real, confirmed cause here (YouTube's
 # per-minute search.list rate limit -- see module docstring's incident
@@ -761,13 +796,19 @@ def fetch_products_to_search(conn, job: dict, max_products: int) -> list:
     computable cutoff as "never reject", same as every other caller of
     is_before_release/compute_earliest_valid_video_date.
 
-    Default/brand_id scopes order by last_video_discovery_at asc nulls
-    first (see module docstring's ROTATION section) -- this is what makes
-    repeated {} invocations actually progress through the catalog instead
-    of re-selecting the same top-N products every time. product_ids scope
-    ignores that column entirely (an explicit list is already a deliberate
-    choice, not something to rotate) but still orders by p.id for
-    deterministic results when len(product_ids) > max_products."""
+    Default/brand_id scopes order by (p.created_at within the last
+    NEW_BALL_PRIORITY_WINDOW_DAYS days) desc FIRST, then
+    last_video_discovery_at asc nulls first (see module docstring's
+    ROTATION and NEW-BALL PRIORITY WINDOW sections) -- recently-discovered
+    products sort as a group ahead of every older product (since their
+    videos are most often published in that same window, per Al), and the
+    existing rotation still decides ordering within each group, which is
+    what makes repeated {} invocations actually progress through the
+    catalog instead of re-selecting the same top-N products every time.
+    product_ids scope ignores both of those entirely (an explicit list is
+    already a deliberate choice, not something to rotate or prioritize)
+    but still orders by p.id for deterministic results when
+    len(product_ids) > max_products."""
     query = """
         select p.id, p.name, b.name as brand_name, p.release_date, p.announced_date
         from products p
@@ -799,9 +840,17 @@ def fetch_products_to_search(conn, job: dict, max_products: int) -> list:
 
     if product_ids:
         query += " order by p.id asc limit %s"
+        params.append(max_products)
     else:
-        query += " order by p.last_video_discovery_at asc nulls first, p.id asc limit %s"
-    params.append(max_products)
+        query += """
+            order by
+                (p.created_at >= now() - make_interval(days => %s)) desc,
+                p.last_video_discovery_at asc nulls first,
+                p.id asc
+            limit %s
+        """
+        params.append(NEW_BALL_PRIORITY_WINDOW_DAYS)
+        params.append(max_products)
 
     with conn.cursor() as cur:
         cur.execute(query, params)

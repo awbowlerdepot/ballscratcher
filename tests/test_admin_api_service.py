@@ -1447,7 +1447,68 @@ def test_list_video_candidates_status_none_without_product_id_omits_where_entire
     service.list_video_candidates(conn, status=None, limit=200, offset=0)
 
     query = conn.cursor().queries[0]
-    assert "where" not in query
+    # The product_image_url lateral join (see list_video_candidates' own
+    # docstring) has its own WHERE for correlation/visibility filtering --
+    # unrelated to this test's actual concern, which is that the OUTER
+    # status/product_id filter is fully omitted when both are absent.
+    # Check the outer portion of the query (everything before the lateral
+    # join) rather than a blanket "where" not in query.
+    outer_query = query.split("left join lateral")[0]
+    assert "where" not in outer_query
+
+
+# --- list_video_candidates: sort param (published_asc/published_desc) ---
+# Al: "can we make the video candidates tab sortable by published,
+# ascending and descending."
+
+def test_list_video_candidates_default_sort_unchanged():
+    conn = _QueryCapturingConnection()
+    service.list_video_candidates(conn, status="pending", limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "order by pv.match_confidence asc, pv.created_at asc, pv.id asc" in query
+
+
+def test_list_video_candidates_sort_published_asc():
+    conn = _QueryCapturingConnection()
+    service.list_video_candidates(conn, status="pending", sort="published_asc", limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "order by pv.published_at asc nulls last, pv.id asc" in query
+
+
+def test_list_video_candidates_sort_published_desc():
+    conn = _QueryCapturingConnection()
+    service.list_video_candidates(conn, status="pending", sort="published_desc", limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "order by pv.published_at desc nulls last, pv.id asc" in query
+
+
+def test_list_video_candidates_unrecognized_sort_falls_back_to_default():
+    conn = _QueryCapturingConnection()
+    service.list_video_candidates(conn, status="pending", sort="bogus", limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "order by pv.match_confidence asc, pv.created_at asc, pv.id asc" in query
+
+
+# --- list_video_candidates: product_image_url ---
+# Al: "it would be helpful to be able to see the product from that same
+# video candidates list so we can easily see the ball to verify that it
+# is the ball in the video."
+
+def test_list_video_candidates_selects_product_image_url():
+    conn = _QueryCapturingConnection()
+    service.list_video_candidates(conn, status="pending", limit=50, offset=0)
+
+    query = conn.cursor().queries[0]
+    assert "pimg.image_url as product_image_url" in query
+    assert "coalesce(pi.stored_url, pi.source_url)" in query
+    # Falls back to the first visible image by display_order when a
+    # product has images but none flagged as the thumbnail.
+    assert "order by pi.is_thumbnail desc, pi.display_order asc, pi.id asc" in query
+    assert "pi.is_visible" in query
 
 
 # --- Video candidates (YouTube content enrichment): approve/reject flow ---

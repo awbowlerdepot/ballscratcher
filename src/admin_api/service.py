@@ -2511,7 +2511,31 @@ def reorder_product_images(conn, product_id: str, image_ids: list) -> dict:
 # directly.
 # ---------------------------------------------------------------------
 
-def list_video_candidates(conn, status: str = "pending", product_id: str = None, limit: int = 50, offset: int = 0) -> list:
+_VIDEO_CANDIDATE_SORT_ORDER_BY = {
+    # Al: "can we make the video candidates tab sortable by published,
+    # ascending and descending." pv.published_at is YouTube's own
+    # snippet.publishedAt for the candidate video -- distinct from
+    # pv.created_at (when THIS project discovered/inserted the row).
+    # nulls last on both directions (not "nulls first" on asc) since an
+    # unknown publish date isn't meaningfully "earliest" -- it just
+    # shouldn't crowd out the rows that actually have a date, regardless
+    # of which direction is selected. pv.id is the same final-tiebreaker
+    # discipline as _DEFAULT_VIDEO_CANDIDATE_ORDER_BY below and every
+    # other paginated list in this file.
+    "published_asc": "pv.published_at asc nulls last, pv.id asc",
+    "published_desc": "pv.published_at desc nulls last, pv.id asc",
+}
+# The pre-existing default (match_confidence groups 'low' candidates
+# together for easier bulk review, created_at as the original insertion-
+# order tiebreaker, pv.id as the final deterministic one -- see this
+# function's own docstring for the pv.id fix's history). Unchanged
+# behavior when sort is None/unrecognized, same fallback pattern as
+# list_products' _SORT_ORDER_BY/_DEFAULT_ORDER_BY above.
+_DEFAULT_VIDEO_CANDIDATE_ORDER_BY = "pv.match_confidence asc, pv.created_at asc, pv.id asc"
+
+
+def list_video_candidates(conn, status: str = "pending", product_id: str = None, sort: str = None,
+                           limit: int = 50, offset: int = 0) -> list:
     """Real bug found via a live full-catalog run of
     scripts/auto_approve_video_candidates.py: a single video_discovery
     invocation inserts many product_videos rows in quick succession, often
@@ -2540,7 +2564,34 @@ def list_video_candidates(conn, status: str = "pending", product_id: str = None,
     what actually lets an admin spot and fix that kind of mismatch -- the
     existing Video Candidates tab only ever shows one status at a time and
     isn't scoped to a product by default, so a bad reassignment like this
-    could sit unnoticed indefinitely."""
+    could sit unnoticed indefinitely.
+
+    sort: None (default) keeps the original match_confidence/created_at/id
+    ordering (see _DEFAULT_VIDEO_CANDIDATE_ORDER_BY); "published_asc"/
+    "published_desc" switch to ordering by the candidate video's own
+    YouTube publish date instead (see _VIDEO_CANDIDATE_SORT_ORDER_BY) --
+    Al's ask, so an admin can review a product's candidates oldest- or
+    newest-published-first rather than only by match confidence. An
+    unrecognized value falls back to the default, same as list_products'
+    sort handling.
+
+    product_image_url (2026-09-18): Al, same conversation as the sort ask
+    -- "it would be helpful to be able to see the product from that same
+    video candidates list so we can easily see the ball to verify that it
+    is the ball in the video." product_name/brand_name (text) were already
+    selected above, but a picture is what actually lets an admin eyeball-
+    verify a candidate against the real ball without navigating away to
+    the product detail page. Sourced via a lateral join to product_images
+    picking that product's thumbnail row (is_thumbnail, falling back to
+    the first visible image by display_order when a product has images
+    but none flagged as the thumbnail -- shouldn't happen post-migration-
+    010's backfill, but the query doesn't assume it) -- same coalesce
+    (stored_url, source_url) preference admin-spa's own ProductDetailPage
+    image cards already use (stored_url is the processed/centered variant,
+    source_url is always present as the scraped fallback). None when a
+    product has no visible images at all; the frontend already has to
+    handle a missing image (e.g. thumbnail_url on the video candidate
+    itself can be null too)."""
     query = """
         select pv.id, pv.product_id, p.name as product_name, b.name as brand_name,
                pv.youtube_video_id, pv.title, pv.channel_title, pv.published_at,
@@ -2549,9 +2600,17 @@ def list_video_candidates(conn, status: str = "pending", product_id: str = None,
                pv.created_at, pv.resolved_at, pv.resolved_by,
                pv.view_count, pv.like_count, pv.comment_count,
                pv.duration_seconds, pv.stats_fetched_at,
-               (pv.summary is not null) as has_summary
+               (pv.summary is not null) as has_summary,
+               pimg.image_url as product_image_url
         from product_videos pv
         join products p on p.id = pv.product_id
+        left join lateral (
+            select coalesce(pi.stored_url, pi.source_url) as image_url
+            from product_images pi
+            where pi.product_id = p.id and pi.is_visible
+            order by pi.is_thumbnail desc, pi.display_order asc, pi.id asc
+            limit 1
+        ) pimg on true
         join brands b on b.id = p.brand_id
     """
     params = []
@@ -2564,7 +2623,7 @@ def list_video_candidates(conn, status: str = "pending", product_id: str = None,
         params.append(product_id)
     if conditions:
         query += " where " + " and ".join(conditions)
-    query += " order by pv.match_confidence asc, pv.created_at asc, pv.id asc limit %s offset %s"
+    query += " order by " + _VIDEO_CANDIDATE_SORT_ORDER_BY.get(sort, _DEFAULT_VIDEO_CANDIDATE_ORDER_BY) + " limit %s offset %s"
     params += [limit, offset]
 
     with conn.cursor() as cur:

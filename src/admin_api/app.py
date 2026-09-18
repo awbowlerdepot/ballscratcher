@@ -804,6 +804,7 @@ def refresh_video_summary(product_id: str):
 def get_video_candidates(
     status: str = Query("pending"),
     product_id: Optional[str] = Query(None),
+    sort: Optional[str] = Query(None),
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
 ):
@@ -816,10 +817,17 @@ def get_video_candidates(
     # Combat/Combat Hybrid siblings). Every other caller of this route is
     # unaffected -- "pending" (the existing default) and any other literal
     # status value still filter exactly as before.
+    #
+    # sort -- Al: "can we make the video candidates tab sortable by
+    # published, ascending and descending." "published_asc"/
+    # "published_desc" only (see service._VIDEO_CANDIDATE_SORT_ORDER_BY);
+    # anything else (including the default None) falls back to the
+    # original match-confidence ordering, same permissive
+    # unrecognized-value handling as GET /products' own sort param.
     query_status = None if status == "all" else status
     conn = service.get_db_connection()
     try:
-        items = service.list_video_candidates(conn, status=query_status, product_id=product_id, limit=limit, offset=offset)
+        items = service.list_video_candidates(conn, status=query_status, product_id=product_id, sort=sort, limit=limit, offset=offset)
         pending_count = service.get_pending_video_count(conn) if status == "pending" else None
         return {"items": items, "pending_count": pending_count}
     finally:

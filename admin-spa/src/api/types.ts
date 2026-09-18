@@ -499,6 +499,14 @@ export interface VideoCandidate {
   product_id: string;
   product_name: string;
   brand_name: string;
+  // Al: "it would be helpful to be able to see the product from that same
+  // video candidates list so we can easily see the ball to verify that it
+  // is the ball in the video." The product's own thumbnail image (falling
+  // back to its first visible image when no thumbnail is flagged -- see
+  // list_video_candidates' own docstring in admin_api/service.py), NOT
+  // the YouTube video's thumbnail_url below. null when the product has no
+  // visible images at all.
+  product_image_url: string | null;
   youtube_video_id: string;
   title: string;
   channel_title: string;
@@ -527,6 +535,13 @@ export interface VideoCandidate {
   has_summary: boolean;
 }
 
+// Al: "can we make the video candidates tab sortable by published,
+// ascending and descending." Matches admin_api/service.py's
+// _VIDEO_CANDIDATE_SORT_ORDER_BY keys exactly -- undefined/omitted keeps
+// the original match-confidence ordering (see that dict's own
+// _DEFAULT_VIDEO_CANDIDATE_ORDER_BY fallback).
+export type VideoCandidateSort = "published_asc" | "published_desc";
+
 export interface ListVideoCandidatesParams {
   // "all" omits the status filter server-side (mapped to NULL) -- see
   // GET /video-candidates. The admin-site tab's own dropdown never
@@ -534,6 +549,7 @@ export interface ListVideoCandidatesParams {
   // does), so admin-spa mirrors that: pending/approved/rejected only.
   status?: VideoCandidateStatus | "all";
   product_id?: string;
+  sort?: VideoCandidateSort;
   limit?: number;
   offset?: number;
 }
