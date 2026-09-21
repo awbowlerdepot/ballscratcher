@@ -1253,6 +1253,20 @@ def discover_all_price_sources(limit: Optional[int] = Query(None, gt=0), scrape_
     return service.queue_price_discovery_batch(limit, scrape_only=scrape_only)
 
 
+@app.post("/admin/sync-bowlerdepot-reconciliation")
+def sync_bowlerdepot_reconciliation():
+    # On-demand "sync BowlerDepot matches now" trigger -- real incident,
+    # Al: "we just added some balls that are in this project to the
+    # bowlerdepot.com and the prices aren't being found," then "maybe it
+    # is the bowlerdepot_reconciliation that hasn't run" once we traced
+    # discover-all-price-sources above back to depending entirely on an
+    # unscheduled-manual-trigger-free daily job for its match data. See
+    # service.queue_bowlerdepot_reconciliation's docstring for the full
+    # root-cause writeup. No conn/product scoping -- same catalog-wide,
+    # no-existence-check shape as /admin/refresh-video-stats.
+    return service.queue_bowlerdepot_reconciliation()
+
+
 @app.post("/products/{product_id}/check-price")
 def check_price(product_id: str):
     # On-demand trigger for this product's approved price sources -- same

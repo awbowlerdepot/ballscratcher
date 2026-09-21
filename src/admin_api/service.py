@@ -2111,6 +2111,51 @@ def queue_video_stats_refresh(limit: int = None) -> dict:
     return {"queued": True, "limit": limit}
 
 
+def queue_bowlerdepot_reconciliation() -> dict:
+    """On-demand "sync BowlerDepot matches now" trigger (POST /admin/
+    sync-bowlerdepot-reconciliation) -- real incident, Al: "we just added
+    some balls that are in this project to the bowlerdepot.com and the
+    prices aren't being found" (example: 900 Global Portal). Root cause,
+    traced live: discover-price-sources (queue_price_discovery/_batch
+    above) only ever turns an EXISTING bowlerdepot_products match into a
+    product_price_sources candidate -- see discover_bigcommerce_
+    candidates's own docstring (price_checker/app.py). It never creates
+    that match itself. The match is only ever written by
+    BowlerDepotReconciliationFunction (src/bowlerdepot_reconciliation),
+    which runs on its own DailySchedule with NO manual trigger at all --
+    so a ball added to the real bowlerdepot.com store since the last
+    scheduled run has no match yet, and "Discover price sources" silently
+    finds nothing for it (0 candidates, 0 errors, no visible reason why --
+    see queue_price_discovery's own docstring for that same silent-no-op
+    shape). Al confirmed he'd already tried the per-product discover
+    button and it wasn't finding the new ball, which is exactly what
+    you'd see while stuck waiting on tomorrow's schedule.
+
+    Same "function NAME env var, direct lambda:InvokeFunction, no queue
+    in front of it" shape as every other on-demand trigger in this file
+    (queue_video_discovery, queue_price_discovery, queue_url_discovery,
+    ...). Catalog-wide by design, same as queue_video_stats_refresh --
+    BowlerDepotReconciliationFunction's own handler() takes no event-shape
+    branching at all (always re-checks every current+published product
+    against BowlerDepot's full live catalog), so there's no per-product
+    scope to pass and no conn/existence check needed here either. Payload
+    is genuinely empty ({}) rather than omitted -- InvocationType='Event'
+    still requires a valid (if unused) JSON body."""
+    function_name = os.environ.get("BOWLERDEPOT_RECONCILIATION_FUNCTION_NAME")
+    if not function_name:
+        return {"queued": False, "reason": "BOWLERDEPOT_RECONCILIATION_FUNCTION_NAME is not configured on this deployment"}
+
+    import boto3
+
+    lambda_client = boto3.client("lambda")
+    lambda_client.invoke(
+        FunctionName=function_name,
+        InvocationType="Event",
+        Payload=json.dumps({}),
+    )
+    return {"queued": True}
+
+
 def set_product_published(conn, product_id: str, published: bool) -> dict:
     with conn.cursor() as cur:
         cur.execute(

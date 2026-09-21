@@ -16139,6 +16139,104 @@ cd admin-spa && npm run build   # tsc -b + vite build
 git push   # triggers the GitHub Actions deploy for admin-spa
 ```
 
+### 6bm. Real incident: newly-added BowlerDepot balls had no price sources, ever, no matter how many times "Discover price sources" was clicked (2026-09-20)
+
+Al: "we just added some balls that are in this project to the
+bowlerdepot.com and the prices aren't being found," then gave a concrete
+example (`https://bowlerdepot.com/900-global-portal/`, "900 Global
+Portal"). Confirmed live: this product exists in our own DB (published,
+`status='current'`), and BowlerDepot's real storefront H1/page title for
+it is literally `"900 Global Portal"` -- an exact match for our own
+`brand_name + name`, so once matched it's a clean `ratio=1.0`, no
+suffix-collision or fuzzy-match ambiguity (see 6ba/312-315's own suffix-
+collision writeup -- this isn't that bug). Al also confirmed he'd already
+tried the per-product "Discover price sources" button on this exact
+product and it found nothing.
+
+**Root cause, traced through the code (no direct DB access in this
+sandbox -- see README's own note on that -- so this was code-reasoning +
+live storefront checks, not a DB query):** `discover-price-sources`
+(`queue_price_discovery`/`queue_price_discovery_batch`, `admin_api/
+service.py`) only ever turns an *existing* `bowlerdepot_products` match
+into a `product_price_sources` candidate -- see `discover_
+bigcommerce_candidates`'s own docstring in `price_checker/app.py`. It
+never creates that match itself; `list_bowlerdepot_matches` just reads
+whatever's already in the `bowlerdepot_products` table. That table is
+written ONLY by `BowlerDepotReconciliationFunction`
+(`src/bowlerdepot_reconciliation/app.py`), which runs on its own
+`DailySchedule` (`rate(1 day)`) and, unlike every other discovery-style
+Lambda in this project, had **no manual/on-demand trigger at all**. So a
+ball added to the real bowlerdepot.com store since the last scheduled
+reconciliation run genuinely has no match yet, and `discover-price-
+sources` correctly finds 0 candidates for it -- silently: `discover_
+bigcommerce_candidates` returns `{"inserted": 0, "errors": 0}`, no
+exception, no visible signal anywhere that the real blocker is a stale/
+absent match rather than a broken discovery run. That's exactly what
+"I clicked the button and it isn't finding them" looks like from the
+admin-spa side, with nothing to point at.
+
+**Fix: give reconciliation the same on-demand trigger every other
+discovery Lambda already has**, rather than leaving it schedule-only.
+`admin_api/service.py` gained `queue_bowlerdepot_reconciliation()`
+(bare `lambda:invoke`, `InvocationType='Event'`, empty `{}` payload --
+`BowlerDepotReconciliationFunction`'s own `handler()` takes no event-
+shape branching at all, always re-checks the whole current+published
+catalog in one pass, so there's no per-product scope or `product_ids`
+concept to pass here, same "catalog-wide, no conn, no existence check"
+shape as `queue_video_stats_refresh`). Wired as `POST /admin/sync-
+bowlerdepot-reconciliation` in `app.py`. `template.yaml`: `AdminApiFunction`
+gained a `BOWLERDEPOT_RECONCILIATION_FUNCTION_NAME` env var (`!Ref
+BowlerDepotReconciliationFunction`) and a narrowly-scoped `lambda:
+InvokeFunction` IAM statement against `BowlerDepotReconciliationFunction.
+Arn`, same "narrowest permission, one statement per invokable function"
+convention every other on-demand trigger in this stack already follows.
+
+**admin-spa.** New "BowlerDepot price-source sync" section on the Batch
+Jobs tab (`BatchJobsPage.tsx`), right after "Discover new balls" -- a
+single `SyncReconciliationButton` (mirrors `DiscoveryButton`'s fire-and-
+forget shape, just with no per-brand `target` since there's nothing to
+select). `syncBowlerDepotReconciliation()` client function + `SyncBowler
+DepotReconciliationResult` type (`api/client.ts`/`types.ts`). The intended
+workflow going forward, when a newly-added ball's price sources aren't
+showing up: click "Sync BowlerDepot matches" first (re-matches the whole
+catalog against BowlerDepot's live store, takes a few minutes for a full
+catalog pass), then retry "Discover price sources" on the product.
+
+**Tests.** `tests/test_admin_api_service.py`: new `test_queue_
+bowlerdepot_reconciliation_invokes_function_with_empty_payload` and
+`test_queue_bowlerdepot_reconciliation_missing_function_name_returns_
+not_queued`, same fake-boto3-via-`sys.modules` pattern as `queue_video_
+stats_refresh`'s own tests. Both pass; full suite re-run manually
+(`python3 -c` invocation of every `test_*` function -- no `pytest`
+binary/network in this sandbox, same disclosed limitation as every
+other entry in this file) shows 352/357 passing, the same 5 pre-existing
+failures as before this change (all `TypeError: missing 1 required
+positional argument: 'monkeypatch'` -- pytest-fixture-dependent tests
+that can't run outside a real pytest session; unrelated to this feature).
+`npx tsc -b --force` in `admin-spa/` exits clean. `template.yaml` re-
+verified parseable via the usual CFN-tolerant PyYAML loader (see 6a.5),
+new env var and IAM statement both confirmed present on `AdminApiFunction`.
+
+**Deploy.**
+
+```bash
+sam build && sam deploy   # bowlerdepot_reconciliation (unchanged) + admin_api
+cd admin-spa && npm run build   # tsc -b + vite build
+git push   # triggers the GitHub Actions deploy for admin-spa
+```
+
+**Still worth knowing:** this doesn't change reconciliation's own daily
+schedule or `discover_bigcommerce_candidates`'s matching logic -- it just
+closes the "no way to force it right now" gap. Also worth checking, if
+this keeps coming up for freshly-added balls specifically: whether it's
+genuinely just same-day timing (added to the store, checked before the
+next daily run) versus something in reconciliation itself silently
+failing to complete (`get_bigcommerce_credentials()`'s very first call
+hard-fails the whole invocation if `BigCommerceSecretArn` is ever wrong,
+per that function's own `Enabled: true` comment in `template.yaml`) --
+CloudWatch logs for `bowling-scraper-bowlerdepot-reconciliation` after
+clicking the new Sync button will show which one it is.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

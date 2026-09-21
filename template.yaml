@@ -1623,6 +1623,16 @@ Resources:
           # no queue in front of it" shape as VIDEO_DISCOVERY_FUNCTION_NAME
           # immediately above.
           PRICE_CHECKER_FUNCTION_NAME: !Ref PriceCheckerFunction
+          # Read by service.py's queue_bowlerdepot_reconciliation (POST
+          # /admin/sync-bowlerdepot-reconciliation) -- Al: "we just added
+          # some balls that are in this project to the bowlerdepot.com and
+          # the prices aren't being found," traced to BowlerDepotReconciliation-
+          # Function's DailySchedule being the ONLY thing that ever writes a
+          # bowlerdepot_products match (discover-price-sources just reads
+          # one that already exists). Same "function NAME for a direct
+          # lambda:InvokeFunction call, no queue in front of it" shape as
+          # PRICE_CHECKER_FUNCTION_NAME immediately above.
+          BOWLERDEPOT_RECONCILIATION_FUNCTION_NAME: !Ref BowlerDepotReconciliationFunction
           # Read by service.py's queue_article_generation (POST
           # /products/{id}/generate-article) -- same "function NAME for a
           # direct lambda:InvokeFunction call, no queue in front of it"
@@ -1746,6 +1756,15 @@ Resources:
               Action:
                 - lambda:InvokeFunction
               Resource: !GetAtt PriceCheckerFunction.Arn
+        # For queue_bowlerdepot_reconciliation (POST /admin/sync-bowlerdepot-
+        # reconciliation) -- same "narrowest permission, scoped to exactly
+        # this function's own ARN" convention as the PriceCheckerFunction
+        # grant immediately above.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource: !GetAtt BowlerDepotReconciliationFunction.Arn
         # For queue_article_generation (POST /products/{id}/generate-article)
         # -- same "narrowest permission, scoped to exactly this function's
         # own ARN" convention as the two grants immediately above.

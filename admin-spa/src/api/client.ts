@@ -55,6 +55,7 @@ import type {
   DeleteImageCandidateResult,
   SetPublishedResult,
   SkuStockHistoryResult,
+  SyncBowlerDepotReconciliationResult,
   UrlDiscoveryTarget,
   VideoCandidateListResult,
 } from "./types";
@@ -272,6 +273,15 @@ export function discoverPriceSourcesForProduct(productId: string): Promise<Disco
 
 export function checkPriceForProduct(productId: string): Promise<CheckPriceResult> {
   return apiPost<CheckPriceResult>(`/products/${encodeURIComponent(productId)}/check-price`);
+}
+
+// Batch Jobs tab's "Sync BowlerDepot matches now" button -- see
+// queue_bowlerdepot_reconciliation's own docstring for the real incident
+// (a newly-added ball's price never getting found) this closes the gap
+// on. Catalog-wide, no product_id -- BowlerDepotReconciliationFunction's
+// own handler always re-checks every current+published product.
+export function syncBowlerDepotReconciliation(): Promise<SyncBowlerDepotReconciliationResult> {
+  return apiPost<SyncBowlerDepotReconciliationResult>("/admin/sync-bowlerdepot-reconciliation");
 }
 
 // Manual-override path -- see create_product_price_source's own

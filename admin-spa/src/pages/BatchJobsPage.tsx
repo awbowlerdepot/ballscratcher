@@ -9,6 +9,7 @@ import {
   refreshVideoSummary,
   rescrapeProduct,
   runUrlDiscovery,
+  syncBowlerDepotReconciliation,
 } from "../api/client";
 import type {
   Brand,
@@ -212,6 +213,56 @@ function DiscoveryButton({ target, label }: UrlDiscoveryTarget) {
   );
 }
 
+// Real incident, Al: "we just added some balls that are in this project
+// to the bowlerdepot.com and the prices aren't being found" (example:
+// 900 Global Portal). Root cause: the Pricing tab's "Discover price
+// sources" button only turns an EXISTING BowlerDepot match into a
+// product_price_sources candidate -- it never creates that match. The
+// match only ever comes from BowlerDepotReconciliationFunction, which
+// previously only ran on its own daily schedule with no manual trigger,
+// so a ball added to the live store since the last scheduled run
+// silently had nothing to discover yet. Same fire-and-forget shape as
+// DiscoveryButton above, just with no per-brand target -- this function's
+// own handler always re-checks the whole catalog in one pass, so there's
+// nothing to select here.
+function SyncReconciliationButton() {
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  async function run() {
+    setRunning(true);
+    setResult(null);
+    try {
+      const r = await syncBowlerDepotReconciliation();
+      setResult(
+        r.queued
+          ? "Started -- takes a few minutes to page through BowlerDepot's full catalog. Check CloudWatch logs, or just retry Discover price sources on the product shortly."
+          : (r.reason ?? "Not queued."),
+      );
+    } catch (err) {
+      setResult(`Error: ${err instanceof Error ? err.message : "failed"}`);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-1 rounded-lg border border-ink-200 bg-ink-100 p-3">
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-sm font-medium text-ink-800">Sync BowlerDepot matches</span>
+        <Button variant="primary" size="sm" onClick={run} disabled={running}>
+          {running ? "Starting…" : "Run"}
+        </Button>
+      </div>
+      <p className="text-xs text-ink-500">
+        Re-matches every current+published product against BowlerDepot's live catalog right now, instead of waiting for
+        tomorrow's daily schedule. Run this first if a newly-added ball's price sources aren't showing up.
+      </p>
+      {result && <p className="text-xs text-ink-500">{result}</p>}
+    </div>
+  );
+}
+
 function describeRescrape(r: RescrapeResult): string {
   return r.queued ? "queued for rescrape" : (r.reason ?? "not queued");
 }
@@ -368,6 +419,19 @@ export default function BatchJobsPage() {
           {urlDiscoveryTargets.map((t) => (
             <DiscoveryButton key={t.target} target={t.target} label={t.label} />
           ))}
+        </div>
+      </section>
+
+      <section className="flex flex-col gap-4">
+        <div>
+          <h2 className="text-lg font-semibold text-ink-800">BowlerDepot price-source sync</h2>
+          <p className="text-sm text-ink-500">
+            Separate from the crawls above -- this re-matches our catalog against BowlerDepot's own live BigCommerce
+            store (the source product_price_sources candidates come from), not a manufacturer site.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <SyncReconciliationButton />
         </div>
       </section>
 

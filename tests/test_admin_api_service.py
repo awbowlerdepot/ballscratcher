@@ -2755,6 +2755,66 @@ def test_queue_video_stats_refresh_missing_function_name_returns_not_queued():
     assert result == {"queued": False, "reason": "VIDEO_DISCOVERY_FUNCTION_NAME is not configured on this deployment"}
 
 
+# --- queue_bowlerdepot_reconciliation (Batch Jobs tab's "Sync BowlerDepot
+# matches" button, real incident: Al, "we just added some balls that are
+# in this project to the bowlerdepot.com and the prices aren't being
+# found" -> "maybe it is the bowlerdepot_reconciliation that hasn't run").
+# Same fake-boto3-via-sys.modules shape as queue_video_stats_refresh
+# above, just with no limit param and a genuinely empty ({}) payload --
+# BowlerDepotReconciliationFunction's own handler() takes no event-shape
+# branching at all.
+
+def test_queue_bowlerdepot_reconciliation_invokes_function_with_empty_payload():
+    fake_lambda = _FakeLambdaClient()
+
+    class _FakeBoto3:
+        def client(self, name):
+            assert name == "lambda"
+            return fake_lambda
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _FakeBoto3()
+    os.environ["BOWLERDEPOT_RECONCILIATION_FUNCTION_NAME"] = "bowling-scraper-bowlerdepot-reconciliation"
+    try:
+        result = service.queue_bowlerdepot_reconciliation()
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+        del os.environ["BOWLERDEPOT_RECONCILIATION_FUNCTION_NAME"]
+
+    assert result == {"queued": True}
+    assert len(fake_lambda.invocations) == 1
+    call = fake_lambda.invocations[0]
+    assert call["FunctionName"] == "bowling-scraper-bowlerdepot-reconciliation"
+    assert call["InvocationType"] == "Event"
+    assert json.loads(call["Payload"]) == {}
+
+
+def test_queue_bowlerdepot_reconciliation_missing_function_name_returns_not_queued():
+    os.environ.pop("BOWLERDEPOT_RECONCILIATION_FUNCTION_NAME", None)
+
+    class _ExplodingBoto3:
+        def client(self, name):
+            raise AssertionError("should never be called when the function name isn't configured")
+
+    real_boto3 = sys.modules.get("boto3")
+    sys.modules["boto3"] = _ExplodingBoto3()
+    try:
+        result = service.queue_bowlerdepot_reconciliation()
+    finally:
+        if real_boto3 is not None:
+            sys.modules["boto3"] = real_boto3
+        else:
+            del sys.modules["boto3"]
+
+    assert result == {
+        "queued": False,
+        "reason": "BOWLERDEPOT_RECONCILIATION_FUNCTION_NAME is not configured on this deployment",
+    }
+
+
 # --- list_url_discovery_targets / queue_url_discovery (Batch Jobs tab's
 # "Discover new balls" buttons, Al: "add some buttons to the batch jobs on
 # for each of the url discovery lambdas that will discover new balls on the

@@ -390,6 +390,19 @@ export interface CheckPriceResult {
   product_id?: string;
 }
 
+// POST /admin/sync-bowlerdepot-reconciliation -- real incident, Al: "we
+// just added some balls that are in this project to the bowlerdepot.com
+// and the prices aren't being found" (900 Global Portal). Root cause:
+// discover-price-sources only ever reads an EXISTING bowlerdepot_products
+// match; that match is only ever written by BowlerDepotReconciliation-
+// Function's own daily schedule, which had no manual trigger at all until
+// this. Same soft-fail queued/reason shape as every other on-demand
+// trigger, catalog-wide (no product_id) same as DiscoverAllPriceSources.
+export interface SyncBowlerDepotReconciliationResult {
+  queued: boolean;
+  reason?: string;
+}
+
 // POST /products/{id}/price-sources -- the manual-override path (see
 // create_product_price_source's own docstring): an admin attaching an
 // exact URL directly rather than waiting on/correcting discovery.
