@@ -16447,7 +16447,7 @@ psql "$DATABASE_URL" -f db/migrations/038_learn_videos.sql
 sam build && sam deploy   # admin_api (code + YouTube key env/IAM)
 git push                  # admin-spa
 # then on the Pi, so the next 7am run includes Learn videos:
-cd ~/dev/brusnwick-scraper && git pull
+cd ~/dev/brunsswick-scraper && git pull   # yes, "brunsswick" -- the Pi checkout's real folder name
 ```
 
 ## 7. Ongoing operations
