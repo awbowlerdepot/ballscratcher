@@ -97,8 +97,9 @@ export interface ArticleProductSpec {
   // Real BowlerDepot storefront product-page URL, resolved from
   // price_checker's own BigCommerce price-tracking data (014/016
   // migrations) -- null until that product has an approved+active
-  // BowlerDepot price source. See client.ts's bowlerDepotSearchUrl()
-  // for the fallback a frontend should use when this is null.
+  // BowlerDepot price source. Null means BowlerDepot doesn't carry the
+  // ball, so don't link to the storefront at all (ArticleDetailPage's
+  // "Shop this ball" CTA hides itself in that case).
   ecommerce_url?: string | null;
   // Real, last-checked price/currency/availability from that same
   // BowlerDepot price source (product_price_history) -- all null

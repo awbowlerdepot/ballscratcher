@@ -113,21 +113,6 @@ export function articleHref(article: { slug?: string | null; product_id: string 
   return `/articles/${encodeURIComponent(article.slug || article.product_id)}`;
 }
 
-// BowlerDepot's storefront doesn't expose a stable per-product URL from
-// this project's data (bowlerdepot_products only stores the BigCommerce
-// numeric product id/SKU -- see 001_init_schema.sql -- not a resolvable
-// slug/permalink, and BigCommerce's Stencil storefronts don't offer a
-// generic "view by id" route). Confirmed live (2026-09-05):
-// bowlerdepot.com's own Stencil search (search.php?search_query=...)
-// reliably lands a visitor on the matching product's real search result,
-// one click from the actual product page -- the same UX a manual search
-// box would give, just pre-filled. Good enough for a "Shop this ball"
-// link without inventing a URL scheme this project can't actually
-// verify resolves.
-export function bowlerDepotSearchUrl(productName: string): string {
-  return `https://bowlerdepot.com/search.php?search_query=${encodeURIComponent(productName)}`;
-}
-
 // On-demand image resizer/optimizer (src/image_resizer in the main repo,
 // fronted by CloudFront at img.bowleriq.io) -- Al: "with the learn site
 // nearing a release i think it is time to optimize the images." Every

@@ -16237,6 +16237,51 @@ per that function's own `Enabled: true` comment in `template.yaml`) --
 CloudWatch logs for `bowling-scraper-bowlerdepot-reconciliation` after
 clicking the new Sync button will show which one it is.
 
+### 6bn. Real incident: Hustle VP's "Shop this ball" CTA landed on Hustle 3TP -- CTA now hidden when BowlerDepot doesn't carry the ball (2026-09-30)
+
+Al (2026-09-13): "the hustle vp 'shop this ball' link does not go to the
+correct ball it goes to the hustle 3tp." The original wrong price-source
+row was fixed back then (score_match suffix-collision guard, see the
+6h.1-era fixes) and has since been replaced: as of 2026-09-30 Hustle
+VP's only price source is an approved bowling.com row pointing at the
+correct `roto-grip-hustle-vp-pearl.htm` page.
+
+**The remaining cause.** BowlerDepot doesn't carry Hustle VP at all
+(`bowlerdepot.com/roto-grip-hustle-vp/` 404s; the store's own search for
+"hustle vp" lists every other Hustle but not VP). So the public API's
+`ecommerce_url` (approved + active `api_provider = 'bigcommerce'` source
+only, see `public_api/service.py`) is null, and `ArticleDetailPage.tsx`
+fell back to `bowlerDepotSearchUrl(product.name)` -- a BowlerDepot site
+search whose results put Hustle 3TP first, under a banner claiming "This
+ball is currently available at BowlerDepot.com."
+
+**Fix.** The post-verdict CTA now renders only when `product.status ===
+"current"` AND `product.ecommerce_url` is set (Al chose "hide it" over
+softening the copy or keeping the search fallback). `bowlerDepotSearchUrl`
+had no other callers and was removed from `client.ts`. The CTA was never
+prerendered (see `scripts/prerender.ts`'s note), so there's no static-HTML
+side to this.
+
+**Scope on 2026-09-30:** 12 of 156 current published articles have no
+BowlerDepot link and lose the CTA until BowlerDepot lists them / a
+BigCommerce price source is approved: Hustle SOS, Hustle VP, Storm
+IDENTITY, IDENTITY B/C/P, TROPICAL SURGE PINK-PURPLE, 900 Global
+Vengeance Returns, Viking Conquest, MOTIV Covert VIP EXJ, and MOTIV
+Ascend (listed 4x -- looks like duplicate products/articles, not yet
+investigated). The CTA reappears on its own once a real link exists.
+
+**Not changed:** Hustle VP's and Hustle SOS's `bowlerdepot_products` rows
+are still `ambiguous`, last synced 2026-08-16, pointing at BigCommerce
+products 674 (Hustle 3TP) and 676 (Hustle HSB). They don't feed the CTA
+(only approved `product_price_sources` do), so they're stale data rather
+than a user-facing bug.
+
+**Verified:** `npx tsc -b` clean in `bowlerdepot-learn/`. Local dev
+server against the live API: 900 Global Portal still shows "Shop the
+Portal" -> `bowlerdepot.com/900-global-portal/`; Hustle VP shows no CTA.
+
+**Deploy.** Frontend only -- `git push` triggers `deploy-learn-site.yml`.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

@@ -3,7 +3,6 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   ApiError,
   articleHref,
-  bowlerDepotSearchUrl,
   estimateReadingTimeMinutes,
   formatArticleDate,
   getArticleBySlug,
@@ -364,10 +363,15 @@ export default function ArticleDetailPage() {
           just ecommerce_url presence -- a retired ball can still have a
           leftover BowlerDepot price-tracking row, and pushing readers to
           buy something no longer sold is worse than showing no CTA at
-          all. Falls back to bowlerDepotSearchUrl the same way every
-          other ecommerce link on this page already does when
-          ecommerce_url itself is null. */}
-      {product && product.status === "current" ? (
+          all.
+
+          Also gated on ecommerce_url (2026-09-30): it used to fall back
+          to a BowlerDepot site search when null, but null means
+          BowlerDepot doesn't actually carry the ball -- Hustle VP's
+          search landed on every other Hustle, 3TP first, under a banner
+          claiming "currently available at BowlerDepot.com." Al chose to
+          hide the CTA entirely until a real product link exists. */}
+      {product && product.status === "current" && product.ecommerce_url ? (
         <div className="mb-10 flex flex-wrap items-center justify-between gap-4 rounded-xl bg-accent px-6 py-6">
           <div>
             <p className="font-display text-lg font-semibold text-white">
@@ -376,7 +380,7 @@ export default function ArticleDetailPage() {
             <p className="mt-1 text-sm text-white/80">This ball is currently available at BowlerDepot.com.</p>
           </div>
           <a
-            href={product.ecommerce_url || bowlerDepotSearchUrl(product.name)}
+            href={product.ecommerce_url}
             target="_blank"
             rel="noreferrer"
             className="shrink-0 whitespace-nowrap rounded-lg bg-white px-5 py-3 font-display text-sm font-semibold text-accent hover:bg-white/90"
