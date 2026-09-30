@@ -942,6 +942,49 @@ export interface ListCoverstocksParams {
   offset?: number;
 }
 
+// Learn-site categories (migrations 031 + 037). GET /categories returns a
+// flat list; parent_id builds the tree (null = top level, a Learn header
+// tab). article_count is DIRECT articles only, any status -- what
+// delete_category's "still has articles" guard checks.
+export interface CategoryArticleType {
+  id: string;
+  category_id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  display_order: number;
+}
+
+export interface Category {
+  id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  product_type: string | null;
+  parent_id: string | null;
+  display_order: number;
+  article_count: number;
+  article_types: CategoryArticleType[];
+}
+
+export interface CategoryCreateInput {
+  name: string;
+  slug?: string;
+  description?: string;
+  parent_id?: string | null;
+  product_type?: string;
+}
+
+// parent_id: omit to leave the parent alone, null to move to top level.
+// description/product_type: "" clears the field.
+export interface CategoryUpdateInput {
+  name?: string;
+  slug?: string;
+  description?: string;
+  product_type?: string;
+  parent_id?: string | null;
+}
+
 // Blocked video channels (021_blocked_video_channels.sql): an admin-
 // curated denylist of YouTube channel display names (not stable
 // channel ids -- see the migration's header comment for why) whose

@@ -1825,13 +1825,21 @@ def list_categories(conn) -> list:
     article_types nested inline, ordered by display_order. Mirrors what
     public_api's own list_categories returns to the Learn site itself --
     this admin_api copy exists so the Articles review tab can eventually
-    show/filter by category+type without a second round-trip design."""
+    show/filter by category+type without a second round-trip design.
+
+    parent_id / article_count (migration 037): a flat list, not a nested
+    tree -- the Categories page builds the tree client-side from
+    parent_id, same "nest in the caller" shape as article_types below.
+    article_count is DIRECT articles only (any status), which is what
+    delete_category's "still has articles" guard checks; it doesn't roll
+    up a subtree."""
     with conn.cursor() as cur:
         cur.execute(
             """
-            select id, slug, name, description, product_type, display_order
-            from categories
-            order by display_order, name
+            select c.id, c.slug, c.name, c.description, c.product_type, c.parent_id, c.display_order,
+                   (select count(*) from product_articles pa where pa.category_id = c.id) as article_count
+            from categories c
+            order by c.display_order, c.name
             """
         )
         columns = [desc[0] for desc in cur.description]
@@ -1853,6 +1861,171 @@ def list_categories(conn) -> list:
     for c in categories:
         c["article_types"] = by_category.get(c["id"], [])
     return categories
+
+
+# ---------------------------------------------------------------------
+# Category management (migration 037) -- Al: "create a category 'Bowling
+# Tips' and then that can have sub categories". Backs the admin SPA's
+# Categories page. Same not-None-means-set partial-update convention as
+# update_price_site, except parent_id, where None is a real value ("move
+# to top level") -- update_category takes the _UNSET sentinel for "leave
+# parent alone" instead.
+# ---------------------------------------------------------------------
+
+_UNSET = object()
+
+
+def slugify_category_name(name: str) -> str:
+    """"Bowling Tips" -> "bowling-tips". Same normalization as
+    slugify_product_name (below), just one input."""
+    return _SLUG_NON_ALNUM_RE.sub("-", name.lower()).strip("-")
+
+
+def _next_sibling_display_order(cur, parent_id) -> int:
+    # New categories go last among their siblings. "is not distinct from"
+    # so parent_id=None matches the top-level (null-parent) siblings.
+    cur.execute(
+        "select coalesce(max(display_order) + 1, 0) from categories where parent_id is not distinct from %s",
+        (parent_id,),
+    )
+    return cur.fetchone()[0]
+
+
+def _is_descendant_or_self(cur, category_id: str, candidate_id: str) -> bool:
+    """True if candidate_id is category_id itself or anywhere in its
+    subtree -- i.e. making candidate_id the parent would create a cycle."""
+    cur.execute(
+        """
+        with recursive subtree as (
+            select id from categories where id = %s
+            union all
+            select c.id from categories c join subtree s on c.parent_id = s.id
+        )
+        select 1 from subtree where id = %s
+        """,
+        (category_id, candidate_id),
+    )
+    return cur.fetchone() is not None
+
+
+def create_category(conn, name: str, slug: str = None, description: str = None,
+                    parent_id: str = None, product_type: str = None) -> dict:
+    """slug defaults to slugify_category_name(name). categories.slug is
+    globally unique (migration 031) -- a duplicate surfaces as the DB's
+    own IntegrityError, same posture as create_price_site's unique name.
+    A nonexistent parent_id raises LookupError (404) rather than
+    surfacing as an FK violation."""
+    slug = (slug or "").strip() or slugify_category_name(name)
+    if not slug:
+        raise ValueError("Category name must contain at least one letter or number.")
+    with conn.cursor() as cur:
+        if parent_id is not None:
+            cur.execute("select id from categories where id = %s", (parent_id,))
+            if cur.fetchone() is None:
+                raise LookupError(f"No categories row with id {parent_id}")
+        display_order = _next_sibling_display_order(cur, parent_id)
+        cur.execute(
+            """
+            insert into categories (name, slug, description, parent_id, product_type, display_order)
+            values (%s, %s, %s, %s, %s, %s)
+            returning id
+            """,
+            (name, slug, description, parent_id, product_type, display_order),
+        )
+        category_id = cur.fetchone()[0]
+    conn.commit()
+    return {
+        "id": category_id, "name": name, "slug": slug, "description": description,
+        "parent_id": parent_id, "product_type": product_type, "display_order": display_order,
+    }
+
+
+def update_category(conn, category_id: str, name: str = None, slug: str = None, description: str = None,
+                    product_type: str = None, parent_id=_UNSET) -> dict:
+    """Partial update. parent_id: leave as _UNSET to keep the current
+    parent, pass None to move to top level, or an id to re-parent --
+    rejected with ValueError (409) if that id is this category or one of
+    its own descendants. Re-parenting puts the category last among its
+    new siblings. description/product_type: "" clears the field (stored
+    as null), None leaves it alone."""
+    with conn.cursor() as cur:
+        cur.execute("select id from categories where id = %s", (category_id,))
+        if cur.fetchone() is None:
+            raise LookupError(f"No categories row with id {category_id}")
+
+        set_clauses = []
+        params = []
+        if name is not None:
+            set_clauses.append("name = %s")
+            params.append(name)
+        if slug is not None:
+            slug = slug.strip()
+            if not slug:
+                raise ValueError("Slug can't be empty.")
+            set_clauses.append("slug = %s")
+            params.append(slug)
+        if description is not None:
+            set_clauses.append("description = %s")
+            params.append(description or None)
+        if product_type is not None:
+            set_clauses.append("product_type = %s")
+            params.append(product_type or None)
+        if parent_id is not _UNSET:
+            if parent_id is not None:
+                cur.execute("select id from categories where id = %s", (parent_id,))
+                if cur.fetchone() is None:
+                    raise LookupError(f"No categories row with id {parent_id}")
+                if _is_descendant_or_self(cur, category_id, parent_id):
+                    raise ValueError("A category can't be moved under itself or one of its own subcategories.")
+            set_clauses.append("parent_id = %s")
+            params.append(parent_id)
+            set_clauses.append("display_order = %s")
+            params.append(_next_sibling_display_order(cur, parent_id))
+
+        if set_clauses:
+            params.append(category_id)
+            cur.execute(f"update categories set {', '.join(set_clauses)} where id = %s", params)
+    conn.commit()
+    return {"id": category_id}
+
+
+def delete_category(conn, category_id: str) -> dict:
+    """Refuses (ValueError -> 409) while the category still has
+    subcategories or articles -- move or delete those first. Its
+    article_types go with it (migration 031's on delete cascade); that's
+    safe once no article references them, since product_articles.
+    article_type_id would otherwise block the delete at the FK."""
+    with conn.cursor() as cur:
+        cur.execute("select id from categories where id = %s", (category_id,))
+        if cur.fetchone() is None:
+            raise LookupError(f"No categories row with id {category_id}")
+        cur.execute("select count(*) from categories where parent_id = %s", (category_id,))
+        child_count = cur.fetchone()[0]
+        if child_count:
+            raise ValueError(f"This category still has {child_count} subcategor{'y' if child_count == 1 else 'ies'} -- move or delete them first.")
+        cur.execute("select count(*) from product_articles where category_id = %s", (category_id,))
+        article_count = cur.fetchone()[0]
+        if article_count:
+            raise ValueError(f"This category still has {article_count} article{'' if article_count == 1 else 's'} -- move them to another category first.")
+        cur.execute("delete from categories where id = %s", (category_id,))
+    conn.commit()
+    return {"deleted": True, "id": category_id}
+
+
+def reorder_categories(conn, parent_id, ordered_ids: list) -> dict:
+    """Sets display_order = position for one sibling group (parent_id
+    None = top level), same full-list shape as reorder_product_images.
+    ordered_ids must be exactly that group's current members -- anything
+    else raises ValueError (400) rather than half-applying."""
+    with conn.cursor() as cur:
+        cur.execute("select id from categories where parent_id is not distinct from %s", (parent_id,))
+        current = {str(row[0]) for row in cur.fetchall()}
+        if set(map(str, ordered_ids)) != current or len(ordered_ids) != len(current):
+            raise ValueError("ordered_ids must list every category in this group exactly once.")
+        for position, category_id in enumerate(ordered_ids):
+            cur.execute("update categories set display_order = %s where id = %s", (position, category_id))
+    conn.commit()
+    return {"reordered": len(ordered_ids)}
 
 
 # ---------------------------------------------------------------------

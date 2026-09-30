@@ -8,6 +8,9 @@ import type {
   ArticleRegenerateMode,
   ApproveReviewResult,
   BlockedChannel,
+  Category,
+  CategoryCreateInput,
+  CategoryUpdateInput,
   Brand,
   CatalogDailyMovementHistoryResult,
   Core,
@@ -555,6 +558,30 @@ export function listCoverstocks(params: ListCoverstocksParams = {}): Promise<Cov
 
 export function getCoverstock(id: string): Promise<CoverstockDetail> {
   return apiGet<CoverstockDetail>(`/coverstocks/${encodeURIComponent(id)}`);
+}
+
+// Learn-site categories (migration 037) -- the Categories page.
+export function listCategories(): Promise<Category[]> {
+  return apiGet<{ items: Category[] }>("/categories").then((r) => r.items);
+}
+
+export function createCategory(input: CategoryCreateInput): Promise<Category> {
+  return apiPost<Category>("/categories", input);
+}
+
+export function updateCategory(id: string, input: CategoryUpdateInput): Promise<{ id: string }> {
+  return apiPatch(`/categories/${encodeURIComponent(id)}`, input);
+}
+
+// Refused with a 409 (message in ApiError) while the category still has
+// subcategories or articles.
+export function deleteCategory(id: string): Promise<{ deleted: boolean; id: string }> {
+  return apiDelete(`/categories/${encodeURIComponent(id)}`);
+}
+
+// Full ordered list of one sibling group (parentId null = top level).
+export function reorderCategories(parentId: string | null, orderedIds: string[]): Promise<{ reordered: number }> {
+  return apiPost("/categories/reorder", { parent_id: parentId, ordered_ids: orderedIds });
 }
 
 // Blocked video channels -- admin-curated denylist, see BlockedChannel's

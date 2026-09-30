@@ -16282,6 +16282,97 @@ Portal" -> `bowlerdepot.com/900-global-portal/`; Hustle VP shows no CTA.
 
 **Deploy.** Frontend only -- `git push` triggers `deploy-learn-site.yml`.
 
+### 6bo. Nested Learn categories + admin Categories page + Learn category filtering (migration 037) (2026-09-30)
+
+Al: "the idea is to create a category 'Bowling Tips' and then that can
+have sub categories and then we can add videos from youtube there and
+then using a similar workflow that we have for balls it will generate an
+article with that video inline." Planned as three phases -- (1) category
+admin + nested categories + Learn filtering (this entry), (2) standalone
+tip videos + transcripts via the Pi fetcher, (3) video-based article
+generation. Al chose **true nested categories** (any depth) over reusing
+`article_types` as a fixed second level, and **paste-a-URL first,
+playlist sync later** for phase 2.
+
+**Where 6ac left it:** one category (Bowling Balls) / one article type
+(Ball Review), no admin UI, and the Learn header's tab row linked to
+`/?category_id=` without LearnIndexPage ever reading it.
+
+**Migration 037** (`037_category_hierarchy.sql`): `categories.parent_id`
+self-FK, `on delete restrict`, plus a `parent_id <> id` check and an
+index. `article_types` are unchanged and stay orthogonal to the tree
+("what kind of write-up" vs "where it lives").
+
+**admin_api:**
+- `list_categories` now returns `parent_id` and `article_count` (direct
+  articles, any status). Still a flat list -- the SPA builds the tree.
+- New `create_category` / `update_category` / `delete_category` /
+  `reorder_categories` behind `POST /categories`, `PATCH
+  /categories/{id}`, `DELETE /categories/{id}`, `POST
+  /categories/reorder`. Slug defaults to the slugified name (unique;
+  duplicate -> 409). `update_category` rejects moving a category under
+  itself or its own subtree (recursive CTE, 409); the route uses
+  pydantic's `model_fields_set` so `"parent_id": null` (move to top
+  level) is distinct from leaving it out (the `_UNSET` sentinel).
+  Re-parenting or creating puts the category last among its siblings.
+  Delete is refused (409, with the count) while subcategories or
+  articles remain. No template.yaml change -- AdminHttpApi already
+  proxies every path/method.
+
+**public_api:**
+- `list_categories` adds `parent_id` and `article_count` = listable
+  (approved, product published) articles in the whole SUBTREE, and omits
+  categories whose subtree has none -- so creating "Bowling Tips" today
+  adds nothing to the live Learn site until it has published articles.
+- `list_articles(category_id=...)` now matches the category's whole
+  subtree (`_CATEGORY_SUBTREE_FILTER`, recursive CTE).
+
+**admin-spa:** new Categories page (`/categories`, nav item after
+Articles): indented tree, up/down reorder within a sibling group, "Add
+subcategory", edit modal (name, slug, parent, description, auto-assign
+product type), delete with the blocker explained up front.
+
+**Learn site:** header tabs are top-level categories only (still shown
+only when there are 2+), highlighted by the selected category's
+top-level ancestor. LearnIndexPage filters on `?category_id=` (default:
+first top-level category), shows subcategory chips ("All <parent>" +
+children, or siblings for a leaf), and the heading is the category name
+-- so the live index heading changes from "Ball Reviews" to "Bowling
+Balls" (eyebrow still "Ball Review"). Search/empty-state copy says
+"articles" instead of "reviews". `topLevelCategories` treats a missing
+`parent_id` as top level, so the Learn build works against the pre-037
+public API too (checked live).
+
+**Known gap for phase 3:** the brand filter still shows on non-ball
+categories.
+
+**Verified:**
+- `.venv` pytest (see CLAUDE.md): `test_admin_api_service.py` 372 passed
+  (15 new), `test_public_api_service.py` 144 passed (3 new),
+  `test_product_article_generator.py` 158 passed.
+- Migrations 031 + 037 applied to a throwaway postgres:16 container
+  (prod is 16.13); the real service functions run against it for a
+  3-level tree, cycle/self-parent rejection, duplicate slug, delete
+  guards, reorder, subtree counts (unpublished/pending excluded), and
+  the subtree filter.
+- FastAPI TestClient: parent_id omitted/null/id reach the service as
+  _UNSET/None/id; 409 bodies for delete-blocked and duplicate slug.
+- `npx tsc -b` clean in admin-spa and bowlerdepot-learn. Learn dev
+  server checked against the live API (unchanged except heading) and
+  against a local mock /categories tree (tabs, chips, subcategory
+  eyebrow, mobile width). The admin Categories page was type-checked
+  but not clicked through locally (Cognito login) -- check it after
+  deploy.
+
+**Deploy, in this order** (migration before the new code reads
+`parent_id`):
+
+```bash
+psql "$DATABASE_URL" -f db/migrations/037_category_hierarchy.sql
+sam build && sam deploy   # admin_api + public_api
+git push                  # admin-spa + bowlerdepot-learn GitHub Actions deploys
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

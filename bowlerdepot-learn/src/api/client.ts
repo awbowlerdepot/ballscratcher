@@ -87,6 +87,30 @@ export function getCategories(): Promise<Category[]> {
   return _categoriesCache;
 }
 
+// Category tree helpers (migration 037). getCategories() is a flat list
+// already sorted by display_order; these walk it by parent_id. A missing
+// parent_id counts as top level, so this still works against a public API
+// that predates migration 037 (frontend and backend deploy separately).
+export function topLevelCategories(categories: Category[]): Category[] {
+  return categories.filter((c) => !c.parent_id);
+}
+
+export function childCategories(categories: Category[], parentId: string): Category[] {
+  return categories.filter((c) => c.parent_id === parentId);
+}
+
+// Ancestors of `category`, root first (empty for a top-level category).
+export function categoryAncestors(categories: Category[], category: Category): Category[] {
+  const byId = new Map(categories.map((c) => [c.id, c]));
+  const out: Category[] = [];
+  let parent = category.parent_id ? byId.get(category.parent_id) : undefined;
+  while (parent && !out.includes(parent)) {
+    out.unshift(parent);
+    parent = parent.parent_id ? byId.get(parent.parent_id) : undefined;
+  }
+  return out;
+}
+
 export function getProductArticle(productId: string): Promise<ProductArticleResponse> {
   return apiGet<ProductArticleResponse>(`/products/${encodeURIComponent(productId)}/article`);
 }

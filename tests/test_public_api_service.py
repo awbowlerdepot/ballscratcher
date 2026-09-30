@@ -660,7 +660,10 @@ def test_list_articles_category_id_filters_and_is_first_bind_param():
 
     query = conn.cursor().queries[0]
     params = conn.cursor().params[0]
-    assert "and pa.category_id = %s" in query
+    # Migration 037: matches the category's whole subtree, not just
+    # itself, so "Bowling Tips" also lists its subcategories' articles.
+    assert "and pa.category_id in (" in query
+    assert "with recursive subtree" in query
     assert params == ["cat-1", 24, 0]
 
 
@@ -669,7 +672,7 @@ def test_list_articles_no_category_filter_by_default():
     service.list_articles(conn)
 
     query = conn.cursor().queries[0]
-    assert "and pa.category_id = %s" not in query
+    assert "pa.category_id in (" not in query
 
 
 def test_list_articles_joins_categories_and_article_types():
@@ -709,6 +712,82 @@ def test_list_categories_orders_by_display_order():
 
     queries = conn.cursor().queries
     assert any("order by display_order, name" in q for q in queries)
+
+
+class _ScriptedCategoryCursor:
+    """Returns canned rows for list_categories' two queries (categories
+    first, then article_types), with real column descriptions."""
+
+    def __init__(self, category_rows, article_type_rows=()):
+        self._results = [
+            (["id", "slug", "name", "description", "parent_id", "display_order", "direct_count"], list(category_rows)),
+            (["id", "category_id", "slug", "name", "description", "display_order"], list(article_type_rows)),
+        ]
+        self._current = None
+        self.queries = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, query, params=None):
+        self.queries.append(" ".join(query.split()))
+        self._current = self._results.pop(0)
+
+    @property
+    def description(self):
+        return [(name,) for name in self._current[0]]
+
+    def fetchall(self):
+        return self._current[1]
+
+
+class _ScriptedCategoryConnection:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def cursor(self):
+        return self._cursor
+
+
+def test_list_categories_selects_parent_id():
+    conn = _QueryCapturingConnection()
+    service.list_categories(conn)
+
+    query = conn.cursor().queries[0]
+    assert "c.parent_id" in query
+    assert "pa.status = 'approved'" in query
+    assert "p.published = true" in query
+
+
+def test_list_categories_rolls_article_counts_up_to_ancestors():
+    """Migration 037: a top-level category's article_count includes its
+    subcategories' articles, at any depth."""
+    cur = _ScriptedCategoryCursor([
+        ("tips", "bowling-tips", "Bowling Tips", None, None, 1, 0),
+        ("spares", "spare-shooting", "Spare Shooting", None, "tips", 0, 2),
+        ("corners", "corner-pins", "Corner Pins", None, "spares", 0, 3),
+    ])
+    items = service.list_categories(_ScriptedCategoryConnection(cur))
+
+    counts = {c["id"]: c["article_count"] for c in items}
+    assert counts == {"tips": 5, "spares": 5, "corners": 3}
+    assert all("direct_count" not in c for c in items)
+
+
+def test_list_categories_hides_categories_with_no_articles_in_subtree():
+    """A freshly created, still-empty category (e.g. a new "Bowling
+    Tips") must not add an empty tab to the Learn header."""
+    cur = _ScriptedCategoryCursor([
+        ("balls", "bowling-balls", "Bowling Balls", None, None, 0, 162),
+        ("tips", "bowling-tips", "Bowling Tips", None, None, 1, 0),
+        ("spares", "spare-shooting", "Spare Shooting", None, "tips", 0, 0),
+    ])
+    items = service.list_categories(_ScriptedCategoryConnection(cur))
+
+    assert [c["id"] for c in items] == ["balls"]
 
 
 # --- get_product / get_products_compare / list_similar_products:

@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { getCategories } from "../api/client";
+import { categoryAncestors, getCategories, topLevelCategories } from "../api/client";
 import type { Category } from "../api/types";
 
 // Real BowlerDepot logo/wordmark asset, pulled live off bowlerdepot.com
@@ -37,14 +37,18 @@ export default function Nav() {
       .catch(() => setCategories([]));
   }, []);
 
-  // Tabs link to /?category_id=<id> -- not wired to an actual filter on
-  // LearnIndexPage.tsx yet (that page only filters on brand_id/q/sort
-  // today), same "seam, not a finished feature" status as this file's
-  // own categories fetch above. Highlighted tab: whatever category_id is
-  // in the URL, or the first (== highest, migration 031's display_order)
-  // category when there's no override -- mirrors LearnIndexPage.tsx's
-  // own `items[0] ?? null` default.
-  const activeCategoryId = searchParams.get("category_id") || categories[0]?.id;
+  // Tabs are TOP-LEVEL categories only (migration 037 nests categories;
+  // subcategories are chips on LearnIndexPage instead), and each links to
+  // /?category_id=<id>, which LearnIndexPage filters on. getCategories()
+  // already omits categories with no published articles, so a new, empty
+  // "Bowling Tips" doesn't add a tab until it has something in it.
+  // Highlighted tab: the top-level ancestor of whatever category_id is in
+  // the URL (so a subcategory keeps its parent's tab lit), or the first
+  // tab by display_order when there's none -- LearnIndexPage's same
+  // default.
+  const tabs = topLevelCategories(categories);
+  const selected = categories.find((c) => c.id === searchParams.get("category_id"));
+  const activeCategoryId = selected ? (categoryAncestors(categories, selected)[0] ?? selected).id : tabs[0]?.id;
 
   return (
     <header className="sticky top-0 z-10 border-b border-paper-border bg-paper/95 backdrop-blur-sm">
@@ -77,10 +81,10 @@ export default function Nav() {
         </a>
       </div>
 
-      {categories.length > 1 ? (
+      {tabs.length > 1 ? (
         <nav className="border-t border-paper-border">
           <div className="mx-auto flex max-w-[75rem] justify-center gap-8 px-6 py-3 text-xs font-semibold uppercase tracking-wide md:px-8">
-            {categories.map((category) => (
+            {tabs.map((category) => (
               <Link
                 key={category.id}
                 to={`/?category_id=${category.id}`}

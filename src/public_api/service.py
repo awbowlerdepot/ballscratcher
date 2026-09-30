@@ -401,10 +401,25 @@ def list_categories(conn) -> list:
     site's nav/eyebrow labels so "Bowling Balls" / "Ball Review" are read
     off this data rather than hardcoded into a component -- a future
     category or article_type just needs a row here, not a frontend
-    deploy."""
+    deploy.
+
+    Nested categories (migration 037): flat list with parent_id, the
+    Learn site builds tabs (top level) and subcategory chips from it.
+    article_count is the number of listable articles (approved, product
+    still published -- list_articles' own gate) in the category's whole
+    SUBTREE, and categories whose subtree has none are left out
+    entirely: a freshly created "Bowling Tips" shouldn't add an empty tab
+    to the Learn header before it has anything in it."""
     with conn.cursor() as cur:
         cur.execute(
-            "select id, slug, name, description, display_order from categories order by display_order, name"
+            """
+            select c.id, c.slug, c.name, c.description, c.parent_id, c.display_order,
+                   (select count(*) from product_articles pa
+                    join products p on p.id = pa.product_id
+                    where pa.category_id = c.id and pa.status = 'approved' and p.published = true) as direct_count
+            from categories c
+            order by c.display_order, c.name
+            """
         )
         columns = [desc[0] for desc in cur.description]
         categories = [dict(zip(columns, row)) for row in cur.fetchall()]
@@ -423,7 +438,35 @@ def list_categories(conn) -> list:
         by_category.setdefault(at["category_id"], []).append(at)
     for c in categories:
         c["article_types"] = by_category.get(c["id"], [])
-    return categories
+
+    # Roll direct counts up the tree: each category's count is added to
+    # every ancestor's. Walks parent links per category rather than
+    # recursing -- the tree is a handful of rows, and a visited set keeps
+    # a (DB-prevented, but still) cycle from looping forever.
+    by_id = {c["id"]: c for c in categories}
+    for c in categories:
+        c["article_count"] = 0
+    for c in categories:
+        count = c.pop("direct_count") or 0
+        node, seen = c, set()
+        while node is not None and node["id"] not in seen:
+            seen.add(node["id"])
+            node["article_count"] += count
+            node = by_id.get(node["parent_id"])
+    return [c for c in categories if c["article_count"] > 0]
+
+
+# Filter expression for list_articles' category_id: the category itself
+# plus every descendant (migration 037), so picking "Bowling Tips" also
+# lists articles filed under "Bowling Tips > Spare Shooting".
+_CATEGORY_SUBTREE_FILTER = """ and pa.category_id in (
+            with recursive subtree as (
+                select id from categories where id = %s
+                union all
+                select c.id from categories c join subtree s on c.parent_id = s.id
+            )
+            select id from subtree
+        )"""
 
 
 def list_articles(conn, brand_id: str = None, coverstock_id: str = None, category_id: str = None,
@@ -491,7 +534,8 @@ def list_articles(conn, brand_id: str = None, coverstock_id: str = None, categor
     product_article_generator/app.py) still lists, just with those four
     fields null. category_id filters the same way brand_id/coverstock_id
     do, scoped to pa.category_id (the article's own persisted category,
-    not a live join back through product_type)."""
+    not a live join back through product_type). Since migration 037 it
+    matches the category's whole subtree, see _CATEGORY_SUBTREE_FILTER."""
     query = f"""
         select pa.id as article_id, pa.slug, pa.title, pa.hook, pa.generated_at, pa.reviewed_at,
                pa.first_published_at,
@@ -525,7 +569,7 @@ def list_articles(conn, brand_id: str = None, coverstock_id: str = None, categor
         query += " and p.coverstock_id = %s"
         params.append(coverstock_id)
     if category_id:
-        query += " and pa.category_id = %s"
+        query += _CATEGORY_SUBTREE_FILTER
         params.append(category_id)
     if search:
         query += " and (pa.title ilike %s or pa.hook ilike %s)"

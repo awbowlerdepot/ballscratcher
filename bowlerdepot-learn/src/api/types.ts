@@ -20,12 +20,18 @@ export interface ArticleType {
   display_order: number;
 }
 
+// Flat list from GET /categories (migration 037): parent_id builds the
+// tree (null = top level, a header tab). Only categories with at least
+// one listable article anywhere in their subtree are returned, and
+// article_count is that subtree total.
 export interface Category {
   id: string;
   slug: string;
   name: string;
   description?: string | null;
+  parent_id: string | null;
   display_order: number;
+  article_count: number;
   article_types: ArticleType[];
 }
 

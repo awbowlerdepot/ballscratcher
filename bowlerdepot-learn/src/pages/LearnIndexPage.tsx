@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
-import { getBrands, getCategories, listArticles } from "../api/client";
+import { Link, useSearchParams } from "react-router-dom";
+import { categoryAncestors, childCategories, getBrands, getCategories, listArticles, topLevelCategories } from "../api/client";
 import type { ArticleCard as ArticleCardType, Category } from "../api/types";
 import ArticleCard from "../components/ArticleCard";
 import ArticleCardSkeleton from "../components/ArticleCardSkeleton";
@@ -36,13 +36,14 @@ const SORT_OPTIONS: { value: string; label: string }[] = [
 // Browse/index page for the Learn section (Al's ask: "a sophisticated
 // learn section with articles that are displayed in a way that is best
 // from a UI/UX perspective"). Filters live in the URL query string
-// (?brand_id=&q=&sort=), same shareable-link reasoning as consumer-
-// site's BrowsePage.
+// (?category_id=&brand_id=&q=&sort=), same shareable-link reasoning as
+// consumer-site's BrowsePage.
 export default function LearnIndexPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const brandId = searchParams.get("brand_id") || "";
   const search = searchParams.get("q") || "";
   const sort = searchParams.get("sort") || "";
+  const categoryParam = searchParams.get("category_id") || "";
 
   const [searchInput, setSearchInput] = useState(search);
   const [brands, setBrands] = useState<{ id: string; name: string }[]>([]);
@@ -51,19 +52,37 @@ export default function LearnIndexPage() {
   const [hasMore, setHasMore] = useState(true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Migration 031 -- read here rather than hardcode "Bowling Balls" /
-  // "Ball Review" into this page's markup, so a future second category
-  // shows up automatically. Only the first category is used for the
-  // eyebrow label today (there's exactly one); this is the seam a future
-  // category switcher would hang off of.
-  const [category, setCategory] = useState<Category | null>(null);
+  // Nested categories (migrations 031 + 037). The selected category is
+  // ?category_id= (a header tab or a subcategory chip), defaulting to the
+  // first top-level category -- the same tab Nav.tsx highlights. Articles
+  // are filtered to its whole subtree (public_api's list_articles).
+  // categoriesReady gates the article fetch so the default category is
+  // known before the first request, instead of loading everything and
+  // then re-fetching; if categories fail to load, articles load unfiltered.
+  const [categories, setCategories] = useState<Category[]>([]);
+  const [categoriesReady, setCategoriesReady] = useState(false);
 
   useEffect(() => {
     getBrands().then(setBrands).catch(() => setBrands([]));
     getCategories()
-      .then((items) => setCategory(items[0] ?? null))
-      .catch(() => setCategory(null));
+      .then(setCategories)
+      .catch(() => setCategories([]))
+      .finally(() => setCategoriesReady(true));
   }, []);
+
+  const category =
+    categories.find((c) => c.id === categoryParam) ?? topLevelCategories(categories)[0] ?? null;
+  const categoryId = category?.id || "";
+  const ancestors = category ? categoryAncestors(categories, category) : [];
+  // Chip row: the selected category's subcategories, or -- when a leaf
+  // subcategory is selected -- its siblings, so the reader can hop across
+  // without going back up. The "All" chip is that group's parent.
+  const chipParent = category
+    ? childCategories(categories, category.id).length > 0
+      ? category
+      : ancestors[ancestors.length - 1] ?? null
+    : null;
+  const chips = chipParent ? childCategories(categories, chipParent.id) : [];
 
   // ArticleDetailPage.tsx sets document.title to the article's own title on
   // mount (client-side nav between articles never re-runs prerender.ts's
@@ -76,12 +95,14 @@ export default function LearnIndexPage() {
   }, []);
 
   useEffect(() => {
+    if (!categoriesReady) return;
     setOffset(0);
     setArticles([]);
     setHasMore(true);
     setError(null);
     setLoading(true);
     listArticles({
+      category_id: categoryId || undefined,
       brand_id: brandId || undefined,
       search: search || undefined,
       sort: sort || undefined,
@@ -94,12 +115,13 @@ export default function LearnIndexPage() {
       })
       .catch(() => setError("Couldn't load articles right now -- try again in a moment."))
       .finally(() => setLoading(false));
-  }, [brandId, search, sort]);
+  }, [categoriesReady, categoryId, brandId, search, sort]);
 
   function loadMore() {
     const nextOffset = offset + PAGE_SIZE;
     setLoading(true);
     listArticles({
+      category_id: categoryId || undefined,
       brand_id: brandId || undefined,
       search: search || undefined,
       sort: sort || undefined,
@@ -122,17 +144,45 @@ export default function LearnIndexPage() {
     setSearchParams(next);
   }
 
-  const articleTypeName = category?.article_types[0]?.name;
+  function categoryHref(id: string): string {
+    const next = new URLSearchParams(searchParams);
+    next.set("category_id", id);
+    return `/?${next.toString()}`;
+  }
+
+  // Eyebrow: the path above a subcategory ("Bowling Tips · Spare
+  // Shooting"), or for a top-level category its article type ("Ball
+  // Review"), as before migration 037.
+  const eyebrow = ancestors.length
+    ? ancestors.map((a) => a.name).join(" · ")
+    : category?.article_types[0]?.name;
 
   return (
     <div>
-      {category ? (
-        <p className="mb-1 text-[11px] font-semibold uppercase tracking-widest text-muted">
-          {category.name}
-          {articleTypeName ? <> &middot; {articleTypeName}</> : null}
-        </p>
+      {eyebrow ? (
+        <p className="mb-1 text-[11px] font-semibold uppercase tracking-widest text-muted">{eyebrow}</p>
       ) : null}
-      <h1 className="mb-8 font-display text-3xl font-semibold text-ink">Ball Reviews</h1>
+      <h1 className="mb-6 font-display text-3xl font-semibold text-ink">{category?.name ?? "Articles"}</h1>
+
+      {chipParent && chips.length > 0 ? (
+        <div className="mb-6 flex flex-wrap gap-2">
+          {[chipParent, ...chips].map((c) => {
+            const active = c.id === categoryId;
+            return (
+              <Link
+                key={c.id}
+                to={categoryHref(c.id)}
+                aria-current={active ? "page" : undefined}
+                className={`rounded-full border px-3 py-1 text-sm hover:no-underline ${
+                  active ? "border-ink bg-ink text-paper" : "border-paper-border text-ink hover:border-ink"
+                }`}
+              >
+                {c.id === chipParent.id ? `All ${c.name}` : c.name}
+              </Link>
+            );
+          })}
+        </div>
+      ) : null}
 
       <div className="mb-8 flex flex-wrap items-center gap-3">
         <select
@@ -170,7 +220,7 @@ export default function LearnIndexPage() {
         >
           <input
             type="search"
-            placeholder="Search reviews..."
+            placeholder="Search articles..."
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
             className="rounded-md border border-paper-border bg-transparent px-3 py-2 text-sm text-ink placeholder:text-muted"
@@ -212,7 +262,7 @@ export default function LearnIndexPage() {
       </div>
 
       {!loading && articles.length === 0 && !error && (
-        <p className="py-8 text-center text-muted">No reviews match those filters yet.</p>
+        <p className="py-8 text-center text-muted">No articles match those filters yet.</p>
       )}
 
       {hasMore && (

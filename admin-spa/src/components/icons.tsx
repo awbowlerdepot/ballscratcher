@@ -70,6 +70,16 @@ export function IconArticles(props: IconProps) {
   );
 }
 
+export function IconCategories(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M3 4.5h5.5M5.5 4.5v11M5.5 10h5M5.5 15.5h5" />
+      <rect x="10.5" y="8" width="6.5" height="4" rx="1" />
+      <rect x="10.5" y="13.5" width="6.5" height="4" rx="1" />
+    </svg>
+  );
+}
+
 export function IconPriceTag(props: IconProps) {
   return (
     <svg {...base} {...props}>

@@ -80,6 +80,31 @@ class ImageReorderRequest(BaseModel):
     image_ids: list[str]
 
 
+class CategoryCreateRequest(BaseModel):
+    name: str
+    slug: Optional[str] = None  # defaults to slugified name, see service.create_category
+    description: Optional[str] = None
+    parent_id: Optional[str] = None  # null = top-level category
+    product_type: Optional[str] = None
+
+
+class CategoryUpdateRequest(BaseModel):
+    # Partial update. parent_id is the one field where an explicit null
+    # means something ("move to top level"), so the route checks
+    # model_fields_set to tell "sent null" apart from "not sent" -- see
+    # service.update_category's _UNSET sentinel.
+    name: Optional[str] = None
+    slug: Optional[str] = None
+    description: Optional[str] = None
+    product_type: Optional[str] = None
+    parent_id: Optional[str] = None
+
+
+class CategoryReorderRequest(BaseModel):
+    parent_id: Optional[str] = None  # which sibling group; null = top level
+    ordered_ids: list[str]
+
+
 class PlotterPositionRequest(BaseModel):
     # oil_rating/motion_rating both required, not independently-optional
     # like ImageUpdateRequest's fields -- see service.set_plotter_
@@ -773,6 +798,80 @@ def get_categories():
     conn = service.get_db_connection()
     try:
         return {"items": service.list_categories(conn)}
+    finally:
+        conn.close()
+
+
+def _raise_if_duplicate_slug(e: Exception):
+    # categories.slug's unique constraint (migration 031) -- psycopg2's
+    # UniqueViolation, matched on its message for the same no-direct-
+    # psycopg2-import reason as set_plotter_position's CHECK handling.
+    if "categories_slug_key" in str(e) or "duplicate key" in str(e).lower():
+        raise HTTPException(status_code=409, detail="Another category already uses that slug.")
+
+
+@app.post("/categories")
+def create_category(body: CategoryCreateRequest):
+    # Categories management (migration 037) -- see service.create_category.
+    conn = service.get_db_connection()
+    try:
+        return service.create_category(
+            conn, body.name, slug=body.slug, description=body.description,
+            parent_id=body.parent_id, product_type=body.product_type,
+        )
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        _raise_if_duplicate_slug(e)
+        raise
+    finally:
+        conn.close()
+
+
+@app.patch("/categories/{category_id}")
+def update_category(category_id: str, body: CategoryUpdateRequest):
+    parent_id = body.parent_id if "parent_id" in body.model_fields_set else service._UNSET
+    conn = service.get_db_connection()
+    try:
+        return service.update_category(
+            conn, category_id, name=body.name, slug=body.slug, description=body.description,
+            product_type=body.product_type, parent_id=parent_id,
+        )
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        # Only cycle / empty-slug rejections reach here -- both are "this
+        # change isn't allowed", not a malformed request.
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        _raise_if_duplicate_slug(e)
+        raise
+    finally:
+        conn.close()
+
+
+@app.delete("/categories/{category_id}")
+def delete_category(category_id: str):
+    conn = service.get_db_connection()
+    try:
+        return service.delete_category(conn, category_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/categories/reorder")
+def reorder_categories(body: CategoryReorderRequest):
+    conn = service.get_db_connection()
+    try:
+        return service.reorder_categories(conn, body.parent_id, body.ordered_ids)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     finally:
         conn.close()
 

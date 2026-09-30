@@ -6,6 +6,7 @@ import Button from "./Button";
 import ErrorBoundary from "./ErrorBoundary";
 import {
   IconArticles,
+  IconCategories,
   IconBatch,
   IconBlocked,
   IconClose,
@@ -35,6 +36,7 @@ const NAV_ITEMS = [
   { to: "/review-queue", label: "Review Queue", end: false, icon: IconReviewQueue },
   { to: "/video-candidates", label: "Video Candidates", end: false, icon: IconVideo },
   { to: "/articles", label: "Articles", end: false, icon: IconArticles },
+  { to: "/categories", label: "Categories", end: false, icon: IconCategories },
   { to: "/price-sites", label: "Price Sites", end: false, icon: IconPriceTag },
   { to: "/cores", label: "Cores", end: false, icon: IconCore },
   { to: "/coverstocks", label: "Coverstocks", end: false, icon: IconCoverstock },

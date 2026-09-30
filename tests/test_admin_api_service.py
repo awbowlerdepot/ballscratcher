@@ -3922,7 +3922,7 @@ def test_list_categories_queries_categories_and_article_types_tables():
     queries = conn.cursor().queries
     assert len(queries) == 2
     assert "from categories" in queries[0]
-    assert "order by display_order, name" in queries[0]
+    assert "order by c.display_order, c.name" in queries[0]
     assert "from article_types" in queries[1]
     assert "order by display_order, name" in queries[1]
 
@@ -7233,3 +7233,202 @@ if __name__ == "__main__":
         finally:
             mp.undo()
     print(f"\n{passed}/{len(tests)} tests passed")
+
+
+# --- Category management (migration 037) -- Al: "create a category
+# 'Bowling Tips' and then that can have sub categories".
+
+class _RuleCursor:
+    """Answers fetchone/fetchall from (query-substring, result) rules,
+    first match wins; records every (query, params) for assertions."""
+
+    def __init__(self, rules):
+        self._rules = rules
+        self._last = None
+        self.executed = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, query, params=None):
+        q = " ".join(query.split())
+        self.executed.append((q, params))
+        self._last = q
+
+    def _result(self):
+        for fragment, result in self._rules:
+            if fragment in self._last:
+                return result
+        return None
+
+    def fetchone(self):
+        return self._result()
+
+    def fetchall(self):
+        return self._result() or []
+
+
+class _RuleConnection:
+    def __init__(self, rules):
+        self._cursor = _RuleCursor(rules)
+        self.committed = False
+
+    def cursor(self):
+        return self._cursor
+
+    def commit(self):
+        self.committed = True
+
+
+def test_list_categories_selects_parent_id_and_article_count():
+    conn = _QueryCapturingConnection()
+    service.list_categories(conn)
+
+    query = conn.cursor().queries[0]
+    assert "c.parent_id" in query
+    assert "as article_count" in query
+
+
+def test_slugify_category_name():
+    assert service.slugify_category_name("Bowling Tips") == "bowling-tips"
+    assert service.slugify_category_name("  Spare Shooting & Corners! ") == "spare-shooting-corners"
+
+
+def test_create_category_defaults_slug_and_appends_to_siblings():
+    conn = _RuleConnection([
+        ("coalesce(max(display_order) + 1, 0)", (3,)),
+        ("insert into categories", ("new-id",)),
+    ])
+    result = service.create_category(conn, "Bowling Tips")
+
+    assert result["slug"] == "bowling-tips"
+    assert result["display_order"] == 3
+    assert result["parent_id"] is None
+    insert = [e for e in conn.cursor().executed if "insert into categories" in e[0]][0]
+    assert insert[1] == ("Bowling Tips", "bowling-tips", None, None, None, 3)
+    assert conn.committed
+
+
+def test_create_category_unknown_parent_raises_lookup_error():
+    conn = _RuleConnection([("select id from categories where id = %s", None)])
+    try:
+        service.create_category(conn, "Spare Shooting", parent_id="missing")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def test_create_category_rejects_name_with_no_slug_characters():
+    conn = _RuleConnection([])
+    try:
+        service.create_category(conn, "!!!")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_update_category_unset_parent_leaves_parent_alone():
+    conn = _RuleConnection([("select id from categories where id = %s", ("cat-1",))])
+    service.update_category(conn, "cat-1", name="Tips")
+
+    update = [e for e in conn.cursor().executed if e[0].startswith("update categories")][0]
+    assert "parent_id" not in update[0]
+    assert update[1] == ["Tips", "cat-1"]
+
+
+def test_update_category_parent_none_moves_to_top_level():
+    conn = _RuleConnection([
+        ("select id from categories where id = %s", ("cat-1",)),
+        ("coalesce(max(display_order) + 1, 0)", (2,)),
+    ])
+    service.update_category(conn, "cat-1", parent_id=None)
+
+    update = [e for e in conn.cursor().executed if e[0].startswith("update categories")][0]
+    assert "parent_id = %s" in update[0]
+    assert update[1] == [None, 2, "cat-1"]
+
+
+def test_update_category_rejects_moving_under_own_descendant():
+    conn = _RuleConnection([
+        ("with recursive subtree", (1,)),
+        ("select id from categories where id = %s", ("exists",)),
+    ])
+    try:
+        service.update_category(conn, "parent", parent_id="child")
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+    assert not any(e[0].startswith("update categories") for e in conn.cursor().executed)
+
+
+def test_update_category_missing_raises_lookup_error():
+    conn = _RuleConnection([("select id from categories where id = %s", None)])
+    try:
+        service.update_category(conn, "missing", name="x")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def test_update_category_blank_description_clears_it():
+    conn = _RuleConnection([("select id from categories where id = %s", ("cat-1",))])
+    service.update_category(conn, "cat-1", description="")
+
+    update = [e for e in conn.cursor().executed if e[0].startswith("update categories")][0]
+    assert update[1] == [None, "cat-1"]
+
+
+def test_delete_category_refuses_when_it_has_subcategories():
+    conn = _RuleConnection([
+        ("select id from categories where id = %s", ("cat-1",)),
+        ("from categories where parent_id = %s", (2,)),
+    ])
+    try:
+        service.delete_category(conn, "cat-1")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "2 subcategories" in str(e)
+
+
+def test_delete_category_refuses_when_it_has_articles():
+    conn = _RuleConnection([
+        ("select id from categories where id = %s", ("cat-1",)),
+        ("from categories where parent_id = %s", (0,)),
+        ("from product_articles where category_id = %s", (1,)),
+    ])
+    try:
+        service.delete_category(conn, "cat-1")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "1 article " in str(e)
+
+
+def test_delete_category_deletes_empty_category():
+    conn = _RuleConnection([
+        ("select id from categories where id = %s", ("cat-1",)),
+        ("from categories where parent_id = %s", (0,)),
+        ("from product_articles where category_id = %s", (0,)),
+    ])
+    assert service.delete_category(conn, "cat-1") == {"deleted": True, "id": "cat-1"}
+    assert any(e[0] == "delete from categories where id = %s" for e in conn.cursor().executed)
+    assert conn.committed
+
+
+def test_reorder_categories_sets_display_order_by_position():
+    conn = _RuleConnection([("where parent_id is not distinct from %s", [("a",), ("b",)])])
+    service.reorder_categories(conn, None, ["b", "a"])
+
+    updates = [e[1] for e in conn.cursor().executed if e[0].startswith("update categories")]
+    assert updates == [(0, "b"), (1, "a")]
+
+
+def test_reorder_categories_rejects_incomplete_group():
+    conn = _RuleConnection([("where parent_id is not distinct from %s", [("a",), ("b",)])])
+    try:
+        service.reorder_categories(conn, None, ["a"])
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
