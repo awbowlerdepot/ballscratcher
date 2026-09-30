@@ -964,6 +964,8 @@ export interface Category {
   parent_id: string | null;
   display_order: number;
   article_count: number;
+  // Direct learn_videos in this category (migration 038) -- also blocks delete.
+  video_count: number;
   article_types: CategoryArticleType[];
 }
 
@@ -983,6 +985,44 @@ export interface CategoryUpdateInput {
   description?: string;
   product_type?: string;
   parent_id?: string | null;
+}
+
+// Learn videos (migration 038): admin-added YouTube videos filed under a
+// category, transcribed by the Pi fetcher. transcript_status is derived:
+// 'awaiting' = not tried yet, 'ready' = has text, 'unavailable' = tried,
+// no captions (transcript_note says why). The list omits transcript text;
+// getLearnVideo returns it.
+export type LearnVideoTranscriptStatus = "awaiting" | "ready" | "unavailable";
+
+export interface LearnVideo {
+  id: string;
+  youtube_video_id: string;
+  category_id: string;
+  category_name: string;
+  title: string | null;
+  channel_title: string | null;
+  channel_id: string | null;
+  published_at: string | null;
+  thumbnail_url: string | null;
+  duration_seconds: number | null;
+  transcript_note: string | null;
+  transcript_fetched_at: string | null;
+  transcript_chars: number | null;
+  transcript_status: LearnVideoTranscriptStatus;
+  added_by: string | null;
+  created_at: string;
+}
+
+export interface LearnVideoDetail extends LearnVideo {
+  transcript: string | null;
+  description: string | null;
+}
+
+export interface ListLearnVideosParams {
+  category_id?: string;
+  transcript_status?: LearnVideoTranscriptStatus;
+  limit?: number;
+  offset?: number;
 }
 
 // Blocked video channels (021_blocked_video_channels.sql): an admin-

@@ -12,6 +12,7 @@ cursor/connection (real database interaction is untested for the same
 reason it's untested in product_scraper/pdf_parser/image_processor -- no
 Postgres instance available in this sandbox).
 """
+import re
 import json
 import os
 import sys
@@ -7411,6 +7412,7 @@ def test_delete_category_deletes_empty_category():
         ("select id from categories where id = %s", ("cat-1",)),
         ("from categories where parent_id = %s", (0,)),
         ("from product_articles where category_id = %s", (0,)),
+        ("from learn_videos where category_id = %s", (0,)),
     ])
     assert service.delete_category(conn, "cat-1") == {"deleted": True, "id": "cat-1"}
     assert any(e[0] == "delete from categories where id = %s" for e in conn.cursor().executed)
@@ -7432,3 +7434,203 @@ def test_reorder_categories_rejects_incomplete_group():
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+def test_delete_category_refuses_when_it_has_learn_videos():
+    conn = _RuleConnection([
+        ("select id from categories where id = %s", ("cat-1",)),
+        ("from categories where parent_id = %s", (0,)),
+        ("from product_articles where category_id = %s", (0,)),
+        ("from learn_videos where category_id = %s", (3,)),
+    ])
+    try:
+        service.delete_category(conn, "cat-1")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "3 videos" in str(e)
+
+
+def test_list_categories_selects_video_count():
+    conn = _QueryCapturingConnection()
+    service.list_categories(conn)
+    assert "as video_count" in conn.cursor().queries[0]
+
+
+# --- Learn videos (migration 038) -- phase 2 of Bowling Tips.
+
+def test_parse_youtube_video_id_accepts_common_link_shapes():
+    vid = "dQw4w9WgXcQ"
+    for value in [
+        vid,
+        f"https://www.youtube.com/watch?v={vid}",
+        f"https://youtube.com/watch?v={vid}&t=42s&list=PL123",
+        f"youtube.com/watch?v={vid}",
+        f"https://m.youtube.com/watch?v={vid}",
+        f"https://youtu.be/{vid}",
+        f"https://youtu.be/{vid}?si=abc",
+        f"https://www.youtube.com/shorts/{vid}",
+        f"https://www.youtube.com/embed/{vid}",
+        f"https://www.youtube.com/live/{vid}?feature=share",
+        f"  https://www.youtube.com/watch?v={vid}  ",
+    ]:
+        assert service.parse_youtube_video_id(value) == vid, value
+
+
+def test_parse_youtube_video_id_rejects_non_video_links():
+    for value in ["", "https://vimeo.com/12345", "https://www.youtube.com/@stormbowling",
+                  "https://www.youtube.com/playlist?list=PL123", "https://youtube.com/watch?v=short", "not a url"]:
+        try:
+            service.parse_youtube_video_id(value)
+            assert False, f"expected ValueError for {value!r}"
+        except ValueError:
+            pass
+
+
+def test_parse_youtube_video_item_maps_snippet_and_duration():
+    item = {
+        "id": "dQw4w9WgXcQ",
+        "snippet": {
+            "title": "How to Pick Up the 10 Pin", "channelTitle": "Bowling This Month", "channelId": "UC1",
+            "publishedAt": "2025-03-01T12:00:00Z", "description": "Spare tips",
+            "thumbnails": {"high": {"url": "https://i.ytimg.com/hq.jpg"}, "default": {"url": "https://i.ytimg.com/d.jpg"}},
+        },
+        "contentDetails": {"duration": "PT1H2M3S"},
+    }
+    details = service.parse_youtube_video_item(item)
+    assert details == {
+        "title": "How to Pick Up the 10 Pin", "channel_title": "Bowling This Month", "channel_id": "UC1",
+        "published_at": "2025-03-01T12:00:00Z", "thumbnail_url": "https://i.ytimg.com/hq.jpg",
+        "duration_seconds": 3723, "description": "Spare tips",
+    }
+
+
+def test_parse_iso8601_duration_edge_cases():
+    assert service._parse_iso8601_duration("PT45S") == 45
+    assert service._parse_iso8601_duration("PT10M") == 600
+    assert service._parse_iso8601_duration("P1DT1S") == 86401
+    assert service._parse_iso8601_duration("P0D") == 0 or service._parse_iso8601_duration("P0D") is None
+    assert service._parse_iso8601_duration(None) is None
+    assert service._parse_iso8601_duration("garbage") is None
+
+
+def test_create_learn_video_inserts_with_details_and_added_by():
+    conn = _RuleConnection([
+        ("select id from categories where id = %s", ("cat-1",)),
+        ("from learn_videos lv join categories c", None),
+        ("insert into learn_videos", ("lv-1",)),
+    ])
+    details = {"title": "T", "channel_title": "C", "channel_id": "UC1", "published_at": None,
+               "thumbnail_url": None, "duration_seconds": 60, "description": None}
+    result = service.create_learn_video(conn, "https://youtu.be/dQw4w9WgXcQ", "cat-1",
+                                        added_by="al@example.com", details=details)
+
+    assert result["id"] == "lv-1"
+    assert result["youtube_video_id"] == "dQw4w9WgXcQ"
+    insert = [e for e in conn.cursor().executed if "insert into learn_videos" in e[0]][0]
+    assert insert[1][0] == "dQw4w9WgXcQ"
+    assert insert[1][1] == "cat-1"
+    assert insert[1][-1] == "al@example.com"
+    assert conn.committed
+
+
+def test_create_learn_video_rejects_duplicate_before_calling_youtube():
+    conn = _RuleConnection([
+        ("select id from categories where id = %s", ("cat-1",)),
+        ("from learn_videos lv join categories c", ("Spare Shooting",)),
+    ])
+    # details=None would trigger a real YouTube call -- the duplicate check
+    # must raise first.
+    try:
+        service.create_learn_video(conn, "dQw4w9WgXcQ", "cat-1")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "already added" in str(e)
+        assert "Spare Shooting" in str(e)
+
+
+def test_create_learn_video_unknown_category_raises_lookup_error():
+    conn = _RuleConnection([("select id from categories where id = %s", None)])
+    try:
+        service.create_learn_video(conn, "dQw4w9WgXcQ", "missing", details={})
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def test_create_learn_video_bad_link_raises_value_error_without_db_access():
+    conn = _RuleConnection([])
+    try:
+        service.create_learn_video(conn, "https://vimeo.com/1", "cat-1", details={})
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "YouTube" in str(e)
+    assert conn.cursor().executed == []
+
+
+def test_list_learn_videos_category_filter_includes_subtree():
+    conn = _QueryCapturingConnection()
+    service.list_learn_videos(conn, category_id="tips")
+    query = conn.cursor().queries[0]
+    assert "with recursive subtree" in query
+    assert "order by lv.created_at desc" in query
+
+
+def test_list_learn_videos_needs_transcript_is_unattempted_oldest_first():
+    conn = _QueryCapturingConnection()
+    service.list_learn_videos(conn, needs_transcript=True)
+    query = conn.cursor().queries[0]
+    assert "lv.transcript is null and lv.transcript_note is null" in query
+    assert "order by lv.created_at asc" in query
+    assert "lv.youtube_video_id" in query
+
+
+def test_list_learn_videos_does_not_select_full_transcript():
+    conn = _QueryCapturingConnection()
+    service.list_learn_videos(conn)
+    query = conn.cursor().queries[0]
+    select_list = query.split(" from learn_videos ")[0]
+    # Only lv.transcript_note / length(lv.transcript) / the status CASE may
+    # reference it -- never the bare column as a selected value.
+    assert not re.search(r"lv\.transcript\s*,", select_list)
+    assert "length(lv.transcript) as transcript_chars" in select_list
+
+
+def test_submit_learn_video_transcript_stores_text():
+    conn = _RuleConnection([("update learn_videos set transcript", ("lv-1",))])
+    result = service.submit_learn_video_transcript(conn, "lv-1", "hello world", None)
+    update = conn.cursor().executed[0]
+    assert update[1] == ("hello world", None, "lv-1")
+    assert result["transcript_status"] == "ready"
+
+
+def test_submit_learn_video_transcript_empty_without_note_marks_attempted():
+    """An empty transcript with no note would look "never attempted" and
+    get re-fetched every day -- record it as empty_transcript instead."""
+    conn = _RuleConnection([("update learn_videos set transcript", ("lv-1",))])
+    result = service.submit_learn_video_transcript(conn, "lv-1", "", None)
+    assert conn.cursor().executed[0][1] == (None, "empty_transcript", "lv-1")
+    assert result["transcript_status"] == "unavailable"
+
+
+def test_submit_learn_video_transcript_missing_raises_lookup_error():
+    conn = _RuleConnection([("update learn_videos set transcript", None)])
+    try:
+        service.submit_learn_video_transcript(conn, "missing", "text", None)
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def test_retry_learn_video_transcript_clears_transcript_and_note():
+    conn = _RuleConnection([("update learn_videos set transcript = null", ("lv-1",))])
+    assert service.retry_learn_video_transcript(conn, "lv-1")["transcript_status"] == "awaiting"
+    assert "transcript_note = null" in conn.cursor().executed[0][0]
+
+
+def test_update_learn_video_moves_category():
+    conn = _RuleConnection([
+        ("select id from categories where id = %s", ("cat-2",)),
+        ("select id from learn_videos where id = %s", ("lv-1",)),
+    ])
+    service.update_learn_video(conn, "lv-1", category_id="cat-2")
+    assert conn.cursor().executed[-1] == ("update learn_videos set category_id = %s where id = %s", ("cat-2", "lv-1"))

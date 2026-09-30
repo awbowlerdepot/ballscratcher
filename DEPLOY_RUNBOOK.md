@@ -16373,6 +16373,83 @@ sam build && sam deploy   # admin_api + public_api
 git push                  # admin-spa + bowlerdepot-learn GitHub Actions deploys
 ```
 
+### 6bp. Learn videos: paste-a-URL YouTube videos per category + Pi transcripts (migration 038) (2026-09-30)
+
+Phase 2 of Bowling Tips (see 6bo). Al picked "paste URLs first,
+playlists later".
+
+**Migration 038** (`038_learn_videos.sql`): `learn_videos` -- one row per
+YouTube video (`youtube_video_id` unique), `category_id` not null (`on
+delete restrict`), YouTube details (title, channel, published_at,
+thumbnail, duration, description), and `transcript` /
+`transcript_note` / `transcript_fetched_at` with product_videos' exact
+"both null = not attempted" convention. Separate from `product_videos`
+on purpose: those require a product and go through search-then-approve.
+
+**admin_api** (routes under `/learn-videos`):
+- `POST /learn-videos {url, category_id}` -- `parse_youtube_video_id`
+  accepts bare ids, watch?v= (extra t=/list=/si= ignored), youtu.be,
+  m./music. hosts, /shorts/, /embed/, /live/. Checks the category and
+  duplicates (409, naming where it's already filed) BEFORE calling
+  YouTube, then one `videos.list` call (1 quota unit) via stdlib urllib
+  (admin_api doesn't package requests). Private/deleted -> 404, not a
+  YouTube link -> 422. `added_by` = the signed-in admin.
+- `GET /learn-videos` (category subtree filter, `transcript_status` =
+  awaiting | ready | unavailable, derived not stored) -- omits transcript
+  text; `GET /learn-videos/{id}` includes it.
+- `PATCH` (move category), `DELETE`, `POST .../retry-transcript` (clears
+  transcript + note so the Pi retries).
+- Pi endpoints: `GET /learn-videos?needs_transcript=true` (never
+  attempted, oldest first) and `POST /learn-videos/{id}/transcript`
+  (same body as the product-video one). No summarizer step yet -- it
+  writes straight to the row. An empty transcript with no note is stored
+  as `empty_transcript` so it isn't re-fetched daily.
+- Categories: `list_categories` adds `video_count`; `delete_category`
+  also refuses while videos remain (409).
+- template.yaml: `YOUTUBE_API_KEY_SECRET_ARN` env var + GetSecretValue on
+  the YouTube key for AdminApiFunction (same `HasYouTubeApiKeySecret`
+  guard as VideoDiscoveryFunction). `sam validate --lint` shows the same
+  1 error / 6 warnings as before this change (pre-existing, unrelated).
+
+**Pi fetcher** (`scripts/home_transcript_fetcher.py`, shared by the
+browser variant): `run()` now also lists Learn videos and submits their
+transcripts to the new endpoint, in the same loop/summary/heartbeat. If
+the admin API returns 404 for `/learn-videos` (Pi pulled before the
+backend deploy) or the listing errors, Learn videos are skipped and
+product-video work carries on.
+
+**admin-spa:** new Learn Videos page (`/learn-videos`, nav after
+Categories): add bar (link + category), filters (category subtree,
+transcript status), thumbnail/title/channel/duration rows, inline
+category move, transcript status with note/character count, View
+transcript modal, Retry transcript, Delete. Categories page shows video
+counts and explains the video delete blocker. Category tree helpers
+moved to `admin-spa/src/lib/categoryTree.ts`.
+
+**Verified:**
+- `.venv` pytest: `test_admin_api_service.py` 390 passed (18 new),
+  `test_home_transcript_fetcher.py` 19 passed (5 new; the direct listing
+  tests use the real function, not the autouse stub),
+  `test_home_transcript_fetcher_browser.py` 17 passed.
+- Migrations 031/037/038 on a throwaway postgres:16 with the real service
+  functions: add (with the details from a live call), duplicate, needs-
+  transcript queue, subtree filter, no-captions -> unavailable and out of
+  the queue, retry -> ready, delete-category guard, move, delete.
+- Live `videos.list` with the production key (DcbP2eltVsE: title,
+  channel, 713s, maxres thumbnail) and a nonexistent id -> LookupError.
+- `npx tsc -b` clean in admin-spa. The two new pages weren't clicked
+  through locally (Cognito login) -- check after deploy.
+
+**Deploy, in this order:**
+
+```bash
+psql "$DATABASE_URL" -f db/migrations/038_learn_videos.sql
+sam build && sam deploy   # admin_api (code + YouTube key env/IAM)
+git push                  # admin-spa
+# then on the Pi, so the next 7am run includes Learn videos:
+cd ~/dev/brusnwick-scraper && git pull
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

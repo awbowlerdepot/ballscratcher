@@ -11,6 +11,9 @@ import type {
   Category,
   CategoryCreateInput,
   CategoryUpdateInput,
+  LearnVideo,
+  LearnVideoDetail,
+  ListLearnVideosParams,
   Brand,
   CatalogDailyMovementHistoryResult,
   Core,
@@ -582,6 +585,39 @@ export function deleteCategory(id: string): Promise<{ deleted: boolean; id: stri
 // Full ordered list of one sibling group (parentId null = top level).
 export function reorderCategories(parentId: string | null, orderedIds: string[]): Promise<{ reordered: number }> {
   return apiPost("/categories/reorder", { parent_id: parentId, ordered_ids: orderedIds });
+}
+
+// Learn videos (migration 038) -- the Learn Videos page.
+export function listLearnVideos(params: ListLearnVideosParams = {}): Promise<LearnVideo[]> {
+  return apiGet<{ items: LearnVideo[] }>("/learn-videos", {
+    category_id: params.category_id,
+    transcript_status: params.transcript_status,
+    limit: params.limit,
+    offset: params.offset,
+  }).then((r) => r.items);
+}
+
+export function getLearnVideo(id: string): Promise<LearnVideoDetail> {
+  return apiGet<LearnVideoDetail>(`/learn-videos/${encodeURIComponent(id)}`);
+}
+
+// url: any YouTube link or bare video id. 409 if already added, 404 if
+// YouTube has no such public video, 422 if it isn't a YouTube link.
+export function createLearnVideo(url: string, categoryId: string): Promise<LearnVideo> {
+  return apiPost<LearnVideo>("/learn-videos", { url, category_id: categoryId });
+}
+
+export function updateLearnVideo(id: string, categoryId: string): Promise<{ id: string }> {
+  return apiPatch(`/learn-videos/${encodeURIComponent(id)}`, { category_id: categoryId });
+}
+
+export function deleteLearnVideo(id: string): Promise<{ deleted: boolean; id: string }> {
+  return apiDelete(`/learn-videos/${encodeURIComponent(id)}`);
+}
+
+// Clears the transcript attempt so the Pi's next daily run tries again.
+export function retryLearnVideoTranscript(id: string): Promise<{ id: string }> {
+  return apiPost(`/learn-videos/${encodeURIComponent(id)}/retry-transcript`);
 }
 
 // Blocked video channels -- admin-curated denylist, see BlockedChannel's

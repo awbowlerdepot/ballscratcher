@@ -24,6 +24,7 @@ const ReviewQueuePage = lazy(() => import("./pages/ReviewQueuePage"));
 const VideoCandidatesPage = lazy(() => import("./pages/VideoCandidatesPage"));
 const ArticlesPage = lazy(() => import("./pages/ArticlesPage"));
 const CategoriesPage = lazy(() => import("./pages/CategoriesPage"));
+const LearnVideosPage = lazy(() => import("./pages/LearnVideosPage"));
 const PriceSitesPage = lazy(() => import("./pages/PriceSitesPage"));
 const CoresPage = lazy(() => import("./pages/CoresPage"));
 const CoverstocksPage = lazy(() => import("./pages/CoverstocksPage"));
@@ -64,6 +65,7 @@ export default function App() {
                 <Route path="/video-candidates" element={<VideoCandidatesPage />} />
                 <Route path="/articles" element={<ArticlesPage />} />
                 <Route path="/categories" element={<CategoriesPage />} />
+                <Route path="/learn-videos" element={<LearnVideosPage />} />
                 <Route path="/price-sites" element={<PriceSitesPage />} />
                 <Route path="/cores" element={<CoresPage />} />
                 <Route path="/coverstocks" element={<CoverstocksPage />} />

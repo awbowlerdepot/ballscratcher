@@ -1832,12 +1832,14 @@ def list_categories(conn) -> list:
     parent_id, same "nest in the caller" shape as article_types below.
     article_count is DIRECT articles only (any status), which is what
     delete_category's "still has articles" guard checks; it doesn't roll
-    up a subtree."""
+    up a subtree. video_count (migration 038) is the same for
+    learn_videos."""
     with conn.cursor() as cur:
         cur.execute(
             """
             select c.id, c.slug, c.name, c.description, c.product_type, c.parent_id, c.display_order,
-                   (select count(*) from product_articles pa where pa.category_id = c.id) as article_count
+                   (select count(*) from product_articles pa where pa.category_id = c.id) as article_count,
+                   (select count(*) from learn_videos lv where lv.category_id = c.id) as video_count
             from categories c
             order by c.display_order, c.name
             """
@@ -1991,7 +1993,7 @@ def update_category(conn, category_id: str, name: str = None, slug: str = None, 
 
 def delete_category(conn, category_id: str) -> dict:
     """Refuses (ValueError -> 409) while the category still has
-    subcategories or articles -- move or delete those first. Its
+    subcategories, articles, or learn_videos -- move or delete those first. Its
     article_types go with it (migration 031's on delete cascade); that's
     safe once no article references them, since product_articles.
     article_type_id would otherwise block the delete at the FK."""
@@ -2002,11 +2004,15 @@ def delete_category(conn, category_id: str) -> dict:
         cur.execute("select count(*) from categories where parent_id = %s", (category_id,))
         child_count = cur.fetchone()[0]
         if child_count:
-            raise ValueError(f"This category still has {child_count} subcategor{'y' if child_count == 1 else 'ies'} -- move or delete them first.")
+            raise ValueError(f"This category still has {child_count} subcategor{'y -- move or delete it' if child_count == 1 else 'ies -- move or delete them'} first.")
         cur.execute("select count(*) from product_articles where category_id = %s", (category_id,))
         article_count = cur.fetchone()[0]
         if article_count:
-            raise ValueError(f"This category still has {article_count} article{'' if article_count == 1 else 's'} -- move them to another category first.")
+            raise ValueError(f"This category still has {article_count} article{' -- move it' if article_count == 1 else 's -- move them'} to another category first.")
+        cur.execute("select count(*) from learn_videos where category_id = %s", (category_id,))
+        video_count = cur.fetchone()[0]
+        if video_count:
+            raise ValueError(f"This category still has {video_count} video{' -- move or delete it' if video_count == 1 else 's -- move or delete them'} first.")
         cur.execute("delete from categories where id = %s", (category_id,))
     conn.commit()
     return {"deleted": True, "id": category_id}
@@ -2026,6 +2032,290 @@ def reorder_categories(conn, parent_id, ordered_ids: list) -> dict:
             cur.execute("update categories set display_order = %s where id = %s", (position, category_id))
     conn.commit()
     return {"reordered": len(ordered_ids)}
+
+
+# ---------------------------------------------------------------------
+# Learn videos (migration 038) -- phase 2 of Bowling Tips. Admin-picked
+# YouTube videos filed under a category, transcribed by the Pi fetcher,
+# later turned into articles (phase 3). See 038_learn_videos.sql.
+# ---------------------------------------------------------------------
+
+YOUTUBE_VIDEOS_API_URL = "https://www.googleapis.com/youtube/v3/videos"
+
+# YouTube video ids are 11 chars of [A-Za-z0-9_-].
+_YOUTUBE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+_YOUTUBE_PATH_ID_RE = re.compile(r"^/(?:shorts|embed|live|v)/([A-Za-z0-9_-]{11})")
+
+
+def parse_youtube_video_id(url_or_id: str) -> str:
+    """The 11-char video id from anything an admin is likely to paste: a
+    bare id, youtube.com/watch?v=..., youtu.be/..., m./music. hosts, or
+    /shorts/, /embed/, /live/ paths. Extra query params (t=, list=, si=)
+    are ignored -- a video in a playlist URL resolves to that video.
+    Raises ValueError for anything else."""
+    from urllib.parse import parse_qs
+
+    value = (url_or_id or "").strip()
+    if _YOUTUBE_ID_RE.match(value):
+        return value
+    if "://" not in value:
+        value = "https://" + value
+    parsed = urlparse(value)
+    host = (parsed.hostname or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    candidate = None
+    if host == "youtu.be":
+        candidate = parsed.path.lstrip("/").split("/")[0]
+    elif host in ("youtube.com", "m.youtube.com", "music.youtube.com", "youtube-nocookie.com"):
+        if parsed.path == "/watch":
+            candidate = (parse_qs(parsed.query).get("v") or [None])[0]
+        else:
+            match = _YOUTUBE_PATH_ID_RE.match(parsed.path)
+            candidate = match.group(1) if match else None
+    if candidate and _YOUTUBE_ID_RE.match(candidate):
+        return candidate
+    raise ValueError("That doesn't look like a YouTube video link.")
+
+
+def _parse_iso8601_duration(duration):
+    # "PT1H2M3S" -> 3723. Same format video_discovery.parse_iso8601_
+    # duration handles; duplicated rather than imported since each Lambda
+    # ships only its own src/ directory.
+    match = re.match(r"^P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$", duration or "")
+    if not match or not any(match.groups()):
+        return None
+    days, hours, minutes, seconds = (int(g) if g else 0 for g in match.groups())
+    return ((days * 24 + hours) * 60 + minutes) * 60 + seconds
+
+
+def _best_thumbnail_url(thumbnails: dict):
+    for size in ("maxres", "standard", "high", "medium", "default"):
+        url = (thumbnails.get(size) or {}).get("url")
+        if url:
+            return url
+    return None
+
+
+def parse_youtube_video_item(item: dict) -> dict:
+    """One videos.list item (part=snippet,contentDetails) -> the columns
+    learn_videos stores."""
+    snippet = item.get("snippet") or {}
+    content = item.get("contentDetails") or {}
+    return {
+        "title": snippet.get("title"),
+        "channel_title": snippet.get("channelTitle"),
+        "channel_id": snippet.get("channelId"),
+        "published_at": snippet.get("publishedAt"),
+        "thumbnail_url": _best_thumbnail_url(snippet.get("thumbnails") or {}),
+        "duration_seconds": _parse_iso8601_duration(content.get("duration")),
+        "description": snippet.get("description"),
+    }
+
+
+def _get_youtube_api_key() -> str:
+    # Same secret video_discovery reads (YOUTUBE_API_KEY_SECRET_ARN) -- a
+    # JSON {"api_key": ...} or the bare key string.
+    import boto3
+
+    secret_value = boto3.client("secretsmanager").get_secret_value(
+        SecretId=os.environ["YOUTUBE_API_KEY_SECRET_ARN"]
+    )["SecretString"]
+    try:
+        return json.loads(secret_value)["api_key"]
+    except (ValueError, KeyError):
+        return secret_value
+
+
+def fetch_youtube_video_details(youtube_video_id: str, api_key: str = None) -> dict:
+    """One videos.list call (1 quota unit, not search.list's 100). stdlib
+    urllib rather than requests -- admin_api doesn't package requests.
+    Raises LookupError when YouTube returns no item (private, deleted, or
+    a typo'd id)."""
+    import urllib.request
+    from urllib.parse import urlencode
+
+    api_key = api_key or _get_youtube_api_key()
+    query = urlencode({"part": "snippet,contentDetails", "id": youtube_video_id, "key": api_key})
+    with urllib.request.urlopen(f"{YOUTUBE_VIDEOS_API_URL}?{query}", timeout=15) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    items = data.get("items") or []
+    if not items:
+        raise LookupError(f"YouTube has no public video with id {youtube_video_id} (private, deleted, or a typo?).")
+    return parse_youtube_video_item(items[0])
+
+
+# Derived, not stored: what the admin page shows for a video's transcript.
+_LEARN_VIDEO_TRANSCRIPT_STATUS_SQL = """
+    case
+        when lv.transcript is not null and lv.transcript <> '' then 'ready'
+        when lv.transcript_note is null then 'awaiting'
+        else 'unavailable'
+    end
+"""
+
+_LEARN_VIDEO_COLUMNS = f"""
+    lv.id, lv.youtube_video_id, lv.category_id, c.name as category_name,
+    lv.title, lv.channel_title, lv.channel_id, lv.published_at, lv.thumbnail_url,
+    lv.duration_seconds, lv.transcript_note, lv.transcript_fetched_at,
+    length(lv.transcript) as transcript_chars,
+    {_LEARN_VIDEO_TRANSCRIPT_STATUS_SQL} as transcript_status,
+    lv.added_by, lv.created_at
+"""
+
+
+def _learn_video_rows(cur) -> list:
+    columns = [desc[0] for desc in cur.description]
+    return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
+def list_learn_videos(conn, category_id: str = None, transcript_status: str = None,
+                      needs_transcript: bool = False, limit: int = 50, offset: int = 0) -> list:
+    """Newest first. category_id matches the category's whole subtree
+    (same recursive shape as public_api's _CATEGORY_SUBTREE_FILTER), so
+    filtering on "Bowling Tips" includes its subcategories' videos.
+    transcript_status: 'awaiting' | 'ready' | 'unavailable'.
+    needs_transcript=True is the Pi fetcher's query (never attempted,
+    oldest first) and also returns youtube_video_id for it to fetch.
+    Transcript text itself isn't listed (can be ~100KB each) -- see
+    get_learn_video."""
+    query = f"select {_LEARN_VIDEO_COLUMNS} from learn_videos lv join categories c on c.id = lv.category_id where true"
+    params = []
+    if category_id:
+        query += """ and lv.category_id in (
+            with recursive subtree as (
+                select id from categories where id = %s
+                union all
+                select c2.id from categories c2 join subtree s on c2.parent_id = s.id
+            )
+            select id from subtree
+        )"""
+        params.append(category_id)
+    if needs_transcript:
+        query += " and lv.transcript is null and lv.transcript_note is null order by lv.created_at asc, lv.id"
+    else:
+        if transcript_status:
+            query += f" and ({_LEARN_VIDEO_TRANSCRIPT_STATUS_SQL}) = %s"
+            params.append(transcript_status)
+        query += " order by lv.created_at desc, lv.id"
+    query += " limit %s offset %s"
+    params += [limit, offset]
+    with conn.cursor() as cur:
+        cur.execute(query, params)
+        return _learn_video_rows(cur)
+
+
+def get_learn_video(conn, learn_video_id: str):
+    """One video including its full transcript and description, or None."""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"select {_LEARN_VIDEO_COLUMNS}, lv.transcript, lv.description "
+            "from learn_videos lv join categories c on c.id = lv.category_id where lv.id = %s",
+            (learn_video_id,),
+        )
+        rows = _learn_video_rows(cur)
+    return rows[0] if rows else None
+
+
+def create_learn_video(conn, url: str, category_id: str, added_by: str = None, details: dict = None) -> dict:
+    """Paste-a-URL add. Validates the category and that the video isn't
+    already added (ValueError -> 409, naming where it's filed) BEFORE
+    spending a YouTube call, then fetches details (LookupError -> 404 if
+    YouTube has no such public video). `details` lets tests skip the
+    network call."""
+    youtube_video_id = parse_youtube_video_id(url)
+    with conn.cursor() as cur:
+        cur.execute("select id from categories where id = %s", (category_id,))
+        if cur.fetchone() is None:
+            raise LookupError(f"No categories row with id {category_id}")
+        cur.execute(
+            "select c.name from learn_videos lv join categories c on c.id = lv.category_id where lv.youtube_video_id = %s",
+            (youtube_video_id,),
+        )
+        existing = cur.fetchone()
+        if existing is not None:
+            raise ValueError(f"That video is already added (filed under {existing[0]}).")
+
+    details = details if details is not None else fetch_youtube_video_details(youtube_video_id)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into learn_videos
+                (youtube_video_id, category_id, title, channel_title, channel_id, published_at,
+                 thumbnail_url, duration_seconds, description, added_by)
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            returning id
+            """,
+            (youtube_video_id, category_id, details.get("title"), details.get("channel_title"),
+             details.get("channel_id"), details.get("published_at"), details.get("thumbnail_url"),
+             details.get("duration_seconds"), details.get("description"), added_by),
+        )
+        learn_video_id = cur.fetchone()[0]
+    conn.commit()
+    return {"id": learn_video_id, "youtube_video_id": youtube_video_id, "category_id": category_id, **details}
+
+
+def update_learn_video(conn, learn_video_id: str, category_id: str = None) -> dict:
+    """Move a video to another category (the only editable field --
+    everything else comes from YouTube)."""
+    with conn.cursor() as cur:
+        if category_id is not None:
+            cur.execute("select id from categories where id = %s", (category_id,))
+            if cur.fetchone() is None:
+                raise LookupError(f"No categories row with id {category_id}")
+        cur.execute("select id from learn_videos where id = %s", (learn_video_id,))
+        if cur.fetchone() is None:
+            raise LookupError(f"No learn_videos row with id {learn_video_id}")
+        if category_id is not None:
+            cur.execute("update learn_videos set category_id = %s where id = %s", (category_id, learn_video_id))
+    conn.commit()
+    return {"id": learn_video_id}
+
+
+def delete_learn_video(conn, learn_video_id: str) -> dict:
+    with conn.cursor() as cur:
+        cur.execute("delete from learn_videos where id = %s returning id", (learn_video_id,))
+        if cur.fetchone() is None:
+            raise LookupError(f"No learn_videos row with id {learn_video_id}")
+    conn.commit()
+    return {"deleted": True, "id": learn_video_id}
+
+
+def retry_learn_video_transcript(conn, learn_video_id: str) -> dict:
+    """Clears transcript + transcript_note so the Pi's next run picks the
+    video up again (e.g. the uploader has added captions since)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "update learn_videos set transcript = null, transcript_note = null, transcript_fetched_at = null "
+            "where id = %s returning id",
+            (learn_video_id,),
+        )
+        if cur.fetchone() is None:
+            raise LookupError(f"No learn_videos row with id {learn_video_id}")
+    conn.commit()
+    return {"id": learn_video_id, "transcript_status": "awaiting"}
+
+
+def submit_learn_video_transcript(conn, learn_video_id: str, transcript: str, transcript_note: str = None) -> dict:
+    """The Pi fetcher's write-back, same body shape as
+    submit_video_transcript. Unlike product videos there's no summarizer
+    step yet, so this writes straight to the row. An empty transcript
+    with a note ('no_captions_available', etc.) records the attempt; an
+    empty transcript with no note is stored as 'empty_transcript' so it
+    still counts as attempted and isn't re-fetched every day."""
+    transcript = transcript or None
+    if transcript is None and not transcript_note:
+        transcript_note = "empty_transcript"
+    with conn.cursor() as cur:
+        cur.execute(
+            "update learn_videos set transcript = %s, transcript_note = %s, transcript_fetched_at = now() "
+            "where id = %s returning id",
+            (transcript, transcript_note, learn_video_id),
+        )
+        if cur.fetchone() is None:
+            raise LookupError(f"No learn_videos row with id {learn_video_id}")
+    conn.commit()
+    return {"id": learn_video_id, "transcript_status": "ready" if transcript else "unavailable"}
 
 
 # ---------------------------------------------------------------------

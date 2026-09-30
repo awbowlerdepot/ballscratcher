@@ -244,6 +244,50 @@ def submit_transcript(admin_api_url: str, token: str, video_id: str, transcript:
     resp.raise_for_status()
 
 
+def list_learn_videos_needing_transcripts(admin_api_url: str, token: str, page_limit: int = DEFAULT_PAGE_LIMIT) -> list:
+    """Learn videos (migration 038, Bowling Tips) that have never been
+    attempted -- the admin API does the filtering (needs_transcript=true),
+    so unlike product candidates there's no client-side needs_transcript
+    check. Returns [] (with a warning) if the admin API predates the
+    /learn-videos endpoint, so a Pi that `git pull`s before the backend
+    deploy keeps working on product videos."""
+    import requests
+
+    headers = {"Authorization": f"Bearer {token}"}
+    videos = []
+    offset = 0
+    while True:
+        resp = requests.get(
+            f"{admin_api_url.rstrip('/')}/learn-videos",
+            params={"needs_transcript": "true", "limit": page_limit, "offset": offset},
+            headers=headers,
+            timeout=30,
+        )
+        if resp.status_code == 404 and offset == 0:
+            logger.warning("Admin API has no /learn-videos endpoint yet -- skipping Learn videos this run")
+            return []
+        resp.raise_for_status()
+        page = resp.json()["items"]
+        videos.extend(page)
+        if len(page) < page_limit:
+            break
+        offset += page_limit
+    return videos
+
+
+def submit_learn_video_transcript(admin_api_url: str, token: str, learn_video_id: str, transcript: str,
+                                  transcript_note: str) -> None:
+    import requests
+
+    resp = requests.post(
+        f"{admin_api_url.rstrip('/')}/learn-videos/{learn_video_id}/transcript",
+        json={"transcript": transcript, "transcript_note": transcript_note},
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=30,
+    )
+    resp.raise_for_status()
+
+
 def submit_heartbeat(admin_api_url: str, token: str, fetcher_name: str, summary: dict) -> None:
     """POSTs this run's summary to /admin/transcript-fetcher-heartbeat so
     admin-spa's Dashboard can show "last Pi run" (032_transcript_fetcher_
@@ -286,16 +330,27 @@ def run(admin_api_url: str, token: str, delay_between_videos: float = DEFAULT_DE
 
     candidates = list_candidates_needing_transcripts(admin_api_url, token)
     logger.info("Found %d approved candidate(s) needing a transcript", len(candidates))
+    # Learn videos (migration 038, Bowling Tips) share the same fetch, just
+    # a different write-back endpoint. A listing failure here (e.g. admin
+    # API briefly down) shouldn't cost the product-video work above.
+    try:
+        learn_videos = list_learn_videos_needing_transcripts(admin_api_url, token)
+    except Exception:
+        logger.exception("Failed listing Learn videos needing transcripts -- skipping them this run")
+        learn_videos = []
+    logger.info("Found %d Learn video(s) needing a transcript", len(learn_videos))
+
+    # (kind, row id, youtube id, submit fn) -- one loop for both.
+    work = [("product_video", c["id"], c["youtube_video_id"], submit_transcript) for c in candidates]
+    work += [("learn_video", v["id"], v["youtube_video_id"], submit_learn_video_transcript) for v in learn_videos]
 
     got_transcript = 0
     no_captions = 0
     errors = 0
-    for i, candidate in enumerate(candidates):
-        video_id = candidate["id"]
-        youtube_video_id = candidate["youtube_video_id"]
+    for i, (kind, row_id, youtube_video_id, submit) in enumerate(work):
         try:
             transcript, note = fetch(youtube_video_id)
-            submit_transcript(admin_api_url, token, video_id, transcript, note)
+            submit(admin_api_url, token, row_id, transcript, note)
             if transcript:
                 got_transcript += 1
             else:
@@ -305,14 +360,13 @@ def run(admin_api_url: str, token: str, delay_between_videos: float = DEFAULT_DE
             # same "don't let one bad item block the others" principle as
             # every SQS-consumer handler in this project, just without SQS
             # itself to lean on here.
-            logger.exception("Failed processing product_video_id=%s (youtube_video_id=%s)",
-                              video_id, youtube_video_id)
+            logger.exception("Failed processing %s_id=%s (youtube_video_id=%s)", kind, row_id, youtube_video_id)
             errors += 1
 
-        if i < len(candidates) - 1:
+        if i < len(work) - 1:
             time.sleep(delay_between_videos)
 
-    summary = {"total": len(candidates), "got_transcript": got_transcript, "no_captions": no_captions, "errors": errors}
+    summary = {"total": len(work), "got_transcript": got_transcript, "no_captions": no_captions, "errors": errors}
     logger.info("Done: %s", summary)
 
     try:

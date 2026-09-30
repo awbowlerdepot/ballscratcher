@@ -105,6 +105,15 @@ class CategoryReorderRequest(BaseModel):
     ordered_ids: list[str]
 
 
+class LearnVideoCreateRequest(BaseModel):
+    url: str  # any YouTube link or bare id, see service.parse_youtube_video_id
+    category_id: str
+
+
+class LearnVideoUpdateRequest(BaseModel):
+    category_id: Optional[str] = None
+
+
 class PlotterPositionRequest(BaseModel):
     # oil_rating/motion_rating both required, not independently-optional
     # like ImageUpdateRequest's fields -- see service.set_plotter_
@@ -872,6 +881,101 @@ def reorder_categories(body: CategoryReorderRequest):
         return service.reorder_categories(conn, body.parent_id, body.ordered_ids)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        conn.close()
+
+
+# --- Learn videos (migration 038) -- admin-added YouTube videos filed under
+# a category, transcribed by the Pi fetcher. See service.create_learn_video.
+
+@app.get("/learn-videos")
+def list_learn_videos(
+    category_id: Optional[str] = Query(None),
+    transcript_status: Optional[str] = Query(None, description="awaiting | ready | unavailable"),
+    needs_transcript: bool = Query(False, description="The Pi fetcher's query: never-attempted videos, oldest first"),
+    limit: int = Query(50, le=200),
+    offset: int = Query(0, ge=0),
+):
+    conn = service.get_db_connection()
+    try:
+        return {"items": service.list_learn_videos(
+            conn, category_id=category_id, transcript_status=transcript_status,
+            needs_transcript=needs_transcript, limit=limit, offset=offset,
+        )}
+    finally:
+        conn.close()
+
+
+@app.get("/learn-videos/{learn_video_id}")
+def get_learn_video(learn_video_id: str):
+    conn = service.get_db_connection()
+    try:
+        video = service.get_learn_video(conn, learn_video_id)
+        if video is None:
+            raise HTTPException(status_code=404, detail="learn video not found")
+        return video
+    finally:
+        conn.close()
+
+
+@app.post("/learn-videos")
+def create_learn_video(body: LearnVideoCreateRequest, caller: dict = Depends(get_caller)):
+    conn = service.get_db_connection()
+    try:
+        return service.create_learn_video(conn, body.url, body.category_id, added_by=caller["resolved_by"])
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        # Unparseable link (422) vs already added (409) -- told apart by
+        # the one message create_learn_video raises for a duplicate.
+        status = 409 if "already added" in str(e) else 422
+        raise HTTPException(status_code=status, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.patch("/learn-videos/{learn_video_id}")
+def update_learn_video(learn_video_id: str, body: LearnVideoUpdateRequest):
+    conn = service.get_db_connection()
+    try:
+        return service.update_learn_video(conn, learn_video_id, category_id=body.category_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.delete("/learn-videos/{learn_video_id}")
+def delete_learn_video(learn_video_id: str):
+    conn = service.get_db_connection()
+    try:
+        return service.delete_learn_video(conn, learn_video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/learn-videos/{learn_video_id}/retry-transcript")
+def retry_learn_video_transcript(learn_video_id: str):
+    conn = service.get_db_connection()
+    try:
+        return service.retry_learn_video_transcript(conn, learn_video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/learn-videos/{learn_video_id}/transcript")
+def submit_learn_video_transcript(learn_video_id: str, body: TranscriptSubmitRequest):
+    # The Pi fetcher's write-back (scripts/home_transcript_fetcher.py),
+    # same body as POST /video-candidates/{id}/transcript.
+    conn = service.get_db_connection()
+    try:
+        return service.submit_learn_video_transcript(conn, learn_video_id, body.transcript, body.transcript_note)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     finally:
         conn.close()
 

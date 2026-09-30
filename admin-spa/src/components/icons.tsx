@@ -80,6 +80,15 @@ export function IconCategories(props: IconProps) {
   );
 }
 
+export function IconPlaylist(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M3 5h10M3 9h10M3 13h6" />
+      <path d="M13 12.2v5l4-2.5z" />
+    </svg>
+  );
+}
+
 export function IconPriceTag(props: IconProps) {
   return (
     <svg {...base} {...props}>

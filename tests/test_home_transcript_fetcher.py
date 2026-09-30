@@ -118,8 +118,9 @@ def test_needs_transcript_false_when_already_summarized():
 # --- list_candidates_needing_transcripts: fake requests, paginates and filters ---
 
 class _FakeResponse:
-    def __init__(self, payload):
+    def __init__(self, payload, status_code=200):
         self._payload = payload
+        self.status_code = status_code
 
     def raise_for_status(self):
         pass
@@ -174,6 +175,20 @@ def test_list_candidates_needing_transcripts_paginates_and_filters():
             _sys.modules["requests"] = real_requests
         else:
             del _sys.modules["requests"]
+
+
+import pytest  # noqa: E402
+
+# The real function, kept before the autouse stub below replaces it, for
+# the tests that exercise it directly.
+_real_list_learn_videos_needing_transcripts = script.list_learn_videos_needing_transcripts
+
+
+@pytest.fixture(autouse=True)
+def _no_learn_videos_by_default(monkeypatch):
+    # run() also lists Learn videos (migration 038); tests that don't care
+    # about them get an empty list instead of a real HTTP call.
+    monkeypatch.setattr(script, "list_learn_videos_needing_transcripts", lambda url, token: [])
 
 
 def test_run_submits_transcripts_and_tolerates_per_video_errors(monkeypatch):
@@ -295,6 +310,111 @@ def test_run_tolerates_heartbeat_failure(monkeypatch):
     summary = script.run("https://admin.example", "tok", delay_between_videos=0)
 
     assert summary == {"total": 0, "got_transcript": 0, "no_captions": 0, "errors": 0}
+
+
+# --- Learn videos (migration 038, Bowling Tips): same fetch, separate
+# listing/write-back endpoints ---
+
+def _with_fake_requests(fake, fn):
+    import sys as _sys
+    real_requests = _sys.modules.get("requests")
+    _sys.modules["requests"] = fake
+    try:
+        return fn()
+    finally:
+        if real_requests is not None:
+            _sys.modules["requests"] = real_requests
+        else:
+            del _sys.modules["requests"]
+
+
+def test_list_learn_videos_needing_transcripts_uses_server_side_filter_and_paginates():
+    fake = _FakeRequestsModule(pages=[
+        {"items": [{"id": "lv-1", "youtube_video_id": "aaaaaaaaaaa"}] * 2},
+        {"items": [{"id": "lv-2", "youtube_video_id": "bbbbbbbbbbb"}]},
+    ])
+    result = _with_fake_requests(
+        fake, lambda: _real_list_learn_videos_needing_transcripts("https://admin.example", "tok", page_limit=2)
+    )
+    assert [v["id"] for v in result] == ["lv-1", "lv-1", "lv-2"]
+    assert fake.get_calls[0]["url"] == "https://admin.example/learn-videos"
+    assert fake.get_calls[0]["params"]["needs_transcript"] == "true"
+    assert fake.get_calls[1]["params"]["offset"] == 2
+
+
+def test_list_learn_videos_needing_transcripts_returns_empty_on_older_admin_api():
+    """A Pi that git-pulls before the backend deploy must keep working."""
+    class _NotFoundRequests(_FakeRequestsModule):
+        def get(self, url, params=None, headers=None, timeout=None):
+            self.get_calls.append({"url": url, "params": params, "headers": headers})
+            return _FakeResponse({"detail": "Not Found"}, status_code=404)
+
+    result = _with_fake_requests(
+        _NotFoundRequests(pages=[]),
+        lambda: _real_list_learn_videos_needing_transcripts("https://admin.example", "tok"),
+    )
+    assert result == []
+
+
+def test_submit_learn_video_transcript_posts_to_learn_videos_endpoint():
+    fake = _FakeRequestsModule(pages=[])
+    _with_fake_requests(
+        fake, lambda: script.submit_learn_video_transcript("https://admin.example", "tok", "lv-1", "text", None)
+    )
+    assert fake.post_calls == [{
+        "url": "https://admin.example/learn-videos/lv-1/transcript",
+        "json": {"transcript": "text", "transcript_note": None},
+        "headers": {"Authorization": "Bearer tok"},
+    }]
+
+
+def test_run_processes_learn_videos_after_product_videos(monkeypatch):
+    monkeypatch.setattr(script, "list_candidates_needing_transcripts", lambda url, token: [
+        {"id": "pv-1", "youtube_video_id": "product0001"},
+    ])
+    monkeypatch.setattr(script, "list_learn_videos_needing_transcripts", lambda url, token: [
+        {"id": "lv-1", "youtube_video_id": "learnvid001"},
+        {"id": "lv-2", "youtube_video_id": "nocaptions1"},
+    ])
+    product_submits, learn_submits = [], []
+    monkeypatch.setattr(script, "submit_transcript",
+                        lambda url, token, vid, t, note: product_submits.append((vid, t, note)))
+    monkeypatch.setattr(script, "submit_learn_video_transcript",
+                        lambda url, token, vid, t, note: learn_submits.append((vid, t, note)))
+    heartbeats = []
+    monkeypatch.setattr(script, "submit_heartbeat", lambda url, token, name, summary: heartbeats.append(summary))
+
+    def fake_fetch(youtube_video_id):
+        if youtube_video_id == "nocaptions1":
+            return "", "no_captions_available"
+        return f"transcript for {youtube_video_id}", None
+
+    summary = script.run("https://admin.example", "tok", delay_between_videos=0, get_transcript_fn=fake_fetch)
+
+    assert product_submits == [("pv-1", "transcript for product0001", None)]
+    assert learn_submits == [("lv-1", "transcript for learnvid001", None), ("lv-2", "", "no_captions_available")]
+    assert summary == {"total": 3, "got_transcript": 2, "no_captions": 1, "errors": 0}
+    assert heartbeats == [summary]
+
+
+def test_run_keeps_product_work_when_learn_video_listing_fails(monkeypatch):
+    monkeypatch.setattr(script, "list_candidates_needing_transcripts", lambda url, token: [
+        {"id": "pv-1", "youtube_video_id": "product0001"},
+    ])
+
+    def boom(url, token):
+        raise RuntimeError("simulated admin API error")
+
+    monkeypatch.setattr(script, "list_learn_videos_needing_transcripts", boom)
+    submitted = []
+    monkeypatch.setattr(script, "submit_transcript", lambda url, token, vid, t, note: submitted.append(vid))
+    monkeypatch.setattr(script, "submit_heartbeat", lambda *a: None)
+
+    summary = script.run("https://admin.example", "tok", delay_between_videos=0,
+                         get_transcript_fn=lambda vid: ("text", None))
+
+    assert submitted == ["pv-1"]
+    assert summary["total"] == 1
 
 
 if __name__ == "__main__":

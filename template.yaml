@@ -1688,12 +1688,24 @@ Resources:
           # S3 delete rather than failing the request (the DB row delete is
           # the authoritative part; see that function's own docstring).
           IMAGE_BUCKET: !Ref ImageBucket
+          # Learn videos (migration 038): POST /learn-videos looks up a
+          # pasted video's title/channel/duration via YouTube videos.list
+          # (1 quota unit each) -- same key VideoDiscoveryFunction uses.
+          YOUTUBE_API_KEY_SECRET_ARN: !Ref YouTubeApiKeySecretArn
       Policies:
         - Statement:
             - Effect: Allow
               Action:
                 - secretsmanager:GetSecretValue
               Resource: !Ref DbSecretArn
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              # Same blank-default guard as VideoDiscoveryFunction's grant.
+              Resource: !If
+                - HasYouTubeApiKeySecret
+                - !Ref YouTubeApiKeySecretArn
+                - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:unused-*"
             # Same three-statement Global CRIS inference-profile grant
             # VideoSummarizerFunction needs -- see that function's
             # Policies block for the full reasoning (AWS's own documented

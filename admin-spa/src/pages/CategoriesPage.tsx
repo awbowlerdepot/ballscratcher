@@ -6,17 +6,14 @@ import Button from "../components/Button";
 import Modal from "../components/Modal";
 import Skeleton from "../components/Skeleton";
 import { useToast } from "../components/Toast";
+import { categoryOptionLabel, flattenCategoryTree, type CategoryTreeNode } from "../lib/categoryTree";
 
 // Learn-site categories, nested (migration 037) -- Al: "create a category
 // 'Bowling Tips' and then that can have sub categories". The API returns
 // a flat list; the tree is built here from parent_id. Ordering is per
 // sibling group (display_order), moved with the up/down buttons.
 
-interface TreeNode {
-  category: Category;
-  depth: number;
-  siblings: Category[];
-}
+type TreeNode = CategoryTreeNode;
 
 // Same normalization as admin_api's slugify_category_name, so the preview
 // in the form matches what the backend would generate.
@@ -25,26 +22,6 @@ function slugify(name: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
-}
-
-function childrenOf(categories: Category[], parentId: string | null): Category[] {
-  return categories
-    .filter((c) => c.parent_id === parentId)
-    .sort((a, b) => a.display_order - b.display_order || a.name.localeCompare(b.name));
-}
-
-// Depth-first, so each subcategory renders directly under its parent.
-function flattenTree(categories: Category[]): TreeNode[] {
-  const out: TreeNode[] = [];
-  const walk = (parentId: string | null, depth: number) => {
-    const siblings = childrenOf(categories, parentId);
-    for (const category of siblings) {
-      out.push({ category, depth, siblings });
-      walk(category.id, depth + 1);
-    }
-  };
-  walk(null, 0);
-  return out;
 }
 
 function descendantIds(categories: Category[], id: string): Set<string> {
@@ -96,7 +73,7 @@ export default function CategoriesPage() {
 
   useEffect(load, []);
 
-  const tree = useMemo(() => flattenTree(categories), [categories]);
+  const tree = useMemo(() => flattenCategoryTree(categories), [categories]);
   const byId = useMemo(() => new Map(categories.map((c) => [c.id, c])), [categories]);
 
   // Parent picker: every category except the one being edited and its own
@@ -105,7 +82,7 @@ export default function CategoriesPage() {
     const excluded = form?.mode === "edit" && form.id ? descendantIds(categories, form.id) : new Set<string>();
     return tree
       .filter((n) => !excluded.has(n.category.id))
-      .map((n) => ({ id: n.category.id, label: `${"— ".repeat(n.depth)}${n.category.name}` }));
+      .map((n) => ({ id: n.category.id, label: categoryOptionLabel(n) }));
   }, [tree, categories, form?.mode, form?.id]);
 
   function openCreate(parentId: string | null = null) {
@@ -212,7 +189,9 @@ export default function CategoriesPage() {
       ? "It still has subcategories. Move or delete them first."
       : deleteTarget.article_count > 0
         ? `It still has ${deleteTarget.article_count} article${deleteTarget.article_count === 1 ? "" : "s"}. Move them to another category first.`
-        : null
+        : deleteTarget.video_count > 0
+          ? `It still has ${deleteTarget.video_count} video${deleteTarget.video_count === 1 ? "" : "s"}. Move or delete them on the Learn Videos page first.`
+          : null
     : null;
 
   return (
@@ -260,6 +239,11 @@ export default function CategoriesPage() {
                       <Badge tone={c.article_count > 0 ? "primary" : "muted"}>
                         {c.article_count} article{c.article_count === 1 ? "" : "s"}
                       </Badge>
+                      {c.video_count > 0 && (
+                        <Badge tone="primary">
+                          {c.video_count} video{c.video_count === 1 ? "" : "s"}
+                        </Badge>
+                      )}
                       {c.article_types.map((t) => (
                         <Badge key={t.id}>{t.name}</Badge>
                       ))}
