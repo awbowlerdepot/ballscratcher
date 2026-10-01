@@ -16878,6 +16878,37 @@ sam build && sam deploy   # admin_api
 git push                  # admin-spa
 ```
 
+### 6bw. Cowork leftovers: static-asset Cache-Control on all sites + Hustle VP price source (2026-10-01)
+
+Two items the retired Cowork task never finished.
+
+**1. Immutable caching for hashed bundles.** deploy-admin-site.yml
+already did a two-pass sync (`assets/*` -> `public, max-age=31536000,
+immutable`, no --delete; everything else -> `no-cache` with --delete);
+deploy-consumer-site.yml and deploy-learn-site.yml still synced everything
+with no Cache-Control, so CloudFront/browsers used default TTLs for all of
+it. Both now use the same two passes. Checked first that only Vite's
+content-hashed files ever land in `dist/assets/` (neither public/ has an
+assets folder): for the Learn site everything else -- index.html, the
+prerendered articles/*/index.html, sitemap.xml, robots.txt, ads.txt, and
+public/embeds/*.js (stable names BowlerDepot product pages load) -- stays
+no-cache. Old hashed files accumulate (no --delete on pass one), same
+accepted tradeoff as the admin site.
+
+**2. Hustle VP's price source.** The original wrong BowlerDepot row was
+long gone (see 6bn), but a NEW pending candidate had appeared pointing at
+`bowlerdepot.com/roto-grip-hustle-3tp/` -- generated from Hustle VP's
+stale `ambiguous` bowlerdepot_products match (BigCommerce 674 = Hustle
+3TP; BowlerDepot doesn't sell Hustle VP). Rejected via
+`POST /price-sources/{id}/reject` (resolved_by "Al Wolfe (via Claude
+Code)"). Both candidate inserts in price_checker are `on conflict
+(product_id, price_site_id, product_url) do nothing`, so the rejected row
+is a tombstone and discovery won't recreate it. Hustle VP keeps its
+approved bowling.com source (vp-pearl page, $113.99). The stale
+ambiguous match itself is still there (as is Hustle SOS -> HSB, already
+rejected) -- reconciliation never refreshes ambiguous rows; separate
+cleanup if it keeps producing bad candidates.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

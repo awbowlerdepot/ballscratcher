@@ -84,8 +84,30 @@ jobs:
           # here instead of widening the trust policy for no benefit.
           role-skip-session-tagging: true
 
+      # Two passes with different Cache-Control values, same as
+      # deploy-admin-site.yml (see its comment for the full reasoning) --
+      # carried over from the retired Cowork task's open item: "hashed
+      # JS/CSS bundles should get a long max-age; only index.html/entry
+      # files need no-cache". Before this, every file went up with no
+      # Cache-Control, so CloudFront and browsers fell back to default
+      # TTLs for everything.
+      #
+      # assets/* = Vite's content-hashed bundles only (nothing from
+      # public/ lands there), so a filename's bytes never change: cache a
+      # year, immutable. WITHOUT --delete, so a page already open from the
+      # previous deploy can still lazy-load its old chunks.
+      #
+      # Everything else (index.html) second, WITH --delete and no-cache: these keep their names across
+      # deploys, so they must revalidate on every load (a cheap 304 when
+      # unchanged).
       - name: Sync to S3
-        run: aws s3 sync dist/ "s3://${{ vars.CONSUMER_SITE_BUCKET }}/" --delete
+        run: |
+          aws s3 sync dist/ "s3://${{ vars.CONSUMER_SITE_BUCKET }}/" \
+            --cache-control "public, max-age=31536000, immutable" \
+            --exclude "*" --include "assets/*"
+          aws s3 sync dist/ "s3://${{ vars.CONSUMER_SITE_BUCKET }}/" --delete \
+            --cache-control "no-cache" \
+            --exclude "assets/*"
 
       - name: Invalidate CloudFront cache
         run: aws cloudfront create-invalidation --distribution-id "${{ vars.CONSUMER_SITE_DISTRIBUTION_ID }}" --paths "/*"
