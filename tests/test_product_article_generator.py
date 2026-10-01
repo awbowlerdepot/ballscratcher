@@ -3894,26 +3894,28 @@ def test_parse_video_article_json_rejects_missing_keys_and_bad_sections():
             pass
 
 
-def test_build_video_scene_prompt_comic_style_with_article_context():
-    """2026-09-30: house comic style, grounded in the article's own
-    sections/takeaways, generic illustrated bowlers allowed, no text."""
+def test_build_video_scene_prompt_people_free_series_look_with_article_context():
+    """2026-09-30: no people (every human-figure round got bowling form
+    wrong), a fixed series look, grounded in the article's own
+    sections/takeaways, no text."""
     video = dict(zip(_VIDEO_COLUMNS, _video_row()), category_path=["Bowling Tips", "Mental Game"])
     action = app.build_video_scene_prompt(video, _VALID_VIDEO_ARTICLE, "action_shot")
     square = app.build_video_scene_prompt(video, _VALID_VIDEO_ARTICLE, "product_shot")
     for prompt in (action, square):
         assert app.VIDEO_ARTICLE_ART_STYLE in prompt
-        assert app.BOWLING_MECHANICS_RULES in prompt
         assert app.VIDEO_ARTICLE_SERIES_LOOK in prompt
         assert "Visualize Before You Step Up" in prompt  # a section heading
         assert "Visualize every shot" in prompt  # a key takeaway
         assert "Bowling Tips > Mental Game" in prompt
         assert "quiet, empty lane at dawn" in prompt  # the model's visual_theme
-        assert "not a likeness of any real person" in prompt
-        assert "Never draw disembodied hands, empty gloves" in prompt
-        assert "no flames, glows, or energy effects on their body" in prompt
+        assert "Do not include any person" in prompt
         assert "Absolutely no text of any kind" in prompt
         assert "Brad and Kyle" not in prompt  # never name the creators to the image model
     assert "16:9" in action and "square" in square
+
+
+def test_video_article_art_style_is_a_known_key():
+    assert app.VIDEO_ARTICLE_ART_STYLE == app.VIDEO_ARTICLE_ART_STYLES[app.VIDEO_ARTICLE_ART_STYLE_KEY]
 
 
 def test_build_video_scene_prompt_falls_back_without_theme_or_sections():

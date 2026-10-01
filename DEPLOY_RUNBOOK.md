@@ -16798,6 +16798,31 @@ border, setting, and outfit; mental-game v2 = bowler at the line
 picturing the shot with a faint path to a strike, card = whole arm
 holding the ball under a spotlight on the pins.
 
+**Final (same day): no people, photoreal.** Al on the comic series
+previews: "those are just as bad". Every human-figure round across six
+styles got bowling form wrong (grip, timing, anatomy, floating gloves),
+while the first published article's people-free lane was fine, so Al
+picked "No people, styled scenes", then **photoreal** over comic from
+side-by-side previews of both articles. Now: `VIDEO_ARTICLE_ART_STYLES`
+{photoreal, comic} with `VIDEO_ARTICLE_ART_STYLE_KEY = "photoreal"`;
+`VIDEO_ARTICLE_SERIES_LOOK` = the Learn palette carried by lighting and
+accents (navy shadows, blue/red accent lights, cream highlights) + the
+same classic alley + thin black border; the scene prompt keeps the
+article context (headings, takeaways, category, visual_theme) and the
+name stripping, bans every person/body part, and spells out accurate
+objects (regulation lane, seven arrows + approach dots, ten white pins
+with red neck stripes in the triangle, head pin in front, plain ball
+resting or rolling, never floating, no text). The bowler-figure rules and
+BOWLING_MECHANICS_RULES are gone; the article prompt's visual_theme asks
+for the tip expressed through objects only (ball on the second-step dot,
+a single pin under a spotlight, arrows glowing on a quiet lane).
+
+During this edit a block replacement keyed on the first "visual_theme:
+OPTIONAL" line hit the BALL prompt and deleted ~30 functions; caught by
+the test run (144 failures), restored from HEAD, redone with the edit
+scoped to build_video_article_prompt -- diff confirmed video-section-only,
+45/45 functions, 177 tests passing.
+
 **Deploy:** `sam build && sam deploy` (product_article_generator only).
 Existing tips articles keep their current images until **Regen images**
 in Articles (images-only regenerate doesn't reset review).
