@@ -3902,11 +3902,15 @@ def test_build_video_scene_prompt_comic_style_with_article_context():
     square = app.build_video_scene_prompt(video, _VALID_VIDEO_ARTICLE, "product_shot")
     for prompt in (action, square):
         assert app.VIDEO_ARTICLE_ART_STYLE in prompt
+        assert app.BOWLING_MECHANICS_RULES in prompt
+        assert app.VIDEO_ARTICLE_SERIES_LOOK in prompt
         assert "Visualize Before You Step Up" in prompt  # a section heading
         assert "Visualize every shot" in prompt  # a key takeaway
         assert "Bowling Tips > Mental Game" in prompt
         assert "quiet, empty lane at dawn" in prompt  # the model's visual_theme
         assert "not a likeness of any real person" in prompt
+        assert "Never draw disembodied hands, empty gloves" in prompt
+        assert "no flames, glows, or energy effects on their body" in prompt
         assert "Absolutely no text of any kind" in prompt
         assert "Brad and Kyle" not in prompt  # never name the creators to the image model
     assert "16:9" in action and "square" in square

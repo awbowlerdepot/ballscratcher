@@ -16767,6 +16767,37 @@ pins, halftone/ink style, no text, face cropped out; card v1 had a
 floating ball -> fixed by the held/rolling rule; card v2 = gloved hand
 holding the ball at knee height on the approach.
 
+**Style shootout, then a fixed series look (same day).** Al: "can we try
+some of the other art styles... not 100% sold on the comic book look."
+Previews of the push-away hero in retro sports poster, modern flat,
+graphic novel, stylized 3D, and watercolor/ink; Al leaned graphic novel
+but "it has some issues with it not looking realistic". Added
+`BOWLING_MECHANICS_RULES` (grip behind/under the ball, balance arm out to
+the side, left slide foot, ball position matching the step, head-sized
+ball, regulation lane with arrows/dots/ten pins) and a "realistic graphic
+novel" style; still palm-over-the-top grips, the downswing instead of
+the push-away, and a stray "B" on a ball return. Al: "they have alot of
+issues.... lets go back to comic book and just make sure we keep them
+having a solid theme so there is continuity between articles."
+
+Final: comic book style + `VIDEO_ARTICLE_SERIES_LOOK` -- fixed palette =
+the Learn site's own (ink #0f0f2d, accent #1f439e, alert #d14343, paper
+#faf8f4, plus black ink), the same classic wood-lane alley, the same
+recurring generic bowler defined only by outfit (navy bowling shirt, one
+red collar stripe, dark slacks/shoes, no logos), same outlines/halftone,
+thin black panel border. Mechanics rules kept. Added after the first
+series preview: no disembodied hands/empty gloves, comic effects on the
+ball and scene only (no flames/glows on the bowler -- the mental-game
+hero had flaming hair), a released ball travels toward the pins, no text
+on equipment either. The scene prompt is otherwise style-neutral now
+("hero illustration", "illustrated character"), so changing the look is
+editing these two constants.
+
+Series previews (local only): both articles' hero + card share palette,
+border, setting, and outfit; mental-game v2 = bowler at the line
+picturing the shot with a faint path to a strike, card = whole arm
+holding the ball under a spotlight on the pins.
+
 **Deploy:** `sam build && sam deploy` (product_article_generator only).
 Existing tips articles keep their current images until **Regen images**
 in Articles (images-only regenerate doesn't reset review).

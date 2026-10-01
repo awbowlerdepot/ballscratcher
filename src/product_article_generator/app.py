@@ -3063,8 +3063,10 @@ def build_video_article_prompt(video: dict) -> str:
         "  faq: array of 3-5 {\"question\": ..., \"answer\": ...} objects, each grounded in something the "
         "video actually covers -- a question a bowler would really ask about this advice, not a generic one\n"
         "  verdict: a 2-3 sentence bottom line -- what to practice first and why\n"
-        "  visual_theme: OPTIONAL. 1-2 sentences describing the single most telling moment to illustrate as "
-        "a comic-book panel -- the key body position or action this article teaches (e.g. a bowler's ball "
+        "  visual_theme: OPTIONAL. 1-2 sentences describing ONE specific, physically accurate moment to "
+        "illustrate -- the exact body position this article teaches, named by approach step (e.g. \"second "
+        "step of a four-step approach: the ball pushed out and down in front of the right knee, left arm "
+        "starting out to the side\") -- the key body position or action this article teaches (e.g. a bowler's ball "
         "pushing out and down toward the knee on the second step; a bowler at the line, eyes locked on the "
         "second arrow, the lane stretching away). A generic illustrated bowler may be in it; never describe "
         "a real person or the video's creators. No text or lettering in the scene. Never shown to readers.\n"
@@ -3107,6 +3109,41 @@ VIDEO_ARTICLE_ART_STYLE = (
     "from a sports comic."
 )
 
+# One consistent series look for every Bowling Tips image -- Al: "lets go
+# back to comic book and just make sure we keep them having a solid theme
+# so there is continuity between articles" (after trying retro poster,
+# flat, graphic novel, 3D, and watercolor). Without this the model
+# improvises palette, setting, and character per article. Palette is the
+# Learn site's own (tailwind.config.js: ink #0f0f2d, accent #1f439e,
+# alert #d14343, paper #faf8f4). The recurring bowler is a generic
+# character defined only by an outfit -- recognizable as the series'
+# "coach", never a likeness of anyone real.
+VIDEO_ARTICLE_SERIES_LOOK = (
+    "Series look -- every image in this series must match it exactly: a fixed palette of deep navy "
+    "(#0f0f2d), royal blue (#1f439e), signal red (#d14343), and warm cream (#faf8f4), plus black ink, with "
+    "no other dominant colors; the same classic bowling alley setting every time (warm wood lanes, mid-century "
+    "details, soft overhead lights); the same recurring bowler character when a bowler appears: a generic "
+    "adult in a navy bowling shirt with a single red stripe at the collar, dark slacks, and dark bowling "
+    "shoes, no logos or names; the same thick black outlines and halftone shading; a thin black panel border "
+    "around the whole image."
+)
+
+# Real bowling mechanics, spelled out -- the image model doesn't know
+# them (Al, on the first graphic-novel preview: "it has some issues with
+# it not looking realistic": hand gripping the ball from the top like a
+# bucket, ball near the floor while the body was mid-approach, balance arm
+# flung back). Applies to every video-article image.
+BOWLING_MECHANICS_RULES = (
+    "Bowling mechanics must be accurate: a right-handed bowler holds the ball in the right hand with the "
+    "thumb and two fingers in the holes, the hand BEHIND and UNDER the ball (never gripping it from the top); "
+    "the left (non-ball) arm is extended out to the side for balance, not flung up or back; the left foot is "
+    "the sliding foot, landing at the foul line at the finish; the ball's position matches the step being "
+    "shown (pushed out in front at waist-to-knee height early in the approach, swinging back at the top of "
+    "the backswing, swinging forward low beside the slide foot at release). Realistic ball size relative to "
+    "the bowler (about the size of their head). The lane is a regulation wooden lane with gutters, the "
+    "approach dots and the arrows painted on the lane, and a full rack of ten pins at the end."
+)
+
 
 def build_video_scene_prompt(video: dict, article: dict, variant: str) -> str:
     """Text-to-image prompt for a video article's artwork, in the house
@@ -3147,14 +3184,11 @@ def build_video_scene_prompt(video: dict, article: dict, variant: str) -> str:
     if takeaways:
         context_lines.append("Key takeaways: " + "; ".join(takeaways[:6]))
     if variant == "action_shot":
-        framing = (
-            "a wide 16:9 hero panel -- a dynamic, cinematic composition with depth, the opening splash panel "
-            "of the story"
-        )
+        framing = "a wide 16:9 hero illustration -- a dynamic, cinematic composition with depth"
     else:
         framing = (
-            "a square, single bold panel with one clear focal subject near the center (a close-up of the key "
-            "body position, the ball, or the lane target) and a simple background, so it still reads at "
+            "a square illustration with one clear focal subject near the center (a close-up of the key body "
+            "position, the ball, or the lane target) and a simple background, so it still reads at "
             "thumbnail size"
         )
     return (
@@ -3162,14 +3196,21 @@ def build_video_scene_prompt(video: dict, article: dict, variant: str) -> str:
         + "\n".join(context_lines)
         + f"\nScene: {concept}\n"
         f"Style: {VIDEO_ARTICLE_ART_STYLE}\n"
+        f"{VIDEO_ARTICLE_SERIES_LOOK}\n"
+        f"{BOWLING_MECHANICS_RULES}\n"
         "Show the technique being taught, at a bowling alley -- lanes, approach dots and arrows, pins, the "
-        "ball. A bowler may appear, demonstrating the technique: a generic, stylized comic-book character "
-        "with an anatomically correct bowling motion, not a likeness of any real person, with no team "
+        "ball. A bowler may appear, demonstrating the technique: a generic, stylized illustrated character "
+        "with realistic anatomy, not a likeness of any real person, with no team "
         "logos or names on clothing. Physically correct: the ball is always either held in the bowler's "
         "hand (fingers in the ball) or rolling on the lane after release -- never floating in the air or "
-        "separate from the hand mid-swing. Any bowling ball is plain and generic, with no logo or printing. "
+        "separate from the hand mid-swing; once released it travels from the bowler toward the pins. Never "
+        "draw disembodied hands, empty gloves, or body parts without a whole bowler attached. Comic effects "
+        "(speed lines, motion streaks, impact bursts) belong to the ball and the scene -- the bowler is drawn "
+        "normally, with no flames, glows, or energy effects on their body or hair, even for a mental-game "
+        "topic. Any bowling ball is plain and generic, with no logo or printing. "
         "Absolutely no text of any kind: no lettering, captions, titles, speech or thought bubbles, sound "
-        "effects, numbers, signs, logos, brand names, scoreboards with writing, or watermarks."
+        "effects, numbers, signs, logos, brand names, scoreboards with writing, or watermarks -- including on "
+        "equipment (ball returns, pinsetters, shirts, balls)."
     )
 
 
