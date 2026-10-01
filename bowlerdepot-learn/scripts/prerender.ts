@@ -425,13 +425,13 @@ function stripLeadingMarkdownHeading(text: string): string {
   return text.replace(/^#{1,6}\s+.*(\r?\n)+/, "").trim();
 }
 
-function renderFeaturedVideo(video: ArticleDetail["featured_video"]): string {
+function renderFeaturedVideo(video: ArticleDetail["featured_video"], heading = "Watch this review from Brad & Kyle"): string {
   if (!video) return "";
   const blurb = escapeHtml(stripLeadingMarkdownHeading(video.summary || video.title || ""));
   return `
     <div class="relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-neutral-900 pb-10 pt-6">
       <div class="mx-auto max-w-[75rem] px-6 md:px-8">
-        <h2 class="mb-4 font-display text-xl font-semibold text-white">Watch this review from Brad &amp; Kyle</h2>
+        <h2 class="mb-4 font-display text-xl font-semibold text-white">${escapeHtml(heading)}</h2>
         <div class="grid grid-cols-1 overflow-hidden rounded-sm md:grid-cols-2">
           <div class="order-2 flex flex-col justify-center bg-white/5 p-6 md:order-none">
             <p class="italic text-white/80">${blurb}</p>
@@ -711,12 +711,12 @@ function renderArticlePage(baseHtml: string, card: ArticleCard, article: Article
   const byline = bylineParts.map(escapeHtml).join(" &middot; ");
 
   // Video article (migration 040): mirrors ArticleDetailPage's video
-  // layout -- embed, body sections, key takeaways, "The Bottom Line".
+  // layout -- body sections, key takeaways, "The Bottom Line", then the
+  // source video in the same dark panel ball reviews use.
   const isVideo = article.kind === "video";
   const rootCategory = article.category_path?.[0];
   const videoBody = isVideo
     ? `
-      ${article.featured_video ? `<div class="article-video"><iframe src="https://www.youtube.com/embed/${escapeHtml(article.featured_video.youtube_video_id)}" title="${escapeHtml(article.featured_video.title || "Video")}" loading="lazy" allowfullscreen></iframe></div>` : ""}
       ${(article.sections ?? [])
         .map(
           (sec) =>
@@ -756,6 +756,7 @@ function renderArticlePage(baseHtml: string, card: ArticleCard, article: Article
       ${article.buying_tips ? `<h2>Buying Tips</h2><p>${escapeHtml(article.buying_tips)}</p>` : ""}
       ${isVideo ? "" : renderFeaturedVideo(article.featured_video)}
       ${article.verdict ? `<h2>${isVideo ? "The Bottom Line" : "Verdict"}</h2><p>${escapeHtml(article.verdict)}</p>` : ""}
+      ${isVideo ? renderFeaturedVideo(article.featured_video, article.featured_video?.channel_title ? `Watch the full video from ${article.featured_video.channel_title}` : "Watch the full video") : ""}
       ${/* Al: "move the related reviews section up to just below the shop
            call to action." The live page now renders Related Reviews
            right after the Shop CTA, ahead of Specs/FAQ -- this static

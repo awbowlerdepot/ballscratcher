@@ -16574,9 +16574,15 @@ ball page's Brad and Kyle hero reads), `related_reviews` = other
 articles under the same top-level category. Ball articles get
 `kind: "product"`.
 
-**Learn site:** video layout on ArticleDetailPage (embed under the hero,
-sections with the first ad slot after section 1, Key Takeaways box, "The
-Bottom Line", "More <root category>", back link to the root category);
+**Learn site:** video layout on ArticleDetailPage (sections with the
+first ad slot after section 1, Key Takeaways box, "The Bottom Line", then
+the source video in the same dark full-bleed panel ball reviews use for
+Brad and Kyle -- `renderVideoPanel`, headed "Watch the full video from
+<channel>" -- then FAQ; "More <root category>", back link to the root
+category). Al, after the first pass embedded it under the hero: "can we
+embed the video like we do on the ball review articles and down after
+the bottom line and before faqs." prerender.ts mirrors it via
+renderFeaturedVideo's new heading param;
 card shows category + channel and falls back to the YouTube thumbnail;
 reading time counts sections; brand filter hidden when the root
 category has `product_type` null (Bowling Tips) and not sent; header

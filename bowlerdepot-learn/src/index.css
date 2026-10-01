@@ -217,15 +217,6 @@
   .article-grid {
     @apply grid grid-cols-1 gap-x-8 gap-y-10 sm:grid-cols-2 lg:grid-cols-3;
   }
-  /* Video articles (migration 040) -- the embedded source video in
-     scripts/prerender.ts' static HTML. */
-  .article-video {
-    @apply mb-10 aspect-video w-full overflow-hidden rounded-md bg-black;
-  }
-  .article-video iframe {
-    @apply h-full w-full;
-  }
-
   .article-card {
     @apply block no-underline;
   }

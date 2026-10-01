@@ -9,7 +9,7 @@ import {
   getProductArticle,
   resizedImageUrl,
 } from "../api/client";
-import type { ProductArticleResponse } from "../api/types";
+import type { FeaturedVideo, ProductArticleResponse } from "../api/types";
 import ArticleDetailSkeleton from "../components/ArticleDetailSkeleton";
 import InArticleAd from "../components/InArticleAd";
 
@@ -168,6 +168,50 @@ export default function ArticleDetailPage() {
   const updatedLabel = formatArticleDate(article.reviewed_at);
   const readingTime = estimateReadingTimeMinutes(article);
 
+  // The dark full-width "watch" panel (summary or title on the left,
+  // video on the right) -- the Brad and Kyle hero on ball reviews, and the
+  // source video on video articles (migration 040), placed after The
+  // Bottom Line there.
+  function renderVideoPanel(video: FeaturedVideo, heading: string) {
+    return (
+      <div className="relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-neutral-900 pb-10 pt-6">
+        <div className="mx-auto max-w-[75rem] px-6 md:px-8">
+          <h2 className="mb-4 font-display text-xl font-semibold text-white">{heading}</h2>
+          {/* md:grid-cols-2 (was a fixed 1fr_480px split) -- a 50/50
+              proportional split scales with the container instead of
+              needing a new hardcoded pixel value every time the page's
+              max-width changes (Al: "make the max-width on desktop
+              75rem as well... this might require a tweak to the brad
+              and kyle video embed style sheet"). Order swapped on
+              mobile only (Al: "on mobile can we move the brad and kyle
+              video embed above the summary") -- video first via
+              order-1, text second via order-2, both reset to DOM order
+              (text-then-video) at md: via order-none so desktop is
+              unchanged. */}
+          <div className="grid grid-cols-1 overflow-hidden rounded-sm md:grid-cols-2">
+            <div className="order-2 flex flex-col justify-center bg-white/5 p-6 md:order-none">
+              <p className="italic text-white/80">
+                {stripLeadingMarkdownHeading(
+                  video.summary || video.title || "",
+                )}
+              </p>
+            </div>
+            <div className="order-1 aspect-video w-full bg-black md:order-none md:aspect-auto md:h-full">
+              <iframe
+                className="h-full w-full"
+                src={`https://www.youtube.com/embed/${video.youtube_video_id}`}
+                title={video.title || "Featured video"}
+                loading="lazy"
+                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                allowFullScreen
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div>
       <Link
@@ -227,28 +271,11 @@ export default function ArticleDetailPage() {
         </div>
       </div>
 
-      {/* Video article (migration 040): the source video right under the
-          hero -- Al: "generate an article with that video inline" -- then
-          the article body and a key-takeaways box. */}
-      {isVideo && article.featured_video ? (
-        <div className="mb-10">
-          <div className="aspect-video w-full overflow-hidden rounded-md bg-black">
-            <iframe
-              className="h-full w-full"
-              src={`https://www.youtube.com/embed/${article.featured_video.youtube_video_id}`}
-              title={article.featured_video.title || "Video"}
-              loading="lazy"
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-              allowFullScreen
-            />
-          </div>
-          <p className="mt-2 text-xs text-muted">
-            Video: {article.featured_video.title}
-            {article.featured_video.channel_title ? <> &middot; {article.featured_video.channel_title}</> : null}
-          </p>
-        </div>
-      ) : null}
-
+      {/* Video article (migration 040): the article body and a key-
+          takeaways box. The source video itself sits after The Bottom
+          Line, in the same dark panel ball reviews use -- Al: "can we
+          embed the video like we do on the ball review articles and
+          down after the bottom line and before faqs". */}
       {isVideo
         ? (article.sections ?? []).map((section, i) => (
             <div key={i}>
@@ -374,45 +401,9 @@ export default function ArticleDetailPage() {
           nocookie.com -- no precedent for privacy-enhanced mode
           anywhere in this codebase, matching the plain embed
           consumer-site's own video grid already uses). */}
-      {article.featured_video && !isVideo ? (
-        <div className="relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-neutral-900 pb-10 pt-6">
-          <div className="mx-auto max-w-[75rem] px-6 md:px-8">
-            <h2 className="mb-4 font-display text-xl font-semibold text-white">
-              Watch this review from Brad &amp; Kyle
-            </h2>
-            {/* md:grid-cols-2 (was a fixed 1fr_480px split) -- a 50/50
-                proportional split scales with the container instead of
-                needing a new hardcoded pixel value every time the page's
-                max-width changes (Al: "make the max-width on desktop
-                75rem as well... this might require a tweak to the brad
-                and kyle video embed style sheet"). Order swapped on
-                mobile only (Al: "on mobile can we move the brad and kyle
-                video embed above the summary") -- video first via
-                order-1, text second via order-2, both reset to DOM order
-                (text-then-video) at md: via order-none so desktop is
-                unchanged. */}
-            <div className="grid grid-cols-1 overflow-hidden rounded-sm md:grid-cols-2">
-              <div className="order-2 flex flex-col justify-center bg-white/5 p-6 md:order-none">
-                <p className="italic text-white/80">
-                  {stripLeadingMarkdownHeading(
-                    article.featured_video.summary || article.featured_video.title || "",
-                  )}
-                </p>
-              </div>
-              <div className="order-1 aspect-video w-full bg-black md:order-none md:aspect-auto md:h-full">
-                <iframe
-                  className="h-full w-full"
-                  src={`https://www.youtube.com/embed/${article.featured_video.youtube_video_id}`}
-                  title={article.featured_video.title || "Featured video"}
-                  loading="lazy"
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                  allowFullScreen
-                />
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      {article.featured_video && !isVideo
+        ? renderVideoPanel(article.featured_video, "Watch this review from Brad & Kyle")
+        : null}
 
       {article.verdict ? (
         <div className="mb-10">
@@ -422,6 +413,15 @@ export default function ArticleDetailPage() {
           <p className="text-ink/90">{article.verdict}</p>
         </div>
       ) : null}
+
+      {isVideo && article.featured_video
+        ? renderVideoPanel(
+            article.featured_video,
+            article.featured_video.channel_title
+              ? `Watch the full video from ${article.featured_video.channel_title}`
+              : "Watch the full video",
+          )
+        : null}
 
       {/* Al: "after the verdict in each article can we include the call
           to action to shop for the ball ... This should only show while
