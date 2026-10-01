@@ -22,6 +22,7 @@ import Button from "../components/Button";
 import type { Column } from "../components/DataTable";
 import DataTable from "../components/DataTable";
 import Modal from "../components/Modal";
+import SocialPostsSection from "../components/SocialPostsSection";
 import Pagination from "../components/Pagination";
 import Skeleton from "../components/Skeleton";
 import { useToast } from "../components/Toast";
@@ -611,6 +612,7 @@ export default function ArticlesPage() {
             regenerateDisabled={!!items.find((a) => a.id === previewArticle.id)?.generation_started_at}
           />
         )}
+        {previewArticle && <SocialPostsSection article={previewArticle} />}
       </Modal>
     </div>
   );

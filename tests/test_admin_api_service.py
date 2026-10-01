@@ -7832,3 +7832,127 @@ def test_list_learn_videos_includes_article_status():
     assert "left join product_articles pa on pa.learn_video_id = lv.id" in query
     assert "pa.status as article_status" in query
     assert "lv.article_generation_started_at" in query
+
+
+# --- Article social posts (migration 042) ---
+
+_SOCIAL_ROW_COLUMNS = ["id", "slug", "status", "title", "hook", "performance_summary", "pros", "cons", "verdict",
+                       "sections", "key_takeaways", "author_name", "product_name", "brand_name", "coverstock_type",
+                       "video_channel_title", "article_kind"]
+
+
+class _SocialCursor(_RuleCursor):
+    @property
+    def description(self):
+        return [(c,) for c in _SOCIAL_ROW_COLUMNS]
+
+
+class _SocialConnection(_RuleConnection):
+    def __init__(self, rules):
+        super().__init__(rules)
+        self._cursor = _SocialCursor(rules)
+
+
+def _ball_social_row(slug="storm-phaze-ii"):
+    return ("art-1", slug, "approved", "Phaze II: The Benchmark", "Hook.", "Smooth and strong.", ["Strong mid"], ["Pricey"],
+            "Buy it.", [], [], None, "Phaze II", "Storm", "solid", None, "product")
+
+
+class _FakeSocialBedrock:
+    def __init__(self, payload):
+        self.payload = payload
+        self.calls = []
+
+    def invoke_model(self, **kwargs):
+        self.calls.append(kwargs)
+        text = self.payload if isinstance(self.payload, str) else json.dumps(self.payload)
+
+        class _Body:
+            def read(self_inner):
+                return json.dumps({"content": [{"text": text}]}).encode()
+
+        return {"body": _Body()}
+
+
+_GOOD_POSTS = {"facebook": "FB post https://learn.bowlerdepot.com/articles/storm-phaze-ii/", "instagram": "IG\nlink in bio\n\n#bowling",
+               "x": "Short post https://learn.bowlerdepot.com/articles/storm-phaze-ii/", "tiktok_hook": "Hook!", "tiktok_caption": "Cap #bowling"}
+
+
+def test_x_post_length_counts_links_as_23():
+    assert service.x_post_length("hi https://learn.bowlerdepot.com/articles/a-very-long-slug-indeed/") == 3 + 23
+
+
+def test_fit_x_post_trims_prose_and_keeps_link():
+    url = "https://learn.bowlerdepot.com/articles/storm-phaze-ii/"
+    long_text = ("word " * 80).strip() + " " + url
+    fitted = service._fit_x_post(long_text, url)
+    assert fitted.endswith(url)
+    assert service.x_post_length(fitted) <= service.X_MAX_CHARS
+    assert "…" in fitted
+
+
+def test_fit_x_post_leaves_short_post_alone():
+    assert service._fit_x_post("short https://x.co/a", "https://x.co/a") == "short https://x.co/a"
+
+
+def test_social_prompt_for_ball_article_uses_article_and_link_and_bans_prices():
+    article = dict(zip(_SOCIAL_ROW_COLUMNS, _ball_social_row()))
+    prompt = service.build_social_posts_prompt(article, "https://learn.bowlerdepot.com/articles/storm-phaze-ii/")
+    assert "Storm Phaze II" in prompt and "Smooth and strong." in prompt and "Strong mid" in prompt
+    assert "https://learn.bowlerdepot.com/articles/storm-phaze-ii/" in prompt
+    assert "Never mention prices" in prompt
+    assert "#Storm" in prompt
+    for key in service.SOCIAL_POST_FIELDS:
+        assert key + ":" in prompt
+
+
+def test_social_prompt_without_url_uses_link_placeholder():
+    article = dict(zip(_SOCIAL_ROW_COLUMNS, _ball_social_row(slug=None)))
+    assert "{LINK}" in service.build_social_posts_prompt(article, None)
+
+
+def test_social_prompt_for_partner_video_article_credits_author():
+    row = list(_ball_social_row())
+    row[-1] = "video"
+    row[11] = "Brad and Kyle"
+    row[9] = [{"heading": "Visualize", "body": "b"}]
+    article = dict(zip(_SOCIAL_ROW_COLUMNS, row))
+    prompt = service.build_social_posts_prompt(article, "https://x.co/a")
+    assert "#bowlingtips" in prompt and "Visualize" in prompt and "Brad and Kyle" in prompt
+
+
+def test_parse_social_posts_json_requires_all_fields():
+    assert service.parse_social_posts_json("```json\n" + json.dumps(_GOOD_POSTS) + "\n```")["tiktok_hook"] == "Hook!"
+    for bad in [{k: v for k, v in _GOOD_POSTS.items() if k != "x"}, dict(_GOOD_POSTS, facebook="  ")]:
+        try:
+            service.parse_social_posts_json(json.dumps(bad))
+            assert False, "expected ValueError"
+        except ValueError:
+            pass
+
+
+def test_generate_article_social_posts_stores_and_returns_url():
+    conn = _SocialConnection([("from product_articles pa", _ball_social_row())])
+    bedrock = _FakeSocialBedrock(_GOOD_POSTS)
+    result = service.generate_article_social_posts(conn, "art-1", bedrock_client=bedrock, model_id="haiku")
+    assert result["article_url"] == "https://learn.bowlerdepot.com/articles/storm-phaze-ii/"
+    assert result["social_posts"]["facebook"].startswith("FB post")
+    update = [e for e in conn.cursor().executed if e[0].startswith("update product_articles set social_posts")][0]
+    assert json.loads(update[1][0]) == result["social_posts"]
+    assert "social_posts_generated_at = now()" in update[0]
+    assert conn.committed
+
+
+def test_generate_article_social_posts_missing_article():
+    conn = _SocialConnection([("from product_articles pa", None)])
+    try:
+        service.generate_article_social_posts(conn, "missing", bedrock_client=_FakeSocialBedrock(_GOOD_POSTS), model_id="m")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def test_update_article_social_posts_keeps_only_known_fields():
+    conn = _RuleConnection([("update product_articles set social_posts", ("art-1",))])
+    result = service.update_article_social_posts(conn, "art-1", {"facebook": " edited ", "evil": "x", "x": "post"})
+    assert result["social_posts"] == {"facebook": "edited", "instagram": "", "x": "post", "tiktok_hook": "", "tiktok_caption": ""}

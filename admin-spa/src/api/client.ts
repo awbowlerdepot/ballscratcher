@@ -3,6 +3,7 @@ import type {
   AdminUser,
   Article,
   ArticleListItem,
+  ArticleSocialPosts,
   ArticleGenerationStatus,
   ArticleImageCandidate,
   ArticleRegenerateMode,
@@ -613,6 +614,22 @@ export function updateLearnVideo(id: string, categoryId: string): Promise<{ id: 
 
 export function deleteLearnVideo(id: string): Promise<{ deleted: boolean; id: string }> {
   return apiDelete(`/learn-videos/${encodeURIComponent(id)}`);
+}
+
+// Social media posts for an article (migration 042). Generate is
+// synchronous (a few seconds); 502 means the model's reply didn't parse --
+// try again.
+export function generateArticleSocialPosts(
+  articleId: string,
+): Promise<{ article_id: string; social_posts: ArticleSocialPosts; article_url: string | null }> {
+  return apiPost(`/articles/${encodeURIComponent(articleId)}/social-posts/generate`);
+}
+
+export function updateArticleSocialPosts(
+  articleId: string,
+  socialPosts: ArticleSocialPosts,
+): Promise<{ article_id: string; social_posts: ArticleSocialPosts }> {
+  return apiPatch(`/articles/${encodeURIComponent(articleId)}/social-posts`, { social_posts: socialPosts });
 }
 
 // Generate Article for a Learn video (migration 040) -- async, same modes

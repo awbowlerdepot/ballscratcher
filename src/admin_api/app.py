@@ -114,6 +114,11 @@ class LearnVideoUpdateRequest(BaseModel):
     category_id: Optional[str] = None
 
 
+class ArticleSocialPostsUpdateRequest(BaseModel):
+    # Migration 042: facebook, instagram, x, tiktok_hook, tiktok_caption.
+    social_posts: dict
+
+
 class LearnVideoGenerateArticleRequest(BaseModel):
     # Same modes as the product article routes: "both" (text + images),
     # "text", "images", "action_shot", "product_shot".
@@ -973,6 +978,32 @@ def retry_learn_video_transcript(learn_video_id: str):
     conn = service.get_db_connection()
     try:
         return service.retry_learn_video_transcript(conn, learn_video_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/articles/{article_id}/social-posts/generate")
+def generate_article_social_posts(article_id: str):
+    # Migration 042 -- synchronous, a few seconds (see the service docstring).
+    conn = service.get_db_connection()
+    try:
+        return service.generate_article_social_posts(conn, article_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        # The model's reply didn't parse -- worth a retry, not a 500.
+        raise HTTPException(status_code=502, detail=f"Couldn't generate posts, try again: {e}")
+    finally:
+        conn.close()
+
+
+@app.patch("/articles/{article_id}/social-posts")
+def update_article_social_posts(article_id: str, body: ArticleSocialPostsUpdateRequest):
+    conn = service.get_db_connection()
+    try:
+        return service.update_article_social_posts(conn, article_id, body.social_posts)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
     finally:

@@ -654,6 +654,16 @@ export type ArticleComparisonRow = Record<string, unknown>;
 
 // Full detail for one article (GET /articles/{id}) -- select pa.* plus
 // product_name/brand_name, see get_article in admin_api/service.py.
+// Social media copy for an article (migration 042) -- one editable string
+// per field.
+export interface ArticleSocialPosts {
+  facebook: string;
+  instagram: string;
+  x: string;
+  tiktok_hook: string;
+  tiktok_caption: string;
+}
+
 export interface ArticleSection {
   heading: string;
   body: string;
@@ -667,6 +677,9 @@ export interface Article extends ArticleSubjectFields {
   // Migration 041: set when written in a partner creator's own voice
   // (creator_partners); null = "BowlerDepot Team" byline.
   author_name: string | null;
+  // Migration 042: ready-to-paste social copy, null until generated.
+  social_posts: ArticleSocialPosts | null;
+  social_posts_generated_at: string | null;
   status: ArticleStatus;
   title: string | null;
   hook: string | null;

@@ -16827,6 +16827,57 @@ scoped to build_video_article_prompt -- diff confirmed video-section-only,
 Existing tips articles keep their current images until **Regen images**
 in Articles (images-only regenerate doesn't reset review).
 
+### 6bv. Social media posts per article in the admin UI (migration 042) (2026-10-01)
+
+Al: "for the bowling ball articles, in the admin ui can we add a social
+media post section that has copy to put for text on social media posts."
+Choices: Facebook, Instagram, X, TikTok/Reels; **on demand** (only for
+articles actually being promoted); **editable with Copy buttons**.
+
+**Migration 042:** `product_articles.social_posts` jsonb -- a flat object
+of five strings (`facebook`, `instagram`, `x`, `tiktok_hook`,
+`tiktok_caption`) so each is one text box -- and
+`social_posts_generated_at` (last generation, not edit).
+
+**admin_api:** `POST /articles/{id}/social-posts/generate` ->
+`generate_article_social_posts`: synchronous, one Haiku call (fits the
+30s admin timeout; admin_api already has Bedrock access for video
+rollups). Prompt is grounded only in the article (ball: brand + name,
+intro, performance, pros/cons, verdict; video articles: sections,
+takeaways, bottom line, partner author credit), never prices, live URL
+`https://learn.bowlerdepot.com/articles/<slug>/` -- or `{LINK}` when not
+yet approved (UI flags it). Per platform: Facebook 2-4 sentences + link;
+Instagram caption + "link in bio" + hashtag block, no URL; X <=250 asked,
+**enforced in code** at 280 with links counted as 23 (`x_post_length`,
+`_fit_x_post` trims prose at a word, keeps the link); TikTok hook line +
+caption/hashtags. A reply that doesn't parse -> 502 "try again".
+`PATCH /articles/{id}/social-posts` saves edits (unknown keys dropped).
+`get_article` already returns `pa.*`, so the preview sees them.
+
+**admin-spa:** `SocialPostsSection` under the article preview on the
+Articles page: Generate / Regenerate (confirms before replacing),
+editable textareas, Copy per field, Save edits (enabled when changed),
+live X count (red over 280), per-platform hints, {LINK} warning. Draft
+resets keyed on the saved posts' content, so the preview's refetch after
+e.g. picking an image candidate doesn't wipe unsaved edits. Works for
+video articles too (same component, video-aware prompt).
+
+**Verified:** admin_api tests 420 passed (10 new: X length/fit, prompts
+for ball/video/no-URL, parse, generate stores + returns URL, missing
+article, update drops unknown keys). Migrations 001-042 on a fresh
+postgres:16 with the real functions (fetch, generate with a fake model,
+overlong X trimmed to 279 ending in the link, edit round-trips through
+get_article). Real Haiku preview for storm-ion-max (read-only, nothing
+stored): on-voice, grounded, X 229/280. `npx tsc -b` clean.
+
+**Deploy:**
+
+```bash
+psql "$DATABASE_URL" -f db/migrations/042_article_social_posts.sql
+sam build && sam deploy   # admin_api
+git push                  # admin-spa
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

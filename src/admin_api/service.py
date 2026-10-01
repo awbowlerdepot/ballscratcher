@@ -5727,6 +5727,175 @@ def queue_learn_video_article_generation(conn, learn_video_id: str, mode: str = 
         raise
     return {"queued": True, "learn_video_id": learn_video_id, "mode": mode}
 
+
+# ---------------------------------------------------------------------
+# Social media posts per article (migration 042) -- Al: "in the admin ui
+# can we add a social media post section that has copy to put for text
+# on social media posts." On demand from the article preview, editable,
+# copy buttons. One Bedrock call writes all five fields.
+# ---------------------------------------------------------------------
+
+LEARN_SITE_URL = "https://learn.bowlerdepot.com"
+SOCIAL_POST_FIELDS = ("facebook", "instagram", "x", "tiktok_hook", "tiktok_caption")
+# X counts every link as 23 characters (t.co), whatever its real length.
+X_MAX_CHARS = 280
+X_LINK_CHARS = 23
+DEFAULT_SOCIAL_POSTS_MAX_TOKENS = 1200
+_URL_RE = re.compile(r"https?://\S+")
+
+
+def x_post_length(text: str) -> int:
+    """Length as X counts it: each URL is 23 characters."""
+    return len(_URL_RE.sub("x" * X_LINK_CHARS, text or ""))
+
+
+def article_public_url(slug: str):
+    return f"{LEARN_SITE_URL}/articles/{slug}/" if slug else None
+
+
+def _fetch_article_for_social(conn, article_id: str):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select pa.id, pa.slug, pa.status, pa.title, pa.hook, pa.performance_summary, pa.pros, pa.cons,
+                   pa.verdict, pa.sections, pa.key_takeaways, pa.author_name,
+                   p.name as product_name, b.name as brand_name, p.coverstock_type,
+                   lv.channel_title as video_channel_title,
+                   case when pa.learn_video_id is not null then 'video' else 'product' end as article_kind
+            from product_articles pa
+            left join products p on p.id = pa.product_id
+            left join brands b on b.id = p.brand_id
+            left join learn_videos lv on lv.id = pa.learn_video_id
+            where pa.id = %s
+            """,
+            (article_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return dict(zip([d[0] for d in cur.description], row))
+
+
+def build_social_posts_prompt(article: dict, url: str) -> str:
+    """All five fields in one call, grounded only in the article's own
+    text. No prices (they change) and nothing the article doesn't say.
+    The link is given literally so the X post's length can be checked;
+    when the article has no public URL yet (not approved), the model
+    writes {LINK} and the admin UI flags it."""
+    link = url or "{LINK}"
+    is_video = article.get("article_kind") == "video"
+    if is_video:
+        subject = f"a bowling instruction article: \"{article.get('title')}\""
+        details = [
+            f"Intro: {article.get('hook') or ''}",
+            "Sections: " + "; ".join(s.get("heading", "") for s in (article.get("sections") or []) if isinstance(s, dict)),
+            "Key takeaways: " + "; ".join(article.get("key_takeaways") or []),
+            f"Bottom line: {article.get('verdict') or ''}",
+        ]
+        if article.get("author_name"):
+            details.append(f"Written by {article['author_name']}, adapted from their video -- credit them by name.")
+        hashtag_hint = "#bowling #bowlingtips and 2-4 topical tags"
+    else:
+        ball = f"{article.get('brand_name') or ''} {article.get('product_name') or ''}".strip()
+        subject = f"a bowling ball review of the {ball}: \"{article.get('title')}\""
+        details = [
+            f"Intro: {article.get('hook') or ''}",
+            f"Performance: {article.get('performance_summary') or ''}",
+            "Pros: " + "; ".join(article.get("pros") or []),
+            "Cons: " + "; ".join(article.get("cons") or []),
+            f"Verdict: {article.get('verdict') or ''}",
+        ]
+        brand_tag = re.sub(r"[^A-Za-z0-9]", "", article.get("brand_name") or "")
+        hashtag_hint = f"#bowling #bowlingball{(' #' + brand_tag) if brand_tag else ''} and 2-3 more relevant tags"
+    return (
+        "You write social media posts for The Bowler Depot (a bowling pro shop) promoting " + subject + " on its "
+        "Learn site. Voice: knowledgeable, upbeat, bowler-to-bowler -- never hype-y or salesy. Use ONLY what the "
+        "article below says; do not invent specs, claims, results, or quotes. Never mention prices or discounts.\n\n"
+        "Article:\n" + "\n".join(details) + f"\nArticle link: {link}\n\n"
+        "Return ONLY a JSON object (no markdown fence) with exactly these string keys:\n"
+        f"  facebook: 2-4 sentences that make a bowler want to read the article, ending with the link {link}\n"
+        "  instagram: a caption of 3-6 short lines (line breaks with \\n), a hook first line, ending with "
+        f"\"Full article: link in bio\" and then a blank line and a hashtag block ({hashtag_hint}). No URL.\n"
+        f"  x: one post including the link {link}, at most 250 characters counting the link as 23, no more "
+        "than two hashtags\n"
+        "  tiktok_hook: one punchy line (under 15 words) to say or show in the first two seconds of a short video\n"
+        f"  tiktok_caption: a 1-2 sentence caption plus 3-5 hashtags ({hashtag_hint}). No URL.\n"
+    )
+
+
+def parse_social_posts_json(raw_text: str) -> dict:
+    text = raw_text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Bedrock response was not valid JSON: {exc}") from exc
+    missing = [k for k in SOCIAL_POST_FIELDS if not isinstance(data.get(k), str) or not data[k].strip()]
+    if missing:
+        raise ValueError(f"Bedrock response missing social post fields: {missing}")
+    return {k: data[k].strip() for k in SOCIAL_POST_FIELDS}
+
+
+def _fit_x_post(text: str, url: str) -> str:
+    """Enforces X's limit in code rather than trusting the model: trims
+    the prose (keeping the link) at a word boundary with an ellipsis."""
+    if x_post_length(text) <= X_MAX_CHARS:
+        return text
+    link = url or ""
+    prose = text.replace(link, "").strip() if link else text
+    budget = X_MAX_CHARS - (X_LINK_CHARS + 1 if link else 0) - 1
+    trimmed = prose[:budget].rsplit(" ", 1)[0].rstrip(" ,.;:") + "…"
+    return f"{trimmed} {link}".strip() if link else trimmed
+
+
+def generate_article_social_posts(conn, article_id: str, bedrock_client=None, model_id: str = None) -> dict:
+    """POST /articles/{id}/social-posts/generate. Synchronous -- one short
+    Haiku call fits inside the admin API's 30s timeout. Overwrites any
+    existing posts (the admin UI confirms first if they were edited)."""
+    article = _fetch_article_for_social(conn, article_id)
+    if article is None:
+        raise LookupError(f"No product_articles row with id {article_id}")
+    url = article_public_url(article.get("slug"))
+    if bedrock_client is None:
+        import boto3
+
+        bedrock_client = boto3.client("bedrock-runtime")
+    model_id = model_id or os.environ.get("BEDROCK_MODEL_ID", DEFAULT_BEDROCK_MODEL_ID)
+    body = json.dumps({
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": DEFAULT_SOCIAL_POSTS_MAX_TOKENS,
+        "messages": [{"role": "user", "content": build_social_posts_prompt(article, url)}],
+    })
+    response = bedrock_client.invoke_model(modelId=model_id, contentType="application/json",
+                                           accept="application/json", body=body)
+    raw = json.loads(response["body"].read())["content"][0]["text"]
+    posts = parse_social_posts_json(raw)
+    posts["x"] = _fit_x_post(posts["x"], url)
+    with conn.cursor() as cur:
+        cur.execute(
+            "update product_articles set social_posts = %s, social_posts_generated_at = now() where id = %s",
+            (json.dumps(posts), article_id),
+        )
+    conn.commit()
+    return {"article_id": article_id, "social_posts": posts, "article_url": url}
+
+
+def update_article_social_posts(conn, article_id: str, posts: dict) -> dict:
+    """PATCH /articles/{id}/social-posts -- saves edits. Only the five
+    known fields are kept; unknown keys are dropped rather than stored."""
+    cleaned = {k: (posts.get(k) or "").strip() for k in SOCIAL_POST_FIELDS}
+    with conn.cursor() as cur:
+        cur.execute(
+            "update product_articles set social_posts = %s where id = %s returning id",
+            (json.dumps(cleaned), article_id),
+        )
+        if cur.fetchone() is None:
+            raise LookupError(f"No product_articles row with id {article_id}")
+    conn.commit()
+    return {"article_id": article_id, "social_posts": cleaned}
+
 _MANAGED_GROUPS = ("Admins", "Editors")
 
 
