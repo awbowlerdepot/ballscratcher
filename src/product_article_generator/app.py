@@ -3063,10 +3063,11 @@ def build_video_article_prompt(video: dict) -> str:
         "  faq: array of 3-5 {\"question\": ..., \"answer\": ...} objects, each grounded in something the "
         "video actually covers -- a question a bowler would really ask about this advice, not a generic one\n"
         "  verdict: a 2-3 sentence bottom line -- what to practice first and why\n"
-        "  visual_theme: OPTIONAL. 1-2 sentences describing a distinctive visual scene concept for the "
-        "article's artwork, grounded in the article's central idea (e.g. a quiet, focused lane at dawn for a "
-        "mental-game article; a single pin standing on the deck for spare shooting). Objects and settings "
-        "only -- no people, hands, or body parts. Never shown to readers.\n"
+        "  visual_theme: OPTIONAL. 1-2 sentences describing the single most telling moment to illustrate as "
+        "a comic-book panel -- the key body position or action this article teaches (e.g. a bowler's ball "
+        "pushing out and down toward the knee on the second step; a bowler at the line, eyes locked on the "
+        "second arrow, the lane stretching away). A generic illustrated bowler may be in it; never describe "
+        "a real person or the video's creators. No text or lettering in the scene. Never shown to readers.\n"
     )
 
 
@@ -3095,34 +3096,80 @@ def parse_video_article_json(raw_text: str) -> dict:
     return data
 
 
+# Bowling Tips house art style (2026-09-30) -- Al: "can we use some more
+# context to generate better images, could we have a general theme like a
+# comic book like look". Video articles only: ball reviews stay
+# photorealistic, built from the real ball photo, since a comic rendering
+# would redraw the ball's actual cover and logo.
+VIDEO_ARTICLE_ART_STYLE = (
+    "Classic comic book art: bold black ink outlines, flat saturated colors, halftone dot shading, "
+    "dramatic angles, speed lines and motion streaks for movement, strong contrast -- like a single panel "
+    "from a sports comic."
+)
+
+
 def build_video_scene_prompt(video: dict, article: dict, variant: str) -> str:
-    """Text-to-image prompt for a video article's artwork. Keeps the ball
-    pipeline's no-people rule (build_gemini_scene_prompt): AI-generated
-    bowlers tend to look wrong, and a person in a tips article's artwork
-    could read as the video's real creators. Unlike ball shots, pins and
-    lanes are welcome -- they're often the subject of a tip."""
-    concept = (article.get("visual_theme") or "").strip() or (
-        f"an evocative bowling-alley scene that captures the idea of: {article.get('title') or video.get('title')}"
+    """Text-to-image prompt for a video article's artwork, in the house
+    comic style (VIDEO_ARTICLE_ART_STYLE). Grounded in the article itself
+    -- title, category, section headings, key takeaways, and the model's
+    own visual_theme -- so the image shows the article's actual technique
+    (a pushaway reaching for the knee, eyes on the second arrow), not a
+    generic bowling mood.
+
+    People: Al chose generic illustrated bowlers. Unlike the ball
+    pipeline's no-people rule, a stylized drawn bowler demonstrating the
+    tip is allowed -- but never named, never modeled on the video's
+    creators or any real person, no team logos. No lettering at all
+    (comics invite captions, speech bubbles, sound effects, and AI image
+    text comes out garbled)."""
+    channel = (video.get("channel_title") or "").strip()
+
+    def _no_names(text: str) -> str:
+        # Never hand the image model the creators' names -- a titled
+        # "...with Brad and Kyle" prompt invites a likeness.
+        if channel:
+            text = re.sub(r"\s*(with|by|from)?\s*" + re.escape(channel), "", text, flags=re.IGNORECASE)
+        return text.strip(" |-:")
+
+    title = _no_names(article.get("title") or video.get("title") or "") or "bowling tips"
+    headings = [_no_names(s.get("heading")) for s in (article.get("sections") or [])
+                if isinstance(s, dict) and s.get("heading")]
+    takeaways = [_no_names(t) for t in (article.get("key_takeaways") or []) if isinstance(t, str)]
+    category = " > ".join(video.get("category_path") or [])
+    concept = _no_names((article.get("visual_theme") or "").strip()) or (
+        f"the single most important moment of the technique this article teaches: {title}"
     )
+    context_lines = [f"Article: \"{title}\""]
+    if category:
+        context_lines.append(f"Topic: {category}")
+    if headings:
+        context_lines.append("What the article covers: " + "; ".join(headings[:7]))
+    if takeaways:
+        context_lines.append("Key takeaways: " + "; ".join(takeaways[:6]))
     if variant == "action_shot":
         framing = (
-            "a wide, cinematic 16:9 editorial hero image with depth and atmosphere, the kind that opens a "
-            "magazine feature"
+            "a wide 16:9 hero panel -- a dynamic, cinematic composition with depth, the opening splash panel "
+            "of the story"
         )
     else:
         framing = (
-            "a square, simple, bold composition with one clear focal subject near the center and an "
-            "uncluttered background, so it still reads clearly as a small thumbnail"
+            "a square, single bold panel with one clear focal subject near the center (a close-up of the key "
+            "body position, the ball, or the lane target) and a simple background, so it still reads at "
+            "thumbnail size"
         )
     return (
-        f"Create {framing} for a bowling instruction article titled \"{article.get('title') or video.get('title')}\". "
-        f"Scene concept: {concept} "
-        "Photorealistic, premium lighting, rich but natural color. The subject is the environment and "
-        "objects -- bowling lanes, approach dots and arrows, pins, a generic bowling ball, the pin deck -- "
-        "never a person. Do not include any human being, hands, arms, legs, feet, shoes, silhouettes, or "
-        "figures of any kind, even blurred or in the background. No text, letters, numbers, logos, brand "
-        "names, or watermarks anywhere in the image, and no scoreboards or screens. Any bowling ball shown "
-        "must be plain and generic, with no logo or printing on it."
+        f"Create {framing} illustrating a bowling instruction article.\n"
+        + "\n".join(context_lines)
+        + f"\nScene: {concept}\n"
+        f"Style: {VIDEO_ARTICLE_ART_STYLE}\n"
+        "Show the technique being taught, at a bowling alley -- lanes, approach dots and arrows, pins, the "
+        "ball. A bowler may appear, demonstrating the technique: a generic, stylized comic-book character "
+        "with an anatomically correct bowling motion, not a likeness of any real person, with no team "
+        "logos or names on clothing. Physically correct: the ball is always either held in the bowler's "
+        "hand (fingers in the ball) or rolling on the lane after release -- never floating in the air or "
+        "separate from the hand mid-swing. Any bowling ball is plain and generic, with no logo or printing. "
+        "Absolutely no text of any kind: no lettering, captions, titles, speech or thought bubbles, sound "
+        "effects, numbers, signs, logos, brand names, scoreboards with writing, or watermarks."
     )
 
 

@@ -16734,6 +16734,43 @@ Then **Regen text** on the existing Brad and Kyle article (Articles tab)
 and re-approve it -- a text regenerate resets it to pending, so it drops
 off the Learn site until approved again (same rule as ball articles).
 
+### 6bu. Bowling Tips house art style: comic book, grounded in the article (2026-09-30)
+
+Al: "can we use some more context to generate better images, could we
+have a general theme like a comic book like look or something similar."
+Choices: **comic book**, **tips (video) articles only** (ball reviews stay
+photorealistic from the real ball photo -- a comic rendering would
+redraw the ball's actual cover/logo), **generic illustrated bowlers
+allowed**.
+
+**product_article_generator:** `VIDEO_ARTICLE_ART_STYLE` (bold ink
+outlines, flat saturated color, halftone shading, speed lines -- a sports
+comic panel). `build_video_scene_prompt` now feeds the image model the
+article's title, category path, section headings, key takeaways, and the
+model's own visual_theme, so the image shows the actual technique. Rules:
+generic stylized bowler only (never a likeness, no team logos/names);
+the ball is always held (fingers in) or rolling after release, never
+floating (added after the first preview's card image had the ball
+hovering beside an empty hand); absolutely no text, lettering, speech
+bubbles, or sound effects (comics invite them, AI image text garbles);
+plain generic ball. The channel name is stripped from everything handed
+to the image model (`_no_names`) -- a "...with Brad and Kyle" title
+invites a likeness. The article prompt's visual_theme now asks for the
+key moment of the technique as a comic panel (a bowler may be in it)
+instead of "objects only".
+
+**Verified:** generator tests 176 passed (scene-prompt tests rewritten:
+style, article context, likeness/no-text rules, name stripping,
+fallback). Real Gemini previews on the push-away article (local only,
+not uploaded): hero = bowler mid-approach, ball at the knee, lane and
+pins, halftone/ink style, no text, face cropped out; card v1 had a
+floating ball -> fixed by the held/rolling rule; card v2 = gloved hand
+holding the ball at knee height on the approach.
+
+**Deploy:** `sam build && sam deploy` (product_article_generator only).
+Existing tips articles keep their current images until **Regen images**
+in Articles (images-only regenerate doesn't reset review).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

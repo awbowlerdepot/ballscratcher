@@ -3894,15 +3894,30 @@ def test_parse_video_article_json_rejects_missing_keys_and_bad_sections():
             pass
 
 
-def test_build_video_scene_prompt_bans_people_and_text_and_differs_by_variant():
-    video = dict(zip(_VIDEO_COLUMNS, _video_row()))
+def test_build_video_scene_prompt_comic_style_with_article_context():
+    """2026-09-30: house comic style, grounded in the article's own
+    sections/takeaways, generic illustrated bowlers allowed, no text."""
+    video = dict(zip(_VIDEO_COLUMNS, _video_row()), category_path=["Bowling Tips", "Mental Game"])
     action = app.build_video_scene_prompt(video, _VALID_VIDEO_ARTICLE, "action_shot")
     square = app.build_video_scene_prompt(video, _VALID_VIDEO_ARTICLE, "product_shot")
     for prompt in (action, square):
-        assert "Do not include any human being" in prompt
-        assert "No text" in prompt
-        assert "quiet, empty lane at dawn" in prompt
+        assert app.VIDEO_ARTICLE_ART_STYLE in prompt
+        assert "Visualize Before You Step Up" in prompt  # a section heading
+        assert "Visualize every shot" in prompt  # a key takeaway
+        assert "Bowling Tips > Mental Game" in prompt
+        assert "quiet, empty lane at dawn" in prompt  # the model's visual_theme
+        assert "not a likeness of any real person" in prompt
+        assert "Absolutely no text of any kind" in prompt
+        assert "Brad and Kyle" not in prompt  # never name the creators to the image model
     assert "16:9" in action and "square" in square
+
+
+def test_build_video_scene_prompt_falls_back_without_theme_or_sections():
+    video = dict(zip(_VIDEO_COLUMNS, _video_row()))
+    article = {"title": "Spare Shooting 101"}
+    prompt = app.build_video_scene_prompt(video, article, "action_shot")
+    assert "Spare Shooting 101" in prompt
+    assert "What the article covers" not in prompt
 
 
 def test_call_gemini_for_image_omits_inline_data_without_reference():
@@ -4051,3 +4066,13 @@ def test_text_only_regenerate_updates_author_name():
     update = [e for e in conn.executed if e[0].startswith("update product_articles set")][0]
     assert "author_name = %s" in update[0]
     assert update[1][-2] == "Brad and Kyle"
+
+
+def test_build_video_scene_prompt_strips_creator_names():
+    video = dict(zip(_VIDEO_COLUMNS, _video_row()))  # channel_title "Brad and Kyle"
+    article = dict(_VALID_VIDEO_ARTICLE, title="Bowling Tips | How To Throw More Strikes with Brad and Kyle",
+                   key_takeaways=["Brad and Kyle say: breathe first"])
+    prompt = app.build_video_scene_prompt(video, article, "action_shot")
+    assert "brad and kyle" not in prompt.lower()
+    assert "How To Throw More Strikes" in prompt
+    assert "say: breathe first" in prompt
