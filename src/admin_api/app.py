@@ -114,6 +114,12 @@ class LearnVideoUpdateRequest(BaseModel):
     category_id: Optional[str] = None
 
 
+class LearnVideoManualTranscriptRequest(BaseModel):
+    # Text copied from YouTube's "Show transcript" panel -- timestamps are
+    # stripped server-side, see service.normalize_pasted_transcript.
+    transcript: str
+
+
 class PlotterPositionRequest(BaseModel):
     # oil_rating/motion_rating both required, not independently-optional
     # like ImageUpdateRequest's fields -- see service.set_plotter_
@@ -891,7 +897,7 @@ def reorder_categories(body: CategoryReorderRequest):
 @app.get("/learn-videos")
 def list_learn_videos(
     category_id: Optional[str] = Query(None),
-    transcript_status: Optional[str] = Query(None, description="awaiting | ready | unavailable"),
+    transcript_status: Optional[str] = Query(None, description="awaiting | retrying | ready | unavailable"),
     needs_transcript: bool = Query(False, description="The Pi fetcher's query: never-attempted videos, oldest first"),
     limit: int = Query(50, le=200),
     offset: int = Query(0, ge=0),
@@ -963,6 +969,20 @@ def retry_learn_video_transcript(learn_video_id: str):
         return service.retry_learn_video_transcript(conn, learn_video_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/learn-videos/{learn_video_id}/manual-transcript")
+def set_manual_learn_video_transcript(learn_video_id: str, body: LearnVideoManualTranscriptRequest):
+    # Admin "Paste transcript" fallback (migration 039).
+    conn = service.get_db_connection()
+    try:
+        return service.set_manual_learn_video_transcript(conn, learn_video_id, body.transcript)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     finally:
         conn.close()
 

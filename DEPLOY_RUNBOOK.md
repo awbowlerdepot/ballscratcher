@@ -16450,6 +16450,73 @@ git push                  # admin-spa
 cd ~/dev/brunsswick-scraper && git pull   # yes, "brunsswick" -- the Pi checkout's real folder name
 ```
 
+### 6bq. Real incident: first Bowling Tips video failed on the Pi -- Learn-video transcript retries + manual paste (migration 039) (2026-09-30)
+
+The first Learn video (kdeshRiNIT0, Brad and Kyle "Bowling Tips | How To
+Improve Your Bowling...") came back `video_player_error_transcript_
+unavailable` twice (18:08 and 18:12 MDT). It does have a transcript:
+a plain request from the Mac showed `playabilityStatus` OK, an English
+auto-generated caption track, and the transcript engagement panel.
+
+**Debug evidence** (`scripts/debug/kdeshRiNIT0_player_error_*.png/.html`,
+scp'd off the Pi): page loaded clean, "Show transcript" clicked, the "In
+this video" panel open with the Transcript tab selected -- but only a
+spinner, and the player showing "Something went wrong. Refresh or try
+again later." with no `<video>` source at all. The `UNPLAYABLE` hit in
+the HTML is just a UI string table entry, and `adPlacements` is only a
+`clientForecastingAdRenderer` placeholder -- neither is a real status.
+So YouTube declined to serve that browser session (both the stream and
+the transcript fetch), not a selector/timing bug. It's intermittent: the
+same Pi got 5/5 ball videos that morning, and 208 product_videos rows
+carry the same note. Deliberately NOT addressed by changing how the
+browser presents itself -- that's bot-detection evasion, same line the
+fetcher's module docstring draws on PoTokens.
+
+**Fix 1 -- retries (server-side, no Pi update):** `learn_videos.
+transcript_attempts`. `LEARN_VIDEO_MAX_TRANSCRIPT_ATTEMPTS = 3`,
+`LEARN_VIDEO_RETRY_MIN_HOURS = 20`. `needs_transcript` now also returns
+player-error rows with attempts left whose last attempt is >= 20h old
+(so a manual Pi run right after the 7am one can't burn attempts).
+`submit_learn_video_transcript` increments the count. New derived status
+`retrying`. Other notes (`no_captions_available`, etc.) stay final after
+one try. Admin "Retry on Pi" resets attempts to 0. Backfill: rows with a
+fetch already get attempts = 1 (so kdeshRiNIT0 is due on the next 7am
+run).
+
+**Fix 2 -- manual paste:** `POST /learn-videos/{id}/manual-transcript
+{transcript}` (POST, not PUT: AdminHttpApi has no PUT route and CORS
+doesn't allow it). `normalize_pasted_transcript` drops YouTube panel
+timestamp lines ("0:13", "1:02:03"), their screen-reader labels ("13
+seconds", "1 minute, 2 seconds"), and leading inline timestamps, then
+collapses whitespace -- the same flat text the Pi stores. Under 100
+characters after cleaning -> 422. Stored with `transcript_source =
+'manual'` (Pi results get `'pi'`).
+
+**admin-spa:** "Will retry" badge with "n of 3 tries", Paste/Replace
+transcript button + modal (steps + link to the video), "Retry on Pi"
+for ready/unavailable rows, "pasted" shown next to the character count,
+`retrying` filter option.
+
+**Not changed:** product_videos still park on the first player error.
+The same retry rule could recover some of those 208, but it'd change the
+Pi's client-side `needs_transcript` for product candidates -- separate
+decision.
+
+**Verified:** `test_admin_api_service.py` 401 passed (11 new, 4 updated
+for the new SQL/params). Migrations 031/037/038 + a row in kdeshRiNIT0's
+exact state, then 039, on a throwaway postgres:16: backfill -> retrying
+(1), out of queue at 3h, due at 21h, attempt 2 -> retrying, attempt 3 ->
+unavailable and out of queue, admin retry -> awaiting/0, YouTube-format
+paste -> ready/manual with timestamps stripped. `npx tsc -b` clean.
+
+**Deploy:**
+
+```bash
+psql "$DATABASE_URL" -f db/migrations/039_learn_video_transcript_retries.sql
+sam build && sam deploy   # admin_api only
+git push                  # admin-spa
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

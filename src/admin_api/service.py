@@ -2145,19 +2145,47 @@ def fetch_youtube_video_details(youtube_video_id: str, api_key: str = None) -> d
     return parse_youtube_video_item(items[0])
 
 
+# Transcript retries (migration 039). A player-error result -- YouTube
+# declining to serve the Pi's browser session, which is intermittent (see
+# 039_learn_video_transcript_retries.sql) -- goes back in the Pi's queue
+# on later daily runs, at least LEARN_VIDEO_RETRY_MIN_HOURS apart, until
+# LEARN_VIDEO_MAX_TRANSCRIPT_ATTEMPTS. Every other note is final after one
+# try. Admin "Retry transcript" resets the count; "Paste transcript" is
+# the always-works fallback.
+LEARN_VIDEO_MAX_TRANSCRIPT_ATTEMPTS = 3
+LEARN_VIDEO_RETRY_MIN_HOURS = 20
+_RETRYABLE_TRANSCRIPT_NOTES = ("video_player_error_transcript_unavailable",)
+_RETRYABLE_NOTES_SQL = ", ".join(f"'{n}'" for n in _RETRYABLE_TRANSCRIPT_NOTES)
+
 # Derived, not stored: what the admin page shows for a video's transcript.
-_LEARN_VIDEO_TRANSCRIPT_STATUS_SQL = """
+# 'retrying' = a retryable failure with attempts left.
+_LEARN_VIDEO_TRANSCRIPT_STATUS_SQL = f"""
     case
         when lv.transcript is not null and lv.transcript <> '' then 'ready'
         when lv.transcript_note is null then 'awaiting'
+        when lv.transcript_note in ({_RETRYABLE_NOTES_SQL})
+             and lv.transcript_attempts < {LEARN_VIDEO_MAX_TRANSCRIPT_ATTEMPTS} then 'retrying'
         else 'unavailable'
     end
+"""
+
+# The Pi's queue: never attempted, or a retryable failure that has
+# attempts left and has waited long enough since the last one.
+_LEARN_VIDEO_NEEDS_TRANSCRIPT_SQL = f"""
+    lv.transcript is null and (
+        lv.transcript_note is null
+        or (lv.transcript_note in ({_RETRYABLE_NOTES_SQL})
+            and lv.transcript_attempts < {LEARN_VIDEO_MAX_TRANSCRIPT_ATTEMPTS}
+            and (lv.transcript_fetched_at is null
+                 or lv.transcript_fetched_at < now() - make_interval(hours => {LEARN_VIDEO_RETRY_MIN_HOURS})))
+    )
 """
 
 _LEARN_VIDEO_COLUMNS = f"""
     lv.id, lv.youtube_video_id, lv.category_id, c.name as category_name,
     lv.title, lv.channel_title, lv.channel_id, lv.published_at, lv.thumbnail_url,
     lv.duration_seconds, lv.transcript_note, lv.transcript_fetched_at,
+    lv.transcript_attempts, lv.transcript_source,
     length(lv.transcript) as transcript_chars,
     {_LEARN_VIDEO_TRANSCRIPT_STATUS_SQL} as transcript_status,
     lv.added_by, lv.created_at
@@ -2174,9 +2202,10 @@ def list_learn_videos(conn, category_id: str = None, transcript_status: str = No
     """Newest first. category_id matches the category's whole subtree
     (same recursive shape as public_api's _CATEGORY_SUBTREE_FILTER), so
     filtering on "Bowling Tips" includes its subcategories' videos.
-    transcript_status: 'awaiting' | 'ready' | 'unavailable'.
-    needs_transcript=True is the Pi fetcher's query (never attempted,
-    oldest first) and also returns youtube_video_id for it to fetch.
+    transcript_status: 'awaiting' | 'retrying' | 'ready' | 'unavailable'.
+    needs_transcript=True is the Pi fetcher's query (never attempted, or
+    a retryable failure that's due again -- _LEARN_VIDEO_NEEDS_
+    TRANSCRIPT_SQL), oldest first.
     Transcript text itself isn't listed (can be ~100KB each) -- see
     get_learn_video."""
     query = f"select {_LEARN_VIDEO_COLUMNS} from learn_videos lv join categories c on c.id = lv.category_id where true"
@@ -2192,7 +2221,7 @@ def list_learn_videos(conn, category_id: str = None, transcript_status: str = No
         )"""
         params.append(category_id)
     if needs_transcript:
-        query += " and lv.transcript is null and lv.transcript_note is null order by lv.created_at asc, lv.id"
+        query += f" and {_LEARN_VIDEO_NEEDS_TRANSCRIPT_SQL} order by lv.created_at asc, lv.id"
     else:
         if transcript_status:
             query += f" and ({_LEARN_VIDEO_TRANSCRIPT_STATUS_SQL}) = %s"
@@ -2282,12 +2311,12 @@ def delete_learn_video(conn, learn_video_id: str) -> dict:
 
 
 def retry_learn_video_transcript(conn, learn_video_id: str) -> dict:
-    """Clears transcript + transcript_note so the Pi's next run picks the
-    video up again (e.g. the uploader has added captions since)."""
+    """Clears the transcript, note, and attempt count so the Pi's next run
+    picks the video up again (e.g. the uploader has added captions since)."""
     with conn.cursor() as cur:
         cur.execute(
-            "update learn_videos set transcript = null, transcript_note = null, transcript_fetched_at = null "
-            "where id = %s returning id",
+            "update learn_videos set transcript = null, transcript_note = null, transcript_fetched_at = null, "
+            "transcript_attempts = 0, transcript_source = null where id = %s returning id",
             (learn_video_id,),
         )
         if cur.fetchone() is None:
@@ -2302,20 +2331,80 @@ def submit_learn_video_transcript(conn, learn_video_id: str, transcript: str, tr
     step yet, so this writes straight to the row. An empty transcript
     with a note ('no_captions_available', etc.) records the attempt; an
     empty transcript with no note is stored as 'empty_transcript' so it
-    still counts as attempted and isn't re-fetched every day."""
+    still counts as attempted and isn't re-fetched every day. Every call
+    counts one attempt (migration 039), which is what caps retries."""
     transcript = transcript or None
     if transcript is None and not transcript_note:
         transcript_note = "empty_transcript"
     with conn.cursor() as cur:
         cur.execute(
-            "update learn_videos set transcript = %s, transcript_note = %s, transcript_fetched_at = now() "
-            "where id = %s returning id",
-            (transcript, transcript_note, learn_video_id),
+            "update learn_videos set transcript = %s, transcript_note = %s, transcript_fetched_at = now(), "
+            "transcript_attempts = transcript_attempts + 1, transcript_source = %s "
+            "where id = %s returning transcript_attempts",
+            (transcript, transcript_note, "pi" if transcript else None, learn_video_id),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError(f"No learn_videos row with id {learn_video_id}")
+    conn.commit()
+    if transcript:
+        status = "ready"
+    elif transcript_note in _RETRYABLE_TRANSCRIPT_NOTES and row[0] < LEARN_VIDEO_MAX_TRANSCRIPT_ATTEMPTS:
+        status = "retrying"
+    else:
+        status = "unavailable"
+    return {"id": learn_video_id, "transcript_status": status}
+
+
+# Lines YouTube's "Show transcript" panel adds around the captions when
+# copied: bare timestamps ("0:13", "1:02:03") and their screen-reader
+# labels ("13 seconds", "1 minute, 3 seconds", "2 hours, 1 minute").
+_PASTED_TIMESTAMP_LINE_RE = re.compile(r"^\d{1,2}(?::\d{2}){1,2}$")
+_PASTED_A11Y_LABEL_RE = re.compile(
+    r"^\d+\s+(?:hours?|minutes?|seconds?)(?:,\s*\d+\s+(?:hours?|minutes?|seconds?))*$", re.IGNORECASE
+)
+_PASTED_LEADING_TIMESTAMP_RE = re.compile(r"^\d{1,2}(?::\d{2}){1,2}\s+")
+MIN_MANUAL_TRANSCRIPT_CHARS = 100
+
+
+def normalize_pasted_transcript(text: str) -> str:
+    """Turns a copy of YouTube's transcript panel into the same plain,
+    space-joined text the Pi fetcher stores: drops timestamp and
+    screen-reader label lines, strips a timestamp at the start of a line
+    ("0:13 so the first thing"), collapses whitespace. Text without any
+    timestamps passes through unchanged apart from whitespace."""
+    kept = []
+    for raw_line in (text or "").splitlines():
+        line = raw_line.strip()
+        if not line or _PASTED_TIMESTAMP_LINE_RE.match(line) or _PASTED_A11Y_LABEL_RE.match(line):
+            continue
+        line = _PASTED_LEADING_TIMESTAMP_RE.sub("", line)
+        if line:
+            kept.append(line)
+    return re.sub(r"\s+", " ", " ".join(kept)).strip()
+
+
+def set_manual_learn_video_transcript(conn, learn_video_id: str, transcript: str) -> dict:
+    """Admin "Paste transcript" -- the fallback for a video the Pi can't
+    get (migration 039). Stores the normalized text as the transcript,
+    clears any failure note, transcript_source = 'manual'. ValueError
+    (422) if what's left after normalizing is too short to be a real
+    transcript (an accidental paste of a URL or title)."""
+    cleaned = normalize_pasted_transcript(transcript)
+    if len(cleaned) < MIN_MANUAL_TRANSCRIPT_CHARS:
+        raise ValueError(
+            f"That's only {len(cleaned)} characters after removing timestamps -- paste the full transcript text."
+        )
+    with conn.cursor() as cur:
+        cur.execute(
+            "update learn_videos set transcript = %s, transcript_note = null, transcript_fetched_at = now(), "
+            "transcript_source = 'manual' where id = %s returning id",
+            (cleaned, learn_video_id),
         )
         if cur.fetchone() is None:
             raise LookupError(f"No learn_videos row with id {learn_video_id}")
     conn.commit()
-    return {"id": learn_video_id, "transcript_status": "ready" if transcript else "unavailable"}
+    return {"id": learn_video_id, "transcript_status": "ready", "transcript_chars": len(cleaned)}
 
 
 # ---------------------------------------------------------------------

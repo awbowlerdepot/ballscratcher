@@ -615,6 +615,16 @@ export function deleteLearnVideo(id: string): Promise<{ deleted: boolean; id: st
   return apiDelete(`/learn-videos/${encodeURIComponent(id)}`);
 }
 
+// "Paste transcript" fallback (migration 039): text copied from YouTube's
+// "Show transcript" panel. Timestamps are stripped server-side; 422 if
+// what's left is too short to be a transcript.
+export function setManualLearnVideoTranscript(
+  id: string,
+  transcript: string,
+): Promise<{ id: string; transcript_status: string; transcript_chars: number }> {
+  return apiPost(`/learn-videos/${encodeURIComponent(id)}/manual-transcript`, { transcript });
+}
+
 // Clears the transcript attempt so the Pi's next daily run tries again.
 export function retryLearnVideoTranscript(id: string): Promise<{ id: string }> {
   return apiPost(`/learn-videos/${encodeURIComponent(id)}/retry-transcript`);

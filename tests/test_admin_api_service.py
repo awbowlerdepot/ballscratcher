@@ -7575,11 +7575,16 @@ def test_list_learn_videos_category_filter_includes_subtree():
     assert "order by lv.created_at desc" in query
 
 
-def test_list_learn_videos_needs_transcript_is_unattempted_oldest_first():
+def test_list_learn_videos_needs_transcript_includes_due_retries_oldest_first():
+    """Migration 039: never-attempted rows, plus player-error rows with
+    attempts left whose last attempt is old enough."""
     conn = _QueryCapturingConnection()
     service.list_learn_videos(conn, needs_transcript=True)
     query = conn.cursor().queries[0]
-    assert "lv.transcript is null and lv.transcript_note is null" in query
+    assert "lv.transcript is null and ( lv.transcript_note is null" in query
+    assert "lv.transcript_note in ('video_player_error_transcript_unavailable')" in query
+    assert f"lv.transcript_attempts < {service.LEARN_VIDEO_MAX_TRANSCRIPT_ATTEMPTS}" in query
+    assert f"make_interval(hours => {service.LEARN_VIDEO_RETRY_MIN_HOURS})" in query
     assert "order by lv.created_at asc" in query
     assert "lv.youtube_video_id" in query
 
@@ -7596,19 +7601,20 @@ def test_list_learn_videos_does_not_select_full_transcript():
 
 
 def test_submit_learn_video_transcript_stores_text():
-    conn = _RuleConnection([("update learn_videos set transcript", ("lv-1",))])
+    conn = _RuleConnection([("update learn_videos set transcript", (1,))])
     result = service.submit_learn_video_transcript(conn, "lv-1", "hello world", None)
     update = conn.cursor().executed[0]
-    assert update[1] == ("hello world", None, "lv-1")
+    assert "transcript_attempts = transcript_attempts + 1" in update[0]
+    assert update[1] == ("hello world", None, "pi", "lv-1")
     assert result["transcript_status"] == "ready"
 
 
 def test_submit_learn_video_transcript_empty_without_note_marks_attempted():
     """An empty transcript with no note would look "never attempted" and
     get re-fetched every day -- record it as empty_transcript instead."""
-    conn = _RuleConnection([("update learn_videos set transcript", ("lv-1",))])
+    conn = _RuleConnection([("update learn_videos set transcript", (1,))])
     result = service.submit_learn_video_transcript(conn, "lv-1", "", None)
-    assert conn.cursor().executed[0][1] == (None, "empty_transcript", "lv-1")
+    assert conn.cursor().executed[0][1] == (None, "empty_transcript", None, "lv-1")
     assert result["transcript_status"] == "unavailable"
 
 
@@ -7625,6 +7631,7 @@ def test_retry_learn_video_transcript_clears_transcript_and_note():
     conn = _RuleConnection([("update learn_videos set transcript = null", ("lv-1",))])
     assert service.retry_learn_video_transcript(conn, "lv-1")["transcript_status"] == "awaiting"
     assert "transcript_note = null" in conn.cursor().executed[0][0]
+    assert "transcript_attempts = 0" in conn.cursor().executed[0][0]
 
 
 def test_update_learn_video_moves_category():
@@ -7634,3 +7641,94 @@ def test_update_learn_video_moves_category():
     ])
     service.update_learn_video(conn, "lv-1", category_id="cat-2")
     assert conn.cursor().executed[-1] == ("update learn_videos set category_id = %s where id = %s", ("cat-2", "lv-1"))
+
+
+# --- Learn video transcript retries + manual paste (migration 039) ---
+
+def test_submit_learn_video_transcript_player_error_with_attempts_left_is_retrying():
+    conn = _RuleConnection([("update learn_videos set transcript", (1,))])
+    result = service.submit_learn_video_transcript(conn, "lv-1", "", "video_player_error_transcript_unavailable")
+    assert result["transcript_status"] == "retrying"
+
+
+def test_submit_learn_video_transcript_player_error_on_last_attempt_is_unavailable():
+    conn = _RuleConnection([("update learn_videos set transcript", (service.LEARN_VIDEO_MAX_TRANSCRIPT_ATTEMPTS,))])
+    result = service.submit_learn_video_transcript(conn, "lv-1", "", "video_player_error_transcript_unavailable")
+    assert result["transcript_status"] == "unavailable"
+
+
+def test_submit_learn_video_transcript_no_captions_is_final_immediately():
+    conn = _RuleConnection([("update learn_videos set transcript", (1,))])
+    result = service.submit_learn_video_transcript(conn, "lv-1", "", "no_captions_available")
+    assert result["transcript_status"] == "unavailable"
+
+
+def test_learn_video_status_sql_has_retrying_state():
+    conn = _QueryCapturingConnection()
+    service.list_learn_videos(conn, transcript_status="retrying")
+    query, params = conn.cursor().queries[0], None
+    assert "then 'retrying'" in query
+
+
+def test_normalize_pasted_transcript_strips_youtube_panel_timestamps():
+    pasted = """0:00
+0 seconds
+so today we're going to talk about
+0:04
+4 seconds
+the mental game in bowling
+1:02
+1 minute, 2 seconds
+and how to stay positive
+1:02:03
+1 hour, 2 minutes, 3 seconds
+last line"""
+    assert service.normalize_pasted_transcript(pasted) == (
+        "so today we're going to talk about the mental game in bowling and how to stay positive last line"
+    )
+
+
+def test_normalize_pasted_transcript_strips_inline_leading_timestamps():
+    pasted = "0:00 so today we're going to\n0:04 talk about spares\n\n"
+    assert service.normalize_pasted_transcript(pasted) == "so today we're going to talk about spares"
+
+
+def test_normalize_pasted_transcript_leaves_plain_text_alone():
+    text = "Keep your eyes on the arrows, not the pins. Breathe before every shot."
+    assert service.normalize_pasted_transcript(text) == text
+
+
+def test_normalize_pasted_transcript_keeps_numbers_inside_sentences():
+    text = "Aim at board 10 and hit 3:1 ratio\nmove 2 boards left"
+    assert service.normalize_pasted_transcript(text) == "Aim at board 10 and hit 3:1 ratio move 2 boards left"
+
+
+def test_set_manual_learn_video_transcript_stores_cleaned_text_as_manual():
+    conn = _RuleConnection([("update learn_videos set transcript", ("lv-1",))])
+    text = "0:00\n" + "spare shooting tip " * 10
+    result = service.set_manual_learn_video_transcript(conn, "lv-1", text)
+    query, params = conn.cursor().executed[0]
+    assert "transcript_source = 'manual'" in query
+    assert "transcript_note = null" in query
+    assert params[0] == ("spare shooting tip " * 10).strip()
+    assert result["transcript_status"] == "ready"
+    assert conn.committed
+
+
+def test_set_manual_learn_video_transcript_rejects_too_short_paste():
+    conn = _RuleConnection([])
+    try:
+        service.set_manual_learn_video_transcript(conn, "lv-1", "0:00\nhttps://youtu.be/abc")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "characters" in str(e)
+    assert conn.cursor().executed == []
+
+
+def test_set_manual_learn_video_transcript_missing_raises_lookup_error():
+    conn = _RuleConnection([("update learn_videos set transcript", None)])
+    try:
+        service.set_manual_learn_video_transcript(conn, "missing", "word " * 50)
+        assert False, "expected LookupError"
+    except LookupError:
+        pass

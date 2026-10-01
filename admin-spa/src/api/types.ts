@@ -989,10 +989,14 @@ export interface CategoryUpdateInput {
 
 // Learn videos (migration 038): admin-added YouTube videos filed under a
 // category, transcribed by the Pi fetcher. transcript_status is derived:
-// 'awaiting' = not tried yet, 'ready' = has text, 'unavailable' = tried,
-// no captions (transcript_note says why). The list omits transcript text;
-// getLearnVideo returns it.
-export type LearnVideoTranscriptStatus = "awaiting" | "ready" | "unavailable";
+// 'awaiting' = not tried yet, 'retrying' = a player error with attempts
+// left (migration 039, retried on the Pi's next daily runs), 'ready' = has
+// text, 'unavailable' = final failure (transcript_note says why). The list
+// omits transcript text; getLearnVideo returns it.
+export type LearnVideoTranscriptStatus = "awaiting" | "retrying" | "ready" | "unavailable";
+
+// Mirrors admin_api's LEARN_VIDEO_MAX_TRANSCRIPT_ATTEMPTS.
+export const LEARN_VIDEO_MAX_TRANSCRIPT_ATTEMPTS = 3;
 
 export interface LearnVideo {
   id: string;
@@ -1007,6 +1011,9 @@ export interface LearnVideo {
   duration_seconds: number | null;
   transcript_note: string | null;
   transcript_fetched_at: string | null;
+  transcript_attempts: number;
+  // 'pi' (fetched) or 'manual' (pasted by an admin); null with no transcript.
+  transcript_source: "pi" | "manual" | null;
   transcript_chars: number | null;
   transcript_status: LearnVideoTranscriptStatus;
   added_by: string | null;
