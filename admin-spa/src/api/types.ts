@@ -664,6 +664,9 @@ export interface Article extends ArticleSubjectFields {
   // Video articles (migration 040); [] on ball articles.
   sections: ArticleSection[];
   key_takeaways: string[];
+  // Migration 041: set when written in a partner creator's own voice
+  // (creator_partners); null = "BowlerDepot Team" byline.
+  author_name: string | null;
   status: ArticleStatus;
   title: string | null;
   hook: string | null;

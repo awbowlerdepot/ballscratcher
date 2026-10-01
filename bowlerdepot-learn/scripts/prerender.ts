@@ -140,6 +140,8 @@ interface ArticleDetail {
   sections?: { heading: string; body: string }[] | null;
   key_takeaways?: string[] | null;
   category_path?: { id: string; name: string; slug: string }[] | null;
+  // Migration 041: partner creator byline; null = BowlerDepot Team.
+  author_name?: string | null;
   // See ArticleCard.slug's own comment above.
   slug?: string | null;
   title: string;
@@ -220,6 +222,7 @@ interface ArticleDetail {
     youtube_video_id: string;
     title?: string | null;
     channel_title?: string | null;
+    channel_id?: string | null;
     summary?: string | null;
     published_at?: string | null;
     thumbnail_url?: string | null;
@@ -504,7 +507,18 @@ function buildArticleLd(card: ArticleCard, article: ArticleDetail, heroImage: st
     datePublished,
     dateModified,
     mainEntityOfPage: { "@type": "WebPage", "@id": canonicalUrl },
-    author: { "@type": "Organization", name: "The Bowler Depot", url: SITE_URL },
+    // Migration 041: a partner creator's article names them as the author
+    // (their YouTube channel as the url); everything else stays The Bowler
+    // Depot, matching the visible byline.
+    author: article.author_name
+      ? {
+          "@type": "Organization",
+          name: article.author_name,
+          url: article.featured_video?.channel_id
+            ? `https://www.youtube.com/channel/${article.featured_video.channel_id}`
+            : undefined,
+        }
+      : { "@type": "Organization", name: "The Bowler Depot", url: SITE_URL },
     publisher: {
       "@type": "Organization",
       name: "The Bowler Depot",
@@ -709,7 +723,7 @@ function renderArticlePage(baseHtml: string, card: ArticleCard, article: Article
   const publishedLabel = formatArticleDate(article.first_published_at || article.reviewed_at);
   const updatedLabel = formatArticleDate(article.reviewed_at);
   const readingTime = estimateReadingTimeMinutes(article);
-  const bylineParts = ["By BowlerDepot Team", `${readingTime} min read`];
+  const bylineParts = [`By ${article.author_name || "BowlerDepot Team"}`, `${readingTime} min read`];
   if (publishedLabel) bylineParts.push(`Published ${publishedLabel}`);
   if (updatedLabel && updatedLabel !== publishedLabel) bylineParts.push(`Updated ${updatedLabel}`);
   const byline = bylineParts.map(escapeHtml).join(" &middot; ");
@@ -748,6 +762,7 @@ function renderArticlePage(baseHtml: string, card: ArticleCard, article: Article
             <h1>${escapeHtml(article.title)}</h1>
             <p class="article-detail-hook">${escapeHtml(article.hook)}</p>
             <p class="article-detail-byline">${byline}</p>
+            ${isVideo && article.author_name ? `<p class="article-detail-byline">Adapted from ${escapeHtml(article.author_name)}&rsquo;s video.</p>` : ""}
           </div>
         </div>
       </div>

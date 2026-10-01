@@ -3843,7 +3843,7 @@ _VALID_VIDEO_ARTICLE = {
 
 def _video_rules(transcript=None, existing=None, locked=()):
     rules = [
-        ("from learn_videos lv where lv.id = %s", (_VIDEO_COLUMNS, [_video_row(transcript) if transcript is not None else _video_row()])),
+        ("from learn_videos lv", (_VIDEO_COLUMNS, [_video_row(transcript) if transcript is not None else _video_row()])),
         ("with recursive path", (["name"], [("Bowling Tips",), ("Mental Game",)])),
         ("from product_articles where learn_video_id = %s",
          (["id", "title", "hook", "verdict", "visual_theme", "sections", "key_takeaways",
@@ -3956,8 +3956,9 @@ def test_generate_article_for_learn_video_text_and_images_upserts_on_learn_video
     params = insert[1]
     assert params[0] == "lv-1"
     assert json.loads(params[4])[1]["heading"] == "Visualize Before You Step Up"
-    assert params[-1] == "cat-tips"  # filed under the video's own category
-    assert params[-2] is True  # images present
+    assert params[-2] == "cat-tips"  # filed under the video's own category
+    assert params[-3] is True  # images present
+    assert params[-1] is None  # not a partner channel -> BowlerDepot Team byline
     candidate_inserts = [e for e in conn.executed if "insert into product_article_image_candidates" in e[0]]
     assert len(candidate_inserts) == 2 * app.NUM_GEMINI_CANDIDATES_PER_VARIANT
 
@@ -4000,3 +4001,53 @@ def test_generate_article_for_learn_video_respects_locked_image_variant(monkeypa
     # action_shot stays the admin-selected one; product_shot takes the fresh candidate.
     assert params[8] == "locked-a-key" and params[9] == "locked-a-url"
     assert params[10].startswith("article-images/learn-videos/lv-1/product_shot_gemini_1_run2")
+
+
+# --- Partner creators' first-person voice (migration 041) ---
+
+def test_video_article_prompt_uses_first_person_for_partner_channel():
+    video = dict(zip(_VIDEO_COLUMNS, _video_row()), category_path=["Bowling Tips"], partner_author_name="Brad and Kyle")
+    prompt = app.build_video_article_prompt(video)
+    assert "AS Brad and Kyle" in prompt
+    assert '"we"' in prompt
+    assert "do not invent personal stories" in prompt
+    assert "In the video, Brad and Kyle explain" not in prompt
+
+
+def test_video_article_prompt_stays_third_person_for_other_channels():
+    video = dict(zip(_VIDEO_COLUMNS, _video_row()), category_path=["Bowling Tips"], partner_author_name=None)
+    prompt = app.build_video_article_prompt(video)
+    assert "In the video, Brad and Kyle explain" in prompt
+    assert "first-person voice" not in prompt
+
+
+def test_fetch_learn_video_content_joins_creator_partners():
+    conn = _VideoRuleConnection(_video_rules())
+    app.fetch_learn_video_content(conn, "lv-1")
+    query = conn.executed[0][0]
+    assert "left join creator_partners cp on lower(cp.channel_title) = lower(lv.channel_title)" in query
+    assert "cp.author_name as partner_author_name" in query
+
+
+def test_generate_article_for_learn_video_stores_partner_author_name():
+    rules = _video_rules()
+    rules[0] = ("from learn_videos lv",
+                (_VIDEO_COLUMNS + ["partner_author_name"], [_video_row() + ("Brad and Kyle",)]))
+    conn = _VideoRuleConnection(rules)
+    app.generate_article_for_learn_video(conn, _FakeBedrockClient(json.dumps(_VALID_VIDEO_ARTICLE)), "haiku", "lv-1")
+    insert = [e for e in conn.executed if e[0].startswith("insert into product_articles")][0]
+    assert "author_name = excluded.author_name" in insert[0]
+    assert insert[1][-1] == "Brad and Kyle"
+
+
+def test_text_only_regenerate_updates_author_name():
+    existing = ("art-1", "Old", "Old hook", "Old verdict", None, [], [], "k-a", "u-a", "k-p", "u-p")
+    rules = _video_rules(existing=existing)
+    rules[0] = ("from learn_videos lv",
+                (_VIDEO_COLUMNS + ["partner_author_name"], [_video_row() + ("Brad and Kyle",)]))
+    conn = _VideoRuleConnection(rules)
+    app.generate_article_for_learn_video(conn, _FakeBedrockClient(json.dumps(_VALID_VIDEO_ARTICLE)), "haiku", "lv-1",
+                                         regenerate_images=False)
+    update = [e for e in conn.executed if e[0].startswith("update product_articles set")][0]
+    assert "author_name = %s" in update[0]
+    assert update[1][-2] == "Brad and Kyle"

@@ -204,6 +204,7 @@ export interface FeaturedVideo {
   youtube_video_id: string;
   title?: string | null;
   channel_title?: string | null;
+  channel_id?: string | null;
   published_at?: string | null;
   thumbnail_url?: string | null;
   // Video articles only (migration 040) -- the source video's length.
@@ -237,6 +238,9 @@ export interface ArticleDetail {
   sections?: ArticleSection[] | null;
   key_takeaways?: string[] | null;
   category_path?: ArticleCategoryRef[] | null;
+  // Migration 041: a partner creator's byline on a video article written
+  // in their own voice; null = "BowlerDepot Team".
+  author_name?: string | null;
   // See ArticleCard.slug's own comment. The detail page uses this (via
   // client.ts's articleHref()) to canonicalize the URL bar to the slug
   // path when a reader lands on the old bare-product_id route -- see

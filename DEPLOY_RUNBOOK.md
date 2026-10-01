@@ -16681,6 +16681,55 @@ unlimited), `test_home_transcript_fetcher_browser.py` 17 passed.
 **Deploy:** Pi only -- `cd ~/dev/brunsswick-scraper && git pull`. No AWS
 change.
 
+### 6bt. Partner creators: first-person video articles under their own byline (migration 041) (2026-09-30)
+
+Al, on the first published Bowling Tips article: "the perspective of the
+article is off for the brad and kyle video. i think it should be written
+by brad and kyle as the authors and not as a third person reviewing the
+video." Confirmed Brad and Kyle are BowlerDepot partners and fine with
+AI-written articles in their voice; byline "By Brad and Kyle".
+
+**Allow-list, not a default (migration 041).** `creator_partners`
+(channel_title, matched case-insensitively like blocked_video_channels;
+author_name; note), seeded with Brad and Kyle. Presenting AI-written text
+as someone's own is only OK with their agreement, so any channel NOT in
+the table keeps the neutral third-person "BowlerDepot Team" article.
+`product_articles.author_name` (null = BowlerDepot Team). No admin UI for
+the table yet -- add partners with an INSERT.
+
+**Generator:** `fetch_learn_video_content` left-joins creator_partners
+-> `partner_author_name`. `build_video_article_prompt` then writes AS the
+creators in first person ("we"/"our"), still strictly from the
+transcript (no invented personal stories/quotes; may name which of them
+made a point only when the transcript shows it; never "in the video,
+they explain"). `store_video_article` and the text-only regenerate both
+write `author_name`.
+
+**public_api / Learn / prerender / admin:** `get_video_article` returns
+`author_name` and the video's `channel_id`. Byline "By <author_name>"
+(else BowlerDepot Team) plus "Adapted from <author>'s video." under it;
+Article JSON-LD author = that name with their YouTube channel URL. Admin
+preview shows which byline/voice an article has.
+
+**Verified:** generator 174 passed (5 new), public_api 151 (1 new);
+migrations 001-041 on a fresh postgres:16, partner lookup matches "BRAD
+AND KYLE", non-partner -> null. Real Bedrock preview of the new prompt on
+the kdeshRiNIT0 transcript (read-only DB, nothing stored): first-person
+throughout ("We talk a lot about the physical side of bowling...").
+`npx tsc -b` clean in both frontends.
+
+**Deploy:**
+
+```bash
+psql "$DATABASE_URL" -f db/migrations/041_creator_partner_bylines.sql
+sam build && sam deploy   # product_article_generator + public_api
+git push                  # admin-spa + bowlerdepot-learn
+```
+
+Then **Regen text** on the existing Brad and Kyle article (Articles tab)
+and re-approve it -- a text regenerate resets it to pending, so it drops
+off the Learn site until approved again (same rule as ball articles).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

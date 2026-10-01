@@ -797,6 +797,13 @@ export function ArticlePreview({
           {article.video_channel_title ? ` · ${article.video_channel_title}` : ""}
         </p>
       )}
+      {article.article_kind === "video" && (
+        <p className="text-xs text-ink-500">
+          {article.author_name
+            ? `Byline: By ${article.author_name} · written in their own first-person voice (partner channel)`
+            : "Byline: By BowlerDepot Team · third person"}
+        </p>
+      )}
       {article.hook && <p className="italic text-ink-700">{article.hook}</p>}
       {(article.sections ?? []).map((sec, i) => (
         <div key={i}>

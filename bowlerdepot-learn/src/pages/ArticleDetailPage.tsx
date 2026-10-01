@@ -278,7 +278,10 @@ export default function ArticleDetailPage() {
                 to be consistent with whatever the page's structured data
                 says. */}
             <p className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-white/60">
-              <span>By BowlerDepot Team</span>
+              {/* Migration 041: a partner creator's own byline on a video
+                  article written in their voice (Al: "it should be written
+                  by brad and kyle as the authors"). */}
+              <span>By {article.author_name || "BowlerDepot Team"}</span>
               <span aria-hidden="true">&middot;</span>
               <span>{readingTime} min read</span>
               {publishedLabel ? (
@@ -294,6 +297,9 @@ export default function ArticleDetailPage() {
                 </>
               ) : null}
             </p>
+            {isVideo && article.author_name ? (
+              <p className="mt-1 text-xs text-white/50">Adapted from {article.author_name}&rsquo;s video.</p>
+            ) : null}
           </div>
         </div>
       </div>

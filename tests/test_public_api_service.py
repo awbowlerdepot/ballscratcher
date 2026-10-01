@@ -2915,3 +2915,13 @@ def test_get_video_article_unapproved_returns_null_article():
 def test_get_video_article_unknown_video_returns_none():
     cur = _VideoArticleCursor([(["youtube_video_id"], [])])
     assert service.get_video_article(_VideoArticleConnection(cur), "missing") is None
+
+
+def test_get_video_article_selects_author_name_and_channel_id():
+    """Migration 041: partner bylines + the channel link for JSON-LD."""
+    video = (["youtube_video_id", "title", "channel_title", "channel_id", "published_at", "thumbnail_url", "duration_seconds"],
+             [("x", "t", "Brad and Kyle", "UC123", None, None, 60)])
+    cur = _VideoArticleCursor([video, (["id"], [])])
+    service.get_video_article(_VideoArticleConnection(cur), "lv-1")
+    assert "lv.channel_id" in cur.queries[0][0]
+    assert "pa.author_name" in cur.queries[1][0]

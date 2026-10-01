@@ -2950,8 +2950,13 @@ def fetch_learn_video_content(conn, learn_video_id: str):
         cur.execute(
             """
             select lv.id, lv.youtube_video_id, lv.title, lv.channel_title, lv.description,
-                   lv.duration_seconds, lv.transcript, lv.category_id
-            from learn_videos lv where lv.id = %s
+                   lv.duration_seconds, lv.transcript, lv.category_id,
+                   cp.author_name as partner_author_name
+            from learn_videos lv
+            -- Migration 041: a partner channel's videos are written in the
+            -- creators' own voice, under their byline.
+            left join creator_partners cp on lower(cp.channel_title) = lower(lv.channel_title)
+            where lv.id = %s
             """,
             (learn_video_id,),
         )
@@ -2997,20 +3002,47 @@ def build_video_article_prompt(video: dict) -> str:
     "only what the source supports" posture as build_article_prompt, with
     the transcript as the single source. Auto-captions mishear bowling
     terms, so the model is told to correct obvious ones rather than
-    repeat them."""
+    repeat them.
+
+    Voice (migration 041): a partner channel's video (partner_author_name
+    set) is written in the creators' own first-person voice, as their
+    article adapted from their video -- Al: "it should be written by brad
+    and kyle as the authors and not as a third person reviewing the
+    video". Everything else stays a third-person BowlerDepot article
+    that credits the creator."""
     transcript = (video.get("transcript") or "")[:DEFAULT_VIDEO_TRANSCRIPT_MAX_CHARS]
     creator = video.get("channel_title") or "the video's creator"
+    author = video.get("partner_author_name")
     category = " > ".join(video.get("category_path") or []) or "Bowling Tips"
     description = (video.get("description") or "").strip()[:1500]
+    if author:
+        voice = (
+            f"You are writing an instructional article for The Bowler Depot's Learn site AS {author}, the "
+            f"creators of the video below, in your own first-person voice (\"we\", \"our\", \"us\"). It "
+            "is your article, adapted from your video, which will be embedded in it -- clear, practical, "
+            "encouraging, and specific, the way you'd coach a bowler in person. Every tip, drill, and claim "
+            "must come from the video transcript below: do not add advice, statistics, or techniques the "
+            "video doesn't contain, and do not invent personal stories, experiences, or quotes that aren't "
+            "in it. Where the transcript makes clear one of you made a point, you may name who (e.g. "
+            "\"as Kyle likes to put it\"); otherwise speak as \"we\". Never describe yourselves in the "
+            "third person or as people featured in a video (\"In the video, they explain...\").\n\n"
+            "Write the article as a standalone read, not a transcript summary: organize the advice into a "
+            "logical flow a reader can follow without watching, and refer to the video only as \"our "
+            "video\" when pointing readers to it. Leave out channel "
+        )
+    else:
+        voice = (
+            "You are writing an instructional article for The Bowler Depot's Learn site, in the voice of an "
+            "experienced bowling coach writing for the site's own readers -- clear, practical, encouraging, and "
+            "specific. The article is based entirely on ONE YouTube video, which will be embedded in the "
+            "article. Every tip, drill, and claim must come from the video transcript below -- do not add "
+            "advice, statistics, or techniques the video doesn't contain, and do not invent quotes.\n\n"
+            f"The video is by {creator}. Credit them naturally where it helps the reader (\"In the video, "
+            f"{creator} explain...\"), but write the article as a standalone read, not a transcript summary: "
+            "organize the advice into a logical flow a reader can follow without watching. Leave out channel "
+        )
     return (
-        "You are writing an instructional article for The Bowler Depot's Learn site, in the voice of an "
-        "experienced bowling coach writing for the site's own readers -- clear, practical, encouraging, and "
-        "specific. The article is based entirely on ONE YouTube video, which will be embedded at the top of "
-        "the article. Every tip, drill, and claim must come from the video transcript below -- do not add "
-        "advice, statistics, or techniques the video doesn't contain, and do not invent quotes.\n\n"
-        f"The video is by {creator}. Credit them naturally where it helps the reader (\"In the video, "
-        f"{creator} explain...\"), but write the article as a standalone read, not a transcript summary: "
-        "organize the advice into a logical flow a reader can follow without watching. Leave out channel "
+        voice +
         "housekeeping -- intros, subscribe/like requests, giveaways or free-gift offers, sponsor reads, "
         "and sign-offs. The transcript may be auto-generated captions with no punctuation and occasional "
         "misheard words; silently correct obvious mishearings of bowling terms (e.g. \"hook\", \"pocket\", "
@@ -3127,7 +3159,7 @@ def generate_video_article_image_candidates(gemini_auth: dict, s3_client, gemini
 
 
 def store_video_article(conn, learn_video_id: str, article: dict, images: dict = None,
-                        category_id: str = None) -> str:
+                        category_id: str = None, author_name: str = None) -> str:
     """Upsert on learn_video_id -- store_article's video twin. Same reset
     to 'pending' with reviewed_at/resolved_by cleared on a regenerate
     (022's "a regenerate re-enters review" rule). Ball-only columns get
@@ -3143,10 +3175,10 @@ def store_video_article(conn, learn_video_id: str, article: dict, images: dict =
                  who_should_buy, who_should_skip, pros, cons, comparison_table, sibling_product_ids,
                  source_video_ids, generated_at, visual_theme,
                  action_shot_image_key, action_shot_image_url, product_shot_image_key, product_shot_image_url,
-                 images_generated_at, category_id, sync_to_bigcommerce)
+                 images_generated_at, category_id, sync_to_bigcommerce, author_name)
             values (%s, 'pending', %s, %s, %s, %s, %s, %s,
                     '[]', '[]', '[]', '[]', '[]', '[]', '[]', now(), %s,
-                    %s, %s, %s, %s, case when %s then now() else null end, %s, false)
+                    %s, %s, %s, %s, case when %s then now() else null end, %s, false, %s)
             on conflict (learn_video_id) do update set
                 status = 'pending',
                 title = excluded.title,
@@ -3163,6 +3195,7 @@ def store_video_article(conn, learn_video_id: str, article: dict, images: dict =
                 product_shot_image_url = excluded.product_shot_image_url,
                 images_generated_at = excluded.images_generated_at,
                 category_id = excluded.category_id,
+                author_name = excluded.author_name,
                 reviewed_at = null,
                 resolved_by = null
             returning id
@@ -3173,7 +3206,7 @@ def store_video_article(conn, learn_video_id: str, article: dict, images: dict =
                 article.get("visual_theme"),
                 images.get("action_shot_image_key"), images.get("action_shot_image_url"),
                 images.get("product_shot_image_key"), images.get("product_shot_image_url"),
-                bool(images), category_id,
+                bool(images), category_id, author_name,
             ),
         )
         article_id = cur.fetchone()[0]
@@ -3181,7 +3214,7 @@ def store_video_article(conn, learn_video_id: str, article: dict, images: dict =
     return article_id
 
 
-def update_video_article_text_only(conn, learn_video_id: str, article: dict) -> str:
+def update_video_article_text_only(conn, learn_video_id: str, article: dict, author_name: str = None) -> str:
     """Text half of a decoupled regenerate -- update_article_text_only's
     video twin: resets review, never touches the image columns."""
     with conn.cursor() as cur:
@@ -3190,13 +3223,13 @@ def update_video_article_text_only(conn, learn_video_id: str, article: dict) -> 
             update product_articles set
                 status = 'pending', title = %s, hook = %s, verdict = %s, sections = %s,
                 key_takeaways = %s, faq = %s, generated_at = now(), visual_theme = %s,
-                reviewed_at = null, resolved_by = null
+                author_name = %s, reviewed_at = null, resolved_by = null
             where learn_video_id = %s
             returning id
             """,
             (article["title"], article["hook"], article["verdict"], json.dumps(article["sections"]),
              json.dumps(article["key_takeaways"]), json.dumps(article["faq"]), article.get("visual_theme"),
-             learn_video_id),
+             author_name, learn_video_id),
         )
         row = cur.fetchone()
         if row is None:
@@ -3297,9 +3330,11 @@ def generate_article_for_learn_video(conn, bedrock_client, model_id: str, learn_
 
     if regenerate_text and regenerate_images:
         article_id = store_video_article(conn, learn_video_id, article, images=images,
-                                         category_id=video["category_id"])
+                                         category_id=video["category_id"],
+                                         author_name=video.get("partner_author_name"))
     elif regenerate_text:
-        article_id = update_video_article_text_only(conn, learn_video_id, article)
+        article_id = update_video_article_text_only(conn, learn_video_id, article,
+                                                    author_name=video.get("partner_author_name"))
     else:
         article_id = existing["id"]
         if images:

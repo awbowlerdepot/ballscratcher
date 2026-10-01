@@ -915,8 +915,8 @@ def get_video_article(conn, learn_video_id: str):
     with conn.cursor() as cur:
         cur.execute(
             """
-            select lv.youtube_video_id, lv.title, lv.channel_title, lv.published_at, lv.thumbnail_url,
-                   lv.duration_seconds
+            select lv.youtube_video_id, lv.title, lv.channel_title, lv.channel_id, lv.published_at,
+                   lv.thumbnail_url, lv.duration_seconds
             from learn_videos lv where lv.id = %s
             """,
             (learn_video_id,),
@@ -931,6 +931,9 @@ def get_video_article(conn, learn_video_id: str):
             """
             select pa.id, pa.slug, pa.title, pa.hook, pa.sections, pa.key_takeaways, pa.verdict, pa.faq,
                    pa.generated_at, pa.reviewed_at, pa.first_published_at,
+                   -- Migration 041: byline when written in a partner
+                   -- creator's own voice; null = BowlerDepot Team.
+                   pa.author_name,
                    pa.action_shot_image_url, pa.product_shot_image_url, pa.category_id,
                    cat.name as category_name, cat.slug as category_slug,
                    atype.name as article_type_name, atype.slug as article_type_slug
