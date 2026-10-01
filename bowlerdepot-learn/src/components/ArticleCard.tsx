@@ -10,7 +10,9 @@ export default function ArticleCard({ article }: { article: ArticleCardType }) {
   // generation is independently-fallible and some articles will only
   // ever have the scraped photo (see get_product_article's/
   // list_articles' own docstrings).
-  const rawCardImage = article.product_shot_image_url || article.primary_image_url;
+  // Video articles (migration 040) fall back to the source video's own
+  // YouTube thumbnail instead (no ball photo exists).
+  const rawCardImage = article.product_shot_image_url || article.primary_image_url || article.video_thumbnail_url;
   // 640x480 (4:3, matching the aspect-[4/3] box below) -- 2x-retina-sized
   // for this card's ~300-370px rendered width in the 2/3-col grid
   // (LearnIndexPage.tsx), served via img.bowleriq.io instead of the raw
@@ -29,7 +31,7 @@ export default function ArticleCard({ article }: { article: ArticleCardType }) {
         {cardImage ? (
           <img
             src={cardImage}
-            alt={article.product_name}
+            alt={article.product_name ?? article.title}
             loading="lazy"
             className="aspect-[4/3] w-full object-cover"
           />
@@ -42,7 +44,15 @@ export default function ArticleCard({ article }: { article: ArticleCardType }) {
       </Link>
       <div className="mt-3 flex flex-col gap-1">
         <div className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-widest text-muted">
-          <span>{article.brand_name}</span>
+          {/* Ball: brand. Video article: the category (e.g. "Mental Game")
+              and the creator, e.g. "Mental Game · Brad and Kyle". */}
+          <span>{article.article_kind === "video" ? article.category_name : article.brand_name}</span>
+          {article.article_kind === "video" && article.video_channel_title ? (
+            <>
+              <span aria-hidden="true">&middot;</span>
+              <span>{article.video_channel_title}</span>
+            </>
+          ) : null}
           {article.article_type_name ? (
             <>
               <span aria-hidden="true">&middot;</span>

@@ -1086,8 +1086,11 @@ class FakeCursor:
             if row is None:
                 self._last_result = None
             else:
-                self._last_result = (row["status"], row.get("slug"), row["brand_name"], row["product_name"])
-            self.description = [("status",), ("slug",), ("name",), ("name",)]
+                # + learn_video_id / title (migration 040: video articles
+                # slug their own title).
+                self._last_result = (row["status"], row.get("slug"), row.get("brand_name"), row.get("product_name"),
+                                     row.get("learn_video_id"), row.get("title"))
+            self.description = [("status",), ("slug",), ("name",), ("name",), ("learn_video_id",), ("title",)]
 
         elif q.startswith("select 1 from product_articles where slug = %s"):
             # generate_unique_article_slug's collision-check loop.
@@ -7732,3 +7735,100 @@ def test_set_manual_learn_video_transcript_missing_raises_lookup_error():
         assert False, "expected LookupError"
     except LookupError:
         pass
+
+
+# --- Video articles (migration 040) ---
+
+def test_list_articles_left_joins_products_and_learn_videos():
+    """An inner join to products would hide every video article from the
+    Articles review tab."""
+    conn = _QueryCapturingConnection()
+    service.list_articles(conn, status=None)
+    query = conn.cursor().queries[0]
+    assert "left join products p on p.id = pa.product_id" in query
+    assert "left join learn_videos lv on lv.id = pa.learn_video_id" in query
+    assert " join products p" not in query.replace("left join products p", "")
+    assert "as article_kind" in query
+    assert "coalesce(pags.started_at, lv.article_generation_started_at) as generation_started_at" in query
+
+
+def test_get_article_left_joins_for_video_articles():
+    conn = _QueryCapturingConnection()
+    service.get_article(conn, "art-1")
+    query = conn.cursor().queries[0]
+    assert "left join products p" in query and "left join learn_videos lv" in query
+
+
+def test_approve_video_article_slugs_its_title():
+    db = {"product_articles": {"art-1": {"status": "pending", "slug": None, "learn_video_id": "lv-1",
+                                         "title": "Three Mental-Game Habits That Add Pins"}}}
+    conn = FakeConnection(db)
+    result = service.approve_article(conn, "art-1", "al@example.com")
+    assert result["slug"] == "three-mental-game-habits-that-add-pins"
+
+
+def test_approve_video_article_dedupes_slug():
+    db = {"product_articles": {
+        "art-1": {"status": "pending", "slug": None, "learn_video_id": "lv-1", "title": "Spare Shooting 101"},
+        "art-0": {"status": "approved", "slug": "spare-shooting-101", "learn_video_id": "lv-0", "title": "x"},
+    }}
+    conn = FakeConnection(db)
+    assert service.approve_article(conn, "art-1", "al")["slug"] == "spare-shooting-101-2"
+
+
+def test_queue_learn_video_article_generation_requires_transcript():
+    conn = _RuleConnection([("select transcript from learn_videos where id = %s", ("",))])
+    try:
+        service.queue_learn_video_article_generation(conn, "lv-1")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "transcript" in str(e)
+
+
+def test_queue_learn_video_article_generation_unknown_video():
+    conn = _RuleConnection([("select transcript from learn_videos where id = %s", None)])
+    try:
+        service.queue_learn_video_article_generation(conn, "missing")
+        assert False, "expected LookupError"
+    except LookupError:
+        pass
+
+
+def test_queue_learn_video_article_generation_rejects_unknown_mode():
+    try:
+        service.queue_learn_video_article_generation(_RuleConnection([]), "lv-1", mode="everything")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "Unknown mode" in str(e)
+
+
+def test_queue_learn_video_article_generation_invokes_with_learn_video_payload(monkeypatch):
+    invoked = []
+
+    class _FakeLambda:
+        def invoke(self, **kwargs):
+            invoked.append(kwargs)
+
+    import types
+    fake_boto3 = types.SimpleNamespace(client=lambda name: _FakeLambda())
+    monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
+    monkeypatch.setenv("PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME", "gen-fn")
+    conn = _RuleConnection([("select transcript from learn_videos where id = %s", ("a real transcript",))])
+
+    result = service.queue_learn_video_article_generation(conn, "lv-1", mode="action_shot")
+
+    assert result == {"queued": True, "learn_video_id": "lv-1", "mode": "action_shot"}
+    assert invoked[0]["FunctionName"] == "gen-fn" and invoked[0]["InvocationType"] == "Event"
+    assert json.loads(invoked[0]["Payload"]) == {
+        "learn_video_id": "lv-1", "regenerate_text": False, "regenerate_images": True, "image_variants": ["action_shot"],
+    }
+    assert any("article_generation_started_at = now()" in e[0] for e in conn.cursor().executed)
+
+
+def test_list_learn_videos_includes_article_status():
+    conn = _QueryCapturingConnection()
+    service.list_learn_videos(conn)
+    query = conn.cursor().queries[0]
+    assert "left join product_articles pa on pa.learn_video_id = lv.id" in query
+    assert "pa.status as article_status" in query
+    assert "lv.article_generation_started_at" in query

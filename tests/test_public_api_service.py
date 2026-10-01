@@ -565,7 +565,7 @@ def test_list_articles_default_sort_is_reviewed_at_desc():
     service.list_articles(conn)
 
     query = conn.cursor().queries[0]
-    assert "order by (p.status = 'current') desc, pa.reviewed_at desc nulls last, pa.id asc" in query
+    assert "order by coalesce(p.status = 'current', true) desc, pa.reviewed_at desc nulls last, pa.id asc" in query
 
 
 def test_list_articles_sort_oldest_orders_reviewed_at_asc():
@@ -573,7 +573,7 @@ def test_list_articles_sort_oldest_orders_reviewed_at_asc():
     service.list_articles(conn, sort="oldest")
 
     query = conn.cursor().queries[0]
-    assert "order by (p.status = 'current') desc, pa.reviewed_at asc nulls last, pa.id asc" in query
+    assert "order by coalesce(p.status = 'current', true) desc, pa.reviewed_at asc nulls last, pa.id asc" in query
 
 
 def test_list_articles_newest_and_oldest_sort_current_status_before_retired():
@@ -586,11 +586,11 @@ def test_list_articles_newest_and_oldest_sort_current_status_before_retired():
     conn = _QueryCapturingConnection()
 
     service.list_articles(conn, sort="newest")
-    assert "order by (p.status = 'current') desc, pa.reviewed_at desc" in conn.cursor().queries[0]
+    assert "order by coalesce(p.status = 'current', true) desc, pa.reviewed_at desc" in conn.cursor().queries[0]
 
     conn.cursor().queries.clear()
     service.list_articles(conn, sort="oldest")
-    assert "order by (p.status = 'current') desc, pa.reviewed_at asc" in conn.cursor().queries[0]
+    assert "order by coalesce(p.status = 'current', true) desc, pa.reviewed_at asc" in conn.cursor().queries[0]
 
 
 def test_list_articles_title_sorts_do_not_prioritize_status():
@@ -630,7 +630,7 @@ def test_list_articles_unrecognized_sort_falls_back_to_default():
     service.list_articles(conn, sort="not_a_real_sort")
 
     query = conn.cursor().queries[0]
-    assert "order by (p.status = 'current') desc, pa.reviewed_at desc nulls last, pa.id asc" in query
+    assert "order by coalesce(p.status = 'current', true) desc, pa.reviewed_at desc nulls last, pa.id asc" in query
 
 
 def test_list_articles_every_sort_option_keeps_id_tiebreaker():
@@ -2810,3 +2810,108 @@ if __name__ == "__main__":
         print(f"PASS: {name}")
         passed += 1
     print(f"\n{passed}/{len(tests)} tests passed")
+
+
+# --- Video articles (migration 040) ---
+
+def test_list_articles_left_joins_and_includes_video_articles():
+    conn = _QueryCapturingConnection()
+    service.list_articles(conn)
+    query = conn.cursor().queries[0]
+    assert "left join products p on p.id = pa.product_id" in query
+    assert "left join learn_videos lv on lv.id = pa.learn_video_id" in query
+    assert "pa.status = 'approved' and (pa.learn_video_id is not null or p.published = true)" in query
+    assert "as article_kind" in query
+
+
+def test_list_categories_counts_video_articles_and_returns_product_type():
+    conn = _QueryCapturingConnection()
+    service.list_categories(conn)
+    query = conn.cursor().queries[0]
+    assert "left join products p on p.id = pa.product_id" in query
+    assert "pa.learn_video_id is not null or p.published = true" in query
+    assert "c.product_type" in query
+
+
+class _VideoArticleCursor:
+    """Scripted results for get_video_article's queries, in order."""
+
+    def __init__(self, results):
+        self._results = list(results)
+        self._current = None
+        self.queries = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, query, params=None):
+        self.queries.append((" ".join(query.split()), params))
+        self._current = self._results.pop(0) if self._results else ([], [])
+
+    @property
+    def description(self):
+        return [(c,) for c in self._current[0]]
+
+    def fetchone(self):
+        return self._current[1][0] if self._current[1] else None
+
+    def fetchall(self):
+        return list(self._current[1])
+
+
+class _VideoArticleConnection:
+    def __init__(self, cursor):
+        self._cursor = cursor
+
+    def cursor(self):
+        return self._cursor
+
+
+def test_resolve_article_by_slug_returns_both_ids():
+    cur = _VideoArticleCursor([(["product_id", "learn_video_id"], [(None, "lv-1")])])
+    assert service.resolve_article_by_slug(_VideoArticleConnection(cur), "tips") == {
+        "product_id": None, "learn_video_id": "lv-1"}
+
+
+def test_get_video_article_assembles_video_path_and_related():
+    video = (["youtube_video_id", "title", "channel_title", "published_at", "thumbnail_url", "duration_seconds"],
+             [("kdeshRiNIT0", "Bowling Tips", "Brad and Kyle", None, "https://i.ytimg.com/x.jpg", 318)])
+    article_cols = ["id", "slug", "title", "hook", "sections", "key_takeaways", "verdict", "faq", "generated_at",
+                    "reviewed_at", "first_published_at", "action_shot_image_url", "product_shot_image_url",
+                    "category_id", "category_name", "category_slug", "article_type_name", "article_type_slug"]
+    article = (article_cols, [("art-1", "three-habits", "Three Habits", "Hook", [{"heading": "H", "body": "B"}],
+                               ["T1"], "Bottom line", [], None, None, None, "a.png", "p.png", "cat-mental",
+                               "Mental Game", "mental-game", None, None)])
+    path = (["id", "name", "slug"], [("cat-tips", "Bowling Tips", "bowling-tips"), ("cat-mental", "Mental Game", "mental-game")])
+    related = (["product_id", "product_name", "article_id", "slug", "title", "hook", "reviewed_at", "image_url"],
+               [(None, None, "art-2", "spares", "Spares", "h", None, "i.png")])
+    cur = _VideoArticleCursor([video, article, path, related])
+
+    result = service.get_video_article(_VideoArticleConnection(cur), "lv-1")
+
+    a = result["article"]
+    assert result["product_id"] is None and result["learn_video_id"] == "lv-1"
+    assert a["kind"] == "video"
+    assert a["featured_video"]["youtube_video_id"] == "kdeshRiNIT0" and a["featured_video"]["summary"] is None
+    assert [c["name"] for c in a["category_path"]] == ["Bowling Tips", "Mental Game"]
+    assert a["related_reviews"][0]["slug"] == "spares"
+    assert a["product"] is None and a["pros"] == [] and a["who_should_buy"] == []
+    related_query, related_params = cur.queries[3]
+    # Related articles come from the ROOT category's subtree, excluding this video.
+    assert related_params == ("cat-tips", "lv-1")
+    assert "with recursive subtree" in related_query
+
+
+def test_get_video_article_unapproved_returns_null_article():
+    video = (["youtube_video_id", "title", "channel_title", "published_at", "thumbnail_url", "duration_seconds"],
+             [("x", "t", "c", None, None, 60)])
+    cur = _VideoArticleCursor([video, (["id"], [])])
+    assert service.get_video_article(_VideoArticleConnection(cur), "lv-1")["article"] is None
+
+
+def test_get_video_article_unknown_video_returns_none():
+    cur = _VideoArticleCursor([(["youtube_video_id"], [])])
+    assert service.get_video_article(_VideoArticleConnection(cur), "missing") is None

@@ -5,6 +5,7 @@ import {
   getArticle,
   listArticleImageCandidates,
   listArticles,
+  generateLearnVideoArticle,
   regenerateArticleActionShot,
   regenerateArticleImages,
   regenerateArticleProductShot,
@@ -209,9 +210,30 @@ export default function ArticlesPage() {
     }
   }
 
-  async function handleRegenerateText(productIdForArticle: string) {
+  // Migration 040: a video article regenerates through its Learn video
+  // (POST /learn-videos/{id}/generate-article), a ball article through
+  // the existing /products/{id}/... routes. Same modes either way.
+  type RegenSubject = Pick<ArticleListItem, "article_kind" | "product_id" | "learn_video_id">;
+  function queueRegeneration(subject: RegenSubject, mode: "text" | "images" | "action_shot" | "product_shot") {
+    if (subject.article_kind === "video" && subject.learn_video_id) {
+      return generateLearnVideoArticle(subject.learn_video_id, mode);
+    }
+    const productId = subject.product_id ?? "";
+    switch (mode) {
+      case "text":
+        return regenerateArticleText(productId);
+      case "images":
+        return regenerateArticleImages(productId);
+      case "action_shot":
+        return regenerateArticleActionShot(productId);
+      default:
+        return regenerateArticleProductShot(productId);
+    }
+  }
+
+  async function handleRegenerateText(subject: RegenSubject) {
     try {
-      const result = await regenerateArticleText(productIdForArticle);
+      const result = await queueRegeneration(subject, "text");
       show(
         result.queued ? "Queued -- reopen this article in a bit to see the regenerated text." : (result.reason ?? "Not queued."),
         result.queued ? "ok" : "danger",
@@ -225,9 +247,9 @@ export default function ArticlesPage() {
     }
   }
 
-  async function handleRegenerateImages(productIdForArticle: string) {
+  async function handleRegenerateImages(subject: RegenSubject) {
     try {
-      const result = await regenerateArticleImages(productIdForArticle);
+      const result = await queueRegeneration(subject, "images");
       show(
         result.queued ? "Queued -- reopen this article in a bit to see the new candidates." : (result.reason ?? "Not queued."),
         result.queued ? "ok" : "danger",
@@ -243,12 +265,9 @@ export default function ArticlesPage() {
   // can we add the ability to just generate a new product or action shot
   // individually") -- doesn't touch the other variant's existing image
   // or burn a generation call on it, unlike handleRegenerateImages above.
-  async function handleRegenerateVariant(productIdForArticle: string, variant: "action_shot" | "product_shot") {
+  async function handleRegenerateVariant(subject: RegenSubject, variant: "action_shot" | "product_shot") {
     try {
-      const result =
-        variant === "action_shot"
-          ? await regenerateArticleActionShot(productIdForArticle)
-          : await regenerateArticleProductShot(productIdForArticle);
+      const result = await queueRegeneration(subject, variant);
       show(
         result.queued
           ? `Queued -- reopen this article in a bit to see the new ${VARIANT_LABELS[variant].toLowerCase()} candidates.`
@@ -389,13 +408,21 @@ export default function ArticlesPage() {
     },
     {
       key: "product_name",
-      header: "Product",
-      render: (a) => (
-        <div>
-          {a.product_name}
-          <div className="text-xs text-ink-500">{a.brand_name}</div>
-        </div>
-      ),
+      header: "Subject",
+      // Ball: product + brand. Video article (migration 040): the source
+      // video + its channel, flagged so it reads differently at a glance.
+      render: (a) =>
+        a.article_kind === "video" ? (
+          <div>
+            <Badge tone="primary">Video</Badge> {a.video_title ?? a.youtube_video_id}
+            <div className="text-xs text-ink-500">{a.video_channel_title}</div>
+          </div>
+        ) : (
+          <div>
+            {a.product_name}
+            <div className="text-xs text-ink-500">{a.brand_name}</div>
+          </div>
+        ),
     },
     { key: "generated_at", header: "Generated", render: (a) => fmtDate(a.generated_at) },
     {
@@ -415,7 +442,13 @@ export default function ArticlesPage() {
       key: "sync",
       header: "BigCommerce",
       stackOnMobile: true,
-      render: (a) => (
+      render: (a) =>
+        // BigCommerce sync posts a ball article to its BowlerDepot product
+        // -- a video article has no product, so the sync job never picks
+        // it up. Don't offer controls that would do nothing.
+        a.article_kind === "video" ? (
+          <span className="text-xs text-ink-400">Learn only</span>
+        ) : (
         <div className="flex flex-col items-start gap-1.5">
           <Button size="sm" variant={a.sync_to_bigcommerce ? "primary" : "secondary"} onClick={() => handleToggleSync(a)}>
             {a.sync_to_bigcommerce ? "Sync on" : "Sync off"}
@@ -437,7 +470,7 @@ export default function ArticlesPage() {
             </div>
           )}
         </div>
-      ),
+        ),
     },
     {
       key: "actions",
@@ -476,10 +509,10 @@ export default function ArticlesPage() {
             <Badge tone="pending">Generating{a.generation_mode ? ` (${a.generation_mode})` : ""}...</Badge>
           )}
           <div className="flex flex-wrap gap-1.5">
-            <Button size="sm" variant="secondary" onClick={() => handleRegenerateText(a.product_id)} disabled={!!a.generation_started_at}>
+            <Button size="sm" variant="secondary" onClick={() => handleRegenerateText(a)} disabled={!!a.generation_started_at}>
               Regen text
             </Button>
-            <Button size="sm" variant="secondary" onClick={() => handleRegenerateImages(a.product_id)} disabled={!!a.generation_started_at}>
+            <Button size="sm" variant="secondary" onClick={() => handleRegenerateImages(a)} disabled={!!a.generation_started_at}>
               Regen images
             </Button>
             <Button size="sm" variant="ghost" onClick={() => openPreview(a.id)}>
@@ -574,7 +607,7 @@ export default function ArticlesPage() {
             candidates={previewCandidates}
             onSelectCandidate={handleSelectCandidate}
             onDeleteCandidate={handleDeleteCandidate}
-            onRegenerateVariant={(variant) => handleRegenerateVariant(previewArticle.product_id, variant)}
+            onRegenerateVariant={(variant) => handleRegenerateVariant(previewArticle, variant)}
             regenerateDisabled={!!items.find((a) => a.id === previewArticle.id)?.generation_started_at}
           />
         )}
@@ -750,7 +783,35 @@ export function ArticlePreview({
         <p className="text-xs text-ink-400">Image generation ran but produced no images for this article.</p>
       ) : null}
 
+      {article.article_kind === "video" && article.youtube_video_id && (
+        <p className="text-xs text-ink-500">
+          Source video:{" "}
+          <a
+            href={`https://www.youtube.com/watch?v=${article.youtube_video_id}`}
+            target="_blank"
+            rel="noreferrer"
+            className="text-primary hover:underline"
+          >
+            {article.video_title ?? article.youtube_video_id}
+          </a>
+          {article.video_channel_title ? ` · ${article.video_channel_title}` : ""}
+        </p>
+      )}
       {article.hook && <p className="italic text-ink-700">{article.hook}</p>}
+      {(article.sections ?? []).map((sec, i) => (
+        <div key={i}>
+          <p className="font-semibold text-ink-800">{sec.heading}</p>
+          {sec.body
+            .split(/\n\s*\n/)
+            .filter((para) => para.trim())
+            .map((para, j) => (
+              <p key={j} className="mb-1.5 text-ink-600">
+                {para.trim()}
+              </p>
+            ))}
+        </div>
+      ))}
+      {listBlock("Key takeaways", article.key_takeaways ?? [])}
       {article.performance_summary && (
         <div>
           <p className="font-semibold text-ink-800">Performance summary</p>
@@ -769,7 +830,7 @@ export function ArticlePreview({
       )}
       {article.verdict && (
         <div>
-          <p className="font-semibold text-ink-800">Verdict</p>
+          <p className="font-semibold text-ink-800">{article.article_kind === "video" ? "Bottom line" : "Verdict"}</p>
           <p className="text-ink-600">{article.verdict}</p>
         </div>
       )}
@@ -784,16 +845,17 @@ export function ArticlePreview({
           ))}
         </div>
       )}
-      {article.comparison_table.length > 0 && (
+      {(article.comparison_table?.length ?? 0) > 0 && (
         <p className="text-xs text-ink-500">Comparison table: {article.comparison_table.length} row(s)</p>
       )}
-      {article.sibling_product_ids.length > 0 && (
+      {(article.sibling_product_ids?.length ?? 0) > 0 && (
         <p className="text-xs text-ink-500">
           Inferred siblings (heuristic -- not ground truth): {article.sibling_product_ids.length} product(s)
         </p>
       )}
       <p className="text-xs text-ink-400">
-        Source videos: {article.source_video_ids.length} &middot; generated {fmtDate(article.generated_at)}
+        {article.article_kind === "video" ? "" : <>Source videos: {article.source_video_ids?.length ?? 0} &middot; </>}
+        generated {fmtDate(article.generated_at)}
       </p>
     </div>
   );

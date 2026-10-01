@@ -2188,8 +2188,16 @@ _LEARN_VIDEO_COLUMNS = f"""
     lv.transcript_attempts, lv.transcript_source,
     length(lv.transcript) as transcript_chars,
     {_LEARN_VIDEO_TRANSCRIPT_STATUS_SQL} as transcript_status,
-    lv.added_by, lv.created_at
+    lv.added_by, lv.created_at,
+    lv.article_generation_started_at, lv.article_generation_mode,
+    pa.id as article_id, pa.status as article_status, pa.title as article_title
 """
+# Every learn_videos read joins its category and (migration 040) its
+# article, if one has been generated.
+_LEARN_VIDEO_FROM = (
+    "from learn_videos lv join categories c on c.id = lv.category_id "
+    "left join product_articles pa on pa.learn_video_id = lv.id"
+)
 
 
 def _learn_video_rows(cur) -> list:
@@ -2208,7 +2216,7 @@ def list_learn_videos(conn, category_id: str = None, transcript_status: str = No
     TRANSCRIPT_SQL), oldest first.
     Transcript text itself isn't listed (can be ~100KB each) -- see
     get_learn_video."""
-    query = f"select {_LEARN_VIDEO_COLUMNS} from learn_videos lv join categories c on c.id = lv.category_id where true"
+    query = f"select {_LEARN_VIDEO_COLUMNS} {_LEARN_VIDEO_FROM} where true"
     params = []
     if category_id:
         query += """ and lv.category_id in (
@@ -2238,8 +2246,7 @@ def get_learn_video(conn, learn_video_id: str):
     """One video including its full transcript and description, or None."""
     with conn.cursor() as cur:
         cur.execute(
-            f"select {_LEARN_VIDEO_COLUMNS}, lv.transcript, lv.description "
-            "from learn_videos lv join categories c on c.id = lv.category_id where lv.id = %s",
+            f"select {_LEARN_VIDEO_COLUMNS}, lv.transcript, lv.description {_LEARN_VIDEO_FROM} where lv.id = %s",
             (learn_video_id,),
         )
         rows = _learn_video_rows(cur)
@@ -4927,14 +4934,21 @@ def list_articles(conn, status: str = "pending", product_id: str = None, limit: 
     having to refresh and guess whether anything actually happened yet."""
     query = """
         select pa.id, pa.product_id, p.name as product_name, b.name as brand_name,
+               pa.learn_video_id, lv.title as video_title, lv.channel_title as video_channel_title,
+               lv.youtube_video_id, lv.thumbnail_url as video_thumbnail_url,
+               case when pa.learn_video_id is not null then 'video' else 'product' end as article_kind,
                pa.status, pa.title, pa.generated_at, pa.reviewed_at,
                pa.resolved_by, pa.created_at,
                pa.action_shot_image_url, pa.product_shot_image_url, pa.images_generated_at,
                pa.sync_to_bigcommerce, pa.bigcommerce_post_id, pa.bowlerdepot_synced_at,
-               pags.started_at as generation_started_at, pags.mode as generation_mode
+               coalesce(pags.started_at, lv.article_generation_started_at) as generation_started_at,
+               coalesce(pags.mode, lv.article_generation_mode) as generation_mode
         from product_articles pa
-        join products p on p.id = pa.product_id
-        join brands b on b.id = p.brand_id
+        -- LEFT joins since migration 040: a video article has no product
+        -- (learn_video_id instead), and an inner join would hide it.
+        left join products p on p.id = pa.product_id
+        left join brands b on b.id = p.brand_id
+        left join learn_videos lv on lv.id = pa.learn_video_id
         left join product_article_generation_status pags on pags.product_id = pa.product_id
     """
     params = []
@@ -4965,10 +4979,14 @@ def get_article(conn, article_id: str):
     with conn.cursor() as cur:
         cur.execute(
             """
-            select pa.*, p.name as product_name, b.name as brand_name
+            select pa.*, p.name as product_name, b.name as brand_name,
+                   lv.title as video_title, lv.channel_title as video_channel_title,
+                   lv.youtube_video_id, lv.thumbnail_url as video_thumbnail_url,
+                   case when pa.learn_video_id is not null then 'video' else 'product' end as article_kind
             from product_articles pa
-            join products p on p.id = pa.product_id
-            join brands b on b.id = p.brand_id
+            left join products p on p.id = pa.product_id
+            left join brands b on b.id = p.brand_id
+            left join learn_videos lv on lv.id = pa.learn_video_id
             where pa.id = %s
             """,
             (article_id,),
@@ -5014,16 +5032,9 @@ def slugify_product_name(brand_name: str, product_name: str) -> str:
     return _SLUG_NON_ALNUM_RE.sub("-", raw).strip("-")
 
 
-def generate_unique_article_slug(conn, brand_name: str, product_name: str) -> str:
-    """Wraps slugify_product_name with a collision-safety net: brand +
-    full product name (this catalog's actual real-world product names)
-    is expected to already be unique in the overwhelming majority of
-    cases -- see 036_product_articles_slug.sql's header comment -- but
-    nothing guarantees it (e.g. two genuinely identically-named listings
-    from different scrape sources), so this appends "-2", "-3", etc.
-    on an actual collision rather than trusting the format to never
-    collide. No visible suffix in the normal (non-colliding) case."""
-    base = slugify_product_name(brand_name, product_name)
+def generate_unique_slug_from_base(conn, base: str) -> str:
+    """The dedupe loop behind generate_unique_article_slug, for any base
+    slug -- video articles (migration 040) slug their own title."""
     candidate = base
     suffix = 2
     with conn.cursor() as cur:
@@ -5033,6 +5044,18 @@ def generate_unique_article_slug(conn, brand_name: str, product_name: str) -> st
                 return candidate
             candidate = f"{base}-{suffix}"
             suffix += 1
+
+
+def generate_unique_article_slug(conn, brand_name: str, product_name: str) -> str:
+    """Wraps slugify_product_name with a collision-safety net: brand +
+    full product name (this catalog's actual real-world product names)
+    is expected to already be unique in the overwhelming majority of
+    cases -- see 036_product_articles_slug.sql's header comment -- but
+    nothing guarantees it (e.g. two genuinely identically-named listings
+    from different scrape sources), so this appends "-2", "-3", etc.
+    on an actual collision rather than trusting the format to never
+    collide. No visible suffix in the normal (non-colliding) case."""
+    return generate_unique_slug_from_base(conn, slugify_product_name(brand_name, product_name))
 
 
 def approve_article(conn, article_id: str, resolved_by: str) -> dict:
@@ -5067,10 +5090,10 @@ def approve_article(conn, article_id: str, resolved_by: str) -> dict:
     with conn.cursor() as cur:
         cur.execute(
             """
-            select pa.status, pa.slug, b.name, p.name
+            select pa.status, pa.slug, b.name, p.name, pa.learn_video_id, pa.title
             from product_articles pa
-            join products p on p.id = pa.product_id
-            join brands b on b.id = p.brand_id
+            left join products p on p.id = pa.product_id
+            left join brands b on b.id = p.brand_id
             where pa.id = %s
             """,
             (article_id,),
@@ -5078,11 +5101,19 @@ def approve_article(conn, article_id: str, resolved_by: str) -> dict:
         row = cur.fetchone()
         if row is None:
             raise LookupError(f"No product_articles row with id {article_id}")
-        status, existing_slug, brand_name, product_name = row
+        status, existing_slug, brand_name, product_name, learn_video_id, title = row
         if status != "pending":
             raise ValueError(f"product_articles row {article_id} is already {status}, not pending")
 
-        slug = existing_slug or generate_unique_article_slug(conn, brand_name, product_name)
+        if existing_slug:
+            slug = existing_slug
+        elif learn_video_id:
+            # Video article (migration 040): no brand/product to slug, so
+            # its own title -- set once at first approval, same "slug
+            # never changes after publish" rule as ball articles.
+            slug = generate_unique_slug_from_base(conn, slugify_category_name(title or "") or f"video-{article_id}")
+        else:
+            slug = generate_unique_article_slug(conn, brand_name, product_name)
 
         cur.execute(
             """
@@ -5644,6 +5675,57 @@ def queue_article_generation(conn, product_id: str, mode: str = "both") -> dict:
 # (see tests/test_admin_api_service.py), which is also simpler to assert
 # against than the sys.modules["boto3"] swap the inline-import functions
 # need.
+
+
+def queue_learn_video_article_generation(conn, learn_video_id: str, mode: str = "both") -> dict:
+    """Generate Article on the Learn Videos page (migration 040) --
+    queue_article_generation's video twin: same modes, same async invoke
+    of ProductArticleGeneratorFunction with {"learn_video_id": ...}, and
+    the live "generating" marker on learn_videos instead of
+    product_article_generation_status. ValueError (409) if the video has
+    no transcript yet -- the transcript is the article's only source."""
+    if mode not in ("both", "text", "images", "action_shot", "product_shot"):
+        raise ValueError(
+            f"Unknown mode {mode!r} -- expected 'both', 'text', 'images', 'action_shot', or 'product_shot'"
+        )
+    with conn.cursor() as cur:
+        cur.execute("select transcript from learn_videos where id = %s", (learn_video_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise LookupError(f"No learn_videos row with id {learn_video_id}")
+        if not (row[0] or "").strip():
+            raise ValueError("This video doesn't have a transcript yet -- paste one or wait for the Pi first.")
+    function_name = os.environ.get("PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME")
+    if not function_name:
+        return {"queued": False, "reason": "PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME is not configured on this deployment"}
+
+    payload = {"learn_video_id": learn_video_id}
+    if mode == "text":
+        payload.update(regenerate_text=True, regenerate_images=False)
+    elif mode == "images":
+        payload.update(regenerate_text=False, regenerate_images=True)
+    elif mode in ("action_shot", "product_shot"):
+        payload.update(regenerate_text=False, regenerate_images=True, image_variants=[mode])
+
+    with conn.cursor() as cur:
+        cur.execute(
+            "update learn_videos set article_generation_started_at = now(), article_generation_mode = %s where id = %s",
+            (mode, learn_video_id),
+        )
+    conn.commit()
+
+    import boto3
+    try:
+        boto3.client("lambda").invoke(FunctionName=function_name, InvocationType="Event", Payload=json.dumps(payload))
+    except Exception:
+        with conn.cursor() as cur:
+            cur.execute(
+                "update learn_videos set article_generation_started_at = null, article_generation_mode = null where id = %s",
+                (learn_video_id,),
+            )
+        conn.commit()
+        raise
+    return {"queued": True, "learn_video_id": learn_video_id, "mode": mode}
 
 _MANAGED_GROUPS = ("Admins", "Editors")
 

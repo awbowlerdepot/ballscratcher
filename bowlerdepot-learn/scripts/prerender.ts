@@ -116,9 +116,13 @@ interface ArticleCard {
   // (033_product_articles_first_published_at.sql) -- see ArticleDetail's
   // own comment for the full reasoning.
   first_published_at?: string | null;
-  product_id: string;
-  product_name: string;
-  brand_name: string;
+  // Null for a video article (migration 040): written from a Learn video,
+  // no product. article_kind says which; video cards are fetched by slug.
+  product_id: string | null;
+  product_name: string | null;
+  brand_name: string | null;
+  article_kind?: "product" | "video";
+  video_thumbnail_url?: string | null;
   coverstock_name?: string | null;
   coverstock_type?: string | null;
   primary_image_url?: string | null;
@@ -131,6 +135,11 @@ interface ArticleCard {
 }
 
 interface ArticleDetail {
+  // Video articles (migration 040).
+  kind?: "product" | "video";
+  sections?: { heading: string; body: string }[] | null;
+  key_takeaways?: string[] | null;
+  category_path?: { id: string; name: string; slug: string }[] | null;
   // See ArticleCard.slug's own comment above.
   slug?: string | null;
   title: string;
@@ -184,7 +193,7 @@ interface ArticleDetail {
   // not just left for the client bundle, specifically so a crawler
   // discovers/follows the internal link graph between review pages from
   // this build-time HTML, same reasoning this whole script exists for.
-  related_reviews?: { product_id: string; slug?: string | null; product_name: string; title: string }[] | null;
+  related_reviews?: { product_id: string | null; article_id?: string; slug?: string | null; product_name: string | null; title: string }[] | null;
   // Al: "change the more from section at the bottom to be links to
   // additional articles for the brand of the ball the current article
   // is from and can we use the demand score to sort them." Now rendered
@@ -207,7 +216,15 @@ interface ArticleDetail {
   // comment on this field for the full reasoning; may be null when the
   // video is approved but not yet summarized, in which case
   // renderFeaturedVideo below falls back to the video's own title.
-  featured_video?: { youtube_video_id: string; title?: string | null; channel_title?: string | null; summary?: string | null } | null;
+  featured_video?: {
+    youtube_video_id: string;
+    title?: string | null;
+    channel_title?: string | null;
+    summary?: string | null;
+    published_at?: string | null;
+    thumbnail_url?: string | null;
+    duration_seconds?: number | null;
+  } | null;
 }
 
 function escapeHtml(value: string): string {
@@ -277,8 +294,8 @@ function formatArticleDate(iso: string | null | undefined): string | null {
 // scheme only needs to be known in one place; falls back to the bare
 // product_id for a not-yet-backfilled pre-036 article, same as the
 // client-rendered app.
-function articleHref(item: { slug?: string | null; product_id: string }): string {
-  return `/articles/${item.slug || item.product_id}/`;
+function articleHref(item: { slug?: string | null; product_id?: string | null; article_id?: string }): string {
+  return `/articles/${item.slug || item.product_id || item.article_id}/`;
 }
 
 function estimateReadingTimeMinutes(article: ArticleDetail): number {
@@ -292,6 +309,8 @@ function estimateReadingTimeMinutes(article: ArticleDetail): number {
     ...(article.pros ?? []),
     ...(article.cons ?? []),
     ...(article.faq ?? []).flatMap((f) => [f.question, f.answer]),
+    ...(article.sections ?? []).flatMap((sec) => [sec.heading, sec.body]),
+    ...(article.key_takeaways ?? []),
   ].filter((s): s is string => Boolean(s));
   const wordCount = parts.join(" ").trim().split(/\s+/).filter(Boolean).length;
   return Math.max(1, Math.ceil(wordCount / 200));
@@ -314,8 +333,14 @@ async function fetchAllArticles(): Promise<ArticleCard[]> {
   return all;
 }
 
-async function fetchArticleDetail(productId: string): Promise<ArticleDetail | null> {
-  const resp = await fetch(`${API_BASE}/products/${encodeURIComponent(productId)}/article`);
+async function fetchArticleDetail(card: ArticleCard): Promise<ArticleDetail | null> {
+  // Video articles (migration 040) have no product to look up by -- but
+  // every listed one is approved, so it always has a slug.
+  const path =
+    card.article_kind === "video" || !card.product_id
+      ? `/articles/${encodeURIComponent(card.slug ?? "")}`
+      : `/products/${encodeURIComponent(card.product_id)}/article`;
+  const resp = await fetch(`${API_BASE}${path}`);
   if (!resp.ok) return null;
   const body = (await resp.json()) as { article: ArticleDetail | null };
   return body.article;
@@ -347,15 +372,15 @@ function renderSpecTable(product: ArticleDetail["product"]): string {
 // specifically (not just a nice-to-have for JS-enabled visitors, who
 // already get this from ArticleDetailPage.tsx's own Related Reviews
 // section).
-function renderRelatedReviews(related: ArticleDetail["related_reviews"]): string {
+function renderRelatedReviews(related: ArticleDetail["related_reviews"], heading = "Related Reviews"): string {
   if (!related?.length) return "";
   const cards = related
     .map(
       (r) =>
-        `<a class="article-card" href="${escapeHtml(articleHref(r))}"><div class="article-card-body"><div class="article-card-title">${escapeHtml(r.title)}</div><div class="article-card-meta">${escapeHtml(r.product_name)}</div></div></a>`,
+        `<a class="article-card" href="${escapeHtml(articleHref(r))}"><div class="article-card-body"><div class="article-card-title">${escapeHtml(r.title)}</div>${r.product_name ? `<div class="article-card-meta">${escapeHtml(r.product_name)}</div>` : ""}</div></a>`,
     )
     .join("");
-  return `<h2>Related Reviews</h2><div class="article-grid">${cards}</div>`;
+  return `<h2>${escapeHtml(heading)}</h2><div class="article-grid">${cards}</div>`;
 }
 
 // Same real <a href="/articles/<id>/"> treatment as renderRelatedReviews
@@ -592,10 +617,31 @@ function buildFaqLd(article: ArticleDetail) {
   };
 }
 
+// Video articles (migration 040): describe the embedded source video.
+// Google's VideoObject needs name, thumbnailUrl, and uploadDate, so it's
+// skipped when YouTube's published date is missing.
+function buildVideoLd(article: ArticleDetail) {
+  const video = article.featured_video;
+  if (article.kind !== "video" || !video?.published_at || !video.thumbnail_url) return undefined;
+  const s = video.duration_seconds;
+  return {
+    "@context": "https://schema.org",
+    "@type": "VideoObject",
+    name: video.title || article.title,
+    description: article.hook,
+    thumbnailUrl: [video.thumbnail_url],
+    uploadDate: video.published_at,
+    duration: s ? `PT${Math.floor(s / 3600) ? `${Math.floor(s / 3600)}H` : ""}${Math.floor((s % 3600) / 60)}M${s % 60}S` : undefined,
+    embedUrl: `https://www.youtube.com/embed/${video.youtube_video_id}`,
+    contentUrl: `https://www.youtube.com/watch?v=${video.youtube_video_id}`,
+  };
+}
+
 function renderStructuredData(card: ArticleCard, article: ArticleDetail, heroImage: string | null | undefined, canonicalUrl: string): string {
   const blocks = [
     buildArticleLd(card, article, heroImage, canonicalUrl),
-    buildProductLd(card, article, heroImage),
+    // A video article isn't about a product -- no Product markup.
+    article.kind === "video" ? buildVideoLd(article) : buildProductLd(card, article, heroImage),
     buildBreadcrumbLd(article, canonicalUrl),
     buildFaqLd(article),
   ].filter(Boolean);
@@ -630,7 +676,8 @@ function renderStructuredData(card: ArticleCard, article: ArticleDetail, heroIma
 // of sync with what the page really shows -- Google's image-sitemap
 // guidance expects the listed image to genuinely appear on that URL.
 function computeHeroImage(card: ArticleCard, article: ArticleDetail): string | null {
-  const rawHeroImage = article.action_shot_image_url || article.product?.primary_image_url || card.primary_image_url;
+  const rawHeroImage =
+    article.action_shot_image_url || article.product?.primary_image_url || card.primary_image_url || card.video_thumbnail_url;
   // 1200x630 -- the standard Open Graph/Twitter Card social-preview
   // dimensions, reused as-is for the no-JS body <img>, og:image, and the
   // Article/Product JSON-LD image fields below (one resized URL, shared
@@ -663,14 +710,34 @@ function renderArticlePage(baseHtml: string, card: ArticleCard, article: Article
   if (updatedLabel && updatedLabel !== publishedLabel) bylineParts.push(`Updated ${updatedLabel}`);
   const byline = bylineParts.map(escapeHtml).join(" &middot; ");
 
+  // Video article (migration 040): mirrors ArticleDetailPage's video
+  // layout -- embed, body sections, key takeaways, "The Bottom Line".
+  const isVideo = article.kind === "video";
+  const rootCategory = article.category_path?.[0];
+  const videoBody = isVideo
+    ? `
+      ${article.featured_video ? `<div class="article-video"><iframe src="https://www.youtube.com/embed/${escapeHtml(article.featured_video.youtube_video_id)}" title="${escapeHtml(article.featured_video.title || "Video")}" loading="lazy" allowfullscreen></iframe></div>` : ""}
+      ${(article.sections ?? [])
+        .map(
+          (sec) =>
+            `<h2>${escapeHtml(sec.heading)}</h2>${sec.body
+              .split(/\n\s*\n/)
+              .filter((para) => para.trim())
+              .map((para) => `<p>${escapeHtml(para.trim())}</p>`)
+              .join("")}`,
+        )
+        .join("")}
+      ${article.key_takeaways?.length ? `<h2>Key Takeaways</h2>${renderList(article.key_takeaways)}` : ""}`
+    : "";
+
   const content = `
     <div class="page">
-      <a class="back-link" href="/">&larr; All reviews</a>
+      <a class="back-link" href="${isVideo && rootCategory ? `/?category_id=${escapeHtml(rootCategory.id)}` : "/"}">&larr; ${escapeHtml(isVideo && rootCategory ? `All ${rootCategory.name}` : "All reviews")}</a>
       <div class="article-detail-hero">
         <div class="article-detail-hero-inner">
           <div class="article-detail-image-frame">
             <div class="article-detail-image">
-              ${heroImage ? `<img src="${escapeHtml(heroImage)}" alt="${escapeHtml(article.product?.name ?? card.product_name)}" />` : ""}
+              ${heroImage ? `<img src="${escapeHtml(heroImage)}" alt="${escapeHtml(article.product?.name ?? card.product_name ?? article.title)}" />` : ""}
             </div>
           </div>
           <div>
@@ -680,14 +747,15 @@ function renderArticlePage(baseHtml: string, card: ArticleCard, article: Article
           </div>
         </div>
       </div>
+      ${videoBody}
       ${article.performance_summary ? `<h2>Performance</h2><p>${escapeHtml(article.performance_summary)}</p>` : ""}
       ${article.pros?.length ? `<h2>Pros</h2>${renderList(article.pros)}` : ""}
       ${article.cons?.length ? `<h2>Cons</h2>${renderList(article.cons)}` : ""}
       ${article.who_should_buy?.length ? `<h2>Who Should Buy This</h2>${renderList(article.who_should_buy)}` : ""}
       ${article.who_should_skip?.length ? `<h2>Who Should Skip This</h2>${renderList(article.who_should_skip)}` : ""}
       ${article.buying_tips ? `<h2>Buying Tips</h2><p>${escapeHtml(article.buying_tips)}</p>` : ""}
-      ${renderFeaturedVideo(article.featured_video)}
-      ${article.verdict ? `<h2>Verdict</h2><p>${escapeHtml(article.verdict)}</p>` : ""}
+      ${isVideo ? "" : renderFeaturedVideo(article.featured_video)}
+      ${article.verdict ? `<h2>${isVideo ? "The Bottom Line" : "Verdict"}</h2><p>${escapeHtml(article.verdict)}</p>` : ""}
       ${/* Al: "move the related reviews section up to just below the shop
            call to action." The live page now renders Related Reviews
            right after the Shop CTA, ahead of Specs/FAQ -- this static
@@ -695,7 +763,7 @@ function renderArticlePage(baseHtml: string, card: ArticleCard, article: Article
            but moved Related Reviews ahead of Specs/FAQ here too so the
            prerendered content order keeps mirroring the live page's
            order as closely as this file's own stated goal calls for. */ ""}
-      ${renderRelatedReviews(article.related_reviews)}
+      ${renderRelatedReviews(article.related_reviews, isVideo ? `More ${rootCategory?.name ?? "Articles"}` : "Related Reviews")}
       ${renderSpecTable(article.product)}
       ${renderFaq(article.faq)}
       ${renderBrandLineup(article.brand_lineup)}
@@ -782,17 +850,17 @@ async function main() {
   let written = 0;
 
   for (const card of cards) {
-    const article = await fetchArticleDetail(card.product_id);
+    const article = await fetchArticleDetail(card);
     if (!article) {
       // Shouldn't happen (list_articles already filters to approved
       // articles on published products), but a public_api hiccup or a
       // product unpublished between the two calls shouldn't fail the
       // whole build -- skip just this one page.
       // eslint-disable-next-line no-console
-      console.warn(`Skipping prerender for ${card.product_id}: no article returned`);
+      console.warn(`Skipping prerender for ${card.slug || card.product_id}: no article returned`);
       continue;
     }
-    const outDir = join(DIST_DIR, "articles", card.slug || card.product_id);
+    const outDir = join(DIST_DIR, "articles", card.slug || card.product_id || card.article_id);
     await mkdir(outDir, { recursive: true });
     await writeFile(join(outDir, "index.html"), renderArticlePage(baseHtml, card, article), "utf-8");
     const lastmod = card.reviewed_at ?? undefined;
@@ -802,7 +870,9 @@ async function main() {
       lastmod,
       image: computeHeroImage(card, article) ?? undefined,
     });
-    if (card.slug) redirectMapEntries.push({ Key: card.product_id, Value: card.slug });
+    // Only ball articles ever had a product_id URL to redirect from;
+    // video articles (migration 040) launched with their slug.
+    if (card.slug && card.product_id) redirectMapEntries.push({ Key: card.product_id, Value: card.slug });
     written += 1;
   }
 

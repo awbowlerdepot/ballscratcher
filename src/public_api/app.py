@@ -131,11 +131,19 @@ def get_article_by_slug(slug: str):
     # and /categories above) rather than right before /products/
     # {product_id} below since this is its own "/articles/..." path,
     # not a "/products/..." one -- no route-ordering hazard either way.
+    #
+    # Migration 040: a slug can also belong to a video article (written
+    # from a Learn video, no product) -- served by get_video_article.
     conn = service.get_db_connection()
-    product_id = service.resolve_product_id_by_slug(conn, slug)
-    if product_id is None:
+    resolved = service.resolve_article_by_slug(conn, slug)
+    if resolved is None:
         raise HTTPException(status_code=404, detail="Article not found")
-    result = service.get_product_article(conn, product_id)
+    if resolved["learn_video_id"]:
+        result = service.get_video_article(conn, resolved["learn_video_id"])
+        if result is None or result["article"] is None:
+            raise HTTPException(status_code=404, detail="Article not found")
+        return result
+    result = service.get_product_article(conn, resolved["product_id"])
     if result is None:
         raise HTTPException(status_code=404, detail="Product not found")
     return result

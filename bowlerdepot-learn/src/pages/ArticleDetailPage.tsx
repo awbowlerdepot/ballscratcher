@@ -131,6 +131,12 @@ export default function ArticleDetailPage() {
   if (!article) return <p className="py-8 text-center text-muted">No review is published for this ball yet.</p>;
 
   const product = article.product;
+  // Video article (migration 040, e.g. Bowling Tips): written from a Learn
+  // video's transcript, no product. Ball-only sections below are already
+  // guarded on their own fields; this adds the video, body sections, and
+  // key takeaways, and swaps a few headings.
+  const isVideo = article.kind === "video";
+  const rootCategory = article.category_path?.[0];
   const rawHeroImage = article.action_shot_image_url || product?.primary_image_url;
   // 700x525 (4:3) -- 2x-retina-sized for the hero box's ~325px rendered
   // width (see the md:w-[325px] box below), served via img.bowleriq.io.
@@ -143,7 +149,9 @@ export default function ArticleDetailPage() {
   // Migration 031 -- "Bowling Balls · Ball Review" eyebrow, read straight
   // off the article row rather than hardcoded (see ArticleCard's own
   // comment on the same fields). Null for a pre-migration article.
-  const taxonomyLabel = [article.category_name, article.article_type_name].filter(Boolean).join(" · ");
+  const taxonomyLabel = isVideo
+    ? (article.category_path ?? []).map((c) => c.name).join(" · ")
+    : [article.category_name, article.article_type_name].filter(Boolean).join(" · ");
 
   // Al: "can we add published dates and last updated dates to the
   // articles" -- publishedLabel from first_published_at (set once, ever
@@ -162,8 +170,11 @@ export default function ArticleDetailPage() {
 
   return (
     <div>
-      <Link to="/" className="mb-6 inline-block text-sm font-medium text-muted hover:text-ink">
-        &larr; All reviews
+      <Link
+        to={isVideo && rootCategory ? `/?category_id=${rootCategory.id}` : "/"}
+        className="mb-6 inline-block text-sm font-medium text-muted hover:text-ink"
+      >
+        &larr; {isVideo && rootCategory ? `All ${rootCategory.name}` : "All reviews"}
       </Link>
 
       <div className="relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-neutral-900 py-10">
@@ -215,6 +226,60 @@ export default function ArticleDetailPage() {
           </div>
         </div>
       </div>
+
+      {/* Video article (migration 040): the source video right under the
+          hero -- Al: "generate an article with that video inline" -- then
+          the article body and a key-takeaways box. */}
+      {isVideo && article.featured_video ? (
+        <div className="mb-10">
+          <div className="aspect-video w-full overflow-hidden rounded-md bg-black">
+            <iframe
+              className="h-full w-full"
+              src={`https://www.youtube.com/embed/${article.featured_video.youtube_video_id}`}
+              title={article.featured_video.title || "Video"}
+              loading="lazy"
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              allowFullScreen
+            />
+          </div>
+          <p className="mt-2 text-xs text-muted">
+            Video: {article.featured_video.title}
+            {article.featured_video.channel_title ? <> &middot; {article.featured_video.channel_title}</> : null}
+          </p>
+        </div>
+      ) : null}
+
+      {isVideo
+        ? (article.sections ?? []).map((section, i) => (
+            <div key={i}>
+              <div className="mb-10">
+                <h2 className="mb-3 font-display text-xl font-semibold text-ink">{section.heading}</h2>
+                {section.body
+                  .split(/\n\s*\n/)
+                  .filter((para) => para.trim())
+                  .map((para, j) => (
+                    <p key={j} className="mb-3 text-ink/90 last:mb-0">
+                      {para.trim()}
+                    </p>
+                  ))}
+              </div>
+              {/* Same single mid-article ad slot ball articles get after
+                  Performance. */}
+              {i === 0 ? <InArticleAd key={`${article.id}-1`} /> : null}
+            </div>
+          ))
+        : null}
+
+      {isVideo && article.key_takeaways?.length ? (
+        <div className="mb-10 rounded-md border border-paper-border bg-white/60 p-6">
+          <h2 className="mb-3 font-display text-xl font-semibold text-ink">Key Takeaways</h2>
+          <ul className="list-disc space-y-1 pl-5 text-ink/90">
+            {article.key_takeaways.map((t, i) => (
+              <li key={i}>{t}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       {article.performance_summary ? (
         <div className="mb-10">
@@ -309,7 +374,7 @@ export default function ArticleDetailPage() {
           nocookie.com -- no precedent for privacy-enhanced mode
           anywhere in this codebase, matching the plain embed
           consumer-site's own video grid already uses). */}
-      {article.featured_video ? (
+      {article.featured_video && !isVideo ? (
         <div className="relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-neutral-900 pb-10 pt-6">
           <div className="mx-auto max-w-[75rem] px-6 md:px-8">
             <h2 className="mb-4 font-display text-xl font-semibold text-white">
@@ -351,7 +416,9 @@ export default function ArticleDetailPage() {
 
       {article.verdict ? (
         <div className="mb-10">
-          <h2 className="mb-3 font-display text-xl font-semibold text-ink">Verdict</h2>
+          <h2 className="mb-3 font-display text-xl font-semibold text-ink">
+            {isVideo ? "The Bottom Line" : "Verdict"}
+          </h2>
           <p className="text-ink/90">{article.verdict}</p>
         </div>
       ) : null}
@@ -407,15 +474,17 @@ export default function ArticleDetailPage() {
           merged here. */}
       {article.related_reviews?.length ? (
         <div className="mb-10">
-          <h2 className="mb-3 font-display text-xl font-semibold text-ink">Related Reviews</h2>
+          <h2 className="mb-3 font-display text-xl font-semibold text-ink">
+            {isVideo ? `More ${rootCategory?.name ?? "Articles"}` : "Related Reviews"}
+          </h2>
           <div className="grid grid-cols-1 gap-x-8 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
             {article.related_reviews.map((r) => (
-              <Link key={r.product_id} className="group block" to={articleHref(r)}>
+              <Link key={r.article_id} className="group block" to={articleHref(r)}>
                 <div className="aspect-[4/3] w-full overflow-hidden rounded-md bg-paper-border/40">
                   {r.image_url ? (
                     <img
                       src={resizedImageUrl(r.image_url, { w: 640, h: 480, fit: "cover" })}
-                      alt={r.product_name}
+                      alt={r.product_name ?? r.title}
                       loading="lazy"
                       className="h-full w-full object-cover"
                     />
@@ -423,7 +492,7 @@ export default function ArticleDetailPage() {
                 </div>
                 <div className="mt-3">
                   <div className="font-display font-semibold text-ink group-hover:text-accent">{r.title}</div>
-                  <div className="text-xs text-muted">{r.product_name}</div>
+                  {r.product_name ? <div className="text-xs text-muted">{r.product_name}</div> : null}
                 </div>
               </Link>
             ))}

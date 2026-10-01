@@ -2113,10 +2113,13 @@ def call_gemini_for_image(gemini_auth: dict, model_id: str, prompt: str,
     body = {
         "contents": [{
             "role": "user",
-            "parts": [
-                {"text": prompt},
-                {"inlineData": {"mimeType": "image/png", "data": reference_image_b64}},
-            ],
+            # reference_image_b64 is optional (migration 040): video
+            # articles have no ball photo to anchor on, so their scenes
+            # are text-to-image.
+            "parts": [{"text": prompt}] + (
+                [{"inlineData": {"mimeType": "image/png", "data": reference_image_b64}}]
+                if reference_image_b64 else []
+            ),
         }],
         "generationConfig": {
             "responseModalities": ["IMAGE"],
@@ -2916,6 +2919,396 @@ def generate_article_for_product(conn, bedrock_client, model_id: str, product_id
     }
 
 
+# ---------------------------------------------------------------------
+# VIDEO ARTICLES (migration 040) -- phase 3 of Bowling Tips. An article
+# written from one learn_videos transcript (an admin-picked YouTube tips
+# video) instead of about a ball. Al: "using a similar workflow that we
+# have for balls it will generate an article with that video inline" --
+# triggered by the Learn Videos page's Generate Article button (handler's
+# {"learn_video_id": ...} shape), AI images through the same Gemini path
+# as ball articles (text-to-image, no reference photo), and an intro /
+# sections / key takeaways / FAQ / bottom-line shape. Stored in
+# product_articles with learn_video_id set instead of product_id, so it
+# goes through the same review queue, slugging, and image-candidate
+# tooling as a ball article.
+# ---------------------------------------------------------------------
+
+# Haiku 4.5 has plenty of context for a whole tips-video transcript (a
+# 20-minute video is ~20K chars); the cap only guards a multi-hour
+# livestream from blowing the request up.
+DEFAULT_VIDEO_TRANSCRIPT_MAX_CHARS = 60_000
+# A video article's sections run longer than a ball article's fields.
+DEFAULT_VIDEO_ARTICLE_MAX_TOKENS = 4500
+
+_REQUIRED_VIDEO_ARTICLE_KEYS = ("title", "hook", "sections", "key_takeaways", "faq", "verdict")
+
+
+def fetch_learn_video_content(conn, learn_video_id: str):
+    """The video row plus its category path ("Bowling Tips > Spare
+    Shooting"), or None if there's no such video."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select lv.id, lv.youtube_video_id, lv.title, lv.channel_title, lv.description,
+                   lv.duration_seconds, lv.transcript, lv.category_id
+            from learn_videos lv where lv.id = %s
+            """,
+            (learn_video_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        columns = [d[0] for d in cur.description]
+        video = dict(zip(columns, row))
+        cur.execute(
+            """
+            with recursive path as (
+                select id, name, parent_id, 0 as depth from categories where id = %s
+                union all
+                select c.id, c.name, c.parent_id, path.depth + 1 from categories c join path on c.id = path.parent_id
+            )
+            select name from path order by depth desc
+            """,
+            (video["category_id"],),
+        )
+        video["category_path"] = [r[0] for r in cur.fetchall()]
+    return video
+
+
+def fetch_existing_video_article(conn, learn_video_id: str):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select id, title, hook, verdict, visual_theme, sections, key_takeaways,
+                   action_shot_image_key, action_shot_image_url,
+                   product_shot_image_key, product_shot_image_url
+            from product_articles where learn_video_id = %s
+            """,
+            (learn_video_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return dict(zip([d[0] for d in cur.description], row))
+
+
+def build_video_article_prompt(video: dict) -> str:
+    """One Bedrock call returning the whole video article as JSON. Same
+    "only what the source supports" posture as build_article_prompt, with
+    the transcript as the single source. Auto-captions mishear bowling
+    terms, so the model is told to correct obvious ones rather than
+    repeat them."""
+    transcript = (video.get("transcript") or "")[:DEFAULT_VIDEO_TRANSCRIPT_MAX_CHARS]
+    creator = video.get("channel_title") or "the video's creator"
+    category = " > ".join(video.get("category_path") or []) or "Bowling Tips"
+    description = (video.get("description") or "").strip()[:1500]
+    return (
+        "You are writing an instructional article for The Bowler Depot's Learn site, in the voice of an "
+        "experienced bowling coach writing for the site's own readers -- clear, practical, encouraging, and "
+        "specific. The article is based entirely on ONE YouTube video, which will be embedded at the top of "
+        "the article. Every tip, drill, and claim must come from the video transcript below -- do not add "
+        "advice, statistics, or techniques the video doesn't contain, and do not invent quotes.\n\n"
+        f"The video is by {creator}. Credit them naturally where it helps the reader (\"In the video, "
+        f"{creator} explain...\"), but write the article as a standalone read, not a transcript summary: "
+        "organize the advice into a logical flow a reader can follow without watching. Leave out channel "
+        "housekeeping -- intros, subscribe/like requests, giveaways or free-gift offers, sponsor reads, "
+        "and sign-offs. The transcript may be auto-generated captions with no punctuation and occasional "
+        "misheard words; silently correct obvious mishearings of bowling terms (e.g. \"hook\", \"pocket\", "
+        "\"axis rotation\", \"PAP\") and never mention the transcript itself.\n\n"
+        f"Learn site category: {category}\n"
+        f"Video title: {video.get('title') or 'untitled'}\n"
+        + (f"Video description: {description}\n" if description else "")
+        + f"\nTranscript:\n{transcript}\n\n"
+        "Return ONLY a single JSON object (no markdown fence, no commentary before or after) with exactly "
+        "these keys:\n"
+        "  title: a specific, benefit-driven headline for the article (not just the video's title)\n"
+        "  hook: a 2-4 sentence opening that sets up the problem this advice solves for the reader\n"
+        "  sections: array of 3-7 {\"heading\": ..., \"body\": ...} objects -- the article body, in the "
+        "order a reader should learn it. Each heading is short and specific (e.g. \"Pick a Spot, Not the "
+        "Pins\"); each body is 1-3 paragraphs of plain text, paragraphs separated by a blank line (\\n\\n). "
+        "If the video presents numbered tips, give each its own section.\n"
+        "  key_takeaways: array of 3-6 short, actionable bullet strings a reader could remember on the lanes\n"
+        "  faq: array of 3-5 {\"question\": ..., \"answer\": ...} objects, each grounded in something the "
+        "video actually covers -- a question a bowler would really ask about this advice, not a generic one\n"
+        "  verdict: a 2-3 sentence bottom line -- what to practice first and why\n"
+        "  visual_theme: OPTIONAL. 1-2 sentences describing a distinctive visual scene concept for the "
+        "article's artwork, grounded in the article's central idea (e.g. a quiet, focused lane at dawn for a "
+        "mental-game article; a single pin standing on the deck for spare shooting). Objects and settings "
+        "only -- no people, hands, or body parts. Never shown to readers.\n"
+    )
+
+
+def parse_video_article_json(raw_text: str) -> dict:
+    """Same fence-stripping/required-key posture as parse_article_json,
+    plus shape checks on sections (a malformed section array would render
+    as a broken article, and there's no partial-field review UI)."""
+    text = raw_text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(json)?\s*", "", text)
+        text = re.sub(r"\s*```$", "", text)
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Bedrock response was not valid JSON: {exc}") from exc
+    missing = [k for k in _REQUIRED_VIDEO_ARTICLE_KEYS if k not in data]
+    if missing:
+        raise ValueError(f"Bedrock response JSON missing required keys: {missing}")
+    sections = data["sections"]
+    if not isinstance(sections, list) or not sections or not all(
+        isinstance(sec, dict) and sec.get("heading") and sec.get("body") for sec in sections
+    ):
+        raise ValueError("Bedrock response 'sections' must be a non-empty list of {heading, body} objects")
+    if not isinstance(data["key_takeaways"], list) or not isinstance(data["faq"], list):
+        raise ValueError("Bedrock response 'key_takeaways' and 'faq' must be lists")
+    return data
+
+
+def build_video_scene_prompt(video: dict, article: dict, variant: str) -> str:
+    """Text-to-image prompt for a video article's artwork. Keeps the ball
+    pipeline's no-people rule (build_gemini_scene_prompt): AI-generated
+    bowlers tend to look wrong, and a person in a tips article's artwork
+    could read as the video's real creators. Unlike ball shots, pins and
+    lanes are welcome -- they're often the subject of a tip."""
+    concept = (article.get("visual_theme") or "").strip() or (
+        f"an evocative bowling-alley scene that captures the idea of: {article.get('title') or video.get('title')}"
+    )
+    if variant == "action_shot":
+        framing = (
+            "a wide, cinematic 16:9 editorial hero image with depth and atmosphere, the kind that opens a "
+            "magazine feature"
+        )
+    else:
+        framing = (
+            "a square, simple, bold composition with one clear focal subject near the center and an "
+            "uncluttered background, so it still reads clearly as a small thumbnail"
+        )
+    return (
+        f"Create {framing} for a bowling instruction article titled \"{article.get('title') or video.get('title')}\". "
+        f"Scene concept: {concept} "
+        "Photorealistic, premium lighting, rich but natural color. The subject is the environment and "
+        "objects -- bowling lanes, approach dots and arrows, pins, a generic bowling ball, the pin deck -- "
+        "never a person. Do not include any human being, hands, arms, legs, feet, shoes, silhouettes, or "
+        "figures of any kind, even blurred or in the background. No text, letters, numbers, logos, brand "
+        "names, or watermarks anywhere in the image, and no scoreboards or screens. Any bowling ball shown "
+        "must be plain and generic, with no logo or printing on it."
+    )
+
+
+def generate_video_article_image_candidates(gemini_auth: dict, s3_client, gemini_model_id: str, image_bucket: str,
+                                            video: dict, article: dict,
+                                            variants: tuple = ("action_shot", "product_shot")) -> dict:
+    """Same candidate shape and interleaved retry-session loop as
+    generate_article_image_candidates' Gemini half (see its v6 incident
+    note on why variants interleave), minus the reference photo. Stored
+    under article-images/learn-videos/{id}/ -- still inside the
+    image_resizer's article-images/ allowed prefix."""
+    gemini_session = get_gemini_requests_session()
+    run_id = _new_image_generation_run_id()
+    storage_id = f"learn-videos/{video['id']}"
+    results = {variant: [] for variant in variants}
+    for i in range(NUM_GEMINI_CANDIDATES_PER_VARIANT):
+        for variant in variants:
+            try:
+                prompt = build_video_scene_prompt(video, article, variant)
+                if i == 1:
+                    prompt += " (Generate a distinct alternate composition/angle from the previous attempt.)"
+                elif i > 1:
+                    prompt += f" (Generate composition/angle #{i + 1}, distinctly different from all previous attempts.)"
+                png_bytes = call_gemini_for_image(gemini_auth, gemini_model_id, prompt, None,
+                                                   _VARIANT_ASPECT_RATIOS[variant], session=gemini_session)
+                stored = store_article_image(s3_client, image_bucket, storage_id,
+                                             f"{variant}_gemini_{i + 1}_{run_id}", png_bytes)
+                results[variant].append({"key": stored["key"], "url": stored["url"],
+                                         "model_id": gemini_model_id, "seed": None})
+            except Exception:
+                logger.exception("Failed to generate Gemini %s candidate #%d for learn_video_id=%s",
+                                 variant, i + 1, video["id"])
+    return results
+
+
+def store_video_article(conn, learn_video_id: str, article: dict, images: dict = None,
+                        category_id: str = None) -> str:
+    """Upsert on learn_video_id -- store_article's video twin. Same reset
+    to 'pending' with reviewed_at/resolved_by cleared on a regenerate
+    (022's "a regenerate re-enters review" rule). Ball-only columns get
+    their empty defaults; article_type_id stays null (article_types are
+    per-category labels -- the Learn eyebrow shows the category path for
+    video articles instead)."""
+    images = images or {}
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into product_articles
+                (learn_video_id, status, title, hook, verdict, sections, key_takeaways, faq,
+                 who_should_buy, who_should_skip, pros, cons, comparison_table, sibling_product_ids,
+                 source_video_ids, generated_at, visual_theme,
+                 action_shot_image_key, action_shot_image_url, product_shot_image_key, product_shot_image_url,
+                 images_generated_at, category_id, sync_to_bigcommerce)
+            values (%s, 'pending', %s, %s, %s, %s, %s, %s,
+                    '[]', '[]', '[]', '[]', '[]', '[]', '[]', now(), %s,
+                    %s, %s, %s, %s, case when %s then now() else null end, %s, false)
+            on conflict (learn_video_id) do update set
+                status = 'pending',
+                title = excluded.title,
+                hook = excluded.hook,
+                verdict = excluded.verdict,
+                sections = excluded.sections,
+                key_takeaways = excluded.key_takeaways,
+                faq = excluded.faq,
+                generated_at = excluded.generated_at,
+                visual_theme = excluded.visual_theme,
+                action_shot_image_key = excluded.action_shot_image_key,
+                action_shot_image_url = excluded.action_shot_image_url,
+                product_shot_image_key = excluded.product_shot_image_key,
+                product_shot_image_url = excluded.product_shot_image_url,
+                images_generated_at = excluded.images_generated_at,
+                category_id = excluded.category_id,
+                reviewed_at = null,
+                resolved_by = null
+            returning id
+            """,
+            (
+                learn_video_id, article["title"], article["hook"], article["verdict"],
+                json.dumps(article["sections"]), json.dumps(article["key_takeaways"]), json.dumps(article["faq"]),
+                article.get("visual_theme"),
+                images.get("action_shot_image_key"), images.get("action_shot_image_url"),
+                images.get("product_shot_image_key"), images.get("product_shot_image_url"),
+                bool(images), category_id,
+            ),
+        )
+        article_id = cur.fetchone()[0]
+    conn.commit()
+    return article_id
+
+
+def update_video_article_text_only(conn, learn_video_id: str, article: dict) -> str:
+    """Text half of a decoupled regenerate -- update_article_text_only's
+    video twin: resets review, never touches the image columns."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            update product_articles set
+                status = 'pending', title = %s, hook = %s, verdict = %s, sections = %s,
+                key_takeaways = %s, faq = %s, generated_at = now(), visual_theme = %s,
+                reviewed_at = null, resolved_by = null
+            where learn_video_id = %s
+            returning id
+            """,
+            (article["title"], article["hook"], article["verdict"], json.dumps(article["sections"]),
+             json.dumps(article["key_takeaways"]), json.dumps(article["faq"]), article.get("visual_theme"),
+             learn_video_id),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise ValueError(f"No existing article for learn_video_id={learn_video_id} to text-regenerate")
+    conn.commit()
+    return row[0]
+
+
+def update_video_article_images_only(conn, learn_video_id: str, images: dict) -> str:
+    """Image half -- like update_article_images_only, doesn't reset review."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            update product_articles set
+                action_shot_image_key = %s, action_shot_image_url = %s,
+                product_shot_image_key = %s, product_shot_image_url = %s,
+                images_generated_at = now()
+            where learn_video_id = %s
+            returning id
+            """,
+            (images.get("action_shot_image_key"), images.get("action_shot_image_url"),
+             images.get("product_shot_image_key"), images.get("product_shot_image_url"), learn_video_id),
+        )
+        row = cur.fetchone()
+        if row is None:
+            raise ValueError(f"No existing article for learn_video_id={learn_video_id} to images-regenerate")
+    conn.commit()
+    return row[0]
+
+
+def clear_learn_video_generation_status(conn, learn_video_id: str) -> None:
+    # Migration 040's live marker -- see clear_article_generation_status.
+    try:
+        conn.rollback()
+        with conn.cursor() as cur:
+            cur.execute(
+                "update learn_videos set article_generation_started_at = null, article_generation_mode = null "
+                "where id = %s",
+                (learn_video_id,),
+            )
+        conn.commit()
+    except Exception:
+        logger.exception("Failed to clear article generation status for learn_video_id=%s", learn_video_id)
+
+
+def generate_article_for_learn_video(conn, bedrock_client, model_id: str, learn_video_id: str,
+                                     s3_client=None, gemini_auth: dict = None, gemini_model_id: str = None,
+                                     image_bucket: str = None, regenerate_text: bool = True,
+                                     regenerate_images: bool = True,
+                                     image_variants: tuple = ("action_shot", "product_shot")) -> dict:
+    """generate_article_for_product's video twin, same regenerate_text /
+    regenerate_images / image_variants semantics (see its v7/v8 notes)
+    and the same "an admin-selected image candidate is locked" rule."""
+    if not regenerate_text and not regenerate_images:
+        return {"learn_video_id": learn_video_id, "generated": False, "reason": "nothing_to_regenerate"}
+    video = fetch_learn_video_content(conn, learn_video_id)
+    if video is None:
+        return {"learn_video_id": learn_video_id, "generated": False, "reason": "learn_video_not_found"}
+    if not (video.get("transcript") or "").strip():
+        return {"learn_video_id": learn_video_id, "generated": False, "reason": "no_transcript"}
+    existing = fetch_existing_video_article(conn, learn_video_id)
+    if existing is None and (not regenerate_text or not regenerate_images):
+        return {"learn_video_id": learn_video_id, "generated": False, "reason": "no_existing_article_to_regenerate"}
+
+    if regenerate_text:
+        raw = call_bedrock_for_article(bedrock_client, model_id, build_video_article_prompt(video),
+                                       max_tokens=DEFAULT_VIDEO_ARTICLE_MAX_TOKENS)
+        article = parse_video_article_json(raw)
+    else:
+        article = existing
+
+    candidates_by_variant = {}
+    if regenerate_images and s3_client is not None and gemini_auth and gemini_model_id and image_bucket:
+        candidates_by_variant = generate_video_article_image_candidates(
+            gemini_auth, s3_client, gemini_model_id, image_bucket, video, article, variants=image_variants,
+        )
+
+    locked_variants = set()
+    if existing is not None and regenerate_images:
+        with conn.cursor() as cur:
+            cur.execute(
+                "select variant from product_article_image_candidates where article_id = %s and is_selected",
+                (existing["id"],),
+            )
+            locked_variants = {row[0] for row in cur.fetchall()}
+
+    images = {}
+    if regenerate_images:
+        for variant in ("action_shot", "product_shot"):
+            variant_candidates = candidates_by_variant.get(variant) or []
+            existing_key = existing.get(f"{variant}_image_key") if existing else None
+            if variant_candidates and variant not in locked_variants:
+                images[f"{variant}_image_key"] = variant_candidates[0]["key"]
+                images[f"{variant}_image_url"] = variant_candidates[0]["url"]
+            elif existing_key:
+                images[f"{variant}_image_key"] = existing_key
+                images[f"{variant}_image_url"] = existing[f"{variant}_image_url"]
+
+    if regenerate_text and regenerate_images:
+        article_id = store_video_article(conn, learn_video_id, article, images=images,
+                                         category_id=video["category_id"])
+    elif regenerate_text:
+        article_id = update_video_article_text_only(conn, learn_video_id, article)
+    else:
+        article_id = existing["id"]
+        if images:
+            update_video_article_images_only(conn, learn_video_id, images)
+    store_article_image_candidates(conn, article_id, candidates_by_variant, locked_variants)
+    return {"learn_video_id": learn_video_id, "generated": True, "article_id": article_id,
+            "images_generated": bool(images)}
+
+
 def handler(event, context):
     """Two shapes: {} / {"batch": true} runs the scheduled catalog-wide
     sweep (see list_products_needing_article -- only products with no
@@ -3021,6 +3414,26 @@ def handler(event, context):
 
     conn = get_db_connection()
     try:
+        if event.get("learn_video_id"):
+            # Video article (migration 040) -- the Learn Videos page's
+            # Generate Article button, via admin_api.queue_learn_video_
+            # article_generation. Same flags as the product path.
+            image_variants = tuple(event["image_variants"]) if event.get("image_variants") else (
+                "action_shot", "product_shot",
+            )
+            try:
+                result = generate_article_for_learn_video(
+                    conn, bedrock_client, model_id, event["learn_video_id"],
+                    s3_client=s3_client, gemini_auth=gemini_auth, gemini_model_id=gemini_model_id,
+                    image_bucket=image_bucket,
+                    regenerate_text=event.get("regenerate_text", True),
+                    regenerate_images=event.get("regenerate_images", True),
+                    image_variants=image_variants,
+                )
+            finally:
+                clear_learn_video_generation_status(conn, event["learn_video_id"])
+            return {"statusCode": 200, "body": json.dumps({"results": [result]}, default=str)}
+
         if event.get("product_id"):
             # v8: event["image_variants"], if present, is a JSON list (e.g.
             # ["action_shot"]) -- tuple()'d to match generate_article_for_

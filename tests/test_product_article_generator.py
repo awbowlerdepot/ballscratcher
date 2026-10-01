@@ -3761,3 +3761,242 @@ if __name__ == "__main__":
         passed += 1
 
     print(f"\n{passed}/{len(tests)} tests passed")
+
+
+# --- Video articles (migration 040) -- phase 3 of Bowling Tips ---
+
+class _VideoRuleCursor:
+    """Answers fetchone/fetchall from (query-fragment, (columns, rows))
+    rules, first match wins; records (query, params)."""
+
+    def __init__(self, rules, executed):
+        self._rules = rules
+        self._executed = executed
+        self._result = (None, [])
+        self.description = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, query, params=None):
+        q = " ".join(query.split())
+        self._executed.append((q, params))
+        for fragment, result in self._rules:
+            if fragment in q:
+                self._result = result
+                break
+        else:
+            self._result = (None, [])
+        columns = self._result[0]
+        self.description = [(c,) for c in columns] if columns else None
+
+    def fetchone(self):
+        rows = self._result[1]
+        return rows[0] if rows else None
+
+    def fetchall(self):
+        return list(self._result[1])
+
+
+class _VideoRuleConnection:
+    def __init__(self, rules):
+        self.rules = rules
+        self.executed = []
+        self.commits = 0
+
+    def cursor(self):
+        return _VideoRuleCursor(self.rules, self.executed)
+
+    def commit(self):
+        self.commits += 1
+
+    def rollback(self):
+        pass
+
+
+_VIDEO_COLUMNS = ["id", "youtube_video_id", "title", "channel_title", "description",
+                  "duration_seconds", "transcript", "category_id"]
+
+
+def _video_row(transcript="all right everyone welcome back today three tips for the mental game " * 5):
+    return ("lv-1", "kdeshRiNIT0", "Bowling Tips | How To Improve Your Bowling", "Brad and Kyle",
+            "Mental game tips", 318, transcript, "cat-tips")
+
+
+_VALID_VIDEO_ARTICLE = {
+    "title": "Three Mental-Game Habits That Add Pins",
+    "hook": "You've got the physical game down. So why does your average stall?",
+    "sections": [
+        {"heading": "Treat the Mental Game as Half the Game", "body": "Brad and Kyle start here.\n\nMore."},
+        {"heading": "Visualize Before You Step Up", "body": "Picture the shot."},
+        {"heading": "Talk to Yourself Like a Coach", "body": "Positive self-talk."},
+    ],
+    "key_takeaways": ["Visualize every shot", "Replace negative self-talk"],
+    "faq": [{"question": "How long should I visualize?", "answer": "A few seconds."}],
+    "verdict": "Start with visualization this week.",
+    "visual_theme": "A quiet, empty lane at dawn with a single ball on the return.",
+}
+
+
+def _video_rules(transcript=None, existing=None, locked=()):
+    rules = [
+        ("from learn_videos lv where lv.id = %s", (_VIDEO_COLUMNS, [_video_row(transcript) if transcript is not None else _video_row()])),
+        ("with recursive path", (["name"], [("Bowling Tips",), ("Mental Game",)])),
+        ("from product_articles where learn_video_id = %s",
+         (["id", "title", "hook", "verdict", "visual_theme", "sections", "key_takeaways",
+           "action_shot_image_key", "action_shot_image_url", "product_shot_image_key", "product_shot_image_url"],
+          [existing] if existing else [])),
+        ("from product_article_image_candidates where article_id = %s and is_selected",
+         (["variant"], [(v,) for v in locked])),
+        ("insert into product_articles", (["id"], [("art-1",)])),
+        ("update product_articles set", (["id"], [("art-1",)])),
+    ]
+    return rules
+
+
+def test_build_video_article_prompt_includes_transcript_creator_and_category():
+    video = dict(zip(_VIDEO_COLUMNS, _video_row()), category_path=["Bowling Tips", "Mental Game"])
+    prompt = app.build_video_article_prompt(video)
+    assert "Brad and Kyle" in prompt
+    assert "Bowling Tips > Mental Game" in prompt
+    assert "three tips for the mental game" in prompt
+    for key in ("title:", "hook:", "sections:", "key_takeaways:", "faq:", "verdict:", "visual_theme:"):
+        assert key in prompt
+    assert "subscribe" in prompt  # told to drop channel housekeeping
+
+
+def test_build_video_article_prompt_caps_transcript_length():
+    video = dict(zip(_VIDEO_COLUMNS, _video_row(transcript="x" * 200_000)), category_path=[])
+    prompt = app.build_video_article_prompt(video)
+    assert prompt.count("x") <= app.DEFAULT_VIDEO_TRANSCRIPT_MAX_CHARS + 50
+
+
+def test_parse_video_article_json_accepts_fenced_valid_article():
+    raw = "```json\n" + json.dumps(_VALID_VIDEO_ARTICLE) + "\n```"
+    assert app.parse_video_article_json(raw)["sections"][0]["heading"] == "Treat the Mental Game as Half the Game"
+
+
+def test_parse_video_article_json_rejects_missing_keys_and_bad_sections():
+    for bad in [
+        {k: v for k, v in _VALID_VIDEO_ARTICLE.items() if k != "sections"},
+        dict(_VALID_VIDEO_ARTICLE, sections=[]),
+        dict(_VALID_VIDEO_ARTICLE, sections=[{"heading": "x"}]),
+        dict(_VALID_VIDEO_ARTICLE, sections="not a list"),
+        dict(_VALID_VIDEO_ARTICLE, faq="nope"),
+    ]:
+        try:
+            app.parse_video_article_json(json.dumps(bad))
+            assert False, f"expected ValueError for {bad}"
+        except ValueError:
+            pass
+
+
+def test_build_video_scene_prompt_bans_people_and_text_and_differs_by_variant():
+    video = dict(zip(_VIDEO_COLUMNS, _video_row()))
+    action = app.build_video_scene_prompt(video, _VALID_VIDEO_ARTICLE, "action_shot")
+    square = app.build_video_scene_prompt(video, _VALID_VIDEO_ARTICLE, "product_shot")
+    for prompt in (action, square):
+        assert "Do not include any human being" in prompt
+        assert "No text" in prompt
+        assert "quiet, empty lane at dawn" in prompt
+    assert "16:9" in action and "square" in square
+
+
+def test_call_gemini_for_image_omits_inline_data_without_reference():
+    import base64
+    captured = {}
+
+    def _post(url, headers=None, json=None, timeout=None):
+        captured["json"] = json
+        return _FakeGeminiResponse({"candidates": [{"content": {"parts": [
+            {"inlineData": {"mimeType": "image/png", "data": base64.b64encode(b"img").decode()}}]}}]})
+
+    auth = {"access_token": "t", "project_id": "p", "region": "global"}
+    out = app.call_gemini_for_image(auth, "gemini-3-pro-image", "a prompt", None, "16:9",
+                                    session=_FakeGeminiSession(_post))
+    assert out == b"img"
+    assert captured["json"]["contents"][0]["parts"] == [{"text": "a prompt"}]
+
+
+def test_generate_article_for_learn_video_requires_transcript():
+    conn = _VideoRuleConnection(_video_rules(transcript=""))
+    result = app.generate_article_for_learn_video(conn, _FakeBedrockClient("unused"), "m", "lv-1")
+    assert result == {"learn_video_id": "lv-1", "generated": False, "reason": "no_transcript"}
+
+
+def test_generate_article_for_learn_video_text_and_images_upserts_on_learn_video_id(monkeypatch):
+    import base64
+    monkeypatch.setattr(app, "_new_image_generation_run_id", lambda: "run1")
+
+    def _post(url, headers=None, json=None, timeout=None):
+        return _FakeGeminiResponse({"candidates": [{"content": {"parts": [
+            {"inlineData": {"mimeType": "image/png", "data": base64.b64encode(b"img").decode()}}]}}]})
+
+    monkeypatch.setattr(app, "get_gemini_requests_session", lambda: _FakeGeminiSession(_post))
+    conn = _VideoRuleConnection(_video_rules())
+    s3 = _FakeS3Client()
+    bedrock = _FakeBedrockClient(json.dumps(_VALID_VIDEO_ARTICLE))
+
+    result = app.generate_article_for_learn_video(
+        conn, bedrock, "haiku", "lv-1", s3_client=s3,
+        gemini_auth={"access_token": "t", "project_id": "p", "region": "global"},
+        gemini_model_id="gemini-3-pro-image", image_bucket="bucket",
+    )
+
+    assert result["generated"] is True and result["article_id"] == "art-1"
+    assert json.loads(bedrock.calls[0]["body"])["max_tokens"] == app.DEFAULT_VIDEO_ARTICLE_MAX_TOKENS
+    keys = [c["Key"] for c in s3.put_calls]
+    assert len(keys) == 2 * app.NUM_GEMINI_CANDIDATES_PER_VARIANT
+    assert all(k.startswith("article-images/learn-videos/lv-1/") for k in keys)
+    insert = [e for e in conn.executed if e[0].startswith("insert into product_articles")][0]
+    assert "on conflict (learn_video_id) do update" in insert[0]
+    params = insert[1]
+    assert params[0] == "lv-1"
+    assert json.loads(params[4])[1]["heading"] == "Visualize Before You Step Up"
+    assert params[-1] == "cat-tips"  # filed under the video's own category
+    assert params[-2] is True  # images present
+    candidate_inserts = [e for e in conn.executed if "insert into product_article_image_candidates" in e[0]]
+    assert len(candidate_inserts) == 2 * app.NUM_GEMINI_CANDIDATES_PER_VARIANT
+
+
+def test_generate_article_for_learn_video_text_only_keeps_images():
+    existing = ("art-1", "Old", "Old hook", "Old verdict", None, [], [],
+                "k-a", "u-a", "k-p", "u-p")
+    conn = _VideoRuleConnection(_video_rules(existing=existing))
+    bedrock = _FakeBedrockClient(json.dumps(_VALID_VIDEO_ARTICLE))
+    result = app.generate_article_for_learn_video(conn, bedrock, "haiku", "lv-1", regenerate_images=False)
+    assert result["generated"] is True
+    update = [e for e in conn.executed if e[0].startswith("update product_articles set")][0]
+    assert "where learn_video_id = %s" in update[0]
+    assert "image_key" not in update[0]
+    assert not any(e[0].startswith("insert into product_articles") for e in conn.executed)
+
+
+def test_generate_article_for_learn_video_images_only_needs_existing_article():
+    conn = _VideoRuleConnection(_video_rules(existing=None))
+    result = app.generate_article_for_learn_video(conn, _FakeBedrockClient("unused"), "haiku", "lv-1",
+                                                  regenerate_text=False)
+    assert result["reason"] == "no_existing_article_to_regenerate"
+
+
+def test_generate_article_for_learn_video_respects_locked_image_variant(monkeypatch):
+    import base64
+    monkeypatch.setattr(app, "_new_image_generation_run_id", lambda: "run2")
+    monkeypatch.setattr(app, "get_gemini_requests_session", lambda: _FakeGeminiSession(
+        lambda url, headers=None, json=None, timeout=None: _FakeGeminiResponse({"candidates": [{"content": {"parts": [
+            {"inlineData": {"mimeType": "image/png", "data": base64.b64encode(b"img").decode()}}]}}]})))
+    existing = ("art-1", "T", "H", "V", "theme", [], [], "locked-a-key", "locked-a-url", "old-p-key", "old-p-url")
+    conn = _VideoRuleConnection(_video_rules(existing=existing, locked=("action_shot",)))
+    app.generate_article_for_learn_video(
+        conn, _FakeBedrockClient(json.dumps(_VALID_VIDEO_ARTICLE)), "haiku", "lv-1", s3_client=_FakeS3Client(),
+        gemini_auth={"access_token": "t", "project_id": "p", "region": "global"},
+        gemini_model_id="g", image_bucket="b",
+    )
+    insert = [e for e in conn.executed if e[0].startswith("insert into product_articles")][0]
+    params = insert[1]
+    # action_shot stays the admin-selected one; product_shot takes the fresh candidate.
+    assert params[8] == "locked-a-key" and params[9] == "locked-a-url"
+    assert params[10].startswith("article-images/learn-videos/lv-1/product_shot_gemini_1_run2")

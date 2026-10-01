@@ -133,8 +133,10 @@ export function getArticleBySlug(slug: string): Promise<ProductArticleResponse> 
 // migration and hasn't been through scripts/backfill_article_slugs.py
 // yet (see ArticleCard.slug's own comment). One place to change if the
 // URL scheme ever changes again.
-export function articleHref(article: { slug?: string | null; product_id: string }): string {
-  return `/articles/${encodeURIComponent(article.slug || article.product_id)}`;
+// Video articles (migration 040) have no product_id but always get a
+// slug at approval, and only approved articles are ever linked.
+export function articleHref(article: { slug?: string | null; product_id?: string | null; article_id?: string }): string {
+  return `/articles/${encodeURIComponent(article.slug || article.product_id || article.article_id || "")}`;
 }
 
 // On-demand image resizer/optimizer (src/image_resizer in the main repo,
@@ -213,6 +215,9 @@ export function estimateReadingTimeMinutes(article: ArticleDetail): number {
     ...(article.pros ?? []),
     ...(article.cons ?? []),
     ...(article.faq ?? []).flatMap((f) => [f.question, f.answer]),
+    // Video articles (migration 040).
+    ...(article.sections ?? []).flatMap((sec) => [sec.heading, sec.body]),
+    ...(article.key_takeaways ?? []),
   ].filter((s): s is string => Boolean(s));
   const wordCount = parts.join(" ").trim().split(/\s+/).filter(Boolean).length;
   return Math.max(1, Math.ceil(wordCount / 200));

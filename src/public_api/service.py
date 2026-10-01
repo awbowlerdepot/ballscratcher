@@ -381,13 +381,20 @@ def list_products(conn, status: str = "current", brand_id: str = None, core_id: 
 # title_asc/title_desc deliberately keep a single flat alphabetical
 # order across all articles regardless of status; splitting an A-Z list
 # into a current-then-retired block would read oddly for a name sort.
+# coalesce(..., true): a video article (migration 040) has no product, so
+# it sorts with current balls rather than after retired ones.
 _ARTICLE_SORT_ORDER_BY = {
-    "newest": "(p.status = 'current') desc, pa.reviewed_at desc nulls last, pa.id asc",
-    "oldest": "(p.status = 'current') desc, pa.reviewed_at asc nulls last, pa.id asc",
+    "newest": "coalesce(p.status = 'current', true) desc, pa.reviewed_at desc nulls last, pa.id asc",
+    "oldest": "coalesce(p.status = 'current', true) desc, pa.reviewed_at asc nulls last, pa.id asc",
     "title_asc": "pa.title asc, pa.id asc",
     "title_desc": "pa.title desc, pa.id asc",
 }
-_ARTICLE_DEFAULT_ORDER_BY = "(p.status = 'current') desc, pa.reviewed_at desc nulls last, pa.id asc"
+_ARTICLE_DEFAULT_ORDER_BY = "coalesce(p.status = 'current', true) desc, pa.reviewed_at desc nulls last, pa.id asc"
+
+# The listable-article gate, shared by list_articles and list_categories'
+# counts: approved, and either a video article (migration 040, no
+# product) or a ball article whose product is still published.
+_LISTABLE_ARTICLE_SQL = "pa.status = 'approved' and (pa.learn_video_id is not null or p.published = true)"
 
 
 def list_categories(conn) -> list:
@@ -413,10 +420,10 @@ def list_categories(conn) -> list:
     with conn.cursor() as cur:
         cur.execute(
             """
-            select c.id, c.slug, c.name, c.description, c.parent_id, c.display_order,
+            select c.id, c.slug, c.name, c.description, c.product_type, c.parent_id, c.display_order,
                    (select count(*) from product_articles pa
-                    join products p on p.id = pa.product_id
-                    where pa.category_id = c.id and pa.status = 'approved' and p.published = true) as direct_count
+                    left join products p on p.id = pa.product_id
+                    where pa.category_id = c.id and """ + _LISTABLE_ARTICLE_SQL + """) as direct_count
             from categories c
             order by c.display_order, c.name
             """
@@ -543,6 +550,9 @@ def list_articles(conn, brand_id: str = None, coverstock_id: str = None, categor
                p.id as product_id, p.name as product_name, p.url as product_url,
                b.name as brand_name,
                p.coverstock_name, p.coverstock_type,
+               case when pa.learn_video_id is not null then 'video' else 'product' end as article_kind,
+               lv.channel_title as video_channel_title, lv.youtube_video_id,
+               lv.thumbnail_url as video_thumbnail_url,
                cat.name as category_name, cat.slug as category_slug,
                atype.name as article_type_name, atype.slug as article_type_slug,
                coalesce(
@@ -555,11 +565,13 @@ def list_articles(conn, brand_id: str = None, coverstock_id: str = None, categor
                    p.primary_image_url
                ) as primary_image_url
         from product_articles pa
-        join products p on p.id = pa.product_id
-        join brands b on b.id = p.brand_id
+        -- LEFT joins since migration 040: video articles have no product.
+        left join products p on p.id = pa.product_id
+        left join brands b on b.id = p.brand_id
+        left join learn_videos lv on lv.id = pa.learn_video_id
         left join categories cat on cat.id = pa.category_id
         left join article_types atype on atype.id = pa.article_type_id
-        where pa.status = 'approved' and p.published = true
+        where """ + _LISTABLE_ARTICLE_SQL + """
     """
     params = []
     if brand_id:
@@ -872,6 +884,113 @@ def resolve_product_id_by_slug(conn, slug: str):
         )
         row = cur.fetchone()
         return row[0] if row else None
+
+
+def resolve_article_by_slug(conn, slug: str):
+    """resolve_product_id_by_slug for both article kinds (migration 040):
+    {"product_id": ..., "learn_video_id": ...} (exactly one set), or None
+    for an unknown / not-approved slug."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "select product_id, learn_video_id from product_articles where slug = %s and status = 'approved'",
+            (slug,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return {"product_id": row[0], "learn_video_id": row[1]}
+
+
+def get_video_article(conn, learn_video_id: str):
+    """GET /articles/{slug} for a video article (migration 040) --
+    get_product_article's twin for an article written from a learn_videos
+    transcript. Same response envelope ({"product_id", "article"}, here
+    with product_id null and learn_video_id set) and reuses its field
+    shapes where they mean the same thing: featured_video is the
+    embedded source video (same keys the ball page's Brad and Kyle hero
+    reads), related_reviews is other approved articles from the same top-
+    level category. Ball-only fields come back as empty lists / null so a
+    shared renderer can guard on length. None for an unknown video; an
+    unapproved article returns {"article": None}, same as the ball path."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select lv.youtube_video_id, lv.title, lv.channel_title, lv.published_at, lv.thumbnail_url,
+                   lv.duration_seconds
+            from learn_videos lv where lv.id = %s
+            """,
+            (learn_video_id,),
+        )
+        video_row = cur.fetchone()
+        if video_row is None:
+            return None
+        featured_video = dict(zip([d[0] for d in cur.description], video_row))
+        featured_video["summary"] = None
+
+        cur.execute(
+            """
+            select pa.id, pa.slug, pa.title, pa.hook, pa.sections, pa.key_takeaways, pa.verdict, pa.faq,
+                   pa.generated_at, pa.reviewed_at, pa.first_published_at,
+                   pa.action_shot_image_url, pa.product_shot_image_url, pa.category_id,
+                   cat.name as category_name, cat.slug as category_slug,
+                   atype.name as article_type_name, atype.slug as article_type_slug
+            from product_articles pa
+            left join categories cat on cat.id = pa.category_id
+            left join article_types atype on atype.id = pa.article_type_id
+            where pa.learn_video_id = %s and pa.status = 'approved'
+            """,
+            (learn_video_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return {"product_id": None, "learn_video_id": learn_video_id, "article": None}
+        article = dict(zip([d[0] for d in cur.description], row))
+
+        # Root-first category path, e.g. Bowling Tips > Mental Game.
+        cur.execute(
+            """
+            with recursive path as (
+                select id, name, slug, parent_id, 0 as depth from categories where id = %s
+                union all
+                select c.id, c.name, c.slug, c.parent_id, path.depth + 1
+                from categories c join path on c.id = path.parent_id
+            )
+            select id, name, slug from path order by depth desc
+            """,
+            (article["category_id"],),
+        )
+        article["category_path"] = [{"id": r[0], "name": r[1], "slug": r[2]} for r in cur.fetchall()]
+        root_category_id = article["category_path"][0]["id"] if article["category_path"] else article["category_id"]
+
+        cur.execute(
+            """
+            select pa.product_id, null as product_name, pa.id as article_id, pa.slug, pa.title, pa.hook,
+                   pa.reviewed_at, coalesce(pa.product_shot_image_url, lv.thumbnail_url) as image_url
+            from product_articles pa
+            left join products p on p.id = pa.product_id
+            left join learn_videos lv on lv.id = pa.learn_video_id
+            where """ + _LISTABLE_ARTICLE_SQL + _CATEGORY_SUBTREE_FILTER + """
+              and pa.learn_video_id is distinct from %s
+            order by pa.reviewed_at desc nulls last, pa.id
+            limit 6
+            """,
+            (root_category_id, learn_video_id),
+        )
+        rel_columns = [d[0] for d in cur.description]
+        related = [dict(zip(rel_columns, r)) for r in cur.fetchall()]
+
+    article.update({
+        "kind": "video",
+        "featured_video": featured_video,
+        "related_reviews": related,
+        "product": None,
+        "brand_lineup": [],
+        "skus": [],
+        # Ball-only fields, empty so a shared renderer can guard on length.
+        "performance_summary": None, "who_should_buy": [], "who_should_skip": [], "pros": [], "cons": [],
+        "buying_tips": None, "sibling_product_ids": [], "source_video_ids": [],
+    })
+    return {"product_id": None, "learn_video_id": learn_video_id, "article": article}
 
 
 def get_product_article(conn, product_id: str):
@@ -1303,6 +1422,7 @@ def get_product_article(conn, product_id: str):
             video_columns = [desc[0] for desc in cur.description]
             featured_video = dict(zip(video_columns, video_row))
         article["featured_video"] = featured_video
+        article["kind"] = "product"  # vs get_video_article's "video" (migration 040)
 
         return {"product_id": product_id, "article": article}
 

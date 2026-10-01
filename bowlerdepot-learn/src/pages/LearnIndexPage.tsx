@@ -83,6 +83,11 @@ export default function LearnIndexPage() {
       : ancestors[ancestors.length - 1] ?? null
     : null;
   const chips = chipParent ? childCategories(categories, chipParent.id) : [];
+  // Brand only means something for product-backed categories (Bowling
+  // Balls, product_type "ball"); video categories like Bowling Tips have
+  // product_type null. undefined (an older API) keeps the filter.
+  const rootCategory = ancestors[0] ?? category;
+  const showBrandFilter = rootCategory?.product_type !== null;
 
   // ArticleDetailPage.tsx sets document.title to the article's own title on
   // mount (client-side nav between articles never re-runs prerender.ts's
@@ -103,7 +108,7 @@ export default function LearnIndexPage() {
     setLoading(true);
     listArticles({
       category_id: categoryId || undefined,
-      brand_id: brandId || undefined,
+      brand_id: (showBrandFilter && brandId) || undefined,
       search: search || undefined,
       sort: sort || undefined,
       limit: PAGE_SIZE,
@@ -115,14 +120,14 @@ export default function LearnIndexPage() {
       })
       .catch(() => setError("Couldn't load articles right now -- try again in a moment."))
       .finally(() => setLoading(false));
-  }, [categoriesReady, categoryId, brandId, search, sort]);
+  }, [categoriesReady, categoryId, brandId, showBrandFilter, search, sort]);
 
   function loadMore() {
     const nextOffset = offset + PAGE_SIZE;
     setLoading(true);
     listArticles({
       category_id: categoryId || undefined,
-      brand_id: brandId || undefined,
+      brand_id: (showBrandFilter && brandId) || undefined,
       search: search || undefined,
       sort: sort || undefined,
       limit: PAGE_SIZE,
@@ -185,18 +190,20 @@ export default function LearnIndexPage() {
       ) : null}
 
       <div className="mb-8 flex flex-wrap items-center gap-3">
-        <select
-          value={brandId}
-          onChange={(e) => updateParam("brand_id", e.target.value)}
-          className="rounded-md border border-paper-border bg-transparent px-3 py-2 text-sm text-ink"
-        >
-          <option value="">All brands</option>
-          {brands.map((b) => (
-            <option key={b.id} value={b.id}>
-              {b.name}
-            </option>
-          ))}
-        </select>
+        {showBrandFilter ? (
+          <select
+            value={brandId}
+            onChange={(e) => updateParam("brand_id", e.target.value)}
+            className="rounded-md border border-paper-border bg-transparent px-3 py-2 text-sm text-ink"
+          >
+            <option value="">All brands</option>
+            {brands.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.name}
+              </option>
+            ))}
+          </select>
+        ) : null}
 
         <select
           value={sort}

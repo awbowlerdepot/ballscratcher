@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   createLearnVideo,
   deleteLearnVideo,
+  generateLearnVideoArticle,
   getLearnVideo,
   listCategories,
   listLearnVideos,
@@ -121,6 +123,34 @@ export default function LearnVideosPage() {
   }
 
   useEffect(load, [filterCategory, filterStatus, offset]);
+
+  // Same 5s poll ArticlesPage runs while a generation is in flight, so the
+  // "Generating article..." badge clears on its own when it finishes.
+  const anyGenerating = items.some((v) => v.article_generation_started_at);
+  useEffect(() => {
+    if (!anyGenerating) return;
+    const interval = setInterval(load, 5000);
+    return () => clearInterval(interval);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [anyGenerating]);
+
+  async function generateArticle(video: LearnVideo) {
+    setBusyId(video.id);
+    try {
+      const result = await generateLearnVideoArticle(video.id, "both");
+      show(
+        result.queued
+          ? "Generating the article and its images. This takes a few minutes; it lands in Articles for review."
+          : (result.reason ?? "Not queued."),
+        result.queued ? "ok" : "danger",
+      );
+      if (result.queued) load();
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Couldn't start article generation.", "danger");
+    } finally {
+      setBusyId(null);
+    }
+  }
 
   async function handleAdd() {
     const url = newUrl.trim();
@@ -282,6 +312,34 @@ export default function LearnVideosPage() {
           <span className="max-w-[16rem] text-xs text-ink-500">{transcriptDetail(v)}</span>
         </div>
       ),
+    },
+    {
+      key: "article",
+      header: "Article",
+      render: (v) => {
+        if (v.article_generation_started_at) {
+          return <Badge tone="pending">Generating article…</Badge>;
+        }
+        if (v.article_id) {
+          return (
+            <div className="flex flex-col items-start gap-1">
+              <Badge tone={v.article_status === "approved" ? "ok" : v.article_status === "rejected" ? "danger" : "pending"}>
+                {v.article_status === "pending" ? "Awaiting review" : v.article_status}
+              </Badge>
+              <Link to="/articles" className="max-w-[14rem] text-xs text-primary hover:underline">
+                {v.article_title ?? "Open in Articles"}
+              </Link>
+            </div>
+          );
+        }
+        return v.transcript_status === "ready" ? (
+          <Button size="sm" variant="primary" disabled={busyId === v.id} onClick={() => generateArticle(v)}>
+            Generate article
+          </Button>
+        ) : (
+          <span className="text-xs text-ink-400">Needs a transcript first</span>
+        );
+      },
     },
     {
       key: "added",

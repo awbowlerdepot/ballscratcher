@@ -16517,6 +16517,114 @@ sam build && sam deploy   # admin_api only
 git push                  # admin-spa
 ```
 
+### 6br. Video articles: Generate Article from a Learn video (migration 040) (2026-09-30)
+
+Phase 3 of Bowling Tips (6bo/6bp/6bq). Al's choices: a **Generate
+Article button**, **AI images same as the ball workflow**, and an
+**intro / sections / key takeaways / FAQ / bottom line** shape with the
+video embedded.
+
+**Data model -- one table, not a parallel one (migration 040).**
+`product_articles.product_id` is now nullable, plus `learn_video_id`
+(unique, FK, cascade) with `product_articles_one_subject` enforcing
+exactly one of the two. New `sections` (`[{heading, body}]`) and
+`key_takeaways` jsonb columns (default `[]`). `learn_videos.
+article_generation_started_at` / `_mode` = the live "generating" marker
+(034's design, cleared in a finally). One table so the review queue,
+slugs, Learn index, category counts, and image-candidate tooling cover
+both kinds. A subagent mapped every product_articles read path first;
+the ones that would have silently dropped video articles (inner joins
+to products) are listed below.
+
+**product_article_generator:** new `{"learn_video_id", regenerate_text?,
+regenerate_images?, image_variants?}` event shape ->
+`generate_article_for_learn_video` (same text/images/variant/locked-
+candidate semantics as the product path). `build_video_article_prompt`:
+whole transcript (60K-char cap), credit the creator, drop channel
+housekeeping (subscribe/giveaways/sponsors), silently fix misheard
+bowling terms, nothing not in the video; `DEFAULT_VIDEO_ARTICLE_MAX_
+TOKENS = 4500`. `parse_video_article_json` validates section shape.
+Images: `call_gemini_for_image`'s reference image is now optional (no
+`inlineData` part when None); `build_video_scene_prompt` keeps the ball
+pipeline's no-people rule (no humans/hands/feet/silhouettes, no text or
+logos) but allows lanes, arrows, pins; same two variants (action_shot
+16:9 hero, product_shot 1:1 card) under `article-images/learn-videos/
+{id}/` (inside image_resizer's allowed prefix). `store_video_article`
+upserts on `learn_video_id`, resets review like store_article, files it
+under the video's own category, `article_type_id` null,
+`sync_to_bigcommerce = false`.
+
+**admin_api:** `list_articles` / `get_article` / `approve_article` now
+LEFT join products/brands (+ learn_videos) and return `article_kind`
+and video fields; `approve_article` slugs a video article's own title
+(`generate_unique_slug_from_base`, same dedupe and "never changes after
+publish" rule). New `POST /learn-videos/{id}/generate-article {mode}`
+-> `queue_learn_video_article_generation` (409 without a transcript;
+same modes as products). `list_learn_videos` includes the article's
+id/status/title and the generating marker.
+
+**public_api:** `_LISTABLE_ARTICLE_SQL` = approved AND (video article OR
+published product), used by `list_articles` (LEFT joins; sort wraps
+`p.status = 'current'` in coalesce so video articles sort with current
+balls) and `list_categories` counts (which also return `product_type`
+now). `GET /articles/{slug}` -> `resolve_article_by_slug` ->
+`get_video_article` for video slugs: sections, takeaways, verdict, faq,
+`category_path`, `featured_video` = the source video (same keys the
+ball page's Brad and Kyle hero reads), `related_reviews` = other
+articles under the same top-level category. Ball articles get
+`kind: "product"`.
+
+**Learn site:** video layout on ArticleDetailPage (embed under the hero,
+sections with the first ad slot after section 1, Key Takeaways box, "The
+Bottom Line", "More <root category>", back link to the root category);
+card shows category + channel and falls back to the YouTube thumbnail;
+reading time counts sections; brand filter hidden when the root
+category has `product_type` null (Bowling Tips) and not sent; header
+highlights no tab on article pages. prerender.ts: video cards fetched by
+slug, sections/takeaways rendered, Article + VideoObject JSON-LD (no
+Product), no redirect-map entry (video articles never had a product_id
+URL). `bowlerdepot-learn/redirect-map.json` added to .gitignore (local
+prerender output; CI regenerates it).
+
+**admin-spa:** Learn Videos "Article" column (Generate article when the
+transcript is ready / Generating... / status + link); Articles page:
+"Subject" column shows Video badge + channel, Regen text/images and
+per-shot regenerate route by kind, BigCommerce column shows "Learn only"
+for video articles, preview renders source-video link, sections,
+takeaways, "Bottom line", and guards the ball-only arrays.
+
+**Not covered:** BigCommerce blog sync for video articles (its queries
+inner-join bowlerdepot_products, so they're silently skipped; the
+generator sets sync_to_bigcommerce=false). backfill_article_slugs skips
+them too (approve always slugs them, so nothing to backfill).
+
+**Verified:**
+- `.venv` pytest, per file: admin_api 410 (9 new), public_api 150 (6
+  new, 5 sort assertions updated), product_article_generator 169 (11
+  new), bowlerdepot_article_sync 50, fetchers 19 + 17.
+- All 40 migrations applied to a fresh postgres:16; real admin/public/
+  generator code against it: generate + text-only regenerate, generating
+  marker cleared, orphan and both-subjects rows rejected by the check,
+  admin list shows both kinds, approve slugs the title, public index
+  only after approval, Bowling Tips subtree filter, brand filter excludes
+  video, categories counts + product_type, slug resolves to the video
+  article (sections/takeaways/path/video), ball articles unchanged,
+  delete-category guard.
+- `npx tsc -b` clean in both frontends; Learn `vite build` OK;
+  `npm run prerender` against the live (pre-deploy) API still renders
+  137/137 ball pages with Product JSON-LD and 137 redirect entries.
+- Learn dev server against a local mock with a sample video article:
+  index card, video layout, brand filter hidden.
+- Admin pages type-checked only (Cognito login) -- check after deploy.
+
+**Deploy, in this order:**
+
+```bash
+psql "$DATABASE_URL" -f db/migrations/040_video_articles.sql
+sam build && sam deploy   # admin_api, public_api, product_article_generator
+git push                  # admin-spa + bowlerdepot-learn
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

@@ -32,6 +32,9 @@ export interface Category {
   parent_id: string | null;
   display_order: number;
   article_count: number;
+  // Set for product-backed categories (e.g. "ball" for Bowling Balls) --
+  // LearnIndexPage only shows the brand filter there.
+  product_type?: string | null;
   article_types: ArticleType[];
 }
 
@@ -54,10 +57,16 @@ export interface ArticleCard {
   // reviewed_at in display code for the rare pre-migration row where
   // this somehow ended up null.
   first_published_at?: string | null;
-  product_id: string;
-  product_name: string;
-  product_url: string;
-  brand_name: string;
+  // Null on a video article (migration 040) -- written from a Learn video
+  // (Bowling Tips), not about a ball. article_kind says which.
+  product_id: string | null;
+  product_name: string | null;
+  product_url: string | null;
+  brand_name: string | null;
+  article_kind?: "product" | "video";
+  video_channel_title?: string | null;
+  youtube_video_id?: string | null;
+  video_thumbnail_url?: string | null;
   coverstock_name?: string | null;
   coverstock_type?: string | null;
   primary_image_url?: string | null;
@@ -155,8 +164,9 @@ export interface BrandLineupItem {
 // articles, the two would have pulled the identical candidate list, so
 // they were merged into this single rail.
 export interface RelatedReview {
-  product_id: string;
-  product_name: string;
+  // Null for a video article (migration 040).
+  product_id: string | null;
+  product_name: string | null;
   article_id: string;
   // See ArticleCard.slug's own comment -- client.ts's articleHref()
   // handles the null-fallback for every rail consistently.
@@ -205,8 +215,26 @@ export interface FeaturedVideo {
   summary?: string | null;
 }
 
+// Video article body (migration 040).
+export interface ArticleSection {
+  heading: string;
+  body: string;
+}
+
+export interface ArticleCategoryRef {
+  id: string;
+  name: string;
+  slug: string;
+}
+
 export interface ArticleDetail {
   id: string;
+  // "video" = written from a Learn video (sections/key_takeaways, no
+  // product); "product" = a ball review. Missing on an older API response.
+  kind?: "product" | "video";
+  sections?: ArticleSection[] | null;
+  key_takeaways?: string[] | null;
+  category_path?: ArticleCategoryRef[] | null;
   // See ArticleCard.slug's own comment. The detail page uses this (via
   // client.ts's articleHref()) to canonicalize the URL bar to the slug
   // path when a reader lands on the old bare-product_id route -- see
@@ -263,6 +291,8 @@ export interface ArticleDetail {
 }
 
 export interface ProductArticleResponse {
-  product_id: string;
+  product_id: string | null;
+  // Set instead of product_id for a video article (migration 040).
+  learn_video_id?: string | null;
   article: ArticleDetail | null;
 }

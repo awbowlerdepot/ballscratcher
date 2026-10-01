@@ -114,6 +114,12 @@ class LearnVideoUpdateRequest(BaseModel):
     category_id: Optional[str] = None
 
 
+class LearnVideoGenerateArticleRequest(BaseModel):
+    # Same modes as the product article routes: "both" (text + images),
+    # "text", "images", "action_shot", "product_shot".
+    mode: str = "both"
+
+
 class LearnVideoManualTranscriptRequest(BaseModel):
     # Text copied from YouTube's "Show transcript" panel -- timestamps are
     # stripped server-side, see service.normalize_pasted_transcript.
@@ -969,6 +975,22 @@ def retry_learn_video_transcript(learn_video_id: str):
         return service.retry_learn_video_transcript(conn, learn_video_id)
     except LookupError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/learn-videos/{learn_video_id}/generate-article")
+def generate_learn_video_article(learn_video_id: str, body: LearnVideoGenerateArticleRequest = None):
+    # Generate Article (migration 040) -- async, like the product routes;
+    # poll GET /learn-videos for article_generation_started_at clearing.
+    conn = service.get_db_connection()
+    try:
+        return service.queue_learn_video_article_generation(conn, learn_video_id, mode=(body.mode if body else "both"))
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        status = 422 if "Unknown mode" in str(e) else 409
+        raise HTTPException(status_code=status, detail=str(e))
     finally:
         conn.close()
 

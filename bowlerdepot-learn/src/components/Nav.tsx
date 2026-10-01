@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { categoryAncestors, getCategories, topLevelCategories } from "../api/client";
 import type { Category } from "../api/types";
 
@@ -48,7 +48,15 @@ export default function Nav() {
   // default.
   const tabs = topLevelCategories(categories);
   const selected = categories.find((c) => c.id === searchParams.get("category_id"));
-  const activeCategoryId = selected ? (categoryAncestors(categories, selected)[0] ?? selected).id : tabs[0]?.id;
+  // On an article page there's no ?category_id, and the header doesn't
+  // know the article's category -- highlight no tab rather than wrongly
+  // lighting the first one (a Bowling Tips article under "Bowling Balls").
+  const onArticlePage = useLocation().pathname.startsWith("/articles/");
+  const activeCategoryId = selected
+    ? (categoryAncestors(categories, selected)[0] ?? selected).id
+    : onArticlePage
+      ? undefined
+      : tabs[0]?.id;
 
   return (
     <header className="sticky top-0 z-10 border-b border-paper-border bg-paper/95 backdrop-blur-sm">

@@ -615,6 +615,17 @@ export function deleteLearnVideo(id: string): Promise<{ deleted: boolean; id: st
   return apiDelete(`/learn-videos/${encodeURIComponent(id)}`);
 }
 
+// Generate Article for a Learn video (migration 040) -- async, same modes
+// as the product article routes. 409 if the video has no transcript yet.
+export type ArticleGenerationMode = "both" | "text" | "images" | "action_shot" | "product_shot";
+
+export function generateLearnVideoArticle(
+  id: string,
+  mode: ArticleGenerationMode = "both",
+): Promise<{ queued: boolean; reason?: string; mode?: string }> {
+  return apiPost(`/learn-videos/${encodeURIComponent(id)}/generate-article`, { mode });
+}
+
 // "Paste transcript" fallback (migration 039): text copied from YouTube's
 // "Show transcript" panel. Timestamps are stripped server-side; 422 if
 // what's left is too short to be a transcript.

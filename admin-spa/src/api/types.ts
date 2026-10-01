@@ -589,11 +589,24 @@ export type ArticleStatus = "pending" | "approved" | "rejected";
 // projection than get_article's full row (no hook/performance_summary/
 // faq/etc.), just enough for the list view and its inline thumbnail/
 // sync-toggle.
-export interface ArticleListItem {
+// Fields shared by both article kinds' list and detail shapes (migration
+// 040): a ball article has product_id/product_name/brand_name; a video
+// article (written from a Learn video, e.g. Bowling Tips) has
+// learn_video_id and the video_* fields instead.
+export interface ArticleSubjectFields {
+  article_kind: "product" | "video";
+  product_id: string | null;
+  product_name: string | null;
+  brand_name: string | null;
+  learn_video_id: string | null;
+  video_title: string | null;
+  video_channel_title: string | null;
+  youtube_video_id: string | null;
+  video_thumbnail_url: string | null;
+}
+
+export interface ArticleListItem extends ArticleSubjectFields {
   id: string;
-  product_id: string;
-  product_name: string;
-  brand_name: string;
   status: ArticleStatus;
   title: string | null;
   generated_at: string | null;
@@ -641,11 +654,16 @@ export type ArticleComparisonRow = Record<string, unknown>;
 
 // Full detail for one article (GET /articles/{id}) -- select pa.* plus
 // product_name/brand_name, see get_article in admin_api/service.py.
-export interface Article {
+export interface ArticleSection {
+  heading: string;
+  body: string;
+}
+
+export interface Article extends ArticleSubjectFields {
   id: string;
-  product_id: string;
-  product_name: string;
-  brand_name: string;
+  // Video articles (migration 040); [] on ball articles.
+  sections: ArticleSection[];
+  key_takeaways: string[];
   status: ArticleStatus;
   title: string | null;
   hook: string | null;
@@ -1018,6 +1036,14 @@ export interface LearnVideo {
   transcript_status: LearnVideoTranscriptStatus;
   added_by: string | null;
   created_at: string;
+  // Generate Article (migration 040): set while the generator is working
+  // on this video's article, cleared when it finishes or fails.
+  article_generation_started_at: string | null;
+  article_generation_mode: string | null;
+  // The generated article, once one exists (any status).
+  article_id: string | null;
+  article_status: ArticleStatus | null;
+  article_title: string | null;
 }
 
 export interface LearnVideoDetail extends LearnVideo {
