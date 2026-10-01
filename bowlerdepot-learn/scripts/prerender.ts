@@ -425,18 +425,22 @@ function stripLeadingMarkdownHeading(text: string): string {
   return text.replace(/^#{1,6}\s+.*(\r?\n)+/, "").trim();
 }
 
-function renderFeaturedVideo(video: ArticleDetail["featured_video"], heading = "Watch this review from Brad & Kyle"): string {
+function renderFeaturedVideo(
+  video: ArticleDetail["featured_video"],
+  heading = "Watch this review from Brad & Kyle",
+  videoFirst = false,
+): string {
   if (!video) return "";
   const blurb = escapeHtml(stripLeadingMarkdownHeading(video.summary || video.title || ""));
   return `
     <div class="relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-neutral-900 pb-10 pt-6">
       <div class="mx-auto max-w-[75rem] px-6 md:px-8">
         <h2 class="mb-4 font-display text-xl font-semibold text-white">${escapeHtml(heading)}</h2>
-        <div class="grid grid-cols-1 overflow-hidden rounded-sm md:grid-cols-2">
-          <div class="order-2 flex flex-col justify-center bg-white/5 p-6 md:order-none">
+        <div class="grid grid-cols-1 items-center overflow-hidden rounded-sm bg-black ${videoFirst ? "md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]" : "md:grid-cols-2"}">
+          <div class="order-2 flex h-full flex-col justify-center bg-neutral-800 p-6 md:order-none">
             <p class="italic text-white/80">${blurb}</p>
           </div>
-          <div class="order-1 aspect-video w-full bg-black md:order-none md:aspect-auto md:h-full">
+          <div class="order-1 aspect-video w-full bg-black md:order-none">
             <iframe src="https://www.youtube.com/embed/${escapeHtml(video.youtube_video_id)}" title="${escapeHtml(video.title || "Featured video")}" loading="lazy" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
           </div>
         </div>
@@ -756,7 +760,7 @@ function renderArticlePage(baseHtml: string, card: ArticleCard, article: Article
       ${article.buying_tips ? `<h2>Buying Tips</h2><p>${escapeHtml(article.buying_tips)}</p>` : ""}
       ${isVideo ? "" : renderFeaturedVideo(article.featured_video)}
       ${article.verdict ? `<h2>${isVideo ? "The Bottom Line" : "Verdict"}</h2><p>${escapeHtml(article.verdict)}</p>` : ""}
-      ${isVideo ? renderFeaturedVideo(article.featured_video, article.featured_video?.channel_title ? `Watch the full video from ${article.featured_video.channel_title}` : "Watch the full video") : ""}
+      ${isVideo ? renderFeaturedVideo(article.featured_video, article.featured_video?.channel_title ? `Watch the full video from ${article.featured_video.channel_title}` : "Watch the full video", true) : ""}
       ${/* Al: "move the related reviews section up to just below the shop
            call to action." The live page now renders Related Reviews
            right after the Shop CTA, ahead of Specs/FAQ -- this static

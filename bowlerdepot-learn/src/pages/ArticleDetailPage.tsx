@@ -28,6 +28,15 @@ function stripLeadingMarkdownHeading(text: string): string {
   return text.replace(/^#{1,6}\s+.*(\r?\n)+/, "").trim();
 }
 
+// "5:18" / "1:02:03" for the video panel's caption line.
+function formatVideoDuration(seconds: number | null | undefined): string | null {
+  if (!seconds) return null;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const sec = String(seconds % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
+}
+
 export default function ArticleDetailPage() {
   // Route param is named :slug (main.tsx) -- 036_product_articles_slug.sql
   // (Al: "can we make the slugs for the pages more human readable").
@@ -172,7 +181,16 @@ export default function ArticleDetailPage() {
   // video on the right) -- the Brad and Kyle hero on ball reviews, and the
   // source video on video articles (migration 040), placed after The
   // Bottom Line there.
-  function renderVideoPanel(video: FeaturedVideo, heading: string) {
+  // The video always keeps its own 16:9 shape now -- it used to stretch
+  // to the text column's height (md:aspect-auto md:h-full), which made it
+  // letterboxed and short whenever the text was short. Al, on the first
+  // video article: "not sure that looks good being so short", then "same
+  // on the ball ... i think it was hidden in the ball because the text was
+  // more there". If the text runs taller, the video sits centered beside
+  // it. videoFirst (video articles, whose only text is the title) also
+  // gives the video ~2/3 of the width and adds channel + length under the
+  // title; ball reviews keep the 50/50 split next to their summary.
+  function renderVideoPanel(video: FeaturedVideo, heading: string, videoFirst = false) {
     return (
       <div className="relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-neutral-900 pb-10 pt-6">
         <div className="mx-auto max-w-[75rem] px-6 md:px-8">
@@ -188,15 +206,24 @@ export default function ArticleDetailPage() {
               order-1, text second via order-2, both reset to DOM order
               (text-then-video) at md: via order-none so desktop is
               unchanged. */}
-          <div className="grid grid-cols-1 overflow-hidden rounded-sm md:grid-cols-2">
-            <div className="order-2 flex flex-col justify-center bg-white/5 p-6 md:order-none">
+          <div
+            className={`grid grid-cols-1 items-center overflow-hidden rounded-sm bg-black ${
+              videoFirst ? "md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]" : "md:grid-cols-2"
+            }`}
+          >
+            <div className="order-2 flex h-full flex-col justify-center bg-neutral-800 p-6 md:order-none">
               <p className="italic text-white/80">
                 {stripLeadingMarkdownHeading(
                   video.summary || video.title || "",
                 )}
               </p>
+              {videoFirst && (video.channel_title || video.duration_seconds) ? (
+                <p className="mt-3 text-sm text-white/60">
+                  {[video.channel_title, formatVideoDuration(video.duration_seconds)].filter(Boolean).join(" · ")}
+                </p>
+              ) : null}
             </div>
-            <div className="order-1 aspect-video w-full bg-black md:order-none md:aspect-auto md:h-full">
+            <div className="order-1 aspect-video w-full bg-black md:order-none">
               <iframe
                 className="h-full w-full"
                 src={`https://www.youtube.com/embed/${video.youtube_video_id}`}
@@ -420,6 +447,7 @@ export default function ArticleDetailPage() {
             article.featured_video.channel_title
               ? `Watch the full video from ${article.featured_video.channel_title}`
               : "Watch the full video",
+            true,
           )
         : null}
 

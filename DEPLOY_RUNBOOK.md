@@ -16582,7 +16582,17 @@ Brad and Kyle -- `renderVideoPanel`, headed "Watch the full video from
 category). Al, after the first pass embedded it under the hero: "can we
 embed the video like we do on the ball review articles and down after
 the bottom line and before faqs." prerender.ts mirrors it via
-renderFeaturedVideo's new heading param;
+renderFeaturedVideo's new heading param. Follow-up the same day (Al:
+"not sure that looks good being so short", then "same on the ball ... i
+think it was hidden in the ball because the text was more there"): the
+panel's video used to stretch to the text column (md:aspect-auto
+md:h-full), so short text = a short, letterboxed video, and long ball
+summaries just hid it. The video now always keeps 16:9 (text column
+centered beside it, video centered if the text runs taller). Video
+articles additionally give the video ~2/3 of the width (videoFirst) and
+show channel + length under the title. Measured at 1440px: video article
+757x426, ION MAX ball review 568x320 (panel = video height); mobile
+327x184, no horizontal scroll;
 card shows category + channel and falls back to the YouTube thumbnail;
 reading time counts sections; brand filter hidden when the root
 category has `product_type` null (Bowling Tips) and not sent; header

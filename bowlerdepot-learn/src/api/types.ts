@@ -206,6 +206,8 @@ export interface FeaturedVideo {
   channel_title?: string | null;
   published_at?: string | null;
   thumbnail_url?: string | null;
+  // Video articles only (migration 040) -- the source video's length.
+  duration_seconds?: number | null;
   // video_summarizer's AI-generated review summary (same field
   // get_product's own general `videos` list already exposes) -- Al,
   // after seeing the first pass: "with a headline ... and some of the
