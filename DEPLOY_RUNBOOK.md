@@ -16709,7 +16709,11 @@ write `author_name`.
 `author_name` and the video's `channel_id`. Byline "By <author_name>"
 (else BowlerDepot Team) plus "Adapted from <author>'s video." under it;
 Article JSON-LD author = that name with their YouTube channel URL. Admin
-preview shows which byline/voice an article has.
+preview shows which byline/voice an article has. Follow-up: video
+articles render "More <category>" LAST, after the FAQ (Al: "can we move
+the more bowling tips section to the end") -- `renderRelatedArticles`,
+called in the old spot for ball reviews and at the end for video
+articles; prerender.ts matches.
 
 **Verified:** generator 174 passed (5 new), public_api 151 (1 new);
 migrations 001-041 on a fresh postgres:16, partner lookup matches "BRAD

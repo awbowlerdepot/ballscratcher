@@ -177,6 +177,37 @@ export default function ArticleDetailPage() {
   const updatedLabel = formatArticleDate(article.reviewed_at);
   const readingTime = estimateReadingTimeMinutes(article);
 
+  function renderRelatedArticles() {
+    if (!article?.related_reviews?.length) return null;
+    return (
+      <div className="mb-10">
+        <h2 className="mb-3 font-display text-xl font-semibold text-ink">
+          {isVideo ? `More ${rootCategory?.name ?? "Articles"}` : "Related Reviews"}
+        </h2>
+        <div className="grid grid-cols-1 gap-x-8 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
+          {article.related_reviews.map((r) => (
+            <Link key={r.article_id} className="group block" to={articleHref(r)}>
+              <div className="aspect-[4/3] w-full overflow-hidden rounded-md bg-paper-border/40">
+                {r.image_url ? (
+                  <img
+                    src={resizedImageUrl(r.image_url, { w: 640, h: 480, fit: "cover" })}
+                    alt={r.product_name ?? r.title}
+                    loading="lazy"
+                    className="h-full w-full object-cover"
+                  />
+                ) : null}
+              </div>
+              <div className="mt-3">
+                <div className="font-display font-semibold text-ink group-hover:text-accent">{r.title}</div>
+                {r.product_name ? <div className="text-xs text-muted">{r.product_name}</div> : null}
+              </div>
+            </Link>
+          ))}
+        </div>
+      </div>
+    );
+  }
+
   // The dark full-width "watch" panel (summary or title on the left,
   // video on the right) -- the Brad and Kyle hero on ball reviews, and the
   // source video on video articles (migration 040), placed after The
@@ -506,33 +537,7 @@ export default function ArticleDetailPage() {
           Similar Balls was also going to link to articles, both rails
           would have pulled the identical candidate list, so they're
           merged here. */}
-      {article.related_reviews?.length ? (
-        <div className="mb-10">
-          <h2 className="mb-3 font-display text-xl font-semibold text-ink">
-            {isVideo ? `More ${rootCategory?.name ?? "Articles"}` : "Related Reviews"}
-          </h2>
-          <div className="grid grid-cols-1 gap-x-8 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
-            {article.related_reviews.map((r) => (
-              <Link key={r.article_id} className="group block" to={articleHref(r)}>
-                <div className="aspect-[4/3] w-full overflow-hidden rounded-md bg-paper-border/40">
-                  {r.image_url ? (
-                    <img
-                      src={resizedImageUrl(r.image_url, { w: 640, h: 480, fit: "cover" })}
-                      alt={r.product_name ?? r.title}
-                      loading="lazy"
-                      className="h-full w-full object-cover"
-                    />
-                  ) : null}
-                </div>
-                <div className="mt-3">
-                  <div className="font-display font-semibold text-ink group-hover:text-accent">{r.title}</div>
-                  {r.product_name ? <div className="text-xs text-muted">{r.product_name}</div> : null}
-                </div>
-              </Link>
-            ))}
-          </div>
-        </div>
-      ) : null}
+      {!isVideo ? renderRelatedArticles() : null}
 
       {product?.skus?.length ? (
         <div className="mb-10">
@@ -650,6 +655,10 @@ export default function ArticleDetailPage() {
           </div>
         </div>
       ) : null}
+      {/* Video articles: "More <category>" goes last -- Al: "can we move
+          the more bowling tips section to the end". Ball reviews keep
+          Related Reviews up under the shop CTA (see that call above). */}
+      {isVideo ? renderRelatedArticles() : null}
     </div>
   );
 }

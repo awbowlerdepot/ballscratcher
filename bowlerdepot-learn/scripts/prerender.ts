@@ -783,10 +783,12 @@ function renderArticlePage(baseHtml: string, card: ArticleCard, article: Article
            but moved Related Reviews ahead of Specs/FAQ here too so the
            prerendered content order keeps mirroring the live page's
            order as closely as this file's own stated goal calls for. */ ""}
-      ${renderRelatedReviews(article.related_reviews, isVideo ? `More ${rootCategory?.name ?? "Articles"}` : "Related Reviews")}
+      ${isVideo ? "" : renderRelatedReviews(article.related_reviews, "Related Reviews")}
       ${renderSpecTable(article.product)}
       ${renderFaq(article.faq)}
       ${renderBrandLineup(article.brand_lineup)}
+      ${/* Video articles: "More <category>" goes last, matching the live page. */ ""}
+      ${isVideo ? renderRelatedReviews(article.related_reviews, `More ${rootCategory?.name ?? "Articles"}`) : ""}
     </div>`;
 
   let html = baseHtml;
