@@ -315,9 +315,11 @@ export default function LearnVideosPage() {
           >
             {v.transcript_status === "ready" ? "Replace transcript" : "Paste transcript"}
           </Button>
-          {(v.transcript_status === "ready" || v.transcript_status === "unavailable") && (
+          {v.transcript_status !== "awaiting" && (
+            // "retrying" included: it otherwise waits out the 20h gap
+            // before the Pi tries again; this makes it due on the next run.
             <Button size="sm" variant="ghost" disabled={busyId === v.id} onClick={() => retry(v)}>
-              Retry on Pi
+              {v.transcript_status === "retrying" ? "Retry now" : "Retry on Pi"}
             </Button>
           )}
           <Button size="sm" variant="ghost" className="text-danger" onClick={() => setDeleteTarget(v)}>
