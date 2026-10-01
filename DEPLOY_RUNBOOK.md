@@ -16641,6 +16641,46 @@ sam build && sam deploy   # admin_api, public_api, product_article_generator
 git push                  # admin-spa + bowlerdepot-learn
 ```
 
+### 6bs. Real incident: YouTube throttling the Pi since ~Sep 24 -- per-run cap + Learn videos first (2026-09-30)
+
+Al, after a second Learn video (yE_n_FwVibk) hit
+`video_player_error_transcript_unavailable`: "are we sure this isn't a
+new issue." It is new -- 6bq's "intermittent" read was wrong.
+
+**Evidence.** transcript_fetcher_runs success rate: Sep 21-23 86-90%
+(66-99 videos/run), Sep 24 56% (145), Sep 29 26% (189), single-video
+manual runs on Oct 1 mostly failing. Debug-dump counts per day on the Pi
+(`scripts/debug/`, 2 files per failure): player_error only exists as a
+label since Sep 10 (detection added then; earlier it showed up as
+panel_extraction_failed), runs a handful/day until Sep 23, then 23 on
+Sep 24 and 73 on Sep 29 -- with `no_button` rising in lockstep (41, 66).
+The Sep 29 dumps by minute: run started 7:00am Pi time, heartbeat 8:53
+(~36s/video), **zero failures until 7:20 (~first 30 videos), then ~90%
+failures of both kinds to the end**. So YouTube stops serving the Pi's
+browser session partway into a big run, and stays wary of the IP for a
+while after (even one-video runs fail). Playwright 1.62.0 (Jul 31) ->
+1.63.0 / Chrome for Testing 153 on the Pi didn't change it (04:05 UTC
+run failed the same way), so it's volume, not browser age.
+
+**Fix (scripts/home_transcript_fetcher.py, shared by the browser
+fetcher).** `DEFAULT_MAX_VIDEOS_PER_RUN = 25`, overridable with
+`TRANSCRIPT_FETCHER_MAX_VIDEOS_PER_RUN` in the cron wrapper (0 =
+unlimited); the rest wait for the next daily run. Learn videos now go
+FIRST (hand-picked, each is an article's only source), product
+candidates after. Deliberately a lighter caller, not a disguised one --
+nothing changes how the browser presents itself. Backlog impact: ~200
+waiting ball-review candidates clear in ~2 weeks instead of one run.
+
+**Also:** let the Pi cool off for a day or two (no manual runs) before
+judging the cap; paste transcripts (6bq) for anything urgent.
+
+**Verified:** `test_home_transcript_fetcher.py` 23 passed (4 new: Learn-
+first order, cap keeps Learn videos, env default + override, 0 =
+unlimited), `test_home_transcript_fetcher_browser.py` 17 passed.
+
+**Deploy:** Pi only -- `cd ~/dev/brunsswick-scraper && git pull`. No AWS
+change.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

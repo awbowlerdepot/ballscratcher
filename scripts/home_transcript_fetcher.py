@@ -78,6 +78,16 @@ DEFAULT_WATCH_PAGE_FETCH_ATTEMPTS = 3
 DEFAULT_WATCH_PAGE_RETRY_DELAY_SECONDS = 2
 DEFAULT_DELAY_BETWEEN_VIDEOS_SECONDS = 3  # be a polite, low-volume, once-a-day caller, not a scraper hammering the site
 DEFAULT_PAGE_LIMIT = 200
+# Real incident, 2026-09-30: from ~Sep 24 YouTube started declining to
+# serve the Pi's browser once a run got going -- debug dumps from the
+# Sep 29 run (189 videos, 7:00-8:53am) show zero failures for the first
+# ~20 minutes (~30 videos), then ~90% player_error/no_button for the
+# rest, and lingering failures on single-video runs the next day. Each
+# run now stops at this many videos (override with
+# TRANSCRIPT_FETCHER_MAX_VIDEOS_PER_RUN in the cron wrapper); the rest
+# wait for the next daily run. Being a lighter caller, not a cleverer
+# one -- nothing here changes how the browser presents itself.
+DEFAULT_MAX_VIDEOS_PER_RUN = 25
 
 _CAPTION_TRACKS_RE = re.compile(r'"captionTracks":(\[.*?\])', re.DOTALL)
 _CONSENT_WALL_MARKERS = ("consent.youtube.com", "Before you continue to YouTube")
@@ -313,7 +323,7 @@ def submit_heartbeat(admin_api_url: str, token: str, fetcher_name: str, summary:
 
 
 def run(admin_api_url: str, token: str, delay_between_videos: float = DEFAULT_DELAY_BETWEEN_VIDEOS_SECONDS,
-        get_transcript_fn=None, fetcher_name: str = "plain") -> dict:
+        get_transcript_fn=None, fetcher_name: str = "plain", max_videos: int = None) -> dict:
     """get_transcript_fn defaults to this module's own HTTP-based
     get_transcript, but callers can pass a different one -- see
     scripts/home_transcript_fetcher_browser.py, which imports this
@@ -340,9 +350,19 @@ def run(admin_api_url: str, token: str, delay_between_videos: float = DEFAULT_DE
         learn_videos = []
     logger.info("Found %d Learn video(s) needing a transcript", len(learn_videos))
 
-    # (kind, row id, youtube id, submit fn) -- one loop for both.
-    work = [("product_video", c["id"], c["youtube_video_id"], submit_transcript) for c in candidates]
-    work += [("learn_video", v["id"], v["youtube_video_id"], submit_learn_video_transcript) for v in learn_videos]
+    # (kind, row id, youtube id, submit fn) -- one loop for both. Learn
+    # videos first: they're hand-picked and each one is an article's only
+    # source, so the per-run cap below shouldn't leave them behind a
+    # backlog of ball-review candidates.
+    work = [("learn_video", v["id"], v["youtube_video_id"], submit_learn_video_transcript) for v in learn_videos]
+    work += [("product_video", c["id"], c["youtube_video_id"], submit_transcript) for c in candidates]
+
+    if max_videos is None:
+        max_videos = int(os.environ.get("TRANSCRIPT_FETCHER_MAX_VIDEOS_PER_RUN", DEFAULT_MAX_VIDEOS_PER_RUN))
+    if max_videos > 0 and len(work) > max_videos:
+        logger.info("Capping this run at %d of %d video(s); the rest wait for the next run "
+                    "(TRANSCRIPT_FETCHER_MAX_VIDEOS_PER_RUN)", max_videos, len(work))
+        work = work[:max_videos]
 
     got_transcript = 0
     no_captions = 0

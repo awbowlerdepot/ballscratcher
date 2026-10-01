@@ -368,7 +368,7 @@ def test_submit_learn_video_transcript_posts_to_learn_videos_endpoint():
     }]
 
 
-def test_run_processes_learn_videos_after_product_videos(monkeypatch):
+def test_run_processes_learn_and_product_videos(monkeypatch):
     monkeypatch.setattr(script, "list_candidates_needing_transcripts", lambda url, token: [
         {"id": "pv-1", "youtube_video_id": "product0001"},
     ])
@@ -463,3 +463,54 @@ if __name__ == "__main__":
         finally:
             mp.undo()
     print(f"\n{passed}/{len(tests)} tests passed")
+
+
+# --- Per-run cap + Learn-first ordering (2026-09-30 throttling incident) ---
+
+def _capture_fetch_order(monkeypatch, n_product, n_learn):
+    monkeypatch.setattr(script, "list_candidates_needing_transcripts",
+                        lambda url, token: [{"id": f"pv-{i}", "youtube_video_id": f"p{i:010d}"} for i in range(n_product)])
+    monkeypatch.setattr(script, "list_learn_videos_needing_transcripts",
+                        lambda url, token: [{"id": f"lv-{i}", "youtube_video_id": f"l{i:010d}"} for i in range(n_learn)])
+    monkeypatch.setattr(script, "submit_transcript", lambda *a: None)
+    monkeypatch.setattr(script, "submit_learn_video_transcript", lambda *a: None)
+    monkeypatch.setattr(script, "submit_heartbeat", lambda *a: None)
+    fetched = []
+
+    def fetch(youtube_video_id):
+        fetched.append(youtube_video_id)
+        return "text", None
+
+    return fetched, fetch
+
+
+def test_run_fetches_learn_videos_before_product_videos(monkeypatch):
+    fetched, fetch = _capture_fetch_order(monkeypatch, n_product=2, n_learn=2)
+    script.run("https://admin.example", "tok", delay_between_videos=0, get_transcript_fn=fetch, max_videos=10)
+    assert [v[0] for v in fetched] == ["l", "l", "p", "p"]
+
+
+def test_run_caps_videos_per_run_keeping_learn_videos(monkeypatch):
+    fetched, fetch = _capture_fetch_order(monkeypatch, n_product=40, n_learn=3)
+    summary = script.run("https://admin.example", "tok", delay_between_videos=0, get_transcript_fn=fetch, max_videos=25)
+    assert len(fetched) == 25
+    assert [v[0] for v in fetched[:3]] == ["l", "l", "l"]
+    assert summary["total"] == 25
+
+
+def test_run_cap_defaults_from_env(monkeypatch):
+    fetched, fetch = _capture_fetch_order(monkeypatch, n_product=40, n_learn=0)
+    monkeypatch.delenv("TRANSCRIPT_FETCHER_MAX_VIDEOS_PER_RUN", raising=False)
+    script.run("https://admin.example", "tok", delay_between_videos=0, get_transcript_fn=fetch)
+    assert len(fetched) == script.DEFAULT_MAX_VIDEOS_PER_RUN
+
+    fetched.clear()
+    monkeypatch.setenv("TRANSCRIPT_FETCHER_MAX_VIDEOS_PER_RUN", "7")
+    script.run("https://admin.example", "tok", delay_between_videos=0, get_transcript_fn=fetch)
+    assert len(fetched) == 7
+
+
+def test_run_cap_zero_means_unlimited(monkeypatch):
+    fetched, fetch = _capture_fetch_order(monkeypatch, n_product=40, n_learn=0)
+    script.run("https://admin.example", "tok", delay_between_videos=0, get_transcript_fn=fetch, max_videos=0)
+    assert len(fetched) == 40
