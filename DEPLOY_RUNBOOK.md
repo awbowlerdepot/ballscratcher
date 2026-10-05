@@ -17403,6 +17403,30 @@ Hammer Special Effect (11,15).
 API picks them up immediately. The prerendered /plotter table refreshes
 on the next Learn deploy.
 
+### 6ci. Learn plotter: article panel gets the desktop floating-card layout (2026-10-05)
+
+Al: "the plotter inline in articles didn't get the styling updates".
+
+**What was missing.** The chart-level changes (6cd, 6ce, 6cg) already
+reached the article panel, since it uses the same PlotterChart:
+zoom-scaled balls, role tags and bigger zoom buttons. But the panel was
+still a 640×460 chart beside a stacked suggestion list.
+
+**Changes.**
+- On desktop, `PlotterArticlePanel` now mirrors the /plotter page:
+  - full-width 1200×620 chart
+  - `PlotterNeighborCard` floating top-left, with Hide / Show details
+  - view offset with `offsetForCard` so the ball clears the card
+- Clear is omitted (`onClear` is now optional), because the article's own
+  ball is always the selection.
+- The card header's "Read review" is hidden there (`showOwnReview=false`),
+  since it would link to the page you're on. Shop stays.
+- Phones and tablets keep the portrait chart with the list underneath.
+- The desktop media-query hook moved to
+  `components/plotter/useIsDesktop.ts`, shared by the page and the panel.
+
+**Deploy:** `git push` (deploy-learn-site).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

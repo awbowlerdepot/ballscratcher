@@ -54,7 +54,8 @@ export function PlotterNeighborCard({
   onSelect,
   onCollapse,
   onClear,
-}: Omit<Props, "compact"> & { onCollapse: () => void; onClear: () => void }) {
+  showOwnReview = true,
+}: Omit<Props, "compact"> & { onCollapse: () => void; onClear?: () => void; showOwnReview?: boolean }) {
   return (
     <div className="flex max-h-full flex-col overflow-hidden rounded-xl border border-paper-border bg-white/95 shadow-lg backdrop-blur-sm">
       {/* Labeled toolbar (Al: "the controls for the floating card could be
@@ -66,9 +67,12 @@ export function PlotterNeighborCard({
           <CardButton onClick={onCollapse} label="Hide" title="Hide these details (the ball stays selected)">
             <path d="M4 10l4-4 4 4" />
           </CardButton>
-          <CardButton onClick={onClear} label="Clear" title="Clear the selection">
-            <path d="M4.5 4.5l7 7M11.5 4.5l-7 7" />
-          </CardButton>
+          {/* No Clear on an article: its own ball is always the selection. */}
+          {onClear ? (
+            <CardButton onClick={onClear} label="Clear" title="Clear the selection">
+              <path d="M4.5 4.5l7 7M11.5 4.5l-7 7" />
+            </CardButton>
+          ) : null}
         </div>
       </div>
       <div className="flex gap-3 border-b border-paper-border p-3">
@@ -79,7 +83,7 @@ export function PlotterNeighborCard({
           <p className="text-[11px] text-muted">
             {formatPosition(selected, TENTHS_ZOOM)} · {sourceLabel(selected.oil_motion_source)}
           </p>
-          <BallLinks p={selected} />
+          <BallLinks p={selected} review={showOwnReview} />
         </div>
       </div>
       <div className="flex flex-col gap-2.5 overflow-y-auto p-3">
@@ -170,10 +174,10 @@ function EstimatedBadge({ p }: { p: LearnPlotterPoint }) {
   );
 }
 
-function BallLinks({ p }: { p: LearnPlotterPoint }) {
+function BallLinks({ p, review = true }: { p: LearnPlotterPoint; review?: boolean }) {
   return (
     <span className="flex gap-3 text-xs font-semibold">
-      {p.article_slug ? <Link to={articleHref({ slug: p.article_slug })}>Read review</Link> : null}
+      {review && p.article_slug ? <Link to={articleHref({ slug: p.article_slug })}>Read review</Link> : null}
       {p.ecommerce_url ? (
         <a href={p.ecommerce_url} target="_blank" rel="noreferrer">
           Shop &rarr;

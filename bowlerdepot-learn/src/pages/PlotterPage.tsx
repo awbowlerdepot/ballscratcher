@@ -4,6 +4,7 @@ import { getLearnPlotter } from "../api/client";
 import type { LearnPlotterPoint } from "../api/types";
 import PlotterChart from "../components/plotter/PlotterChart";
 import PlotterNeighborPanel, { PlotterNeighborCard } from "../components/plotter/PlotterNeighborPanel";
+import { useIsDesktop } from "../components/plotter/useIsDesktop";
 import { FULL_VIEW, ROLES, fitView, offsetForCard, type PlotterView } from "../components/plotter/plotterModel";
 
 // /plotter -- the Learn site's ball motion plotter (runbook 6cc). Al: "the
@@ -19,21 +20,9 @@ import { FULL_VIEW, ROLES, fitView, offsetForCard, type PlotterView } from "../c
 // Desktop (lg+): full-width landscape chart with the details as a card
 // floating in its top-left corner (runbook 6ce). Smaller screens keep the
 // portrait chart with details stacked underneath.
-const DESKTOP_QUERY = "(min-width: 1024px)";
 const DESKTOP_CHART = { width: 1200, height: 740 };
 const MOBILE_CHART = { width: 900, height: 980 };
 const CARD_PX = 330; // card width (~20rem) in chart viewBox px at desktop width
-
-function useIsDesktop() {
-  const [desktop, setDesktop] = useState(() => typeof window !== "undefined" && window.matchMedia(DESKTOP_QUERY).matches);
-  useEffect(() => {
-    const mq = window.matchMedia(DESKTOP_QUERY);
-    const onChange = () => setDesktop(mq.matches);
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
-  }, []);
-  return desktop;
-}
 
 export default function PlotterPage() {
   const [searchParams, setSearchParams] = useSearchParams();
