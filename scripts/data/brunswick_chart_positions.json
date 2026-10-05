@@ -37,13 +37,13 @@
   },
   {
     "brand": "Hammer",
-    "name": "Hammerhead",
+    "name": "Hammerhead Pearl",
     "oil": 7,
     "motion": 16
   },
   {
     "brand": "Brunswick",
-    "name": "Infinity Quest",
+    "name": "Infinity Quest Pearl",
     "oil": 8,
     "motion": 16
   },
@@ -73,7 +73,7 @@
   },
   {
     "brand": "Hammer",
-    "name": "Black Widow 3.0",
+    "name": "Black Widow 3.0 Dynasty",
     "oil": 12,
     "motion": 15
   },
@@ -103,7 +103,7 @@
   },
   {
     "brand": "Radical",
-    "name": "Evil Eye",
+    "name": "Evil Eye Pearl",
     "oil": 9,
     "motion": 14
   },
@@ -121,7 +121,7 @@
   },
   {
     "brand": "Radical",
-    "name": "Revenge Solid",
+    "name": "Revenge Pearl",
     "oil": 3,
     "motion": 14
   },
@@ -169,7 +169,7 @@
   },
   {
     "brand": "Track",
-    "name": "Stealth Mode",
+    "name": "Stealth Mode Hybrid",
     "oil": 8,
     "motion": 12
   },
@@ -205,7 +205,7 @@
   },
   {
     "brand": "Radical",
-    "name": "Revenge Pearl",
+    "name": "Revenge Solid",
     "oil": 4,
     "motion": 11
   },
@@ -229,7 +229,7 @@
   },
   {
     "brand": "Radical",
-    "name": "Guru Oracle",
+    "name": "Guru Oracle Pearl",
     "oil": 8,
     "motion": 10
   },

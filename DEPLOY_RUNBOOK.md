@@ -17296,6 +17296,50 @@ below it, as before.
 
 **Deploy:** `git push` (deploy-learn-site).
 
+### 6cf. Chart positions moved to the correct colorways (8 balls) (2026-10-05)
+
+Al: "hammerhead pearl is on the chart oil-7 motion-16".
+
+**Cause.** Both Brunswick charts (Jul/Aug #0526-19 and Sept #0726-12)
+show logos, not names, and a logo is shared by every colorway of a line.
+The older chart was hand-digitized into
+`scripts/data/brunswick_chart_positions.json` with logo names
+("Hammerhead", "Evil Eye", ...). `backfill_plotter_chart_positions.py`
+matched those names exactly, which picks the BASE product. When 6bz
+digitized the Sept chart, it took any ball already holding the same spot
+as "already matched" without comparing colors.
+
+**Check.** Every chart ball was compared against its siblings'
+`products.color`, and each suspect was re-cropped from the Sept PDF.
+Eight were the wrong colorway:
+
+| Spot | On the chart (by color) | Was credited to |
+|---|---|---|
+| (7,16) | Hammerhead Pearl (Onyx/Silver/Yellow) | Hammerhead (Blue/Navy/Sky) |
+| (8,16) | Infinity Quest Pearl (Blue/Pink) | Infinity Quest (retired) |
+| (8,10) | Guru Oracle Pearl (Black/Gold) | Guru Oracle (retired) |
+| (8,12) | Stealth Mode Hybrid (Black/Cadet Grey/Gold) | Stealth Mode (retired) |
+| (9,14) | Evil Eye Pearl (Smoke/Teal/Magenta) | Evil Eye (Black) |
+| (12,15) | Black Widow 3.0 Dynasty (Ultraviolet/Black) | Black Widow 3.0 (Black/Orange) |
+| (3,14) | Revenge Pearl | Revenge Solid (swapped) |
+| (4,11) | Revenge Solid (Teal/Black) | Revenge Pearl (swapped) |
+
+**Fix (one transaction).**
+- The 8 correct balls are set to `chart` at those spots.
+- The 6 wrongly credited balls (Hammerhead, Evil Eye, Black Widow 3.0,
+  and retired Infinity Quest, Guru Oracle, Stealth Mode) are cleared to
+  null. The plotter shows a live v3 estimate for them; Re-estimate stores
+  one.
+- Prior values are in the session scratchpad
+  (`colorway_fix_before.psv`).
+- The 8 names in `brunswick_chart_positions.json` are corrected, so a
+  re-run can't reintroduce the mistake.
+- The chart still covers 61 balls.
+
+**Lesson.** When matching a logo-only chart, compare colorways (photo vs
+`products.color`) for every ball in a multi-colorway line, including
+balls that already have a chart position.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
