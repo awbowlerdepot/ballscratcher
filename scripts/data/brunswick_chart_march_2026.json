@@ -1,0 +1,140 @@
+{
+  "source": "Brunswick Ball Motion Comparison Chart, Form #0126-47, March 2026",
+  "note": "Balls from this chart that had no chart position yet (runbook 6ch). Identified by logo AND colorway (products.color). Balls already positioned by a newer chart were left as is.",
+  "applied": [
+    {
+      "brand": "Hammer",
+      "name": "Raw Hammer - Smoke / Blue / Gold",
+      "oil": 1,
+      "motion": 14
+    },
+    {
+      "brand": "Radical",
+      "name": "Intel Recon",
+      "oil": 3,
+      "motion": 11
+    },
+    {
+      "brand": "DV8",
+      "name": "Dark Side",
+      "oil": 4,
+      "motion": 10
+    },
+    {
+      "brand": "Hammer",
+      "name": "Hazmat Pearl",
+      "oil": 7,
+      "motion": 13
+    },
+    {
+      "brand": "Hammer",
+      "name": "Anger Solid",
+      "oil": 8,
+      "motion": 10
+    },
+    {
+      "brand": "Track",
+      "name": "Criterion Inverse",
+      "oil": 8,
+      "motion": 14
+    },
+    {
+      "brand": "DV8",
+      "name": "Heckler",
+      "oil": 8,
+      "motion": 15
+    },
+    {
+      "brand": "Brunswick",
+      "name": "Energize",
+      "oil": 9,
+      "motion": 12
+    },
+    {
+      "brand": "Hammer",
+      "name": "Hammerhead",
+      "oil": 10,
+      "motion": 8
+    },
+    {
+      "brand": "Ebonite",
+      "name": "The One Ovation",
+      "oil": 10,
+      "motion": 14
+    },
+    {
+      "brand": "Brunswick",
+      "name": "Infinity Quest",
+      "oil": 10,
+      "motion": 17
+    },
+    {
+      "brand": "Track",
+      "name": "Stealth Mode",
+      "oil": 11,
+      "motion": 9
+    },
+    {
+      "brand": "Track",
+      "name": "Theorem Pearl",
+      "oil": 11,
+      "motion": 11
+    },
+    {
+      "brand": "Ebonite",
+      "name": "Entity Pearl",
+      "oil": 11,
+      "motion": 12
+    },
+    {
+      "brand": "DV8",
+      "name": "Mantra Solid",
+      "oil": 12,
+      "motion": 10
+    },
+    {
+      "brand": "Radical",
+      "name": "Evil Eye",
+      "oil": 12,
+      "motion": 12
+    },
+    {
+      "brand": "Brunswick",
+      "name": "Combat",
+      "oil": 12,
+      "motion": 14
+    }
+  ],
+  "not_in_catalog": [
+    {
+      "brand": "Columbia 300",
+      "name": "Ricochet Return",
+      "oil": 6,
+      "motion": 16
+    },
+    {
+      "brand": "Columbia 300",
+      "name": "Piranha",
+      "oil": 11,
+      "motion": 8
+    },
+    {
+      "brand": "Columbia 300",
+      "name": "Pulse",
+      "oil": 13,
+      "motion": 7
+    },
+    {
+      "brand": "Columbia 300",
+      "name": "Street Rally",
+      "oil": 13,
+      "motion": 16
+    },
+    {
+      "brand": "Hammer",
+      "name": "Special Effect",
+      "oil": 11,
+      "motion": 15
+    }
+  ]
+}

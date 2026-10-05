@@ -17363,6 +17363,46 @@ fit at the card's 20rem width.
 
 **Deploy:** `git push` (deploy-learn-site).
 
+### 6ch. March 2026 Brunswick chart: 17 balls given chart positions (2026-10-05)
+
+Al shared an earlier chart (Form #0126-47, March 2026, which adds
+Columbia 300): "can you pull in any balls from this that are missing
+their fixed plotted points".
+
+**Method.** Same grid as the Sept chart. 55 balls were detected, and the
+count was checked against the chart by eye. Each was identified by logo
+and then by colorway (photo vs `products.color`), per 6cf's lesson. Only
+balls without a `chart` position were written (`... and
+oil_motion_source is distinct from 'chart'`), so the newer charts (Sept
+and Jul/Aug) keep priority for anything on more than one.
+
+**Applied (17).** The list is in
+`scripts/data/brunswick_chart_march_2026.json`; prior values are in the
+session scratchpad (`march_before.psv`).
+- Current balls: Raw Hammer Smoke/Blue/Gold (1,14), Criterion Inverse
+  (8,14), Energize (9,12), Hammerhead (10,8), Entity Pearl (11,12),
+  Evil Eye (12,12).
+- Retired balls: Intel Recon (3,11), Dark Side (4,10), Hazmat Pearl
+  (7,13), Anger Solid (8,10), Heckler (8,15), The One Ovation (10,14),
+  Infinity Quest (10,17), Stealth Mode (11,9), Theorem Pearl (11,11),
+  Mantra Solid (12,10), Combat (12,14).
+- This confirms 6cf. On this chart the ORIGINAL Hammerhead, Evil Eye,
+  Infinity Quest and Stealth Mode have their own spots, separate from
+  the Pearl and Hybrid spots the later charts use.
+- Colorway calls:
+  - Anger Solid (black/crimson/grey), not Anger (caramel).
+  - Theorem Pearl (purple/blue/sky), not Theorem (red/violet).
+  - Mantra Solid (fuchsia), not Mantra (mint).
+  - Heckler (citrine), not Heckler Hybrid.
+
+**Not in the catalog (5), skipped.** Columbia 300 Ricochet Return (6,16),
+Piranha (11,8), Pulse (13,7), Street Rally (13,16), none scraped; and
+Hammer Special Effect (11,15).
+
+**Result.** 78 balls now have chart positions (was 61). The Learn plotter
+API picks them up immediately. The prerendered /plotter table refreshes
+on the next Learn deploy.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
