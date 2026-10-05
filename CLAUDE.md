@@ -7,6 +7,7 @@ This is a serverless pipeline built with AWS SAM. It scrapes bowling ball manufa
 - the consumer site at data.bowleriq.com
 - the marketing site at bowleriq.com
 - the public API at api.bowleriq.io
+- the partner API at api.bowleriq.io/partner/v1, a versioned, key-protected read-only contract for other platforms (runbook 6cj, docs/partner-api-v1.md)
 - the image resizer at img.bowleriq.io
 
 The GitHub repo is `awbowlerdepot/ballscratcher`, and everything deploys to the AWS region `us-west-1`.
@@ -30,7 +31,8 @@ The GitHub repo is `awbowlerdepot/ballscratcher`, and everything deploys to the 
   - Video: `video_discovery` (YouTube search, 100 searches a day) → `video_transcript_fetcher` → `video_summarizer` (Bedrock Claude Haiku).
   - `product_article_generator` writes articles and generates images with Gemini.
   - The `bowlerdepot_*` functions reconcile and sync with bowlerdepot.com, which runs on BigCommerce. `price_checker` handles price-source discovery and the daily price checks.
-  - `admin_api` is FastAPI behind Mangum. Its logic lives in `service.py`, and `app.py` only does routing. `admin_api_authorizer` accepts either Cognito JWTs or a shared bearer token.
+  - `partner_api` serves the partner API. Its response shape is a locked contract: `models.py` defines it and `tests/test_partner_api_contract.py` diffs the OpenAPI schema against a committed snapshot. v1 may only gain optional fields or endpoints; anything else is a `/v2`. Its plotter-neighbor code is a verbatim copy of public_api's, kept in sync by `tests/test_plotter_neighbors_sync.py`.
+- `admin_api` is FastAPI behind Mangum. Its logic lives in `service.py`, and `app.py` only does routing. `admin_api_authorizer` accepts either Cognito JWTs or a shared bearer token.
 - `template.yaml` defines about 31 functions, the queues, buckets and CloudFront distributions. `samconfig.toml` holds the deploy parameters.
 - `db/migrations/NNN_*.sql` holds numbered migrations (001–042), applied by hand with `psql` in order. Add a new migration with the next number.
 - `scripts/` holds one-off backfill and rescrape jobs, run locally against the database. `scripts/home_transcript_fetcher*.py` runs on a Raspberry Pi at home, because YouTube blocks transcript fetches from AWS IP addresses.

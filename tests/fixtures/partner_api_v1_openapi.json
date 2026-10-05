@@ -1,0 +1,904 @@
+{
+  "components": {
+    "schemas": {
+      "Ball": {
+        "additionalProperties": false,
+        "properties": {
+          "bowlerdepot_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "BowlerDepot product page, when BowlerDepot carries the ball.",
+            "title": "Bowlerdepot Url"
+          },
+          "brand": {
+            "$ref": "#/components/schemas/Brand"
+          },
+          "color": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Color"
+          },
+          "content_changed_at": {
+            "description": "When anything in this object last changed.",
+            "format": "date-time",
+            "title": "Content Changed At",
+            "type": "string"
+          },
+          "core": {
+            "$ref": "#/components/schemas/Core"
+          },
+          "coverstock": {
+            "$ref": "#/components/schemas/Coverstock"
+          },
+          "factory_finish": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Manufacturer's finish text, e.g. '500, 1000, 1500 Siaair / Factory Compound'.",
+            "title": "Factory Finish"
+          },
+          "finish_category": {
+            "anyOf": [
+              {
+                "enum": [
+                  "polished",
+                  "satin",
+                  "dull"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finish Category"
+          },
+          "has_particle": {
+            "title": "Has Particle",
+            "type": "boolean"
+          },
+          "id": {
+            "description": "Stable ball id (UUID). Colorways are separate balls.",
+            "title": "Id",
+            "type": "string"
+          },
+          "image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image Url"
+          },
+          "learn_article_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "BowlerDepot Learn review, when one is published.",
+            "title": "Learn Article Url"
+          },
+          "manufacturer_url": {
+            "title": "Manufacturer Url",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "plotter": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PlotterPosition"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "release_date": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Release Date"
+          },
+          "status": {
+            "description": "'retired' = no longer made; still a valid ball.",
+            "enum": [
+              "current",
+              "retired"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "weights": {
+            "description": "Specs per weight, heaviest first. May be empty.",
+            "items": {
+              "$ref": "#/components/schemas/Weight"
+            },
+            "title": "Weights",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "brand",
+          "status",
+          "coverstock",
+          "core",
+          "has_particle",
+          "weights",
+          "manufacturer_url",
+          "content_changed_at"
+        ],
+        "title": "Ball",
+        "type": "object"
+      },
+      "BallPage": {
+        "additionalProperties": false,
+        "properties": {
+          "api_version": {
+            "const": "1",
+            "default": "1",
+            "title": "Api Version",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Ball"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Pass as ?cursor= for the next page; null on the last page.",
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "BallPage",
+        "type": "object"
+      },
+      "BallResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "api_version": {
+            "const": "1",
+            "default": "1",
+            "title": "Api Version",
+            "type": "string"
+          },
+          "item": {
+            "$ref": "#/components/schemas/Ball"
+          }
+        },
+        "required": [
+          "item"
+        ],
+        "title": "BallResponse",
+        "type": "object"
+      },
+      "Brand": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Stable brand id (UUID).",
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name"
+        ],
+        "title": "Brand",
+        "type": "object"
+      },
+      "BrandList": {
+        "additionalProperties": false,
+        "properties": {
+          "api_version": {
+            "const": "1",
+            "default": "1",
+            "title": "Api Version",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Brand"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "BrandList",
+        "type": "object"
+      },
+      "Change": {
+        "additionalProperties": false,
+        "properties": {
+          "ball": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Ball"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present for 'upsert', null for 'remove'."
+          },
+          "change": {
+            "description": "'upsert' = create or replace your copy with `ball`; 'remove' = delete your copy (the ball is no longer published).",
+            "enum": [
+              "upsert",
+              "remove"
+            ],
+            "title": "Change",
+            "type": "string"
+          },
+          "changed_at": {
+            "format": "date-time",
+            "title": "Changed At",
+            "type": "string"
+          },
+          "id": {
+            "description": "Ball id.",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "change",
+          "changed_at"
+        ],
+        "title": "Change",
+        "type": "object"
+      },
+      "ChangePage": {
+        "additionalProperties": false,
+        "properties": {
+          "api_version": {
+            "const": "1",
+            "default": "1",
+            "title": "Api Version",
+            "type": "string"
+          },
+          "has_more": {
+            "description": "True if more changes are ready now; keep paging until false.",
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Change"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "description": "ALWAYS present. Store it and pass it as ?cursor= on your next sync to get only newer changes.",
+            "title": "Next Cursor",
+            "type": "string"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor",
+          "has_more"
+        ],
+        "title": "ChangePage",
+        "type": "object"
+      },
+      "Core": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "symmetric",
+                  "asymmetric"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Type"
+          }
+        },
+        "title": "Core",
+        "type": "object"
+      },
+      "Coverstock": {
+        "additionalProperties": false,
+        "properties": {
+          "material": {
+            "anyOf": [
+              {
+                "enum": [
+                  "reactive_resin",
+                  "urethane",
+                  "polyester_plastic"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Material"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Manufacturer's coverstock name, e.g. 'HK22 - Aggression Pearl'.",
+            "title": "Name"
+          },
+          "type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "solid",
+                  "pearl",
+                  "hybrid"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Type"
+          }
+        },
+        "title": "Coverstock",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "PlotterEntry": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "description": "Ball id.",
+            "title": "Id",
+            "type": "string"
+          },
+          "neighbors": {
+            "$ref": "#/components/schemas/PlotterNeighbors",
+            "description": "Suggestions are limited to balls BowlerDepot sells; colorways of the same ball are collapsed."
+          },
+          "plotter": {
+            "$ref": "#/components/schemas/PlotterPosition"
+          }
+        },
+        "required": [
+          "id",
+          "plotter",
+          "neighbors"
+        ],
+        "title": "PlotterEntry",
+        "type": "object"
+      },
+      "PlotterList": {
+        "additionalProperties": false,
+        "properties": {
+          "api_version": {
+            "const": "1",
+            "default": "1",
+            "title": "Api Version",
+            "type": "string"
+          },
+          "items": {
+            "description": "Every current, published ball.",
+            "items": {
+              "$ref": "#/components/schemas/PlotterEntry"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "PlotterList",
+        "type": "object"
+      },
+      "PlotterNeighbor": {
+        "additionalProperties": false,
+        "properties": {
+          "distance": {
+            "description": "Distance on the plotter, in plotter units.",
+            "title": "Distance",
+            "type": "number"
+          },
+          "id": {
+            "description": "Ball id.",
+            "title": "Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "distance"
+        ],
+        "title": "PlotterNeighbor",
+        "type": "object"
+      },
+      "PlotterNeighbors": {
+        "additionalProperties": false,
+        "properties": {
+          "less_oil": {
+            "items": {
+              "$ref": "#/components/schemas/PlotterNeighbor"
+            },
+            "title": "Less Oil",
+            "type": "array"
+          },
+          "more_angular": {
+            "items": {
+              "$ref": "#/components/schemas/PlotterNeighbor"
+            },
+            "title": "More Angular",
+            "type": "array"
+          },
+          "more_oil": {
+            "items": {
+              "$ref": "#/components/schemas/PlotterNeighbor"
+            },
+            "title": "More Oil",
+            "type": "array"
+          },
+          "smoother": {
+            "items": {
+              "$ref": "#/components/schemas/PlotterNeighbor"
+            },
+            "title": "Smoother",
+            "type": "array"
+          },
+          "twins": {
+            "description": "Closest balls from OTHER brands (within 1.5 units).",
+            "items": {
+              "$ref": "#/components/schemas/PlotterNeighbor"
+            },
+            "title": "Twins",
+            "type": "array"
+          }
+        },
+        "required": [
+          "twins",
+          "more_oil",
+          "less_oil",
+          "more_angular",
+          "smoother"
+        ],
+        "title": "PlotterNeighbors",
+        "type": "object"
+      },
+      "PlotterPosition": {
+        "additionalProperties": false,
+        "properties": {
+          "motion": {
+            "description": "Backend motion shape: 1.0 (smooth) to 18.0 (angular), to 0.1.",
+            "title": "Motion",
+            "type": "number"
+          },
+          "oil": {
+            "description": "Oil the ball handles best: 1.0 (light) to 16.0 (heavy), to 0.1.",
+            "title": "Oil",
+            "type": "number"
+          },
+          "source": {
+            "description": "'chart' = read off a manufacturer's published ball motion chart; 'estimated' = BowlerIQ's model; 'manual' = staff correction.",
+            "enum": [
+              "chart",
+              "estimated",
+              "manual"
+            ],
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "oil",
+          "motion",
+          "source"
+        ],
+        "title": "PlotterPosition",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "Weight": {
+        "additionalProperties": false,
+        "properties": {
+          "differential": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Total differential, inches (e.g. 0.054).",
+            "title": "Differential"
+          },
+          "mass_bias": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Intermediate differential, inches. Null for symmetric cores.",
+            "title": "Mass Bias"
+          },
+          "rg": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Radius of gyration, inches (e.g. 2.49).",
+            "title": "Rg"
+          },
+          "weight_lbs": {
+            "title": "Weight Lbs",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "weight_lbs"
+        ],
+        "title": "Weight",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Read-only bowling ball data for BowlerIQ partner platforms. Authenticate with `Authorization: Bearer <partner key>`. v1 only ever grows (new optional fields/endpoints); breaking changes ship as /v2.",
+    "title": "BowlerIQ Partner API",
+    "version": "1"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/v1/balls": {
+      "get": {
+        "operationId": "get_balls_v1_balls_get",
+        "parameters": [
+          {
+            "description": "next_cursor from the previous page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "next_cursor from the previous page.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BallPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "All published balls (full load), paged by id"
+      }
+    },
+    "/v1/balls/{ball_id}": {
+      "get": {
+        "operationId": "get_ball_v1_balls__ball_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "ball_id",
+            "required": true,
+            "schema": {
+              "title": "Ball Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BallResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "One published ball"
+      }
+    },
+    "/v1/brands": {
+      "get": {
+        "operationId": "get_brands_v1_brands_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrandList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Brands with at least one published ball"
+      }
+    },
+    "/v1/changes": {
+      "get": {
+        "description": "First sync: call with no cursor (or ?since=ISO time) and page until has_more is false. Store next_cursor; next time call ?cursor=<stored> to get only newer changes. 'upsert' = create/replace your copy; 'remove' = delete it. Changes appear about 60 seconds after they happen.",
+        "operationId": "get_changes_v1_changes_get",
+        "parameters": [
+          {
+            "description": "next_cursor from your previous call.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "next_cursor from your previous call.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "description": "ISO 8601 time to start from when you have no cursor.",
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "ISO 8601 time to start from when you have no cursor.",
+              "title": "Since"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChangePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Sync feed: balls changed since your last cursor"
+      }
+    },
+    "/v1/plotter": {
+      "get": {
+        "operationId": "get_plotter_v1_plotter_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PlotterList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Ball motion plotter: positions + similar balls and directional steps for every current ball"
+      }
+    }
+  }
+}

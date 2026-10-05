@@ -2035,6 +2035,111 @@ Resources:
       # validation of any kind happens in this function or in front of
       # it -- see PublicHttpApi's own comment above.
 
+  # --- Partner API v1 (DEPLOY_RUNBOOK.md 6cj) ------------------------------
+  # Al: "a separate platform that i want to be a consumer of the ball
+  # data ... a lightweight version of security ontop of that just to keep
+  # it in house", server-side, read-only, public data, syncing, with the
+  # response shape locked so Learn/consumer-site changes can't break it.
+  # Its own Lambda (src/partner_api) + its own HTTP API behind a per-
+  # partner key authorizer, mapped under /partner on the public API's
+  # domain: https://api.bowleriq.io/partner/v1/... No CORS (server-side
+  # callers only). No provisioned concurrency -- a sync poll can absorb a
+  # cold start.
+
+  PartnerApiAuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-partner-api-authorizer
+      CodeUri: src/partner_api_authorizer/
+      Handler: app.handler
+      Timeout: 10
+      Environment:
+        Variables:
+          # Created by scripts/create_partner_api_key.py on first use.
+          # Until it exists the authorizer denies every request.
+          PARTNER_API_KEYS_SECRET_ID: bowling-scraper-partner-api-keys
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:bowling-scraper-partner-api-keys-*"
+
+  # Same hand-added permission AdminApiAuthorizerFunctionInvokePermission
+  # needed (see its comment): a raw FunctionArn authorizer gets no
+  # SAM-generated invoke permission, and every keyed request would 500.
+  PartnerApiAuthorizerFunctionInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref PartnerApiAuthorizerFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${PartnerHttpApi}/authorizers/*"
+
+  PartnerHttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      Auth:
+        Authorizers:
+          PartnerKeyAuthorizer:
+            FunctionArn: !GetAtt PartnerApiAuthorizerFunction.Arn
+            FunctionPayloadType: REQUEST
+            AuthorizerPayloadFormatVersion: "2.0"
+            EnableSimpleResponses: true
+            # Cache each key's allow/deny for 5 minutes (keyed on the
+            # Authorization header), so a sync's page-after-page polling
+            # doesn't invoke the authorizer per request. A revoked key
+            # stops working within ~5 min (+ the authorizer's own 5 min
+            # secret cache).
+            AuthorizerResultTtlInSeconds: 300
+            Identity:
+              Headers:
+                - Authorization
+        DefaultAuthorizer: PartnerKeyAuthorizer
+      # Keeps a runaway sync loop from hammering the database. Stage-wide
+      # (HTTP APIs don't throttle per key); fine for a handful of partners.
+      DefaultRouteSettings:
+        ThrottlingBurstLimit: 20
+        ThrottlingRateLimit: 10
+
+  PartnerApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-partner-api
+      CodeUri: src/partner_api/
+      Handler: app.handler
+      Timeout: 30
+      MemorySize: 512
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+      Events:
+        PartnerApiGet:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref PartnerHttpApi
+            Path: /{proxy+}
+            Method: GET
+
+  PartnerApiMapping:
+    Type: AWS::ApiGatewayV2::ApiMapping
+    Condition: HasPublicApiDomain
+    # The $default stage SAM generates for PartnerHttpApi must exist before
+    # a mapping can point at it -- without this the first deploy failed
+    # "Invalid stage identifier specified" and rolled back (runbook 6cj).
+    DependsOn: PartnerHttpApiApiGatewayDefaultStage
+    Properties:
+      ApiId: !Ref PartnerHttpApi
+      DomainName: !Ref PublicApiCustomDomain
+      # api.bowleriq.io/partner/... -> this API, with "/partner" stripped
+      # (so its routes are /v1/...). The public API keeps the empty-key
+      # mapping, i.e. everything else on the domain.
+      ApiMappingKey: partner
+      Stage: $default
+
   # --- WooCommerce brand family (SWAG Bowling to start) ---
   #
   # A genuinely different platform from everything above, added this
@@ -4286,6 +4391,12 @@ Outputs:
       - HasPublicApiDomain
       - !Sub "https://${PublicApiDomainName}/"
       - !Sub "https://${PublicHttpApi}.execute-api.${AWS::Region}.amazonaws.com/"
+  PartnerApiUrl:
+    # Base URL partners use (runbook 6cj); append v1/<endpoint>.
+    Value: !If
+      - HasPublicApiDomain
+      - !Sub "https://${PublicApiDomainName}/partner/"
+      - !Sub "https://${PartnerHttpApi}.execute-api.${AWS::Region}.amazonaws.com/"
   PublicApiCustomDomainTarget:
     # The value Al's registrar CNAME for PublicApiDomainName needs to
     # point at -- same role ImageResizerDistributionDomainName plays for

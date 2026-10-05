@@ -17427,6 +17427,118 @@ still a 640×460 chart beside a stacked suggestion list.
 
 **Deploy:** `git push` (deploy-learn-site).
 
+### 6cj. Partner API v1: versioned, key-protected, read-only ball data for other platforms (migration 044) (2026-10-05)
+
+Al: "we are also working on a separate platform that i want to be a
+consumer of the ball data in the project. I feel like that being just an
+API integration is doable and not sure if we would want a lightweight
+version of security ontop of that just to keep it in house". Then:
+"server-side, read-only, public data for now, it could sync so that isn't
+as noisy. One other thing that might be helpful is locking the shape down
+so that if we move the learn and consumer sites forward it doesn't break
+the integration to other platform".
+
+**Why not just the public API.** It stays open on purpose: the Learn and
+consumer sites call it from browsers, so it can't hold a secret. The
+admin token can write data, so it can't be handed to a partner either.
+
+**What was built.**
+- **`src/partner_api`**: its own Lambda and FastAPI app, with its own
+  queries and mapping. The public API can change for the sites without
+  touching it.
+  - URL: `https://api.bowleriq.io/partner/v1/...`, an ApiMapping with key
+    `partner` on the public API's domain. Mangum
+    `api_gateway_base_path="/partner"` handles the prefix whether or not
+    API Gateway strips it; both paths were checked with simulated events.
+  - Endpoints: `/v1/brands`, `/v1/balls` (paged by id), `/v1/balls/{id}`,
+    `/v1/changes` (sync feed), `/v1/plotter` (positions + neighbors).
+  - No /docs pages, since a browser can't send the key. `/openapi.json`
+    works with the key.
+  - No CORS: server-side callers only.
+- **The contract.**
+  - `models.py` holds the pydantic v1 models, all `extra="forbid"`, and
+    every route has a `response_model`.
+  - `tests/test_partner_api_contract.py` diffs the generated OpenAPI
+    against `tests/fixtures/partner_api_v1_openapi.json`.
+  - A second test checks the v1 baseline: no field removed, required-ness
+    unchanged, extras forbidden. So even a regenerated snapshot can't
+    quietly break v1. I confirmed it fails when a field is deleted.
+  - v1 rules: additive only (new optional fields or endpoints, with the
+    snapshot regenerated via `PARTNER_API_UPDATE_SNAPSHOT=1`). Anything
+    else is a `/v2`.
+- **The sync feed (`/v1/changes`).** Ordered by
+  `(content_changed_at, id)` with opaque cursors.
+  - `upsert` carries the full Ball; `remove` means unpublished.
+  - The first sync skips removes.
+  - `next_cursor` is always returned.
+  - The newest 60 s are held back (`CHANGE_LAG_SECONDS`) so a
+    slow-committing write isn't skipped.
+- **Migration 044.** `products.content_changed_at` plus triggers. It is
+  deliberately NOT `updated_at`: every scrape sets `updated_at = now()`
+  and the sites sort by it, and popularity/demand/discovery columns change
+  daily. The column is bumped only when partner-visible content changes:
+  - the exposed product columns
+  - SKU specs, on insert/delete or a real value change
+  - images
+  - the article's status or slug
+
+  Updates are WHEN-guarded, so a scraper's no-op `ON CONFLICT DO UPDATE`
+  doesn't bump it. Brand/core/coverstock renames don't bump it (rare).
+- **`src/partner_api_authorizer`**: HTTP API REQUEST authorizer with
+  simple responses, fail-closed.
+  - Keys are stored as SHA-256 hashes in Secrets Manager
+    `bowling-scraper-partner-api-keys`: `{"keys": {partner: sha256hex}}`.
+  - Every stored hash is compared in constant time, with no early exit.
+  - A missing secret means deny everyone.
+  - Context `{"partner": name}` is logged once per call by partner_api.
+  - The secret is cached 5 min, and API Gateway caches each decision
+    5 min, so a revoke takes effect within about 10 min.
+  - Stage throttling: 10 req/s, burst 20.
+- **`scripts/create_partner_api_key.py <partner> [--revoke]`** mints a
+  key, prints it once to the terminal, stores only the hash, and creates
+  the secret on first use.
+- **`docs/partner-api-v1.md`**: the guide to hand the other team (auth,
+  endpoints, Ball fields and units, sync loop, errors).
+- Plotter neighbors: public_api's `compute_plotter_neighbors` block is
+  copied verbatim (markers `PLOTTER NEIGHBORS v1`), guarded by
+  `tests/test_plotter_neighbors_sync.py`.
+
+**Tested.**
+- Unit tests:
+  - `test_partner_api_service.py`: 11 tests on mapping, cursors, paging
+    with timestamp ties, upsert/remove, and the lag window, each
+    validated against the models.
+  - `test_partner_api_authorizer.py`: 6.
+  - `test_partner_api_contract.py`: 3.
+  - `test_plotter_neighbors_sync.py`: 1.
+- Scratch Postgres 16 with migrations 001–044 and the real triggers and
+  SQL, through FastAPI TestClient. 15 checks passed, including: no-op
+  product + SKU upserts don't bump; an rg change, a new SKU and a plotter
+  change do; unpublish → `remove`; re-poll empty; 400 on a bad cursor;
+  404 on a bad id.
+
+**Deploy.**
+```bash
+psql -v ON_ERROR_STOP=1 -f db/migrations/044_products_content_changed_at.sql
+sam build && sam deploy
+python3 scripts/create_partner_api_key.py <partner-name>   # prints the key once
+```
+Send the partner the key and `docs/partner-api-v1.md` plus
+`tests/fixtures/partner_api_v1_openapi.json`.
+
+First deploy attempt rolled back: `PartnerApiMapping` was created before
+SAM's `PartnerHttpApiApiGatewayDefaultStage` existed ("Invalid stage
+identifier specified"). Fixed with `DependsOn` on the stage. The public
+mapping never hit this because its stage already existed. Migration 044
+was applied 2026-10-05 (all 1,487 products start at the migration time).
+
+**Verify.**
+```bash
+curl -s -o /dev/null -w "%{http_code}\n" https://api.bowleriq.io/partner/v1/brands          # 401, no key
+curl -s -H "Authorization: Bearer $KEY" https://api.bowleriq.io/partner/v1/brands | jq '.items | length'
+aws logs tail /aws/lambda/bowling-scraper-partner-api --since 10m   # "partner=<name> GET /v1/brands -> 200"
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

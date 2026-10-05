@@ -2002,6 +2002,9 @@ def list_plotter_positions(conn, status: str = "current", ids: list = None) -> l
 # -- so the page, the article panel and any later BowlerDepot embed all
 # agree, and the rules are pytest-covered like the estimator.
 
+# >>> PLOTTER NEIGHBORS v1 >>>
+# Copied verbatim into src/partner_api/service.py (Partner API /v1/plotter,
+# runbook 6cj); tests/test_plotter_neighbors_sync.py fails if they differ.
 # Colorways are one ball for recommendations -- suggesting three Rhinos
 # as "twins" is noise. "Same ball" = same brand + core + coverstock (what
 # actually makes the reaction; Storm doesn't use a " - " colorway
@@ -2093,6 +2096,7 @@ def compute_plotter_neighbors(points: list) -> dict:
         result[target["id"]] = entry
     return result
 
+# <<< PLOTTER NEIGHBORS v1 <<<
 
 def get_learn_plotter(conn) -> dict:
     """GET /learn/plotter: every current published ball's position (same

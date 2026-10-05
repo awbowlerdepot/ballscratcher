@@ -1,0 +1,1 @@
+# No third-party deps: boto3 ships with the Lambda Python runtime.
