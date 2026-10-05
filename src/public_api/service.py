@@ -2260,8 +2260,8 @@ def lookup_plotter_balls(conn, q: str) -> list:
 def get_plotter_ball(conn, product_id: str):
     """GET /learn/plotter/ball/{id}: one ball as a plotter point. A current
     published ball comes back exactly as in /learn/plotter. A retired ball
-    (published or not) comes back with ONLY brand, name, status and
-    position -- plus image/article link if it's published -- and its
+    (published or not) comes back with ONLY brand, name, status, position
+    and image -- plus its article link if it's published -- and its
     current replacements as `neighbors` (closest + steps). None if the id
     isn't a current-published or retired ball."""
     try:
@@ -2273,11 +2273,14 @@ def get_plotter_ball(conn, product_id: str):
             """
             select p.id, p.name, b.name as brand_name, p.status, p.published,
                    p.oil_rating, p.motion_rating, p.oil_motion_source, p.core_id, p.coverstock_id,
-                   case when p.published then coalesce(
+                   -- Image for every ball, published or not (Al: "can it show
+                   -- the image? just in grey scale or dimmed out") -- the
+                   -- Learn plotter greys it out for retired balls.
+                   coalesce(
                        (select pi.stored_url from product_images pi
                          where pi.product_id = p.id and pi.is_visible = true
                          order by pi.is_thumbnail desc, pi.display_order, pi.id limit 1),
-                       p.primary_image_url) end as primary_image_url,
+                       p.primary_image_url) as primary_image_url,
                    case when p.published then
                        (select pa.slug from product_articles pa
                          where pa.product_id = p.id and pa.status = 'approved' and pa.slug is not null

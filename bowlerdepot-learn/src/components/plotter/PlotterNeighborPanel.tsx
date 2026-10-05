@@ -161,7 +161,7 @@ function BallThumb({ p, size }: { p: LearnPlotterPoint; size: number }) {
       width={size}
       height={size}
       style={{ width: size, height: size }}
-      className="shrink-0 rounded-full bg-paper object-contain"
+      className={`shrink-0 rounded-full bg-paper object-contain${p.status === "retired" ? " opacity-60 grayscale" : ""}`}
       loading="lazy"
     />
   ) : (

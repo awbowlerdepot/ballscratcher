@@ -17654,6 +17654,13 @@ brand, name, status and position. Combat (published) also had its image
 and article. Browser-tested on /plotter (Hazmat search → ghost + card)
 and on the Combat article.
 
+**Follow-up (same day).** Al: "can it show the image? just in grey scale
+or dimmed out". `get_plotter_ball` now returns the image for every
+retired ball, published or not; 1,264 of 1,266 have a stored image. The
+article link stays published-only. On the chart, the retired ghost draws
+its photo through an SVG `feColorMatrix saturate=0` filter at 0.55
+opacity. The card and panel thumbnails use `grayscale opacity-60`.
+
 **Deploy:** `sam build && sam deploy` (public_api) FIRST, then `git push`
 (deploy-learn-site).
 

@@ -335,6 +335,10 @@ export default function PlotterChart({
           <clipPath id={clipId} clipPathUnits="objectBoundingBox">
             <circle cx="0.5" cy="0.5" r="0.5" />
           </clipPath>
+          {/* Retired balls' photos render greyscale (runbook 6cl). */}
+          <filter id={`${clipId}-grey`}>
+            <feColorMatrix type="saturate" values="0" />
+          </filter>
           <clipPath id={`${clipId}-plot`}>
             <rect x={M.left} y={M.top} width={plotW} height={plotH} />
           </clipPath>
@@ -451,6 +455,8 @@ export default function PlotterChart({
                     height={r * 2}
                     preserveAspectRatio="xMidYMid meet"
                     clipPath={`url(#${clipId})`}
+                    filter={retired ? `url(#${clipId}-grey)` : undefined}
+                    opacity={retired ? 0.55 : 1}
                   />
                 ) : null}
                 {/* Solid ring = from a published chart; dashed = estimated */}
