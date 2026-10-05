@@ -17539,6 +17539,64 @@ curl -s -H "Authorization: Bearer $KEY" https://api.bowleriq.io/partner/v1/brand
 aws logs tail /aws/lambda/bowling-scraper-partner-api --since 10m   # "partner=<name> GET /v1/brands -> 200"
 ```
 
+### 6ck. Plotter estimator refit on all chart balls (2026-10-05)
+
+Al: "refit the estimator on all 78 chart balls".
+
+**Data.** 78 chart positions: the original 44, plus 6bz (Sept chart),
+6cf (colorway fixes) and 6ch (March chart). 77 were fitted; the plastic
+Spare+ stays pinned. 63 have a price (was 40).
+
+**Method.** Unchanged from v3 (6bx): the same features, ridge regression
+on standardized features with an unpenalized intercept, and lambda
+picked by leave-one-out MAE. Three models: oil with price, oil without
+price, motion. The fit is now a committed, reproducible script,
+`scripts/refit_plotter_estimator.py`. It reads the database read-only,
+prints LOO scores, and prints the constants to paste. The old
+`dump_plotter_estimate_training_data.py` is from the v2 era and doesn't
+pull finish, RG, mass bias or price.
+
+**Results (leave-one-out).**
+
+| Model | LOO MAE | Within ±2 |
+|---|---|---|
+| Oil with price | 1.14 | 53/63 |
+| Oil without price | 1.57 | 52/77 |
+| Motion | 1.71 | 52/77 |
+
+Fair comparison on the 41 balls v3 was never trained on:
+
+| | v3 | Refit (LOO) |
+|---|---|---|
+| Oil MAE | 1.42 | 1.12 |
+| Oil within ±2 | 28/41 | 33/41 |
+| Motion MAE | 2.06 | 1.77 |
+| Motion within ±2 | 22/41 | 27/41 |
+
+The entry-level balls v3 overrated now land near the light-oil edge, e.g.
+Twist 3.9 → 1.3 (chart 1) and Rhino Carbon 3.3 → 1.3 (chart 1). Direction
+checks still hold: duller finish → more oil and smoother; more
+differential → more of both; higher price → more oil; urethane → smoother.
+
+**Changed constants** (both PLOTTER ESTIMATOR v3 blocks):
+- mass bias range 0–0.027 (was 0–0.02)
+- price range 94.95–194.95 (was 109.95–)
+- fill RG 2.5086 / differential 0.0444
+- all three models' coefficients
+
+The plastic pin, the +2 particle bonus and the low-friction pull (6cb)
+are unchanged, since there's no chart data for them.
+
+**Impact preview** (read-only, current published estimated balls, 103):
+- mean shift: oil 0.87, motion 1.02
+- 19 balls move more than 2 on an axis, mostly entry-level reactives
+  moving toward light oil and smoother (Tropical Surge, the uncharted Raw
+  Hammer colorways, Arctic Vibe)
+- Axe (1.4, 7.1); Mix (1.0, 5.7)
+
+**Deploy.** `sam build && sam deploy` (admin_api + public_api), then
+Admin → Batch Jobs → Re-estimate plotter positions.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

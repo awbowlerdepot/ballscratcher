@@ -1706,9 +1706,20 @@ def list_similar_products(conn, product_id: str, limit: int = 5) -> list:
 #   it only to fill a brand-new ball's null position at insert -- the next
 #   re-estimate replaces it with this.
 #
-# Refit: scripts/dump_plotter_estimate_training_data.py pulls the training
-# rows; refit the same way (ridge, leave-one-out) when more real chart
-# positions exist -- especially plastic, particle, and non-chart brands.
+# REFIT 2026-10-05 (DEPLOY_RUNBOOK.md 6ck) -- Al: "refit the estimator on
+# all 78 chart balls" (the Sept 2026 + March 2026 Brunswick charts and the
+# colorway fixes took chart positions from 44 to 78). Same features and
+# method; 77 fitted (the plastic Spare+ stays pinned), 63 with a price.
+# Leave-one-out: oil with price MAE 1.14 (53/63 within +/-2), oil without
+# price 1.57 (52/77), motion 1.71 (52/77). On the 41 balls v3 never saw,
+# v3 scored oil 1.42 / motion 2.06; this refit (LOO) 1.12 / 1.77 -- and
+# the entry-level balls v3 overrated (Twist, Rhino, Raw Hammer) now sit
+# near the chart's light-oil edge. The 44-ball numbers above are v3's
+# original fit, kept for history.
+#
+# Refit: scripts/refit_plotter_estimator.py (read-only; prints LOO scores
+# and these constants) whenever more real chart positions exist --
+# especially plastic, particle, and non-chart brands.
 
 PLOTTER_OIL_MIN, PLOTTER_OIL_MAX = 1, 16
 PLOTTER_MOTION_MIN, PLOTTER_MOTION_MAX = 1, 18
@@ -1718,10 +1729,10 @@ PLOTTER_FINISH_DEFAULT = 1.0
 PLOTTER_INPUT_RANGES = {
     "rg15": (2.462, 2.65),
     "diff15": (0.015, 0.058),
-    "mass_bias15": (0.0, 0.02),
-    "price": (109.95, 194.95),
+    "mass_bias15": (0.0, 0.027),
+    "price": (94.95, 194.95),
 }
-PLOTTER_INPUT_FILL = {"rg15": 2.5068, "diff15": 0.0455, "mass_bias15": 0.0}
+PLOTTER_INPUT_FILL = {"rg15": 2.5086, "diff15": 0.0444, "mass_bias15": 0.0}
 PLOTTER_PARTICLE_OIL_BONUS = 2
 # Brunswick's Sept 2026 chart puts plastic (Black Widow Spare+) at (1, 1).
 PLOTTER_PLASTIC_PINNED = (1, 1)
@@ -1737,46 +1748,46 @@ PLOTTER_LOW_FRICTION_PULL = 0.5
 PLOTTER_LOW_FRICTION_COVER = re.compile(r"low[\s-]?friction|\blf[pr]\b", re.IGNORECASE)
 
 PLOTTER_OIL_WITH_PRICE = {
-    "intercept": -28.6432,
+    "intercept": -66.8293,
     "coef": {
-        "urethane": -0.9691,
-        "pearl": -0.0935,
-        "solid": 0.2961,
-        "asymmetric": 0.4793,
-        "core_unknown": -0.3932,
-        "finish": 0.7712,
-        "rg15": 0.2041,
-        "diff15": 63.5959,
-        "mass_bias15": 93.9502,
-        "log_price": 6.3833,
+        "urethane": -2.3263,
+        "pearl": -0.1841,
+        "solid": 0.4124,
+        "asymmetric": 0.0447,
+        "core_unknown": -0.4739,
+        "finish": 1.1158,
+        "rg15": 10.0761,
+        "diff15": 105.1842,
+        "mass_bias15": 99.2759,
+        "log_price": 8.6509,
     },
 }
 PLOTTER_OIL_NO_PRICE = {
-    "intercept": -2.8342,
+    "intercept": 8.4991,
     "coef": {
-        "urethane": -1.7268,
-        "pearl": -0.161,
-        "solid": -0.1542,
-        "asymmetric": 0.679,
-        "core_unknown": 0.2612,
-        "finish": 1.4907,
-        "rg15": 2.0279,
-        "diff15": 77.7788,
-        "mass_bias15": 190.1347,
+        "urethane": 0.1582,
+        "pearl": 0.0885,
+        "solid": 0.2397,
+        "asymmetric": 1.4829,
+        "core_unknown": 0.7557,
+        "finish": 1.4796,
+        "rg15": -4.214,
+        "diff15": 157.7257,
+        "mass_bias15": 165.872,
     },
 }
 PLOTTER_MOTION = {
-    "intercept": -51.5571,
+    "intercept": -22.3399,
     "coef": {
-        "urethane": -7.0056,
-        "pearl": -0.67,
-        "solid": 0.8938,
-        "asymmetric": 0.5761,
-        "core_unknown": -1.5752,
-        "finish": -2.2772,
-        "rg15": 24.3322,
-        "diff15": 136.672,
-        "mass_bias15": 3.0243,
+        "urethane": -5.4327,
+        "pearl": 0.3288,
+        "solid": 0.3808,
+        "asymmetric": 1.6674,
+        "core_unknown": 0.1399,
+        "finish": -1.6237,
+        "rg15": 11.8338,
+        "diff15": 121.6263,
+        "mass_bias15": 23.8968,
     },
 }
 
