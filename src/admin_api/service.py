@@ -193,6 +193,7 @@ def execute_update_plan(cur, product_id: str, plan: dict) -> None:
 # ---------------------------------------------------------------------
 
 import json
+import math
 import os
 
 # Module-level cache, deliberately NOT function-local -- see get_db_
@@ -2810,76 +2811,197 @@ def update_product_image(conn, product_id: str, image_id: str, is_visible: bool 
     return result
 
 
-# --------------------------------------------------------------------
-# estimate_oil_motion / _reference_sku -- duplicated from public_api/
-# service.py rather than shared (same "each Lambda is its own
-# independent deployment package" reasoning as every other duplicated
-# helper in this project -- see e.g. product_scraper.publish_messages'
-# docstring). MUST stay in sync with public_api's copy: a visitor's
-# plotter page and an admin's backfill run should never disagree about
-# what a given core/coverstock combination estimates to. See public_api/
-# service.py's module-level comment above its own estimate_oil_motion
-# for the full reasoning behind every constant below, INCLUDING the
-# 2026-08-14 refit against 40 real chart-matched products (Al: "i feel
-# like it is way off for most balls") -- that comment has the full
-# before/after accuracy numbers and per-constant reasoning; this copy
-# only carries the resulting values.
-# --------------------------------------------------------------------
+# >>> PLOTTER ESTIMATOR v3 >>> (identical in public_api/service.py and
+# admin_api/service.py -- tests/test_plotter_estimator_sync.py fails if the
+# two copies ever differ; each Lambda is its own package, so it's copied,
+# not imported)
+#
+# v3 (2026-10-04) -- Al: "I think there are some ball metrics that are
+# getting overlooked that could be used to better estimate those ...
+# coverstock_material, coverstock_type, factory_finish, rg(15lbs),
+# diff(15lbs), mass_bias(15lbs), price ... The 15lbs metrics should be used
+# because that is the most common weight. Price typically indicates higher
+# performance." v2 (superseded; DEPLOY_RUNBOOK.md 6m, 6bx) only used cover material/type,
+# particle, core type, and differential -- never RG, mass bias, finish, or
+# price.
+#
+# Two ridge regressions fit on the 44 real chart-positioned reactive/
+# urethane balls (oil_motion_source='chart'; Hammer, Brunswick, Radical,
+# DV8, Ebonite, Track). Leave-one-out scores, each ball predicted by a
+# model fit on the others, vs v2 on the same balls:
+#   oil:    v2 MAE 2.66, within +/-2 21/44  ->  v3 with price MAE 1.35 (within
+#           +/-2 34/40), without price MAE 1.52 (35/44)
+#   motion: v2 MAE 2.41, within +/-2 27/44  ->  v3 MAE 1.75 (within +/-2 32/44)
+# What the chart says (single-feature correlations): price is the
+# strongest oil signal (+0.79) and says nothing about motion (+0.09);
+# duller finishes = heavier oil (+0.43) and smoother motion (-0.55);
+# higher 15lb differential = more oil and more motion (+0.58/+0.53);
+# lower 15lb RG trends to both (-0.37/-0.47); 15lb mass bias is a modest
+# oil signal (+0.37, asymmetric balls only).
+#
+# Decisions (Al, 2026-10-04):
+# - Price = the HIGHEST approved price ever seen for the ball (BowlerDepot
+#   or bowling.com) -- the closest thing to launch/retail; a clearance
+#   markdown mustn't make a ball look weaker. log(price), clamped.
+# - No price (retired balls, mostly) -> the no-price oil model.
+# - Motion ALWAYS uses the no-price model: adding price made motion worse
+#   (MAE 1.9 vs 1.75) -- price tracks strength, which lives on the oil
+#   axis ("More total hook would be more along the oil axis"). Motion =
+#   back-end angularity, per the chart: light-oil polished balls rate high
+#   (Bubblegum Vibe 4/15), smooth urethane/dull ones low (Purple Pearl
+#   Urethane 7/2).
+# - Plastic (polyester) -> pinned to oil 1, motion 1, whatever the core.
+#   First drafted as "pinned unless it has a performance core, then
+#   capped at oil 5 / motion 8"; Brunswick's Sept 2026 Ball Motion
+#   Comparison Chart (Form #0726-12, Al shared it mid-change: "it looks
+#   like they pin the widow spare+ to the bottom left 1 & 1") pins even
+#   the Black Widow Spare+ -- a Black Widow core under a plastic cover --
+#   at (1, 1). So the cover decides: plastic goes straight.
+# - Particle covers keep v2's untested +2 oil (no particle balls in the
+#   chart data either).
+# - Numeric inputs are clamped to the range seen in the chart data before
+#   applying the coefficients: with only ~44 points some coefficients are
+#   steep (RG especially), and other brands' outliers mustn't extrapolate
+#   wildly. Missing RG/differential -> the chart data's mean; missing mass
+#   bias -> 0 (symmetric); missing finish -> satin; missing core type ->
+#   its own "unknown" coefficient.
+# - Recomputed only on demand (admin Batch Jobs "Re-estimate plotter
+#   positions" -> admin_api.reestimate_plotter_positions); chart and manual
+#   positions are never touched. The five scrapers still carry v2 and use
+#   it only to fill a brand-new ball's null position at insert -- the next
+#   re-estimate replaces it with this.
+#
+# Refit: scripts/dump_plotter_estimate_training_data.py pulls the training
+# rows; refit the same way (ridge, leave-one-out) when more real chart
+# positions exist -- especially plastic, particle, and non-chart brands.
 
-OIL_BASE_BY_MATERIAL = {
-    "polyester_plastic": 2,
-    "urethane": 6,
-    "reactive_resin": 10,
+PLOTTER_OIL_MIN, PLOTTER_OIL_MAX = 1, 16
+PLOTTER_MOTION_MIN, PLOTTER_MOTION_MAX = 1, 18
+
+PLOTTER_FINISH_LEVEL = {"polished": 0.0, "satin": 1.0, "dull": 2.0}
+PLOTTER_FINISH_DEFAULT = 1.0
+PLOTTER_INPUT_RANGES = {
+    "rg15": (2.462, 2.65),
+    "diff15": (0.015, 0.058),
+    "mass_bias15": (0.0, 0.02),
+    "price": (109.95, 194.95),
 }
-OIL_ADJUST_BY_TYPE = {
-    "pearl": -3,
-    "hybrid": 0,
-    "solid": 0,
+PLOTTER_INPUT_FILL = {"rg15": 2.5068, "diff15": 0.0455, "mass_bias15": 0.0}
+PLOTTER_PARTICLE_OIL_BONUS = 2
+# Brunswick's Sept 2026 chart puts plastic (Black Widow Spare+) at (1, 1).
+PLOTTER_PLASTIC_PINNED = (1, 1)
+
+PLOTTER_OIL_WITH_PRICE = {
+    "intercept": -28.6432,
+    "coef": {
+        "urethane": -0.9691,
+        "pearl": -0.0935,
+        "solid": 0.2961,
+        "asymmetric": 0.4793,
+        "core_unknown": -0.3932,
+        "finish": 0.7712,
+        "rg15": 0.2041,
+        "diff15": 63.5959,
+        "mass_bias15": 93.9502,
+        "log_price": 6.3833,
+    },
 }
-OIL_PARTICLE_BONUS = 2
-
-MOTION_BASE_BY_CORE_TYPE = {
-    "symmetric": 4,
-    "asymmetric": 8,
+PLOTTER_OIL_NO_PRICE = {
+    "intercept": -2.8342,
+    "coef": {
+        "urethane": -1.7268,
+        "pearl": -0.161,
+        "solid": -0.1542,
+        "asymmetric": 0.679,
+        "core_unknown": 0.2612,
+        "finish": 1.4907,
+        "rg15": 2.0279,
+        "diff15": 77.7788,
+        "mass_bias15": 190.1347,
+    },
 }
-MOTION_BASE_UNKNOWN_CORE = 6
-MOTION_DIFF_MIDPOINT = 0.02
-MOTION_DIFF_SCALE = 0.045
-MOTION_DIFF_WEIGHT = 8
-MOTION_ADJUST_BY_COVERSTOCK_TYPE = {
-    "pearl": 2,
-    "solid": 1,
-    "hybrid": 0,
+PLOTTER_MOTION = {
+    "intercept": -51.5571,
+    "coef": {
+        "urethane": -7.0056,
+        "pearl": -0.67,
+        "solid": 0.8938,
+        "asymmetric": 0.5761,
+        "core_unknown": -1.5752,
+        "finish": -2.2772,
+        "rg15": 24.3322,
+        "diff15": 136.672,
+        "mass_bias15": 3.0243,
+    },
 }
 
-OIL_MIN, OIL_MAX = 1, 16
-MOTION_MIN, MOTION_MAX = 1, 18
+
+def _plotter_clamp_input(name: str, value):
+    low, high = PLOTTER_INPUT_RANGES[name]
+    return max(low, min(high, float(value)))
 
 
-def _clamp_oil_motion(value: float, low: int, high: int) -> int:
+def _plotter_round(value: float, low: int, high: int) -> int:
     return max(low, min(high, round(value)))
 
 
-def estimate_oil_motion(core_type: str = None, coverstock_type: str = None,
-                         coverstock_material: str = None, has_particle: bool = False,
-                         differential: float = None) -> dict:
-    """Pure function, identical logic to public_api.service.estimate_oil_
-    motion -- see that module for the full reasoning. Duplicated (not
-    imported) since admin_api and public_api are separate Lambda
-    packages."""
-    oil = OIL_BASE_BY_MATERIAL.get(coverstock_material, (OIL_MIN + OIL_MAX) / 2)
-    oil += OIL_ADJUST_BY_TYPE.get(coverstock_type, 0)
+def _plotter_linear(model: dict, features: dict) -> float:
+    return model["intercept"] + sum(weight * features.get(name, 0.0) for name, weight in model["coef"].items())
+
+
+def estimate_oil_motion(coverstock_material: str = None, coverstock_type: str = None,
+                         has_particle: bool = False, core_type: str = None,
+                         finish_category: str = None, rg15=None, diff15=None,
+                         mass_bias15=None, price=None) -> dict:
+    """Pure function (no DB): the plotter's (oil 1-16, motion 1-18)
+    estimate for a ball from its specs -- see the PLOTTER ESTIMATOR v3
+    comment above for the model, the data behind it, and every rule.
+    Always returns a usable pair, even with every input missing. "basis"
+    says which path produced it, for debugging and the admin re-estimate
+    summary: "plastic_pinned", "price", or "no_price"."""
+    if coverstock_material == "polyester_plastic":
+        oil, motion = PLOTTER_PLASTIC_PINNED
+        return {"oil": oil, "motion": motion, "basis": "plastic_pinned"}
+    diff_value = float(diff15) if diff15 is not None else None
+
+    features = {
+        "urethane": 1.0 if coverstock_material == "urethane" else 0.0,
+        "pearl": 1.0 if coverstock_type == "pearl" else 0.0,
+        "solid": 1.0 if coverstock_type == "solid" else 0.0,
+        "asymmetric": 1.0 if core_type == "asymmetric" else 0.0,
+        "core_unknown": 1.0 if core_type is None else 0.0,
+        "finish": PLOTTER_FINISH_LEVEL.get(finish_category, PLOTTER_FINISH_DEFAULT),
+        "rg15": _plotter_clamp_input("rg15", rg15 if rg15 is not None else PLOTTER_INPUT_FILL["rg15"]),
+        "diff15": _plotter_clamp_input("diff15", diff_value if diff_value is not None else PLOTTER_INPUT_FILL["diff15"]),
+        "mass_bias15": _plotter_clamp_input(
+            "mass_bias15", mass_bias15 if mass_bias15 is not None else PLOTTER_INPUT_FILL["mass_bias15"]
+        ),
+    }
+    if price is not None and float(price) > 0:
+        features["log_price"] = math.log(_plotter_clamp_input("price", price))
+        oil = _plotter_linear(PLOTTER_OIL_WITH_PRICE, features)
+        basis = "price"
+    else:
+        oil = _plotter_linear(PLOTTER_OIL_NO_PRICE, features)
+        basis = "no_price"
     if has_particle:
-        oil += OIL_PARTICLE_BONUS
-    oil = _clamp_oil_motion(oil, OIL_MIN, OIL_MAX)
+        oil += PLOTTER_PARTICLE_OIL_BONUS
+    motion = _plotter_linear(PLOTTER_MOTION, features)
 
-    motion = MOTION_BASE_BY_CORE_TYPE.get(core_type, MOTION_BASE_UNKNOWN_CORE)
-    if differential is not None:
-        motion += ((float(differential) - MOTION_DIFF_MIDPOINT) / MOTION_DIFF_SCALE) * MOTION_DIFF_WEIGHT
-    motion += MOTION_ADJUST_BY_COVERSTOCK_TYPE.get(coverstock_type, 0)
-    motion = _clamp_oil_motion(motion, MOTION_MIN, MOTION_MAX)
+    oil = _plotter_round(oil, PLOTTER_OIL_MIN, PLOTTER_OIL_MAX)
+    motion = _plotter_round(motion, PLOTTER_MOTION_MIN, PLOTTER_MOTION_MAX)
+    return {"oil": oil, "motion": motion, "basis": basis}
 
-    return {"oil": oil, "motion": motion}
+
+# Highest approved price ever recorded for a product (Al: highest price
+# seen, see the v3 comment) -- selected as a scalar subquery next to p.*.
+PLOTTER_MAX_PRICE_SQL = """
+    (select max(h.price)
+     from product_price_sources ps
+     join product_price_history h on h.price_source_id = ps.id
+     where ps.product_id = p.id and ps.status = 'approved' and h.price is not null)
+"""
+# <<< PLOTTER ESTIMATOR v3 <<<
 
 
 def _reference_sku(skus: list):
@@ -2928,67 +3050,64 @@ def set_plotter_position(conn, product_id: str, oil_rating: int, motion_rating: 
     return {"product_id": product_id, "oil_rating": oil_rating, "motion_rating": motion_rating, "oil_motion_source": source}
 
 
-def backfill_estimated_plotter_positions(conn) -> dict:
-    """One-time (but idempotent, safe to re-run) catalog-wide backfill for
-    every product with no plotter position at all yet -- Al's direct ask,
-    after finding out the estimate was being recomputed live on every
-    plotter API call: "i would prefer for it to just back fill the values
-    once in the DB and then estimate on scrape if not set". This function
-    is the "once" half; each scraper's upsert_product now has its own
-    matching hook that covers "on scrape if not set" for anything scraped
-    from here on. This function exists for whatever predates that hook --
-    every product already in the catalog the moment this migration/
-    deploy lands.
-
-    Never touches a product that already has ANY plotter position (chart
-    match, an earlier estimate, or a manual correction) -- 'where
-    oil_rating is null' on the write is the same not-clobber guard as
-    every scraper's own hook and as backfill_last_video_discovery_at
-    above. Scoped to every product regardless of published/status -- a
-    plotter position is scrape-derived metadata, not a publish-gated
-    feature, so a product still under review gets a real position ready
-    for whenever it's published, same reasoning the scrapers' hook uses.
-
-    Two passes (read missing + their SKUs, then write), same shape as
-    backfill_last_video_discovery_at above and for the same reason: stays
-    correct even if a real scrape lands an estimate for one of these
-    products between this function's SELECT and its UPDATE -- that
-    product's oil_rating is no longer null by the time the UPDATE's WHERE
-    clause runs, so it's naturally skipped instead of overwritten."""
-    with conn.cursor() as cur:
+def _fetch_plotter_estimate_inputs(cur, where_sql: str, params=()) -> list:
+    """Everything estimate_oil_motion (v3) needs for a set of products, in
+    two queries: product + core + finish + highest-ever approved price,
+    then each product's SKUs so _reference_sku can pick the 15lb one (Al:
+    "The 15lbs metrics should be used because that is the most common
+    weight"), falling back to the nearest weight when there's no 15lb row.
+    where_sql is a trusted, caller-written fragment over alias p."""
+    cur.execute(
+        f"""
+        select p.id, p.oil_rating, p.motion_rating, p.oil_motion_source,
+               c.core_type, p.coverstock_type, p.coverstock_material, p.has_particle, p.finish_category,
+               {PLOTTER_MAX_PRICE_SQL} as max_price
+        from products p
+        left join cores c on c.id = p.core_id
+        where {where_sql}
+        """,
+        params,
+    )
+    columns = [desc[0] for desc in cur.description]
+    products = [dict(zip(columns, row)) for row in cur.fetchall()]
+    skus_by_product = {}
+    product_ids = [p["id"] for p in products]
+    if product_ids:
         cur.execute(
-            """
-            select p.id, c.core_type, p.coverstock_type, p.coverstock_material, p.has_particle
-            from products p
-            left join cores c on c.id = p.core_id
-            where p.oil_rating is null
-            """
+            "select product_id, weight_lbs, rg, differential, mass_bias from product_skus "
+            "where product_id = any(%s::uuid[]) and differential is not null",
+            (product_ids,),
         )
-        columns = [desc[0] for desc in cur.description]
-        missing = [dict(zip(columns, row)) for row in cur.fetchall()]
+        sku_columns = [desc[0] for desc in cur.description]
+        for row in cur.fetchall():
+            sku = dict(zip(sku_columns, row))
+            skus_by_product.setdefault(sku["product_id"], []).append(sku)
+    for p in products:
+        p["ref_sku"] = _reference_sku(skus_by_product.get(p["id"], []))
+    return products
 
-        product_ids = [p["id"] for p in missing]
-        skus_by_product = {}
-        if product_ids:
-            cur.execute(
-                "select product_id, weight_lbs, differential from product_skus "
-                "where product_id = any(%s::uuid[]) and differential is not null",
-                (product_ids,),
-            )
-            sku_columns = [desc[0] for desc in cur.description]
-            for row in cur.fetchall():
-                sku = dict(zip(sku_columns, row))
-                skus_by_product.setdefault(sku["product_id"], []).append(sku)
 
+def _estimate_from_inputs(p: dict) -> dict:
+    sku = p.get("ref_sku") or {}
+    return estimate_oil_motion(
+        coverstock_material=p["coverstock_material"], coverstock_type=p["coverstock_type"],
+        has_particle=bool(p["has_particle"]), core_type=p["core_type"],
+        finish_category=p["finish_category"], rg15=sku.get("rg"), diff15=sku.get("differential"),
+        mass_bias15=sku.get("mass_bias"), price=p["max_price"],
+    )
+
+
+def backfill_estimated_plotter_positions(conn) -> dict:
+    """Fills ONLY products with no plotter position yet (oil_rating null),
+    with the v3 estimate -- never touches an existing chart, manual, or
+    estimated value. Kept for its existing route; reestimate_plotter_
+    positions below is the one-button superset Al uses."""
+    with conn.cursor() as cur:
+        missing = _fetch_plotter_estimate_inputs(cur, "p.product_type = 'ball' and p.oil_rating is null")
     updated = 0
     with conn.cursor() as cur:
         for p in missing:
-            ref_sku = _reference_sku(skus_by_product.get(p["id"], []))
-            estimate = estimate_oil_motion(
-                core_type=p["core_type"], coverstock_type=p["coverstock_type"],
-                coverstock_material=p["coverstock_material"], has_particle=p["has_particle"],
-                differential=ref_sku["differential"] if ref_sku else None,
-            )
+            estimate = _estimate_from_inputs(p)
             cur.execute(
                 "update products set oil_rating = %s, motion_rating = %s, oil_motion_source = 'estimated' "
                 "where id = %s and oil_rating is null returning id",
@@ -3001,78 +3120,58 @@ def backfill_estimated_plotter_positions(conn) -> dict:
 
 
 def reestimate_plotter_positions(conn) -> dict:
-    """Real ask, Al: "i feel like it is way off for most balls" -- backed
-    up by DEPLOY_RUNBOOK.md 6m's spot-check against the 32 chart-matched
-    products, which found estimate_oil_motion's original constants only
-    landed 2/32 exact oil matches (mean error 3.3/16). Once those
-    constants were refit against that real data (see this file's own
-    estimate_oil_motion header for the refit), backfill_estimated_
-    plotter_positions above is the wrong tool to apply the fix catalog-
-    wide: it only ever fills a NULL position once and never revisits a
-    row, so every product estimated under the OLD, badly-miscalibrated
-    formula would keep that wrong value forever even after the formula
-    itself was fixed.
+    """Admin Batch Jobs "Re-estimate plotter positions" (v3, 2026-10-04):
+    recomputes every ball still marked oil_motion_source='estimated' AND
+    fills any ball with no position yet. The five scrapers still write a
+    first, rough v2 estimate when a ball is inserted (their own copies,
+    deliberately left alone -- they only ever fill a null, and this run
+    overwrites them with v3); Al chose "Only when I click a button" over a
+    nightly job, so positions stay stable between runs. Never touches 'chart' or 'manual' rows -- the update's
+    own where clause re-checks that, so an admin's manual correction made
+    mid-run still wins.
 
-    This is the one-time "go re-run the new formula over everything the
-    old one already got wrong" pass -- run it once, right after this fix
-    deploys. Not needed again after that: every NEWLY estimated product
-    from here on already uses the refit constants (same estimate_oil_
-    motion function, no separate code path for old vs. new), so there's
-    nothing left to reconcile going forward.
-
-    Scoped strictly to oil_motion_source = 'estimated' -- never touches
-    'chart' (Brunswick's own authoritative published data, migration 011)
-    or 'manual' (an admin's own correction, more trustworthy than any
-    formula by definition). The UPDATE re-checks oil_motion_source =
-    'estimated' at write time, not just at the initial SELECT, so a
-    product that got manually corrected or matched onto a chart position
-    in between is safely skipped instead of clobbered -- same two-pass,
-    recheck-on-write shape as backfill_estimated_plotter_positions
-    above, and oil_motion_source itself is left as 'estimated' (still an
-    estimate, just a better one now)."""
+    Returns a summary for the button: how many were considered, written,
+    actually changed, newly positioned, the mean absolute shift on each
+    axis among existing estimates, and which model path each used
+    (price / no_price / plastic_pinned)."""
     with conn.cursor() as cur:
-        cur.execute(
-            """
-            select p.id, c.core_type, p.coverstock_type, p.coverstock_material, p.has_particle
-            from products p
-            left join cores c on c.id = p.core_id
-            where p.oil_motion_source = 'estimated'
-            """
+        products = _fetch_plotter_estimate_inputs(
+            cur,
+            "p.product_type = 'ball' and (p.oil_motion_source = 'estimated' or p.oil_rating is null)",
         )
-        columns = [desc[0] for desc in cur.description]
-        estimated = [dict(zip(columns, row)) for row in cur.fetchall()]
-
-        product_ids = [p["id"] for p in estimated]
-        skus_by_product = {}
-        if product_ids:
-            cur.execute(
-                "select product_id, weight_lbs, differential from product_skus "
-                "where product_id = any(%s::uuid[]) and differential is not null",
-                (product_ids,),
-            )
-            sku_columns = [desc[0] for desc in cur.description]
-            for row in cur.fetchall():
-                sku = dict(zip(sku_columns, row))
-                skus_by_product.setdefault(sku["product_id"], []).append(sku)
-
-    updated = 0
+    updated = changed = newly_estimated = 0
+    oil_shift = motion_shift = 0
+    by_basis = {}
     with conn.cursor() as cur:
-        for p in estimated:
-            ref_sku = _reference_sku(skus_by_product.get(p["id"], []))
-            estimate = estimate_oil_motion(
-                core_type=p["core_type"], coverstock_type=p["coverstock_type"],
-                coverstock_material=p["coverstock_material"], has_particle=p["has_particle"],
-                differential=ref_sku["differential"] if ref_sku else None,
-            )
+        for p in products:
+            estimate = _estimate_from_inputs(p)
+            by_basis[estimate["basis"]] = by_basis.get(estimate["basis"], 0) + 1
             cur.execute(
-                "update products set oil_rating = %s, motion_rating = %s "
-                "where id = %s and oil_motion_source = 'estimated' returning id",
+                "update products set oil_rating = %s, motion_rating = %s, oil_motion_source = 'estimated' "
+                "where id = %s and (oil_motion_source = 'estimated' or oil_rating is null) returning id",
                 (estimate["oil"], estimate["motion"], p["id"]),
             )
-            if cur.fetchone() is not None:
-                updated += 1
+            if cur.fetchone() is None:
+                continue
+            updated += 1
+            if p["oil_rating"] is None:
+                newly_estimated += 1
+            elif (p["oil_rating"], p["motion_rating"]) != (estimate["oil"], estimate["motion"]):
+                changed += 1
+            if p["oil_rating"] is not None:
+                oil_shift += abs(estimate["oil"] - p["oil_rating"])
+                motion_shift += abs(estimate["motion"] - (p["motion_rating"] or estimate["motion"]))
     conn.commit()
-    return {"products_estimated": len(estimated), "products_updated": updated}
+    previously = updated - newly_estimated
+    return {
+        "products_considered": len(products),
+        "products_updated": updated,
+        "products_changed": changed,
+        "products_newly_estimated": newly_estimated,
+        "mean_oil_shift": round(oil_shift / previously, 2) if previously else 0,
+        "mean_motion_shift": round(motion_shift / previously, 2) if previously else 0,
+        "by_basis": by_basis,
+    }
 
 
 def reorder_product_images(conn, product_id: str, image_ids: list) -> dict:

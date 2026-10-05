@@ -43,6 +43,7 @@ tests/test_public_api_service.py) and app.py's routes are logic-verified
 only, not executed.
 """
 import json
+import math
 import os
 
 # Module-level cache, deliberately NOT function-local -- see get_db_
@@ -1644,156 +1645,197 @@ def list_similar_products(conn, product_id: str, limit: int = 5) -> list:
 # module's own header comment for the full backstory)
 # --------------------------------------------------------------------
 
-# estimate_oil_motion is a documented heuristic -- same spirit and same
-# caveat as RG_RANGE/DIFF_RANGE above, still a small linear model over
-# core/coverstock features, NOT a real physics simulation. It STARTED as
-# pure general bowling-industry domain knowledge (see the original
-# reasoning paragraphs below, kept for context), but as of 2026-08-14 its
-# constants are REFIT against real data: Al's own reported experience
-# ("i feel like it is way off for most balls") plus the 2026-08-12
-# spot-check (see DEPLOY_RUNBOOK.md 6m) showed the original domain-
-# knowledge-only constants had real, systematic misses -- confirmed once
-# scripts/dump_plotter_estimate_training_data.py pulled the real (core/
-# coverstock inputs -> actual chart oil/motion) pairs for all 40 products
-# that were, at the time, matched onto a real Brunswick chart position
-# (oil_motion_source='chart').
+# >>> PLOTTER ESTIMATOR v3 >>> (identical in public_api/service.py and
+# admin_api/service.py -- tests/test_plotter_estimator_sync.py fails if the
+# two copies ever differ; each Lambda is its own package, so it's copied,
+# not imported)
 #
-# Original domain-knowledge reasoning (still directionally true, still
-# why each axis uses the inputs it does -- only the exact numbers below
-# changed):
+# v3 (2026-10-04) -- Al: "I think there are some ball metrics that are
+# getting overlooked that could be used to better estimate those ...
+# coverstock_material, coverstock_type, factory_finish, rg(15lbs),
+# diff(15lbs), mass_bias(15lbs), price ... The 15lbs metrics should be used
+# because that is the most common weight. Price typically indicates higher
+# performance." v2 (superseded; DEPLOY_RUNBOOK.md 6m, 6bx) only used cover material/type,
+# particle, core type, and differential -- never RG, mass bias, finish, or
+# price.
 #
-#   oil (1 light -> 16 heavy) is primarily a COVERSTOCK friction/traction
-#   question -- higher-friction covers hook earlier and need more oil on
-#   the lane to be controllable, lower-friction covers skid further and
-#   suit lighter/drier conditions. Material dominates (polyester <
-#   urethane < reactive resin), and within reactive resin, type matters
-#   too (pearl skids more than solid). Particle coverstocks push further
-#   into heavy-oil territory than any of those alone.
+# Two ridge regressions fit on the 44 real chart-positioned reactive/
+# urethane balls (oil_motion_source='chart'; Hammer, Brunswick, Radical,
+# DV8, Ebonite, Track). Leave-one-out scores, each ball predicted by a
+# model fit on the others, vs v2 on the same balls:
+#   oil:    v2 MAE 2.66, within +/-2 21/44  ->  v3 with price MAE 1.35 (within
+#           +/-2 34/40), without price MAE 1.52 (35/44)
+#   motion: v2 MAE 2.41, within +/-2 27/44  ->  v3 MAE 1.75 (within +/-2 32/44)
+# What the chart says (single-feature correlations): price is the
+# strongest oil signal (+0.79) and says nothing about motion (+0.09);
+# duller finishes = heavier oil (+0.43) and smoother motion (-0.55);
+# higher 15lb differential = more oil and more motion (+0.58/+0.53);
+# lower 15lb RG trends to both (-0.37/-0.47); 15lb mass bias is a modest
+# oil signal (+0.37, asymmetric balls only).
 #
-#   motion (1 smooth -> 18 angular) is primarily a CORE question --
-#   asymmetric cores create a sharper, more defined direction change than
-#   symmetric ones, and that effect scales with differential (more flare
-#   potential = more angular). Coverstock type gets a smaller secondary
-#   nudge.
+# Decisions (Al, 2026-10-04):
+# - Price = the HIGHEST approved price ever seen for the ball (BowlerDepot
+#   or bowling.com) -- the closest thing to launch/retail; a clearance
+#   markdown mustn't make a ball look weaker. log(price), clamped.
+# - No price (retired balls, mostly) -> the no-price oil model.
+# - Motion ALWAYS uses the no-price model: adding price made motion worse
+#   (MAE 1.9 vs 1.75) -- price tracks strength, which lives on the oil
+#   axis ("More total hook would be more along the oil axis"). Motion =
+#   back-end angularity, per the chart: light-oil polished balls rate high
+#   (Bubblegum Vibe 4/15), smooth urethane/dull ones low (Purple Pearl
+#   Urethane 7/2).
+# - Plastic (polyester) -> pinned to oil 1, motion 1, whatever the core.
+#   First drafted as "pinned unless it has a performance core, then
+#   capped at oil 5 / motion 8"; Brunswick's Sept 2026 Ball Motion
+#   Comparison Chart (Form #0726-12, Al shared it mid-change: "it looks
+#   like they pin the widow spare+ to the bottom left 1 & 1") pins even
+#   the Black Widow Spare+ -- a Black Widow core under a plastic cover --
+#   at (1, 1). So the cover decides: plastic goes straight.
+# - Particle covers keep v2's untested +2 oil (no particle balls in the
+#   chart data either).
+# - Numeric inputs are clamped to the range seen in the chart data before
+#   applying the coefficients: with only ~44 points some coefficients are
+#   steep (RG especially), and other brands' outliers mustn't extrapolate
+#   wildly. Missing RG/differential -> the chart data's mean; missing mass
+#   bias -> 0 (symmetric); missing finish -> satin; missing core type ->
+#   its own "unknown" coefficient.
+# - Recomputed only on demand (admin Batch Jobs "Re-estimate plotter
+#   positions" -> admin_api.reestimate_plotter_positions); chart and manual
+#   positions are never touched. The five scrapers still carry v2 and use
+#   it only to fill a brand-new ball's null position at insert -- the next
+#   re-estimate replaces it with this.
 #
-# WHAT THE REAL DATA ACTUALLY SHOWED (40 chart-matched products,
-# 2026-08-14 refit -- see scripts/dump_plotter_estimate_training_data.py
-# and its own module docstring for how this was pulled):
-#
-#   The single biggest miss, by far: OIL_ADJUST_BY_TYPE's old flat "+3"
-#   for a solid coverstock. Real reactive-resin/solid balls (n=16, the
-#   single largest group in the data) average oil=10.0 -- essentially
-#   IDENTICAL to reactive-resin/hybrid's own real average (9.4), not 3
-#   points heavier. The old +3 overshot this whole class hard (e.g.
-#   Revenge Solid: real oil 3, old estimate 13) -- exactly the pattern
-#   DEPLOY_RUNBOOK.md's 2026-08-12 spot-check flagged. Fixed by dropping
-#   solid's oil adjustment to 0 (same as hybrid). Note this group is also
-#   the model's biggest remaining known weakness: real oil for reactive-
-#   resin/solid balls genuinely ranges from 3 (Revenge Solid) to 16 (Zero
-#   Mercy Solid) even holding material+type fixed -- a real, wide spread
-#   this 2-input model structurally can't capture. Worth a future revisit
-#   with a more granular input (e.g. which core LINE a ball belongs to)
-#   once that's available as structured data, not just a bigger version
-#   of this same formula.
-#
-#   Urethane's oil base nudged 5 -> 6 (real urethane balls average 6.0
-#   across the 5 samples available -- still a small sample, still worth
-#   more data over time).
-#
-#   Motion's real numbers ran higher across the board than the original
-#   guesses at every core-type base AND needed a stronger differential
-#   weight to match -- refit via ordinary least squares against all 40
-#   points (course inputs: core_type dummy, coverstock_type dummy,
-#   differential). One genuine surprise vs. the original hand-written
-#   reasoning: real solid-coverstock balls trend slightly MORE angular
-#   than hybrid, not less (the old "-1" was backwards; real data wants
-#   roughly "+1") -- pearl's real "more angular than hybrid" direction
-#   held up (old +1 was directionally right, just too small).
-#
-#   OIL_PARTICLE_BONUS and OIL_BASE_BY_MATERIAL["polyester_plastic"]
-#   could NOT be refit -- zero has_particle=true or polyester_plastic
-#   products exist in this 40-product real-chart dataset, so both are
-#   still the original, untested domain-knowledge guesses.
-#
-#   Measured accuracy, old vs. new formula, both scored against the same
-#   40 real chart positions: oil mean absolute error 3.05 -> 2.675 (on
-#   the 1-16 scale), exact matches 4/40 -> 4/40 (unchanged), within +/-2
-#   18/40 -> 18/40 (unchanged, oil's real spread inside the solid group
-#   above is the limiting factor, not the constants); motion mean
-#   absolute error 2.75 -> 2.5 (on the 1-18 scale), exact matches 3/40 ->
-#   6/40, within +/-2 22/40 -> 24/40. A real, modest, net improvement
-#   across the board (no metric regressed) -- not a dramatic fix, because
-#   real ball motion depends on more than these few inputs, but a
-#   genuine step up validated against real answers instead of guessed a
-#   second time.
-#
-# scripts/reestimate_plotter_positions.py (+ admin_api.reestimate_
-# plotter_positions) re-runs THIS formula against every product still
-# marked oil_motion_source='estimated' so products estimated under the
-# OLD constants actually get the fix, not just new ones.
-#
-# Revisit again once more real chart/reference data exists -- especially
-# the reactive-resin/solid spread flagged above, and OIL_PARTICLE_BONUS/
-# polyester_plastic once a real particle or plastic-cover chart match
-# shows up.
+# Refit: scripts/dump_plotter_estimate_training_data.py pulls the training
+# rows; refit the same way (ridge, leave-one-out) when more real chart
+# positions exist -- especially plastic, particle, and non-chart brands.
 
-OIL_BASE_BY_MATERIAL = {
-    "polyester_plastic": 2,   # unchanged -- no real polyester_plastic samples to refit against
-    "urethane": 6,
-    "reactive_resin": 10,
+PLOTTER_OIL_MIN, PLOTTER_OIL_MAX = 1, 16
+PLOTTER_MOTION_MIN, PLOTTER_MOTION_MAX = 1, 18
+
+PLOTTER_FINISH_LEVEL = {"polished": 0.0, "satin": 1.0, "dull": 2.0}
+PLOTTER_FINISH_DEFAULT = 1.0
+PLOTTER_INPUT_RANGES = {
+    "rg15": (2.462, 2.65),
+    "diff15": (0.015, 0.058),
+    "mass_bias15": (0.0, 0.02),
+    "price": (109.95, 194.95),
 }
-OIL_ADJUST_BY_TYPE = {
-    "pearl": -3,   # unchanged -- matched real data closely already
-    "hybrid": 0,
-    "solid": 0,    # was +3 -- the single biggest fix, see comment above
+PLOTTER_INPUT_FILL = {"rg15": 2.5068, "diff15": 0.0455, "mass_bias15": 0.0}
+PLOTTER_PARTICLE_OIL_BONUS = 2
+# Brunswick's Sept 2026 chart puts plastic (Black Widow Spare+) at (1, 1).
+PLOTTER_PLASTIC_PINNED = (1, 1)
+
+PLOTTER_OIL_WITH_PRICE = {
+    "intercept": -28.6432,
+    "coef": {
+        "urethane": -0.9691,
+        "pearl": -0.0935,
+        "solid": 0.2961,
+        "asymmetric": 0.4793,
+        "core_unknown": -0.3932,
+        "finish": 0.7712,
+        "rg15": 0.2041,
+        "diff15": 63.5959,
+        "mass_bias15": 93.9502,
+        "log_price": 6.3833,
+    },
 }
-OIL_PARTICLE_BONUS = 2  # unchanged -- no real has_particle=true samples to refit against
-
-MOTION_BASE_BY_CORE_TYPE = {
-    "symmetric": 4,
-    "asymmetric": 8,
+PLOTTER_OIL_NO_PRICE = {
+    "intercept": -2.8342,
+    "coef": {
+        "urethane": -1.7268,
+        "pearl": -0.161,
+        "solid": -0.1542,
+        "asymmetric": 0.679,
+        "core_unknown": 0.2612,
+        "finish": 1.4907,
+        "rg15": 2.0279,
+        "diff15": 77.7788,
+        "mass_bias15": 190.1347,
+    },
 }
-MOTION_BASE_UNKNOWN_CORE = 6  # default when core_type is unset
-MOTION_DIFF_MIDPOINT = 0.02   # unchanged -- still roughly the low end of a typical differential range
-MOTION_DIFF_SCALE = 0.045     # unchanged -- still roughly the typical differential range's span
-MOTION_DIFF_WEIGHT = 8        # how many motion points a full-range differential swing is worth
-MOTION_ADJUST_BY_COVERSTOCK_TYPE = {
-    "pearl": 2,
-    "solid": 1,    # was -1 -- real data runs the opposite direction from the original guess, see comment above
-    "hybrid": 0,
+PLOTTER_MOTION = {
+    "intercept": -51.5571,
+    "coef": {
+        "urethane": -7.0056,
+        "pearl": -0.67,
+        "solid": 0.8938,
+        "asymmetric": 0.5761,
+        "core_unknown": -1.5752,
+        "finish": -2.2772,
+        "rg15": 24.3322,
+        "diff15": 136.672,
+        "mass_bias15": 3.0243,
+    },
 }
 
-OIL_MIN, OIL_MAX = 1, 16
-MOTION_MIN, MOTION_MAX = 1, 18
+
+def _plotter_clamp_input(name: str, value):
+    low, high = PLOTTER_INPUT_RANGES[name]
+    return max(low, min(high, float(value)))
 
 
-def _clamp(value: float, low: int, high: int) -> int:
+def _plotter_round(value: float, low: int, high: int) -> int:
     return max(low, min(high, round(value)))
 
 
-def estimate_oil_motion(core_type: str = None, coverstock_type: str = None,
-                         coverstock_material: str = None, has_particle: bool = False,
-                         differential: float = None) -> dict:
-    """Pure function (no DB) -- see the module-level comment above this
-    for the reasoning behind every constant here. Always returns a
-    usable (oil, motion) pair, even with every input missing (falls back
-    to the middle of each axis) -- a product this sparse is rare (every
-    scraper always writes coverstock_material/coverstock_type at
-    minimum) but the frontend shouldn't have to special-case a missing
-    plotter position for a published, presumably-real product."""
-    oil = OIL_BASE_BY_MATERIAL.get(coverstock_material, (OIL_MIN + OIL_MAX) / 2)
-    oil += OIL_ADJUST_BY_TYPE.get(coverstock_type, 0)
+def _plotter_linear(model: dict, features: dict) -> float:
+    return model["intercept"] + sum(weight * features.get(name, 0.0) for name, weight in model["coef"].items())
+
+
+def estimate_oil_motion(coverstock_material: str = None, coverstock_type: str = None,
+                         has_particle: bool = False, core_type: str = None,
+                         finish_category: str = None, rg15=None, diff15=None,
+                         mass_bias15=None, price=None) -> dict:
+    """Pure function (no DB): the plotter's (oil 1-16, motion 1-18)
+    estimate for a ball from its specs -- see the PLOTTER ESTIMATOR v3
+    comment above for the model, the data behind it, and every rule.
+    Always returns a usable pair, even with every input missing. "basis"
+    says which path produced it, for debugging and the admin re-estimate
+    summary: "plastic_pinned", "price", or "no_price"."""
+    if coverstock_material == "polyester_plastic":
+        oil, motion = PLOTTER_PLASTIC_PINNED
+        return {"oil": oil, "motion": motion, "basis": "plastic_pinned"}
+    diff_value = float(diff15) if diff15 is not None else None
+
+    features = {
+        "urethane": 1.0 if coverstock_material == "urethane" else 0.0,
+        "pearl": 1.0 if coverstock_type == "pearl" else 0.0,
+        "solid": 1.0 if coverstock_type == "solid" else 0.0,
+        "asymmetric": 1.0 if core_type == "asymmetric" else 0.0,
+        "core_unknown": 1.0 if core_type is None else 0.0,
+        "finish": PLOTTER_FINISH_LEVEL.get(finish_category, PLOTTER_FINISH_DEFAULT),
+        "rg15": _plotter_clamp_input("rg15", rg15 if rg15 is not None else PLOTTER_INPUT_FILL["rg15"]),
+        "diff15": _plotter_clamp_input("diff15", diff_value if diff_value is not None else PLOTTER_INPUT_FILL["diff15"]),
+        "mass_bias15": _plotter_clamp_input(
+            "mass_bias15", mass_bias15 if mass_bias15 is not None else PLOTTER_INPUT_FILL["mass_bias15"]
+        ),
+    }
+    if price is not None and float(price) > 0:
+        features["log_price"] = math.log(_plotter_clamp_input("price", price))
+        oil = _plotter_linear(PLOTTER_OIL_WITH_PRICE, features)
+        basis = "price"
+    else:
+        oil = _plotter_linear(PLOTTER_OIL_NO_PRICE, features)
+        basis = "no_price"
     if has_particle:
-        oil += OIL_PARTICLE_BONUS
-    oil = _clamp(oil, OIL_MIN, OIL_MAX)
+        oil += PLOTTER_PARTICLE_OIL_BONUS
+    motion = _plotter_linear(PLOTTER_MOTION, features)
 
-    motion = MOTION_BASE_BY_CORE_TYPE.get(core_type, MOTION_BASE_UNKNOWN_CORE)
-    if differential is not None:
-        motion += ((float(differential) - MOTION_DIFF_MIDPOINT) / MOTION_DIFF_SCALE) * MOTION_DIFF_WEIGHT
-    motion += MOTION_ADJUST_BY_COVERSTOCK_TYPE.get(coverstock_type, 0)
-    motion = _clamp(motion, MOTION_MIN, MOTION_MAX)
+    oil = _plotter_round(oil, PLOTTER_OIL_MIN, PLOTTER_OIL_MAX)
+    motion = _plotter_round(motion, PLOTTER_MOTION_MIN, PLOTTER_MOTION_MAX)
+    return {"oil": oil, "motion": motion, "basis": basis}
 
-    return {"oil": oil, "motion": motion}
+
+# Highest approved price ever recorded for a product (Al: highest price
+# seen, see the v3 comment) -- selected as a scalar subquery next to p.*.
+PLOTTER_MAX_PRICE_SQL = """
+    (select max(h.price)
+     from product_price_sources ps
+     join product_price_history h on h.price_source_id = ps.id
+     where ps.product_id = p.id and ps.status = 'approved' and h.price is not null)
+"""
+# <<< PLOTTER ESTIMATOR v3 <<<
 
 
 def list_plotter_positions(conn, status: str = "current", ids: list = None) -> list:
@@ -1849,6 +1891,7 @@ def list_plotter_positions(conn, status: str = "current", ids: list = None) -> l
             select p.id, p.name, p.url,
                    b.name as brand_name,
                    c.core_type, p.coverstock_type, p.coverstock_material, p.has_particle,
+                   p.finish_category, {PLOTTER_MAX_PRICE_SQL} as max_price,
                    p.oil_rating, p.motion_rating, p.oil_motion_source,
                    coalesce(
                        (
@@ -1873,7 +1916,7 @@ def list_plotter_positions(conn, status: str = "current", ids: list = None) -> l
         skus_by_product = {}
         if product_ids:
             cur.execute(
-                "select product_id, weight_lbs, rg, differential from product_skus "
+                "select product_id, weight_lbs, rg, differential, mass_bias from product_skus "
                 "where product_id = any(%s::uuid[]) and differential is not null",
                 (product_ids,),
             )
@@ -1887,11 +1930,18 @@ def list_plotter_positions(conn, status: str = "current", ids: list = None) -> l
         if p["oil_rating"] is not None and p["motion_rating"] is not None:
             oil, motion, source = p["oil_rating"], p["motion_rating"], p["oil_motion_source"] or "estimated"
         else:
-            ref_sku = _reference_sku(skus_by_product.get(p["id"], []))
+            # Live fallback for a ball with no stored position (rare: the
+            # scrapers write a first estimate on insert, and admin
+            # "Re-estimate plotter positions" stores v3) -- the same v3
+            # estimate that run would write, from the 15lb SKU and
+            # highest price.
+            ref_sku = _reference_sku(skus_by_product.get(p["id"], [])) or {}
             estimate = estimate_oil_motion(
-                core_type=p["core_type"], coverstock_type=p["coverstock_type"],
-                coverstock_material=p["coverstock_material"], has_particle=p["has_particle"],
-                differential=ref_sku["differential"] if ref_sku else None,
+                coverstock_material=p["coverstock_material"], coverstock_type=p["coverstock_type"],
+                has_particle=bool(p["has_particle"]), core_type=p["core_type"],
+                finish_category=p["finish_category"], rg15=ref_sku.get("rg"),
+                diff15=ref_sku.get("differential"), mass_bias15=ref_sku.get("mass_bias"),
+                price=p["max_price"],
             )
             oil, motion, source = estimate["oil"], estimate["motion"], "estimated"
         results.append({

@@ -62,6 +62,7 @@ import type {
   DeleteImageCandidateResult,
   SetPublishedResult,
   SkuStockHistoryResult,
+  ReestimatePlotterResult,
   SyncBowlerDepotReconciliationResult,
   UrlDiscoveryTarget,
   VideoCandidateListResult,
@@ -289,6 +290,14 @@ export function checkPriceForProduct(productId: string): Promise<CheckPriceResul
 // own handler always re-checks every current+published product.
 export function syncBowlerDepotReconciliation(): Promise<SyncBowlerDepotReconciliationResult> {
   return apiPost<SyncBowlerDepotReconciliationResult>("/admin/sync-bowlerdepot-reconciliation");
+}
+
+// Plotter estimator v3 (DEPLOY_RUNBOOK.md 6bx) -- Al asked for recalculation
+// "Only when I click a button", so nothing re-runs this on a schedule.
+// Synchronous: one pass over every ball whose position is estimated (or
+// missing); chart/manual positions are never touched.
+export function reestimatePlotterPositions(): Promise<ReestimatePlotterResult> {
+  return apiPost<ReestimatePlotterResult>("/admin/reestimate-plotter-positions");
 }
 
 // Manual-override path -- see create_product_price_source's own

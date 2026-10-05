@@ -435,6 +435,19 @@ export interface DeleteProductPriceSourceResult {
 // approved+summarized videos yet" is a normal, expected outcome
 // (rollup_regenerated: false + reason), not an HTTP error, same
 // convention as RescrapeResult's queued/reason shape.
+// POST /admin/reestimate-plotter-positions (estimator v3, runbook 6bx).
+// by_basis counts which model placed each ball: "price" (highest price
+// seen), "no_price", or "plastic_pinned" (1, 1).
+export interface ReestimatePlotterResult {
+  products_considered: number;
+  products_updated: number;
+  products_changed: number;
+  products_newly_estimated: number;
+  mean_oil_shift: number | null;
+  mean_motion_shift: number | null;
+  by_basis: Record<string, number>;
+}
+
 export interface RefreshRollupResult {
   product_id: string;
   rollup_regenerated: boolean;

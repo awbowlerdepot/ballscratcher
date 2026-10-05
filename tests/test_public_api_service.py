@@ -1056,7 +1056,8 @@ class _FakeCursor:
 
             self._description = [(c,) for c in (
                 "id", "name", "url", "brand_name", "core_type", "coverstock_type", "coverstock_material",
-                "has_particle", "oil_rating", "motion_rating", "oil_motion_source", "primary_image_url",
+                "has_particle", "finish_category", "max_price",
+                "oil_rating", "motion_rating", "oil_motion_source", "primary_image_url",
             )]
             rows = []
             for pid, p in self.db["products"].items():
@@ -1065,19 +1066,21 @@ class _FakeCursor:
                     rows.append((
                         pid, p["name"], p["url"], self.db["brands"][p["brand_id"]]["name"],
                         core.get("core_type"), p.get("coverstock_type"), p.get("coverstock_material"),
-                        p.get("has_particle", False), p.get("oil_rating"), p.get("motion_rating"),
+                        p.get("has_particle", False), p.get("finish_category"), p.get("max_price"),
+                        p.get("oil_rating"), p.get("motion_rating"),
                         p.get("oil_motion_source"), _derive_primary_image_url(self.db, pid, p),
                     ))
             self._result_rows = rows
 
-        elif q.startswith("select product_id, weight_lbs, rg, differential from product_skus where product_id = any(%s::uuid[]) and differential is not null"):
+        elif q.startswith("select product_id, weight_lbs, rg, differential, mass_bias from product_skus where product_id = any(%s::uuid[]) and differential is not null"):
+            # Plotter estimator v3 inputs (15lb RG/diff/mass bias).
             ids = set(params[0])
-            self._description = [("product_id",), ("weight_lbs",), ("rg",), ("differential",)]
+            self._description = [("product_id",), ("weight_lbs",), ("rg",), ("differential",), ("mass_bias",)]
             rows = []
             for pid in ids:
                 for s in self.db["skus"].get(pid, []):
                     if s.get("differential") is not None:
-                        rows.append((pid, s["weight_lbs"], s.get("rg"), s["differential"]))
+                        rows.append((pid, s["weight_lbs"], s.get("rg"), s["differential"], s.get("mass_bias")))
             self._result_rows = rows
 
         elif q.startswith("select p.video_reviews_summary, p.video_reviews_summary_video_count"):
@@ -1588,48 +1591,32 @@ def test_list_similar_products_respects_limit():
 
 # --- estimate_oil_motion: pure, no DB ---
 
-def test_estimate_oil_motion_within_valid_ranges_for_every_material_type_combo():
-    materials = [None, "polyester_plastic", "urethane", "reactive_resin"]
-    types = [None, "solid", "pearl", "hybrid"]
-    core_types = [None, "symmetric", "asymmetric"]
-    for m in materials:
-        for t in types:
-            for c in core_types:
-                for particle in (True, False):
-                    for diff in (None, 0.01, 0.065):
-                        result = service.estimate_oil_motion(
-                            core_type=c, coverstock_type=t, coverstock_material=m,
-                            has_particle=particle, differential=diff,
-                        )
-                        assert service.OIL_MIN <= result["oil"] <= service.OIL_MAX
-                        assert service.MOTION_MIN <= result["motion"] <= service.MOTION_MAX
+def test_estimate_oil_motion_within_valid_ranges_for_every_combo():
+    """Estimator v3 -- the full behavior suite lives in
+    test_admin_api_service.py (same block, kept identical by
+    test_plotter_estimator_sync.py); this checks the public copy's range."""
+    for m in [None, "polyester_plastic", "urethane", "reactive_resin"]:
+        for t in [None, "solid", "pearl", "hybrid"]:
+            for c in [None, "symmetric", "asymmetric"]:
+                for finish in [None, "polished", "dull"]:
+                    for particle in (True, False):
+                        for diff, rg, price in ((None, None, None), (0.01, 2.70, 90.0), (0.065, 2.45, 260.0)):
+                            result = service.estimate_oil_motion(
+                                core_type=c, coverstock_type=t, coverstock_material=m, has_particle=particle,
+                                finish_category=finish, rg15=rg, diff15=diff, price=price,
+                            )
+                            assert service.PLOTTER_OIL_MIN <= result["oil"] <= service.PLOTTER_OIL_MAX
+                            assert service.PLOTTER_MOTION_MIN <= result["motion"] <= service.PLOTTER_MOTION_MAX
 
 
-def test_estimate_oil_motion_heavier_material_and_particle_increase_oil():
+def test_estimate_oil_motion_plastic_pinned_and_particle_increases_oil():
     poly = service.estimate_oil_motion(coverstock_material="polyester_plastic")
     solid_resin = service.estimate_oil_motion(coverstock_type="solid", coverstock_material="reactive_resin")
     particle_solid_resin = service.estimate_oil_motion(
         coverstock_type="solid", coverstock_material="reactive_resin", has_particle=True,
     )
+    assert (poly["oil"], poly["motion"]) == (1, 1)
     assert poly["oil"] < solid_resin["oil"] < particle_solid_resin["oil"]
-
-
-def test_estimate_oil_motion_pearl_skids_more_than_solid():
-    solid = service.estimate_oil_motion(coverstock_type="solid", coverstock_material="reactive_resin")
-    pearl = service.estimate_oil_motion(coverstock_type="pearl", coverstock_material="reactive_resin")
-    assert pearl["oil"] < solid["oil"]
-
-
-def test_estimate_oil_motion_asymmetric_and_higher_differential_increase_motion():
-    sym_low_diff = service.estimate_oil_motion(core_type="symmetric", differential=0.015)
-    asym_high_diff = service.estimate_oil_motion(core_type="asymmetric", differential=0.06)
-    assert sym_low_diff["motion"] < asym_high_diff["motion"]
-
-
-def test_estimate_oil_motion_no_inputs_falls_back_to_midrange():
-    result = service.estimate_oil_motion()
-    assert service.OIL_MIN < result["oil"] < service.OIL_MAX
-    assert service.MOTION_MIN < result["motion"] < service.MOTION_MAX
 
 
 # --- list_plotter_positions: multi-query assembly, chart vs. estimated ---
@@ -1683,8 +1670,11 @@ def test_list_plotter_positions_estimates_when_chart_value_unset():
 
     assert len(results) == 1
     assert results[0]["oil_motion_source"] == "estimated"
-    assert service.OIL_MIN <= results[0]["oil"] <= service.OIL_MAX
-    assert service.MOTION_MIN <= results[0]["motion"] <= service.MOTION_MAX
+    expected = service.estimate_oil_motion(
+        core_type="symmetric", coverstock_type="pearl", coverstock_material="reactive_resin",
+        rg15=2.50, diff15=0.020,
+    )
+    assert (results[0]["oil"], results[0]["motion"]) == (expected["oil"], expected["motion"])
 
 
 def test_list_plotter_positions_only_published_current_by_default():

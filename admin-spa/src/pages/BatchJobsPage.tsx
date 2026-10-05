@@ -6,6 +6,7 @@ import {
   listManualSeedUrls,
   listProducts,
   listUrlDiscoveryTargets,
+  reestimatePlotterPositions,
   refreshVideoSummary,
   rescrapeProduct,
   runUrlDiscovery,
@@ -15,6 +16,7 @@ import type {
   Brand,
   ListProductsParams,
   ManualSeedUrl,
+  ReestimatePlotterResult,
   RefreshRollupResult,
   RescrapeResult,
   UrlDiscoveryTarget,
@@ -263,6 +265,64 @@ function SyncReconciliationButton() {
   );
 }
 
+// Plotter estimator v3 (DEPLOY_RUNBOOK.md 6bx). Al: "Only when I click a
+// button" -- improving the estimator must not silently move every ball on
+// the plotter, so the recompute is this one deliberate click. Unlike the
+// fire-and-forget buttons above this one is synchronous (one SQL pass over
+// ~1.5k balls, a few seconds) so it can show what actually moved. Chart
+// and manual positions are never touched; scrapers still only fill a
+// brand-new ball's empty position.
+function describeReestimate(r: ReestimatePlotterResult): string {
+  const basis = Object.entries(r.by_basis)
+    .map(([k, v]) => `${v} ${k.replace(/_/g, " ")}`)
+    .join(", ");
+  return (
+    `${r.products_considered} balls checked, ${r.products_changed} moved` +
+    (r.products_newly_estimated ? `, ${r.products_newly_estimated} newly placed` : "") +
+    `. Avg shift: oil ${r.mean_oil_shift ?? 0}, motion ${r.mean_motion_shift ?? 0}.` +
+    (basis ? ` Model used: ${basis}.` : "")
+  );
+}
+
+function ReestimatePlotterButton() {
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<string | null>(null);
+
+  async function run() {
+    if (
+      !window.confirm(
+        "Recalculate every estimated plotter position with the current estimator? Chart and manual positions stay as they are.",
+      )
+    )
+      return;
+    setRunning(true);
+    setResult(null);
+    try {
+      setResult(describeReestimate(await reestimatePlotterPositions()));
+    } catch (err) {
+      setResult(`Error: ${err instanceof Error ? err.message : "failed"}`);
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <div className="flex flex-col gap-1 rounded-lg border border-ink-200 bg-ink-100 p-3">
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-sm font-medium text-ink-800">Re-estimate plotter positions</span>
+        <Button variant="primary" size="sm" onClick={run} disabled={running}>
+          {running ? "Recalculating…" : "Run"}
+        </Button>
+      </div>
+      <p className="text-xs text-ink-500">
+        Recomputes oil/motion for every ball without a chart or manual position, from cover, finish, 15 lb RG/diff/mass
+        bias and highest price seen. Plastic is pinned to (1, 1).
+      </p>
+      {result && <p className="text-xs text-ink-500">{result}</p>}
+    </div>
+  );
+}
+
 function describeRescrape(r: RescrapeResult): string {
   return r.queued ? "queued for rescrape" : (r.reason ?? "not queued");
 }
@@ -432,6 +492,19 @@ export default function BatchJobsPage() {
         </div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <SyncReconciliationButton />
+        </div>
+      </section>
+
+      <section className="flex flex-col gap-4">
+        <div>
+          <h2 className="text-lg font-semibold text-ink-800">Ball motion plotter</h2>
+          <p className="text-sm text-ink-500">
+            Estimated positions only change when you run this -- new balls get a position when they're scraped, but
+            existing ones never move on their own.
+          </p>
+        </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <ReestimatePlotterButton />
         </div>
       </section>
 

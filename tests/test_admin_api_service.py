@@ -382,22 +382,17 @@ class FakeCursor:
             row["video_reviews_summary_updated_at"] = "now"
             self._last_result = None
 
-        elif q.startswith("update products set oil_rating") and "where id = %s and oil_motion_source = 'estimated'" in q:
-            # reestimate_plotter_positions' per-row OVERWRITE -- checked
-            # before the backfill branch below since both queries contain
-            # the literal text "oil_motion_source = 'estimated'"
-            # somewhere; this one is distinguished by that text living in
-            # the WHERE clause (re-checked at write time) rather than the
-            # SET clause, and only ever writes 2 columns (oil_rating/
-            # motion_rating), never touching oil_motion_source itself --
-            # it's still 'estimated' after a re-estimate, just a better
-            # estimate now.
+        elif q.startswith("update products set oil_rating") and "(oil_motion_source = 'estimated' or oil_rating is null)" in q:
+            # reestimate_plotter_positions' per-row write (v3): overwrites
+            # an 'estimated' row or fills a null one, never 'chart'/'manual'
+            # -- re-checked in the WHERE clause at write time.
             oil_rating, motion_rating, product_id = params
             row = self.db["products"].get(product_id)
             self._last_result = None
-            if row is not None and row.get("oil_motion_source") == "estimated":
+            if row is not None and (row.get("oil_motion_source") == "estimated" or row.get("oil_rating") is None):
                 row["oil_rating"] = oil_rating
                 row["motion_rating"] = motion_rating
+                row["oil_motion_source"] = "estimated"
                 self._last_result = (product_id,)
             self.description = [("id",)]
 
@@ -431,46 +426,36 @@ class FakeCursor:
                 self._last_result = (product_id,)
             self.description = [("id",)]
 
-        elif q.startswith("select p.id, c.core_type, p.coverstock_type, p.coverstock_material, p.has_particle") and "oil_motion_source = 'estimated'" in q:
-            # reestimate_plotter_positions' scan -- every product CURRENTLY
-            # marked 'estimated' (regardless of whether oil_rating is
-            # already set, which it always is for this source), checked
-            # before the missing-position branch below since both start
-            # with the same select-list prefix.
-            estimated = [
-                (pid, row.get("core_type"), row.get("coverstock_type"),
-                 row.get("coverstock_material"), row.get("has_particle"))
-                for pid, row in self.db["products"].items()
-                if row.get("oil_motion_source") == "estimated"
-            ]
-            self._rows = estimated
-            self.description = [("id",), ("core_type",), ("coverstock_type",), ("coverstock_material",), ("has_particle",)]
+        elif q.startswith("select p.id, p.oil_rating, p.motion_rating, p.oil_motion_source, c.core_type"):
+            # _fetch_plotter_estimate_inputs (v3) -- reestimate_plotter_
+            # positions (estimated OR null) or backfill_estimated_plotter_
+            # positions (null only), told apart by the WHERE text. Flat read
+            # off each product dict (fixtures set core_type/finish_category/
+            # max_price directly), same simplification as the rest of this
+            # fake. product_type defaults to 'ball' when a fixture omits it.
+            include_estimated = "p.oil_motion_source = 'estimated' or p.oil_rating is null" in q
+            rows = []
+            for pid, row in self.db["products"].items():
+                if row.get("product_type", "ball") != "ball":
+                    continue
+                if row.get("oil_rating") is None or (include_estimated and row.get("oil_motion_source") == "estimated"):
+                    rows.append((pid, row.get("oil_rating"), row.get("motion_rating"), row.get("oil_motion_source"),
+                                 row.get("core_type"), row.get("coverstock_type"), row.get("coverstock_material"),
+                                 row.get("has_particle"), row.get("finish_category"), row.get("max_price")))
+            self._rows = rows
+            self.description = [("id",), ("oil_rating",), ("motion_rating",), ("oil_motion_source",), ("core_type",),
+                                ("coverstock_type",), ("coverstock_material",), ("has_particle",),
+                                ("finish_category",), ("max_price",)]
 
-        elif q.startswith("select p.id, c.core_type, p.coverstock_type, p.coverstock_material, p.has_particle"):
-            # backfill_estimated_plotter_positions' missing-position scan.
-            # The fake models this as a flat read off each product dict's
-            # own core_type/coverstock_type/coverstock_material/has_particle
-            # keys (test fixtures set these directly) rather than a real
-            # cores join -- same simplification every other product-row
-            # fake in this file already uses.
-            missing = [
-                (pid, row.get("core_type"), row.get("coverstock_type"),
-                 row.get("coverstock_material"), row.get("has_particle"))
-                for pid, row in self.db["products"].items()
-                if row.get("oil_rating") is None
-            ]
-            self._rows = missing
-            self.description = [("id",), ("core_type",), ("coverstock_type",), ("coverstock_material",), ("has_particle",)]
-
-        elif q.startswith("select product_id, weight_lbs, differential from product_skus"):
+        elif q.startswith("select product_id, weight_lbs, rg, differential, mass_bias from product_skus"):
             (product_ids,) = params
             rows = [
-                (sku["product_id"], sku["weight_lbs"], sku["differential"])
+                (sku["product_id"], sku["weight_lbs"], sku.get("rg"), sku["differential"], sku.get("mass_bias"))
                 for sku in self.db.get("product_skus_plotter", [])
                 if sku["product_id"] in product_ids and sku["differential"] is not None
             ]
             self._rows = rows
-            self.description = [("product_id",), ("weight_lbs",), ("differential",)]
+            self.description = [("product_id",), ("weight_lbs",), ("rg",), ("differential",), ("mass_bias",)]
 
         elif q.startswith("update products set") and "returning id" not in q:
             column = q.split("set ", 1)[1].split(" =", 1)[0]
@@ -4534,18 +4519,6 @@ def test_set_plotter_position_missing_product_raises():
 # service.py, must behave identically -- spot checks, not the full
 # exhaustive sweep (that already lives in test_public_api_service.py).
 
-def test_estimate_oil_motion_matches_public_api_shape():
-    # oil: reactive_resin base 10 + solid adjust 0 (2026-08-14 refit, see
-    # public_api/service.py's module comment above its own estimate_
-    # oil_motion) = 10. motion: asymmetric base 8 + ((0.055-0.02)/0.045)*8
-    # ~= 6.22 + solid adjust 1 = 15.22 -> round -> 15.
-    result = service.estimate_oil_motion(
-        core_type="asymmetric", coverstock_type="solid",
-        coverstock_material="reactive_resin", has_particle=False, differential=0.055,
-    )
-    assert result == {"oil": 10, "motion": 15}
-
-
 def test_reference_sku_prefers_15lb():
     skus = [
         {"weight_lbs": 14, "differential": 0.01},
@@ -4629,69 +4602,6 @@ def test_backfill_estimated_plotter_positions_no_op_when_nothing_missing():
 # balls". Unlike backfill_estimated_plotter_positions above, this
 # OVERWRITES existing oil_motion_source='estimated' rows rather than only
 # filling nulls.
-
-def test_reestimate_plotter_positions_overwrites_estimated_only():
-    db = {
-        "products": {
-            "prod-1": {
-                # Seeded with a STALE estimate (as if written by the pre-
-                # refit formula) -- the whole point of this test is
-                # confirming reestimate_plotter_positions overwrites it
-                # with whatever the CURRENT estimate_oil_motion computes.
-                "id": "prod-1", "oil_rating": 13, "motion_rating": 16, "oil_motion_source": "estimated",
-                "core_type": "asymmetric", "coverstock_type": "solid",
-                "coverstock_material": "reactive_resin", "has_particle": False,
-            },
-            "prod-2": {
-                "id": "prod-2", "oil_rating": 6, "motion_rating": 18, "oil_motion_source": "chart",
-                "core_type": "asymmetric", "coverstock_type": "solid",
-                "coverstock_material": "reactive_resin", "has_particle": False,
-            },
-            "prod-3": {
-                "id": "prod-3", "oil_rating": 9, "motion_rating": 17, "oil_motion_source": "manual",
-                "core_type": "asymmetric", "coverstock_type": "pearl",
-                "coverstock_material": "reactive_resin", "has_particle": False,
-            },
-        },
-        "product_skus_plotter": [
-            {"product_id": "prod-1", "weight_lbs": 15, "differential": 0.055},
-        ],
-    }
-    conn = FakeConnection(db)
-
-    result = service.reestimate_plotter_positions(conn)
-
-    assert result == {"products_estimated": 1, "products_updated": 1}
-    # prod-1 (the only 'estimated' row) got recomputed with the CURRENT
-    # formula -- same inputs as test_estimate_oil_motion_matches_public_
-    # api_shape above (oil=10, motion=15), NOT the stale seeded 13/16.
-    assert db["products"]["prod-1"]["oil_rating"] == 10
-    assert db["products"]["prod-1"]["motion_rating"] == 15
-    assert db["products"]["prod-1"]["oil_motion_source"] == "estimated"  # unchanged
-    # chart and manual positions are completely untouched.
-    assert db["products"]["prod-2"] == {
-        "id": "prod-2", "oil_rating": 6, "motion_rating": 18, "oil_motion_source": "chart",
-        "core_type": "asymmetric", "coverstock_type": "solid",
-        "coverstock_material": "reactive_resin", "has_particle": False,
-    }
-    assert db["products"]["prod-3"]["oil_motion_source"] == "manual"
-    assert db["products"]["prod-3"]["oil_rating"] == 9
-    assert conn.committed
-
-
-def test_reestimate_plotter_positions_no_op_when_nothing_estimated():
-    db = {
-        "products": {
-            "prod-1": {"id": "prod-1", "oil_rating": 6, "motion_rating": 18, "oil_motion_source": "chart"},
-        },
-        "product_skus_plotter": [],
-    }
-    conn = FakeConnection(db)
-
-    result = service.reestimate_plotter_positions(conn)
-
-    assert result == {"products_estimated": 0, "products_updated": 0}
-
 
 def test_reestimate_plotter_positions_handles_no_usable_skus():
     db = {
@@ -7956,3 +7866,131 @@ def test_update_article_social_posts_keeps_only_known_fields():
     conn = _RuleConnection([("update product_articles set social_posts", ("art-1",))])
     result = service.update_article_social_posts(conn, "art-1", {"facebook": " edited ", "evil": "x", "x": "post"})
     assert result["social_posts"] == {"facebook": "edited", "instagram": "", "x": "post", "tiktok_hook": "", "tiktok_caption": ""}
+
+
+# --- Plotter estimator v3 (2026-10-04): 15lb RG/diff/mass bias, finish,
+# highest price; plastic pinned to (1, 1) per Brunswick's Sept 2026 chart.
+
+def _v3(**kw):
+    return service.estimate_oil_motion(**kw)
+
+
+def test_v3_plastic_is_pinned_to_one_one_even_with_a_performance_core():
+    """Brunswick's Sept 2026 chart puts the Black Widow Spare+ (Black Widow
+    core, plastic cover) at (1, 1) -- Al: "it looks like they pin the
+    widow spare+ to the bottom left 1 & 1"."""
+    spare_plus = _v3(coverstock_material="polyester_plastic", core_type="asymmetric", rg15=2.48, diff15=0.058,
+                     mass_bias15=0.018, finish_category="polished", price=149.0)
+    plain_spare = _v3(coverstock_material="polyester_plastic")
+    assert spare_plus == plain_spare == {"oil": 1, "motion": 1, "basis": "plastic_pinned"}
+
+
+def test_v3_uses_price_model_only_when_price_known():
+    common = dict(coverstock_material="reactive_resin", coverstock_type="solid", core_type="asymmetric",
+                  finish_category="dull", rg15=2.49, diff15=0.055, mass_bias15=0.015)
+    assert _v3(**common)["basis"] == "no_price"
+    assert _v3(**common, price=199.0)["basis"] == "price"
+    assert _v3(**common, price=0)["basis"] == "no_price"
+
+
+def test_v3_higher_price_means_more_oil_and_never_changes_motion():
+    common = dict(coverstock_material="reactive_resin", coverstock_type="hybrid", core_type="asymmetric",
+                  finish_category="satin", rg15=2.50, diff15=0.050, mass_bias15=0.015)
+    cheap, pricey = _v3(**common, price=110.0), _v3(**common, price=195.0)
+    assert pricey["oil"] > cheap["oil"]
+    assert pricey["motion"] == cheap["motion"] == _v3(**common)["motion"]
+
+
+def test_v3_duller_finish_means_more_oil_and_smoother_motion():
+    common = dict(coverstock_material="reactive_resin", coverstock_type="solid", core_type="symmetric",
+                  rg15=2.50, diff15=0.045, price=170.0)
+    polished, dull = _v3(**common, finish_category="polished"), _v3(**common, finish_category="dull")
+    assert dull["oil"] >= polished["oil"]
+    assert dull["motion"] < polished["motion"]
+
+
+def test_v3_higher_differential_means_more_oil_and_motion():
+    common = dict(coverstock_material="reactive_resin", coverstock_type="solid", core_type="symmetric",
+                  finish_category="satin", rg15=2.50)
+    low, high = _v3(**common, diff15=0.020), _v3(**common, diff15=0.055)
+    assert high["oil"] > low["oil"] and high["motion"] > low["motion"]
+
+
+def test_v3_urethane_rates_smooth_like_the_chart():
+    """Hammer Purple Pearl Urethane sits at motion 2 on the chart."""
+    purple_pearl = _v3(coverstock_material="urethane", coverstock_type="pearl", core_type="symmetric",
+                       finish_category="dull", rg15=2.65, diff15=0.015, price=149.95)
+    assert purple_pearl["motion"] <= 4
+
+
+def test_v3_clamps_inputs_to_the_training_range():
+    """Out-of-range specs (other brands' outliers) mustn't extrapolate."""
+    common = dict(coverstock_material="reactive_resin", coverstock_type="solid", core_type="asymmetric",
+                  finish_category="satin", price=170.0)
+    assert _v3(**common, rg15=2.30, diff15=0.090) == _v3(**common, rg15=2.462, diff15=0.058)
+    specs = dict(rg15=2.50, diff15=0.050)
+    assert _v3(**{**common, **specs, "price": 400.0}) == _v3(**{**common, **specs, "price": 194.95})
+
+
+def test_v3_always_returns_in_range_values_with_no_inputs():
+    result = _v3()
+    assert 1 <= result["oil"] <= 16 and 1 <= result["motion"] <= 18
+
+
+def test_v3_particle_keeps_oil_bonus():
+    common = dict(coverstock_material="reactive_resin", coverstock_type="solid", core_type="symmetric",
+                  finish_category="satin", rg15=2.50, diff15=0.040)
+    assert _v3(**common, has_particle=True)["oil"] == min(16, _v3(**common)["oil"] + service.PLOTTER_PARTICLE_OIL_BONUS)
+
+
+def test_reestimate_plotter_positions_overwrites_estimated_fills_null_never_chart_or_manual():
+    db = {
+        "products": {
+            # Stale v2 estimate -> recomputed with v3 from its 15lb SKU + price.
+            "prod-1": {"id": "prod-1", "oil_rating": 13, "motion_rating": 16, "oil_motion_source": "estimated",
+                       "core_type": "asymmetric", "coverstock_type": "solid", "coverstock_material": "reactive_resin",
+                       "has_particle": False, "finish_category": "dull", "max_price": 199.0},
+            # No position yet -> filled.
+            "prod-4": {"id": "prod-4", "oil_rating": None, "motion_rating": None, "oil_motion_source": None,
+                       "coverstock_material": "polyester_plastic", "has_particle": False},
+            "prod-2": {"id": "prod-2", "oil_rating": 6, "motion_rating": 18, "oil_motion_source": "chart",
+                       "core_type": "asymmetric", "coverstock_type": "solid", "coverstock_material": "reactive_resin",
+                       "has_particle": False},
+            "prod-3": {"id": "prod-3", "oil_rating": 9, "motion_rating": 17, "oil_motion_source": "manual",
+                       "core_type": "asymmetric", "coverstock_type": "pearl", "coverstock_material": "reactive_resin",
+                       "has_particle": False},
+            "bag-1": {"id": "bag-1", "product_type": "bag", "oil_rating": None, "motion_rating": None},
+        },
+        "product_skus_plotter": [
+            {"product_id": "prod-1", "weight_lbs": 14, "rg": 2.55, "differential": 0.040, "mass_bias": 0.010},
+            {"product_id": "prod-1", "weight_lbs": 15, "rg": 2.49, "differential": 0.055, "mass_bias": 0.015},
+        ],
+    }
+    conn = FakeConnection(db)
+    expected = service.estimate_oil_motion(coverstock_material="reactive_resin", coverstock_type="solid",
+                                           has_particle=False, core_type="asymmetric", finish_category="dull",
+                                           rg15=2.49, diff15=0.055, mass_bias15=0.015, price=199.0)
+
+    result = service.reestimate_plotter_positions(conn)
+
+    assert (db["products"]["prod-1"]["oil_rating"], db["products"]["prod-1"]["motion_rating"]) == (expected["oil"], expected["motion"])
+    assert (db["products"]["prod-4"]["oil_rating"], db["products"]["prod-4"]["motion_rating"]) == (1, 1)
+    assert db["products"]["prod-4"]["oil_motion_source"] == "estimated"
+    assert db["products"]["prod-2"]["oil_rating"] == 6 and db["products"]["prod-2"]["oil_motion_source"] == "chart"
+    assert db["products"]["prod-3"]["oil_rating"] == 9 and db["products"]["prod-3"]["oil_motion_source"] == "manual"
+    assert db["products"]["bag-1"]["oil_rating"] is None  # balls only
+    assert result["products_considered"] == 2
+    assert result["products_updated"] == 2
+    assert result["products_newly_estimated"] == 1
+    assert result["by_basis"] == {"price": 1, "plastic_pinned": 1}
+    assert result["mean_oil_shift"] == abs(expected["oil"] - 13)
+    assert conn.committed
+
+
+def test_reestimate_plotter_positions_no_op_when_nothing_estimated():
+    db = {
+        "products": {"prod-1": {"id": "prod-1", "oil_rating": 6, "motion_rating": 18, "oil_motion_source": "chart"}},
+        "product_skus_plotter": [],
+    }
+    result = service.reestimate_plotter_positions(FakeConnection(db))
+    assert result["products_considered"] == 0 and result["products_updated"] == 0

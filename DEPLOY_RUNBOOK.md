@@ -16909,6 +16909,79 @@ ambiguous match itself is still there (as is Hustle SOS -> HSB, already
 rejected) -- reconciliation never refreshes ambiguous rows; separate
 cleanup if it keeps producing bad candidates.
 
+### 6bx. Ball motion plotter estimator v3: finish, 15 lb specs, price; plastic pinned to (1, 1) (2026-10-04)
+
+Al: "I think there are some ball metrics that are getting over looked that
+could be used to better estimate those ... coverstock_material,
+coverstock_type, factory_finish, rg(15lbs), diff(15lbs), mass_bias(15lbs),
+price ... The 15lbs metrics should be used because that is the most common
+weight. Price typically indicates higher performance."
+
+**Why.** v2 (6m) used only cover material/type, core symmetry, particle and
+a raw differential. Against the 44 balls with real chart positions
+(oil_motion_source='chart') it had oil MAE 2.66 (21/44 within ±2) and
+motion MAE 2.41 (27/44). Estimated balls bunched at oil 6 and 9.
+
+**Model.** Ridge regression fitted on the 44 chart balls with leave-one-out
+cross-validation. Features: urethane, pearl, solid, asymmetric,
+core_unknown, finish level (polished 0 < satin 1 < dull 2), RG, diff and
+mass bias at 15 lb (nearest weight when there's no 15 lb SKU; inputs are
+clamped to the training range and missing ones filled with the training
+mean), and log of the **highest price ever seen** across approved price
+sources (Al's choice).
+- Oil: a with-price model (LOO MAE 1.35, 34/40 within ±2) when a price
+  exists, and a **separate no-price model** (Al's choice; MAE 1.52, 35/44)
+  when it doesn't. Only current balls have prices (~94% of current, ~8% of
+  the catalog).
+- Motion: a single no-price model (MAE 1.75, 32/44). Price helped oil
+  (r = +0.79) but not motion (+0.09); adding it made motion worse (1.90).
+  Motion = back-end angularity, per the chart ("More total hook would be
+  more along the oil axis").
+- Particle keeps the +2 oil bump.
+- **Plastic is pinned to (1, 1).** Brunswick's Sept 2026 chart (form
+  #0726-12) puts the Black Widow Spare+ at the bottom-left corner, even
+  with a performance core. Al: "it looks like they pin the widow spare+ to
+  the bottom left 1 & 1".
+
+**Code.** The identical block `# >>> PLOTTER ESTIMATOR v3 >>>` …
+`# <<< PLOTTER ESTIMATOR v3 <<<` lives in src/public_api/service.py
+(the fallback in list_plotter_positions) and src/admin_api/service.py
+(`_fetch_plotter_estimate_inputs`, `backfill_estimated_plotter_positions`,
+`reestimate_plotter_positions`). The new tests/test_plotter_estimator_sync.py
+fails if the two copies drift. The five scrapers still carry v2 and only
+ever fill a NULL position on insert. The button below overwrites those
+with v3.
+
+**Recalculation is button-only** (Al: "Only when I click a button"):
+Admin → Batch Jobs → "Ball motion plotter" → Re-estimate plotter positions
+→ POST /admin/reestimate-plotter-positions. It is synchronous; the input
+query takes 12 ms on prod and the run writes about 1.5k single-row updates.
+It rewrites `estimated` rows and fills NULL ones. Its WHERE clause
+re-checks the source, so `chart` and `manual` rows are never touched. The
+summary reports considered, moved and newly placed counts, the average oil
+and motion shift, and how many balls used each model path (price,
+no price, plastic pinned).
+
+**Deploy.**
+```bash
+sam build && sam deploy
+git push   # admin-spa button ships via GitHub Actions
+```
+Then click the button once.
+
+**Verify.** The button's summary should show a nonzero "moved" count and
+by_basis mostly `price` for current balls. The consumer plotter should
+show estimated current balls spread across oil 3–13 instead of clustered
+at 6 and 9, with all plastic in the bottom-left corner. The chart count
+should still be 44:
+```bash
+psql -c "select oil_motion_source, count(*) from products where product_type='ball' group by 1"
+```
+
+**Follow-up.** Digitize the Sept 2026 Brunswick chart (~70 balls across
+Brunswick/DV8/Ebonite/Hammer/Radical/Track; names are logos only) as more
+`chart` rows and refit the coefficients.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
