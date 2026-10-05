@@ -17355,6 +17355,12 @@ to understand and smaller than expected".
 - The chart's zoom controls (+ / − / All) grew to 36px with hover
   tooltips, matching the card.
 
+**Follow-up (same day).** Al: "the links for the articles are now missing
+from the floating card on desktop". When the card's suggestion rows were
+compacted in 6ce, they kept only Shop. Each row now has a **Review** link
+too, shown whenever that ball has an approved Learn article. Names still
+fit at the card's 20rem width.
+
 **Deploy:** `git push` (deploy-learn-site).
 
 ## 7. Ongoing operations

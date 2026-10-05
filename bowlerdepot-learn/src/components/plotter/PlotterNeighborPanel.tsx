@@ -107,6 +107,17 @@ export function PlotterNeighborCard({
                         {p.brand_name} {p.name}
                       </button>
                       <EstimatedBadge p={p} />
+                      {/* Review link restored (Al: "the links for the articles are
+                          now missing from the floating card on desktop"). */}
+                      {p.article_slug ? (
+                        <Link
+                          to={articleHref({ slug: p.article_slug })}
+                          className="shrink-0 text-[11px] font-semibold"
+                          title={`Read our ${p.brand_name} ${p.name} review`}
+                        >
+                          Review
+                        </Link>
+                      ) : null}
                       {p.ecommerce_url ? (
                         <a href={p.ecommerce_url} target="_blank" rel="noreferrer" className="shrink-0 text-[11px] font-semibold">
                           Shop
