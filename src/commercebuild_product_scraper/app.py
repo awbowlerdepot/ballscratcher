@@ -220,6 +220,19 @@ def parse_core_type(symmetry_value):
     return None
 
 
+# Storm's site abbreviates polyester covers to a bare "Poly" -- "Clear
+# Poly" (Roto Grip Cosmos, RG Jester Clear Polyester, 900 Global Onyx
+# Polyester), "Poly Pearl" / "Poly Hybrid" (Ice Storm), "Poly Clear"
+# (Norm Duke Clear). None of those contain "polyester" or "plastic", so
+# all seven fell through to reactive_resin and plotted as hooking balls
+# until Al spotted it: "it looks like the cosmos is a polyester ball and
+# we have it as a reactive ball for some reason" (runbook 6ca). Whole
+# word only, so "Polythane" (a urethane blend) and "Microcell Polymer"
+# (reactive) don't match; "polyster" covers Motiv's own "DMX Polyster"
+# typo in case that spelling ever shows up here too.
+_POLY_WORD = re.compile(r"\bpoly\b|polyster")
+
+
 def parse_coverstock(coverstock_value):
     """Real values seen this session (post _clean_field_value):
     "GI26 Solid" (Storm Alpha Crux), "V-R1 Pearl" (Roto Grip Gremlin),
@@ -234,7 +247,7 @@ def parse_coverstock(coverstock_value):
     v = coverstock_value.lower()
     if "urethane" in v:
         material = "urethane"
-    elif "polyester" in v or "plastic" in v:
+    elif "polyester" in v or "plastic" in v or _POLY_WORD.search(v):
         material = "polyester_plastic"
     else:
         material = "reactive_resin"

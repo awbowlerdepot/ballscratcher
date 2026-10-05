@@ -17084,6 +17084,46 @@ Rollback: the prior values are in the session scratchpad, all
 `estimated`. To roll back, set the source back to estimated, then click
 Re-estimate.
 
+### 6ca. Storm "Poly" covers misclassified as reactive (2026-10-04)
+
+Al: "it looks like the cosmos is a polyester ball and we have it as a
+reactive ball for some reason".
+
+**Cause.** In the Storm/Roto Grip/900 Global scraper,
+`commercebuild_product_scraper.parse_coverstock` only treated a cover as
+plastic if its name contained "polyester" or "plastic". Storm's site
+abbreviates to a bare "Poly": "Clear Poly", "Poly Pearl", "Poly Hybrid",
+"Poly Clear". Those fell through to `reactive_resin`, and the v3
+estimator then placed them as hooking balls (Cosmos was at (2.9, 15.0)).
+
+**Fix.**
+- Code: `_POLY_WORD` (`\bpoly\b|polyster`) now also counts as polyester.
+  It matches whole words only, so "Polythane" (urethane blend) and
+  "Microcell Polymer" (reactive) are unaffected. Tests are in
+  test_commercebuild_product_scraper.py.
+- Data (one transaction, already applied):
+  - 6 `coverstocks` rows were set to `polyester_plastic`: the 5 Storm/Roto
+    Grip/900 Global "Poly" rows plus Motiv's "DMX Polyster". The upsert
+    keeps existing material, so this sticks.
+  - 12 balls on a polyester cover had their material corrected:
+    - 7 current, previously `reactive_resin`: Cosmos, RG Jester Clear
+      Polyester, Onyx Polyester, the three Ice Storms and Norm Duke Clear.
+    - 5 retired, previously blank: three DV8 Polyesters, Shanpire Spare
+      and Motiv Sniper.
+  - All 12 were estimated, so they now sit at the plastic pin (1, 1).
+
+**Deploy.** `sam build && sam deploy`. This is required: every rescrape
+rewrites `products.coverstock_material` from the parser, so without the
+code fix the next Storm scrape would flip the 7 current balls back to
+reactive.
+
+**Verify.**
+```bash
+psql -c "select p.name, p.coverstock_material, p.oil_rating, p.motion_rating from products p join coverstocks c on c.id=p.coverstock_id where c.name ~* '\mpoly\M'"
+```
+Run this after the next commercebuild scrape. Every row should still
+read `polyester_plastic` at (1, 1).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

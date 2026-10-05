@@ -431,6 +431,21 @@ def test_parse_coverstock_pearl():
     }
 
 
+def test_parse_coverstock_bare_poly_abbreviation_is_polyester():
+    """Runbook 6ca: Storm's "Clear Poly" / "Poly Pearl" / "Poly Hybrid" /
+    "Poly Clear" covers were classified reactive_resin."""
+    for value, cov_type in (("Clear Poly", None), ("Poly Pearl", "pearl"), ("Poly Hybrid", "hybrid"),
+                            ("Poly Clear", None), ("Clear Polyester", None)):
+        assert app.parse_coverstock(value) == {"coverstock_material": "polyester_plastic", "coverstock_type": cov_type}
+
+
+def test_parse_coverstock_poly_prefixed_words_are_not_polyester():
+    # Whole-word "poly" only: Polythane (urethane blend) and Microcell
+    # Polymer (reactive) must not be swept into polyester.
+    for value in ("TruShot Polythane", "Frixion Microcell Polymer"):
+        assert app.parse_coverstock(value)["coverstock_material"] != "polyester_plastic"
+
+
 def test_parse_coverstock_returns_none_when_missing():
     assert app.parse_coverstock(None) == {"coverstock_material": None, "coverstock_type": None}
 
