@@ -190,9 +190,16 @@ export default function PlotterPage() {
                   <button
                     type="button"
                     onClick={() => setCardCollapsed(false)}
-                    className="pointer-events-auto flex items-center gap-2 rounded-full border border-paper-border bg-white/95 px-3 py-1.5 text-xs font-semibold text-ink shadow"
+                    title="Show the details for the selected ball"
+                    className="pointer-events-auto flex h-10 max-w-full items-center gap-2 rounded-lg border border-paper-border bg-white/95 px-3 text-sm font-semibold text-ink shadow hover:border-ink"
                   >
-                    {selected.brand_name} {selected.name} <span className="text-muted">&#9662; details</span>
+                    <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M4 6l4 4 4-4" />
+                    </svg>
+                    <span>Show details</span>
+                    <span className="truncate font-normal text-muted">
+                      · {selected.brand_name} {selected.name}
+                    </span>
                   </button>
                 ) : (
                   <div className="pointer-events-auto rounded-lg border border-paper-border bg-white/95 px-3 py-2 text-xs text-muted shadow-sm">

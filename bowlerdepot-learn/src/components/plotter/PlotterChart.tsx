@@ -533,11 +533,14 @@ export default function PlotterChart({
         </text>
       </svg>
 
-      <div className="absolute right-2 top-2 flex flex-col overflow-hidden rounded-md border border-paper-border bg-white/95 shadow-sm">
+      {/* Same 32px, labeled-on-hover sizing as the details card's toolbar
+          (runbook 6cg) -- these were small bare glyphs. */}
+      <div className="absolute right-2 top-2 flex flex-col overflow-hidden rounded-lg border border-paper-border bg-white/95 shadow">
         <button
           type="button"
           aria-label="Zoom in"
-          className="px-2.5 py-1 text-lg leading-none text-ink hover:bg-paper disabled:opacity-40"
+          title="Zoom in"
+          className="flex h-9 w-9 items-center justify-center text-xl leading-none text-ink hover:bg-paper disabled:opacity-40"
           onClick={() => zoomButton(1.6)}
           disabled={view.k >= ZOOM_MAX}
         >
@@ -546,7 +549,8 @@ export default function PlotterChart({
         <button
           type="button"
           aria-label="Zoom out"
-          className="border-t border-paper-border px-2.5 py-1 text-lg leading-none text-ink hover:bg-paper disabled:opacity-40"
+          title="Zoom out"
+          className="flex h-9 w-9 items-center justify-center border-t border-paper-border text-xl leading-none text-ink hover:bg-paper disabled:opacity-40"
           onClick={() => zoomButton(1 / 1.6)}
           disabled={view.k <= ZOOM_MIN}
         >
@@ -555,7 +559,8 @@ export default function PlotterChart({
         <button
           type="button"
           aria-label="Show the whole chart"
-          className="border-t border-paper-border px-2 py-1 text-[10px] font-semibold uppercase text-muted hover:bg-paper disabled:opacity-40"
+          title="Show the whole chart"
+          className="flex h-9 w-9 items-center justify-center border-t border-paper-border text-[11px] font-bold uppercase text-ink hover:bg-paper disabled:opacity-40"
           onClick={() => onViewChange(clampView({ cx: (DOMAIN.x0 + DOMAIN.x1) / 2, cy: (DOMAIN.y0 + DOMAIN.y1) / 2, k: 1 }))}
           disabled={view.k <= ZOOM_MIN}
         >

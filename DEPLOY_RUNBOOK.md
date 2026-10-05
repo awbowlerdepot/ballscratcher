@@ -17340,6 +17340,23 @@ Eight were the wrong colorway:
 `products.color`) for every ball in a multi-colorway line, including
 balls that already have a chart position.
 
+### 6cg. Learn plotter: clearer, bigger card and zoom controls (2026-10-05)
+
+Al: "the controls for the floating card could be improved they are hard
+to understand and smaller than expected".
+
+**Changes.**
+- The card's controls were a bare "–" and "×" stacked in the corner. They
+  are now a toolbar across the top of the card: a "Selected ball" label
+  and two 32px buttons with icon + text, **Hide** and **Clear**, each with
+  a tooltip (`CardButton` in PlotterNeighborPanel.tsx).
+- The collapsed pill was "Name ▾ details" in 12px text. It is now a 40px
+  "⌄ Show details · Brand Name" button.
+- The chart's zoom controls (+ / − / All) grew to 36px with hover
+  tooltips, matching the card.
+
+**Deploy:** `git push` (deploy-learn-site).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
