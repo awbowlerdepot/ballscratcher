@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { getLearnPlotter } from "../api/client";
-import type { LearnPlotterPoint } from "../api/types";
+import { getLearnPlotter, getPlotterBall, lookupPlotterBalls } from "../api/client";
+import type { LearnPlotterPoint, PlotterLookupItem } from "../api/types";
 import PlotterChart from "../components/plotter/PlotterChart";
 import PlotterNeighborPanel, { PlotterNeighborCard } from "../components/plotter/PlotterNeighborPanel";
 import { useIsDesktop } from "../components/plotter/useIsDesktop";
@@ -37,7 +37,15 @@ export default function PlotterPage() {
   const chart = isDesktop ? DESKTOP_CHART : MOBILE_CHART;
 
   const selectedId = searchParams.get("ball");
-  const byId = useMemo(() => new Map(points.map((p) => [p.id, p])), [points]);
+  // A retired ball (runbook 6cl) isn't in the current-ball list; it's
+  // fetched on demand with its replacements and merged in for drawing.
+  const [extraBall, setExtraBall] = useState<LearnPlotterPoint | null>(null);
+  const [retiredMatches, setRetiredMatches] = useState<PlotterLookupItem[]>([]);
+  const byId = useMemo(() => {
+    const m = new Map(points.map((p) => [p.id, p]));
+    if (extraBall && !m.has(extraBall.id)) m.set(extraBall.id, extraBall);
+    return m;
+  }, [points, extraBall]);
   const selected = selectedId ? (byId.get(selectedId) ?? null) : null;
   const brands = useMemo(() => [...new Set(points.map((p) => p.brand_name))].sort(), [points]);
   const visible = useMemo(() => points.filter((p) => !hiddenBrands.has(p.brand_name)), [points, hiddenBrands]);
@@ -50,9 +58,46 @@ export default function PlotterPage() {
       .finally(() => setLoading(false));
   }, []);
 
+  useEffect(() => {
+    if (!selectedId || loading || points.some((p) => p.id === selectedId)) return;
+    let cancelled = false;
+    getPlotterBall(selectedId)
+      .then((b) => {
+        if (!cancelled) setExtraBall(b);
+      })
+      .catch(() => {
+        if (!cancelled) setExtraBall(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId, loading, points]);
+
+  // Retired matches come from the server (the page only holds current
+  // balls); debounced so typing doesn't fire a request per keystroke.
+  useEffect(() => {
+    const q = query.trim();
+    if (q.length < 2) {
+      setRetiredMatches([]);
+      return;
+    }
+    let cancelled = false;
+    const t = setTimeout(() => {
+      lookupPlotterBalls(q)
+        .then((items) => {
+          if (!cancelled) setRetiredMatches(items.filter((i) => i.status === "retired"));
+        })
+        .catch(() => undefined);
+    }, 250);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [query]);
+
   // Zoom to a ball + its suggestions whenever the selection changes.
   function focusOn(p: LearnPlotterPoint) {
-    const related = ROLES.flatMap((r) => p.neighbors[r.key]).map((n) => byId.get(n.id)).filter(Boolean) as LearnPlotterPoint[];
+    const related = ROLES.flatMap((r) => p.neighbors[r.key] ?? []).map((n) => byId.get(n.id)).filter(Boolean) as LearnPlotterPoint[];
     const fitted = fitView([p, ...related]);
     setView(isDesktop && !cardCollapsed ? offsetForCard(fitted, chart.width, CARD_PX) : fitted);
   }
@@ -75,11 +120,16 @@ export default function PlotterPage() {
     setSearchParams(next);
   }
 
-  const matches = useMemo(() => {
+  const matches: { id: string; name: string; brand_name: string; retired: boolean }[] = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (q.length < 2) return [];
-    return points.filter((p) => `${p.brand_name} ${p.name}`.toLowerCase().includes(q)).slice(0, 8);
-  }, [query, points]);
+    const current = points
+      .filter((p) => `${p.brand_name} ${p.name}`.toLowerCase().includes(q))
+      .slice(0, 8)
+      .map((p) => ({ id: p.id, name: p.name, brand_name: p.brand_name, retired: false }));
+    const retired = retiredMatches.map((r) => ({ id: r.id, name: r.name, brand_name: r.brand_name, retired: true }));
+    return [...current, ...retired].slice(0, 12);
+  }, [query, points, retiredMatches]);
 
   function toggleBrand(brand: string) {
     const next = new Set(hiddenBrands);
@@ -106,7 +156,7 @@ export default function PlotterPage() {
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Find a ball (e.g. Phaze II)"
+            placeholder="Find any ball, even retired (e.g. Hazmat)"
             aria-label="Find a ball"
             className="w-full rounded-lg border border-paper-border bg-white px-3 py-2 text-sm"
           />
@@ -120,6 +170,11 @@ export default function PlotterPage() {
                     className="block w-full px-3 py-2 text-left text-sm hover:bg-paper"
                   >
                     <span className="text-muted">{p.brand_name}</span> {p.name}
+                    {p.retired ? (
+                      <span className="ml-2 rounded bg-paper px-1.5 py-0.5 text-[10px] font-semibold uppercase text-muted">
+                        Retired
+                      </span>
+                    ) : null}
                   </button>
                 </li>
               ))}

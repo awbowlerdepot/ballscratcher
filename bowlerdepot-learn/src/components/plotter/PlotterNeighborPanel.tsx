@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import { articleHref, resizedImageUrl } from "../../api/client";
 import type { LearnPlotterPoint } from "../../api/types";
-import { ROLES, TENTHS_ZOOM, formatPosition, sourceLabel } from "./plotterModel";
+import { TENTHS_ZOOM, formatPosition, rolesPresent, sourceLabel } from "./plotterModel";
 
 // The selected ball and what to look at next (runbook 6cc): similar balls
 // from other brands, then the nearest step in each direction. Every
@@ -62,7 +62,9 @@ export function PlotterNeighborCard({
           improved they are hard to understand and smaller than expected") --
           was a bare "–" and "×" stacked in the corner. */}
       <div className="flex items-center justify-between gap-2 border-b border-paper-border bg-paper/70 px-3 py-1.5">
-        <span className="text-[11px] font-bold uppercase tracking-wide text-muted">Selected ball</span>
+        <span className="text-[11px] font-bold uppercase tracking-wide text-muted">
+          {selected.status === "retired" ? "Retired ball" : "Selected ball"}
+        </span>
         <div className="flex gap-1.5">
           <CardButton onClick={onCollapse} label="Hide" title="Hide these details (the ball stays selected)">
             <path d="M4 10l4-4 4 4" />
@@ -83,11 +85,14 @@ export function PlotterNeighborCard({
           <p className="text-[11px] text-muted">
             {formatPosition(selected, TENTHS_ZOOM)} · {sourceLabel(selected.oil_motion_source)}
           </p>
+          {selected.status === "retired" ? (
+            <p className="text-[11px] font-semibold text-alert">No longer made · current replacements below</p>
+          ) : null}
           <BallLinks p={selected} review={showOwnReview} />
         </div>
       </div>
       <div className="flex flex-col gap-2.5 overflow-y-auto p-3">
-        {ROLES.map((role) => {
+        {rolesPresent(selected).map((role) => {
           const items = (selected.neighbors[role.key] ?? []).map((n) => byId.get(n.id)).filter(Boolean) as LearnPlotterPoint[];
           return (
             <section key={role.key}>
@@ -131,7 +136,9 @@ export function PlotterNeighborCard({
                   ))}
                 </ul>
               ) : (
-                <p className="text-[11px] text-muted">{role.key === "twins" ? "None this close." : "Nothing a step this way."}</p>
+                <p className="text-[11px] text-muted">
+                  {role.key === "twins" || role.key === "closest" ? "None this close." : "Nothing a step this way."}
+                </p>
               )}
             </section>
           );
@@ -199,6 +206,9 @@ export default function PlotterNeighborPanel({ selected, byId, onSelect, compact
             <p className="mt-1 text-xs text-muted">
               {formatPosition(selected, TENTHS_ZOOM)} · {sourceLabel(selected.oil_motion_source)}
             </p>
+            {selected.status === "retired" ? (
+              <p className="text-xs font-semibold text-alert">No longer made · current replacements below</p>
+            ) : null}
             {selected.coverstock_name ? <p className="text-xs text-muted">{selected.coverstock_name}</p> : null}
             <div className="mt-1">
               <BallLinks p={selected} />
@@ -207,7 +217,7 @@ export default function PlotterNeighborPanel({ selected, byId, onSelect, compact
         </div>
       ) : null}
 
-      {ROLES.map((role) => {
+      {rolesPresent(selected).map((role) => {
         const items = (selected.neighbors[role.key] ?? []).map((n) => byId.get(n.id)).filter(Boolean) as LearnPlotterPoint[];
         return (
           <section key={role.key}>
@@ -242,6 +252,8 @@ export default function PlotterNeighborPanel({ selected, byId, onSelect, compact
               <p className="mt-1 text-xs text-muted">
                 {role.key === "twins"
                   ? "No other brand's ball sits this close."
+                  : role.key === "closest"
+                  ? "No current ball BowlerDepot sells sits this close."
                   : "Nothing BowlerDepot carries a step in this direction."}
               </p>
             )}

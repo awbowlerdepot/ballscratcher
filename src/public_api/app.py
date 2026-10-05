@@ -82,6 +82,25 @@ def get_learn_plotter():
     return service.get_learn_plotter(conn)
 
 
+@app.get("/learn/plotter/lookup")
+def get_learn_plotter_lookup(q: str = Query("", description="Ball name search, 2+ characters")):
+    # Retired-ball lookup for the plotter search (runbook 6cl): current
+    # published balls plus every retired ball, minimal fields.
+    conn = service.get_db_connection()
+    return {"items": service.lookup_plotter_balls(conn, q)}
+
+
+@app.get("/learn/plotter/ball/{product_id}")
+def get_learn_plotter_ball(product_id: str):
+    # One ball as a plotter point; a retired ball carries its current
+    # replacements as `neighbors` (runbook 6cl).
+    conn = service.get_db_connection()
+    ball = service.get_plotter_ball(conn, product_id)
+    if ball is None:
+        raise HTTPException(status_code=404, detail="No current or retired ball with that id")
+    return ball
+
+
 @app.get("/products/compare")
 def get_products_compare(ids: str = Query(..., description="Comma-separated product ids")):
     # A real, deliberate ordering dependency: this route is declared

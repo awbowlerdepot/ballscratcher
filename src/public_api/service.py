@@ -44,6 +44,7 @@ only, not executed.
 """
 import json
 import math
+import uuid
 import re
 import os
 
@@ -2109,13 +2110,11 @@ def compute_plotter_neighbors(points: list) -> dict:
 
 # <<< PLOTTER NEIGHBORS v1 <<<
 
-def get_learn_plotter(conn) -> dict:
-    """GET /learn/plotter: every current published ball's position (same
-    rows /products/plotter serves, so the same estimate fallback), plus
-    what the Learn page needs to recommend and link: the BowlerDepot
-    storefront URL (same approved+active bigcommerce source rule as
-    get_product_article's ecommerce_url), the ball's own approved Learn
-    article slug, a little display detail, and the precomputed neighbors."""
+def _learn_plotter_points(conn) -> list:
+    """Every current published ball as a Learn plotter point, with the
+    internal core_id/coverstock_id grouping keys still on it (callers
+    strip them before responding). Shared by get_learn_plotter and the
+    retired-ball replacement lookup (runbook 6cl)."""
     points = list_plotter_positions(conn, status="current")
     ids = [p["id"] for p in points]
     extra = {}
@@ -2156,10 +2155,172 @@ def get_learn_plotter(conn) -> dict:
         p["core_id"] = e.get("core_id")
         p["coverstock_id"] = e.get("coverstock_id")
         p["recommendable"] = bool(p["ecommerce_url"])
+        p["status"] = "current"
+    return points
+
+
+def _strip_internal(p: dict) -> dict:
+    p.pop("core_id", None)
+    p.pop("coverstock_id", None)
+    return p
+
+
+def get_learn_plotter(conn) -> dict:
+    """GET /learn/plotter: every current published ball's position (same
+    rows /products/plotter serves, so the same estimate fallback), plus
+    what the Learn page needs to recommend and link: the BowlerDepot
+    storefront URL (same approved+active bigcommerce source rule as
+    get_product_article's ecommerce_url), the ball's own approved Learn
+    article slug, a little display detail, and the precomputed neighbors."""
+    points = _learn_plotter_points(conn)
     neighbors = compute_plotter_neighbors(points)
     for p in points:
         p["neighbors"] = neighbors[p["id"]]
-        # internal grouping keys, not part of the response
-        p.pop("core_id", None)
-        p.pop("coverstock_id", None)
+        _strip_internal(p)
     return {"items": points}
+
+
+# --------------------------------------------------------------------
+# Current replacements for retired balls (runbook 6cl). Al: "show current
+# replacements for retired balls" -- his choices: ANY retired ball can be
+# looked up (not just the 3 published ones), exposing only brand, name and
+# plotter position (no specs, images or pages for unpublished balls); and
+# replacements = the closest current balls PLUS the usual directional
+# steps. Unlike the cross-brand "twins", the closest list may include the
+# SAME brand -- a retired Hammer's natural successor is often a current
+# Hammer -- and even a current colorway of the same ball. Only balls
+# BowlerDepot sells are suggested (same rule as the Learn plotter).
+
+PLOTTER_REPLACEMENT_RADIUS = 2.5
+PLOTTER_REPLACEMENT_MAX = 3
+PLOTTER_LOOKUP_LIMIT = 10
+
+
+def compute_replacements(target: dict, current_points: list) -> dict:
+    """Pure: {"closest": [...], "more_oil": [...], "less_oil": [...],
+    "more_angular": [...], "smoother": [...]} for a (retired) target
+    against current points. Entries are {"id", "distance"}. Closest =
+    up to PLOTTER_REPLACEMENT_MAX recommendable balls within
+    PLOTTER_REPLACEMENT_RADIUS, one per ball line, any brand. Steps use
+    the Learn plotter's rules (plotter neighbors block), skipping balls
+    already listed as closest."""
+    candidates = [p for p in current_points if p.get("recommendable") and p["id"] != target["id"]]
+
+    def dist(p):
+        return math.hypot(p["oil"] - target["oil"], p["motion"] - target["motion"])
+
+    near = [(dist(p), p) for p in candidates if dist(p) <= PLOTTER_REPLACEMENT_RADIUS]
+    closest = _plotter_best_per_line(near)[:PLOTTER_REPLACEMENT_MAX]
+    out = {"closest": [{"id": p["id"], "distance": round(d, 2)} for d, p in closest]}
+    taken = {plotter_ball_line(p) for _, p in closest}
+    for direction, (ux, uy) in PLOTTER_DIRECTIONS.items():
+        steps = []
+        for p in candidates:
+            if plotter_ball_line(p) in taken:
+                continue
+            dx, dy = p["oil"] - target["oil"], p["motion"] - target["motion"]
+            along = dx * ux + dy * uy
+            off = abs(dx * uy - dy * ux)
+            if PLOTTER_STEP_MIN <= along <= PLOTTER_STEP_MAX and off <= along:
+                steps.append((along + PLOTTER_STEP_OFF_AXIS_WEIGHT * off, p))
+        out[direction] = [{"id": p["id"], "distance": round(dist(p), 2)}
+                          for _, p in _plotter_best_per_line(steps)[:PLOTTER_STEP_PER_DIRECTION]]
+    return out
+
+
+def _like_pattern(q: str) -> str:
+    escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+def lookup_plotter_balls(conn, q: str) -> list:
+    """GET /learn/plotter/lookup?q=: name search for the plotter's search
+    box -- current published balls plus EVERY retired ball (Al's choice),
+    minimal fields only. Current first, then by name."""
+    q = (q or "").strip()
+    if len(q) < 2:
+        return []
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select p.id, p.name, b.name as brand_name, p.status
+            from products p join brands b on b.id = p.brand_id
+            where p.product_type = 'ball'
+              and ((p.status = 'current' and p.published = true) or p.status = 'retired')
+              and (b.name || ' ' || p.name) ilike %s
+              and p.oil_rating is not null
+            order by (p.status = 'current') desc, p.name, b.name
+            limit %s
+            """,
+            (_like_pattern(q), PLOTTER_LOOKUP_LIMIT),
+        )
+        return [{"id": str(r[0]), "name": r[1], "brand_name": r[2], "status": r[3]} for r in cur.fetchall()]
+
+
+def get_plotter_ball(conn, product_id: str):
+    """GET /learn/plotter/ball/{id}: one ball as a plotter point. A current
+    published ball comes back exactly as in /learn/plotter. A retired ball
+    (published or not) comes back with ONLY brand, name, status and
+    position -- plus image/article link if it's published -- and its
+    current replacements as `neighbors` (closest + steps). None if the id
+    isn't a current-published or retired ball."""
+    try:
+        product_id = str(uuid.UUID(str(product_id)))
+    except (ValueError, TypeError):
+        return None
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select p.id, p.name, b.name as brand_name, p.status, p.published,
+                   p.oil_rating, p.motion_rating, p.oil_motion_source, p.core_id, p.coverstock_id,
+                   case when p.published then coalesce(
+                       (select pi.stored_url from product_images pi
+                         where pi.product_id = p.id and pi.is_visible = true
+                         order by pi.is_thumbnail desc, pi.display_order, pi.id limit 1),
+                       p.primary_image_url) end as primary_image_url,
+                   case when p.published then
+                       (select pa.slug from product_articles pa
+                         where pa.product_id = p.id and pa.status = 'approved' and pa.slug is not null
+                         order by pa.first_published_at desc nulls last limit 1) end as article_slug
+            from products p join brands b on b.id = p.brand_id
+            where p.id = %s::uuid and p.product_type = 'ball'
+              and ((p.status = 'current' and p.published = true) or p.status = 'retired')
+            """,
+            (product_id,),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        r = dict(zip([d[0] for d in cur.description], row))
+    points = _learn_plotter_points(conn)
+    if r["status"] == "current":
+        neighbors = compute_plotter_neighbors(points)
+        for p in points:
+            if p["id"] == product_id or str(p["id"]) == product_id:
+                p["neighbors"] = neighbors[p["id"]]
+                return _strip_internal(p)
+        return None
+    if r["oil_rating"] is None or r["motion_rating"] is None:
+        return None
+    target = {
+        "id": product_id, "name": r["name"], "brand_name": r["brand_name"],
+        "oil": float(r["oil_rating"]), "motion": float(r["motion_rating"]),
+        "core_id": r["core_id"], "coverstock_id": r["coverstock_id"],
+    }
+    return {
+        "id": product_id,
+        "name": r["name"],
+        "brand_name": r["brand_name"],
+        "status": "retired",
+        "primary_image_url": r["primary_image_url"],
+        "oil": target["oil"],
+        "motion": target["motion"],
+        "oil_motion_source": r["oil_motion_source"] or "estimated",
+        "ecommerce_url": None,
+        "article_slug": r["article_slug"],
+        "coverstock_name": None,
+        "coverstock_material": None,
+        "finish_category": None,
+        "recommendable": False,
+        "neighbors": compute_replacements(target, points),
+    }

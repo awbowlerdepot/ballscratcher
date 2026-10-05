@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { getLearnPlotter } from "../../api/client";
+import { getLearnPlotter, getPlotterBall } from "../../api/client";
 import type { LearnPlotterPoint } from "../../api/types";
 import PlotterChart from "./PlotterChart";
 import PlotterNeighborPanel, { PlotterNeighborCard } from "./PlotterNeighborPanel";
@@ -55,12 +55,32 @@ export default function PlotterArticlePanel({ productId }: { productId: string }
     };
   }, []);
 
-  const byId = useMemo(() => new Map((points ?? []).map((p) => [p.id, p])), [points]);
+  // Retired ball (runbook 6cl): not in the current-ball list, so fetch it
+  // with its current replacements and merge it in.
+  const [extraBall, setExtraBall] = useState<LearnPlotterPoint | null>(null);
+  useEffect(() => {
+    if (!points || points.some((p) => p.id === productId)) return;
+    let cancelled = false;
+    getPlotterBall(productId)
+      .then((b) => {
+        if (!cancelled) setExtraBall(b);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [points, productId]);
+  const byId = useMemo(() => {
+    const m = new Map((points ?? []).map((p) => [p.id, p]));
+    if (extraBall && !m.has(extraBall.id)) m.set(extraBall.id, extraBall);
+    return m;
+  }, [points, extraBall]);
   const ball = byId.get(productId) ?? null;
+  const retired = ball?.status === "retired";
 
   useEffect(() => {
     if (!ball) return;
-    const related = ROLES.flatMap((r) => ball.neighbors[r.key]).map((n) => byId.get(n.id)).filter(Boolean) as LearnPlotterPoint[];
+    const related = ROLES.flatMap((r) => ball.neighbors[r.key] ?? []).map((n) => byId.get(n.id)).filter(Boolean) as LearnPlotterPoint[];
     const fitted = fitView([ball, ...related]);
     setView(isDesktop && !cardCollapsed ? offsetForCard(fitted, chart.width, CARD_PX) : fitted);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -74,9 +94,13 @@ export default function PlotterArticlePanel({ productId }: { productId: string }
     <section className="mb-10 rounded-xl border border-paper-border bg-white p-5">
       <div className="mb-4 flex flex-wrap items-end justify-between gap-2">
         <div>
-          <h2 className="font-display text-xl font-semibold text-ink">Where this ball sits</h2>
+          <h2 className="font-display text-xl font-semibold text-ink">
+            {retired ? "Current replacements" : "Where this ball sits"}
+          </h2>
           <p className="text-sm text-muted">
-            {formatPosition(ball, TENTHS_ZOOM)} on the ball motion chart · {sourceLabel(ball.oil_motion_source).toLowerCase()}
+            {retired
+              ? `This ball is retired. It sat at ${formatPosition(ball, TENTHS_ZOOM)} on the ball motion chart; these current balls are closest.`
+              : `${formatPosition(ball, TENTHS_ZOOM)} on the ball motion chart · ${sourceLabel(ball.oil_motion_source).toLowerCase()}`}
           </p>
         </div>
         <Link to={`/plotter?ball=${encodeURIComponent(ball.id)}`} className="text-sm font-semibold">

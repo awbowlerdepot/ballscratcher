@@ -411,7 +411,10 @@ export default function PlotterChart({
             const role = roles.get(p.id);
             const isSel = p.id === selectedId;
             const dim = selected && !isSel && !role;
-            const ring = isSel ? "#0f0f2d" : role ? ROLE_BY_KEY[role].color : "#9ca3af";
+            // A retired ball (runbook 6cl) is drawn as a ghost: dotted grey
+            // ring, pale fill, "Retired" tag -- it's where the ball WAS.
+            const retired = p.status === "retired";
+            const ring = retired ? "#6b6b63" : isSel ? "#0f0f2d" : role ? ROLE_BY_KEY[role].color : "#9ca3af";
             // Request a sharper image as balls get bigger (2x for retina).
             const imgPx = r > 40 ? 192 : r > 22 ? 128 : 96;
             const img = p.primary_image_url
@@ -438,7 +441,7 @@ export default function PlotterChart({
                   {p.oil_motion_source === "estimated" ? ", estimated" : ""})
                   {it.stacked ? ` + ${it.group.length - 1} more here -- click to zoom in` : ""}
                 </title>
-                <circle cx={cx} cy={cy} r={r} fill="#eef0f6" />
+                <circle cx={cx} cy={cy} r={r} fill={retired ? "#f3f0ea" : "#eef0f6"} />
                 {img ? (
                   <image
                     href={img}
@@ -458,8 +461,16 @@ export default function PlotterChart({
                   fill="none"
                   stroke={ring}
                   strokeWidth={isSel || role ? 3 : 1.5}
-                  strokeDasharray={p.oil_motion_source === "estimated" ? "4 3" : undefined}
+                  strokeDasharray={retired ? "2 4" : p.oil_motion_source === "estimated" ? "4 3" : undefined}
                 />
+                {retired ? (
+                  <g pointerEvents="none">
+                    <rect x={cx - 26} y={cy + r + 3} width={52} height={15} rx={7.5} fill="#6b6b63" />
+                    <text x={cx} y={cy + r + 10.5} textAnchor="middle" dominantBaseline="central" fontSize={10} fontWeight={700} fill="#fff">
+                      Retired
+                    </text>
+                  </g>
+                ) : null}
                 {/* Role tag under each suggestion, so the chart reads on
                     its own without the details card (runbook 6ce). */}
                 {role && !it.stacked ? (

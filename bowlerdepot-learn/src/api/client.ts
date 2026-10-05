@@ -1,4 +1,4 @@
-import type { ArticleCard, ArticleDetail, Category, LearnPlotterPoint, ProductArticleResponse } from "./types";
+import type { ArticleCard, ArticleDetail, Category, LearnPlotterPoint, PlotterLookupItem, ProductArticleResponse } from "./types";
 
 // Same unauthenticated-PublicApiFunction posture as consumer-site/src/
 // api/client.ts (see its own comments for the full "why no auth"
@@ -127,6 +127,26 @@ export function getLearnPlotter(): Promise<LearnPlotterPoint[]> {
       });
   }
   return _plotterCache;
+}
+
+// Retired-ball lookup (runbook 6cl): name search across current AND
+// retired balls, and one ball with its current replacements.
+export function lookupPlotterBalls(q: string): Promise<PlotterLookupItem[]> {
+  return apiGet<{ items: PlotterLookupItem[] }>("/learn/plotter/lookup", { q }).then((r) => r.items);
+}
+
+const _plotterBallCache = new Map<string, Promise<LearnPlotterPoint>>();
+
+export function getPlotterBall(id: string): Promise<LearnPlotterPoint> {
+  let hit = _plotterBallCache.get(id);
+  if (!hit) {
+    hit = apiGet<LearnPlotterPoint>(`/learn/plotter/ball/${encodeURIComponent(id)}`).catch((err) => {
+      _plotterBallCache.delete(id);
+      throw err;
+    });
+    _plotterBallCache.set(id, hit);
+  }
+  return hit;
 }
 
 export function getProductArticle(productId: string): Promise<ProductArticleResponse> {

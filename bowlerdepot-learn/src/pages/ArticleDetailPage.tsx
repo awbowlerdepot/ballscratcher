@@ -542,9 +542,8 @@ export default function ArticleDetailPage() {
 
       {/* Ball motion plotter slice (runbook 6cc): where this ball sits,
           similar balls from other brands, and a step in each direction. */}
-      {!isVideo && data?.product_id && product?.status === "current" ? (
-        <PlotterArticlePanel productId={data.product_id} />
-      ) : null}
+      {/* Retired balls get it too, as "Current replacements" (6cl). */}
+      {!isVideo && data?.product_id ? <PlotterArticlePanel productId={data.product_id} /> : null}
 
       {product?.skus?.length ? (
         <div className="mb-10">

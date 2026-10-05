@@ -17597,6 +17597,66 @@ are unchanged, since there's no chart data for them.
 **Deploy.** `sam build && sam deploy` (admin_api + public_api), then
 Admin → Batch Jobs → Re-estimate plotter positions.
 
+### 6cl. Current replacements for retired balls (2026-10-05)
+
+Al: "show current replacements for retired balls".
+
+**Scope (Al's choices).** ANY retired ball can be looked up, not just the
+3 published retired balls (Motiv Subzero Forge, Storm Level, Brunswick
+Combat). 1,263 retired balls are unpublished, and only minimal info is
+exposed for them: brand, name, status and plotter position. No specs,
+images or pages. Replacements are the closest current balls plus the
+usual directional steps.
+
+**Backend (public_api).**
+- `compute_replacements(target, current_points)`, a pure function:
+  - closest: up to 3 recommendable (BowlerDepot-sold) current balls
+    within 2.5 units, one per ball line, any brand. The same brand is
+    allowed, since a retired Hammer's successor is often a current
+    Hammer, and so is a current colorway of the same ball.
+  - steps: more oil / less oil / angular / smoother, using the plotter
+    neighbors rules and skipping the closest ones.
+- `GET /learn/plotter/lookup?q=`: name search (2+ chars) over current
+  published balls plus every retired ball with a position. Minimal
+  fields; current first; LIKE wildcards escaped.
+- `GET /learn/plotter/ball/{id}`:
+  - A current published ball returns exactly as in /learn/plotter.
+  - A retired ball returns brand/name/status/position, plus image and
+    article only if published, with `neighbors = {closest, more_oil,
+    less_oil, more_angular, smoother}`.
+  - Anything else returns 404.
+- `get_learn_plotter` was refactored around `_learn_plotter_points`, and
+  points now carry `status: "current"`. Additive; the partner API
+  contract is untouched.
+- All 1,266 retired balls already have stored positions (13 from charts).
+
+**Frontend (bowlerdepot-learn).**
+- /plotter search: "Find any ball, even retired". Server lookup is
+  debounced 250 ms, and retired results are tagged "Retired".
+- Selecting a retired ball (or opening `?ball=<retired id>`) fetches it
+  on demand. It draws as a ghost (dotted grey ring, pale fill, "Retired"
+  tag) with links to its replacements.
+- The card says "Retired ball … No longer made · current replacements
+  below" and shows a new role, "Closest current balls" (#9d174d). Roles
+  shown are whatever the ball has (`rolesPresent`): current balls get
+  twins + steps, retired balls get closest + steps.
+- Article panel: retired published balls get it too, headed "Current
+  replacements".
+
+**Checked against prod (read-only):**
+- Hazmat Pearl → Turbo X, Outer Limits Black Hole, Vexed
+- Heckler → Criterion Inverse, Infinity Quest Pearl, No Doubt Solid
+- Combat → The Great One, Viking, Equinox Hybrid
+- Anger Solid → Guru Oracle Pearl, Black Venom, Monsoon
+
+About 160 ms per lookup. Unpublished retired balls exposed only id,
+brand, name, status and position. Combat (published) also had its image
+and article. Browser-tested on /plotter (Hazmat search → ghost + card)
+and on the Combat article.
+
+**Deploy:** `sam build && sam deploy` (public_api) FIRST, then `git push`
+(deploy-learn-site).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

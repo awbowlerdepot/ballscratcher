@@ -122,6 +122,14 @@ export type PlotterRole = keyof PlotterNeighbors;
 
 export const ROLES: { key: PlotterRole; label: string; short: string; blurb: string; color: string }[] = [
   {
+    // Retired balls only (runbook 6cl).
+    key: "closest",
+    label: "Closest current balls",
+    short: "Closest",
+    blurb: "Current balls BowlerDepot sells that sit closest to where this retired ball was.",
+    color: "#9d174d",
+  },
+  {
     key: "twins",
     label: "Similar from other brands",
     short: "Similar",
@@ -157,6 +165,12 @@ export const ROLES: { key: PlotterRole; label: string; short: string; blurb: str
     color: "#0369a1",
   },
 ];
+
+// The roles a ball actually has: current balls get twins + steps, retired
+// balls get closest + steps.
+export function rolesPresent(p: LearnPlotterPoint) {
+  return ROLES.filter((r) => p.neighbors[r.key] !== undefined);
+}
 
 export const ROLE_BY_KEY = Object.fromEntries(ROLES.map((r) => [r.key, r])) as Record<
   PlotterRole,

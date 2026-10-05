@@ -2985,3 +2985,38 @@ def test_plotter_twin_is_not_repeated_as_a_step():
     n = service.compute_plotter_neighbors(pts)["t"]
     assert [x["id"] for x in n["twins"]] == ["twin"]
     assert [x["id"] for x in n["more_oil"]] == ["next"]
+
+
+# --- Retired-ball replacements (runbook 6cl) ---
+
+def test_replacements_closest_allows_same_brand_and_stays_in_radius():
+    target = {"id": "r", "oil": 8.0, "motion": 12.0}
+    pts = [
+        _pt("same-brand", "Hammer", "Successor", 8.3, 12.1),
+        _pt("other", "Storm", "Twin", 7.6, 11.8),
+        _pt("far", "DV8", "Far", 12.0, 12.0),
+        _pt("unsold", "Radical", "Unsold", 8.1, 12.0, sold=False),
+    ]
+    rep = service.compute_replacements(target, pts)
+    assert [x["id"] for x in rep["closest"]] == ["same-brand", "other"]
+    assert all(x["distance"] <= service.PLOTTER_REPLACEMENT_RADIUS for x in rep["closest"])
+    assert "unsold" not in {x["id"] for v in rep.values() for x in v}
+
+
+def test_replacements_steps_skip_closest_and_have_every_direction():
+    target = {"id": "r", "oil": 8.0, "motion": 12.0}
+    pts = [
+        _pt("close", "Storm", "Close", 9.0, 12.0),       # closest AND a valid more_oil step
+        _pt("step", "DV8", "Step", 10.5, 12.2),          # outside radius, good more_oil
+        _pt("smooth", "Track", "Smooth", 8.0, 9.0),
+    ]
+    rep = service.compute_replacements(target, pts)
+    assert set(rep) == {"closest", "more_oil", "less_oil", "more_angular", "smoother"}
+    assert [x["id"] for x in rep["closest"]] == ["close"]
+    assert [x["id"] for x in rep["more_oil"]] == ["step"]
+    assert [x["id"] for x in rep["smoother"]] == ["smooth"]
+
+
+def test_lookup_like_pattern_escapes_wildcards():
+    assert service._like_pattern("50%_off") == "%50\\%\\_off%"
+    assert service.lookup_plotter_balls(None, "a") == []  # under 2 chars: no query at all

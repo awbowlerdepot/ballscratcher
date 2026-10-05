@@ -316,9 +316,12 @@ export interface PlotterNeighbor {
 export type PlotterDirection = "more_oil" | "less_oil" | "more_angular" | "smoother";
 
 export interface PlotterNeighbors {
-  // Other-brand balls within 1.5 units -- "what's the same ball from
-  // another brand?"
-  twins: PlotterNeighbor[];
+  // Current balls: other-brand balls within 1.5 units -- "what's the same
+  // ball from another brand?"
+  twins?: PlotterNeighbor[];
+  // Retired balls (runbook 6cl): the closest CURRENT balls BowlerDepot
+  // sells, any brand -- "what replaced it?"
+  closest?: PlotterNeighbor[];
   more_oil: PlotterNeighbor[];
   less_oil: PlotterNeighbor[];
   more_angular: PlotterNeighbor[];
@@ -341,5 +344,15 @@ export interface LearnPlotterPoint {
   coverstock_material: string | null;
   finish_category: string | null;
   recommendable: boolean;
+  // "retired" only for a ball fetched via getPlotterBall (6cl). Unpublished
+  // retired balls carry just brand/name/position; image/article are null.
+  status?: "current" | "retired";
   neighbors: PlotterNeighbors;
+}
+
+export interface PlotterLookupItem {
+  id: string;
+  name: string;
+  brand_name: string;
+  status: "current" | "retired";
 }
