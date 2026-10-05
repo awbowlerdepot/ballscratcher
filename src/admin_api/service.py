@@ -2941,8 +2941,16 @@ def _plotter_clamp_input(name: str, value):
     return max(low, min(high, float(value)))
 
 
-def _plotter_round(value: float, low: int, high: int) -> int:
-    return max(low, min(high, round(value)))
+# Tenths, not whole numbers (migration 043, runbook 6by) -- Al: "can we
+# make these accurate down to on tenth so that we can support zooming in
+# on the motion plotter? default is to round to the whole number". The
+# stored/served value keeps the model's precision to 0.1; the plotter
+# page itself rounds to the whole-number grid at default zoom.
+PLOTTER_PRECISION = 1
+
+
+def _plotter_round(value: float, low: int, high: int) -> float:
+    return float(max(low, min(high, round(value, PLOTTER_PRECISION))))
 
 
 def _plotter_linear(model: dict, features: dict) -> float:
@@ -3016,7 +3024,7 @@ def _reference_sku(skus: list):
     return min(skus, key=lambda s: abs(s["weight_lbs"] - 15))
 
 
-def set_plotter_position(conn, product_id: str, oil_rating: int, motion_rating: int,
+def set_plotter_position(conn, product_id: str, oil_rating: float, motion_rating: float,
                           source: str = "manual") -> dict:
     """Writes products.oil_rating/motion_rating/oil_motion_source
     (migrations 011/012). source defaults to 'manual' -- this endpoint's
@@ -3037,6 +3045,9 @@ def set_plotter_position(conn, product_id: str, oil_rating: int, motion_rating: 
 
     Raises LookupError if product_id doesn't exist, same not-found
     convention as every other single-row setter in this module."""
+    # numeric(3,1) (migration 043) rounds to tenths on write; round here
+    # too so the echoed response is what's actually stored.
+    oil_rating, motion_rating = round(float(oil_rating), 1), round(float(motion_rating), 1)
     with conn.cursor() as cur:
         cur.execute(
             "update products set oil_rating = %s, motion_rating = %s, oil_motion_source = %s "
@@ -3070,6 +3081,13 @@ def _fetch_plotter_estimate_inputs(cur, where_sql: str, params=()) -> list:
     )
     columns = [desc[0] for desc in cur.description]
     products = [dict(zip(columns, row)) for row in cur.fetchall()]
+    # numeric(3,1) since migration 043 comes back as Decimal -- float it so
+    # reestimate_plotter_positions' changed-check and shift math compare
+    # like with like (Decimal("7.3") != 7.3, and Decimal - float raises).
+    for p in products:
+        for col in ("oil_rating", "motion_rating"):
+            if p[col] is not None:
+                p[col] = float(p[col])
     skus_by_product = {}
     product_ids = [p["id"] for p in products]
     if product_ids:

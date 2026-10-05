@@ -140,8 +140,10 @@ class PlotterPositionRequest(BaseModel):
     # scripts/backfill_plotter_chart_positions.py is the one caller that
     # passes 'chart' explicitly (see migration 012's header comment for
     # the three source values and what each means).
-    oil_rating: int
-    motion_rating: int
+    # Tenths allowed since migration 043 (numeric(3,1); Postgres rounds
+    # anything finer) -- a manual correction can be as precise as v3's.
+    oil_rating: float
+    motion_rating: float
     source: Literal["chart", "estimated", "manual"] = "manual"
 
 

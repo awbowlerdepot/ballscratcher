@@ -57,6 +57,19 @@ const SIZE_DEFAULT = 42;
 // second param plumbed through everywhere status already is.
 type PlotterView = ProductStatus | "compare";
 
+// Positions arrive to 0.1 (migration 043, DEPLOY_RUNBOOK.md 6by) -- Al:
+// "can we make these accurate down to on tenth so that we can support
+// zooming in on the motion plotter? default is to round to the whole
+// number". At default zoom every point snaps to the whole-number grid
+// (placement, stacking and the labels), so the chart reads exactly as it
+// always has; a zoomed view can pass 1 to show the tenths.
+const DEFAULT_ZOOM_DECIMALS = 0;
+
+function snap(value: number, decimals: number = DEFAULT_ZOOM_DECIMALS) {
+  const f = 10 ** decimals;
+  return Math.round(value * f) / f;
+}
+
 function xFor(oil: number) {
   const t = (oil - OIL_MIN) / (OIL_MAX - OIL_MIN);
   return MARGIN.left + t * (WIDTH - MARGIN.left - MARGIN.right);
@@ -123,14 +136,15 @@ export default function PlotterPage() {
   // hover animate them out so they are visible" -- so a group stays
   // stacked exactly on the true grid position at rest, and only spreads
   // into a small ring while the stack is being hovered, easing back
-  // together on mouse-out. Grouped by the literal oil/motion pair.
+  // together on mouse-out. Grouped by the snapped oil/motion pair (whole
+  // numbers at default zoom -- see snap()), so 7.3 and 7.4 still stack.
   // p.oil/p.motion themselves (used everywhere else: tooltip, title,
   // click-through) are never touched -- this only ever computes a render
   // offset layered on top of the real grid position.
   const groups = useMemo(() => {
     const map = new Map<string, PlotterPoint[]>();
     for (const p of visible) {
-      const key = `${p.oil}:${p.motion}`;
+      const key = `${snap(p.oil)}:${snap(p.motion)}`;
       const group = map.get(key);
       if (group) group.push(p);
       else map.set(key, [p]);
@@ -356,8 +370,8 @@ export default function PlotterPage() {
                 comment. */}
             {orderedGroupKeys.map((key) => {
               const group = groups.get(key)!;
-              const baseCx = xFor(group[0].oil);
-              const baseCy = yFor(group[0].motion);
+              const baseCx = xFor(snap(group[0].oil));
+              const baseCy = yFor(snap(group[0].motion));
               const radius = size / 2;
               const exploded = group.length > 1;
               const haloRadius = exploded
@@ -396,7 +410,7 @@ export default function PlotterPage() {
                         onClick={() => navigate(`/balls/${p.id}`)}
                       >
                         <title>
-                          {p.brand_name} {p.name} (oil {p.oil}, motion {p.motion}
+                          {p.brand_name} {p.name} (oil {snap(p.oil)}, motion {snap(p.motion)}
                           {p.oil_motion_source === "estimated" ? ", estimated" : ""})
                         </title>
                         {p.primary_image_url ? (
@@ -450,7 +464,7 @@ export default function PlotterPage() {
                 <div className="product-card-brand">{hovered.brand_name}</div>
                 <div className="product-card-name">{hovered.name}</div>
                 <div className="hint">
-                  oil {hovered.oil} / motion {hovered.motion}
+                  oil {snap(hovered.oil)} / motion {snap(hovered.motion)}
                   {hovered.oil_motion_source === "estimated" ? " (estimated)" : ""}
                 </div>
               </div>

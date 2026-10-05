@@ -1,3 +1,4 @@
+import pytest
 """
 Tests for src/admin_api/service.py.
 
@@ -7940,7 +7941,32 @@ def test_v3_always_returns_in_range_values_with_no_inputs():
 def test_v3_particle_keeps_oil_bonus():
     common = dict(coverstock_material="reactive_resin", coverstock_type="solid", core_type="symmetric",
                   finish_category="satin", rg15=2.50, diff15=0.040)
-    assert _v3(**common, has_particle=True)["oil"] == min(16, _v3(**common)["oil"] + service.PLOTTER_PARTICLE_OIL_BONUS)
+    # Within one tenth: the bonus is added before rounding to 0.1.
+    assert _v3(**common, has_particle=True)["oil"] == pytest.approx(
+        min(16, _v3(**common)["oil"] + service.PLOTTER_PARTICLE_OIL_BONUS), abs=0.1 + 1e-9
+    )
+
+
+def test_v3_positions_are_to_one_tenth():
+    """Migration 043 / runbook 6by -- Al: "can we make these accurate down
+    to on tenth so that we can support zooming in on the motion plotter?"
+    """
+    seen_fractional = False
+    for diff in (0.020, 0.031, 0.044, 0.052):
+        for rg in (2.47, 2.51, 2.56):
+            r = _v3(coverstock_material="reactive_resin", coverstock_type="solid", core_type="asymmetric",
+                    finish_category="satin", rg15=rg, diff15=diff, price=165.0)
+            for v in (r["oil"], r["motion"]):
+                assert isinstance(v, float) and round(v, 1) == v
+                seen_fractional |= v != int(v)
+    assert seen_fractional
+
+
+def test_set_plotter_position_rounds_to_tenths():
+    db = {"products": {"prod-1": {"id": "prod-1", "oil_rating": None, "motion_rating": None,
+                                  "oil_motion_source": None}}}
+    result = service.set_plotter_position(FakeConnection(db), "prod-1", 7.36, 12.04)
+    assert (result["oil_rating"], result["motion_rating"]) == (7.4, 12.0)
 
 
 def test_reestimate_plotter_positions_overwrites_estimated_fills_null_never_chart_or_manual():
@@ -7983,7 +8009,7 @@ def test_reestimate_plotter_positions_overwrites_estimated_fills_null_never_char
     assert result["products_updated"] == 2
     assert result["products_newly_estimated"] == 1
     assert result["by_basis"] == {"price": 1, "plastic_pinned": 1}
-    assert result["mean_oil_shift"] == abs(expected["oil"] - 13)
+    assert result["mean_oil_shift"] == pytest.approx(abs(expected["oil"] - 13))
     assert conn.committed
 
 

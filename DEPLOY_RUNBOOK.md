@@ -16982,6 +16982,51 @@ psql -c "select oil_motion_source, count(*) from products where product_type='ba
 Brunswick/DV8/Ebonite/Hammer/Radical/Track; names are logos only) as more
 `chart` rows and refit the coefficients.
 
+### 6by. Plotter positions to one tenth (migration 043) (2026-10-04)
+
+Al: "can we make these accurate down to on tenth so that we can support
+zooming in on the motion plotter? default is to round to the whole number".
+
+**Change.**
+- Migration 043: `products.oil_rating` / `motion_rating` changed from
+  `smallint` to `numeric(3,1)`. The cast is lossless (6 → 6.0), and the
+  011 range CHECKs and 012 consistency CHECK are unchanged.
+- Estimator v3 (6bx) now rounds to 0.1 (`PLOTTER_PRECISION = 1`) in both
+  copies. Chart positions stay whole numbers. The scrapers' v2 still writes
+  whole numbers into a null position until the button runs.
+- psycopg2 returns `Decimal` for numeric. `_fetch_plotter_estimate_inputs`
+  converts to float so the re-estimate's moved check and shift math work;
+  without that, `Decimal("7.3") != 7.3`. The public plotter serves floats.
+- `PATCH /products/{id}/plotter-position` now takes floats and rounds to
+  0.1, matching what's stored.
+- consumer-site PlotterPage: a `snap()` helper (`DEFAULT_ZOOM_DECIMALS = 0`)
+  rounds placement, stacking and labels to whole numbers, so the default
+  view looks exactly as it did. A future zoom view passes 1 to show tenths.
+
+**Tested.** Applied migrations 001–043 to a scratch Postgres 16 and ran
+the real `reestimate_plotter_positions`, `set_plotter_position` and
+public `list_plotter_positions` through psycopg2:
+- tenths are stored (7.36 → 7.4);
+- a second run reports 0 moved;
+- the chart row is untouched;
+- plastic is at 1.0/1.0.
+
+**Deploy order.** Apply the migration first. Old code against numeric
+columns still works, because FastAPI encodes Decimal as a number. Then run
+`sam build && sam deploy` (6bx and 6by ship together), push for the
+consumer site and admin-spa, and click Admin → Batch Jobs → Re-estimate
+plotter positions.
+```bash
+psql -v ON_ERROR_STOP=1 -f db/migrations/043_plotter_ratings_tenths.sql
+```
+
+**Verify.**
+```bash
+psql -c "select oil_rating, motion_rating from products where oil_motion_source='estimated' and oil_rating <> trunc(oil_rating) limit 5"
+```
+After the button runs this should return rows with fractional values. The
+plotter itself should look unchanged.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

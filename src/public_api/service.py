@@ -1775,8 +1775,16 @@ def _plotter_clamp_input(name: str, value):
     return max(low, min(high, float(value)))
 
 
-def _plotter_round(value: float, low: int, high: int) -> int:
-    return max(low, min(high, round(value)))
+# Tenths, not whole numbers (migration 043, runbook 6by) -- Al: "can we
+# make these accurate down to on tenth so that we can support zooming in
+# on the motion plotter? default is to round to the whole number". The
+# stored/served value keeps the model's precision to 0.1; the plotter
+# page itself rounds to the whole-number grid at default zoom.
+PLOTTER_PRECISION = 1
+
+
+def _plotter_round(value: float, low: int, high: int) -> float:
+    return float(max(low, min(high, round(value, PLOTTER_PRECISION))))
 
 
 def _plotter_linear(model: dict, features: dict) -> float:
@@ -1928,7 +1936,10 @@ def list_plotter_positions(conn, status: str = "current", ids: list = None) -> l
     results = []
     for p in products:
         if p["oil_rating"] is not None and p["motion_rating"] is not None:
-            oil, motion, source = p["oil_rating"], p["motion_rating"], p["oil_motion_source"] or "estimated"
+            # numeric(3,1) since migration 043 -- psycopg2 hands back
+            # Decimal; served as a plain float either way.
+            oil, motion = float(p["oil_rating"]), float(p["motion_rating"])
+            source = p["oil_motion_source"] or "estimated"
         else:
             # Live fallback for a ball with no stored position (rare: the
             # scrapers write a first estimate on insert, and admin
