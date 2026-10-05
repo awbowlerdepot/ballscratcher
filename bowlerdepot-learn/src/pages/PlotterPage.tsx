@@ -3,8 +3,8 @@ import { useSearchParams } from "react-router-dom";
 import { getLearnPlotter } from "../api/client";
 import type { LearnPlotterPoint } from "../api/types";
 import PlotterChart from "../components/plotter/PlotterChart";
-import PlotterNeighborPanel from "../components/plotter/PlotterNeighborPanel";
-import { FULL_VIEW, ROLES, fitView, type PlotterView } from "../components/plotter/plotterModel";
+import PlotterNeighborPanel, { PlotterNeighborCard } from "../components/plotter/PlotterNeighborPanel";
+import { FULL_VIEW, ROLES, fitView, offsetForCard, type PlotterView } from "../components/plotter/plotterModel";
 
 // /plotter -- the Learn site's ball motion plotter (runbook 6cc). Al: "the
 // goal here is to move this to the learn site in some way with a more
@@ -16,6 +16,25 @@ import { FULL_VIEW, ROLES, fitView, type PlotterView } from "../components/plott
 // ?ball=<product id> selects a ball and zooms to it and its suggestions --
 // the article panel's "Open in the plotter" link and shared links use it.
 
+// Desktop (lg+): full-width landscape chart with the details as a card
+// floating in its top-left corner (runbook 6ce). Smaller screens keep the
+// portrait chart with details stacked underneath.
+const DESKTOP_QUERY = "(min-width: 1024px)";
+const DESKTOP_CHART = { width: 1200, height: 740 };
+const MOBILE_CHART = { width: 900, height: 980 };
+const CARD_PX = 330; // card width (~20rem) in chart viewBox px at desktop width
+
+function useIsDesktop() {
+  const [desktop, setDesktop] = useState(() => typeof window !== "undefined" && window.matchMedia(DESKTOP_QUERY).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(DESKTOP_QUERY);
+    const onChange = () => setDesktop(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return desktop;
+}
+
 export default function PlotterPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [points, setPoints] = useState<LearnPlotterPoint[]>([]);
@@ -24,6 +43,9 @@ export default function PlotterPage() {
   const [view, setView] = useState<PlotterView>(FULL_VIEW);
   const [hiddenBrands, setHiddenBrands] = useState<Set<string>>(new Set());
   const [query, setQuery] = useState("");
+  const isDesktop = useIsDesktop();
+  const [cardCollapsed, setCardCollapsed] = useState(false);
+  const chart = isDesktop ? DESKTOP_CHART : MOBILE_CHART;
 
   const selectedId = searchParams.get("ball");
   const byId = useMemo(() => new Map(points.map((p) => [p.id, p])), [points]);
@@ -42,13 +64,14 @@ export default function PlotterPage() {
   // Zoom to a ball + its suggestions whenever the selection changes.
   function focusOn(p: LearnPlotterPoint) {
     const related = ROLES.flatMap((r) => p.neighbors[r.key]).map((n) => byId.get(n.id)).filter(Boolean) as LearnPlotterPoint[];
-    setView(fitView([p, ...related]));
+    const fitted = fitView([p, ...related]);
+    setView(isDesktop && !cardCollapsed ? offsetForCard(fitted, chart.width, CARD_PX) : fitted);
   }
 
   useEffect(() => {
     if (selected) focusOn(selected);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected?.id]);
+  }, [selected?.id, isDesktop]);
 
   function select(id: string) {
     const next = new URLSearchParams(searchParams);
@@ -138,8 +161,8 @@ export default function PlotterPage() {
       {error ? <p className="py-16 text-center text-alert">{error}</p> : null}
 
       {!loading && !error ? (
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_22rem]">
-          <div>
+        <div>
+          <div className="relative">
             <PlotterChart
               points={visible}
               byId={byId}
@@ -147,45 +170,75 @@ export default function PlotterPage() {
               onSelect={select}
               view={view}
               onViewChange={setView}
-              width={900}
-              height={980}
+              width={chart.width}
+              height={chart.height}
               wheelZoom
             />
-            <p className="mt-2 text-xs text-muted">
-              Solid ring: position read off the manufacturer&rsquo;s published ball motion chart. Dashed ring: our
-              estimate from the ball&rsquo;s cover, finish, core specs and price. A number on a ball means several balls
-              share that spot &mdash; click it to zoom in.
-            </p>
-          </div>
-
-          <aside className="lg:sticky lg:top-28 lg:self-start">
-            {selected ? (
-              <div className="rounded-xl border border-paper-border bg-white p-5">
-                <div className="mb-3 flex justify-end">
-                  <button type="button" onClick={clearSelection} className="text-xs font-semibold text-muted hover:text-ink">
-                    Clear &times;
+            {isDesktop ? (
+              <div className="pointer-events-none absolute bottom-12 left-12 top-3 flex w-[20rem] flex-col items-start">
+                {selected && !cardCollapsed ? (
+                  <div className="pointer-events-auto flex max-h-full w-full flex-col">
+                    <PlotterNeighborCard
+                      selected={selected}
+                      byId={byId}
+                      onSelect={select}
+                      onCollapse={() => setCardCollapsed(true)}
+                      onClear={clearSelection}
+                    />
+                  </div>
+                ) : selected ? (
+                  <button
+                    type="button"
+                    onClick={() => setCardCollapsed(false)}
+                    className="pointer-events-auto flex items-center gap-2 rounded-full border border-paper-border bg-white/95 px-3 py-1.5 text-xs font-semibold text-ink shadow"
+                  >
+                    {selected.brand_name} {selected.name} <span className="text-muted">&#9662; details</span>
                   </button>
+                ) : (
+                  <div className="pointer-events-auto rounded-lg border border-paper-border bg-white/95 px-3 py-2 text-xs text-muted shadow-sm">
+                    <span className="font-semibold text-ink">Pick a ball</span> to see similar balls and a step in each
+                    direction.
+                  </div>
+                )}
+              </div>
+            ) : null}
+          </div>
+          <p className="mt-2 text-xs text-muted">
+            Solid ring: position read off the manufacturer&rsquo;s published ball motion chart. Dashed ring: our estimate
+            from the ball&rsquo;s cover, finish, core specs and price. A number on a ball means several balls share that
+            spot &mdash; click it to zoom in.
+          </p>
+          <ul className="mt-2 flex list-none flex-wrap gap-x-4 gap-y-1 p-0">
+            {ROLES.map((r) => (
+              <li key={r.key} className="flex items-center gap-1.5 text-xs" title={r.blurb}>
+                <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: r.color }} />
+                <span className="font-semibold text-ink">{r.label}</span>
+              </li>
+            ))}
+          </ul>
+
+          {!isDesktop ? (
+            <div className="mt-6">
+              {selected ? (
+                <div className="rounded-xl border border-paper-border bg-white p-5">
+                  <div className="mb-3 flex justify-end">
+                    <button type="button" onClick={clearSelection} className="text-xs font-semibold text-muted hover:text-ink">
+                      Clear &times;
+                    </button>
+                  </div>
+                  <PlotterNeighborPanel selected={selected} byId={byId} onSelect={select} />
                 </div>
-                <PlotterNeighborPanel selected={selected} byId={byId} onSelect={select} />
-              </div>
-            ) : (
-              <div className="rounded-xl border border-dashed border-paper-border p-5 text-sm text-muted">
-                <p className="font-display text-base font-semibold text-ink">Pick a ball</p>
-                <p className="mt-1">
-                  Click any ball on the chart, or search above, to see similar balls from other brands and the nearest
-                  step toward more oil, less oil, a sharper move, or a smoother one.
-                </p>
-                <ul className="mt-3 flex list-none flex-col gap-1.5 p-0">
-                  {ROLES.map((r) => (
-                    <li key={r.key} className="flex items-center gap-2 text-xs">
-                      <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: r.color }} />
-                      <span className="font-semibold text-ink">{r.label}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </aside>
+              ) : (
+                <div className="rounded-xl border border-dashed border-paper-border p-5 text-sm text-muted">
+                  <p className="font-display text-base font-semibold text-ink">Pick a ball</p>
+                  <p className="mt-1">
+                    Tap any ball on the chart, or search above, to see similar balls from other brands and the nearest
+                    step toward more oil, less oil, a sharper move, or a smoother one.
+                  </p>
+                </div>
+              )}
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>

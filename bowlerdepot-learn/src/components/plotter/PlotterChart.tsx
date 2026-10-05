@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { resizedImageUrl } from "../../api/client";
 import type { LearnPlotterPoint } from "../../api/types";
 import {
+  CHART_MARGIN,
   DOMAIN,
   MOTION_MAX,
   MOTION_MIN,
@@ -44,10 +45,12 @@ interface Props {
   ariaLabel?: string;
 }
 
-const M = { left: 40, right: 12, top: 12, bottom: 34 };
+const M = CHART_MARGIN;
 const BALL_RADIUS_MAX = 64;
 // Gap kept between neighboring balls after the layout pass.
 const BALL_GAP = 3;
+
+const roleTagWidth = (role: keyof typeof ROLE_BY_KEY) => ROLE_BY_KEY[role].short.length * 6 + 14;
 
 interface LayoutItem {
   group: LearnPlotterPoint[];
@@ -457,6 +460,23 @@ export default function PlotterChart({
                   strokeWidth={isSel || role ? 3 : 1.5}
                   strokeDasharray={p.oil_motion_source === "estimated" ? "4 3" : undefined}
                 />
+                {/* Role tag under each suggestion, so the chart reads on
+                    its own without the details card (runbook 6ce). */}
+                {role && !it.stacked ? (
+                  <g pointerEvents="none">
+                    <rect
+                      x={cx - roleTagWidth(role) / 2}
+                      y={cy + r + 3}
+                      width={roleTagWidth(role)}
+                      height={15}
+                      rx={7.5}
+                      fill={ROLE_BY_KEY[role].color}
+                    />
+                    <text x={cx} y={cy + r + 10.5} textAnchor="middle" dominantBaseline="central" fontSize={10} fontWeight={700} fill="#fff">
+                      {ROLE_BY_KEY[role].short}
+                    </text>
+                  </g>
+                ) : null}
                 {it.stacked ? (
                   <g>
                     <circle cx={cx + r * 0.8} cy={cy - r * 0.8} r={Math.max(8, r * 0.45)} fill="#0f0f2d" />
@@ -543,7 +563,7 @@ export default function PlotterChart({
         </button>
       </div>
       {tenths ? (
-        <p className="pointer-events-none absolute left-12 top-3 rounded bg-white/90 px-1.5 py-0.5 text-[11px] text-muted">
+        <p className="pointer-events-none absolute right-14 top-3 rounded bg-white/90 px-1.5 py-0.5 text-[11px] text-muted">
           Zoomed in · positions to 0.1
         </p>
       ) : null}

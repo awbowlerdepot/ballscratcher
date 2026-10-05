@@ -85,6 +85,17 @@ export function fitView(points: { oil: number; motion: number }[], minK = TENTHS
   return clampView({ cx: (minX + maxX) / 2, cy: (minY + maxY) / 2, k });
 }
 
+// Chart margins in viewBox px (axis labels live in them).
+export const CHART_MARGIN = { left: 40, right: 12, top: 12, bottom: 34 };
+
+// Desktop floating details card (runbook 6ce): shift the view left by half
+// the card's width so a focused ball and its suggestions land in the open
+// part of the chart instead of under the card.
+export function offsetForCard(view: PlotterView, chartWidth: number, cardPx: number): PlotterView {
+  const plotW = chartWidth - CHART_MARGIN.left - CHART_MARGIN.right;
+  return clampView({ ...view, cx: view.cx - (cardPx / 2) * (spans(view.k).sx / plotW) });
+}
+
 export function snap(value: number, decimals: number) {
   const f = 10 ** decimals;
   return Math.round(value * f) / f;

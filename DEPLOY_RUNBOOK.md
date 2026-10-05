@@ -17265,6 +17265,37 @@ explicit size.
 
 **Deploy:** `git push` (deploy-learn-site).
 
+### 6ce. Learn plotter: full-width chart with a floating details card on desktop (2026-10-05)
+
+Al: "can you think of a better way on desktop to display the details for
+the selected ball so that the chart is larger?" He was shown four layouts
+(floating card, details bar below, slide-over drawer, narrower side
+panel) and picked the floating card.
+
+**Desktop (≥1024px):**
+- The chart is full width, in a landscape viewBox of 1200×740. It was a
+  900×980 portrait next to a 22rem panel.
+- The details render as `PlotterNeighborCard`, a 20rem card in the
+  chart's top-left corner: header with photo, position, source,
+  Review/Shop links, collapse (–) and clear (×) buttons, then one tight
+  row per suggestion (thumbnail, name, est., Shop). It scrolls inside the
+  chart height.
+- Collapsing leaves a "Ball name ▾ details" pill.
+- With the card open, focusing a ball shifts the view left by half the
+  card width (`offsetForCard`), so the ball and its suggestions land in
+  the open part of the chart.
+
+**Every screen size:**
+- Each suggested ball gets a role-colored tag under it on the chart
+  (Similar / More oil / Less oil / Angular / Smoother).
+- A role legend sits under the chart.
+- The "zoomed in" hint moved to the top right.
+
+**Phones and tablets:** the portrait chart with the full details panel
+below it, as before.
+
+**Deploy:** `git push` (deploy-learn-site).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
