@@ -17027,6 +17027,63 @@ psql -c "select oil_rating, motion_rating from products where oil_motion_source=
 After the button runs this should return rows with fractional values. The
 plotter itself should look unchanged.
 
+### 6bz. Sept 2026 Brunswick chart digitized: 17 new chart positions (2026-10-04)
+
+Source: Brunswick Ball Motion Comparison Chart, Form #0726-12, Sept 2026
+(Brunswick, DV8, Ebonite, Hammer, Radical, Track).
+
+**How it was read.** The PDF is vector with a regular grid: oil
+x = 102 + 76·(oil−1) pt, motion y = 1558 − 76·(motion−1) pt. Every ball
+sits on a whole-number intersection. 57 balls are on the chart; each was
+cropped at 216 dpi and identified from its logo. Colorway variants were
+told apart using `products.color`:
+- Zero Mercy Pearl is Silver/Orange, Hybrid is Black/Silver/Red, Solid is
+  Black/Purple/White/Red.
+- Turbo X Pearl is Red/Black.
+- Danger Zone (Black) is at (6, 12) and Danger Zone Purple Ice at (3, 16).
+- Green rings on the chart mark new releases.
+
+**Result.**
+- 40 balls match their existing `chart` positions exactly; unchanged.
+- 17 were `estimated` and are now `chart`, written via
+  `PATCH /products/{id}/plotter-position` with source "chart":
+  - Twist Pink/Black (1, 9)
+  - Rhino Carbon/Lime/Silver (1, 12)
+  - Raw Hammer Red/White/Purple (1, 14)
+  - Black Widow Spare+ (1, 1)
+  - Black Pearl Urethane (3, 1)
+  - Rhino Purple/Black (3, 8)
+  - Raw Hammer Black/Grey (3, 9)
+  - Turbo X Pearl (4, 12)
+  - Fury Orange/Red (4, 13)
+  - Fury Emerald/Black (5, 10)
+  - Deep Ocean Vibe (5, 14)
+  - Danger Zone (6, 12)
+  - Kinetic Sapphire Ice (6, 17)
+  - Zero Mercy Tour (12, 11)
+  - The Great One (12, 14)
+  - Zero Mercy Hybrid (14, 16)
+  - Zero Mercy Pearl (14, 18)
+- 4 balls from the older chart aren't on this one and keep their old
+  chart positions: Dark Side Curse, Deep Impact, Combat Hybrid and
+  Maximum Effect.
+- Other colorways of Rhino, Raw Hammer, Fury and Twist stay estimated.
+  Colorways sit at different spots on the chart (e.g. Rhino at (1, 12)
+  vs (3, 8)), so positions aren't copied between them.
+
+**Holdout check of v3.** On the 16 new non-plastic balls, the estimates
+just before this change scored:
+- oil MAE 1.73 (8/16 within ±2)
+- motion MAE 1.86 (9/16 within ±2)
+
+That is close to the LOO numbers in 6bx. The largest misses were
+entry-level balls (Raw Hammer, Twist, Rhino), which v3 placed too far
+right and too high.
+
+Rollback: the prior values are in the session scratchpad, all
+`estimated`. To roll back, set the source back to estimated, then click
+Re-estimate.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
