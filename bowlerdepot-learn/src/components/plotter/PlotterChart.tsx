@@ -45,6 +45,61 @@ interface Props {
 }
 
 const M = { left: 40, right: 12, top: 12, bottom: 34 };
+const BALL_RADIUS_MAX = 64;
+// Gap kept between neighboring balls after the layout pass.
+const BALL_GAP = 3;
+
+interface LayoutItem {
+  group: LearnPlotterPoint[];
+  ball: LearnPlotterPoint; // the one drawn (a stack shows one)
+  stacked: boolean;
+  anchor: { oil: number; motion: number }; // true (snapped) position
+  dx: number; // nudge from the anchor, viewBox px
+  dy: number;
+  r: number;
+}
+
+// Nudges overlapping balls apart (a few rounds of pairwise separation,
+// like a collision force). The selected ball never moves and its
+// recommendations barely do, so the thing being looked at stays exactly
+// where the data says. Works in pan-independent px offsets, so dragging
+// never reshuffles the layout -- it only reruns when the zoom changes.
+function separate(items: LayoutItem[], scaleX: number, scaleY: number, fixedId: string | null, heavy: Set<string>) {
+  const pos = items.map((it, i) => {
+    // Identical spots (colorways) need a deterministic nudge to separate.
+    const a = (i * 2.399963) % (2 * Math.PI);
+    return { x: it.anchor.oil * scaleX + Math.cos(a) * 0.01, y: -it.anchor.motion * scaleY + Math.sin(a) * 0.01 };
+  });
+  const weight = items.map((it) => (it.ball.id === fixedId ? 0 : heavy.has(it.ball.id) ? 0.25 : 1));
+  for (let iter = 0; iter < 60; iter++) {
+    let moved = false;
+    for (let i = 0; i < items.length; i++) {
+      for (let j = i + 1; j < items.length; j++) {
+        const ddx = pos[j].x - pos[i].x;
+        const ddy = pos[j].y - pos[i].y;
+        const min = items[i].r + items[j].r + BALL_GAP;
+        if (Math.abs(ddx) >= min || Math.abs(ddy) >= min) continue;
+        const d = Math.hypot(ddx, ddy) || 0.01;
+        if (d >= min) continue;
+        const wSum = weight[i] + weight[j];
+        if (wSum === 0) continue;
+        const push = min - d;
+        const ux = ddx / d;
+        const uy = ddy / d;
+        pos[i].x -= ux * push * (weight[i] / wSum);
+        pos[i].y -= uy * push * (weight[i] / wSum);
+        pos[j].x += ux * push * (weight[j] / wSum);
+        pos[j].y += uy * push * (weight[j] / wSum);
+        moved = true;
+      }
+    }
+    if (!moved) break;
+  }
+  items.forEach((it, i) => {
+    it.dx = pos[i].x - it.anchor.oil * scaleX;
+    it.dy = pos[i].y + it.anchor.motion * scaleY;
+  });
+}
 
 export default function PlotterChart({
   points,
@@ -68,10 +123,20 @@ export default function PlotterChart({
   const py = (motion: number) => M.top + ((y1 - motion) / sy) * plotH;
   const toData = (vx: number, vy: number) => ({ oil: x0 + ((vx - M.left) / plotW) * sx, motion: y1 - ((vy - M.top) / plotH) * sy });
 
-  // Ball size grows a little with zoom so tenths-level detail has room,
-  // capped so a zoomed-in view doesn't turn into a wall of huge balls.
-  const unitPx = Math.min(plotW / sx, plotH / sy);
-  const radius = Math.max(9, Math.min(26, unitPx * 0.32));
+  // Ball size scales with zoom (Al: "can you make the size of the ball
+  // images increase when zooming in closer and the ball won't overlap") --
+  // 0.42 of a grid unit at default zoom, so neighbors one whole number
+  // apart never touch, up to a cap where a ball photo is still a ball on
+  // a chart rather than a wall of photos. Overlaps from balls a few
+  // tenths apart are resolved by the layout pass below.
+  const scaleX = plotW / sx; // viewBox px per oil unit at this zoom
+  const scaleY = plotH / sy; // ... per motion unit
+  const unitPx = Math.min(scaleX, scaleY);
+  // Grows as zoom^0.6 rather than 1:1 with the grid -- 1:1 made dense
+  // clusters (lots of balls a few tenths apart) push each other far from
+  // their real spots. This keeps balls clearly bigger when zoomed while
+  // the layout pass only has to nudge them a little.
+  const radius = Math.max(9, Math.min(BALL_RADIUS_MAX, (unitPx / view.k) * 0.42 * view.k ** 0.6));
   const tenths = view.k >= TENTHS_ZOOM;
 
   const selected = selectedId ? (byId.get(selectedId) ?? null) : null;
@@ -92,8 +157,7 @@ export default function PlotterChart({
 
   // Group balls that land on the same drawn spot. Below TENTHS_ZOOM a
   // group is a stack (top ball + count; click zooms in). At tenths zoom
-  // only exact twins (usually colorways) still share a spot, and those fan
-  // out in a small ring so each is clickable.
+  // each ball is drawn on its own and the layout pass keeps them apart.
   const groups = useMemo(() => {
     const map = new Map<string, LearnPlotterPoint[]>();
     for (const p of drawn) {
@@ -108,6 +172,33 @@ export default function PlotterChart({
       g.some((p) => p.id === selectedId) ? 2 : g.some((p) => roles.has(p.id)) ? 1 : 0;
     return [...map.values()].sort((a, b) => rank(a) - rank(b));
   }, [drawn, view.k, selectedId, roles]);
+
+  // One layout item per drawn ball (a stack at default zoom is one item),
+  // nudged apart so nothing overlaps.
+  const layout = useMemo(() => {
+    const items: LayoutItem[] = [];
+    for (const group of groups) {
+      const stacked = group.length > 1 && !tenths;
+      const shown = stacked
+        ? [group.find((p) => p.id === selectedId) ?? group.find((p) => roles.has(p.id)) ?? group[0]]
+        : group;
+      for (const ball of shown) {
+        items.push({
+          group,
+          ball,
+          stacked,
+          anchor: displayPosition(ball, view.k),
+          dx: 0,
+          dy: 0,
+          r: ball.id === selectedId ? radius * 1.15 : radius,
+        });
+      }
+    }
+    separate(items, scaleX, scaleY, selectedId, new Set(roles.keys()));
+    return items;
+  }, [groups, tenths, selectedId, roles, view.k, radius, scaleX, scaleY]);
+  const drawnAt = new Map(layout.map((it) => [it.ball.id, it]));
+  const centerOf = (it: LayoutItem) => ({ x: px(it.anchor.oil) + it.dx, y: py(it.anchor.motion) + it.dy });
 
   // --- pointer: drag to pan, two-finger pinch to zoom -------------------
   const pointers = useRef(new Map<number, { x: number; y: number }>());
@@ -221,7 +312,6 @@ export default function PlotterChart({
   const yLines = gridLines(y1 - sy, y1, MOTION_MIN, MOTION_MAX);
   const labelEvery = (level: number) => level === 0 || (level === 1 && view.k >= 4);
 
-  const selPos = selected ? displayPosition(selected, view.k) : null;
   const clipId = useMemo(() => `plotter-ball-clip-${Math.random().toString(36).slice(2, 8)}`, []);
 
   return (
@@ -272,19 +362,36 @@ export default function PlotterChart({
             />
           ))}
 
-          {/* Recommendation links */}
-          {selected && selPos
+          {/* Where a nudged ball really sits: a dot at its true spot and a
+              thin leader line to the ball. */}
+          {layout.map((it) => {
+            if (Math.hypot(it.dx, it.dy) < it.r * 0.35) return null;
+            const ax = px(it.anchor.oil);
+            const ay = py(it.anchor.motion);
+            const c = centerOf(it);
+            const dim = selected && it.ball.id !== selectedId && !roles.has(it.ball.id);
+            return (
+              <g key={`lead-${it.ball.id}`} opacity={dim ? 0.25 : 0.7} pointerEvents="none">
+                <line x1={ax} y1={ay} x2={c.x} y2={c.y} stroke="#9ca3af" strokeWidth={1} />
+                <circle cx={ax} cy={ay} r={2.5} fill="#6b6b63" />
+              </g>
+            );
+          })}
+
+          {/* Recommendation links, drawn to where each ball is drawn */}
+          {selected && drawnAt.get(selected.id)
             ? [...roles.entries()].map(([id, role]) => {
-                const p = byId.get(id);
-                if (!p) return null;
-                const d = displayPosition(p, view.k);
+                const target = drawnAt.get(id);
+                if (!target) return null;
+                const a = centerOf(drawnAt.get(selected.id)!);
+                const b = centerOf(target);
                 return (
                   <line
                     key={`link-${id}`}
-                    x1={px(selPos.oil)}
-                    y1={py(selPos.motion)}
-                    x2={px(d.oil)}
-                    y2={py(d.motion)}
+                    x1={a.x}
+                    y1={a.y}
+                    x2={b.x}
+                    y2={b.y}
                     stroke={ROLE_BY_KEY[role].color}
                     strokeWidth={2}
                     strokeDasharray="5 4"
@@ -294,85 +401,78 @@ export default function PlotterChart({
               })
             : null}
 
-          {groups.map((group) => {
-            const d = displayPosition(group[0], view.k);
-            const cx0 = px(d.oil);
-            const cy0 = py(d.motion);
-            const stacked = group.length > 1 && !tenths;
-            // At tenths zoom, exact duplicates fan out; at default zoom a
-            // stack shows one ball (the selected/recommended one if any).
-            const members = stacked
-              ? [group.find((p) => p.id === selectedId) ?? group.find((p) => roles.has(p.id)) ?? group[0]]
-              : group;
-            const fan = !stacked && group.length > 1 ? radius * 1.15 : 0;
+          {layout.map((it) => {
+            const p = it.ball;
+            const { x: cx, y: cy } = centerOf(it);
+            const r = it.r;
+            const role = roles.get(p.id);
+            const isSel = p.id === selectedId;
+            const dim = selected && !isSel && !role;
+            const ring = isSel ? "#0f0f2d" : role ? ROLE_BY_KEY[role].color : "#9ca3af";
+            // Request a sharper image as balls get bigger (2x for retina).
+            const imgPx = r > 40 ? 192 : r > 22 ? 128 : 96;
+            const img = p.primary_image_url
+              ? resizedImageUrl(p.primary_image_url, { w: imgPx, h: imgPx, fit: "contain", fmt: "webp" })
+              : null;
             return (
-              <g key={`${d.oil}:${d.motion}`}>
-                {members.map((p, i) => {
-                  const angle = (2 * Math.PI * i) / members.length - Math.PI / 2;
-                  const cx = cx0 + fan * Math.cos(angle);
-                  const cy = cy0 + fan * Math.sin(angle);
-                  const role = roles.get(p.id);
-                  const isSel = p.id === selectedId;
-                  const dim = selected && !isSel && !role;
-                  const ring = isSel ? "#0f0f2d" : role ? ROLE_BY_KEY[role].color : "#9ca3af";
-                  const img = p.primary_image_url
-                    ? resizedImageUrl(p.primary_image_url, { w: 96, h: 96, fit: "contain", fmt: "webp" })
-                    : null;
-                  const r = isSel ? radius * 1.2 : radius;
-                  return (
-                    <g
-                      key={p.id}
-                      role="button"
-                      tabIndex={0}
-                      aria-label={`${p.brand_name} ${p.name}, ${formatPosition(p, TENTHS_ZOOM)}`}
-                      opacity={dim ? 0.28 : 1}
-                      style={{ cursor: "pointer" }}
-                      onClick={() => onGroupClick(group, p)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          onSelect(p.id);
-                        }
-                      }}
+              <g
+                key={p.id}
+                role="button"
+                tabIndex={0}
+                aria-label={`${p.brand_name} ${p.name}, ${formatPosition(p, TENTHS_ZOOM)}`}
+                opacity={dim ? 0.28 : 1}
+                style={{ cursor: "pointer" }}
+                onClick={() => onGroupClick(it.group, p)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onSelect(p.id);
+                  }
+                }}
+              >
+                <title>
+                  {p.brand_name} {p.name} ({formatPosition(p, TENTHS_ZOOM)}
+                  {p.oil_motion_source === "estimated" ? ", estimated" : ""})
+                  {it.stacked ? ` + ${it.group.length - 1} more here -- click to zoom in` : ""}
+                </title>
+                <circle cx={cx} cy={cy} r={r} fill="#eef0f6" />
+                {img ? (
+                  <image
+                    href={img}
+                    x={cx - r}
+                    y={cy - r}
+                    width={r * 2}
+                    height={r * 2}
+                    preserveAspectRatio="xMidYMid meet"
+                    clipPath={`url(#${clipId})`}
+                  />
+                ) : null}
+                {/* Solid ring = from a published chart; dashed = estimated */}
+                <circle
+                  cx={cx}
+                  cy={cy}
+                  r={r}
+                  fill="none"
+                  stroke={ring}
+                  strokeWidth={isSel || role ? 3 : 1.5}
+                  strokeDasharray={p.oil_motion_source === "estimated" ? "4 3" : undefined}
+                />
+                {it.stacked ? (
+                  <g>
+                    <circle cx={cx + r * 0.8} cy={cy - r * 0.8} r={Math.max(8, r * 0.45)} fill="#0f0f2d" />
+                    <text
+                      x={cx + r * 0.8}
+                      y={cy - r * 0.8}
+                      textAnchor="middle"
+                      dominantBaseline="central"
+                      fontSize={Math.max(9, r * 0.5)}
+                      fontWeight={700}
+                      fill="#fff"
                     >
-                      <title>
-                        {p.brand_name} {p.name} ({formatPosition(p, TENTHS_ZOOM)}
-                        {p.oil_motion_source === "estimated" ? ", estimated" : ""})
-                        {stacked ? ` + ${group.length - 1} more here -- click to zoom in` : ""}
-                      </title>
-                      <circle cx={cx} cy={cy} r={r} fill="#eef0f6" />
-                      {img ? (
-                        <image href={img} x={cx - r} y={cy - r} width={r * 2} height={r * 2} clipPath={`url(#${clipId})`} />
-                      ) : null}
-                      {/* Solid ring = from a published chart; dashed = estimated */}
-                      <circle
-                        cx={cx}
-                        cy={cy}
-                        r={r}
-                        fill="none"
-                        stroke={ring}
-                        strokeWidth={isSel || role ? 3 : 1.5}
-                        strokeDasharray={p.oil_motion_source === "estimated" ? "4 3" : undefined}
-                      />
-                      {stacked ? (
-                        <g>
-                          <circle cx={cx + r * 0.8} cy={cy - r * 0.8} r={Math.max(8, r * 0.45)} fill="#0f0f2d" />
-                          <text
-                            x={cx + r * 0.8}
-                            y={cy - r * 0.8}
-                            textAnchor="middle"
-                            dominantBaseline="central"
-                            fontSize={Math.max(9, r * 0.5)}
-                            fontWeight={700}
-                            fill="#fff"
-                          >
-                            {group.length}
-                          </text>
-                        </g>
-                      ) : null}
-                    </g>
-                  );
-                })}
+                      {it.group.length}
+                    </text>
+                  </g>
+                ) : null}
               </g>
             );
           })}

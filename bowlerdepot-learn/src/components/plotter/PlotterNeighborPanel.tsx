@@ -21,7 +21,17 @@ function BallThumb({ p, size }: { p: LearnPlotterPoint; size: number }) {
     ? resizedImageUrl(p.primary_image_url, { w: size * 2, h: size * 2, fit: "contain", fmt: "webp" })
     : null;
   return src ? (
-    <img src={src} alt="" width={size} height={size} className="shrink-0 rounded-full bg-paper" loading="lazy" />
+    // object-contain: product photos aren't square, and a forced square
+    // box squished the selected ball's photo (Al).
+    <img
+      src={src}
+      alt=""
+      width={size}
+      height={size}
+      style={{ width: size, height: size }}
+      className="shrink-0 rounded-full bg-paper object-contain"
+      loading="lazy"
+    />
   ) : (
     <span className="shrink-0 rounded-full bg-paper" style={{ width: size, height: size }} />
   );

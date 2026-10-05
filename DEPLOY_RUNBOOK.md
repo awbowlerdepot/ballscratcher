@@ -17239,6 +17239,32 @@ deploy-learn-site.
 - `?ball=<id>` zooms to that ball.
 - A current ball article shows "Where this ball sits".
 
+### 6cd. Learn plotter: balls grow with zoom without overlapping; panel photo fix (2026-10-04)
+
+Al: "can you make the size of the ball images increase when zooming in
+closer and the ball won't overlap. also after selecting a ball it
+squishes the image of the ball you selected in the ball details section".
+
+**Ball size.** Radius = 0.42 grid unit at default zoom × zoom^0.6, capped
+at 64 viewBox px. Scaling 1:1 with the grid was tried first; it pushed
+dense clusters far from their real spots.
+
+**No overlap.** A layout pass (`separate` in PlotterChart.tsx) runs a
+pairwise collision separation, up to 60 rounds:
+- The selected ball never moves; its recommendations carry weight 0.25.
+- It works in pan-independent offsets, so it only reruns on zoom, never
+  on drag.
+- A ball moved more than about a third of its radius gets a thin leader
+  line to a dot at its true position.
+- Recommendation lines run to where balls are drawn.
+- Larger balls request larger resized images (96/128/192 px).
+
+**Squished photo.** The panel `<img>` was forced into a square box, which
+stretched non-square product photos. It now uses `object-contain` with an
+explicit size.
+
+**Deploy:** `git push` (deploy-learn-site).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
