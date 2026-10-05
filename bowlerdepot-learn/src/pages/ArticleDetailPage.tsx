@@ -12,6 +12,7 @@ import {
 import type { FeaturedVideo, ProductArticleResponse } from "../api/types";
 import ArticleDetailSkeleton from "../components/ArticleDetailSkeleton";
 import InArticleAd from "../components/InArticleAd";
+import PlotterArticlePanel from "../components/plotter/PlotterArticlePanel";
 
 // video_summarizer's prompt sometimes prefixes its output with a plain
 // markdown heading line (e.g. "# Summary") before the actual prose --
@@ -538,6 +539,12 @@ export default function ArticleDetailPage() {
           would have pulled the identical candidate list, so they're
           merged here. */}
       {!isVideo ? renderRelatedArticles() : null}
+
+      {/* Ball motion plotter slice (runbook 6cc): where this ball sits,
+          similar balls from other brands, and a step in each direction. */}
+      {!isVideo && data?.product_id && product?.status === "current" ? (
+        <PlotterArticlePanel productId={data.product_id} />
+      ) : null}
 
       {product?.skus?.length ? (
         <div className="mb-10">

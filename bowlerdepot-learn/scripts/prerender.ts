@@ -808,6 +808,73 @@ function renderArticlePage(baseHtml: string, card: ArticleCard, article: Article
   return html;
 }
 
+// /plotter (runbook 6cc) -- the Ball Motion Plotter. The interactive
+// chart is client-only, but the static page carries a real title/
+// description and a plain table of every current ball's position, so
+// crawlers (and no-JS visitors) get the data. If /learn/plotter can't be
+// fetched at build time the page still ships as a bare shell with the
+// right <head> -- a plotter hiccup must never fail the whole Learn deploy.
+interface PlotterRow {
+  name: string;
+  brand_name: string;
+  oil: number;
+  motion: number;
+  oil_motion_source: string;
+  article_slug: string | null;
+}
+
+async function fetchPlotterRows(): Promise<PlotterRow[]> {
+  try {
+    const resp = await fetch(`${API_BASE}/learn/plotter`);
+    if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
+    return ((await resp.json()) as { items: PlotterRow[] }).items;
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.warn(`Plotter data unavailable at build time (${String(err)}); writing /plotter/ as a shell.`);
+    return [];
+  }
+}
+
+function renderPlotterPage(baseHtml: string, rows: PlotterRow[]): string {
+  const title = "Ball Motion Plotter | Learn | The Bowler Depot";
+  const description =
+    "Compare every current bowling ball on one ball motion chart: oil handling vs. backend motion, similar balls across brands, and what to try for a bit more or less.";
+  const canonicalUrl = `${SITE_URL}/plotter/`;
+  const sorted = [...rows].sort((a, b) => a.brand_name.localeCompare(b.brand_name) || a.name.localeCompare(b.name));
+  const table = sorted.length
+    ? `<table class="w-full text-sm"><thead><tr><th>Ball</th><th>Oil (1-16)</th><th>Motion (1-18)</th><th>Source</th></tr></thead><tbody>${sorted
+        .map((r) => {
+          const name = escapeHtml(`${r.brand_name} ${r.name}`);
+          const label = r.article_slug ? `<a href="/articles/${escapeHtml(r.article_slug)}/">${name}</a>` : name;
+          return `<tr><td>${label}</td><td>${r.oil.toFixed(1)}</td><td>${r.motion.toFixed(1)}</td><td>${
+            r.oil_motion_source === "estimated" ? "Estimated" : "Manufacturer chart"
+          }</td></tr>`;
+        })
+        .join("")}</tbody></table>`
+    : "";
+  const content = `
+    <div>
+      <h1 class="font-display text-3xl font-semibold text-ink">Ball Motion Plotter</h1>
+      <p>${escapeHtml(description)}</p>
+      ${table}
+    </div>`;
+  let html = baseHtml;
+  html = html.replace(/<title>.*?<\/title>/, `<title>${escapeHtml(title)}</title>`);
+  html = html.replace(
+    "</head>",
+    `
+    <meta name="description" content="${escapeHtml(description)}" />
+    <link rel="canonical" href="${canonicalUrl}" />
+    <meta property="og:type" content="website" />
+    <meta property="og:title" content="Ball Motion Plotter" />
+    <meta property="og:description" content="${escapeHtml(description)}" />
+    <meta property="og:url" content="${canonicalUrl}" />
+  </head>`,
+  );
+  html = html.replace('<div id="root"></div>', `<div id="root">${content}</div>`);
+  return html;
+}
+
 // REAL REQUEST (2026-09-13, Al): "can we work on some google search
 // console specifics. especially the sitemap and how that gets delivered
 // to search console." Asked which site + what kind of improvement;
@@ -901,6 +968,12 @@ async function main() {
   // Homepage lastmod: set now that the loop above has seen every
   // article's reviewed_at (see this function's own header comment).
   sitemapUrls[0].lastmod = mostRecentReviewedAt;
+
+  // Ball Motion Plotter page (runbook 6cc).
+  const plotterRows = await fetchPlotterRows();
+  await mkdir(join(DIST_DIR, "plotter"), { recursive: true });
+  await writeFile(join(DIST_DIR, "plotter", "index.html"), renderPlotterPage(baseHtml, plotterRows), "utf-8");
+  sitemapUrls.push({ loc: `${SITE_URL}/plotter/` });
 
   await writeFile(
     join(__dirname, "..", "redirect-map.json"),

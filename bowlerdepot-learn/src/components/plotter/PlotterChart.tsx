@@ -1,0 +1,452 @@
+import { useEffect, useMemo, useRef } from "react";
+import { resizedImageUrl } from "../../api/client";
+import type { LearnPlotterPoint } from "../../api/types";
+import {
+  DOMAIN,
+  MOTION_MAX,
+  MOTION_MIN,
+  OIL_MAX,
+  OIL_MIN,
+  ROLE_BY_KEY,
+  TENTHS_ZOOM,
+  ZOOM_MAX,
+  ZOOM_MIN,
+  clampView,
+  displayPosition,
+  formatPosition,
+  rolesFor,
+  spans,
+  zoomAbout,
+  type PlotterView,
+} from "./plotterModel";
+
+// Zoomable SVG ball motion plotter (runbook 6cc). Al wanted zoom so the
+// 0.1-precision positions (migration 043) mean something: at default zoom
+// balls snap to the whole-number grid like Brunswick's printed chart and
+// balls on the same spot stack (click a stack to zoom into it); from
+// TENTHS_ZOOM up they sit at their real tenths with half/tenth gridlines.
+//
+// Interaction: drag to pan, wheel or pinch to zoom (wheel only when
+// `wheelZoom`, so an embedded panel never hijacks page scrolling), +/-/
+// reset buttons always. Selecting a ball dims everything except it and
+// its recommendations, which are linked to it with role-colored lines.
+
+interface Props {
+  points: LearnPlotterPoint[];
+  byId: Map<string, LearnPlotterPoint>;
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  view: PlotterView;
+  onViewChange: (view: PlotterView) => void;
+  width: number; // viewBox units; the SVG scales to its container width
+  height: number;
+  wheelZoom?: boolean;
+  ariaLabel?: string;
+}
+
+const M = { left: 40, right: 12, top: 12, bottom: 34 };
+
+export default function PlotterChart({
+  points,
+  byId,
+  selectedId,
+  onSelect,
+  view,
+  onViewChange,
+  width,
+  height,
+  wheelZoom = false,
+  ariaLabel = "Ball motion plotter",
+}: Props) {
+  const svgRef = useRef<SVGSVGElement>(null);
+  const plotW = width - M.left - M.right;
+  const plotH = height - M.top - M.bottom;
+  const { sx, sy } = spans(view.k);
+  const x0 = view.cx - sx / 2;
+  const y1 = view.cy + sy / 2;
+  const px = (oil: number) => M.left + ((oil - x0) / sx) * plotW;
+  const py = (motion: number) => M.top + ((y1 - motion) / sy) * plotH;
+  const toData = (vx: number, vy: number) => ({ oil: x0 + ((vx - M.left) / plotW) * sx, motion: y1 - ((vy - M.top) / plotH) * sy });
+
+  // Ball size grows a little with zoom so tenths-level detail has room,
+  // capped so a zoomed-in view doesn't turn into a wall of huge balls.
+  const unitPx = Math.min(plotW / sx, plotH / sy);
+  const radius = Math.max(9, Math.min(26, unitPx * 0.32));
+  const tenths = view.k >= TENTHS_ZOOM;
+
+  const selected = selectedId ? (byId.get(selectedId) ?? null) : null;
+  const roles = useMemo(() => rolesFor(selected), [selected]);
+
+  // Everything drawn: the visible points, plus the selected ball and its
+  // recommendations even if a brand filter hid them.
+  const drawn = useMemo(() => {
+    const ids = new Set(points.map((p) => p.id));
+    const extra: LearnPlotterPoint[] = [];
+    if (selected && !ids.has(selected.id)) extra.push(selected);
+    for (const id of roles.keys()) {
+      const p = byId.get(id);
+      if (p && !ids.has(id)) extra.push(p);
+    }
+    return [...points, ...extra];
+  }, [points, selected, roles, byId]);
+
+  // Group balls that land on the same drawn spot. Below TENTHS_ZOOM a
+  // group is a stack (top ball + count; click zooms in). At tenths zoom
+  // only exact twins (usually colorways) still share a spot, and those fan
+  // out in a small ring so each is clickable.
+  const groups = useMemo(() => {
+    const map = new Map<string, LearnPlotterPoint[]>();
+    for (const p of drawn) {
+      const d = displayPosition(p, view.k);
+      const key = `${d.oil}:${d.motion}`;
+      const g = map.get(key);
+      if (g) g.push(p);
+      else map.set(key, [p]);
+    }
+    // Paint order: plain balls, then recommendations, then the selection.
+    const rank = (g: LearnPlotterPoint[]) =>
+      g.some((p) => p.id === selectedId) ? 2 : g.some((p) => roles.has(p.id)) ? 1 : 0;
+    return [...map.values()].sort((a, b) => rank(a) - rank(b));
+  }, [drawn, view.k, selectedId, roles]);
+
+  // --- pointer: drag to pan, two-finger pinch to zoom -------------------
+  const pointers = useRef(new Map<number, { x: number; y: number }>());
+  const gesture = useRef<{ moved: boolean; startDist?: number; startView?: PlotterView } | null>(null);
+  const viewRef = useRef(view);
+  viewRef.current = view;
+
+  function toViewBox(clientX: number, clientY: number) {
+    const rect = svgRef.current!.getBoundingClientRect();
+    return { x: ((clientX - rect.left) / rect.width) * width, y: ((clientY - rect.top) / rect.height) * height };
+  }
+
+  function onPointerDown(e: React.PointerEvent) {
+    pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pointers.current.size === 1) gesture.current = { moved: false };
+    if (pointers.current.size === 2) {
+      const [a, b] = [...pointers.current.values()];
+      gesture.current = { moved: true, startDist: Math.hypot(a.x - b.x, a.y - b.y), startView: viewRef.current };
+    }
+  }
+
+  function onPointerMove(e: React.PointerEvent) {
+    const prev = pointers.current.get(e.pointerId);
+    if (!prev || !gesture.current) return;
+    const rect = svgRef.current!.getBoundingClientRect();
+    if (pointers.current.size === 1) {
+      const dx = e.clientX - prev.x;
+      const dy = e.clientY - prev.y;
+      if (!gesture.current.moved && Math.hypot(dx, dy) < 4) return;
+      if (!gesture.current.moved) svgRef.current!.setPointerCapture(e.pointerId);
+      gesture.current.moved = true;
+      pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      const v = viewRef.current;
+      const s = spans(v.k);
+      onViewChange(
+        clampView({
+          ...v,
+          cx: v.cx - (dx / rect.width) * width * (s.sx / plotW),
+          cy: v.cy + (dy / rect.height) * height * (s.sy / plotH),
+        }),
+      );
+    } else if (pointers.current.size === 2 && gesture.current.startDist && gesture.current.startView) {
+      pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      const [a, b] = [...pointers.current.values()];
+      const dist = Math.hypot(a.x - b.x, a.y - b.y);
+      const mid = toViewBox((a.x + b.x) / 2, (a.y + b.y) / 2);
+      const start = gesture.current.startView;
+      const s = spans(start.k);
+      const anchor = {
+        oil: start.cx - s.sx / 2 + ((mid.x - M.left) / plotW) * s.sx,
+        motion: start.cy + s.sy / 2 - ((mid.y - M.top) / plotH) * s.sy,
+      };
+      onViewChange(zoomAbout(start, dist / gesture.current.startDist, anchor.oil, anchor.motion));
+    }
+  }
+
+  function onPointerUp(e: React.PointerEvent) {
+    pointers.current.delete(e.pointerId);
+    if (pointers.current.size === 0) {
+      // Keep `moved` readable by the click handler that fires next.
+      setTimeout(() => {
+        if (pointers.current.size === 0) gesture.current = null;
+      }, 0);
+    }
+  }
+
+  // A drag ends with a click on whatever was under the pointer -- ignore it.
+  const wasDrag = () => Boolean(gesture.current?.moved);
+
+  // Wheel zoom needs a non-passive listener to stop the page scrolling.
+  useEffect(() => {
+    const svg = svgRef.current;
+    if (!svg || !wheelZoom) return;
+    function onWheel(e: WheelEvent) {
+      e.preventDefault();
+      const { x, y } = toViewBox(e.clientX, e.clientY);
+      const anchor = toData(x, y);
+      onViewChange(zoomAbout(viewRef.current, Math.exp(-e.deltaY * 0.0015), anchor.oil, anchor.motion));
+    }
+    svg.addEventListener("wheel", onWheel, { passive: false });
+    return () => svg.removeEventListener("wheel", onWheel);
+  });
+
+  function zoomButton(factor: number) {
+    onViewChange(zoomAbout(view, factor, view.cx, view.cy));
+  }
+
+  function onGroupClick(group: LearnPlotterPoint[], clicked: LearnPlotterPoint) {
+    if (wasDrag()) return;
+    if (group.length > 1 && !tenths) {
+      // A stack at default zoom: zoom in on it so its balls separate.
+      const d = displayPosition(clicked, view.k);
+      onViewChange(clampView({ cx: d.oil, cy: d.motion, k: Math.max(TENTHS_ZOOM * 1.4, view.k * 2.5) }));
+      return;
+    }
+    onSelect(clicked.id);
+  }
+
+  // --- gridlines ------------------------------------------------------
+  const gridLines = (lo: number, hi: number, vMin: number, vMax: number) => {
+    const out: { v: number; level: 0 | 1 | 2 }[] = [];
+    const step = view.k >= 6 ? 0.1 : view.k >= TENTHS_ZOOM ? 0.5 : 1;
+    const start = Math.ceil(Math.max(lo, vMin) / step) * step;
+    for (let v = start; v <= Math.min(hi, vMax) + 1e-9; v += step) {
+      const r = Math.round(v * 10) / 10;
+      out.push({ v: r, level: Number.isInteger(r) ? 0 : Math.abs(r * 2 - Math.round(r * 2)) < 1e-9 ? 1 : 2 });
+    }
+    return out;
+  };
+  const xLines = gridLines(x0, x0 + sx, OIL_MIN, OIL_MAX);
+  const yLines = gridLines(y1 - sy, y1, MOTION_MIN, MOTION_MAX);
+  const labelEvery = (level: number) => level === 0 || (level === 1 && view.k >= 4);
+
+  const selPos = selected ? displayPosition(selected, view.k) : null;
+  const clipId = useMemo(() => `plotter-ball-clip-${Math.random().toString(36).slice(2, 8)}`, []);
+
+  return (
+    <div className="relative select-none">
+      <svg
+        ref={svgRef}
+        viewBox={`0 0 ${width} ${height}`}
+        className="block h-auto w-full touch-none rounded-lg border border-paper-border bg-white"
+        role="img"
+        aria-label={ariaLabel}
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        style={{ cursor: gesture.current?.moved ? "grabbing" : "grab" }}
+      >
+        <defs>
+          <clipPath id={clipId} clipPathUnits="objectBoundingBox">
+            <circle cx="0.5" cy="0.5" r="0.5" />
+          </clipPath>
+          <clipPath id={`${clipId}-plot`}>
+            <rect x={M.left} y={M.top} width={plotW} height={plotH} />
+          </clipPath>
+        </defs>
+
+        {/* Axis bands: light -> heavy oil, smooth -> angular */}
+        <g clipPath={`url(#${clipId}-plot)`}>
+          {xLines.map((l) => (
+            <line
+              key={`x${l.v}`}
+              x1={px(l.v)}
+              x2={px(l.v)}
+              y1={M.top}
+              y2={M.top + plotH}
+              stroke={l.level === 0 ? "#d9d3c7" : l.level === 1 ? "#ebe6dc" : "#f3f0ea"}
+              strokeWidth={l.level === 0 ? 1 : 0.75}
+            />
+          ))}
+          {yLines.map((l) => (
+            <line
+              key={`y${l.v}`}
+              x1={M.left}
+              x2={M.left + plotW}
+              y1={py(l.v)}
+              y2={py(l.v)}
+              stroke={l.level === 0 ? "#d9d3c7" : l.level === 1 ? "#ebe6dc" : "#f3f0ea"}
+              strokeWidth={l.level === 0 ? 1 : 0.75}
+            />
+          ))}
+
+          {/* Recommendation links */}
+          {selected && selPos
+            ? [...roles.entries()].map(([id, role]) => {
+                const p = byId.get(id);
+                if (!p) return null;
+                const d = displayPosition(p, view.k);
+                return (
+                  <line
+                    key={`link-${id}`}
+                    x1={px(selPos.oil)}
+                    y1={py(selPos.motion)}
+                    x2={px(d.oil)}
+                    y2={py(d.motion)}
+                    stroke={ROLE_BY_KEY[role].color}
+                    strokeWidth={2}
+                    strokeDasharray="5 4"
+                    opacity={0.8}
+                  />
+                );
+              })
+            : null}
+
+          {groups.map((group) => {
+            const d = displayPosition(group[0], view.k);
+            const cx0 = px(d.oil);
+            const cy0 = py(d.motion);
+            const stacked = group.length > 1 && !tenths;
+            // At tenths zoom, exact duplicates fan out; at default zoom a
+            // stack shows one ball (the selected/recommended one if any).
+            const members = stacked
+              ? [group.find((p) => p.id === selectedId) ?? group.find((p) => roles.has(p.id)) ?? group[0]]
+              : group;
+            const fan = !stacked && group.length > 1 ? radius * 1.15 : 0;
+            return (
+              <g key={`${d.oil}:${d.motion}`}>
+                {members.map((p, i) => {
+                  const angle = (2 * Math.PI * i) / members.length - Math.PI / 2;
+                  const cx = cx0 + fan * Math.cos(angle);
+                  const cy = cy0 + fan * Math.sin(angle);
+                  const role = roles.get(p.id);
+                  const isSel = p.id === selectedId;
+                  const dim = selected && !isSel && !role;
+                  const ring = isSel ? "#0f0f2d" : role ? ROLE_BY_KEY[role].color : "#9ca3af";
+                  const img = p.primary_image_url
+                    ? resizedImageUrl(p.primary_image_url, { w: 96, h: 96, fit: "contain", fmt: "webp" })
+                    : null;
+                  const r = isSel ? radius * 1.2 : radius;
+                  return (
+                    <g
+                      key={p.id}
+                      role="button"
+                      tabIndex={0}
+                      aria-label={`${p.brand_name} ${p.name}, ${formatPosition(p, TENTHS_ZOOM)}`}
+                      opacity={dim ? 0.28 : 1}
+                      style={{ cursor: "pointer" }}
+                      onClick={() => onGroupClick(group, p)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          onSelect(p.id);
+                        }
+                      }}
+                    >
+                      <title>
+                        {p.brand_name} {p.name} ({formatPosition(p, TENTHS_ZOOM)}
+                        {p.oil_motion_source === "estimated" ? ", estimated" : ""})
+                        {stacked ? ` + ${group.length - 1} more here -- click to zoom in` : ""}
+                      </title>
+                      <circle cx={cx} cy={cy} r={r} fill="#eef0f6" />
+                      {img ? (
+                        <image href={img} x={cx - r} y={cy - r} width={r * 2} height={r * 2} clipPath={`url(#${clipId})`} />
+                      ) : null}
+                      {/* Solid ring = from a published chart; dashed = estimated */}
+                      <circle
+                        cx={cx}
+                        cy={cy}
+                        r={r}
+                        fill="none"
+                        stroke={ring}
+                        strokeWidth={isSel || role ? 3 : 1.5}
+                        strokeDasharray={p.oil_motion_source === "estimated" ? "4 3" : undefined}
+                      />
+                      {stacked ? (
+                        <g>
+                          <circle cx={cx + r * 0.8} cy={cy - r * 0.8} r={Math.max(8, r * 0.45)} fill="#0f0f2d" />
+                          <text
+                            x={cx + r * 0.8}
+                            y={cy - r * 0.8}
+                            textAnchor="middle"
+                            dominantBaseline="central"
+                            fontSize={Math.max(9, r * 0.5)}
+                            fontWeight={700}
+                            fill="#fff"
+                          >
+                            {group.length}
+                          </text>
+                        </g>
+                      ) : null}
+                    </g>
+                  );
+                })}
+              </g>
+            );
+          })}
+        </g>
+
+        {/* Axes */}
+        <rect x={M.left} y={M.top} width={plotW} height={plotH} fill="none" stroke="#d9d3c7" />
+        {xLines
+          .filter((l) => labelEvery(l.level))
+          .map((l) => (
+            <text key={`xl${l.v}`} x={px(l.v)} y={M.top + plotH + 14} textAnchor="middle" fontSize={11} fill="#6b6b63">
+              {l.level === 0 ? l.v : l.v.toFixed(1)}
+            </text>
+          ))}
+        {yLines
+          .filter((l) => labelEvery(l.level))
+          .map((l) => (
+            <text key={`yl${l.v}`} x={M.left - 6} y={py(l.v)} textAnchor="end" dominantBaseline="central" fontSize={11} fill="#6b6b63">
+              {l.level === 0 ? l.v : l.v.toFixed(1)}
+            </text>
+          ))}
+        <text x={M.left} y={height - 6} fontSize={11} fontWeight={700} fill="#0f0f2d">
+          ← Light oil
+        </text>
+        <text x={M.left + plotW} y={height - 6} textAnchor="end" fontSize={11} fontWeight={700} fill="#0f0f2d">
+          Heavy oil →
+        </text>
+        <text
+          x={12}
+          y={M.top + plotH / 2}
+          transform={`rotate(-90 12 ${M.top + plotH / 2})`}
+          textAnchor="middle"
+          fontSize={11}
+          fontWeight={700}
+          fill="#0f0f2d"
+        >
+          Smooth ← Motion → Angular
+        </text>
+      </svg>
+
+      <div className="absolute right-2 top-2 flex flex-col overflow-hidden rounded-md border border-paper-border bg-white/95 shadow-sm">
+        <button
+          type="button"
+          aria-label="Zoom in"
+          className="px-2.5 py-1 text-lg leading-none text-ink hover:bg-paper disabled:opacity-40"
+          onClick={() => zoomButton(1.6)}
+          disabled={view.k >= ZOOM_MAX}
+        >
+          +
+        </button>
+        <button
+          type="button"
+          aria-label="Zoom out"
+          className="border-t border-paper-border px-2.5 py-1 text-lg leading-none text-ink hover:bg-paper disabled:opacity-40"
+          onClick={() => zoomButton(1 / 1.6)}
+          disabled={view.k <= ZOOM_MIN}
+        >
+          −
+        </button>
+        <button
+          type="button"
+          aria-label="Show the whole chart"
+          className="border-t border-paper-border px-2 py-1 text-[10px] font-semibold uppercase text-muted hover:bg-paper disabled:opacity-40"
+          onClick={() => onViewChange(clampView({ cx: (DOMAIN.x0 + DOMAIN.x1) / 2, cy: (DOMAIN.y0 + DOMAIN.y1) / 2, k: 1 }))}
+          disabled={view.k <= ZOOM_MIN}
+        >
+          All
+        </button>
+      </div>
+      {tenths ? (
+        <p className="pointer-events-none absolute left-12 top-3 rounded bg-white/90 px-1.5 py-0.5 text-[11px] text-muted">
+          Zoomed in · positions to 0.1
+        </p>
+      ) : null}
+    </div>
+  );
+}

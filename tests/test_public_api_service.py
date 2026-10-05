@@ -2915,3 +2915,73 @@ def test_get_video_article_selects_author_name_and_channel_id():
     service.get_video_article(_VideoArticleConnection(cur), "lv-1")
     assert "lv.channel_id" in cur.queries[0][0]
     assert "pa.author_name" in cur.queries[1][0]
+
+
+# --- Learn plotter neighbors (runbook 6cc) ---
+
+def _pt(pid, brand, name, oil, motion, sold=True, core=None, cover=None):
+    return {"id": pid, "brand_name": brand, "name": name, "oil": oil, "motion": motion,
+            "recommendable": sold, "core_id": core, "coverstock_id": cover}
+
+
+def test_plotter_twins_are_other_brands_within_radius_nearest_first():
+    pts = [
+        _pt("t", "Storm", "Phaze II", 9.0, 14.0),
+        _pt("a", "DV8", "Heckler", 9.0, 14.5),
+        _pt("b", "Radical", "Evil Eye", 9.5, 15.0),
+        _pt("same-brand", "Storm", "Next Factor", 9.0, 14.1),
+        _pt("far", "Hammer", "Spawn", 14.0, 14.0),
+    ]
+    twins = service.compute_plotter_neighbors(pts)["t"]["twins"]
+    assert [t["id"] for t in twins] == ["a", "b"]
+    assert twins[0]["distance"] == 0.5
+
+
+def test_plotter_only_recommends_bowlerdepot_sold_balls_but_every_ball_gets_neighbors():
+    pts = [
+        _pt("t", "Storm", "Not Sold Here", 9.0, 14.0, sold=False),
+        _pt("unsold", "DV8", "Heckler", 9.0, 14.2, sold=False),
+        _pt("sold", "Radical", "Evil Eye", 9.2, 14.3),
+    ]
+    n = service.compute_plotter_neighbors(pts)
+    assert [t["id"] for t in n["t"]["twins"]] == ["sold"]
+    assert "unsold" not in {x["id"] for v in n["t"].values() for x in v}
+
+
+def test_plotter_colorways_collapse_to_one_ball_and_never_suggest_yourself():
+    pts = [
+        _pt("t", "Brunswick", "Rhino - Purple / Black", 3.0, 8.0, core="c1", cover="v1"),
+        _pt("t2", "Brunswick", "Rhino - Red / Black", 3.2, 8.1, core="c1", cover="v1"),
+        _pt("s1", "Storm", "TROPICAL SURGE TEAL-BLUE", 3.5, 8.0, core="c2", cover="v2"),
+        _pt("s2", "Storm", "TROPICAL SURGE PINK", 3.4, 8.0, core="c2", cover="v2"),
+    ]
+    twins = service.compute_plotter_neighbors(pts)["t"]["twins"]
+    assert [t["id"] for t in twins] == ["s2"]  # one Tropical Surge (the closer colorway), no Rhino
+
+
+def test_plotter_directional_steps_respect_min_max_and_cone():
+    pts = [
+        _pt("t", "Hammer", "Base", 8.0, 12.0),
+        _pt("nudge", "Storm", "Nudge", 8.3, 12.0),       # < STEP_MIN along oil
+        _pt("step", "Storm", "Step", 9.8, 12.2),         # good more_oil (outside twin radius)
+        _pt("diag", "DV8", "Diag", 9.0, 14.0),           # off-axis > along: not more_oil
+        _pt("toofar", "Radical", "Far", 13.0, 12.0),     # > STEP_MAX
+        _pt("smooth", "Track", "Smooth", 8.1, 10.2),
+    ]
+    n = service.compute_plotter_neighbors(pts)["t"]
+    assert [x["id"] for x in n["twins"]] == ["nudge"]
+    assert [x["id"] for x in n["more_oil"]] == ["step"]
+    assert [x["id"] for x in n["more_angular"]] == ["diag"]
+    assert [x["id"] for x in n["smoother"]] == ["smooth"]
+    assert n["less_oil"] == []
+
+
+def test_plotter_twin_is_not_repeated_as_a_step():
+    pts = [
+        _pt("t", "Hammer", "Base", 8.0, 12.0),
+        _pt("twin", "Storm", "Twin", 9.0, 12.0),   # within twin radius AND a valid more_oil step
+        _pt("next", "DV8", "Next", 10.0, 12.0),
+    ]
+    n = service.compute_plotter_neighbors(pts)["t"]
+    assert [x["id"] for x in n["twins"]] == ["twin"]
+    assert [x["id"] for x in n["more_oil"]] == ["next"]

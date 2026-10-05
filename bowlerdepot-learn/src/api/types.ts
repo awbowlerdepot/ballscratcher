@@ -302,3 +302,44 @@ export interface ProductArticleResponse {
   learn_video_id?: string | null;
   article: ArticleDetail | null;
 }
+
+// GET /learn/plotter (runbook 6cc) -- every current ball's ball-motion
+// position plus precomputed recommendations. Positions are to 0.1
+// (migration 043); "chart" = read off a manufacturer's published Ball
+// Motion Comparison Chart, "estimated" = our model (6bx), "manual" = an
+// admin correction.
+export interface PlotterNeighbor {
+  id: string;
+  distance: number;
+}
+
+export type PlotterDirection = "more_oil" | "less_oil" | "more_angular" | "smoother";
+
+export interface PlotterNeighbors {
+  // Other-brand balls within 1.5 units -- "what's the same ball from
+  // another brand?"
+  twins: PlotterNeighbor[];
+  more_oil: PlotterNeighbor[];
+  less_oil: PlotterNeighbor[];
+  more_angular: PlotterNeighbor[];
+  smoother: PlotterNeighbor[];
+}
+
+export interface LearnPlotterPoint {
+  id: string;
+  name: string;
+  brand_name: string;
+  primary_image_url?: string | null;
+  oil: number;
+  motion: number;
+  oil_motion_source: "chart" | "estimated" | "manual";
+  // BowlerDepot storefront page; null when BowlerDepot doesn't carry it.
+  // Only balls with one are ever recommended (Al's choice).
+  ecommerce_url: string | null;
+  article_slug: string | null;
+  coverstock_name: string | null;
+  coverstock_material: string | null;
+  finish_category: string | null;
+  recommendable: boolean;
+  neighbors: PlotterNeighbors;
+}

@@ -51,10 +51,14 @@ export default function Nav() {
   // On an article page there's no ?category_id, and the header doesn't
   // know the article's category -- highlight no tab rather than wrongly
   // lighting the first one (a Bowling Tips article under "Bowling Balls").
-  const onArticlePage = useLocation().pathname.startsWith("/articles/");
+  const pathname = useLocation().pathname;
+  const onArticlePage = pathname.startsWith("/articles/");
+  // Ball motion plotter (runbook 6cc) gets its own tab after the
+  // categories, which also means the tab row now always renders.
+  const onPlotterPage = pathname.startsWith("/plotter");
   const activeCategoryId = selected
     ? (categoryAncestors(categories, selected)[0] ?? selected).id
-    : onArticlePage
+    : onArticlePage || onPlotterPage
       ? undefined
       : tabs[0]?.id;
 
@@ -89,7 +93,7 @@ export default function Nav() {
         </a>
       </div>
 
-      {tabs.length > 1 ? (
+      {tabs.length > 0 ? (
         <nav className="border-t border-paper-border">
           <div className="mx-auto flex max-w-[75rem] justify-center gap-8 px-6 py-3 text-xs font-semibold uppercase tracking-wide md:px-8">
             {tabs.map((category) => (
@@ -105,6 +109,12 @@ export default function Nav() {
                 {category.name}
               </Link>
             ))}
+            <Link
+              to="/plotter"
+              className={onPlotterPage ? "text-ink hover:no-underline" : "text-muted hover:text-ink hover:no-underline"}
+            >
+              Ball Motion Plotter
+            </Link>
           </div>
         </nav>
       ) : null}

@@ -1,4 +1,4 @@
-import type { ArticleCard, ArticleDetail, Category, ProductArticleResponse } from "./types";
+import type { ArticleCard, ArticleDetail, Category, LearnPlotterPoint, ProductArticleResponse } from "./types";
 
 // Same unauthenticated-PublicApiFunction posture as consumer-site/src/
 // api/client.ts (see its own comments for the full "why no auth"
@@ -109,6 +109,24 @@ export function categoryAncestors(categories: Category[], category: Category): C
     parent = parent.parent_id ? byId.get(parent.parent_id) : undefined;
   }
   return out;
+}
+
+// Ball motion plotter data (runbook 6cc). One ~170-ball response the
+// /plotter page and every article's "Where this ball sits" panel share --
+// cached in module scope like getCategories, so moving between articles
+// doesn't refetch it.
+let _plotterCache: Promise<LearnPlotterPoint[]> | null = null;
+
+export function getLearnPlotter(): Promise<LearnPlotterPoint[]> {
+  if (!_plotterCache) {
+    _plotterCache = apiGet<{ items: LearnPlotterPoint[] }>("/learn/plotter")
+      .then((r) => r.items)
+      .catch((err) => {
+        _plotterCache = null; // let a later page retry
+        throw err;
+      });
+  }
+  return _plotterCache;
 }
 
 export function getProductArticle(productId: string): Promise<ProductArticleResponse> {

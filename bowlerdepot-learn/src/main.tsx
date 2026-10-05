@@ -4,6 +4,7 @@ import { BrowserRouter, Route, Routes } from "react-router-dom";
 import App from "./App";
 import LearnIndexPage from "./pages/LearnIndexPage";
 import ArticleDetailPage from "./pages/ArticleDetailPage";
+import PlotterPage from "./pages/PlotterPage";
 import "./index.css";
 
 // Client-side route table -- same SPA shape as consumer-site/src/
@@ -28,6 +29,8 @@ createRoot(document.getElementById("root")!).render(
         <Route path="/" element={<App />}>
           <Route index element={<LearnIndexPage />} />
           <Route path="articles/:slug" element={<ArticleDetailPage />} />
+          {/* Ball motion plotter (runbook 6cc) */}
+          <Route path="plotter" element={<PlotterPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

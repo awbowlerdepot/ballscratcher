@@ -73,6 +73,15 @@ def get_products_plotter(
     return {"items": service.list_plotter_positions(conn, status=status, ids=id_list)}
 
 
+@app.get("/learn/plotter")
+def get_learn_plotter():
+    # Learn site plotter (runbook 6cc): positions + BowlerDepot/article
+    # links + precomputed cross-brand twins and directional neighbors for
+    # every current ball, in one cacheable response.
+    conn = service.get_db_connection()
+    return service.get_learn_plotter(conn)
+
+
 @app.get("/products/compare")
 def get_products_compare(ids: str = Query(..., description="Comma-separated product ids")):
     # A real, deliberate ordering dependency: this route is declared

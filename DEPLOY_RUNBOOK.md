@@ -17167,6 +17167,78 @@ psql -c "select name, oil_rating, motion_rating from products where name ~* '^ax
 ```
 Expect about (2.7, 7.2).
 
+### 6cc. Learn site Ball Motion Plotter: zoom, cross-brand twins, directional steps (2026-10-04)
+
+Al: "can we work on zooming. just a point of clarification the goal here
+is to move this to the learn site in some way with a more sophisticated
+version of the plotter. Some goals are to use this data to inform users
+of what balls would be similar across brand and what would be a bit more
+or less in all directions on the plotter".
+
+Al's choices:
+- a full `/plotter` page plus a panel in each ball article
+- recommend only balls BowlerDepot sells
+- use estimated positions, but mark them
+- keep the data.bowleriq.com plotter for now
+
+**Backend: `GET /learn/plotter`** (public_api).
+- Returns every current published ball from `list_plotter_positions`
+  (same estimate fallback), plus:
+  - `ecommerce_url`: same approved+active bigcommerce source rule as the
+    article's ecommerce_url
+  - `article_slug`, `coverstock_name`, material, finish
+  - `recommendable`: true when ecommerce_url is set
+  - `neighbors`
+- Neighbors come from `compute_plotter_neighbors`, a pure function with
+  pytest tests:
+  - **twins**: other-brand balls within 1.5 units, nearest first, max 3.
+  - **more_oil / less_oil / more_angular / smoother**: up to 2 each, at
+    least 0.5 and at most 4 units along the axis, inside a 45° cone.
+    Score = along + 1.5 × off-axis.
+  - Only recommendable balls are suggested.
+  - Colorways collapse to one ball: same brand + core + coverstock,
+    falling back to the name before " - ". Storm has no colorway
+    separator ("TROPICAL SURGE TEAL-BLUE").
+  - A twin isn't repeated as a step.
+- On prod data: 169 balls, 156 recommendable, 138 with a Learn article.
+
+**Frontend** (bowlerdepot-learn):
+- `src/components/plotter/`:
+  - `plotterModel.ts`: geometry, zoom math, roles and colors.
+  - `PlotterChart.tsx`: SVG chart.
+    - Drag to pan, wheel or pinch to zoom, +/−/All buttons.
+    - Below zoom 2.5, balls snap to whole numbers and stack with a count
+      badge; clicking a stack zooms into it. From 2.5 up, balls sit at
+      real tenths with half and tenth gridlines (6by's "default is to
+      round to the whole number").
+    - Selecting a ball dims the rest and draws role-colored links to its
+      suggestions.
+    - Solid ring = chart position, dashed ring = estimated.
+  - `PlotterNeighborPanel.tsx`: the suggestion list, with Read review and
+    Shop links.
+  - `PlotterArticlePanel.tsx`: "Where this ball sits" on current ball
+    articles, after Related Reviews. Wheel zoom is off there so it never
+    traps page scrolling.
+- `/plotter` page (`PlotterPage.tsx`): search, brand filter chips, and
+  `?ball=<id>` deep links that zoom to a ball and its suggestions (at
+  least tenths zoom). Nav has a "Ball Motion Plotter" tab, so the tab row
+  now always renders.
+- prerender writes `dist/plotter/index.html` (title, description,
+  canonical, and a crawlable table of every position) and adds a sitemap
+  entry. If `/learn/plotter` fails at build time it writes a shell
+  instead and never fails the deploy.
+
+**Deploy order.** Backend first, so the page and the prerender have data:
+`sam build && sam deploy`, then `git push`, which triggers
+deploy-learn-site.
+
+**Verify.**
+- `curl -s https://api.bowleriq.io/learn/plotter | jq '.items | length'`
+  returns about 169.
+- https://learn.bowlerdepot.com/plotter/ loads.
+- `?ball=<id>` zooms to that ball.
+- A current ball article shows "Where this ball sits".
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

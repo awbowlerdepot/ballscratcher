@@ -1986,3 +1986,165 @@ def list_plotter_positions(conn, status: str = "current", ids: list = None) -> l
         results = [by_id[i] for i in ids if i in by_id]
 
     return results
+
+
+# --------------------------------------------------------------------
+# Learn site plotter (runbook 6cc). Al: "the goal here is to move this to
+# the learn site in some way with a more sophisticated version of the
+# plotter. Some goals are to use this data to inform users of what balls
+# would be similar across brand and what would be a bit more or less in
+# all directions on the plotter". His choices: a full /plotter page plus
+# a panel on each ball article; recommendations ONLY from balls
+# BowlerDepot sells (every suggestion has a buy link); estimated
+# positions used but visibly marked.
+#
+# Neighbors are computed here, once, for every ball -- not in the browser
+# -- so the page, the article panel and any later BowlerDepot embed all
+# agree, and the rules are pytest-covered like the estimator.
+
+# Colorways are one ball for recommendations -- suggesting three Rhinos
+# as "twins" is noise. "Same ball" = same brand + core + coverstock (what
+# actually makes the reaction; Storm doesn't use a " - " colorway
+# separator, e.g. "TROPICAL SURGE TEAL-BLUE"), falling back to the name
+# before " - " when core or cover is unknown.
+_PLOTTER_COLORWAY_SPLIT = " - "
+
+# Twins: other-brand ball lines within this distance (plotter units).
+PLOTTER_TWIN_RADIUS = 1.5
+PLOTTER_TWIN_MAX = 3
+# Directional steps: "a bit more or less" -- at least STEP_MIN along the
+# axis (a 0.2 nudge isn't a different ball), at most STEP_MAX (beyond that
+# it's a different category, not "a bit"), and inside a 45-degree cone so
+# "more oil" doesn't hand back something mostly more angular.
+PLOTTER_STEP_MIN = 0.5
+PLOTTER_STEP_MAX = 4.0
+PLOTTER_STEP_PER_DIRECTION = 2
+# Prefer a small step that stays on-axis: score = along + weight * off-axis.
+PLOTTER_STEP_OFF_AXIS_WEIGHT = 1.5
+PLOTTER_DIRECTIONS = {
+    "more_oil": (1.0, 0.0),
+    "less_oil": (-1.0, 0.0),
+    "more_angular": (0.0, 1.0),
+    "smoother": (0.0, -1.0),
+}
+
+
+def plotter_ball_line(point: dict) -> tuple:
+    if point.get("core_id") and point.get("coverstock_id"):
+        return (point["brand_name"], "spec", str(point["core_id"]), str(point["coverstock_id"]))
+    return (point["brand_name"], "name", (point.get("name") or "").split(_PLOTTER_COLORWAY_SPLIT)[0].strip().lower())
+
+
+def _plotter_best_per_line(candidates: list) -> list:
+    """candidates: (score, point) pairs, best first after sorting. Keeps
+    the best-scoring colorway of each (brand, line)."""
+    seen, out = set(), []
+    for score, point in sorted(candidates, key=lambda c: (c[0], c[1]["name"], c[1]["id"])):
+        key = plotter_ball_line(point)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((score, point))
+    return out
+
+
+def compute_plotter_neighbors(points: list) -> dict:
+    """Pure function (no DB): {product_id: {"twins": [...], "more_oil":
+    [...], "less_oil": [...], "more_angular": [...], "smoother": [...]}}.
+    Every entry is {"id", "distance"}. points: dicts with id, name,
+    brand_name, oil, motion, "recommendable" (sold at BowlerDepot), and
+    optionally core_id/coverstock_id (see plotter_ball_line). Every ball
+    gets neighbors (so a ball BowlerDepot doesn't sell still points to
+    ones it does); only recommendable balls are ever suggested, never
+    another colorway of the ball itself, and a twin isn't repeated as a
+    directional step -- each suggestion is a distinct ball."""
+    recommendable = [p for p in points if p.get("recommendable")]
+    result = {}
+    for target in points:
+        own_line = plotter_ball_line(target)
+        others = [p for p in recommendable if p["id"] != target["id"] and plotter_ball_line(p) != own_line]
+
+        twin_candidates = []
+        for p in others:
+            if p["brand_name"] == target["brand_name"]:
+                continue  # twins are the cross-brand question
+            d = math.hypot(p["oil"] - target["oil"], p["motion"] - target["motion"])
+            if d <= PLOTTER_TWIN_RADIUS:
+                twin_candidates.append((d, p))
+        twins = _plotter_best_per_line(twin_candidates)[:PLOTTER_TWIN_MAX]
+        entry = {"twins": [{"id": p["id"], "distance": round(d, 2)} for d, p in twins]}
+        twin_lines = {plotter_ball_line(p) for _, p in twins}
+
+        for direction, (ux, uy) in PLOTTER_DIRECTIONS.items():
+            step_candidates = []
+            for p in others:
+                if plotter_ball_line(p) in twin_lines:
+                    continue
+                dx, dy = p["oil"] - target["oil"], p["motion"] - target["motion"]
+                along = dx * ux + dy * uy
+                off = abs(dx * uy - dy * ux)
+                if PLOTTER_STEP_MIN <= along <= PLOTTER_STEP_MAX and off <= along:
+                    step_candidates.append((along + PLOTTER_STEP_OFF_AXIS_WEIGHT * off, p))
+            steps = _plotter_best_per_line(step_candidates)[:PLOTTER_STEP_PER_DIRECTION]
+            entry[direction] = [
+                {"id": p["id"], "distance": round(math.hypot(p["oil"] - target["oil"], p["motion"] - target["motion"]), 2)}
+                for _, p in steps
+            ]
+        result[target["id"]] = entry
+    return result
+
+
+def get_learn_plotter(conn) -> dict:
+    """GET /learn/plotter: every current published ball's position (same
+    rows /products/plotter serves, so the same estimate fallback), plus
+    what the Learn page needs to recommend and link: the BowlerDepot
+    storefront URL (same approved+active bigcommerce source rule as
+    get_product_article's ecommerce_url), the ball's own approved Learn
+    article slug, a little display detail, and the precomputed neighbors."""
+    points = list_plotter_positions(conn, status="current")
+    ids = [p["id"] for p in points]
+    extra = {}
+    if ids:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                select p.id,
+                       (select pps.product_url
+                          from product_price_sources pps
+                          join price_sites ps on ps.id = pps.price_site_id
+                         where pps.product_id = p.id and ps.api_provider = 'bigcommerce'
+                           and pps.status = 'approved' and pps.is_active = true
+                         order by pps.last_checked_at desc nulls last, pps.id
+                         limit 1) as ecommerce_url,
+                       (select pa.slug from product_articles pa
+                         where pa.product_id = p.id and pa.status = 'approved' and pa.slug is not null
+                         order by pa.first_published_at desc nulls last
+                         limit 1) as article_slug,
+                       (select cv.name from coverstocks cv where cv.id = p.coverstock_id) as coverstock_name,
+                       p.coverstock_material, p.finish_category, p.core_id, p.coverstock_id
+                from products p
+                where p.id = any(%s::uuid[])
+                """,
+                (ids,),
+            )
+            columns = [desc[0] for desc in cur.description]
+            for row in cur.fetchall():
+                r = dict(zip(columns, row))
+                extra[str(r["id"])] = r
+    for p in points:
+        e = extra.get(str(p["id"]), {})
+        p["ecommerce_url"] = e.get("ecommerce_url")
+        p["article_slug"] = e.get("article_slug")
+        p["coverstock_name"] = e.get("coverstock_name")
+        p["coverstock_material"] = e.get("coverstock_material")
+        p["finish_category"] = e.get("finish_category")
+        p["core_id"] = e.get("core_id")
+        p["coverstock_id"] = e.get("coverstock_id")
+        p["recommendable"] = bool(p["ecommerce_url"])
+    neighbors = compute_plotter_neighbors(points)
+    for p in points:
+        p["neighbors"] = neighbors[p["id"]]
+        # internal grouping keys, not part of the response
+        p.pop("core_id", None)
+        p.pop("coverstock_id", None)
+    return {"items": points}
