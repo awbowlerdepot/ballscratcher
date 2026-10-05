@@ -17124,6 +17124,49 @@ psql -c "select p.name, p.coverstock_material, p.oil_rating, p.motion_rating fro
 Run this after the next commercebuild scrape. Every row should still
 read `polyester_plastic` at (1, 1).
 
+### 6cb. Plotter: low-friction reactive covers sit between plastic and reactive (2026-10-04)
+
+Al: "the estimates have the furys and the axes plotted the same ... the
+axes don't have a core or numbers ... but do have low friction reactive
+covers. low friction reactive is between polyester and the furys reactive
+cover. so they should be down closer to a polyester ball. they are very
+similar to a mix from storm".
+
+**Why they collided.**
+- Hammer Axe has cover "Low Friction Reactive" (material reactive_resin,
+  pearl, polished). It has no RG/diff SKUs and no core type.
+- v3 saw only "reactive pearl polished" and filled the missing specs with
+  averages, so the Axe landed at (4.3, 13.4), on top of the Furys.
+- Nothing told v3 the cover was low friction.
+
+**Rule.** No chart ball has a low-friction cover, so nothing could be
+fitted. Instead, when the coverstock name matches
+`PLOTTER_LOW_FRICTION_COVER` (`low[\s-]?friction|\blf[pr]\b`) and the
+material isn't urethane, the reactive estimate is pulled
+`PLOTTER_LOW_FRICTION_PULL = 0.5` of the way toward the plastic pin
+(1, 1); basis "low_friction". The Axe goes to about (2.7, 7.2), next to
+Storm's Mix (1.8, 7.3).
+
+Affected balls:
+- current: Hammer Axe (4 colorways) and Radical Torpedo Direct Hit
+- retired: Axe Pink/Smoke, the Torpedo Direct Hit duplicate, and Motiv
+  Freestyle / Freestyle Rush ("LFP Reactive")
+
+Both estimator copies take a new `coverstock_name` kwarg. Both callers
+select it with a scalar subquery on `coverstocks`. Torpedo Direct Hit has
+a null `coverstock_material`, which the estimator already treats as
+reactive, so it gets the rule too.
+
+**Deploy.** `sam build && sam deploy` (admin_api + public_api), then
+click Admin → Batch Jobs → Re-estimate plotter positions. Its summary
+should list a `low_friction` count.
+
+**Verify.**
+```bash
+psql -c "select name, oil_rating, motion_rating from products where name ~* '^axe' and status='current'"
+```
+Expect about (2.7, 7.2).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

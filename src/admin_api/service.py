@@ -2890,6 +2890,16 @@ PLOTTER_INPUT_FILL = {"rg15": 2.5068, "diff15": 0.0455, "mass_bias15": 0.0}
 PLOTTER_PARTICLE_OIL_BONUS = 2
 # Brunswick's Sept 2026 chart puts plastic (Black Widow Spare+) at (1, 1).
 PLOTTER_PLASTIC_PINNED = (1, 1)
+# Low-friction reactive covers (Hammer Axe, Radical Torpedo Direct Hit,
+# Motiv's "LFP" Freestyles) -- Al: "low friction reactive is between
+# polyester and the furys reactive cover. so they should be down closer to
+# a polyester ball. they are very similar to a mix from storm". No chart
+# ball has one, so there's nothing to fit: the reactive estimate is pulled
+# this fraction of the way toward the plastic pin. 0.5 puts the Axe at
+# about (2.7, 7.2), next to Storm's Mix (1.8, 7.3). Detected from the
+# coverstock NAME, since material stays reactive_resin.
+PLOTTER_LOW_FRICTION_PULL = 0.5
+PLOTTER_LOW_FRICTION_COVER = re.compile(r"low[\s-]?friction|\blf[pr]\b", re.IGNORECASE)
 
 PLOTTER_OIL_WITH_PRICE = {
     "intercept": -28.6432,
@@ -2960,13 +2970,13 @@ def _plotter_linear(model: dict, features: dict) -> float:
 def estimate_oil_motion(coverstock_material: str = None, coverstock_type: str = None,
                          has_particle: bool = False, core_type: str = None,
                          finish_category: str = None, rg15=None, diff15=None,
-                         mass_bias15=None, price=None) -> dict:
+                         mass_bias15=None, price=None, coverstock_name: str = None) -> dict:
     """Pure function (no DB): the plotter's (oil 1-16, motion 1-18)
     estimate for a ball from its specs -- see the PLOTTER ESTIMATOR v3
     comment above for the model, the data behind it, and every rule.
     Always returns a usable pair, even with every input missing. "basis"
     says which path produced it, for debugging and the admin re-estimate
-    summary: "plastic_pinned", "price", or "no_price"."""
+    summary: "plastic_pinned", "low_friction", "price", or "no_price"."""
     if coverstock_material == "polyester_plastic":
         oil, motion = PLOTTER_PLASTIC_PINNED
         return {"oil": oil, "motion": motion, "basis": "plastic_pinned"}
@@ -2995,6 +3005,11 @@ def estimate_oil_motion(coverstock_material: str = None, coverstock_type: str = 
     if has_particle:
         oil += PLOTTER_PARTICLE_OIL_BONUS
     motion = _plotter_linear(PLOTTER_MOTION, features)
+    if coverstock_name and coverstock_material != "urethane" and PLOTTER_LOW_FRICTION_COVER.search(coverstock_name):
+        pin_oil, pin_motion = PLOTTER_PLASTIC_PINNED
+        oil = pin_oil + (1 - PLOTTER_LOW_FRICTION_PULL) * (oil - pin_oil)
+        motion = pin_motion + (1 - PLOTTER_LOW_FRICTION_PULL) * (motion - pin_motion)
+        basis = "low_friction"
 
     oil = _plotter_round(oil, PLOTTER_OIL_MIN, PLOTTER_OIL_MAX)
     motion = _plotter_round(motion, PLOTTER_MOTION_MIN, PLOTTER_MOTION_MAX)
@@ -3072,7 +3087,8 @@ def _fetch_plotter_estimate_inputs(cur, where_sql: str, params=()) -> list:
         f"""
         select p.id, p.oil_rating, p.motion_rating, p.oil_motion_source,
                c.core_type, p.coverstock_type, p.coverstock_material, p.has_particle, p.finish_category,
-               {PLOTTER_MAX_PRICE_SQL} as max_price
+               {PLOTTER_MAX_PRICE_SQL} as max_price,
+               (select cv.name from coverstocks cv where cv.id = p.coverstock_id) as coverstock_name
         from products p
         left join cores c on c.id = p.core_id
         where {where_sql}
@@ -3111,7 +3127,7 @@ def _estimate_from_inputs(p: dict) -> dict:
         coverstock_material=p["coverstock_material"], coverstock_type=p["coverstock_type"],
         has_particle=bool(p["has_particle"]), core_type=p["core_type"],
         finish_category=p["finish_category"], rg15=sku.get("rg"), diff15=sku.get("differential"),
-        mass_bias15=sku.get("mass_bias"), price=p["max_price"],
+        mass_bias15=sku.get("mass_bias"), price=p["max_price"], coverstock_name=p.get("coverstock_name"),
     )
 
 

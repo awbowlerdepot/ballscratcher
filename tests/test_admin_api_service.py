@@ -7924,6 +7924,25 @@ def test_v3_urethane_rates_smooth_like_the_chart():
     assert purple_pearl["motion"] <= 4
 
 
+def test_low_friction_reactive_sits_halfway_to_the_plastic_pin():
+    """Al: "low friction reactive is between polyester and the furys
+    reactive cover. so they should be down closer to a polyester ball"."""
+    axe = dict(coverstock_material="reactive_resin", coverstock_type="pearl", finish_category="polished", price=134.95)
+    as_reactive = _v3(**axe)
+    for cover in ("Low Friction Reactive", "Turmoil LFP Reactive", "low-friction pearl"):
+        lf = _v3(**axe, coverstock_name=cover)
+        assert lf["basis"] == "low_friction"
+        assert lf["oil"] == pytest.approx(1 + (as_reactive["oil"] - 1) / 2, abs=0.1 + 1e-9)
+        assert lf["motion"] == pytest.approx(1 + (as_reactive["motion"] - 1) / 2, abs=0.1 + 1e-9)
+    # An ordinary reactive cover name is untouched.
+    assert _v3(**axe, coverstock_name="PK-26 Pearl Reactive") == as_reactive
+
+
+def test_low_friction_rule_leaves_plastic_and_urethane_alone():
+    assert _v3(coverstock_material="polyester_plastic", coverstock_name="Low Friction Poly")["basis"] == "plastic_pinned"
+    assert _v3(coverstock_material="urethane", coverstock_name="Low Friction Urethane")["basis"] != "low_friction"
+
+
 def test_v3_clamps_inputs_to_the_training_range():
     """Out-of-range specs (other brands' outliers) mustn't extrapolate."""
     common = dict(coverstock_material="reactive_resin", coverstock_type="solid", core_type="asymmetric",

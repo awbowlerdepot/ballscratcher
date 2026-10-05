@@ -1056,7 +1056,7 @@ class _FakeCursor:
 
             self._description = [(c,) for c in (
                 "id", "name", "url", "brand_name", "core_type", "coverstock_type", "coverstock_material",
-                "has_particle", "finish_category", "max_price",
+                "has_particle", "finish_category", "max_price", "coverstock_name",
                 "oil_rating", "motion_rating", "oil_motion_source", "primary_image_url",
             )]
             rows = []
@@ -1067,7 +1067,7 @@ class _FakeCursor:
                         pid, p["name"], p["url"], self.db["brands"][p["brand_id"]]["name"],
                         core.get("core_type"), p.get("coverstock_type"), p.get("coverstock_material"),
                         p.get("has_particle", False), p.get("finish_category"), p.get("max_price"),
-                        p.get("oil_rating"), p.get("motion_rating"),
+                        p.get("coverstock_name"), p.get("oil_rating"), p.get("motion_rating"),
                         p.get("oil_motion_source"), _derive_primary_image_url(self.db, pid, p),
                     ))
             self._result_rows = rows
