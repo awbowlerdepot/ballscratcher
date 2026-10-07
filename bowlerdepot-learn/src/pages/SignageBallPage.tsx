@@ -1,4 +1,3 @@
-import QRCode from "qrcode";
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { getArticleBySlug, getLearnPlotter, resizedImageUrl } from "../api/client";
@@ -17,7 +16,12 @@ import type { ArticleDetail, LearnPlotterPoint } from "../api/types";
 //   0-5 s   action shot (slow push-in) + brand / name
 //   5-10 s  product shot + spec callouts (cover, core, 15 lb RG/diff/MB)
 //   10-14 s ball motion plotter position + "similar to" line
-//   14-18 s BowlerDepot.com price + QR code to the product page
+//   14-18 s price + "Ask our pro shop about this ball"
+// IN-STORE ONLY (Al: "again this is for in store signage why are we even
+// suggesting they go to the website"): no QR code, no website wording,
+// no BOWLERDEPOT.COM wordmark -- the shopper is already in the store. The
+// price shown is still the BowlerDepot.com listing price (the only price
+// we have).
 // Every number is drawn by code from live data -- never baked into an AI
 // image -- so the price is always the current BowlerDepot price.
 //
@@ -27,6 +31,8 @@ import type { ArticleDetail, LearnPlotterPoint } from "../api/types";
 // players that should run from local video instead.
 
 const LOOP_S = 18;
+// The line under the price -- an in-store prompt, never a website.
+const STORE_PROMPT = "Ask our pro shop about this ball";
 const W = 1080;
 const H = 1920;
 
@@ -55,7 +61,6 @@ export default function SignageBallPage() {
   const [article, setArticle] = useState<ArticleDetail | null>(null);
   const [point, setPoint] = useState<LearnPlotterPoint | null>(null);
   const [byId, setById] = useState<Map<string, LearnPlotterPoint>>(new Map());
-  const [qr, setQr] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [scale, setScale] = useState(1);
 
@@ -84,8 +89,6 @@ export default function SignageBallPage() {
         if (cancelled) return;
         if (!res.article) throw new Error("No article for this ball");
         setArticle(res.article);
-        const url = res.article.product?.ecommerce_url;
-        if (url) setQr(await QRCode.toDataURL(url, { margin: 1, width: 360, color: { dark: "#0f0f2dff", light: "#ffffffff" } }));
         try {
           const items = await getLearnPlotter();
           if (cancelled) return;
@@ -135,7 +138,6 @@ export default function SignageBallPage() {
         point={point}
         similar={similar}
         price={price}
-        qr={qr}
       />
     );
   }
@@ -196,21 +198,14 @@ export default function SignageBallPage() {
           </div>
         ) : null}
 
-        {/* Scene 4: price + QR */}
+        {/* Scene 4: price + in-store prompt */}
         <div className={`sg-scene ${point ? "sg-s4" : "sg-s4-noplot"}`}>
           {shotSrc ? <img className="sg-shot-sm" src={shotSrc} alt="" /> : null}
           <p className="sg-s4-name">{product.name}</p>
           {price ? <p className="sg-price">{price}</p> : null}
-          <p className="sg-at">at BowlerDepot.com</p>
-          {qr ? (
-            <div className="sg-qr">
-              <img src={qr} alt="" />
-              <span>Scan to shop</span>
-            </div>
-          ) : null}
+          <p className="sg-at">{STORE_PROMPT}</p>
         </div>
 
-        <div className="sg-logo">BOWLERDEPOT.COM</div>
       </div>
     </div>
   );
@@ -289,10 +284,6 @@ const SIGNAGE_CSS = `
 .sg-price { font-size: 190px; font-weight: 700; margin: 10px 0 0; color: #fbbf24; line-height: 1; animation: sg-pop ${LOOP_S}s ease-out infinite; }
 @keyframes sg-pop { 0%,79% {transform: scale(0.7); opacity:0} 83% {transform: scale(1.06); opacity:1} 86% {transform: scale(1)} 100% {transform: scale(1); opacity:1} }
 .sg-at { font-size: 54px; font-weight: 600; margin: 10px 0 50px; color: #e2e8f0; }
-.sg-qr { display: flex; flex-direction: column; align-items: center; gap: 14px; background: #fff; border-radius: 24px; padding: 26px 26px 18px; }
-.sg-qr img { width: 300px; height: 300px; }
-.sg-qr span { color: #0f0f2d; font-size: 38px; font-weight: 700; }
-.sg-logo { position: absolute; top: 60px; left: 0; right: 0; text-align: center; font-size: 40px; font-weight: 700; letter-spacing: 8px; color: rgba(255,255,255,0.9); }
 `;
 
 
@@ -303,12 +294,12 @@ const SIGNAGE_CSS = `
 // One continuous scene: the Veo-animated 9:16 signage shot loops underneath
 // (8 s clip), and a 16 s overlay timeline plays over it --
 //   0.5 s  name + brand settle in at the top (stay)
-//   1.5 s  price lower third + QR (stay -- shoppers always see the price)
+//   1.5 s  price lower third + in-store prompt (stays -- shoppers always see the price)
 //   2-9 s  spec callouts: a thin line draws from the ball's edge outward,
 //          then its label appears at the end of the line
 //   9.5-15 s motion badge: mini chart + "Similar to ..."
 // Only transform/opacity/stroke animations, no backdrop blur (Pi-friendly).
-const HERO_LOOP_S = 16;
+const HERO_LOOP_S = 14; // two loops of the 7 s background clip, so an exported MP4 loops cleanly
 
 type Callout = { k: string; v: string };
 
@@ -322,9 +313,8 @@ function HeroLayout(props: {
   point: LearnPlotterPoint | null;
   similar: LearnPlotterPoint[];
   price: string | null;
-  qr: string | null;
 }) {
-  const { scale, video, ball, brand, name, callouts, point, similar, price, qr } = props;
+  const { scale, video, ball, brand, name, callouts, point, similar, price } = props;
   const cx = ball.x * W;
   const cy = ball.y * H;
   const r = ball.r * W;
@@ -405,14 +395,8 @@ function HeroLayout(props: {
         <div className="hx-lower">
           <div>
             {price ? <p className="hx-price">{price}</p> : null}
-            <p className="hx-at">at BowlerDepot.com</p>
+            <p className="hx-at">{STORE_PROMPT}</p>
           </div>
-          {qr ? (
-            <div className="hx-qr">
-              <img src={qr} alt="" />
-              <span>Scan to shop</span>
-            </div>
-          ) : null}
         </div>
       </div>
     </div>
@@ -463,9 +447,6 @@ const HERO_CSS = `
 @keyframes hx-lower { 0%,7% {opacity:0; transform: translateY(40px)} 12% {opacity:1; transform: translateY(0)} 97% {opacity:1} 100% {opacity:0} }
 .hx-price { margin: 0; font-size: 170px; line-height: 1; font-weight: 700; color: #fbbf24; text-shadow: 0 8px 30px rgba(0,0,0,0.7); }
 .hx-at { margin: 10px 0 0; font-size: 46px; font-weight: 600; color: #f1f5f9; }
-.hx-qr { display: flex; flex-direction: column; align-items: center; gap: 8px; background: #fff; border-radius: 22px; padding: 18px 18px 12px; }
-.hx-qr img { width: 230px; height: 230px; }
-.hx-qr span { color: #0f0f2d; font-size: 30px; font-weight: 700; }
 .sg-dot-pulse { transform-box: fill-box; transform-origin: center; animation: sg-pulse 1.6s ease-in-out infinite; }
 @keyframes sg-pulse { 0%,100% {transform: scale(0.8); opacity:0.5} 50% {transform: scale(1.4); opacity:0.15} }
 `;

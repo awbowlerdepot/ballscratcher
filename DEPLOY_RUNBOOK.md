@@ -17767,6 +17767,32 @@ incorrectly". The prototype uses MOTIV Raptor Pursuit (Al's pick:
    faststart. Output: a 16 s, 5.6 MB MP4 (piSignage's native format),
    rendered in about 4 min locally.
 
+**Revision (same day).**
+- **In-store only.** Al: "again this is for in store signage why are we
+  even suggesting they go to the website". Both layouts lost the QR code,
+  "at BowlerDepot.com" and the BOWLERDEPOT.COM wordmark. The line under
+  the price is now `STORE_PROMPT` = "Ask our pro shop about this ball".
+  The price is still the BowlerDepot.com listing price, the only one we
+  have. The `qrcode` dependency was removed (the signage chunk went from
+  35 KB to 18 KB).
+- **Background motion.** Al: "the background is not animating there is
+  some strange over lay that is". The render was faithful: its
+  background matched the raw clip frame for frame. The CLIP was nearly
+  static. Using the still as both first frame and `lastFrame`, plus "keep
+  the ball fixed", made Veo hold the scene and add embers, sparks and a
+  flare on top. The fix:
+  - no `lastFrame`
+  - a prompt for real scene motion (raptor flapping and banking, clouds
+    streaming, the spiral turning, slow camera drift)
+  - embers, sparks, particles, fire and flares added to the negative
+    prompt
+
+  Measured frame-to-frame change rose about 4x (3.75 → 16.2); the logo
+  still held. The seamless loop now comes from an ffmpeg crossfade of the
+  last second into the first: `xfade(A[1:8], A[0:1], offset=6, dur=1)`,
+  giving a 7 s loop. `HERO_LOOP_S` is now 14 (two background loops), so
+  the exported MP4 loops cleanly.
+
 The prototype scripts (signage still, Veo, renderer) are not in the repo
 yet. Productionizing would mean:
 - a signage_shot slot plus candidates and admin review
