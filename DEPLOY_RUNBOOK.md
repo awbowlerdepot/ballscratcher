@@ -17869,7 +17869,9 @@ older than 20 min counts as failed. Failures show their error.
     default fallback). Then it invokes the renderer's `loop` job.
 - **Signage renderer**: new `src/signage_renderer`, the stack's first
   CONTAINER-image Lambda (arm64, Playwright Python 1.63 image plus ffmpeg;
-  900 s, 4 GB memory, 4 GB /tmp).
+  900 s, 3008 MB memory, 4 GB /tmp). 3008 MB is this account's Lambda
+  memory cap: the first deploy at 4096 failed with "Member must have value
+  less than or equal to 3008" and rolled back cleanly.
   - `loop`: an ffmpeg crossfade turns the 8 s clip into a 7 s loop.
   - `render`: Chromium screenshots ONLY the data layer
     (`/signage/ball/<slug>?overlay=1`, transparent, no `<video>`) frame

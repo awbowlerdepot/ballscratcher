@@ -2616,8 +2616,10 @@ Resources:
   # and ffmpeg. Jobs: "loop" (Veo clip -> seamless 7 s loop) and "render"
   # (overlay frames from the live signage page composited onto the loop ->
   # a 14 s 1080x1920 MP4 for piSignage). arm64 so the image builds natively
-  # on Apple Silicon. 4 GB memory for CPU (Chromium screenshots + x264);
-  # 4 GB /tmp for the ~336 overlay frames.
+  # on Apple Silicon. Memory at this account's Lambda cap of 3008 MB (the
+  # first deploy at 4096 was rejected: "Member must have value less than or
+  # equal to 3008") -- CPU scales with it; 4 GB /tmp for the ~336 overlay
+  # frames.
   SignageRendererFunction:
     Type: AWS::Serverless::Function
     Metadata:
@@ -2630,7 +2632,7 @@ Resources:
       Architectures:
         - arm64
       Timeout: 900
-      MemorySize: 4096
+      MemorySize: 3008
       EphemeralStorage:
         Size: 4096
       Environment:
