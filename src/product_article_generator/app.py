@@ -3404,6 +3404,58 @@ def generate_article_for_learn_video(conn, bedrock_client, model_id: str, learn_
             "images_generated": bool(images)}
 
 
+def run_signage_job(conn, event, *, s3_client, bedrock_client, model_id, gemini_auth, gemini_model_id, image_bucket):
+    """{"signage": "stills" | "animate", "article_id": ...} from admin_api
+    (runbook 6cn). Any failure marks the row 'failed' with the error, so the
+    admin section shows it instead of spinning forever."""
+    import signage
+
+    article_id = event["article_id"]
+    try:
+        ctx = signage.load_signage_context(conn, article_id)
+        if not gemini_auth:
+            raise RuntimeError("Google (Vertex AI) credentials aren't configured on this deployment")
+        if event["signage"] == "stills":
+            product = fetch_product_content(conn, ctx["product_id"])
+            article = fetch_existing_article(conn, ctx["product_id"])
+            raw = fetch_reference_image_bytes(fetch_reference_image_url(conn, ctx["product_id"]))
+            scene_prompt = build_gemini_scene_prompt(product, article, "action_shot", estimate_ball_frame_fill_ratio(raw))
+            session = get_gemini_requests_session()
+            return signage.generate_stills(
+                conn, ctx, scene_prompt=scene_prompt, reference_b64=_reference_image_to_base64_png(raw),
+                gemini_call=lambda prompt, ref, ratio: call_gemini_for_image(
+                    gemini_auth, gemini_model_id, prompt, ref, ratio, session=session),
+                s3_client=s3_client, image_bucket=image_bucket, bedrock_client=bedrock_client, model_id=model_id,
+            )
+        if event["signage"] == "animate":
+            if not ctx["selected_still_url"]:
+                raise RuntimeError("Pick a still before animating")
+            import boto3
+            import requests
+
+            still = requests.get(ctx["selected_still_url"], timeout=30)
+            still.raise_for_status()
+            session = get_gemini_requests_session()
+            renderer = os.environ.get("SIGNAGE_RENDERER_FUNCTION_NAME")
+            if not renderer:
+                raise RuntimeError("SIGNAGE_RENDERER_FUNCTION_NAME isn't configured on this deployment")
+            lambda_client = boto3.client("lambda")
+            return signage.animate(
+                conn, ctx, still_png=still.content,
+                veo_call=lambda png, prompt: signage.call_veo(
+                    session, gemini_auth["access_token"], gemini_auth["project_id"], png, prompt),
+                s3_client=s3_client, image_bucket=image_bucket, bedrock_client=bedrock_client, model_id=model_id,
+                invoke_renderer=lambda payload: lambda_client.invoke(
+                    FunctionName=renderer, InvocationType="Event", Payload=json.dumps(payload)),
+            )
+        raise ValueError(f"Unknown signage job {event['signage']!r}")
+    except Exception as e:
+        logger.exception("Signage job %s failed for article %s", event.get("signage"), article_id)
+        conn.rollback()
+        signage.update_signage(conn, article_id, status="failed", job_started_at=None, error=str(e)[:500])
+        return {"article_id": article_id, "failed": True, "error": str(e)[:500]}
+
+
 def handler(event, context):
     """Two shapes: {} / {"batch": true} runs the scheduled catalog-wide
     sweep (see list_products_needing_article -- only products with no
@@ -3509,6 +3561,14 @@ def handler(event, context):
 
     conn = get_db_connection()
     try:
+        # In-store signage jobs (runbook 6cn) -- see signage.py.
+        if event.get("signage"):
+            result = run_signage_job(
+                conn, event, s3_client=s3_client, bedrock_client=bedrock_client, model_id=model_id,
+                gemini_auth=gemini_auth, gemini_model_id=gemini_model_id, image_bucket=image_bucket,
+            )
+            return {"statusCode": 200, "body": json.dumps(result, default=str)}
+
         if event.get("learn_video_id"):
             # Video article (migration 040) -- the Learn Videos page's
             # Generate Article button, via admin_api.queue_learn_video_

@@ -6267,3 +6267,186 @@ def delete_user(cognito_client, user_pool_id: str, username: str) -> dict:
 
     cognito_client.admin_delete_user(UserPoolId=user_pool_id, Username=username)
     return {"username": username, "deleted": True}
+
+
+# --------------------------------------------------------------------
+# In-store signage (migration 045, runbook 6cn). Al: "can there just be a
+# generate button on the ball on the admin site so we can pick and choose".
+# Per ball article: Generate (stills + taglines) -> pick -> Animate (Veo
+# clip + loop) -> Approve -> Render MP4. The jobs run in the article
+# generator (stills/animate) and the signage renderer container (loop/
+# render), invoked fire-and-forget like article regeneration; the status
+# column on article_signage is the marker the admin section polls.
+# --------------------------------------------------------------------
+
+SIGNAGE_RUNNING = ("generating", "animating", "rendering")
+# A job that never reported back (Lambda killed, etc) stops blocking the
+# buttons after this long -- the longest real job (Veo + loop) is ~5 min.
+SIGNAGE_STALE_MINUTES = 20
+SIGNAGE_COLUMNS = (
+    "status", "job_started_at", "error", "still_candidates", "selected_still_key", "selected_still_url",
+    "tagline_options", "tagline", "clip_url", "clip_generated_at", "ball_x", "ball_y", "ball_r",
+    "approved", "approved_at", "approved_by", "mp4_url", "mp4_rendered_at", "mp4_price", "updated_at",
+)
+
+
+def signage_effective_status(row: dict, now=None) -> str:
+    """'failed' for a running job older than SIGNAGE_STALE_MINUTES (pure)."""
+    from datetime import datetime, timedelta, timezone
+
+    if row.get("status") in SIGNAGE_RUNNING and row.get("job_started_at"):
+        now = now or datetime.now(timezone.utc)
+        if now - row["job_started_at"] > timedelta(minutes=SIGNAGE_STALE_MINUTES):
+            return "failed"
+    return row.get("status") or "idle"
+
+
+def _signage_article(cur, article_id: str) -> dict:
+    cur.execute(
+        """
+        select pa.id, pa.product_id, pa.slug, pa.status
+        from product_articles pa
+        where pa.id = %s
+        """,
+        (article_id,),
+    )
+    row = cur.fetchone()
+    if row is None:
+        raise LookupError(f"No article {article_id}")
+    if row[1] is None:
+        raise ValueError("Signage is only for ball articles")
+    return {"article_id": str(row[0]), "product_id": str(row[1]), "slug": row[2], "article_status": row[3]}
+
+
+def get_article_signage(conn, article_id: str) -> dict:
+    """GET /articles/{id}/signage: the working set, plus the current drilled
+    price (so the UI can flag an MP4 rendered at an old price) and the
+    piSignage URL. A row that doesn't exist yet is 'idle'."""
+    with conn.cursor() as cur:
+        art = _signage_article(cur, article_id)
+        cur.execute(f"select {', '.join(SIGNAGE_COLUMNS)} from article_signage where article_id = %s", (article_id,))
+        row = cur.fetchone()
+        data = dict(zip(SIGNAGE_COLUMNS, row)) if row else {"status": "idle", "still_candidates": [], "tagline_options": []}
+        cur.execute(
+            """
+            select h.price from product_price_sources pps
+              join price_sites ps on ps.id = pps.price_site_id
+              join product_price_history h on h.price_source_id = pps.id
+             where pps.product_id = %s and ps.api_provider = 'bigcommerce'
+               and pps.status = 'approved' and pps.is_active = true and h.price is not null
+             order by h.checked_at desc limit 1
+            """,
+            (art["product_id"],),
+        )
+        price_row = cur.fetchone()
+    data["status"] = signage_effective_status(data)
+    data["article_id"] = art["article_id"]
+    data["slug"] = art["slug"]
+    data["drilled_price"] = float(price_row[0]) + SIGNAGE_DRILLING_UPCHARGE if price_row else None
+    data["signage_url"] = f"{LEARN_SITE_BASE_URL}/signage/ball/{art['slug']}" if art["slug"] else None
+    for k in ("ball_x", "ball_y", "ball_r", "mp4_price"):
+        if data.get(k) is not None:
+            data[k] = float(data[k])
+    return data
+
+
+SIGNAGE_DRILLING_UPCHARGE = 50  # must match DRILLING_UPCHARGE in the Learn signage page
+LEARN_SITE_BASE_URL = os.environ.get("LEARN_SITE_URL", "https://learn.bowlerdepot.com").rstrip("/")
+
+
+def _queue_signage_job(conn, article_id: str, status: str, function_env: str, payload: dict,
+                       require=None) -> dict:
+    """Shared fire-and-forget launcher: refuse while a job is running, mark
+    the row, invoke, and roll the marker back if the invoke itself fails."""
+    current = get_article_signage(conn, article_id)
+    if current["status"] in SIGNAGE_RUNNING:
+        raise ValueError("A signage job is already running for this ball")
+    if require:
+        require(current)
+    function_name = os.environ.get(function_env)
+    if not function_name:
+        return {"queued": False, "reason": f"{function_env} is not configured on this deployment"}
+    with conn.cursor() as cur:
+        cur.execute(
+            "insert into article_signage (article_id, status, job_started_at, error) values (%s, %s, now(), null) "
+            "on conflict (article_id) do update set status = excluded.status, job_started_at = now(), "
+            "error = null, updated_at = now()",
+            (article_id, status),
+        )
+    conn.commit()
+    import boto3
+
+    try:
+        boto3.client("lambda").invoke(FunctionName=function_name, InvocationType="Event",
+                                      Payload=json.dumps(payload))
+    except Exception:
+        with conn.cursor() as cur:
+            cur.execute("update article_signage set status = %s, job_started_at = null where article_id = %s",
+                        (current["status"] if current["status"] != "idle" else "idle", article_id))
+        conn.commit()
+        raise
+    return {"queued": True, "article_id": article_id, "status": status}
+
+
+def queue_signage_stills(conn, article_id: str) -> dict:
+    return _queue_signage_job(conn, article_id, "generating", "PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME",
+                              {"signage": "stills", "article_id": article_id})
+
+
+def queue_signage_animate(conn, article_id: str) -> dict:
+    def require(cur):
+        if not cur.get("selected_still_url"):
+            raise ValueError("Pick a still first")
+    return _queue_signage_job(conn, article_id, "animating", "PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME",
+                              {"signage": "animate", "article_id": article_id}, require=require)
+
+
+def queue_signage_render(conn, article_id: str) -> dict:
+    def require(cur):
+        if not cur.get("clip_url"):
+            raise ValueError("Animate first -- there's no clip to render yet")
+    return _queue_signage_job(conn, article_id, "rendering", "SIGNAGE_RENDERER_FUNCTION_NAME",
+                              {"mode": "render", "article_id": article_id}, require=require)
+
+
+def update_article_signage(conn, article_id: str, *, selected_still_key=None, tagline=None, approved=None,
+                           approved_by=None) -> dict:
+    """PATCH: pick a still (must be one of the current candidates), set the
+    tagline (2-60 chars), approve/unapprove (needs a clip). Picking a
+    different still clears the clip -- it must be re-animated."""
+    current = get_article_signage(conn, article_id)
+    if current["status"] in SIGNAGE_RUNNING:
+        raise ValueError("Wait for the running signage job to finish")
+    sets, vals = [], []
+    if selected_still_key is not None:
+        match = next((c for c in current.get("still_candidates") or [] if c.get("key") == selected_still_key), None)
+        if match is None:
+            raise ValueError("That still isn't one of this ball's candidates")
+        if match["key"] != current.get("selected_still_key"):
+            sets += ["selected_still_key = %s", "selected_still_url = %s", "clip_key = null", "clip_url = null",
+                     "raw_clip_key = null", "approved = false", "approved_at = null", "approved_by = null"]
+            vals += [match["key"], match["url"]]
+    if tagline is not None:
+        t = " ".join(tagline.split())
+        if not (2 <= len(t) <= 60):
+            raise ValueError("Tagline must be 2-60 characters")
+        sets.append("tagline = %s")
+        vals.append(t)
+    if approved is not None:
+        if approved and not current.get("clip_url"):
+            raise ValueError("Animate before approving")
+        if approved:
+            sets += ["approved = true", "approved_at = now()", "approved_by = %s"]
+            vals.append(approved_by)
+        else:
+            sets += ["approved = false", "approved_at = null", "approved_by = null"]
+    if sets:
+        with conn.cursor() as cur:
+            cur.execute(
+                "insert into article_signage (article_id) values (%s) on conflict (article_id) do nothing",
+                (article_id,),
+            )
+            cur.execute(f"update article_signage set {', '.join(sets)}, updated_at = now() where article_id = %s",
+                        [*vals, article_id])
+        conn.commit()
+    return get_article_signage(conn, article_id)

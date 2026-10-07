@@ -66,6 +66,8 @@ import type {
   SyncBowlerDepotReconciliationResult,
   UrlDiscoveryTarget,
   VideoCandidateListResult,
+  ArticleSignage,
+  QueueSignageResult,
 } from "./types";
 
 // Unlike consumer-site's PublicApiFunction client, every request here
@@ -623,6 +625,31 @@ export function updateLearnVideo(id: string, categoryId: string): Promise<{ id: 
 
 export function deleteLearnVideo(id: string): Promise<{ deleted: boolean; id: string }> {
   return apiDelete(`/learn-videos/${encodeURIComponent(id)}`);
+}
+
+// In-store signage (migration 045, runbook 6cn). generate/animate/render
+// are fire-and-forget -- poll getArticleSignage for status.
+export function getArticleSignage(articleId: string): Promise<ArticleSignage> {
+  return apiGet<ArticleSignage>(`/articles/${encodeURIComponent(articleId)}/signage`);
+}
+
+export function generateArticleSignage(articleId: string): Promise<QueueSignageResult> {
+  return apiPost<QueueSignageResult>(`/articles/${encodeURIComponent(articleId)}/signage/generate`);
+}
+
+export function animateArticleSignage(articleId: string): Promise<QueueSignageResult> {
+  return apiPost<QueueSignageResult>(`/articles/${encodeURIComponent(articleId)}/signage/animate`);
+}
+
+export function renderArticleSignage(articleId: string): Promise<QueueSignageResult> {
+  return apiPost<QueueSignageResult>(`/articles/${encodeURIComponent(articleId)}/signage/render`);
+}
+
+export function updateArticleSignage(
+  articleId: string,
+  patch: { selected_still_key?: string; tagline?: string; approved?: boolean },
+): Promise<ArticleSignage> {
+  return apiPatch<ArticleSignage>(`/articles/${encodeURIComponent(articleId)}/signage`, patch);
 }
 
 // Social media posts for an article (migration 042). Generate is

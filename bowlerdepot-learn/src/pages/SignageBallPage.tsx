@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
-import { getArticleBySlug, getLearnPlotter, resizedImageUrl } from "../api/client";
-import type { ArticleDetail, LearnPlotterPoint } from "../api/types";
+import { getArticleBySlug, getLearnPlotter, getSignage, resizedImageUrl } from "../api/client";
+import type { ArticleDetail, LearnPlotterPoint, SignageSpec } from "../api/types";
 
 // In-store signage loop for one ball (runbook 6cm) -- Al: "do you think we
 // could create a 9:16 vertical format video that could be put on our
@@ -59,12 +59,37 @@ export default function SignageBallPage() {
   // the data overlaid on it. ?video= plus the ball's position in the frame
   // (bx/by = center as fractions, br = radius as a fraction of width) drive
   // the prototype; the production pipeline will store these per ball.
-  const video = searchParams.get("video");
+  // Production (runbook 6cn): a ball's APPROVED signage comes from
+  // GET /learn/signage/<slug> -- so a piSignage web link needs no query
+  // params. Query params still override (admin preview of an unapproved
+  // clip, and the MP4 renderer).
+  const [signage, setSignage] = useState<SignageSpec | null>(null);
+  useEffect(() => {
+    if (!slug) return;
+    let cancelled = false;
+    getSignage(slug)
+      .then((s) => !cancelled && setSignage(s))
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [slug]);
+  const param = (k: string) => searchParams.get(k);
+  const video = param("video") ?? signage?.clip_url ?? null;
   const ballPos = {
-    x: Number(searchParams.get("bx") ?? 0.5),
-    y: Number(searchParams.get("by") ?? 0.62),
-    r: Number(searchParams.get("br") ?? 0.26),
+    x: Number(param("bx") ?? signage?.ball_x ?? 0.5),
+    y: Number(param("by") ?? signage?.ball_y ?? 0.62),
+    r: Number(param("br") ?? signage?.ball_r ?? 0.26),
   };
+  // ?overlay=1: draw ONLY the data layer on a transparent background, no
+  // video -- the MP4 renderer screenshots this and lets ffmpeg composite it
+  // over the clip (no H.264 decoding needed in a headless browser).
+  const overlayOnly = param("overlay") === "1";
+  useEffect(() => {
+    if (!overlayOnly) return;
+    document.documentElement.style.background = "transparent";
+    document.body.style.background = "transparent";
+  }, [overlayOnly]);
   const [article, setArticle] = useState<ArticleDetail | null>(null);
   const [point, setPoint] = useState<LearnPlotterPoint | null>(null);
   const [byId, setById] = useState<Map<string, LearnPlotterPoint>>(new Map());
@@ -126,16 +151,17 @@ export default function SignageBallPage() {
   // the point") -- 2-6 words riffing on the ball's visual_theme, never an
   // instruction, website or price. Raptor Pursuit: "Talons find the
   // pocket." The prototype takes it from ?cta=; the pipeline will store it.
-  const cta = searchParams.get("cta") || STORE_PROMPT;
+  const cta = param("cta") || signage?.tagline || STORE_PROMPT;
 
   if (error) return <div style={{ background: "#0f0f2d", color: "#fff", height: "100vh", padding: 40 }}>{error}</div>;
   if (!article || !product) return <div style={{ background: "#0f0f2d", height: "100vh" }} />;
 
-  if (video) {
+  if (video || overlayOnly) {
     return (
       <HeroLayout
+        overlayOnly={overlayOnly}
         scale={scale}
-        video={video}
+        video={video ?? ""}
         ball={ballPos}
         brand={product.brand_name ?? ""}
         name={product.name}
@@ -323,6 +349,7 @@ const HERO_LOOP_S = 14; // two loops of the 7 s background clip, so an exported 
 type Callout = { k: string; v: string };
 
 function HeroLayout(props: {
+  overlayOnly?: boolean;
   scale: number;
   video: string;
   ball: { x: number; y: number; r: number };
@@ -334,7 +361,7 @@ function HeroLayout(props: {
   price: string | null;
   cta: string;
 }) {
-  const { scale, video, ball, brand, name, callouts, point, similar, price, cta } = props;
+  const { overlayOnly, scale, video, ball, brand, name, callouts, point, similar, price, cta } = props;
   const cx = ball.x * W;
   const cy = ball.y * H;
   const r = ball.r * W;
@@ -350,13 +377,13 @@ function HeroLayout(props: {
     { angle: 20, lx: W - 60, ly: cy + r * 0.55, align: "right" as const },
   ];
   return (
-    <div style={{ position: "fixed", inset: 0, background: "#000", overflow: "hidden" }}>
+    <div style={{ position: "fixed", inset: 0, background: overlayOnly ? "transparent" : "#000", overflow: "hidden" }}>
       <style>{HERO_CSS}</style>
       <div
-        className="hx-canvas"
+        className={overlayOnly ? "hx-canvas hx-overlay-only" : "hx-canvas"}
         style={{ width: W, height: H, transform: `translate(-50%, -50%) scale(${scale})`, position: "absolute", left: "50%", top: "50%" }}
       >
-        <video className="hx-video" src={video} autoPlay muted loop playsInline />
+        {overlayOnly ? null : <video className="hx-video" src={video} autoPlay muted loop playsInline />}
         <div className="hx-top-shade" />
         <div className="hx-bottom-shade" />
 
@@ -442,6 +469,7 @@ function MiniBadge({ oil, motion }: { oil: number; motion: number }) {
 
 const HERO_CSS = `
 .hx-canvas { font-family: "Space Grotesk", Arial, sans-serif; color: #fff; overflow: hidden; background: #000; }
+.hx-overlay-only { background: transparent; }
 .hx-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .hx-top-shade { position: absolute; left: 0; right: 0; top: 0; height: 520px; background: linear-gradient(to bottom, rgba(5,8,25,0.85), rgba(5,8,25,0)); }
 .hx-bottom-shade { position: absolute; left: 0; right: 0; bottom: 0; height: 560px; background: linear-gradient(to top, rgba(5,8,25,0.95) 30%, rgba(5,8,25,0)); }

@@ -1,0 +1,5 @@
+# Container image (see Dockerfile) -- Playwright's own image provides Chromium.
+playwright==1.63.0
+awslambdaric>=2.2
+boto3>=1.34
+psycopg2-binary>=2.9

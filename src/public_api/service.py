@@ -2327,3 +2327,30 @@ def get_plotter_ball(conn, product_id: str):
         "recommendable": False,
         "neighbors": compute_replacements(target, points),
     }
+
+
+
+def get_learn_signage(conn, slug: str):
+    """GET /learn/signage/{slug} (migration 045, runbook 6cn): a ball's
+    APPROVED in-store signage -- the looping 9:16 clip, where the ball sits
+    in it, and its tagline -- or None (404) if there's no approved signage,
+    the article isn't approved, or the product isn't published. The
+    signage page falls back to its card layout then."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select s.clip_url, s.ball_x, s.ball_y, s.ball_r, s.tagline
+            from article_signage s
+            join product_articles pa on pa.id = s.article_id
+            join products p on p.id = pa.product_id
+            where pa.slug = %s and pa.status = 'approved' and p.published = true
+              and s.approved = true and s.clip_url is not null
+            """,
+            (slug,),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return None
+    return {"clip_url": row[0], "ball_x": float(row[1]) if row[1] is not None else 0.5,
+            "ball_y": float(row[2]) if row[2] is not None else 0.62,
+            "ball_r": float(row[3]) if row[3] is not None else 0.27, "tagline": row[4]}

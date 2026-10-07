@@ -15,7 +15,9 @@ Description: >
 
 Globals:
   Function:
-    Runtime: python3.13
+    # Runtime is set on each zip function, not here: Globals would also apply
+    # it to SignageRendererFunction, and a container-image function can't
+    # have a Runtime (runbook 6cn).
     Timeout: 60
     MemorySize: 256
     Environment:
@@ -975,6 +977,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-url-discovery
       CodeUri: src/url_discovery/
+      Runtime: python3.13
       Handler: app.handler
       Environment:
         Variables:
@@ -1033,6 +1036,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-radical-url-discovery
       CodeUri: src/url_discovery/
+      Runtime: python3.13
       Handler: app.handler
       Environment:
         Variables:
@@ -1063,6 +1067,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-dv8-url-discovery
       CodeUri: src/url_discovery/
+      Runtime: python3.13
       Handler: app.handler
       Environment:
         Variables:
@@ -1101,6 +1106,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-brunswick-bags-url-discovery
       CodeUri: src/url_discovery/
+      Runtime: python3.13
       Handler: app.handler
       Environment:
         Variables:
@@ -1131,6 +1137,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-product-scraper
       CodeUri: src/product_scraper/
+      Runtime: python3.13
       Handler: app.handler
       # Raised from 30 to 150 alongside ImageProcessorFunction/
       # CommercebuildProductScraperFunction -- same BatchSize: 5
@@ -1201,6 +1208,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-pdf-parser
       CodeUri: src/pdf_parser/
+      Runtime: python3.13
       Handler: app.handler
       # Raised from 30 to 150, same reasoning as ProductScraperFunction/
       # ImageProcessorFunction/CommercebuildProductScraperFunction above.
@@ -1232,6 +1240,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-image-processor
       CodeUri: src/image_processor/
+      Runtime: python3.13
       Handler: app.handler
       # Real bug found via production CloudWatch logs: image_processor/
       # app.py's handler processes each SQS batch of up to 5 images
@@ -1449,6 +1458,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-admin-api-authorizer
       CodeUri: src/admin_api_authorizer/
+      Runtime: python3.13
       Handler: app.handler
       Timeout: 10
       Environment:
@@ -1500,6 +1510,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-admin-api
       CodeUri: src/admin_api/
+      Runtime: python3.13
       Handler: app.handler
       # Bumped from 15s -- POST /products/{id}/refresh-video-summary (see
       # service.refresh_video_reviews_rollup) adds a synchronous Bedrock
@@ -1646,6 +1657,10 @@ Resources:
           # covers the unattended case; this is the "sync THIS one right
           # now" on-demand path.
           ARTICLE_SYNC_FUNCTION_NAME: !Ref BowlerdepotArticleSyncFunction
+          # In-store signage (runbook 6cn): Render MP4 runs in the renderer
+          # container; the signage URL shown in admin uses LEARN_SITE_URL.
+          SIGNAGE_RENDERER_FUNCTION_NAME: !Ref SignageRendererFunction
+          LEARN_SITE_URL: https://learn.bowlerdepot.com
           # Read by service.py's require_user_pool_id (GET/POST/PATCH/
           # DELETE /users -- Al: "can we add user management and a user
           # group that has no access to user managment"). This is the
@@ -1785,6 +1800,12 @@ Resources:
               Action:
                 - lambda:InvokeFunction
               Resource: !GetAtt ProductArticleGeneratorFunction.Arn
+        # In-store signage "Render MP4" (runbook 6cn).
+        - Statement:
+            - Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource: !GetAtt SignageRendererFunction.Arn
         # For queue_article_sync (POST /articles/{id}/sync-to-bigcommerce)
         # -- same "narrowest permission, scoped to exactly this function's
         # own ARN" convention as the three grants immediately above.
@@ -1974,6 +1995,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-public-api
       CodeUri: src/public_api/
+      Runtime: python3.13
       Handler: app.handler
       Timeout: 30
       # Bumped above the 256MB Globals default -- Al: "im still seeing
@@ -2051,6 +2073,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-partner-api-authorizer
       CodeUri: src/partner_api_authorizer/
+      Runtime: python3.13
       Handler: app.handler
       Timeout: 10
       Environment:
@@ -2107,6 +2130,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-partner-api
       CodeUri: src/partner_api/
+      Runtime: python3.13
       Handler: app.handler
       Timeout: 30
       MemorySize: 512
@@ -2169,6 +2193,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-woocommerce-url-discovery
       CodeUri: src/woocommerce_url_discovery/
+      Runtime: python3.13
       Handler: app.handler
       Environment:
         Variables:
@@ -2199,6 +2224,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-woocommerce-product-scraper
       CodeUri: src/woocommerce_product_scraper/
+      Runtime: python3.13
       Handler: app.handler
       # Raised from 30 to 150, same reasoning as ProductScraperFunction/
       # ImageProcessorFunction/CommercebuildProductScraperFunction above.
@@ -2267,6 +2293,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-netsuite-url-discovery
       CodeUri: src/netsuite_url_discovery/
+      Runtime: python3.13
       Handler: app.handler
       Environment:
         Variables:
@@ -2297,6 +2324,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-netsuite-product-scraper
       CodeUri: src/netsuite_product_scraper/
+      Runtime: python3.13
       Handler: app.handler
       # Raised from 30 to 150, same reasoning as ProductScraperFunction/
       # ImageProcessorFunction/CommercebuildProductScraperFunction above.
@@ -2394,6 +2422,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-video-discovery
       CodeUri: src/video_discovery/
+      Runtime: python3.13
       Handler: app.handler
       # Network-bound (one YouTube search.list call per product, each a
       # real HTTP round trip) -- same reasoning as the other discovery/
@@ -2480,6 +2509,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-video-transcript-fetcher
       CodeUri: src/video_transcript_fetcher/
+      Runtime: python3.13
       Handler: app.handler
       # Same 150s reasoning as VideoSummarizerFunction had before the split
       # -- a watch-page fetch plus up to DEFAULT_WATCH_PAGE_FETCH_ATTEMPTS
@@ -2519,6 +2549,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-video-summarizer
       CodeUri: src/video_summarizer/
+      Runtime: python3.13
       Handler: app.handler
       Timeout: 150
       Environment:
@@ -2580,11 +2611,50 @@ Resources:
       # invocation with {"product_video_id": "...", "transcript": "...",
       # "transcript_note": "..."} for testing one row by hand.
 
+  # In-store signage renderer (runbook 6cn): a CONTAINER-image function --
+  # the only one in this stack -- because it needs Chromium (Playwright)
+  # and ffmpeg. Jobs: "loop" (Veo clip -> seamless 7 s loop) and "render"
+  # (overlay frames from the live signage page composited onto the loop ->
+  # a 14 s 1080x1920 MP4 for piSignage). arm64 so the image builds natively
+  # on Apple Silicon. 4 GB memory for CPU (Chromium screenshots + x264);
+  # 4 GB /tmp for the ~336 overlay frames.
+  SignageRendererFunction:
+    Type: AWS::Serverless::Function
+    Metadata:
+      DockerTag: v1
+      DockerContext: src/signage_renderer
+      Dockerfile: Dockerfile
+    Properties:
+      FunctionName: bowling-scraper-signage-renderer
+      PackageType: Image
+      Architectures:
+        - arm64
+      Timeout: 900
+      MemorySize: 4096
+      EphemeralStorage:
+        Size: 4096
+      Environment:
+        Variables:
+          IMAGE_BUCKET: !Ref ImageBucket
+          LEARN_SITE_URL: https://learn.bowlerdepot.com
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource: !Sub arn:aws:s3:::${ImageBucket}/article-images/*
+
   ProductArticleGeneratorFunction:
     Type: AWS::Serverless::Function
     Properties:
       FunctionName: bowling-scraper-product-article-generator
       CodeUri: src/product_article_generator/
+      Runtime: python3.13
       Handler: app.handler
       # Bigger structured generation than VideoSummarizerFunction's one
       # paragraph (a whole article: title/hook/narrative/two bullet
@@ -2651,8 +2721,16 @@ Resources:
           # {"batch": true, "limit": N} invoke can override this for
           # deliberate backlog catch-up without raising the daily default.
           MAX_PRODUCTS_PER_INVOCATION: "10"
+          # Signage animate (runbook 6cn) hands the Veo clip to the renderer
+          # container to make the seamless loop.
+          SIGNAGE_RENDERER_FUNCTION_NAME: !Ref SignageRendererFunction
       Policies:
         - VPCAccessPolicy: {}
+        - Statement:
+            - Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource: !GetAtt SignageRendererFunction.Arn
         - Statement:
             - Effect: Allow
               Action:
@@ -2884,6 +2962,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-commercebuild-url-discovery
       CodeUri: src/commercebuild_url_discovery/
+      Runtime: python3.13
       Handler: app.handler
       Environment:
         Variables:
@@ -2921,6 +3000,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-commercebuild-product-scraper
       CodeUri: src/commercebuild_product_scraper/
+      Runtime: python3.13
       Handler: app.handler
       # Real bug confirmed via production CloudWatch logs during the
       # archived-product smoke test: the same class of problem just fixed
@@ -3004,6 +3084,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-shopify-url-discovery
       CodeUri: src/shopify_url_discovery/
+      Runtime: python3.13
       Handler: app.handler
       Environment:
         Variables:
@@ -3034,6 +3115,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-track-url-discovery
       CodeUri: src/shopify_url_discovery/
+      Runtime: python3.13
       Handler: app.handler
       Environment:
         Variables:
@@ -3069,6 +3151,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-ebonite-url-discovery
       CodeUri: src/shopify_url_discovery/
+      Runtime: python3.13
       Handler: app.handler
       Environment:
         Variables:
@@ -3102,6 +3185,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-shopify-product-scraper
       CodeUri: src/shopify_product_scraper/
+      Runtime: python3.13
       Handler: app.handler
       # Same reasoning as every other product scraper's raised timeout --
       # one product-page-plus-image-fanout per SQS batch item, sequential.
@@ -3146,6 +3230,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-bowwwl-cross-check
       CodeUri: src/bowwwl_cross_check/
+      Runtime: python3.13
       Handler: app.handler
       Timeout: 120
       Policies:
@@ -3180,6 +3265,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-bowlerdepot-reconciliation
       CodeUri: src/bowlerdepot_reconciliation/
+      Runtime: python3.13
       Handler: app.handler
       Timeout: 300
       MemorySize: 512
@@ -3251,6 +3337,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-price-checker
       CodeUri: src/price_checker/
+      Runtime: python3.13
       Handler: app.handler
       # Network-bound against arbitrary, unpredictably slow third-party
       # sites (not a single well-behaved API the way YouTube's Data API
@@ -3337,6 +3424,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-refresh-product-scores
       CodeUri: src/refresh_product_scores/
+      Runtime: python3.13
       Handler: app.handler
       # Three plain set-based UPDATEs against however many rows `products`
       # has -- see app.py's own module docstring for why this doesn't
@@ -3381,6 +3469,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-bowlerdepot-video-sync
       CodeUri: src/bowlerdepot_video_sync/
+      Runtime: python3.13
       Handler: app.handler
       # Same 30s-per-request BigCommerce POST as price_checker's own
       # fetches, but no per-source retry loop here, and expected batch
@@ -3435,6 +3524,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-bowlerdepot-article-sync
       CodeUri: src/bowlerdepot_article_sync/
+      Runtime: python3.13
       Handler: app.handler
       # Same reasoning as BowlerdepotVideoSyncFunction's own Timeout
       # comment: one extra BigCommerce GET (product URL lookup) plus one
@@ -4186,6 +4276,7 @@ Resources:
     Properties:
       FunctionName: bowling-scraper-image-resizer
       CodeUri: src/image_resizer/
+      Runtime: python3.13
       Handler: app.handler
       # Single-image resize/transcode is CPU-bound and quick -- 1024MB
       # (same reasoning as PublicApiFunction/AdminApiFunction's own memory

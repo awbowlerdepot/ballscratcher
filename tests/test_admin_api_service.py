@@ -8039,3 +8039,17 @@ def test_reestimate_plotter_positions_no_op_when_nothing_estimated():
     }
     result = service.reestimate_plotter_positions(FakeConnection(db))
     assert result["products_considered"] == 0 and result["products_updated"] == 0
+
+
+# --- In-store signage (migration 045, runbook 6cn) ---
+
+def test_signage_running_job_goes_stale_after_twenty_minutes():
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
+    fresh = {"status": "animating", "job_started_at": now - timedelta(minutes=5)}
+    stale = {"status": "animating", "job_started_at": now - timedelta(minutes=25)}
+    assert service.signage_effective_status(fresh, now) == "animating"
+    assert service.signage_effective_status(stale, now) == "failed"
+    assert service.signage_effective_status({"status": "ready", "job_started_at": None}, now) == "ready"
+    assert service.signage_effective_status({}, now) == "idle"

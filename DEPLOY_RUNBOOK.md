@@ -17821,6 +17821,116 @@ yet. Productionizing would mean:
 
 **Deploy:** `git push` (deploy-learn-site).
 
+### 6cn. In-store signage pipeline: Generate / Animate / Approve / Render MP4 per ball in admin (migration 045) (2026-10-07)
+
+Al: "can there just be a generate button on the ball on the admin site so we
+can pick and choose". His choices: the button lives in the article preview,
+the MP4 download is in v1, and Veo Fast is the tier. This productizes the
+6cm prototype.
+
+**Admin flow** ("In-store signage" in the article preview, ball articles
+only, after Social media posts; `admin-spa/src/components/SignageSection.tsx`):
+1. **Generate signage**: 3 native 9:16 stills plus tagline ideas, in about
+   1–2 min (~$0.50).
+2. Pick a still. Pick or edit a tagline (2–60 chars).
+3. **Animate**: a Veo 3.1 Fast clip from the still, made into a seamless
+   loop, in about 2–4 min (~$1).
+4. A live preview: the real signage page in an iframe, using the clip,
+   ball position, tagline and current drilled price.
+5. **Approve**: the public signage URL serves it, and admin shows the
+   piSignage web link.
+6. **Render MP4**: a 14 s 1080×1920 H.264 file with a download link.
+   Admin flags it when the drilled price has changed since the render.
+
+Running jobs disable the buttons, and the section polls every 5 s. A job
+older than 20 min counts as failed. Failures show their error.
+
+**Data: migration 045, `article_signage`** (one row per article).
+- Columns: status (idle / generating / stills_ready / animating /
+  rendering / ready / failed), job_started_at, error, still_candidates
+  jsonb, selected still, tagline_options jsonb, tagline, raw clip, loop
+  clip, ball x/y/r, approved / approved_at / approved_by, mp4 key, url,
+  rendered_at and price.
+- Switching to a different still clears the clip and the approval.
+- A new loop clip also un-approves, so nothing reaches the stores
+  unreviewed.
+
+**Jobs.**
+- **Article generator**, `{"signage": "stills"|"animate", "article_id"}`.
+  The logic lives in `src/product_article_generator/signage.py`, called
+  by `run_signage_job` in app.py.
+  - stills = the generator's own action-shot `build_gemini_scene_prompt`
+    plus signage composition rules, using Vertex `gemini-3-pro-image` at
+    9:16. Taglines come from Haiku and are filtered: never an
+    instruction, website or price.
+  - animate = Veo 3.1 Fast (`us-central1`) with NO lastFrame and with
+    particles, fire and flares in the negative prompt (the 6cm lessons).
+    Ball position comes from Haiku vision on the still (validated, with a
+    default fallback). Then it invokes the renderer's `loop` job.
+- **Signage renderer**: new `src/signage_renderer`, the stack's first
+  CONTAINER-image Lambda (arm64, Playwright Python 1.63 image plus ffmpeg;
+  900 s, 4 GB memory, 4 GB /tmp).
+  - `loop`: an ffmpeg crossfade turns the 8 s clip into a 7 s loop.
+  - `render`: Chromium screenshots ONLY the data layer
+    (`/signage/ball/<slug>?overlay=1`, transparent, no `<video>`) frame
+    by frame at 24 fps for 14 s. ffmpeg then composites it over the
+    looped clip, so headless Chromium never decodes H.264.
+  - Files go to `article-images/<product_id>/signage/` in the image
+    bucket (public-read).
+- **Template changes.**
+  - `Runtime: python3.13` moved from Globals onto each of the 33 zip
+    functions. Globals would otherwise apply it to the Image function,
+    which SAM rejects ("Runtime, Handler, Layers cannot be present when
+    PackageType is of type Image").
+  - samconfig gains `resolve_image_repos = true` (a SAM-managed ECR
+    repo). samconfig.toml is gitignored, so this lives only in the
+    deploying machine's copy; add it there if deploying from somewhere
+    new.
+  - Admin gets `SIGNAGE_RENDERER_FUNCTION_NAME` plus invoke permission.
+    The generator gets the same, for the loop hand-off.
+
+**Admin API.**
+- `GET /articles/{id}/signage`: the working set, plus `drilled_price`
+  and `signage_url`.
+- `POST /articles/{id}/signage/generate | animate | render`
+- `PATCH /articles/{id}/signage` with `{selected_still_key, tagline,
+  approved}`; `approved_by` comes from the caller.
+- Errors: 409 for "job running" or an out-of-order step, 404 for a
+  missing article, and "not a ball article" also comes back 409 (it's a
+  ValueError).
+
+**Public API.** `GET /learn/signage/{slug}` returns the approved clip,
+ball position and tagline, else 404. The Learn page uses it automatically
+(no query params needed; query params still override for preview and
+render). `?overlay=1` renders the transparent data layer.
+
+**Tested.**
+- Unit:
+  - `test_signage_generator.py` (6): taglines, composition, no lastFrame
+    and banned particles, ball parsing, both jobs with fakes.
+  - `test_signage_renderer.py` (3).
+  - The admin stale-job rule.
+- Scratch Postgres with migrations 001–045 and real SQL (15 checks): the
+  full generate → pick → animate → approve → public → render → re-pick
+  flow, including the guards.
+- The container image was built locally (arm64, 2.5 GB). Its render path
+  ran INSIDE the container against the Learn page: transparent overlay
+  frames composited onto the Raptor Pursuit loop.
+
+**Deploy.**
+```bash
+psql -v ON_ERROR_STOP=1 -f db/migrations/045_article_signage.sql
+sam build && sam deploy     # builds + pushes the renderer image (first push is ~2.5 GB)
+git push                    # admin-spa (section) + Learn (signage page)
+```
+
+**Verify.** Open a ball article's preview in admin → In-store signage →
+Generate. Then:
+```bash
+aws logs tail /aws/lambda/bowling-scraper-product-article-generator --since 10m
+aws logs tail /aws/lambda/bowling-scraper-signage-renderer --since 10m
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

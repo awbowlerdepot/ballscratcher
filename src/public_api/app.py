@@ -101,6 +101,16 @@ def get_learn_plotter_ball(product_id: str):
     return ball
 
 
+@app.get("/learn/signage/{slug}")
+def get_learn_signage(slug: str):
+    # In-store signage for a ball (runbook 6cn): approved only.
+    conn = service.get_db_connection()
+    signage = service.get_learn_signage(conn, slug)
+    if signage is None:
+        raise HTTPException(status_code=404, detail="No approved signage for that ball")
+    return signage
+
+
 @app.get("/products/compare")
 def get_products_compare(ids: str = Query(..., description="Comma-separated product ids")):
     # A real, deliberate ordering dependency: this route is declared

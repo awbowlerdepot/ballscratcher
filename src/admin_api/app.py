@@ -114,6 +114,13 @@ class LearnVideoUpdateRequest(BaseModel):
     category_id: Optional[str] = None
 
 
+class ArticleSignageUpdateRequest(BaseModel):
+    # Migration 045 (runbook 6cn): any subset.
+    selected_still_key: Optional[str] = None
+    tagline: Optional[str] = None
+    approved: Optional[bool] = None
+
+
 class ArticleSocialPostsUpdateRequest(BaseModel):
     # Migration 042: facebook, instagram, x, tiktok_hook, tiktok_caption.
     social_posts: dict
@@ -1010,6 +1017,50 @@ def update_article_social_posts(article_id: str, body: ArticleSocialPostsUpdateR
         raise HTTPException(status_code=404, detail=str(e))
     finally:
         conn.close()
+
+
+# --- In-store signage (migration 045, runbook 6cn) ---------------------
+# Generate / Animate / Render are fire-and-forget (the jobs take 1-5 min);
+# poll GET .../signage for status. 409 = a job is running or a step is out
+# of order; 400 = not a ball article.
+
+def _signage_call(fn):
+    conn = service.get_db_connection()
+    try:
+        return fn(conn)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.get("/articles/{article_id}/signage")
+def get_article_signage(article_id: str):
+    return _signage_call(lambda conn: service.get_article_signage(conn, article_id))
+
+
+@app.post("/articles/{article_id}/signage/generate")
+def generate_article_signage(article_id: str):
+    return _signage_call(lambda conn: service.queue_signage_stills(conn, article_id))
+
+
+@app.post("/articles/{article_id}/signage/animate")
+def animate_article_signage(article_id: str):
+    return _signage_call(lambda conn: service.queue_signage_animate(conn, article_id))
+
+
+@app.post("/articles/{article_id}/signage/render")
+def render_article_signage(article_id: str):
+    return _signage_call(lambda conn: service.queue_signage_render(conn, article_id))
+
+
+@app.patch("/articles/{article_id}/signage")
+def update_article_signage(article_id: str, body: ArticleSignageUpdateRequest, caller: dict = Depends(get_caller)):
+    return _signage_call(lambda conn: service.update_article_signage(
+        conn, article_id, selected_still_key=body.selected_still_key, tagline=body.tagline,
+        approved=body.approved, approved_by=caller["resolved_by"]))
 
 
 @app.post("/learn-videos/{learn_video_id}/generate-article")

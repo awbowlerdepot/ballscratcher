@@ -1161,3 +1161,43 @@ export interface CreateUserResult {
   group: "Admins" | "Editors";
   password: string;
 }
+
+// In-store signage per ball article (migration 045, runbook 6cn).
+export type SignageStatus = "idle" | "generating" | "stills_ready" | "animating" | "rendering" | "ready" | "failed";
+
+export interface SignageStill {
+  key: string;
+  url: string;
+}
+
+export interface ArticleSignage {
+  article_id: string;
+  slug: string | null;
+  status: SignageStatus;
+  job_started_at?: string | null;
+  error?: string | null;
+  still_candidates: SignageStill[];
+  selected_still_key?: string | null;
+  selected_still_url?: string | null;
+  tagline_options: string[];
+  tagline?: string | null;
+  clip_url?: string | null;
+  clip_generated_at?: string | null;
+  ball_x?: number | null;
+  ball_y?: number | null;
+  ball_r?: number | null;
+  approved?: boolean;
+  approved_at?: string | null;
+  approved_by?: string | null;
+  mp4_url?: string | null;
+  mp4_rendered_at?: string | null;
+  mp4_price?: number | null;
+  drilled_price: number | null;
+  signage_url: string | null;
+}
+
+export interface QueueSignageResult {
+  queued: boolean;
+  reason?: string;
+  status?: SignageStatus;
+}

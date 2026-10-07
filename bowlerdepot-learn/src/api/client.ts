@@ -1,4 +1,4 @@
-import type { ArticleCard, ArticleDetail, Category, LearnPlotterPoint, PlotterLookupItem, ProductArticleResponse } from "./types";
+import type { ArticleCard, ArticleDetail, Category, LearnPlotterPoint, PlotterLookupItem, ProductArticleResponse, SignageSpec } from "./types";
 
 // Same unauthenticated-PublicApiFunction posture as consumer-site/src/
 // api/client.ts (see its own comments for the full "why no auth"
@@ -147,6 +147,12 @@ export function getPlotterBall(id: string): Promise<LearnPlotterPoint> {
     _plotterBallCache.set(id, hit);
   }
   return hit;
+}
+
+// Approved in-store signage for a ball (runbook 6cn); rejects (404) when
+// none is approved yet -- the signage page then falls back to the cards.
+export function getSignage(slug: string): Promise<SignageSpec> {
+  return apiGet<SignageSpec>(`/learn/signage/${encodeURIComponent(slug)}`);
 }
 
 export function getProductArticle(productId: string): Promise<ProductArticleResponse> {

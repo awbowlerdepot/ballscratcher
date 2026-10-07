@@ -22,6 +22,7 @@ import Button from "../components/Button";
 import type { Column } from "../components/DataTable";
 import DataTable from "../components/DataTable";
 import Modal from "../components/Modal";
+import SignageSection from "../components/SignageSection";
 import SocialPostsSection from "../components/SocialPostsSection";
 import Pagination from "../components/Pagination";
 import Skeleton from "../components/Skeleton";
@@ -613,6 +614,8 @@ export default function ArticlesPage() {
           />
         )}
         {previewArticle && <SocialPostsSection article={previewArticle} />}
+        {/* In-store signage, ball articles only (migration 045, runbook 6cn). */}
+        {previewArticle && previewArticle.article_kind === "product" && <SignageSection article={previewArticle} />}
       </Modal>
     </div>
   );

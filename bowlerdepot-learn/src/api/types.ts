@@ -356,3 +356,14 @@ export interface PlotterLookupItem {
   brand_name: string;
   status: "current" | "retired";
 }
+
+// GET /learn/signage/{slug} (runbook 6cn): a ball's APPROVED in-store
+// signage -- the looping 9:16 background clip, where the ball sits in it
+// (fractions: x/y center, r radius of frame width), and its tagline.
+export interface SignageSpec {
+  clip_url: string;
+  ball_x: number;
+  ball_y: number;
+  ball_r: number;
+  tagline: string | null;
+}

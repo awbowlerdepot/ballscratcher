@@ -20,7 +20,7 @@ The GitHub repo is `awbowlerdepot/ballscratcher`, and everything deploys to the 
 
 ## Layout
 
-- `src/<function>/app.py` holds one Lambda per directory, each with its own `requirements.txt`. The runtime is Python 3.13.
+- `src/<function>/app.py` holds one Lambda per directory, each with its own `requirements.txt`. The runtime is Python 3.13, set on each function in `template.yaml` (not in Globals). The one exception is `signage_renderer`, a container-image Lambda (arm64, Chromium + ffmpeg) built from its own Dockerfile, so `sam build` needs Docker running.
   - Scrapers are grouped by site platform:
     - Craft CMS (`product_scraper`, `url_discovery`) for Brunswick, Radical and DV8
     - `commercebuild_*` for Storm and Roto Grip
@@ -29,12 +29,12 @@ The GitHub repo is `awbowlerdepot/ballscratcher`, and everything deploys to the 
     - `shopify_*` for Hammer, Track and Ebonite
   - The pipeline chains `url_discovery` → SQS → `product_scraper` → `pdf_parser` / `image_processor`. Every queue has a dead-letter queue (DLQ), and consumers use partial batch responses.
   - Video: `video_discovery` (YouTube search, 100 searches a day) → `video_transcript_fetcher` → `video_summarizer` (Bedrock Claude Haiku).
-  - `product_article_generator` writes articles and generates images with Gemini.
+  - `product_article_generator` writes articles and generates images with Gemini. It also runs the in-store signage stills and Veo animation jobs (`signage.py`, runbook 6cn); `signage_renderer` makes the loop and the MP4.
   - The `bowlerdepot_*` functions reconcile and sync with bowlerdepot.com, which runs on BigCommerce. `price_checker` handles price-source discovery and the daily price checks.
   - `partner_api` serves the partner API. Its response shape is a locked contract: `models.py` defines it and `tests/test_partner_api_contract.py` diffs the OpenAPI schema against a committed snapshot. v1 may only gain optional fields or endpoints; anything else is a `/v2`. Its plotter-neighbor code is a verbatim copy of public_api's, kept in sync by `tests/test_plotter_neighbors_sync.py`.
 - `admin_api` is FastAPI behind Mangum. Its logic lives in `service.py`, and `app.py` only does routing. `admin_api_authorizer` accepts either Cognito JWTs or a shared bearer token.
 - `template.yaml` defines about 31 functions, the queues, buckets and CloudFront distributions. `samconfig.toml` holds the deploy parameters.
-- `db/migrations/NNN_*.sql` holds numbered migrations (001–042), applied by hand with `psql` in order. Add a new migration with the next number.
+- `db/migrations/NNN_*.sql` holds numbered migrations (001–045), applied by hand with `psql` in order. Add a new migration with the next number.
 - `scripts/` holds one-off backfill and rescrape jobs, run locally against the database. `scripts/home_transcript_fetcher*.py` runs on a Raspberry Pi at home, because YouTube blocks transcript fetches from AWS IP addresses.
 - `tests/` has one `test_<module>.py` per module. Each test file inserts `src/<module>` into `sys.path` and does `import app`, and there is no conftest.
 - The frontends are Vite + React + TypeScript + Tailwind: `admin-spa/`, `bowlerdepot-learn/` (its build prerenders pages) and `consumer-site/`. `marketing-site/` and `admin-site/` are single static `index.html` files.
