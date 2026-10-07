@@ -17793,6 +17793,23 @@ incorrectly". The prototype uses MOTIV Raptor Pursuit (Al's pick:
   giving a 7 s loop. `HERO_LOOP_S` is now 14 (two background loops), so
   the exported MP4 loops cleanly.
 
+**Drilled price + themed tagline (same day).**
+- Al: "for the in shop version can we publish drilled pricing. which is
+  $50 more than the online pricing". The signage price is now the
+  BowlerDepot.com listing price + `DRILLING_UPCHARGE` (50), labeled
+  "DRILLED" (Raptor Pursuit: $209.95 → $259.95).
+- Al: "can get bottom call to action line also follow the theme of the
+  ball", then "these will be in the pro shop so you are already there so
+  just be more to the point".
+  - The line under the price is a 2–6 word tagline on the ball's
+    visual_theme. It is never an instruction ("ask", "visit", "get"),
+    and never a website, price or the pro shop itself.
+  - Generated with Bedrock Claude Haiku (the article model). Raptor
+    Pursuit: "Talons find the pocket." Other options it gave: "Dive
+    steep. Strike hard.", "The hunt is on."
+  - The prototype takes it from `?cta=`; the fallback is "Built to
+    strike."
+
 The prototype scripts (signage still, Veo, renderer) are not in the repo
 yet. Productionizing would mean:
 - a signage_shot slot plus candidates and admin review

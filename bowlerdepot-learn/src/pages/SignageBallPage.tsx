@@ -32,7 +32,14 @@ import type { ArticleDetail, LearnPlotterPoint } from "../api/types";
 
 const LOOP_S = 18;
 // The line under the price -- an in-store prompt, never a website.
-const STORE_PROMPT = "Ask our pro shop about this ball";
+// Fallback tagline when a ball has none yet. Taglines don't direct the
+// shopper anywhere (Al: "these will be in the pro shop so you are already
+// there so just be more to the point") -- short and on the ball's theme.
+const STORE_PROMPT = "Built to strike.";
+// In-store price = DRILLED price: the BowlerDepot.com listing price plus
+// drilling (Al: "can we publish drilled pricing. which is $50 more than the
+// online pricing"). One constant if the drilling charge ever changes.
+const DRILLING_UPCHARGE = 50;
 const W = 1080;
 const H = 1920;
 
@@ -110,7 +117,16 @@ export default function SignageBallPage() {
     return skus.find((s) => s.weight_lbs === 15) ?? skus[0] ?? null;
   }, [product]);
   const similar = (point?.neighbors.twins ?? []).map((n) => byId.get(n.id)).filter(Boolean).slice(0, 2) as LearnPlotterPoint[];
-  const price = fmtPrice(product?.ecommerce_price, product?.ecommerce_price_currency);
+  const price = fmtPrice(
+    product?.ecommerce_price != null ? product.ecommerce_price + DRILLING_UPCHARGE : null,
+    product?.ecommerce_price_currency,
+  );
+  // Tagline under the price, themed per ball (Al: "can get bottom call to
+  // action line also follow the theme of the ball", then "just be more to
+  // the point") -- 2-6 words riffing on the ball's visual_theme, never an
+  // instruction, website or price. Raptor Pursuit: "Talons find the
+  // pocket." The prototype takes it from ?cta=; the pipeline will store it.
+  const cta = searchParams.get("cta") || STORE_PROMPT;
 
   if (error) return <div style={{ background: "#0f0f2d", color: "#fff", height: "100vh", padding: 40 }}>{error}</div>;
   if (!article || !product) return <div style={{ background: "#0f0f2d", height: "100vh" }} />;
@@ -138,6 +154,7 @@ export default function SignageBallPage() {
         point={point}
         similar={similar}
         price={price}
+        cta={cta}
       />
     );
   }
@@ -202,8 +219,9 @@ export default function SignageBallPage() {
         <div className={`sg-scene ${point ? "sg-s4" : "sg-s4-noplot"}`}>
           {shotSrc ? <img className="sg-shot-sm" src={shotSrc} alt="" /> : null}
           <p className="sg-s4-name">{product.name}</p>
+          {price ? <p className="sg-price-label">Drilled</p> : null}
           {price ? <p className="sg-price">{price}</p> : null}
-          <p className="sg-at">{STORE_PROMPT}</p>
+          <p className="sg-at">{cta}</p>
         </div>
 
       </div>
@@ -281,6 +299,7 @@ const SIGNAGE_CSS = `
 .sg-similar { font-size: 44px; color: #cbd5e1; margin: 30px 80px 0; text-align: center; line-height: 1.3; }
 .sg-shot-sm { width: 560px; height: 560px; object-fit: cover; border-radius: 32px; box-shadow: 0 24px 60px rgba(0,0,0,0.45); }
 .sg-s4-name { font-size: 72px; font-weight: 700; margin: 20px 60px 0; text-align: center; text-transform: uppercase; }
+.sg-price-label { margin: 10px 0 0; font-size: 44px; font-weight: 700; letter-spacing: 8px; text-transform: uppercase; color: #fde68a; }
 .sg-price { font-size: 190px; font-weight: 700; margin: 10px 0 0; color: #fbbf24; line-height: 1; animation: sg-pop ${LOOP_S}s ease-out infinite; }
 @keyframes sg-pop { 0%,79% {transform: scale(0.7); opacity:0} 83% {transform: scale(1.06); opacity:1} 86% {transform: scale(1)} 100% {transform: scale(1); opacity:1} }
 .sg-at { font-size: 54px; font-weight: 600; margin: 10px 0 50px; color: #e2e8f0; }
@@ -313,8 +332,9 @@ function HeroLayout(props: {
   point: LearnPlotterPoint | null;
   similar: LearnPlotterPoint[];
   price: string | null;
+  cta: string;
 }) {
-  const { scale, video, ball, brand, name, callouts, point, similar, price } = props;
+  const { scale, video, ball, brand, name, callouts, point, similar, price, cta } = props;
   const cx = ball.x * W;
   const cy = ball.y * H;
   const r = ball.r * W;
@@ -394,8 +414,9 @@ function HeroLayout(props: {
 
         <div className="hx-lower">
           <div>
+            {price ? <p className="hx-price-label">Drilled</p> : null}
             {price ? <p className="hx-price">{price}</p> : null}
-            <p className="hx-at">{STORE_PROMPT}</p>
+            <p className="hx-at">{cta}</p>
           </div>
         </div>
       </div>
@@ -445,6 +466,7 @@ const HERO_CSS = `
 .hx-badge-sim { margin: 8px 0 0; font-size: 32px; color: #e2e8f0; line-height: 1.25; }
 .hx-lower { position: absolute; left: 70px; right: 70px; bottom: 90px; display: flex; align-items: flex-end; justify-content: space-between; gap: 30px; animation: hx-lower ${HERO_LOOP_S}s ease-out infinite; }
 @keyframes hx-lower { 0%,7% {opacity:0; transform: translateY(40px)} 12% {opacity:1; transform: translateY(0)} 97% {opacity:1} 100% {opacity:0} }
+.hx-price-label { margin: 0 0 4px; font-size: 40px; font-weight: 700; letter-spacing: 8px; text-transform: uppercase; color: #fde68a; text-shadow: 0 4px 14px rgba(0,0,0,0.7); }
 .hx-price { margin: 0; font-size: 170px; line-height: 1; font-weight: 700; color: #fbbf24; text-shadow: 0 8px 30px rgba(0,0,0,0.7); }
 .hx-at { margin: 10px 0 0; font-size: 46px; font-weight: 600; color: #f1f5f9; }
 .sg-dot-pulse { transform-box: fill-box; transform-origin: center; animation: sg-pulse 1.6s ease-in-out infinite; }
