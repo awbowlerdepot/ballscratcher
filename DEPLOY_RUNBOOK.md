@@ -17664,6 +17664,68 @@ opacity. The card and panel thumbnails use `grayscale opacity-60`.
 **Deploy:** `sam build && sam deploy` (public_api) FIRST, then `git push`
 (deploy-learn-site).
 
+### 6cm. In-store signage: a 9:16 animated web page per ball for piSignage (2026-10-07)
+
+Al: "do you think we could create a 9:16 vertical format video that could
+be put on our signage screens in our stores for each ball that is an
+animated version of the action images. it could include callouts for the
+ball meta data and price on bowlerdepot.com". Then: "we can try the
+webpage version first ... it is pisignage".
+
+**piSignage notes** (researched; see the sources in the chat):
+- It plays web links two ways:
+  - "Web link (embedded)": an iframe in the player's own browser, fast
+    and animation-friendly, but it needs the page to allow framing. The
+    Learn site sends no X-Frame-Options or CSP, so it does.
+  - "Web Page": a separate browser instance.
+- MP4/H.264 is the native video format, and 1080×1920 portrait is a
+  supported screen setting.
+- Videos are cached on the player and play offline. Web links need the
+  network.
+- Pi 4/5 run current releases well; Pi 3 / Zero 2 W may struggle.
+- There's a REST API (token, files, playlists) for automating video
+  pushes later.
+
+**What was built.** `bowlerdepot-learn/src/pages/SignageBallPage.tsx` at
+`/signage/ball/<article slug>`:
+- Outside the site shell (no nav/footer), noindex, lazy-loaded so the
+  `qrcode` library only ships to signage screens (a 35 KB chunk).
+- A fixed 1080×1920 canvas scaled to the window.
+- An 18 s pure-CSS loop of four scenes:
+  1. action shot with a slow push-in, plus brand / name
+  2. product shot card plus callouts: cover, core, 15 lb RG/diff/MB
+  3. mini ball-motion plotter, with every current ball as faint context
+     dots, this ball pulsing, "Oil x · Motion y" and "Similar to …"
+     (Learn plotter twins)
+  4. BowlerDepot price (`ecommerce_price`) plus a QR code to the
+     BowlerDepot product page ("Scan to shop")
+- If a ball has no plotter position, the price scene takes the plotter
+  scene's slot.
+- Every number and price is drawn by code from live data. The AI images
+  are only backgrounds.
+- Pi-friendly: transform/opacity animations only, images pre-sized via
+  img.bowleriq.io, no blur or filters.
+- No backend change. It uses the existing article and /learn/plotter
+  endpoints. The SPA fallback (CloudFront 404 → index.html) serves the
+  route without prerendering.
+
+**piSignage setup (per ball).**
+- Assets → Add → Web link (embedded) →
+  `https://learn.bowlerdepot.com/signage/ball/<slug>`
+  (e.g. `.../signage/ball/storm-phaze-ii`).
+- Duration: 18 s, or a multiple of it.
+- Put it in a playlist, with the group's display set to 1080×1920
+  portrait.
+
+**Next options.**
+- One rotating URL that cycles through every current ball, or a picked
+  list.
+- An MP4 export of the same page (headless recording → H.264), pushed
+  via the piSignage API, for offline-robust players.
+- A Veo image-to-video background for a true animated action shot.
+
+**Deploy:** `git push` (deploy-learn-site).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

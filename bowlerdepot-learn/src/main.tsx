@@ -1,4 +1,4 @@
-import { StrictMode } from "react";
+import { StrictMode, Suspense, lazy } from "react";
 import { createRoot } from "react-dom/client";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import App from "./App";
@@ -6,6 +6,9 @@ import LearnIndexPage from "./pages/LearnIndexPage";
 import ArticleDetailPage from "./pages/ArticleDetailPage";
 import PlotterPage from "./pages/PlotterPage";
 import "./index.css";
+
+// Lazy: only signage screens load it (and its QR-code library).
+const SignageBallPage = lazy(() => import("./pages/SignageBallPage"));
 
 // Client-side route table -- same SPA shape as consumer-site/src/
 // main.tsx. CloudFront (see template.yaml's LearnSiteDistribution, task
@@ -26,6 +29,15 @@ createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <BrowserRouter>
       <Routes>
+        {/* In-store signage (runbook 6cm): full-screen, no site shell. */}
+        <Route
+          path="/signage/ball/:slug"
+          element={
+            <Suspense fallback={<div style={{ background: "#0f0f2d", height: "100vh" }} />}>
+              <SignageBallPage />
+            </Suspense>
+          }
+        />
         <Route path="/" element={<App />}>
           <Route index element={<LearnIndexPage />} />
           <Route path="articles/:slug" element={<ArticleDetailPage />} />
