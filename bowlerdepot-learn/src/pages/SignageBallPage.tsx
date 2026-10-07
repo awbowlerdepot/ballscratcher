@@ -1,6 +1,6 @@
 import QRCode from "qrcode";
 import { useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useSearchParams } from "react-router-dom";
 import { getArticleBySlug, getLearnPlotter, resizedImageUrl } from "../api/client";
 import type { ArticleDetail, LearnPlotterPoint } from "../api/types";
 
@@ -41,6 +41,17 @@ function titleCase(s?: string | null) {
 
 export default function SignageBallPage() {
   const { slug } = useParams<{ slug: string }>();
+  const [searchParams] = useSearchParams();
+  // Hero layout (6cm follow-up): an AI-animated 9:16 background clip with
+  // the data overlaid on it. ?video= plus the ball's position in the frame
+  // (bx/by = center as fractions, br = radius as a fraction of width) drive
+  // the prototype; the production pipeline will store these per ball.
+  const video = searchParams.get("video");
+  const ballPos = {
+    x: Number(searchParams.get("bx") ?? 0.5),
+    y: Number(searchParams.get("by") ?? 0.62),
+    r: Number(searchParams.get("br") ?? 0.26),
+  };
   const [article, setArticle] = useState<ArticleDetail | null>(null);
   const [point, setPoint] = useState<LearnPlotterPoint | null>(null);
   const [byId, setById] = useState<Map<string, LearnPlotterPoint>>(new Map());
@@ -100,6 +111,34 @@ export default function SignageBallPage() {
 
   if (error) return <div style={{ background: "#0f0f2d", color: "#fff", height: "100vh", padding: 40 }}>{error}</div>;
   if (!article || !product) return <div style={{ background: "#0f0f2d", height: "100vh" }} />;
+
+  if (video) {
+    return (
+      <HeroLayout
+        scale={scale}
+        video={video}
+        ball={ballPos}
+        brand={product.brand_name ?? ""}
+        name={product.name}
+        callouts={[
+          { k: "Coverstock", v: [product.coverstock_name, titleCase(product.coverstock_type)].filter(Boolean).join(" · ") },
+          { k: "Core", v: [product.core_name, titleCase(product.core_type)].filter(Boolean).join(" · ") },
+          sku
+            ? {
+                k: `${sku.weight_lbs} lb`,
+                v: [sku.rg != null && `RG ${sku.rg}`, sku.differential != null && `Diff ${sku.differential}`, sku.mass_bias != null && `MB ${sku.mass_bias}`]
+                  .filter(Boolean)
+                  .join("  ·  "),
+              }
+            : null,
+        ].filter((c): c is { k: string; v: string } => Boolean(c && c.v))}
+        point={point}
+        similar={similar}
+        price={price}
+        qr={qr}
+      />
+    );
+  }
 
   const action = article.action_shot_image_url || product.primary_image_url;
   const shot = article.product_shot_image_url || product.primary_image_url;
@@ -254,4 +293,179 @@ const SIGNAGE_CSS = `
 .sg-qr img { width: 300px; height: 300px; }
 .sg-qr span { color: #0f0f2d; font-size: 38px; font-weight: 700; }
 .sg-logo { position: absolute; top: 60px; left: 0; right: 0; text-align: center; font-size: 40px; font-weight: 700; letter-spacing: 8px; color: rgba(255,255,255,0.9); }
+`;
+
+
+// ---------------------------------------------------------------------------
+// Hero layout (runbook 6cm follow-up). Al: "i was thinking a bit more custom.
+// not just cards using the existing assets. something built on those with
+// the background being animated and the meta data overlaid on the image".
+// One continuous scene: the Veo-animated 9:16 signage shot loops underneath
+// (8 s clip), and a 16 s overlay timeline plays over it --
+//   0.5 s  name + brand settle in at the top (stay)
+//   1.5 s  price lower third + QR (stay -- shoppers always see the price)
+//   2-9 s  spec callouts: a thin line draws from the ball's edge outward,
+//          then its label appears at the end of the line
+//   9.5-15 s motion badge: mini chart + "Similar to ..."
+// Only transform/opacity/stroke animations, no backdrop blur (Pi-friendly).
+const HERO_LOOP_S = 16;
+
+type Callout = { k: string; v: string };
+
+function HeroLayout(props: {
+  scale: number;
+  video: string;
+  ball: { x: number; y: number; r: number };
+  brand: string;
+  name: string;
+  callouts: Callout[];
+  point: LearnPlotterPoint | null;
+  similar: LearnPlotterPoint[];
+  price: string | null;
+  qr: string | null;
+}) {
+  const { scale, video, ball, brand, name, callouts, point, similar, price, qr } = props;
+  const cx = ball.x * W;
+  const cy = ball.y * H;
+  const r = ball.r * W;
+  // Callout anchors: start on the ball's edge at these angles, run outward
+  // to a label slot. Left, right, left-low -- alternating sides keeps the
+  // labels clear of each other and of the ball.
+  // Stacked down the gap between the title (~y 560) and the ball, each
+  // ~190px apart so two-line labels never collide; the third sits beside
+  // the ball's lower right.
+  const slots = [
+    { angle: -150, lx: 60, ly: Math.max(620, cy - r - 300), align: "left" as const },
+    { angle: -30, lx: W - 60, ly: Math.max(810, cy - r - 110), align: "right" as const },
+    { angle: 20, lx: W - 60, ly: cy + r * 0.55, align: "right" as const },
+  ];
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "#000", overflow: "hidden" }}>
+      <style>{HERO_CSS}</style>
+      <div
+        className="hx-canvas"
+        style={{ width: W, height: H, transform: `translate(-50%, -50%) scale(${scale})`, position: "absolute", left: "50%", top: "50%" }}
+      >
+        <video className="hx-video" src={video} autoPlay muted loop playsInline />
+        <div className="hx-top-shade" />
+        <div className="hx-bottom-shade" />
+
+        <div className="hx-title">
+          <p className="hx-brand">{brand}</p>
+          <p className="hx-name">{name}</p>
+        </div>
+
+        <svg className="hx-lines" width={W} height={H} viewBox={`0 0 ${W} ${H}`}>
+          {callouts.map((c, i) => {
+            const s = slots[i % slots.length];
+            const a = (s.angle * Math.PI) / 180;
+            const x1 = cx + Math.cos(a) * (r + 8);
+            const y1 = cy + Math.sin(a) * (r + 8);
+            const elbowX = s.align === "left" ? s.lx + 420 : s.lx - 420;
+            const d = `M ${x1} ${y1} L ${elbowX} ${s.ly + 36} L ${s.align === "left" ? s.lx : s.lx} ${s.ly + 36}`;
+            return (
+              <g key={c.k} className="hx-callout-g" style={{ animationDelay: `${i * 1.1}s` }}>
+                <circle cx={x1} cy={y1} r={10} fill="#fbbf24" className="hx-dot" style={{ animationDelay: `${i * 1.1}s` }} />
+                <path d={d} className="hx-line" style={{ animationDelay: `${i * 1.1}s` }} pathLength={1} />
+              </g>
+            );
+          })}
+        </svg>
+        {callouts.map((c, i) => {
+          const s = slots[i % slots.length];
+          return (
+            <div
+              key={c.k}
+              className={`hx-label hx-label-${s.align}`}
+              style={{
+                top: s.ly - 46,
+                ...(s.align === "left" ? { left: s.lx } : { right: W - s.lx }),
+                animationDelay: `${i * 1.1}s`,
+              }}
+            >
+              <span className="hx-k">{c.k}</span>
+              <span className="hx-v">{c.v}</span>
+            </div>
+          );
+        })}
+
+        {point ? (
+          <div className="hx-badge">
+            <MiniBadge oil={point.oil} motion={point.motion} />
+            <div>
+              <p className="hx-badge-h">Ball motion</p>
+              <p className="hx-badge-pos">
+                Oil {point.oil.toFixed(1)} · Motion {point.motion.toFixed(1)}
+              </p>
+              {similar.length ? <p className="hx-badge-sim">Similar to {similar.map((x) => `${x.brand_name} ${x.name}`).join(", ")}</p> : null}
+            </div>
+          </div>
+        ) : null}
+
+        <div className="hx-lower">
+          <div>
+            {price ? <p className="hx-price">{price}</p> : null}
+            <p className="hx-at">at BowlerDepot.com</p>
+          </div>
+          {qr ? (
+            <div className="hx-qr">
+              <img src={qr} alt="" />
+              <span>Scan to shop</span>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MiniBadge({ oil, motion }: { oil: number; motion: number }) {
+  const s = 200;
+  const p = 14;
+  const x = p + ((oil - 1) / 15) * (s - 2 * p);
+  const y = s - p - ((motion - 1) / 17) * (s - 2 * p);
+  return (
+    <svg width={s} height={s} viewBox={`0 0 ${s} ${s}`} style={{ flexShrink: 0 }}>
+      <rect x={p} y={p} width={s - 2 * p} height={s - 2 * p} rx={12} fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.35)" />
+      <line x1={s / 2} y1={p} x2={s / 2} y2={s - p} stroke="rgba(255,255,255,0.15)" />
+      <line x1={p} y1={s / 2} x2={s - p} y2={s / 2} stroke="rgba(255,255,255,0.15)" />
+      <circle className="sg-dot-pulse" cx={x} cy={y} r={16} fill="#fbbf24" opacity={0.4} />
+      <circle cx={x} cy={y} r={9} fill="#fbbf24" stroke="#fff" strokeWidth={3} />
+    </svg>
+  );
+}
+
+const HERO_CSS = `
+.hx-canvas { font-family: "Space Grotesk", Arial, sans-serif; color: #fff; overflow: hidden; background: #000; }
+.hx-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.hx-top-shade { position: absolute; left: 0; right: 0; top: 0; height: 520px; background: linear-gradient(to bottom, rgba(5,8,25,0.85), rgba(5,8,25,0)); }
+.hx-bottom-shade { position: absolute; left: 0; right: 0; bottom: 0; height: 560px; background: linear-gradient(to top, rgba(5,8,25,0.95) 30%, rgba(5,8,25,0)); }
+.hx-title { position: absolute; top: 110px; left: 70px; right: 70px; animation: hx-title ${HERO_LOOP_S}s ease-out infinite; }
+@keyframes hx-title { 0% {opacity:0; transform: translateY(-40px)} 4% {opacity:1; transform: translateY(0)} 97% {opacity:1} 100% {opacity:0} }
+.hx-brand { margin: 0; font-size: 48px; font-weight: 700; letter-spacing: 10px; text-transform: uppercase; color: #fbbf24; text-shadow: 0 4px 18px rgba(0,0,0,0.6); }
+.hx-name { margin: 6px 0 0; font-size: 150px; line-height: 0.95; font-weight: 700; text-transform: uppercase; text-shadow: 0 8px 30px rgba(0,0,0,0.7); }
+.hx-lines { position: absolute; inset: 0; pointer-events: none; }
+.hx-line { fill: none; stroke: #fbbf24; stroke-width: 4; stroke-dasharray: 1; stroke-dashoffset: 1; animation: hx-draw ${HERO_LOOP_S}s ease-out infinite; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.6)); }
+@keyframes hx-draw { 0%,12% {stroke-dashoffset: 1; opacity: 1} 18% {stroke-dashoffset: 0; opacity:1} 56% {stroke-dashoffset: 0; opacity:1} 60% {stroke-dashoffset: 0; opacity: 0} 100% {stroke-dashoffset: 1; opacity: 0} }
+.hx-dot { opacity: 0; animation: hx-dot ${HERO_LOOP_S}s ease-out infinite; }
+@keyframes hx-dot { 0%,11% {opacity:0} 13% {opacity:1} 56% {opacity:1} 60% {opacity:0} 100% {opacity:0} }
+.hx-label { position: absolute; display: flex; flex-direction: column; max-width: 560px; background: rgba(8,10,30,0.72); border: 2px solid rgba(251,191,36,0.85); border-radius: 18px; padding: 16px 26px; opacity: 0; animation: hx-label ${HERO_LOOP_S}s ease-out infinite; box-shadow: 0 10px 30px rgba(0,0,0,0.45); }
+.hx-label-right { text-align: right; align-items: flex-end; }
+@keyframes hx-label { 0%,17% {opacity:0; transform: translateY(14px)} 21% {opacity:1; transform: translateY(0)} 56% {opacity:1} 60% {opacity:0} 100% {opacity:0} }
+.hx-k { font-size: 28px; letter-spacing: 4px; text-transform: uppercase; color: #fbbf24; font-weight: 700; }
+.hx-v { font-size: 44px; font-weight: 600; margin-top: 4px; line-height: 1.15; }
+.hx-badge { position: absolute; left: 60px; right: 60px; top: 520px; display: flex; gap: 28px; align-items: center; background: rgba(8,10,30,0.72); border: 2px solid rgba(255,255,255,0.25); border-radius: 24px; padding: 22px 28px; opacity: 0; animation: hx-badge ${HERO_LOOP_S}s ease-out infinite; }
+@keyframes hx-badge { 0%,60% {opacity:0; transform: translateX(-60px)} 64% {opacity:1; transform: translateX(0)} 94% {opacity:1} 97% {opacity:0} 100% {opacity:0} }
+.hx-badge-h { margin: 0; font-size: 30px; letter-spacing: 4px; text-transform: uppercase; color: #fbbf24; font-weight: 700; }
+.hx-badge-pos { margin: 6px 0 0; font-size: 48px; font-weight: 700; }
+.hx-badge-sim { margin: 8px 0 0; font-size: 32px; color: #e2e8f0; line-height: 1.25; }
+.hx-lower { position: absolute; left: 70px; right: 70px; bottom: 90px; display: flex; align-items: flex-end; justify-content: space-between; gap: 30px; animation: hx-lower ${HERO_LOOP_S}s ease-out infinite; }
+@keyframes hx-lower { 0%,7% {opacity:0; transform: translateY(40px)} 12% {opacity:1; transform: translateY(0)} 97% {opacity:1} 100% {opacity:0} }
+.hx-price { margin: 0; font-size: 170px; line-height: 1; font-weight: 700; color: #fbbf24; text-shadow: 0 8px 30px rgba(0,0,0,0.7); }
+.hx-at { margin: 10px 0 0; font-size: 46px; font-weight: 600; color: #f1f5f9; }
+.hx-qr { display: flex; flex-direction: column; align-items: center; gap: 8px; background: #fff; border-radius: 22px; padding: 18px 18px 12px; }
+.hx-qr img { width: 230px; height: 230px; }
+.hx-qr span { color: #0f0f2d; font-size: 30px; font-weight: 700; }
+.sg-dot-pulse { transform-box: fill-box; transform-origin: center; animation: sg-pulse 1.6s ease-in-out infinite; }
+@keyframes sg-pulse { 0%,100% {transform: scale(0.8); opacity:0.5} 50% {transform: scale(1.4); opacity:0.15} }
 `;

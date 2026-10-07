@@ -17724,6 +17724,58 @@ webpage version first ... it is pisignage".
   via the piSignage API, for offline-robust players.
 - A Veo image-to-video background for a true animated action shot.
 
+**Follow-up: AI-animated hero prototype (2026-10-07).** Al: "i was
+thinking a bit more custom. not just cards using the existing assets.
+something built on those with the background being animated and the meta
+data overlaid on the image", and "we might want to generate a third image
+that is the aspect ratio so it feels right. not something that is cropped
+incorrectly". The prototype uses MOTIV Raptor Pursuit (Al's pick:
+"a more current ball").
+
+1. **Native 9:16 "signage shot".**
+   - Built from product_article_generator's own
+     `build_gemini_scene_prompt` (visual_theme plus every logo, no-people
+     and no-pins rule), with signage composition appended: ball in the
+     lower-middle, calm top 25% for the title, darker bottom 18% for the
+     price, clean sides for callouts, layered depth for animation, no
+     text.
+   - Same model and credentials as the articles: Vertex
+     `gemini-3-pro-image`, aspectRatio 9:16 (768×1376 out).
+   - 3 candidates; #2 was rejected (a landscape image padded with blurred
+     bars, and a redrawn logo).
+2. **Animated with Veo 3.1 on Vertex** (`us-central1`,
+   `:predictLongRunning`, polled with `:fetchPredictOperation`).
+   - The still is BOTH the first frame and the `lastFrame`, so the clip
+     loops seamlessly. 9:16, 8 s, 1080p, no audio, returned inline.
+   - The prompt asks for the scene to move (clouds, raptor, embers, slow
+     push-in) while the ball and logo stay fixed. The logo held in every
+     sampled frame.
+   - `veo-3.1-fast-generate-001`: about 114 s. `veo-3.1-lite-generate-001`:
+     about 103 s, with gentler motion. Both work on project
+     bowling-content-aggergator.
+3. **Overlay: the `HeroLayout` in SignageBallPage.**
+   - Activated by `?video=<mp4>&bx&by&br` (ball center/radius as frame
+     fractions). It plays the clip full-bleed with a 16 s overlay loop:
+     - title at the top (stays)
+     - price lower third plus QR (stays)
+     - spec callouts whose pointer lines draw out from the ball's edge,
+       then the labels
+     - a motion badge with a mini chart and "Similar to ..."
+   - Pi-friendly: transform/opacity/stroke only, no backdrop blur.
+4. **MP4 export.** Playwright steps every CSS animation and the `<video>`
+   frame by frame (24 fps, 1080×1920), and ffmpeg encodes H.264 +
+   faststart. Output: a 16 s, 5.6 MB MP4 (piSignage's native format),
+   rendered in about 4 min locally.
+
+The prototype scripts (signage still, Veo, renderer) are not in the repo
+yet. Productionizing would mean:
+- a signage_shot slot plus candidates and admin review
+- a video generation job
+- per-ball ball-position metadata
+- a renderer job (container Lambda with Chromium + ffmpeg)
+- S3 hosting
+- piSignage API push and nightly re-renders when the price changes
+
 **Deploy:** `git push` (deploy-learn-site).
 
 ## 7. Ongoing operations
