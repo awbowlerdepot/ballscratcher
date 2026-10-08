@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import {
   approveArticle,
   deleteArticleImageCandidate,
@@ -22,7 +23,6 @@ import Button from "../components/Button";
 import type { Column } from "../components/DataTable";
 import DataTable from "../components/DataTable";
 import Modal from "../components/Modal";
-import SignageSection from "../components/SignageSection";
 import SocialPostsSection from "../components/SocialPostsSection";
 import Pagination from "../components/Pagination";
 import Skeleton from "../components/Skeleton";
@@ -613,9 +613,20 @@ export default function ArticlesPage() {
             regenerateDisabled={!!items.find((a) => a.id === previewArticle.id)?.generation_started_at}
           />
         )}
-        {previewArticle && <SocialPostsSection article={previewArticle} />}
-        {/* In-store signage, ball articles only (migration 045, runbook 6cn). */}
-        {previewArticle && previewArticle.article_kind === "product" && <SignageSection article={previewArticle} />}
+        {/* Ball articles' social posts and in-store signage live on the
+            product page now, a tab each (runbook 6co); video articles have
+            no product page, so their social posts stay here. */}
+        {previewArticle && previewArticle.article_kind === "product" && previewArticle.product_id ? (
+          <div className="flex flex-wrap gap-3 border-t border-ink-200 pt-4 text-sm">
+            <Link to={`/products/${previewArticle.product_id}?tab=social`} className="font-semibold">
+              Social posts →
+            </Link>
+            <Link to={`/products/${previewArticle.product_id}?tab=signage`} className="font-semibold">
+              In-store signage →
+            </Link>
+          </div>
+        ) : null}
+        {previewArticle && previewArticle.article_kind !== "product" && <SocialPostsSection article={previewArticle} />}
       </Modal>
     </div>
   );

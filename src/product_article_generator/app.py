@@ -3405,7 +3405,7 @@ def generate_article_for_learn_video(conn, bedrock_client, model_id: str, learn_
 
 
 def run_signage_job(conn, event, *, s3_client, bedrock_client, model_id, gemini_auth, gemini_model_id, image_bucket):
-    """{"signage": "stills" | "animate", "article_id": ...} from admin_api
+    """{"signage": "stills" | "animate", "article_id": ..., "source": ...} from admin_api
     (runbook 6cn). Any failure marks the row 'failed' with the error, so the
     admin section shows it instead of spinning forever."""
     import signage
@@ -3416,15 +3416,36 @@ def run_signage_job(conn, event, *, s3_client, bedrock_client, model_id, gemini_
         if not gemini_auth:
             raise RuntimeError("Google (Vertex AI) credentials aren't configured on this deployment")
         if event["signage"] == "stills":
-            product = fetch_product_content(conn, ctx["product_id"])
-            article = fetch_existing_article(conn, ctx["product_id"])
-            raw = fetch_reference_image_bytes(fetch_reference_image_url(conn, ctx["product_id"]))
-            scene_prompt = build_gemini_scene_prompt(product, article, "action_shot", estimate_ball_frame_fill_ratio(raw))
+            # Every still is outpainted from a source image (runbook 6co --
+            # straight 9:16 from the square product photo came back
+            # letterboxed). Al picks the source in admin.
+            import requests
+
+            source = event.get("source") or ("action_shot" if ctx["action_shot_url"] else "new")
+            if source not in signage.STILL_SOURCES:
+                raise ValueError(f"Unknown signage source {source!r}")
             session = get_gemini_requests_session()
+            gemini_call = lambda prompt, ref, ratio: call_gemini_for_image(  # noqa: E731
+                gemini_auth, gemini_model_id, prompt, ref, ratio, session=session)
+            if source == "new":
+                # A fresh themed scene, made exactly like the article's own
+                # action shot (16:9, same prompt and product reference),
+                # then outpainted like any other source.
+                product = fetch_product_content(conn, ctx["product_id"])
+                article = fetch_existing_article(conn, ctx["product_id"])
+                raw = fetch_reference_image_bytes(fetch_reference_image_url(conn, ctx["product_id"]))
+                scene_prompt = build_gemini_scene_prompt(product, article, "action_shot",
+                                                         estimate_ball_frame_fill_ratio(raw))
+                source_png = gemini_call(scene_prompt, _reference_image_to_base64_png(raw), _ACTION_SHOT_ASPECT_RATIO)
+            else:
+                url = ctx[f"{source}_url"]
+                if not url:
+                    raise RuntimeError(f"This article has no {source.replace('_', ' ')} to start from")
+                r = requests.get(url, timeout=30)
+                r.raise_for_status()
+                source_png = r.content
             return signage.generate_stills(
-                conn, ctx, scene_prompt=scene_prompt, reference_b64=_reference_image_to_base64_png(raw),
-                gemini_call=lambda prompt, ref, ratio: call_gemini_for_image(
-                    gemini_auth, gemini_model_id, prompt, ref, ratio, session=session),
+                conn, ctx, source_png=source_png, gemini_call=gemini_call,
                 s3_client=s3_client, image_bucket=image_bucket, bedrock_client=bedrock_client, model_id=model_id,
             )
         if event["signage"] == "animate":

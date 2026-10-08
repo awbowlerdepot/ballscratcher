@@ -6304,7 +6304,7 @@ def signage_effective_status(row: dict, now=None) -> str:
 def _signage_article(cur, article_id: str) -> dict:
     cur.execute(
         """
-        select pa.id, pa.product_id, pa.slug, pa.status
+        select pa.id, pa.product_id, pa.slug, pa.status, pa.action_shot_image_url, pa.product_shot_image_url
         from product_articles pa
         where pa.id = %s
         """,
@@ -6315,7 +6315,8 @@ def _signage_article(cur, article_id: str) -> dict:
         raise LookupError(f"No article {article_id}")
     if row[1] is None:
         raise ValueError("Signage is only for ball articles")
-    return {"article_id": str(row[0]), "product_id": str(row[1]), "slug": row[2], "article_status": row[3]}
+    return {"article_id": str(row[0]), "product_id": str(row[1]), "slug": row[2], "article_status": row[3],
+            "action_shot_url": row[4], "product_shot_url": row[5]}
 
 
 def get_article_signage(conn, article_id: str) -> dict:
@@ -6344,6 +6345,8 @@ def get_article_signage(conn, article_id: str) -> dict:
     data["slug"] = art["slug"]
     data["drilled_price"] = float(price_row[0]) + SIGNAGE_DRILLING_UPCHARGE if price_row else None
     data["signage_url"] = f"{LEARN_SITE_BASE_URL}/signage/ball/{art['slug']}" if art["slug"] else None
+    # The images Generate can start from (runbook 6co), for the source picker.
+    data["source_images"] = {"action_shot": art["action_shot_url"], "product_shot": art["product_shot_url"]}
     for k in ("ball_x", "ball_y", "ball_r", "mp4_price"):
         if data.get(k) is not None:
             data[k] = float(data[k])
@@ -6388,9 +6391,22 @@ def _queue_signage_job(conn, article_id: str, status: str, function_env: str, pa
     return {"queued": True, "article_id": article_id, "status": status}
 
 
-def queue_signage_stills(conn, article_id: str) -> dict:
+SIGNAGE_STILL_SOURCES = ("action_shot", "product_shot", "new")
+
+
+def queue_signage_stills(conn, article_id: str, source: str = "action_shot") -> dict:
+    """source = which image the stills are outpainted from (runbook 6co) --
+    Al: "Can we select an existing image action or product shot as input to
+    the Signage Video still as part of the workflow?" "new" makes a fresh
+    themed scene first."""
+    if source not in SIGNAGE_STILL_SOURCES:
+        raise ValueError(f"source must be one of {', '.join(SIGNAGE_STILL_SOURCES)}")
+
+    def require(cur):
+        if source != "new" and not cur["source_images"].get(source):
+            raise ValueError(f"This article has no {source.replace('_', ' ')} yet -- pick another source")
     return _queue_signage_job(conn, article_id, "generating", "PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME",
-                              {"signage": "stills", "article_id": article_id})
+                              {"signage": "stills", "article_id": article_id, "source": source}, require=require)
 
 
 def queue_signage_animate(conn, article_id: str) -> dict:

@@ -2,9 +2,12 @@
 clients. The prototype's lessons are pinned here -- no lastFrame for Veo,
 particles/fire banned, taglines never instruct or mention the website."""
 import base64
+import io
 import json
 import os
 import sys
+
+from PIL import Image, ImageDraw
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src", "product_article_generator"))
 
@@ -79,9 +82,50 @@ Dive steep. Strike hard."""
     assert signage.parse_tagline_options(raw) == ["Talons find the pocket.", "The hunt is on.", "Dive steep. Strike hard."]
 
 
-def test_still_prompt_adds_native_vertical_composition():
-    p = signage.build_still_prompt("SCENE")
-    assert p.startswith("SCENE") and "9:16 VERTICAL" in p and "blurred or empty bars" in p
+def _png(w, h, draw=None):
+    im = Image.new("RGB", (w, h), (40, 60, 90))
+    if draw:
+        draw(ImageDraw.Draw(im), w, h)
+    buf = io.BytesIO()
+    im.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def _scene(d, w, h):
+    # Smooth vertical gradient + a ball: a natural, seam-free vertical image.
+    for y in range(h):
+        d.line([(0, y), (w, y)], fill=(30 + y * 100 // h, 50, 90 + y * 60 // h))
+    d.ellipse([w * 0.25, h * 0.45, w * 0.75, h * 0.73], fill=(200, 200, 210))
+
+
+def _letterboxed(d, w, h):
+    # Square content in the middle, flat blurred-looking bands above/below.
+    _scene(d, w, h)
+    band = (h - w) // 2
+    d.rectangle([0, 0, w, band], fill=(120, 120, 125))
+    d.rectangle([0, h - band, w, h], fill=(120, 120, 125))
+
+
+def test_outpaint_prompt_keeps_ball_and_bans_letterboxing():
+    p = signage.build_outpaint_prompt()
+    assert "Extend this exact image" in p and "never letterbox" in p and "9:16 VERTICAL" in p
+
+
+def test_source_is_enlarged_and_bottom_anchored_on_9x16_canvas():
+    ref = Image.open(io.BytesIO(base64.b64decode(signage.place_on_canvas(_png(1376, 768)))))
+    assert ref.size == (768, 1376)
+    # top is empty grey canvas (to be painted), the source sits just above the bottom margin
+    assert ref.getpixel((384, 100)) == signage.CANVAS_GREY
+    assert ref.getpixel((384, 1376 - 90)) == (40, 60, 90)
+    assert ref.getpixel((384, 1376 - 40)) == signage.CANVAS_GREY
+    # a square product shot fills the width
+    sq = Image.open(io.BytesIO(base64.b64decode(signage.place_on_canvas(_png(1024, 1024)))))
+    assert sq.getpixel((2, 1000)) == (40, 60, 90)
+
+
+def test_letterbox_score_separates_banded_from_vertical():
+    assert signage.letterbox_score(_png(768, 1376, _scene)) < signage.LETTERBOX_THRESHOLD
+    assert signage.letterbox_score(_png(768, 1376, _letterboxed)) >= signage.LETTERBOX_THRESHOLD
 
 
 def test_veo_request_has_no_last_frame_and_bans_particles():
@@ -120,21 +164,29 @@ def test_ball_position_parsing_and_fallback():
     assert signage.parse_ball_position('{"cx": 2, "cy": 0.6, "r": 0.3}') == signage.DEFAULT_BALL_POSITION
 
 
-def test_generate_stills_stores_candidates_and_taglines():
+def test_generate_stills_outpaints_source_retries_letterboxed_and_stores():
     conn, s3 = FakeConn(), FakeS3()
-    calls = []
+    good, banded = _png(768, 1376, _scene), _png(768, 1376, _letterboxed)
+    calls, refs = [], set()
+    # candidate 1: banded then good (retried); 2: raises twice (skipped);
+    # 3: banded twice (kept anyway -- least-banded attempt)
+    outputs = [banded, good, RuntimeError("boom"), RuntimeError("filtered"), banded, banded]
 
     def gemini(prompt, ref, ratio):
         calls.append(ratio)
-        if len(calls) == 2:
-            raise RuntimeError("one candidate failed")
-        return b"png"
+        refs.add(ref)
+        assert "Extend this exact image" in prompt
+        out = outputs[len(calls) - 1]
+        if isinstance(out, Exception):
+            raise out
+        return out
 
-    out = signage.generate_stills(conn, CTX, scene_prompt="SCENE", reference_b64="ref", gemini_call=gemini,
+    out = signage.generate_stills(conn, CTX, source_png=_png(1376, 768), gemini_call=gemini,
                                   s3_client=s3, image_bucket="bkt", bedrock_client=FakeBedrock("The hunt is on.\nAsk us"),
                                   model_id="m")
     assert out == {"stills": 2, "taglines": 1}
-    assert calls == ["9:16"] * 3
+    assert calls == ["9:16"] * 6 and len(refs) == 1
+    assert s3.puts[0]["Body"] == good
     assert all(p["Key"].startswith("article-images/p1/signage/still_") for p in s3.puts)
     sql, params = conn.log[-1]
     assert "insert into article_signage" in sql and "stills_ready" in params

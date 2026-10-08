@@ -1194,7 +1194,11 @@ export interface ArticleSignage {
   mp4_price?: number | null;
   drilled_price: number | null;
   signage_url: string | null;
+  // Runbook 6co: the article's images Generate can start from.
+  source_images: { action_shot: string | null; product_shot: string | null };
 }
+
+export type SignageStillSource = "action_shot" | "product_shot" | "new";
 
 export interface QueueSignageResult {
   queued: boolean;

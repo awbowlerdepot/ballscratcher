@@ -17933,6 +17933,102 @@ aws logs tail /aws/lambda/bowling-scraper-product-article-generator --since 10m
 aws logs tail /aws/lambda/bowling-scraper-signage-renderer --since 10m
 ```
 
+### 6co. Signage stills: outpaint a source image (no more letterboxing), source picker, Social posts + Signage tabs on the product page (2026-10-08)
+
+Al, after the first real batch (Black Widow Spare+):
+> "1. The image is blurred letter boxing a 1:1 ration image to the 9:16
+> aspect ration. 2. ... I would prefer the social posts and this Signage
+> Video stuff all in the product page with a tab for each. 3. Can we select
+> an existing image action or product shot as input to the Signage Video
+> still as part of the workflow?"
+
+**1. Letterboxing.** We asked gemini-3-pro-image for 9:16 with only the
+square product photo as reference. It painted a square scene and padded it
+with blurred bands, on all 3 of Al's stills. Experiments:
+- A: the product photo on a 9:16 grey canvas, plus "the grey is empty
+  canvas, fill the frame, never letterbox". **Still letterboxed** (2 of 2).
+- B: the article's 16:9 action shot, full width and centered on the 9:16
+  canvas, plus an "extend this exact image" prompt. **Truly vertical.**
+  But it left a faint seam where the floor met the original image's edge.
+- C: the same as B, but enlarged (about 42% of the height, cropped at the
+  sides) and anchored 6% above the bottom, so Gemini mostly extends
+  upward. **Vertical and seamless.** This is what shipped.
+
+So every still is now outpainted from a source image
+(`signage.place_on_canvas` + `build_outpaint_prompt`, which adds the
+existing signage composition rules). `build_still_prompt` is gone.
+
+**Letterbox guard.** `signage.letterbox_score(png)` is pure PIL, because
+this Lambda has no numpy. For each row it takes the median absolute
+brightness change down to the next row, measured across the full width,
+then reports the peak in the 12–32% band divided by the image's typical
+row. Scores on the samples we have:
+
+| Stills | Score |
+| --- | --- |
+| Letterboxed (Al's 3, experiment A, prototype) | 7–24.5 |
+| Real vertical | 0.3–3.3 |
+
+Threshold: `LETTERBOX_THRESHOLD = 6.5`. Each candidate gets up to 2
+attempts (`STILL_ATTEMPTS`). A banded result or a Gemini error triggers a
+retry; live, one plain product shot got a spurious
+IMAGE_PROHIBITED_CONTENT. If both attempts are banded, the least-banded
+one is kept, so Al still has something to choose from.
+
+**3. Source picker.** `POST /articles/{id}/signage/generate` takes an
+optional JSON body, `{"source": ...}`:
+
+| Source | What the stills are outpainted from |
+| --- | --- |
+| `action_shot` (default) | The article's current action shot |
+| `product_shot` | The article's current product shot |
+| `new` | A fresh themed scene: the generator's own action-shot prompt, 16:9, with the product reference, then outpainted |
+
+The API refuses (409) a source the article doesn't have.
+`GET .../signage` now also returns `source_images {action_shot,
+product_shot}` for the picker's thumbnails. No migration.
+
+**2. Product page tabs.** `ProductDetailPage` gains **Social posts** and
+**Signage** tabs, right after Article (`?tab=social` / `?tab=signage`).
+Both need the ball's article and say so if it doesn't exist yet. The
+Articles page preview now just links to those tabs for ball articles.
+Video articles have no product page, so their social posts stay in the
+preview. The signage tab opens with "Start from": thumbnails for the action
+shot, the product shot and "New scene". It defaults to the action shot,
+which extends best.
+
+**Tested.**
+- Unit:
+  - `test_signage_generator.py` (8): the outpaint prompt; canvas placement
+    (bottom-anchored, square sources fill the width); the letterbox score
+    on a synthetic banded vs a vertical image; retry, error and keep-best
+    behavior.
+  - The FastAPI route with no body, `product_shot` and `new`.
+- Scratch Postgres with migrations 001–045 (19 checks):
+  - source_images are exposed;
+  - a missing source and a bogus source are both refused;
+  - the queued payload carries the source;
+  - the generator context has both shot URLs.
+- Live, against prod data read-only, Black Widow Spare+:
+  - Action shot: 3 of 3 full-bleed vertical stills (scores 1.0–1.7).
+  - Product shot: 2 stills (0.3, 1.0), plus one candidate that the content
+    filter blocked on its only try. That run predates the error retry.
+- All 56 test files pass, run one per file. `admin-spa` builds.
+
+**Deploy.** This is zip-only. The renderer image is unchanged, but use the
+Docker-config workaround if `sam build` complains about credentials.
+```bash
+sam build && sam deploy
+git push        # admin-spa tabs + source picker
+```
+
+**Verify.** In admin, open a ball → **Signage** tab → pick a source →
+Generate. The 3 stills should fill the frame top to bottom.
+Letterboxed retries show in the logs as "letterboxed (score ...)":
+```bash
+aws logs tail /aws/lambda/bowling-scraper-product-article-generator --since 15m --filter-pattern letterboxed
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

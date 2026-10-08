@@ -121,6 +121,11 @@ class ArticleSignageUpdateRequest(BaseModel):
     approved: Optional[bool] = None
 
 
+class ArticleSignageGenerateRequest(BaseModel):
+    # Runbook 6co: which image the stills are outpainted from.
+    source: str = "action_shot"  # action_shot | product_shot | new
+
+
 class ArticleSocialPostsUpdateRequest(BaseModel):
     # Migration 042: facebook, instagram, x, tiktok_hook, tiktok_caption.
     social_posts: dict
@@ -1042,8 +1047,9 @@ def get_article_signage(article_id: str):
 
 
 @app.post("/articles/{article_id}/signage/generate")
-def generate_article_signage(article_id: str):
-    return _signage_call(lambda conn: service.queue_signage_stills(conn, article_id))
+def generate_article_signage(article_id: str, body: Optional[ArticleSignageGenerateRequest] = None):
+    source = body.source if body else "action_shot"
+    return _signage_call(lambda conn: service.queue_signage_stills(conn, article_id, source))
 
 
 @app.post("/articles/{article_id}/signage/animate")

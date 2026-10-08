@@ -62,16 +62,18 @@ import type { Column } from "../components/DataTable";
 import DataTable from "../components/DataTable";
 import Modal from "../components/Modal";
 import ProductDetailSkeleton from "../components/ProductDetailSkeleton";
+import SignageSection from "../components/SignageSection";
+import SocialPostsSection from "../components/SocialPostsSection";
 import { useToast } from "../components/Toast";
 import { ArticlePreview } from "./ArticlesPage";
 
-type DetailTab = "overview" | "videos" | "article" | "pricing" | "skus" | "raw";
+type DetailTab = "overview" | "videos" | "article" | "social" | "signage" | "pricing" | "skus" | "raw";
 
 // Kept in one place so the ?tab= reader below and the tab buttons/links
 // that write it (ProductsPage's new Article-status icon in particular --
 // Al: "click the icon it takes you to the article") always agree on what
 // a valid value looks like.
-const DETAIL_TABS: DetailTab[] = ["overview", "videos", "article", "pricing", "skus", "raw"];
+const DETAIL_TABS: DetailTab[] = ["overview", "videos", "article", "social", "signage", "pricing", "skus", "raw"];
 
 function isDetailTab(value: string | null): value is DetailTab {
   return value !== null && (DETAIL_TABS as string[]).includes(value);
@@ -393,6 +395,11 @@ export default function ProductDetailPage() {
     { name: "overview", label: "Overview" },
     { name: "videos", label: `Videos (${videos.length})` },
     { name: "article", label: `Article${articleItem ? ` (${articleItem.status})` : ""}` },
+    // Runbook 6co -- Al: "I would prefer the social posts and this Signage
+    // Video stuff all in the product page with a tab for each." Both hang
+    // off the ball's article, so they need one to exist.
+    { name: "social", label: "Social posts" },
+    { name: "signage", label: "Signage" },
     { name: "pricing", label: `Pricing (${priceSources.length})` },
     { name: "skus", label: `SKUs & Stock (${product.skus.length})` },
     { name: "raw", label: "Raw Data" },
@@ -1136,6 +1143,20 @@ export default function ProductDetailPage() {
           )}
         </div>
       )}
+
+      {(tab === "social" || tab === "signage") &&
+        (article ? (
+          tab === "social" ? (
+            <SocialPostsSection article={article} />
+          ) : (
+            <SignageSection article={article} />
+          )
+        ) : (
+          <p className="text-sm text-ink-500">
+            Generate the ball review article first (Article tab) -- {tab === "social" ? "social posts" : "signage"} are built
+            from it.
+          </p>
+        ))}
 
       {tab === "pricing" && (
         <div className="flex flex-col gap-3">

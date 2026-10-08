@@ -7,16 +7,35 @@ can pick and choose" -- the stores' piSignage screens get a 9:16 looping
 video per ball, made on demand from the article preview in admin. The
 prototype (6cm) settled the recipe; this is it, productized:
 
-  signage="stills"   3 native 9:16 "signage shot" stills (Gemini, built on
-                     the article's own scene prompt + signage composition
-                     rules -- Al: "generate a third image that is the aspect
-                     ratio so it feels right. not something that is cropped
-                     incorrectly") + tagline options (Bedrock Haiku).
+  signage="stills"   3 native 9:16 "signage shot" stills (Gemini outpaints a
+                     source image -- see below -- under the signage
+                     composition rules; Al: "generate a third image that is
+                     the aspect ratio so it feels right. not something that
+                     is cropped incorrectly") + tagline options (Haiku).
   signage="animate"  the picked still -> Veo 3.1 Fast image-to-video (8 s,
                      9:16, 1080p, no audio) -> raw clip to S3; where the ball
                      sits in the frame (Haiku vision, for the callout
                      lines); then the signage renderer is invoked to make
                      the seamless loop.
+
+Stills are OUTPAINTED from a source image (runbook 6co). Al, on the first
+real batch: "The image is blurred letter boxing a 1:1 ration image to the
+9:16 aspect ration." Asked for 9:16 with only the square product photo as
+reference, gemini-3-pro-image kept returning the square scene padded with
+blurred top/bottom bands -- even with the reference pre-placed on a 9:16
+grey canvas and an explicit "fill the frame" instruction (both test
+candidates still letterboxed). What reliably works: put a real SCENE (the
+article's action shot) on the 9:16 canvas, enlarged and anchored near the
+bottom, and ask Gemini to extend it upward -- it continues the environment
+instead of padding it. So every still starts from a source image, which is
+also Al's other ask: "Can we select an existing image action or product
+shot as input to the Signage Video still as part of the workflow?"
+  source="action_shot"   the article's approved action shot (default)
+  source="product_shot"  the article's approved product shot
+  source="new"           a fresh themed action shot first (the generator's
+                         own 16:9 scene prompt), then outpainted
+Each candidate is checked with letterbox_score() and retried once if it
+still came back banded.
 
 Lessons baked in from the prototype:
   * NO lastFrame for Veo: first frame == last frame made it hold the scene
@@ -43,6 +62,21 @@ logger = logging.getLogger(__name__)
 
 STILL_CANDIDATES = 3
 STILL_ASPECT_RATIO = "9:16"
+STILL_SOURCES = ("action_shot", "product_shot", "new")
+CANVAS_W, CANVAS_H = 768, 1376  # gemini-3-pro-image's native 9:16 size
+CANVAS_GREY = (128, 128, 128)
+# Source placement on the canvas: tall enough (~42% of the height, at least
+# full width) that the ball stays the hero, anchored 6% above the bottom so
+# Gemini extends UP (calm title area) and adds only a sliver of floor. The
+# first try (full width, centered) gave a visible seam where the floor met
+# the original image edge; enlarged + bottom-anchored didn't.
+SOURCE_HEIGHT_FRAC = 0.42
+SOURCE_BOTTOM_MARGIN = 0.06
+# letterbox_score(): on the stills we had (runbook 6co) letterboxed ones
+# scored 7-24.5, genuinely vertical ones 0.5-3.3 (5.5 for the worst
+# outpaint from the abandoned centered placement).
+LETTERBOX_THRESHOLD = 6.5
+STILL_ATTEMPTS = 2  # per candidate
 VEO_MODEL_ID = "veo-3.1-fast-generate-001"
 VEO_REGION = "us-central1"  # Veo is regional; Gemini images use "global"
 VEO_DURATION_S = 8
@@ -70,11 +104,60 @@ def new_run_id() -> str:
     return uuid.uuid4().hex[:8]
 
 
-def build_still_prompt(scene_prompt: str) -> str:
-    """The article generator's own action-shot scene prompt (visual_theme,
-    every logo/no-people/no-pins rule learned the hard way) plus the
-    signage composition rules."""
-    return scene_prompt + SIGNAGE_COMPOSITION
+OUTPAINT_PROMPT = (
+    "Extend this exact image into a complete 9:16 vertical composition. Keep the existing scene, art style, lighting, "
+    "and the bowling ball exactly as they are (same colors, pattern, and printed logo, same proportions); continue the "
+    "environment naturally upward and downward so the whole frame is one continuous scene."
+    "\n\nTHE REFERENCE IMAGE IS ALREADY THE FINAL 9:16 VERTICAL CANVAS. The flat grey areas are EMPTY canvas, not part "
+    "of the scene: paint the scene so it fills the ENTIRE frame edge to edge, top to bottom, as one continuous image. "
+    "Never leave flat, blurred, mirrored, or repeated bands at the top or bottom; never letterbox."
+)
+
+
+def build_outpaint_prompt() -> str:
+    return OUTPAINT_PROMPT + SIGNAGE_COMPOSITION
+
+
+def place_on_canvas(image_bytes: bytes) -> str:
+    """Source image -> base64 PNG of the 9:16 grey canvas with the image
+    enlarged (SOURCE_HEIGHT_FRAC of the height, never narrower than the
+    canvas; overflow is cropped evenly left/right) and bottom-anchored."""
+    import io
+    from PIL import Image
+
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    h = int(CANVAS_H * SOURCE_HEIGHT_FRAC)
+    w = int(img.width * h / img.height)
+    if w < CANVAS_W:
+        w, h = CANVAS_W, int(img.height * CANVAS_W / img.width)
+    img = img.resize((w, h), Image.LANCZOS)
+    canvas = Image.new("RGB", (CANVAS_W, CANVAS_H), CANVAS_GREY)
+    top = max(0, CANVAS_H - int(CANVAS_H * SOURCE_BOTTOM_MARGIN) - h)
+    canvas.paste(img, ((CANVAS_W - w) // 2, top))
+    buf = io.BytesIO()
+    canvas.save(buf, "PNG")
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def letterbox_score(png: bytes) -> float:
+    """How strongly the image has a horizontal seam in the band where a
+    square-in-9:16 letterbox edge falls (12-32% down). Per row: the median
+    absolute vertical brightness change across the width; score = the
+    band's peak / the image's typical row. A real scene has no row where
+    the WHOLE width changes at once; a blurred-bar edge does. Pure PIL (no
+    numpy in this Lambda) on a 192x344 thumbnail."""
+    import io
+    from PIL import Image
+
+    w, h = 192, 344
+    px = Image.open(io.BytesIO(png)).convert("L").resize((w, h)).tobytes()  # one byte per pixel
+    rows = []
+    for y in range(h - 1):
+        a, b = px[y * w:(y + 1) * w], px[(y + 1) * w:(y + 2) * w]
+        d = sorted(abs(p - q) for p, q in zip(a, b))
+        rows.append(d[w // 2])
+    base = max(sorted(rows)[len(rows) // 2], 0.5)
+    return max(rows[int(h * 0.12):int(h * 0.32)]) / base
 
 
 def build_tagline_prompt(brand: str, name: str, visual_theme: str) -> str:
@@ -207,7 +290,8 @@ def load_signage_context(conn, article_id: str) -> dict:
         cur.execute(
             """
             select pa.id, pa.product_id, pa.visual_theme, p.name, b.name,
-                   s.selected_still_key, s.selected_still_url
+                   s.selected_still_key, s.selected_still_url,
+                   pa.action_shot_image_url, pa.product_shot_image_url
             from product_articles pa
             join products p on p.id = pa.product_id
             join brands b on b.id = p.brand_id
@@ -219,7 +303,8 @@ def load_signage_context(conn, article_id: str) -> dict:
         row = cur.fetchone()
     if row is None:
         raise LookupError(f"No ball article {article_id}")
-    keys = ("article_id", "product_id", "visual_theme", "name", "brand", "selected_still_key", "selected_still_url")
+    keys = ("article_id", "product_id", "visual_theme", "name", "brand", "selected_still_key", "selected_still_url",
+            "action_shot_url", "product_shot_url")
     return dict(zip(keys, [str(v) if k in ("article_id", "product_id") else v for k, v in zip(keys, row)]))
 
 
@@ -243,19 +328,39 @@ def update_signage(conn, article_id: str, **fields) -> None:
 # Jobs
 # --------------------------------------------------------------------------
 
-def generate_stills(conn, ctx: dict, *, scene_prompt: str, reference_b64: str, gemini_call, s3_client,
+def generate_stills(conn, ctx: dict, *, source_png: bytes, gemini_call, s3_client,
                     image_bucket: str, bedrock_client, model_id: str) -> dict:
-    """signage="stills". gemini_call(prompt, reference_b64, aspect_ratio) ->
-    png bytes (the generator's call_gemini_for_image, bound to its auth)."""
-    prompt = build_still_prompt(scene_prompt)
+    """signage="stills". source_png is the picked source image (see the
+    module docstring); gemini_call(prompt, reference_b64, aspect_ratio) ->
+    png bytes (the generator's call_gemini_for_image, bound to its auth).
+    A candidate that errors or still comes back letterboxed is retried; if every try
+    is banded the least-banded one is kept rather than dropped (better
+    something to look at than nothing -- Al picks)."""
+    prompt = build_outpaint_prompt()
+    reference_b64 = place_on_canvas(source_png)
     run = new_run_id()
     stills = []
     for i in range(STILL_CANDIDATES):
-        try:
-            png = gemini_call(prompt, reference_b64, STILL_ASPECT_RATIO)
-        except Exception:  # one bad candidate shouldn't sink the batch
-            logger.exception("signage still %d failed for article %s", i + 1, ctx["article_id"])
+        best = None  # (score, png)
+        for attempt in range(STILL_ATTEMPTS):
+            try:
+                png = gemini_call(prompt, reference_b64, STILL_ASPECT_RATIO)
+            except Exception:  # retried like a banded one; never sinks the batch
+                # (seen live: a spurious IMAGE_PROHIBITED_CONTENT on a
+                # plain product shot that the next call rendered fine)
+                logger.exception("signage still %d attempt %d failed for article %s", i + 1, attempt + 1,
+                                 ctx["article_id"])
+                continue
+            score = letterbox_score(png)
+            if best is None or score < best[0]:
+                best = (score, png)
+            if score < LETTERBOX_THRESHOLD:
+                break
+            logger.warning("signage still %d attempt %d letterboxed (score %.1f) for article %s",
+                           i + 1, attempt + 1, score, ctx["article_id"])
+        if best is None:
             continue
+        png = best[1]
         key = f"article-images/{ctx['product_id']}/signage/still_{i + 1}_{run}.png"
         s3_client.put_object(Bucket=image_bucket, Key=key, Body=png, ContentType="image/png")
         stills.append({"key": key, "url": f"https://{image_bucket}.s3.amazonaws.com/{key}"})

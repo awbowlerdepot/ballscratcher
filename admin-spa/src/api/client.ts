@@ -68,6 +68,7 @@ import type {
   VideoCandidateListResult,
   ArticleSignage,
   QueueSignageResult,
+  SignageStillSource,
 } from "./types";
 
 // Unlike consumer-site's PublicApiFunction client, every request here
@@ -633,8 +634,8 @@ export function getArticleSignage(articleId: string): Promise<ArticleSignage> {
   return apiGet<ArticleSignage>(`/articles/${encodeURIComponent(articleId)}/signage`);
 }
 
-export function generateArticleSignage(articleId: string): Promise<QueueSignageResult> {
-  return apiPost<QueueSignageResult>(`/articles/${encodeURIComponent(articleId)}/signage/generate`);
+export function generateArticleSignage(articleId: string, source: SignageStillSource): Promise<QueueSignageResult> {
+  return apiPost<QueueSignageResult>(`/articles/${encodeURIComponent(articleId)}/signage/generate`, { source });
 }
 
 export function animateArticleSignage(articleId: string): Promise<QueueSignageResult> {

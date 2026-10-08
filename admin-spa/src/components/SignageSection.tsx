@@ -6,7 +6,7 @@ import {
   renderArticleSignage,
   updateArticleSignage,
 } from "../api/client";
-import type { Article, ArticleSignage, SignageStatus } from "../api/types";
+import type { Article, ArticleSignage, SignageStatus, SignageStillSource } from "../api/types";
 import Badge from "./Badge";
 import Button from "./Button";
 import { useToast } from "./Toast";
@@ -17,6 +17,13 @@ import { useToast } from "./Toast";
 // pick a still and tagline -> Animate (Veo clip, seamless loop) -> preview
 // -> Approve (the live signage URL serves it) -> Render MP4 (for piSignage).
 // Generate/Animate/Render run in the background; this polls while one runs.
+//
+// Runbook 6co: lives in its own Signage tab on the product page now ("I
+// would prefer the social posts and this Signage Video stuff all in the
+// product page with a tab for each"), and Generate starts from a source
+// image Al picks -- "Can we select an existing image action or product shot
+// as input to the Signage Video still as part of the workflow?" The stills
+// are that image extended to 9:16 (straight 9:16 generation letterboxed).
 
 const RUNNING: SignageStatus[] = ["generating", "animating", "rendering"];
 const STATUS_LABEL: Record<SignageStatus, string> = {
@@ -27,6 +34,11 @@ const STATUS_LABEL: Record<SignageStatus, string> = {
   rendering: "Rendering MP4 (1–3 min)…",
   ready: "Ready",
   failed: "Failed",
+};
+const SOURCE_LABEL: Record<SignageStillSource, string> = {
+  action_shot: "Action shot",
+  product_shot: "Product shot",
+  new: "New scene",
 };
 const PREVIEW_SCALE = 0.25; // 1080x1920 page shown at 270x480
 
@@ -39,6 +51,7 @@ export default function SignageSection({ article }: { article: Article }) {
   const [data, setData] = useState<ArticleSignage | null>(null);
   const [busy, setBusy] = useState(false);
   const [taglineDraft, setTaglineDraft] = useState("");
+  const [source, setSource] = useState<SignageStillSource>("action_shot");
 
   const load = useCallback(async () => {
     try {
@@ -53,7 +66,12 @@ export default function SignageSection({ article }: { article: Article }) {
 
   useEffect(() => {
     setData(null);
-    load().then((d) => setTaglineDraft(d?.tagline ?? d?.tagline_options?.[0] ?? ""));
+    load().then((d) => {
+      setTaglineDraft(d?.tagline ?? d?.tagline_options?.[0] ?? "");
+      // Default to the action shot (a real scene extends best), else the
+      // product shot, else a fresh scene.
+      setSource(d?.source_images.action_shot ? "action_shot" : d?.source_images.product_shot ? "product_shot" : "new");
+    });
   }, [load]);
 
   const running = !!data && RUNNING.includes(data.status);
@@ -96,7 +114,7 @@ export default function SignageSection({ article }: { article: Article }) {
   const mp4Stale = data.mp4_url && data.mp4_price != null && data.drilled_price != null && data.mp4_price !== data.drilled_price;
 
   return (
-    <div className="flex flex-col gap-4 border-t border-ink-200 pt-4">
+    <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
           <p className="font-semibold text-ink-800">In-store signage</p>
@@ -114,20 +132,51 @@ export default function SignageSection({ article }: { article: Article }) {
         <p className="rounded-md bg-danger-light px-3 py-2 text-xs text-danger">{data.error}</p>
       ) : null}
 
-      {/* Step 1: stills + taglines */}
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          size="sm"
-          variant={hasStills ? "secondary" : "primary"}
-          disabled={busy || running}
-          onClick={() => {
-            if (hasStills && !window.confirm("Generate new stills and taglines? The current candidates will be replaced.")) return;
-            act(() => generateArticleSignage(article.id), "Generating 3 stills and tagline ideas -- about 1–2 minutes.");
-          }}
-        >
-          {hasStills ? "Regenerate stills" : "Generate signage"}
-        </Button>
-        <span className="text-xs text-ink-500">3 vertical images built from this article's theme + tagline ideas (~$0.50).</span>
+      {/* Step 1: pick a source image, then stills + taglines */}
+      <div className="flex flex-col gap-2">
+        <p className="text-xs font-medium text-ink-600">Start from</p>
+        <div className="flex flex-wrap gap-3">
+          {(["action_shot", "product_shot", "new"] as SignageStillSource[]).map((s) => {
+            const img = s === "new" ? null : data.source_images[s];
+            const available = s === "new" || !!img;
+            const picked = s === source;
+            return (
+              <button
+                key={s}
+                type="button"
+                disabled={!available || busy || running}
+                onClick={() => setSource(s)}
+                className={`flex w-36 flex-col gap-1 rounded-md border p-1.5 text-left text-xs disabled:opacity-40 ${picked ? "border-primary ring-2 ring-primary" : "border-ink-200"}`}
+              >
+                {img ? (
+                  <img src={img} alt="" className="aspect-video w-full rounded object-cover" />
+                ) : (
+                  <div className="flex aspect-video w-full items-center justify-center rounded bg-ink-100 px-2 text-center text-[11px] text-ink-500">
+                    {s === "new" ? "Fresh themed scene from the article" : "None yet"}
+                  </div>
+                )}
+                <span className="font-medium text-ink-700">{SOURCE_LABEL[s]}</span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            variant={hasStills ? "secondary" : "primary"}
+            disabled={busy || running}
+            onClick={() => {
+              if (hasStills && !window.confirm("Generate new stills and taglines? The current candidates will be replaced.")) return;
+              act(() => generateArticleSignage(article.id, source), "Generating 3 stills and tagline ideas -- about 1–3 minutes.");
+            }}
+          >
+            {hasStills ? "Regenerate stills" : "Generate signage"}
+          </Button>
+          <span className="text-xs text-ink-500">
+            3 vertical stills extended from the {SOURCE_LABEL[source].toLowerCase()} + tagline ideas (~$0.50
+            {source === "new" ? ", a bit more for the new scene" : ""}).
+          </span>
+        </div>
       </div>
 
       {hasStills ? (
