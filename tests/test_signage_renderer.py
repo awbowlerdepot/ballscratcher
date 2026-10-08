@@ -30,3 +30,13 @@ def test_overlay_url_is_transparent_mode_with_ball_and_tagline():
     q = dict(urllib.parse.parse_qsl(parsed.query))
     assert parsed.path == "/signage/ball/motiv-raptor-pursuit"
     assert q == {"overlay": "1", "bx": "0.49", "by": "0.62", "br": "0.29", "cta": "Talons find the pocket."}
+
+
+def test_mp4_fades_in_from_and_out_to_black_for_pisignage_playlists():
+    # Runbook 6cq: piSignage has no video transitions -- it cuts to black
+    # between playlist items -- so the MP4 itself fades in and out.
+    f = app.composite_args("/tmp/clip.mp4", "/tmp/f_%05d.png", "/tmp/out.mp4")
+    f = f[f.index("-filter_complex") + 1]
+    assert "fade=t=in:st=0:d=0.5" in f
+    assert f"fade=t=out:st={app.OVERLAY_LOOP_S - 1.0}:d=1.0" in f
+    assert f.index("overlay=0:0") < f.index("fade=t=in")  # the text fades with the picture

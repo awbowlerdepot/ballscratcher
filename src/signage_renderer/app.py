@@ -19,7 +19,19 @@ Two jobs, both invoked asynchronously:
       <video> -- frame by frame (every CSS animation paused at t), and
       ffmpeg composites it over the looped clip. Headless Chromium never has
       to decode H.264. Output: 14 s (two background loops, the overlay
-      cycle), 1080x1920, H.264 + faststart.
+      cycle), 1080x1920, H.264 + faststart, with a fade in from black and a
+      fade out to black (runbook 6cq).
+
+Why the MP4 fades (runbook 6cq), Al: "can we add some version of a fade
+out to the end of the signage videos ... these are playlist in pisignage
+with many of these videos added." The 14 s cut was built as a seamless
+loop, but the stores run piSignage playlists of many balls back to back.
+piSignage's own transitions ("Animation: SVG animation options for
+image/html transition", user guide) don't apply to videos: a video plays to
+its end, the player shows its black background while it loads the next
+file, and that one starts. A hard cut at full brightness into black looked
+like a glitch; fading to and from black blends with that gap, so the
+playlist reads as one ball dissolving into the next.
 
 The drilled price is whatever the live page draws at render time (listing
 price + $50); it's also recorded as mp4_price so admin can flag a rendered
@@ -40,6 +52,8 @@ FPS = 24
 OVERLAY_LOOP_S = 14  # must match HERO_LOOP_S in bowlerdepot-learn SignageBallPage.tsx
 DRILLING_UPCHARGE = 50  # must match DRILLING_UPCHARGE there
 WIDTH, HEIGHT = 1080, 1920
+FADE_IN_S = 0.5   # short, the overlay text animates in on its own anyway
+FADE_OUT_S = 1.0  # ends on true black, matching piSignage's gap between videos
 TMP = "/tmp/signage"
 
 SEEK_JS = """(t) => {
@@ -62,7 +76,8 @@ def composite_args(clip_path: str, frames_glob: str, out_path: str) -> list:
         "-framerate", str(FPS), "-i", frames_glob,
         "-filter_complex",
         f"[0:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=increase,crop={WIDTH}:{HEIGHT},setsar=1,fps={FPS}[bg];"
-        "[bg][1:v]overlay=0:0,format=yuv420p[v]",
+        f"[bg][1:v]overlay=0:0,fade=t=in:st=0:d={FADE_IN_S},"
+        f"fade=t=out:st={OVERLAY_LOOP_S - FADE_OUT_S}:d={FADE_OUT_S},format=yuv420p[v]",
         "-map", "[v]", "-t", str(OVERLAY_LOOP_S),
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-profile:v", "high", "-movflags", "+faststart",
         out_path,

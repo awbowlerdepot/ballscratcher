@@ -18093,6 +18093,62 @@ select weight_lbs, rg, differential, mass_bias from product_skus
  where product_id = 'd18abd31-f433-478d-b5c1-18758c364518' order by weight_lbs;
 ```
 
+### 6cq. Signage MP4s fade in from and out to black for piSignage playlists (2026-10-08)
+
+Al:
+> "can we add some version of a fade out to the end of the signage videos.
+> it might be because you think they are looping. these are playlist in
+> pisignage with many of these videos added. The MP4 might be the solution
+> the weblink would work if you were controlling the entire playlist but
+> the playlist is coming from pisignage configuration."
+
+**Research.** piSignage's user guide lists transitions only under
+"Animation: SVG animation options for image/html transition". Videos get
+none. The player plays a video to its end, shows its background (black by
+default) while it loads the next file, then starts that file. Raspberry Pi
+players are known to leave a short black gap between videos because they
+can't preload the next file. Our 14 s MP4 was built as a seamless loop, so
+it ended at full brightness and cut hard into that black gap, which looked
+like a glitch.
+
+**Decision.** The MP4 is the right asset for playlists, and the fade goes
+into the file itself. With a fade in from black (0.5 s) and a fade out to
+black (1 s), piSignage's gap becomes part of the dissolve between balls,
+however the playlist is configured.
+- The fades are applied after the overlay, so the text fades with the
+  picture.
+- The overlay already finishes its own exit at 14 s, so the timing is
+  unchanged.
+
+The web link still loops forever, which is right when one ball owns the
+screen. In a piSignage playlist, use the MP4. piSignage also recommends
+giving weblinks at least 20 s to load, so they're a poor fit for a
+rotating playlist anyway.
+
+**Tested.**
+- `test_signage_renderer.py` (4).
+- Ran the real ffmpeg command on Black Widow Spare+'s clip. Mean
+  brightness:
+
+  | Time | Brightness |
+  | --- | --- |
+  | 0 s | 0.0 |
+  | 0.25 s | 26.6 |
+  | 1 s | 51.7 |
+  | 7 s | 54.5 |
+  | 13 s | 49.9 |
+  | 13.5 s | 25.3 |
+  | 13.95 s | 1.4 |
+
+  Length is still 14.0 s.
+
+**Deploy.** This rebuilds and pushes the renderer image.
+```bash
+sam build && sam deploy
+```
+Existing MP4s keep the hard cut. Click **Re-render MP4** on each ball's
+Signage tab, then replace the file in piSignage.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
