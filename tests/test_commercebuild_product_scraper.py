@@ -1205,3 +1205,32 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"ERROR: {t.__name__}: {type(e).__name__}: {e}")
     print(f"\n{passed}/{len(tests)} tests passed")
+
+
+# Runbook 6cp -- 900 Global Portal's redesigned Tech Data sheet: Textract
+# merged the metric labels, so the RG row has none and DIFF reads "RG DIFF".
+# Before the fix every SKU stored rg=differential=null, mass_bias only.
+PORTAL_TABLE = [
+    ["", "16lb", "15lb", "14lb", "13lb", "12lb"],
+    ["", "2.58", "2.59", "2.61", "2.56", "2.58"],
+    ["RG DIFF", ".053", ".050", ".049", ".034", ".031"],
+    ["PSA", ".021", ".019", ".018", ".011", ".009"],
+]
+
+
+def test_skus_from_table_portal_merged_metric_labels():
+    skus = {s["weight_lbs"]: s for s in app._skus_from_table(PORTAL_TABLE)}
+    assert skus[16] == {"weight_lbs": 16, "rg": 2.58, "differential": 0.053, "mass_bias": 0.021}
+    assert skus[12] == {"weight_lbs": 12, "rg": 2.58, "differential": 0.031, "mass_bias": 0.009}
+
+
+def test_skus_from_table_unlabeled_small_rows_take_diff_then_psa_in_order():
+    table = [["", "15lb", "14lb"], ["", "2.50", "2.52"], ["", ".050", ".048"], ["", ".014", ".012"]]
+    skus = {s["weight_lbs"]: s for s in app._skus_from_table(table)}
+    assert skus[15] == {"weight_lbs": 15, "rg": 2.5, "differential": 0.05, "mass_bias": 0.014}
+
+
+def test_skus_from_table_prose_row_never_lends_numbers():
+    table = PORTAL_TABLE + [["NOTES", "12lb engineered 2.5 core", "", "", "", ""]]
+    skus = {s["weight_lbs"]: s for s in app._skus_from_table(table)}
+    assert skus[12]["rg"] == 2.58

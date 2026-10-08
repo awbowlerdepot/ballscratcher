@@ -207,6 +207,12 @@ def _to_float(value):
     return float(match.group()) if match else None
 
 
+def _to_float_strict(value):
+    """True if the whole cell is one number (".053", "2.58") -- unlike
+    _to_float, which pulls a number out of any text ("16lb" -> 16.0)."""
+    return bool(re.fullmatch(r"\s*-?(?:\d+\.?\d*|\.\d+)\s*", str(value or "")))
+
+
 def parse_core_type(symmetry_value):
     """Symmetry field values seen: "Asymmetrical", "Symmetrical" (after
     _clean_field_value strips the brand prefix)."""
@@ -701,17 +707,67 @@ def _skus_from_table(table: list) -> list:
             w: {"weight_lbs": w, "rg": None, "differential": None, "mass_bias": None}
             for w in header_weight_cols.values()
         }
-        for row in table:
-            label = next(((c or "").strip() for c in row if (c or "").strip()), "")
-            field = metric_fields.get(re.sub(r"[^a-z]", "", label.lower()))
-            if not field:
-                continue  # e.g. "NOTES" or the header row itself -- not a metric row, skip don't guess
+        # Real incident (runbook 6cp), Al: "it looks like 900 global changed
+        # the mark up for the new portal bowling ball and it cause a miss on
+        # the rg/diff/mass bias numbers". Portal's redesigned Tech Data
+        # sheet has the labels in a narrow column beside the numbers, and
+        # Textract merged them: the RG row came back with a BLANK label and
+        # the DIFF row labeled "RG DIFF" --
+        #   ['', '16lb', '15lb', '14lb', '13lb', '12lb']
+        #   ['', '2.58', '2.59', '2.61', '2.56', '2.58']
+        #   ['RG DIFF', '.053', '.050', '.049', '.034', '.031']
+        #   ['PSA', '.021', '.019', '.018', '.011', '.009']
+        # so only PSA matched and every SKU stored rg=differential=null. A
+        # row whose label isn't exactly one metric now falls back to its
+        # VALUES: RG lives in a range no Diff/PSA ever reaches (2.0-3.0 vs
+        # under 0.1), and the small-valued rows take Diff then PSA in
+        # table order -- the order every Storm-family sheet prints them --
+        # skipping any field another row's exact label already claimed.
+        # A blank/merged-label row that fits none of that is still skipped
+        # (and a field is never written twice), not guessed.
+        def row_values(row):
+            vals = {}
             for idx, w in header_weight_cols.items():
-                if idx >= len(row):
-                    continue
-                val = (row[idx] or "").strip()
-                if val:
-                    by_weight[w][field] = _to_float(val)
+                # Whole-number cells only, so a prose row (Portal's
+                # description text shares this table's columns) can never
+                # lend a stray number to a metric.
+                if idx < len(row) and _to_float_strict(row[idx]):
+                    vals[w] = _to_float(row[idx])
+            return vals
+
+        resolved = []  # (field or None, label words, values) in table order
+        for row in table:
+            vals = row_values(row)
+            if not vals or all(WEIGHT_TOKEN_RE.match((c or "").strip()) for c in row if (c or "").strip()):
+                continue  # header row / "NOTES" text -- not a metric row
+            label = next(((c or "").strip() for c in row if (c or "").strip() and not _to_float_strict(c)), "")
+            words = re.findall(r"[a-z]+", label.lower())
+            resolved.append((metric_fields.get("".join(words)), words, vals))
+
+        claimed = {field for field, _, _ in resolved if field}
+        for i, (field, words, vals) in enumerate(resolved):
+            if field:
+                continue
+            hinted = {metric_fields[w] for w in words if w in metric_fields}
+            if all(2.0 <= v <= 3.0 for v in vals.values()):
+                guess = "rg"
+            elif all(0 <= v < 0.1 for v in vals.values()):
+                guess = next((f for f in ("differential", "mass_bias") if f not in claimed), None)
+            else:
+                guess = None
+            if guess and guess not in claimed and (not hinted or guess in hinted or not words):
+                claimed.add(guess)
+                resolved[i] = (guess, words, vals)
+            else:
+                logger.warning("Tech Data PDF header-column table: couldn't place metric row %r %s -- skipping",
+                               " ".join(words), vals)
+
+        for field, _, vals in resolved:
+            if not field:
+                continue
+            for w, v in vals.items():
+                if by_weight[w][field] is None:
+                    by_weight[w][field] = v
         return list(by_weight.values())
 
     # Long mode: one row per weight, each row's weight cell a single token.

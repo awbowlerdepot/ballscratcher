@@ -18029,6 +18029,70 @@ Letterboxed retries show in the logs as "letterboxed (score ...)":
 aws logs tail /aws/lambda/bowling-scraper-product-article-generator --since 15m --filter-pattern letterboxed
 ```
 
+### 6cp. Fixed: 900 Global Portal's new Tech Data layout lost its RG and differential (2026-10-08)
+
+Al: "it looks like 900 global changed the mark up for the new portal
+bowling ball and it cause a miss on the rg/diff/mass bias numbers".
+
+**What happened.** Portal's Tech Data PDF is a scanned image, so it goes
+through Textract (6f.2). Its redesigned sheet puts the metric labels in a
+narrow column beside the numbers. Textract merged those labels: the RG row
+came back with no label at all, and the DIFF row came back labeled
+`RG DIFF`.
+```
+['',        '16lb', '15lb', '14lb', '13lb', '12lb']
+['',        '2.58', '2.59', '2.61', '2.56', '2.58']
+['RG DIFF', '.053', '.050', '.049', '.034', '.031']
+['PSA',     '.021', '.019', '.018', '.011', '.009']
+```
+`_skus_from_table`'s header-column mode only accepted a row labeled
+exactly RG, DIFF or PSA. Only PSA matched, so all 5 SKUs were stored with
+`rg` and `differential` null and only `mass_bias` set. The product page
+itself was fine: RG 2.58, Diff .053 and PSA .021 for 16 lb.
+
+**Fix** (`commercebuild_product_scraper`). A metric row whose label isn't
+exactly one metric is now placed by its values:
+- RG falls in 2.0–3.0. Diff and PSA are always under 0.1.
+- Small-valued rows take Diff, then PSA, in table order, skipping any
+  field another row's exact label already claimed.
+- A word in the label can rule a field out: `RG DIFF` can't become PSA.
+- Anything that fits none of these is logged and skipped, never guessed.
+- A field is never written twice.
+- Only cells that are a bare number count, so a description row sharing
+  the table's columns can't lend a stray number. Helper:
+  `_to_float_strict`.
+
+A sweep of all ball SKUs found Portal is the only PDF-sourced ball
+affected. Hammer Tough and Radical Innovator also lack RG/Diff, but both
+are sourced from their product pages, so that's unrelated.
+
+**Tested.**
+- 3 new tests in `test_commercebuild_product_scraper.py`: the exact
+  Portal table, all-unlabeled rows, and a prose row. All 86 pass.
+- All 56 test files pass, run one per file.
+- The live Portal PDF, re-parsed through Textract with the fix:
+  - 16 lb: 2.58 / .053 / .021
+  - 15 lb: 2.59 / .050 / .019
+  - 14 lb: 2.61 / .049 / .018
+  - 13 lb: 2.56 / .034 / .011
+  - 12 lb: 2.58 / .031 / .009
+
+**Deploy + repair.**
+```bash
+sam build && sam deploy
+```
+Then rescrape Portal (product `d18abd31-f433-478d-b5c1-18758c364518`),
+either with Rescrape on its admin product page or with this command:
+```bash
+aws lambda invoke --region us-west-1 --function-name bowling-scraper-commercebuild-product-scraper --cli-binary-format raw-in-base64-out --payload '{"url": "https://www.stormbowling.com/900-global-portal-bowling-ball", "brand_id": "33cf9798-1b16-4262-9e74-0f6043008a98"}' /tmp/portal.json && cat /tmp/portal.json
+```
+
+**Verify.**
+```sql
+select weight_lbs, rg, differential, mass_bias from product_skus
+ where product_id = 'd18abd31-f433-478d-b5c1-18758c364518' order by weight_lbs;
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
