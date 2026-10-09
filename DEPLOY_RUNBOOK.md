@@ -18149,6 +18149,80 @@ sam build && sam deploy
 Existing MP4s keep the hard cut. Click **Re-render MP4** on each ball's
 Signage tab, then replace the file in piSignage.
 
+### 6cr. Signage background: one continuous 15 s Veo clip (extension) with a locked camera (2026-10-09)
+
+Al:
+> "i noticed that the video for the widow spare + is less than 14 seconds
+> so it loops. was that by design?"
+
+It was. Veo makes at most 8 s, so the 14 s MP4 (one overlay cycle) played
+a 7 s background loop twice. That's fine for a page that loops forever.
+In a piSignage playlist (6cq), where each ball plays once, the repeat
+halfway through is visible.
+
+**Fix.** We use Veo 3.1 Fast's **video extension**, on the same model,
+`veo-3.1-fast-generate-001`:
+- The 8 s clip is passed back as `video.bytesBase64Encoded`. The docs only
+  show `gcsUri`, but bytes work, so no GCS bucket is needed.
+- There's no `durationSeconds`; an extension is always +7 s.
+- 1080p, 9:16.
+- The response is the **whole 15 s video**, not just the new part.
+
+The renderer loops D-second clips into D-1 seconds
+(`loop_filter(clip_seconds(raw))`), so 15 s becomes a 14 s seamless loop.
+That's exactly one overlay cycle, so the MP4 plays its background once.
+If the extension fails, the 8 s clip is used and loops as before.
+
+**Prototype findings** (Black Widow Spare+, 3 tries):
+1. **Extending the existing clip.** The 8 s join was invisible: a
+   frame-to-frame change of 2.4, against motion peaks of 3.3. But the old
+   "slow forward drift" kept pushing in. By 15 s the ball had doubled in
+   size and run off the bottom under the price, and the callout lines
+   pointed at nothing.
+2. **Extension told to pull back.** The ball turned away, the logo was
+   lost and the ball ended up tiny. Rejected.
+3. **Base clip and extension both told to lock the camera**
+   (`CAMERA_LOCKED`). The ball kept the same size and position for all
+   15 s, the logo stayed sharp, and the spider crawled while the
+   webs and lights moved.
+   - Join: 2.1, against peaks of 5.0.
+   - Looped to 14 s, the wrap from last frame to first: 1.2.
+   - Final MP4: 14.000 s.
+
+**Changes.**
+- `signage.py`:
+  - `CAMERA_LOCKED` in `build_veo_prompt`, replacing the forward drift.
+  - `build_veo_extend_prompt`.
+  - `call_veo(..., extend_mp4=)`.
+  - `animate(veo_extend_call=)`, best-effort.
+  - `VEO_EXTEND_TIMEOUT_S = 360`.
+- Renderer: `loop_filter(duration_s)` and `clip_seconds()` (ffprobe).
+- `ProductArticleGeneratorFunction` Timeout raised from 600 to 900 s
+  (Lambda's max). The job now makes two Veo calls back to back, about
+  2–2.5 min each live, up to 420 + 360 s at the limits.
+- Admin copy: animating takes 4–6 min, about $2.
+
+**Tested.**
+- `test_signage_generator.py` (11): locked-camera prompts, the extension
+  request shape, extend plus fallback.
+- `test_signage_renderer.py` (5).
+- All 56 test files pass, run one per file. `admin-spa` builds.
+- The live prototype, as above.
+
+**Deploy.** This rebuilds the renderer image.
+```bash
+sam build && sam deploy
+git push        # admin copy
+```
+Existing clips are still 8 s loops. On each ball's Signage tab:
+**Re-animate** (needs re-approval), then **Approve**, then
+**Re-render MP4**, then replace the file in piSignage.
+
+**Verify.** The raw clip should be 15 s and the loop clip 14 s:
+```bash
+aws logs tail /aws/lambda/bowling-scraper-product-article-generator --since 15m --filter-pattern "?extension ?Veo"
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

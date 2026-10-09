@@ -194,6 +194,50 @@ def test_generate_stills_outpaints_source_retries_letterboxed_and_stores():
     assert conn.commits == 1
 
 
+def test_veo_prompts_lock_the_camera():
+    # Runbook 6cr: a forward drift kept pushing in through the extension.
+    assert "LOCKED OFF" in signage.build_veo_prompt("webs") and "forward drift" not in signage.build_veo_prompt("webs")
+    p = signage.build_veo_extend_prompt("webs")
+    assert p.startswith("Continue this exact shot") and "LOCKED OFF" in p
+
+
+def test_veo_extension_sends_the_clip_as_bytes_without_duration():
+    sent = {}
+
+    class Resp:
+        def __init__(self, data):
+            self.data = data
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self.data
+
+    class Session:
+        def post(self, url, headers=None, json=None, timeout=None):
+            if url.endswith(":predictLongRunning"):
+                sent["body"] = json
+                return Resp({"name": "op/1"})
+            return Resp({"done": True, "response": {"videos": [{"bytesBase64Encoded": base64.b64encode(b"15s").decode()}]}})
+
+    signage.VEO_POLL_S = 0
+    assert signage.call_veo(Session(), "tok", "proj", None, "p", extend_mp4=b"8s") == b"15s"
+    inst, params = sent["body"]["instances"][0], sent["body"]["parameters"]
+    assert inst["video"] == {"bytesBase64Encoded": base64.b64encode(b"8s").decode(), "mimeType": "video/mp4"}
+    assert "image" not in inst and "durationSeconds" not in params
+    assert params["resolution"] == "1080p" and "camera movement" in params["negativePrompt"]
+
+
+def test_animate_extends_the_clip_and_falls_back_to_8s_if_extension_fails():
+    for ext, expect in ((lambda mp4, p: mp4 + b"+7s", b"mp4+7s"), (lambda mp4, p: 1 / 0, b"mp4")):
+        conn, s3 = FakeConn(), FakeS3()
+        signage.animate(conn, CTX, still_png=b"png", veo_call=lambda png, prompt: b"mp4", s3_client=s3,
+                        image_bucket="bkt", bedrock_client=FakeBedrock('{"cx":0.5,"cy":0.6,"r":0.3}'),
+                        model_id="m", invoke_renderer=lambda p: None, veo_extend_call=ext)
+        assert s3.puts[0]["Body"] == expect
+
+
 def test_animate_uploads_clip_records_ball_and_hands_off_to_renderer():
     conn, s3, invoked = FakeConn(), FakeS3(), []
     out = signage.animate(conn, CTX, still_png=b"png", veo_call=lambda png, prompt: b"mp4", s3_client=s3,

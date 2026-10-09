@@ -15,6 +15,14 @@ def test_loop_filter_crossfades_last_second_into_first():
     assert "trim=start=1:end=8" in f and "trim=start=0:end=1" in f and "xfade=transition=fade:duration=1:offset=6" in f
 
 
+def test_extended_15s_clip_loops_at_14s_one_overlay_cycle():
+    # Runbook 6cr: Veo extension -> 15 s raw -> a 14 s loop, so the 14 s MP4
+    # plays its background exactly once.
+    f = app.loop_filter(15)
+    assert "trim=start=1:end=15" in f and "offset=13" in f
+    assert 15 - 1 == app.OVERLAY_LOOP_S
+
+
 def test_composite_overlays_frames_on_looped_clip_for_the_full_cycle():
     args = app.composite_args("/tmp/clip.mp4", "/tmp/f_%05d.png", "/tmp/out.mp4")
     assert args[args.index("-stream_loop") + 1] == "-1"

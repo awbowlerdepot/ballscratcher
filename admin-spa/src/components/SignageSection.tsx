@@ -30,7 +30,7 @@ const STATUS_LABEL: Record<SignageStatus, string> = {
   idle: "Not started",
   generating: "Generating stills…",
   stills_ready: "Pick a still",
-  animating: "Animating (2–4 min)…",
+  animating: "Animating (4–6 min)…",
   rendering: "Rendering MP4 (1–3 min)…",
   ready: "Ready",
   failed: "Failed",
@@ -253,12 +253,12 @@ export default function SignageSection({ article }: { article: Article }) {
             disabled={busy || running}
             onClick={() => {
               if (data.clip_url && !window.confirm("Make a new animation? It replaces the current one and needs re-approval.")) return;
-              act(() => animateArticleSignage(article.id), "Animating -- about 2–4 minutes.");
+              act(() => animateArticleSignage(article.id), "Animating -- about 4–6 minutes.");
             }}
           >
             {data.clip_url ? "Re-animate" : "Animate"}
           </Button>
-          <span className="text-xs text-ink-500">Veo video from the selected still (~$1).</span>
+          <span className="text-xs text-ink-500">15 s Veo video from the selected still, camera locked (~$2).</span>
         </div>
       ) : null}
 

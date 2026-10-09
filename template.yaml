@@ -2677,7 +2677,10 @@ Resources:
       # independently try/excepted in generate_article_image_candidates
       # (a slow/failing candidate is skipped, not retried) -- revisit if
       # real invocations start timing out.
-      Timeout: 600
+      # 900 (Lambda's max) since runbook 6cr: a signage "animate" job runs
+      # TWO Veo calls back to back (8 s image-to-video, then the extension
+      # to 15 s), ~2-2.5 min each live, up to 420 + 360 s at their limits.
+      Timeout: 900
       Environment:
         Variables:
           BEDROCK_MODEL_ID: !Ref BedrockModelId

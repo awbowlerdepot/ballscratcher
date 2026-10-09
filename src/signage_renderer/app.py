@@ -6,8 +6,10 @@ that the zip-packaged functions can't carry.
 Two jobs, both invoked asynchronously:
 
   {"mode": "loop", "article_id"}    from the article generator after Veo
-      Veo's raw 8 s clip -> a seamless 7 s loop: crossfade the last second
-      into the first (xfade(A[1:8], A[0:1], offset=6, dur=1)). Veo is NOT
+      Veo's raw clip -> a seamless loop: crossfade the last second into the
+      first (xfade(A[1:D], A[0:1], offset=D-2, dur=1)). D is 15 since runbook
+      6cr (Veo extension) -> a 14 s loop, one overlay cycle; 8 -> 7 s if the
+      extension failed. Veo is NOT
       given a matching last frame -- that made it freeze the scene and paint
       sparks on top (runbook 6cm). A new clip un-approves the signage, so
       nothing new reaches the stores unreviewed.
@@ -62,11 +64,24 @@ SEEK_JS = """(t) => {
 }"""
 
 
-def loop_filter() -> str:
-    """ffmpeg filtergraph for the seamless loop (8 s in -> 7 s out)."""
-    return ("[0:v]split[a][b];[a]trim=start=1:end=8,setpts=PTS-STARTPTS[main];"
+def loop_filter(duration_s: int = 8) -> str:
+    """ffmpeg filtergraph for the seamless loop: D s in -> D-1 s out, the
+    last second crossfaded into the first. Veo's 15 s extended clip (runbook
+    6cr) -> a 14 s loop, exactly one overlay cycle, so the MP4 never repeats
+    its background; the 8 s fallback (extension failed) -> 7 s, played twice
+    as before."""
+    d = int(duration_s)
+    return (f"[0:v]split[a][b];[a]trim=start=1:end={d},setpts=PTS-STARTPTS[main];"
             "[b]trim=start=0:end=1,setpts=PTS-STARTPTS[head];"
-            "[main][head]xfade=transition=fade:duration=1:offset=6,format=yuv420p[v]")
+            f"[main][head]xfade=transition=fade:duration=1:offset={d - 2},format=yuv420p[v]")
+
+
+def clip_seconds(path: str) -> int:
+    """Whole seconds of a Veo clip (8, or 15 when extended), capped so the
+    loop never exceeds the overlay cycle."""
+    out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path],
+                         check=True, capture_output=True, text=True).stdout
+    return max(2, min(int(round(float(out.strip()))), OVERLAY_LOOP_S + 1))
 
 
 def composite_args(clip_path: str, frames_glob: str, out_path: str) -> list:
@@ -137,7 +152,7 @@ def make_loop(conn, s3, bucket: str, row: dict) -> dict:
     raw = os.path.join(TMP, "raw.mp4")
     out = os.path.join(TMP, "loop.mp4")
     s3.download_file(bucket, row["raw_clip_key"], raw)
-    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", raw, "-filter_complex", loop_filter(), "-map", "[v]",
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", raw, "-filter_complex", loop_filter(clip_seconds(raw)), "-map", "[v]",
                     "-c:v", "libx264", "-crf", "18", "-movflags", "+faststart", out], check=True)
     key = f"article-images/{row['product_id']}/signage/clip_loop_{uuid.uuid4().hex[:8]}.mp4"
     s3.upload_file(out, bucket, key, ExtraArgs={"ContentType": "video/mp4"})

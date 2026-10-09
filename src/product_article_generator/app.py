@@ -3465,6 +3465,8 @@ def run_signage_job(conn, event, *, s3_client, bedrock_client, model_id, gemini_
                 conn, ctx, still_png=still.content,
                 veo_call=lambda png, prompt: signage.call_veo(
                     session, gemini_auth["access_token"], gemini_auth["project_id"], png, prompt),
+                veo_extend_call=lambda mp4, prompt: signage.call_veo(
+                    session, gemini_auth["access_token"], gemini_auth["project_id"], None, prompt, extend_mp4=mp4),
                 s3_client=s3_client, image_bucket=image_bucket, bedrock_client=bedrock_client, model_id=model_id,
                 invoke_renderer=lambda payload: lambda_client.invoke(
                     FunctionName=renderer, InvocationType="Event", Payload=json.dumps(payload)),

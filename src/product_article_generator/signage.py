@@ -13,10 +13,29 @@ prototype (6cm) settled the recipe; this is it, productized:
                      the aspect ratio so it feels right. not something that
                      is cropped incorrectly") + tagline options (Haiku).
   signage="animate"  the picked still -> Veo 3.1 Fast image-to-video (8 s,
-                     9:16, 1080p, no audio) -> raw clip to S3; where the ball
-                     sits in the frame (Haiku vision, for the callout
+                     9:16, 1080p, no audio) -> Veo EXTENSION of that clip
+                     to 15 s (runbook 6cr) -> raw clip to S3; where the
+                     ball sits in the frame (Haiku vision, for the callout
                      lines); then the signage renderer is invoked to make
-                     the seamless loop.
+                     the seamless 14 s loop.
+
+The 15 s background (runbook 6cr). Al: "i noticed that the video for the
+widow spare + is less than 14 seconds so it loops. was that by design?" It
+was: Veo makes at most 8 s, so the 14 s MP4 played a 7 s loop twice -- fine
+for a page that loops forever, visibly repetitive in a piSignage playlist
+that plays each ball once. Veo's extension (same model, the clip passed
+back as bytes -- no GCS bucket needed) continues the clip by 7 s and returns
+the whole 15 s video at 1080p. Prototyped on Black Widow Spare+: the 8 s
+join is invisible (a smaller frame-to-frame change than the clip's own
+motion). Two things learned:
+  * The base clip's old "slow forward drift" kept pushing in through the
+    extension -- by 15 s the ball was twice the size, off the bottom of the
+    frame under the price, and the callout lines (aimed at the still's ball
+    position) pointed at nothing. Asking the extension to pull back instead
+    turned the ball away and lost the logo. So the camera is now LOCKED OFF
+    for both: the scene moves, the framing never does.
+  * Extension is best-effort: if it fails, the 8 s clip is used as before
+    (the renderer loops it), so a Veo hiccup never costs Al the animation.
 
 Stills are OUTPAINTED from a source image (runbook 6co). Al, on the first
 real batch: "The image is blurred letter boxing a 1:1 ration image to the
@@ -82,6 +101,7 @@ VEO_REGION = "us-central1"  # Veo is regional; Gemini images use "global"
 VEO_DURATION_S = 8
 VEO_POLL_S = 10
 VEO_TIMEOUT_S = 420
+VEO_EXTEND_TIMEOUT_S = 360  # base + extension must fit the generator's 900 s Lambda timeout
 DEFAULT_BALL_POSITION = {"x": 0.5, "y": 0.62, "r": 0.27}
 
 SIGNAGE_COMPOSITION = """
@@ -193,13 +213,29 @@ def parse_tagline_options(raw: str, limit: int = 8) -> list:
     return out[:limit]
 
 
+CAMERA_LOCKED = (
+    "The camera is LOCKED OFF on a tripod: no zoom, no dolly, no push-in, no pan -- the framing never changes and "
+    "the ball keeps exactly the same size and position in the frame the whole time. "
+)
+VEO_EXTEND_NEGATIVE_EXTRA = ", zoom, dolly, camera movement, ball rotating away"
+
+
+def build_veo_extend_prompt(visual_theme: str) -> str:
+    theme = f" Theme: {visual_theme.strip()}" if visual_theme else ""
+    return (
+        "Continue this exact shot seamlessly. " + CAMERA_LOCKED + "The environment keeps its natural motion and any "
+        "creature keeps moving, same lighting and art style. The bowling ball stays perfectly sharp with its printed "
+        "logo facing the camera exactly as shown. No new objects, no text, no people." + theme
+    )
+
+
 def build_veo_prompt(visual_theme: str) -> str:
     theme = f" The scene's theme: {visual_theme.strip()}" if visual_theme else ""
     return (
         "Cinematic animation of this exact illustrated scene with strong, continuous natural motion throughout the "
         "whole frame: the environment moves naturally (clouds, water, light, air, the backdrop drift at different "
-        "speeds for real depth), and any creature or figure in the scene comes alive and moves. The camera makes a "
-        "slow, smooth forward drift. The bowling ball stays in the lower middle of the frame and remains perfectly "
+        "speeds for real depth), and any creature or figure in the scene comes alive and moves. " + CAMERA_LOCKED +
+        "The bowling ball stays in the lower middle of the frame and remains perfectly "
         "sharp with its colors, swirl pattern and printed logo exactly as shown -- the logo never changes shape, "
         "size or position; the ball may turn very slightly. Same art style throughout. No text, no new objects, "
         "no people." + theme
@@ -246,20 +282,32 @@ def call_bedrock_text(bedrock_client, model_id: str, prompt: str, max_tokens: in
 
 
 def call_veo(session, access_token: str, project_id: str, image_png: bytes, prompt: str,
-             model_id: str = VEO_MODEL_ID, region: str = VEO_REGION) -> bytes:
-    """Veo 3.1 image-to-video on Vertex AI: predictLongRunning, then poll
+             model_id: str = VEO_MODEL_ID, region: str = VEO_REGION, *, extend_mp4: bytes = None) -> bytes:
+    """Veo 3.1 on Vertex AI: predictLongRunning, then poll
     fetchPredictOperation until done. Video comes back inline (no
-    storageUri). Raises on errors, safety filtering, or timeout."""
+    storageUri). Raises on errors, safety filtering, or timeout.
+
+    Image-to-video by default (8 s). With extend_mp4, a video EXTENSION
+    instead: the clip goes in as bytes (the docs only show gcsUri; bytes
+    work), no durationSeconds (extensions are a fixed 7 s), and the
+    response is the WHOLE extended video, not just the new part."""
     base = (f"https://{region}-aiplatform.googleapis.com/v1/projects/{project_id}/locations/{region}"
             f"/publishers/google/models/{model_id}")
     headers = {"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"}
-    body = {
-        "instances": [{"prompt": prompt, "image": {"bytesBase64Encoded": base64.b64encode(image_png).decode(),
-                                                   "mimeType": "image/png"}}],
-        "parameters": {"aspectRatio": "9:16", "durationSeconds": VEO_DURATION_S, "resolution": "1080p",
-                       "generateAudio": False, "sampleCount": 1, "negativePrompt": VEO_NEGATIVE_PROMPT},
-    }
-    r = session.post(f"{base}:predictLongRunning", headers=headers, json=body, timeout=60)
+    params = {"aspectRatio": "9:16", "resolution": "1080p", "generateAudio": False, "sampleCount": 1,
+              "negativePrompt": VEO_NEGATIVE_PROMPT}
+    if extend_mp4 is not None:
+        instance = {"prompt": prompt, "video": {"bytesBase64Encoded": base64.b64encode(extend_mp4).decode(),
+                                                "mimeType": "video/mp4"}}
+        params["negativePrompt"] += VEO_EXTEND_NEGATIVE_EXTRA
+        timeout_s = VEO_EXTEND_TIMEOUT_S
+    else:
+        instance = {"prompt": prompt, "image": {"bytesBase64Encoded": base64.b64encode(image_png).decode(),
+                                                "mimeType": "image/png"}}
+        params["durationSeconds"] = VEO_DURATION_S
+        timeout_s = VEO_TIMEOUT_S
+    r = session.post(f"{base}:predictLongRunning", headers=headers,
+                     json={"instances": [instance], "parameters": params}, timeout=120)
     r.raise_for_status()
     op = r.json()["name"]
     started = time.time()
@@ -270,8 +318,8 @@ def call_veo(session, access_token: str, project_id: str, image_png: bytes, prom
         d = p.json()
         if d.get("done"):
             break
-        if time.time() - started > VEO_TIMEOUT_S:
-            raise TimeoutError(f"Veo didn't finish within {VEO_TIMEOUT_S}s")
+        if time.time() - started > timeout_s:
+            raise TimeoutError(f"Veo didn't finish within {timeout_s}s")
     if d.get("error"):
         raise RuntimeError(f"Veo error: {json.dumps(d['error'])[:300]}")
     videos = (d.get("response") or {}).get("videos") or []
@@ -374,10 +422,17 @@ def generate_stills(conn, ctx: dict, *, source_png: bytes, gemini_call, s3_clien
 
 
 def animate(conn, ctx: dict, *, still_png: bytes, veo_call, s3_client, image_bucket: str,
-            bedrock_client, model_id: str, invoke_renderer) -> dict:
-    """signage="animate". veo_call(png, prompt) -> mp4 bytes. Leaves status
-    'animating'; the renderer's loop step flips it to 'ready'."""
+            bedrock_client, model_id: str, invoke_renderer, veo_extend_call=None) -> dict:
+    """signage="animate". veo_call(png, prompt) -> 8 s mp4 bytes;
+    veo_extend_call(mp4, prompt) -> the 15 s extended mp4 (best-effort, see
+    the module docstring). Leaves status 'animating'; the renderer's loop
+    step flips it to 'ready'."""
     clip = veo_call(still_png, build_veo_prompt(ctx["visual_theme"]))
+    if veo_extend_call is not None:
+        try:
+            clip = veo_extend_call(clip, build_veo_extend_prompt(ctx["visual_theme"]))
+        except Exception:  # noqa: BLE001 -- fall back to the 8 s clip (renderer loops it)
+            logger.exception("Veo extension failed for article %s -- using the 8 s clip", ctx["article_id"])
     key = f"article-images/{ctx['product_id']}/signage/clip_raw_{new_run_id()}.mp4"
     s3_client.put_object(Bucket=image_bucket, Key=key, Body=clip, ContentType="video/mp4")
     try:
