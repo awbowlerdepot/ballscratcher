@@ -18223,6 +18223,75 @@ Existing clips are still 8 s loops. On each ball's Signage tab:
 aws logs tail /aws/lambda/bowling-scraper-product-article-generator --since 15m --filter-pattern "?extension ?Veo"
 ```
 
+### 6cs. Signage overlay in each brand's own colors and fonts (2026-10-11)
+
+Al:
+> "for the signage videos can you analyse the current marketing site for
+> each brand and pull in the current styling and color schemes to use for
+> the fonts and colors you use for the overlays"
+
+**Research.** I loaded each brand's live site in a real browser and read
+the computed styles of its headings and buttons. For Storm, Roto Grip and
+900 Global I also sampled colors from their logo PNGs: their brand pages
+share stormbowling.com's template (Oswald and Roboto, ink #191C1B), so
+their own color appears only in the logo. Storm's homepage was running its
+"Paint the Lane Pink" campaign, so that pink was ignored, and Storm's sage
+came from its brand page banner and logo.
+
+| Brand | Accent | Headings (site → used) | Body |
+| --- | --- | --- | --- |
+| Brunswick | #0000F0 blue, navy #061B2B panels | DIN → Barlow Condensed | Usual → Inter |
+| Storm | #548277 sage (keys #A9CBC2) | Oswald italic | Roboto |
+| Roto Grip | #E21836 red (logo) | Oswald | Roboto |
+| 900 Global | #F5A81C gold (logo) | Oswald | Roboto |
+| Hammer | #FE5000 orange | Open Sans 800 | Open Sans |
+| MOTIV | #E63201 red-orange | Mohave 600 | Montserrat |
+| Radical | #FFF200 yellow | Proxima Nova → Montserrat 800 | Montserrat |
+| Ebonite | #002D72 navy (panels) | Open Sans 800 | Assistant |
+| Track | #FFD700 yellow | Nunito Sans 900 | Nunito Sans |
+| DV8 | white on black, square outlines | DDC Hardware → Bungee | Usual → Inter |
+| SWAG | #E8202A red, ink #111318 | Anton | Noto Sans |
+
+- Paid fonts can't be loaded from our page, so the nearest Google Font
+  stands in. Bungee was picked side by side against dv8bowling.com's own
+  "TONIGHT WE BOWL." heading.
+- Brand colors too dark to read on video (Brunswick blue, Ebonite navy,
+  Storm sage) are used only as fills: the "Drilled" tag, label borders
+  and panels. The text and lines on top of them are white.
+
+**Changes** (Learn only, no backend):
+- New `bowlerdepot-learn/src/pages/signageThemes.ts`: the theme table,
+  `signageTheme(brand)` (unknown brands keep the old amber/Space Grotesk
+  look) and `themeVars()`.
+- `HeroLayout` sets those values as CSS variables on `.hx-canvas`, and
+  `HERO_CSS` reads only the variables.
+- The brand's Google Fonts are loaded with a `<link>`.
+- "Drilled" is now a solid accent tag.
+- `?theme=<brand>` previews another brand's look (used for SWAG, which
+  has no approved ball article yet).
+- **Name auto-fit.** Wider brand fonts pushed long names to three lines
+  and into the first callout (Hammer's "Black Widow Mania", Track's
+  "Kinetic Sapphire Ice"). The name now shrinks from 150px, in steps of
+  6px down to a 72px floor, until it fits in two lines.
+  - Lines are measured with `offsetHeight`, because `scrollHeight` counts
+    Open Sans's tall capitals overflowing the 0.95 line-height.
+  - The fit reruns once the exact brand font has loaded
+    (`document.fonts.load`, plus `loadingdone`), so the renderer's frames
+    get the fitted size.
+
+**Tested.** I previewed all 11 brands on the dev server against the live
+public API, on the same background clip, frozen at 5.5 s. The `tsc`
+build passes. I also checked the Track fit in `?overlay=1`, the
+renderer's mode: 132px, two lines.
+
+**Deploy.**
+```bash
+git push    # bowlerdepot-learn CI
+```
+The admin Signage preview and the piSignage web links pick it up at once.
+MP4s already rendered keep the old look, so use **Re-render MP4** on any
+you want restyled. No re-animate is needed.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

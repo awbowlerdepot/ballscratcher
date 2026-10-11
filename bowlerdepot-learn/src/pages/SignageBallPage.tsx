@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
 import { getArticleBySlug, getLearnPlotter, getSignage, resizedImageUrl } from "../api/client";
 import type { ArticleDetail, LearnPlotterPoint, SignageSpec } from "../api/types";
+import { signageTheme, themeVars } from "./signageThemes";
 
 // In-store signage loop for one ball (runbook 6cm) -- Al: "do you think we
 // could create a 9:16 vertical format video that could be put on our
@@ -164,6 +165,7 @@ export default function SignageBallPage() {
         video={video ?? ""}
         ball={ballPos}
         brand={product.brand_name ?? ""}
+        themeBrand={param("theme") ?? product.brand_name ?? ""}
         name={product.name}
         callouts={[
           { k: "Coverstock", v: [product.coverstock_name, titleCase(product.coverstock_type)].filter(Boolean).join(" · ") },
@@ -354,6 +356,9 @@ function HeroLayout(props: {
   video: string;
   ball: { x: number; y: number; r: number };
   brand: string;
+  // ?theme=<brand> previews another brand's look (runbook 6cs) -- e.g.
+  // SWAG, which has no approved ball article to try it on yet.
+  themeBrand: string;
   name: string;
   callouts: Callout[];
   point: LearnPlotterPoint | null;
@@ -361,7 +366,41 @@ function HeroLayout(props: {
   price: string | null;
   cta: string;
 }) {
-  const { overlayOnly, scale, video, ball, brand, name, callouts, point, similar, price, cta } = props;
+  const { overlayOnly, scale, video, ball, brand, themeBrand, name, callouts, point, similar, price, cta } = props;
+  // The brand's own colors + fonts (runbook 6cs, signageThemes.ts). The
+  // renderer waits on document.fonts.ready, so the MP4 always gets them.
+  const theme = signageTheme(themeBrand || brand);
+  // Fit the ball name to at most two lines (runbook 6cs). The brand faces
+  // run much wider than Space Grotesk did -- Hammer's Open Sans put "Black
+  // Widow Mania" on three lines, into the first callout; DV8's Bungee is
+  // wider still. Shrinks in place, written straight to the DOM (no
+  // re-render), once the brand font has actually loaded.
+  const nameRef = useRef<HTMLParagraphElement>(null);
+  useLayoutEffect(() => {
+    const el = nameRef.current;
+    if (!el) return;
+    const fit = () => {
+      let size = 150;
+      el.style.fontSize = `${size}px`;
+      // offsetHeight = lines x line-height (glyphs that overflow the tight
+      // 0.95 line-height -- Open Sans's tall caps -- don't count, which
+      // scrollHeight wrongly did); scrollWidth catches one word too wide.
+      while (size > 72 && (el.offsetHeight > size * 0.95 * 2 + 4 || el.scrollWidth > el.clientWidth + 12)) {
+        size -= 6;
+        el.style.fontSize = `${size}px`;
+      }
+    };
+    fit();
+    // The brand's font arrives via the <link> below, often AFTER an early
+    // document.fonts.ready has already resolved (Track's Nunito Sans 900
+    // left "Kinetic Sapphire Ice" on three lines), so wait for that exact
+    // face; refit on any later font load too. Both land well before the
+    // renderer's networkidle + fonts.ready wait, so every MP4 frame is fitted.
+    const face = `${theme.heading.italic ? "italic " : ""}${theme.heading.weight} 150px "${theme.heading.family}"`;
+    document.fonts.load(face).then(fit, fit);
+    document.fonts.addEventListener("loadingdone", fit);
+    return () => document.fonts.removeEventListener("loadingdone", fit);
+  }, [name, theme]);
   const cx = ball.x * W;
   const cy = ball.y * H;
   const r = ball.r * W;
@@ -379,9 +418,18 @@ function HeroLayout(props: {
   return (
     <div style={{ position: "fixed", inset: 0, background: overlayOnly ? "transparent" : "#000", overflow: "hidden" }}>
       <style>{HERO_CSS}</style>
+      <link rel="stylesheet" href={`https://fonts.googleapis.com/css2?${theme.fonts}&display=block`} />
       <div
         className={overlayOnly ? "hx-canvas hx-overlay-only" : "hx-canvas"}
-        style={{ width: W, height: H, transform: `translate(-50%, -50%) scale(${scale})`, position: "absolute", left: "50%", top: "50%" }}
+        style={{
+          width: W,
+          height: H,
+          transform: `translate(-50%, -50%) scale(${scale})`,
+          position: "absolute",
+          left: "50%",
+          top: "50%",
+          ...(themeVars(theme) as CSSProperties),
+        }}
       >
         {overlayOnly ? null : <video className="hx-video" src={video} autoPlay muted loop playsInline />}
         <div className="hx-top-shade" />
@@ -389,7 +437,7 @@ function HeroLayout(props: {
 
         <div className="hx-title">
           <p className="hx-brand">{brand}</p>
-          <p className="hx-name">{name}</p>
+          <p className="hx-name" ref={nameRef}>{name}</p>
         </div>
 
         <svg className="hx-lines" width={W} height={H} viewBox={`0 0 ${W} ${H}`}>
@@ -402,7 +450,7 @@ function HeroLayout(props: {
             const d = `M ${x1} ${y1} L ${elbowX} ${s.ly + 36} L ${s.align === "left" ? s.lx : s.lx} ${s.ly + 36}`;
             return (
               <g key={c.k} className="hx-callout-g" style={{ animationDelay: `${i * 1.1}s` }}>
-                <circle cx={x1} cy={y1} r={10} fill="#fbbf24" className="hx-dot" style={{ animationDelay: `${i * 1.1}s` }} />
+                <circle cx={x1} cy={y1} r={10} fill={theme.line} className="hx-dot" style={{ animationDelay: `${i * 1.1}s` }} />
                 <path d={d} className="hx-line" style={{ animationDelay: `${i * 1.1}s` }} pathLength={1} />
               </g>
             );
@@ -428,7 +476,7 @@ function HeroLayout(props: {
 
         {point ? (
           <div className="hx-badge">
-            <MiniBadge oil={point.oil} motion={point.motion} />
+            <MiniBadge oil={point.oil} motion={point.motion} color={theme.accent} />
             <div>
               <p className="hx-badge-h">Ball motion</p>
               <p className="hx-badge-pos">
@@ -451,7 +499,7 @@ function HeroLayout(props: {
   );
 }
 
-function MiniBadge({ oil, motion }: { oil: number; motion: number }) {
+function MiniBadge({ oil, motion, color = "#fbbf24" }: { oil: number; motion: number; color?: string }) {
   const s = 200;
   const p = 14;
   const x = p + ((oil - 1) / 15) * (s - 2 * p);
@@ -461,42 +509,42 @@ function MiniBadge({ oil, motion }: { oil: number; motion: number }) {
       <rect x={p} y={p} width={s - 2 * p} height={s - 2 * p} rx={12} fill="rgba(255,255,255,0.08)" stroke="rgba(255,255,255,0.35)" />
       <line x1={s / 2} y1={p} x2={s / 2} y2={s - p} stroke="rgba(255,255,255,0.15)" />
       <line x1={p} y1={s / 2} x2={s - p} y2={s / 2} stroke="rgba(255,255,255,0.15)" />
-      <circle className="sg-dot-pulse" cx={x} cy={y} r={16} fill="#fbbf24" opacity={0.4} />
-      <circle cx={x} cy={y} r={9} fill="#fbbf24" stroke="#fff" strokeWidth={3} />
+      <circle className="sg-dot-pulse" cx={x} cy={y} r={16} fill={color} opacity={0.4} />
+      <circle cx={x} cy={y} r={9} fill={color} stroke="#fff" strokeWidth={3} />
     </svg>
   );
 }
 
 const HERO_CSS = `
-.hx-canvas { font-family: "Space Grotesk", Arial, sans-serif; color: #fff; overflow: hidden; background: #000; }
+.hx-canvas { font-family: var(--sg-body-font); color: #fff; overflow: hidden; background: #000; }
 .hx-overlay-only { background: transparent; }
 .hx-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-.hx-top-shade { position: absolute; left: 0; right: 0; top: 0; height: 520px; background: linear-gradient(to bottom, rgba(5,8,25,0.85), rgba(5,8,25,0)); }
-.hx-bottom-shade { position: absolute; left: 0; right: 0; bottom: 0; height: 560px; background: linear-gradient(to top, rgba(5,8,25,0.95) 30%, rgba(5,8,25,0)); }
+.hx-top-shade { position: absolute; left: 0; right: 0; top: 0; height: 520px; background: linear-gradient(to bottom, rgba(var(--sg-shade),0.85), rgba(var(--sg-shade),0)); }
+.hx-bottom-shade { position: absolute; left: 0; right: 0; bottom: 0; height: 560px; background: linear-gradient(to top, rgba(var(--sg-shade),0.95) 30%, rgba(var(--sg-shade),0)); }
 .hx-title { position: absolute; top: 110px; left: 70px; right: 70px; animation: hx-title ${HERO_LOOP_S}s ease-out infinite; }
 @keyframes hx-title { 0% {opacity:0; transform: translateY(-40px)} 4% {opacity:1; transform: translateY(0)} 97% {opacity:1} 100% {opacity:0} }
-.hx-brand { margin: 0; font-size: 48px; font-weight: 700; letter-spacing: 10px; text-transform: uppercase; color: #fbbf24; text-shadow: 0 4px 18px rgba(0,0,0,0.6); }
-.hx-name { margin: 6px 0 0; font-size: 150px; line-height: 0.95; font-weight: 700; text-transform: uppercase; text-shadow: 0 8px 30px rgba(0,0,0,0.7); }
+.hx-brand { margin: 0; font-family: var(--sg-head-font); font-size: 48px; font-weight: var(--sg-head-weight); font-style: var(--sg-head-style); letter-spacing: 10px; text-transform: uppercase; color: var(--sg-key); text-shadow: 0 4px 18px rgba(0,0,0,0.6); }
+.hx-name { margin: 6px 0 0; font-family: var(--sg-head-font); font-size: 150px; line-height: 0.95; font-weight: var(--sg-head-weight); font-style: var(--sg-head-style); letter-spacing: var(--sg-head-tracking); text-transform: uppercase; text-shadow: 0 8px 30px rgba(0,0,0,0.7); }
 .hx-lines { position: absolute; inset: 0; pointer-events: none; }
-.hx-line { fill: none; stroke: #fbbf24; stroke-width: 4; stroke-dasharray: 1; stroke-dashoffset: 1; animation: hx-draw ${HERO_LOOP_S}s ease-out infinite; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.6)); }
+.hx-line { fill: none; stroke: var(--sg-line); stroke-width: 4; stroke-dasharray: 1; stroke-dashoffset: 1; animation: hx-draw ${HERO_LOOP_S}s ease-out infinite; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.6)); }
 @keyframes hx-draw { 0%,12% {stroke-dashoffset: 1; opacity: 1} 18% {stroke-dashoffset: 0; opacity:1} 56% {stroke-dashoffset: 0; opacity:1} 60% {stroke-dashoffset: 0; opacity: 0} 100% {stroke-dashoffset: 1; opacity: 0} }
 .hx-dot { opacity: 0; animation: hx-dot ${HERO_LOOP_S}s ease-out infinite; }
 @keyframes hx-dot { 0%,11% {opacity:0} 13% {opacity:1} 56% {opacity:1} 60% {opacity:0} 100% {opacity:0} }
-.hx-label { position: absolute; display: flex; flex-direction: column; max-width: 560px; background: rgba(8,10,30,0.72); border: 2px solid rgba(251,191,36,0.85); border-radius: 18px; padding: 16px 26px; opacity: 0; animation: hx-label ${HERO_LOOP_S}s ease-out infinite; box-shadow: 0 10px 30px rgba(0,0,0,0.45); }
+.hx-label { position: absolute; display: flex; flex-direction: column; max-width: 560px; background: var(--sg-panel); border: 3px solid var(--sg-accent); border-radius: var(--sg-radius); padding: 16px 26px; opacity: 0; animation: hx-label ${HERO_LOOP_S}s ease-out infinite; box-shadow: 0 10px 30px rgba(0,0,0,0.45); }
 .hx-label-right { text-align: right; align-items: flex-end; }
 @keyframes hx-label { 0%,17% {opacity:0; transform: translateY(14px)} 21% {opacity:1; transform: translateY(0)} 56% {opacity:1} 60% {opacity:0} 100% {opacity:0} }
-.hx-k { font-size: 28px; letter-spacing: 4px; text-transform: uppercase; color: #fbbf24; font-weight: 700; }
-.hx-v { font-size: 44px; font-weight: 600; margin-top: 4px; line-height: 1.15; }
-.hx-badge { position: absolute; left: 60px; right: 60px; top: 520px; display: flex; gap: 28px; align-items: center; background: rgba(8,10,30,0.72); border: 2px solid rgba(255,255,255,0.25); border-radius: 24px; padding: 22px 28px; opacity: 0; animation: hx-badge ${HERO_LOOP_S}s ease-out infinite; }
+.hx-k { font-family: var(--sg-head-font); font-size: 28px; letter-spacing: 4px; text-transform: uppercase; color: var(--sg-key); font-weight: var(--sg-head-weight); font-style: var(--sg-head-style); }
+.hx-v { font-size: 44px; font-weight: var(--sg-body-weight); margin-top: 4px; line-height: 1.15; }
+.hx-badge { position: absolute; left: 60px; right: 60px; top: 520px; display: flex; gap: 28px; align-items: center; background: var(--sg-panel); border: 2px solid rgba(255,255,255,0.25); border-radius: var(--sg-radius); padding: 22px 28px; opacity: 0; animation: hx-badge ${HERO_LOOP_S}s ease-out infinite; }
 @keyframes hx-badge { 0%,60% {opacity:0; transform: translateX(-60px)} 64% {opacity:1; transform: translateX(0)} 94% {opacity:1} 97% {opacity:0} 100% {opacity:0} }
-.hx-badge-h { margin: 0; font-size: 30px; letter-spacing: 4px; text-transform: uppercase; color: #fbbf24; font-weight: 700; }
-.hx-badge-pos { margin: 6px 0 0; font-size: 48px; font-weight: 700; }
+.hx-badge-h { margin: 0; font-family: var(--sg-head-font); font-size: 30px; letter-spacing: 4px; text-transform: uppercase; color: var(--sg-key); font-weight: var(--sg-head-weight); font-style: var(--sg-head-style); }
+.hx-badge-pos { margin: 6px 0 0; font-family: var(--sg-head-font); font-size: 48px; font-weight: var(--sg-head-weight); }
 .hx-badge-sim { margin: 8px 0 0; font-size: 32px; color: #e2e8f0; line-height: 1.25; }
 .hx-lower { position: absolute; left: 70px; right: 70px; bottom: 90px; display: flex; align-items: flex-end; justify-content: space-between; gap: 30px; animation: hx-lower ${HERO_LOOP_S}s ease-out infinite; }
 @keyframes hx-lower { 0%,7% {opacity:0; transform: translateY(40px)} 12% {opacity:1; transform: translateY(0)} 97% {opacity:1} 100% {opacity:0} }
-.hx-price-label { margin: 0 0 4px; font-size: 40px; font-weight: 700; letter-spacing: 8px; text-transform: uppercase; color: #fde68a; text-shadow: 0 4px 14px rgba(0,0,0,0.7); }
-.hx-price { margin: 0; font-size: 170px; line-height: 1; font-weight: 700; color: #fbbf24; text-shadow: 0 8px 30px rgba(0,0,0,0.7); }
-.hx-at { margin: 10px 0 0; font-size: 46px; font-weight: 600; color: #f1f5f9; }
+.hx-price-label { display: inline-block; margin: 0 0 12px; padding: 6px 18px; font-family: var(--sg-head-font); font-size: 38px; font-weight: var(--sg-head-weight); font-style: var(--sg-head-style); letter-spacing: 8px; text-transform: uppercase; color: var(--sg-on-accent); background: var(--sg-accent); border-radius: var(--sg-radius); box-shadow: 0 6px 18px rgba(0,0,0,0.45); }
+.hx-price { margin: 0; font-family: var(--sg-head-font); font-size: 170px; line-height: 1; font-weight: var(--sg-head-weight); font-style: var(--sg-head-style); color: var(--sg-price); text-shadow: 0 8px 30px rgba(0,0,0,0.7); }
+.hx-at { margin: 10px 0 0; font-size: 46px; font-weight: var(--sg-body-weight); color: #f1f5f9; }
 .sg-dot-pulse { transform-box: fill-box; transform-origin: center; animation: sg-pulse 1.6s ease-in-out infinite; }
 @keyframes sg-pulse { 0%,100% {transform: scale(0.8); opacity:0.5} 50% {transform: scale(1.4); opacity:0.15} }
 `;
