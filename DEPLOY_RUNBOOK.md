@@ -18460,6 +18460,38 @@ git push                    # Learn layout (6ct) + admin checkbox
 Existing clips keep their Veo-animated balls. On each ball's Signage tab,
 click **Re-animate**, then **Approve**, then **Re-render MP4**.
 
+### 6cv. Fixed: signage Re-animate ran out of memory; generator raised to 1024 MB with no async retries (2026-10-12)
+
+Al: "reanimate has failed twice now".
+
+**Cause.** `ProductArticleGeneratorFunction` had the 256 MB default. A
+ball-lock animate (6cu) holds the still, the plate and a 15 s 1080p Veo
+clip. The clip arrives base64-encoded inside a JSON body, so it takes
+roughly 3x its size in memory while decoding. Every run died with
+`Runtime.OutOfMemory`, after 160–330 s.
+
+Lambda's default async retry policy (2 retries) re-ran each failed
+invoke on its own, so each click became 3 paid runs. Al's two clicks,
+plus a third at 19:14, made 9 runs between 18:00 and 19:27, each paying
+for at least one Veo call. The Zero Mercy row stayed `animating` until
+the 20-minute stale rule (6cn) surfaced it as failed.
+
+**Fix** (`template.yaml`, generator only):
+- `MemorySize: 1024`.
+- `EventInvokeConfig: MaximumRetryAttempts: 0`. A signage job already
+  records its own failure in admin. A scheduled article batch just runs
+  again on its next schedule.
+
+**Deploy.** `sam build && sam deploy`.
+
+**Verify.**
+```bash
+aws lambda get-function-configuration --region us-west-1 --function-name bowling-scraper-product-article-generator --query MemorySize   # 1024
+aws lambda get-function-event-invoke-config --region us-west-1 --function-name bowling-scraper-product-article-generator --query MaximumRetryAttempts   # 0
+```
+Then Re-animate a ball. The REPORT line should show `Max Memory Used`
+well under 1024 MB.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

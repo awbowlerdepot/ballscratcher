@@ -2681,6 +2681,17 @@ Resources:
       # TWO Veo calls back to back (8 s image-to-video, then the extension
       # to 15 s), ~2-2.5 min each live, up to 420 + 360 s at their limits.
       Timeout: 900
+      # 1024 MB since runbook 6cv: the 256 MB default ran out of memory
+      # (Runtime.OutOfMemory) on ball-lock animate jobs -- a 15 s 1080p
+      # Veo clip arrives base64-encoded inside a JSON body (~3x its size in
+      # memory while it's decoded), on top of the still and the plate.
+      MemorySize: 1024
+      # No async retries (runbook 6cv): Lambda retried each OOM'd animate
+      # twice on its own -- 3 paid Veo runs per click -- and a signage job
+      # already reports its own failure in admin. Scheduled article batches
+      # just run again on their next schedule.
+      EventInvokeConfig:
+        MaximumRetryAttempts: 0
       Environment:
         Variables:
           BEDROCK_MODEL_ID: !Ref BedrockModelId
