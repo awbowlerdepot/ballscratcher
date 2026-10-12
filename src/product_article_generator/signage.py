@@ -242,27 +242,56 @@ def build_veo_prompt(visual_theme: str) -> str:
     )
 
 
-def parse_ball_position(raw: str) -> dict:
-    """Haiku's {"cx","cy","r"} (fractions) -> validated {"x","y","r"};
-    falls back to DEFAULT_BALL_POSITION if missing or implausible (the
-    callout lines then just aim at the composition's intended spot)."""
+# Where the ball sits, for the callout dots (runbook 6ct). Al: "can you
+# adjust the callouts in the videos so that they are mapping the dots to
+# where the ball is in the video? if not we should figure out something
+# better because it doesn't look polished". The old Haiku "give me cx/cy/r
+# as fractions" guess came back coarse and often wrong (Black Widow Spare+
+# 0.50/0.55 when the ball sat at 0.72, Zero Mercy 0.35 vs 0.68), so the dots
+# landed on the background. Gemini's native object detection -- the
+# box_2d [ymin, xmin, ymax, xmax] 0-1000 format it's trained on, thinking
+# off -- matched an OpenCV circle fit to within ~0.01 on all four live
+# clips, AND picked the ball in Portal, where the circle fit locked onto
+# the round portal instead ("the portal got the portal not the ball").
+DETECT_MODEL_ID = "gemini-2.5-flash"
+BALL_DETECT_PROMPT = (
+    'Detect the bowling ball (the real ball object -- not a round portal, ring, planet, moon or logo). Output a '
+    'JSON list of bounding boxes with "box_2d" [ymin, xmin, ymax, xmax] normalized to 0-1000 and "label".'
+)
+
+
+def parse_ball_box(raw: str, height_over_width: float = 16 / 9) -> dict:
+    """Gemini's [{"box_2d": [ymin, xmin, ymax, xmax]}] (0-1000) -> {"x","y","r"}:
+    center as fractions of width/height, radius as a fraction of WIDTH (the
+    average of the box's half-width and its half-height converted to width
+    units -- a ball's box is square in pixels). Falls back to
+    DEFAULT_BALL_POSITION when missing or implausible."""
     try:
-        m = re.search(r"\{.*\}", raw or "", re.DOTALL)
+        m = re.search(r"\[.*\]|\{.*\}", raw or "", re.DOTALL)
         d = json.loads(m.group(0))
-        x, y, r = float(d["cx"]), float(d["cy"]), float(d["r"])
+        box = (d[0] if isinstance(d, list) else d)["box_2d"]
+        y0, x0, y1, x1 = (float(v) / 1000 for v in box)
     except Exception:  # noqa: BLE001 -- any parse failure -> default
         return dict(DEFAULT_BALL_POSITION)
-    if not (0.15 <= x <= 0.85 and 0.3 <= y <= 0.9 and 0.08 <= r <= 0.45):
+    x, y = (x0 + x1) / 2, (y0 + y1) / 2
+    r = ((x1 - x0) / 2 + (y1 - y0) / 2 * height_over_width) / 2
+    if not (0.05 <= x <= 0.95 and 0.1 <= y <= 0.95 and 0.05 <= r <= 0.5):
         return dict(DEFAULT_BALL_POSITION)
     return {"x": round(x, 3), "y": round(y, 3), "r": round(r, 3)}
 
 
-BALL_POSITION_PROMPT = (
-    "This is a 9:16 vertical image with one bowling ball in it. Return ONLY JSON "
-    '{"cx": <center x>, "cy": <center y>, "r": <radius>} where cx is the ball center as a fraction of the image '
-    "WIDTH (0-1), cy the center as a fraction of the image HEIGHT (0-1), and r the ball's radius as a fraction of "
-    "the image WIDTH."
-)
+def locate_ball(png: bytes, detect_call) -> dict:
+    """detect_call(png, prompt) -> Gemini's text. Never raises: a missing
+    position only costs the dots their precision."""
+    import io
+    from PIL import Image
+
+    try:
+        w, h = Image.open(io.BytesIO(png)).size
+        return parse_ball_box(detect_call(png, BALL_DETECT_PROMPT), h / w)
+    except Exception:  # noqa: BLE001
+        logger.exception("ball detection failed")
+        return dict(DEFAULT_BALL_POSITION)
 
 
 # --------------------------------------------------------------------------
@@ -279,6 +308,23 @@ def call_bedrock_text(bedrock_client, model_id: str, prompt: str, max_tokens: in
                        "messages": [{"role": "user", "content": content}]})
     resp = bedrock_client.invoke_model(modelId=model_id, contentType="application/json", accept="application/json", body=body)
     return json.loads(resp["body"].read())["content"][0]["text"].strip()
+
+
+def call_gemini_detect(session, access_token: str, project_id: str, png: bytes, prompt: str,
+                       model_id: str = DETECT_MODEL_ID) -> str:
+    """One image + prompt -> Gemini's JSON text (Vertex, global endpoint)."""
+    url = (f"https://aiplatform.googleapis.com/v1/projects/{project_id}/locations/global"
+           f"/publishers/google/models/{model_id}:generateContent")
+    body = {
+        "contents": [{"role": "user", "parts": [
+            {"inlineData": {"mimeType": "image/png", "data": base64.b64encode(png).decode()}},
+            {"text": prompt}]}],
+        "generationConfig": {"temperature": 0, "responseMimeType": "application/json",
+                             "thinkingConfig": {"thinkingBudget": 0}},
+    }
+    r = session.post(url, headers={"Authorization": f"Bearer {access_token}"}, json=body, timeout=60)
+    r.raise_for_status()
+    return r.json()["candidates"][0]["content"]["parts"][-1]["text"]
 
 
 def call_veo(session, access_token: str, project_id: str, image_png: bytes, prompt: str,
@@ -422,7 +468,7 @@ def generate_stills(conn, ctx: dict, *, source_png: bytes, gemini_call, s3_clien
 
 
 def animate(conn, ctx: dict, *, still_png: bytes, veo_call, s3_client, image_bucket: str,
-            bedrock_client, model_id: str, invoke_renderer, veo_extend_call=None) -> dict:
+            detect_call, invoke_renderer, veo_extend_call=None) -> dict:
     """signage="animate". veo_call(png, prompt) -> 8 s mp4 bytes;
     veo_extend_call(mp4, prompt) -> the 15 s extended mp4 (best-effort, see
     the module docstring). Leaves status 'animating'; the renderer's loop
@@ -435,11 +481,19 @@ def animate(conn, ctx: dict, *, still_png: bytes, veo_call, s3_client, image_buc
             logger.exception("Veo extension failed for article %s -- using the 8 s clip", ctx["article_id"])
     key = f"article-images/{ctx['product_id']}/signage/clip_raw_{new_run_id()}.mp4"
     s3_client.put_object(Bucket=image_bucket, Key=key, Body=clip, ContentType="video/mp4")
-    try:
-        pos = parse_ball_position(call_bedrock_text(bedrock_client, model_id, BALL_POSITION_PROMPT, 100, image_png=still_png))
-    except Exception:  # noqa: BLE001 -- position is a nicety; default is fine
-        logger.exception("ball position detection failed for article %s", ctx["article_id"])
-        pos = dict(DEFAULT_BALL_POSITION)
+    # The still is the clip's first frame, and the camera is locked off
+    # (6cr), so where the ball is in the still is where it stays.
+    pos = locate_ball(still_png, detect_call)
     update_signage(conn, ctx["article_id"], raw_clip_key=key, ball_x=pos["x"], ball_y=pos["y"], ball_r=pos["r"])
     invoke_renderer({"mode": "loop", "article_id": ctx["article_id"]})
     return {"raw_clip_key": key, "ball": pos}
+
+
+def relocate(conn, ctx: dict, *, still_png: bytes, detect_call) -> dict:
+    """signage="locate" (runbook 6ct): re-detect the ball on the selected
+    still and store it -- fixes the dots on clips animated before Gemini
+    detection, without re-animating. Touches only ball_x/y/r (never status
+    or approval); the live page uses them at once, an MP4 needs a re-render."""
+    pos = locate_ball(still_png, detect_call)
+    update_signage(conn, ctx["article_id"], ball_x=pos["x"], ball_y=pos["y"], ball_r=pos["r"])
+    return {"article_id": ctx["article_id"], "ball": pos}

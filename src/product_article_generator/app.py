@@ -3405,7 +3405,7 @@ def generate_article_for_learn_video(conn, bedrock_client, model_id: str, learn_
 
 
 def run_signage_job(conn, event, *, s3_client, bedrock_client, model_id, gemini_auth, gemini_model_id, image_bucket):
-    """{"signage": "stills" | "animate", "article_id": ..., "source": ...} from admin_api
+    """{"signage": "stills" | "animate" | "locate", "article_id": ..., "source": ...} from admin_api
     (runbook 6cn). Any failure marks the row 'failed' with the error, so the
     admin section shows it instead of spinning forever."""
     import signage
@@ -3467,9 +3467,26 @@ def run_signage_job(conn, event, *, s3_client, bedrock_client, model_id, gemini_
                     session, gemini_auth["access_token"], gemini_auth["project_id"], png, prompt),
                 veo_extend_call=lambda mp4, prompt: signage.call_veo(
                     session, gemini_auth["access_token"], gemini_auth["project_id"], None, prompt, extend_mp4=mp4),
-                s3_client=s3_client, image_bucket=image_bucket, bedrock_client=bedrock_client, model_id=model_id,
+                s3_client=s3_client, image_bucket=image_bucket,
+                detect_call=lambda png, prompt: signage.call_gemini_detect(
+                    session, gemini_auth["access_token"], gemini_auth["project_id"], png, prompt),
                 invoke_renderer=lambda payload: lambda_client.invoke(
                     FunctionName=renderer, InvocationType="Event", Payload=json.dumps(payload)),
+            )
+        if event["signage"] == "locate":
+            # Re-detect the ball for the callout dots (runbook 6ct). Never
+            # marks the row failed -- a ready, approved signage stays as is.
+            import requests
+
+            if not ctx["selected_still_url"]:
+                return {"article_id": article_id, "skipped": "no selected still"}
+            still = requests.get(ctx["selected_still_url"], timeout=30)
+            still.raise_for_status()
+            session = get_gemini_requests_session()
+            return signage.relocate(
+                conn, ctx, still_png=still.content,
+                detect_call=lambda png, prompt: signage.call_gemini_detect(
+                    session, gemini_auth["access_token"], gemini_auth["project_id"], png, prompt),
             )
         raise ValueError(f"Unknown signage job {event['signage']!r}")
     except Exception as e:

@@ -158,10 +158,28 @@ def test_veo_request_has_no_last_frame_and_bans_particles():
     assert all(w in params["negativePrompt"] for w in ("embers", "sparks", "fire", "lens flare"))
 
 
-def test_ball_position_parsing_and_fallback():
-    assert signage.parse_ball_position('{"cx": 0.49, "cy": 0.62, "r": 0.29}') == {"x": 0.49, "y": 0.62, "r": 0.29}
-    assert signage.parse_ball_position("not json") == signage.DEFAULT_BALL_POSITION
-    assert signage.parse_ball_position('{"cx": 2, "cy": 0.6, "r": 0.3}') == signage.DEFAULT_BALL_POSITION
+def test_ball_box_parsing_and_fallback():
+    # Runbook 6ct: Gemini box_2d [ymin, xmin, ymax, xmax] 0-1000 -- the real
+    # Black Widow Spare+ answer, which matched an OpenCV circle fit.
+    pos = signage.parse_ball_box('[{"box_2d": [567, 225, 875, 773], "label": "bowling ball"}]')
+    assert pos == {"x": 0.499, "y": 0.721, "r": 0.274}
+    assert signage.parse_ball_box("not json") == signage.DEFAULT_BALL_POSITION
+    assert signage.parse_ball_box('[{"box_2d": [0, 0, 1000, 1000]}]') == signage.DEFAULT_BALL_POSITION
+
+
+def test_locate_ball_never_raises():
+    png = _png(768, 1376)
+    assert signage.locate_ball(png, lambda p, prompt: 1 / 0) == signage.DEFAULT_BALL_POSITION
+    assert "not a round portal" in signage.BALL_DETECT_PROMPT
+
+
+def test_relocate_updates_only_the_ball():
+    conn = FakeConn()
+    out = signage.relocate(conn, CTX, still_png=_png(768, 1376),
+                           detect_call=lambda p, prompt: '[{"box_2d": [639, 525, 839, 847]}]')
+    assert out["ball"]["x"] == 0.686
+    sql, params = conn.log[-1]
+    assert "ball_x" in sql and "status" not in sql and "approved" not in sql
 
 
 def test_generate_stills_outpaints_source_retries_letterboxed_and_stores():
@@ -232,17 +250,17 @@ def test_veo_extension_sends_the_clip_as_bytes_without_duration():
 def test_animate_extends_the_clip_and_falls_back_to_8s_if_extension_fails():
     for ext, expect in ((lambda mp4, p: mp4 + b"+7s", b"mp4+7s"), (lambda mp4, p: 1 / 0, b"mp4")):
         conn, s3 = FakeConn(), FakeS3()
-        signage.animate(conn, CTX, still_png=b"png", veo_call=lambda png, prompt: b"mp4", s3_client=s3,
-                        image_bucket="bkt", bedrock_client=FakeBedrock('{"cx":0.5,"cy":0.6,"r":0.3}'),
-                        model_id="m", invoke_renderer=lambda p: None, veo_extend_call=ext)
+        signage.animate(conn, CTX, still_png=_png(768, 1376), veo_call=lambda png, prompt: b"mp4", s3_client=s3,
+                        image_bucket="bkt", detect_call=lambda p, prompt: '[{"box_2d": [500, 250, 800, 750]}]',
+                        invoke_renderer=lambda p: None, veo_extend_call=ext)
         assert s3.puts[0]["Body"] == expect
 
 
 def test_animate_uploads_clip_records_ball_and_hands_off_to_renderer():
     conn, s3, invoked = FakeConn(), FakeS3(), []
-    out = signage.animate(conn, CTX, still_png=b"png", veo_call=lambda png, prompt: b"mp4", s3_client=s3,
-                          image_bucket="bkt", bedrock_client=FakeBedrock('{"cx":0.5,"cy":0.6,"r":0.3}'),
-                          model_id="m", invoke_renderer=invoked.append)
+    out = signage.animate(conn, CTX, still_png=_png(768, 1376), veo_call=lambda png, prompt: b"mp4", s3_client=s3,
+                          image_bucket="bkt", detect_call=lambda p, prompt: '[{"box_2d": [500, 250, 800, 750]}]',
+                          invoke_renderer=invoked.append)
     assert s3.puts[0]["ContentType"] == "video/mp4" and "clip_raw_" in s3.puts[0]["Key"]
-    assert out["ball"] == {"x": 0.5, "y": 0.6, "r": 0.3}
+    assert out["ball"] == {"x": 0.5, "y": 0.65, "r": 0.259}
     assert invoked == [{"mode": "loop", "article_id": "a1"}]

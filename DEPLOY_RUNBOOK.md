@@ -18292,6 +18292,84 @@ The admin Signage preview and the piSignage web links pick it up at once.
 MP4s already rendered keep the old look, so use **Re-render MP4** on any
 you want restyled. No re-animate is needed.
 
+### 6ct. Signage callouts: real ball position (Gemini detection) and an adaptive label layout (2026-10-12)
+
+Al:
+> "can you adjust the callouts in the videos so that they are mapping the
+> dots to where the ball is in the video? if not we should figure out
+> something better because it doesn't look polished"
+
+**Why the dots missed.** The ball position came from Bedrock Haiku,
+asked to "return cx/cy/r as fractions". The answers were coarse round
+numbers and often wrong, so the dots landed on the background.
+
+| Ball | Stored (Haiku) | Actual |
+| --- | --- | --- |
+| Black Widow Spare+ | 0.50, 0.55, r 0.25 | 0.50, 0.72, r 0.27 |
+| Zero Mercy Tour | 0.50, 0.35 | 0.45, 0.68 |
+| Equinox Hybrid | 0.50, 0.45, r 0.25 | 0.50, 0.65, r 0.37 |
+
+**Detection.** I measured both options against frames of the 4 live
+clips:
+- **OpenCV `HoughCircles`** was exact on 3 of 4, but on Portal it locked
+  onto the round portal (Al: "the portal got the portal not the ball").
+- **Gemini 2.5 Flash native detection** asks for `box_2d` [ymin, xmin,
+  ymax, xmax] on a 0–1000 scale, with thinking off and temperature 0. It
+  matched the Hough fit to within ~0.01 on those 3, and on Portal it
+  picked the ball, at 0.68, 0.74, r 0.16.
+- The radius is the mean of the box's half-width and its half-height,
+  converted to width units.
+- The still is the clip's first frame, and the camera has been locked
+  since 6cr, so the position holds for the whole clip.
+
+**Layout.** With true positions, the fixed label slots (designed for a
+mid-size centered ball) put a label over Black Widow's logo, or over the
+price for low balls. `HeroLayout` now picks a layout from where the ball
+actually is:
+- **Room beside the ball** (500 px or more, e.g. Portal at x 0.68): all
+  labels stack on that side, narrower to fit.
+- **Big or centered ball:** labels go in the clear band above the ball.
+  With 450 px or more of room they're staggered L, R, L. With less (Black
+  Widow, Equinox at r 0.37) the first two share a row side by side and
+  the third goes below them.
+- Labels always stay between the title (~y 620) and the price (~y 1300).
+- Each dot sits where the ball's edge faces its label's leader elbow.
+  Elbows are set per slot (400 / 180 px in from the edge) so two labels
+  on one side don't share a dot.
+
+**Code.**
+- `signage.py`:
+  - `DETECT_MODEL_ID`, `BALL_DETECT_PROMPT` (says "not a round portal,
+    ring, planet, moon or logo"), `parse_ball_box`, `locate_ball` (never
+    raises), `call_gemini_detect`.
+  - `animate(detect_call=)` replaces the Haiku position step.
+    `parse_ball_position` and `BALL_POSITION_PROMPT` are removed.
+  - New job `signage="locate"`: `relocate` re-detects on the selected
+    still and writes only `ball_x/y/r`, never status or approval.
+- Learn `SignageBallPage.tsx` `HeroLayout`: the adaptive slots.
+
+**Tested.**
+- `test_signage_generator.py` (13): box parsing on the real Black Widow
+  answer, fallback, `locate_ball` never raises, relocate only touches the
+  ball.
+- All 56 test files pass, run one per file. `tsc` passes.
+- Live detection on the 4 selected stills, with the dots drawn on the
+  ball's edge in all 4 (Portal included).
+- I previewed the overlay at 1080x1920 for Black Widow (big, centered),
+  Portal (off-center), Equinox (huge) and Zero Mercy.
+
+**Deploy.**
+```bash
+sam build && sam deploy     # generator (zip)
+git push                    # Learn layout
+```
+
+**Repair existing rows.** Run the new locate job for each, then click
+**Re-render MP4** where an MP4 exists. The web link updates at once.
+```bash
+for a in <article ids>; do aws lambda invoke --region us-west-1 --function-name bowling-scraper-product-article-generator --cli-binary-format raw-in-base64-out --payload "{\"signage\": \"locate\", \"article_id\": \"$a\"}" /dev/stdout; echo; done
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

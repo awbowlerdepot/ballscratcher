@@ -404,17 +404,53 @@ function HeroLayout(props: {
   const cx = ball.x * W;
   const cy = ball.y * H;
   const r = ball.r * W;
-  // Callout anchors: start on the ball's edge at these angles, run outward
-  // to a label slot. Left, right, left-low -- alternating sides keeps the
-  // labels clear of each other and of the ball.
-  // Stacked down the gap between the title (~y 560) and the ball, each
-  // ~190px apart so two-line labels never collide; the third sits beside
-  // the ball's lower right.
-  const slots = [
-    { angle: -150, lx: 60, ly: Math.max(620, cy - r - 300), align: "left" as const },
-    { angle: -30, lx: W - 60, ly: Math.max(810, cy - r - 110), align: "right" as const },
-    { angle: 20, lx: W - 60, ly: cy + r * 0.55, align: "right" as const },
-  ];
+  // Callout layout (runbook 6ct). Al: "can you adjust the callouts in the
+  // videos so that they are mapping the dots to where the ball is in the
+  // video? if not we should figure out something better because it doesn't
+  // look polished". The ball position now comes from Gemini's detection
+  // (accurate to ~1%), and the layout adapts to where the ball really is --
+  // fixed slots assumed a mid-size centered ball and, given the TRUE
+  // positions, put a label over the logo (big centered Black Widow) or the
+  // price (low balls).
+  //   Room beside the ball (>= ~500 px, e.g. Portal at x 0.68): all labels
+  //     stacked on that side.
+  //   Big/centered ball: labels in the clear band ABOVE it, alternating
+  //     left/right, narrower so a pair fits side by side.
+  // Labels always sit between the title (~y 560) and the price (~y 1450).
+  // Each dot sits where the ball's edge FACES its label's line elbow, so
+  // every leader takes the shortest clean path off the ball.
+  const LABEL_TOP = 620;
+  const LABEL_BOTTOM = 1300;
+  const clampY = (y: number) => Math.min(LABEL_BOTTOM, Math.max(LABEL_TOP, y));
+  const leftRoom = cx - r;
+  const rightRoom = W - (cx + r);
+  const sideRoom = Math.max(leftRoom, rightRoom);
+  // elbow = how far in from the label's outer edge its leader turns toward
+  // the ball; two labels on the same side get different elbows so their
+  // dots don't land on the same spot of the ball.
+  type Slot = { lx: number; ly: number; align: "left" | "right"; maxW: number; elbow: number };
+  let slots: Slot[];
+  if (sideRoom >= 500) {
+    const align = leftRoom >= rightRoom ? "left" : "right";
+    const maxW = Math.min(560, sideRoom - 100);
+    const top = clampY(Math.min(cy - r - 120, LABEL_BOTTOM - 2 * 230));
+    slots = [0, 1, 2].map((i) => ({
+      lx: align === "left" ? 60 : W - 60, ly: clampY(top + i * 230), align, maxW, elbow: Math.min(maxW, 300),
+    }));
+  } else {
+    // Staggered rows (L, R, L) when there's room above the ball; when
+    // there isn't (Equinox's ball fills ~3/4 of the width), the first two
+    // share a row side by side, saving a whole row.
+    const avail = Math.max(0, cy - r - 60 - LABEL_TOP);
+    const rowY =
+      avail >= 3 * 150
+        ? [0, 1, 2].map((i) => LABEL_TOP + 46 + i * Math.min(230, avail / 3))
+        : [LABEL_TOP + 46, LABEL_TOP + 46, LABEL_TOP + 46 + Math.min(230, Math.max(150, avail))];
+    slots = [0, 1, 2].map((i) => {
+      const align = i % 2 === 0 ? ("left" as const) : ("right" as const);
+      return { lx: align === "left" ? 60 : W - 60, ly: clampY(rowY[i]), align, maxW: 470, elbow: i === 2 ? 180 : 400 };
+    });
+  }
   return (
     <div style={{ position: "fixed", inset: 0, background: overlayOnly ? "transparent" : "#000", overflow: "hidden" }}>
       <style>{HERO_CSS}</style>
@@ -443,11 +479,17 @@ function HeroLayout(props: {
         <svg className="hx-lines" width={W} height={H} viewBox={`0 0 ${W} ${H}`}>
           {callouts.map((c, i) => {
             const s = slots[i % slots.length];
-            const a = (s.angle * Math.PI) / 180;
+            // Elbow s.elbow px in from the label's outer edge, on the line's row
+            // (under the label when it's wider; a short visible leader when
+            // it's narrower). Not at the label's max width: above a centered
+            // ball that put every elbow mid-screen and bunched all three
+            // dots on the ball's crown. The dot faces the elbow.
+            const elbowX = s.align === "left" ? s.lx + s.elbow : s.lx - s.elbow;
+            const elbowY = s.ly + 36;
+            const a = Math.atan2(elbowY - cy, elbowX - cx);
             const x1 = cx + Math.cos(a) * (r + 8);
             const y1 = cy + Math.sin(a) * (r + 8);
-            const elbowX = s.align === "left" ? s.lx + 420 : s.lx - 420;
-            const d = `M ${x1} ${y1} L ${elbowX} ${s.ly + 36} L ${s.align === "left" ? s.lx : s.lx} ${s.ly + 36}`;
+            const d = `M ${x1} ${y1} L ${elbowX} ${elbowY} L ${s.lx} ${elbowY}`;
             return (
               <g key={c.k} className="hx-callout-g" style={{ animationDelay: `${i * 1.1}s` }}>
                 <circle cx={x1} cy={y1} r={10} fill={theme.line} className="hx-dot" style={{ animationDelay: `${i * 1.1}s` }} />
@@ -464,6 +506,7 @@ function HeroLayout(props: {
               className={`hx-label hx-label-${s.align}`}
               style={{
                 top: s.ly - 46,
+                maxWidth: s.maxW,
                 ...(s.align === "left" ? { left: s.lx } : { right: W - s.lx }),
                 animationDelay: `${i * 1.1}s`,
               }}
