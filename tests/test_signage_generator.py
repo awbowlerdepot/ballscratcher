@@ -212,6 +212,13 @@ def test_generate_stills_outpaints_source_retries_letterboxed_and_stores():
     assert conn.commits == 1
 
 
+def test_ball_is_always_undrilled():
+    # Runbook 6cu: Veo painted finger holes on Zero Mercy / Equinox as they turned.
+    assert "UNDRILLED" in signage.build_veo_prompt("ice") and "UNDRILLED" in signage.build_veo_extend_prompt("ice")
+    assert "UNDRILLED" in signage.build_outpaint_prompt()
+    assert "finger holes" in signage.VEO_NEGATIVE_PROMPT and "thumb hole" in signage.VEO_NEGATIVE_PROMPT
+
+
 def test_veo_prompts_lock_the_camera():
     # Runbook 6cr: a forward drift kept pushing in through the extension.
     assert "LOCKED OFF" in signage.build_veo_prompt("webs") and "forward drift" not in signage.build_veo_prompt("webs")
@@ -254,6 +261,27 @@ def test_animate_extends_the_clip_and_falls_back_to_8s_if_extension_fails():
                         image_bucket="bkt", detect_call=lambda p, prompt: '[{"box_2d": [500, 250, 800, 750]}]',
                         invoke_renderer=lambda p: None, veo_extend_call=ext)
         assert s3.puts[0]["Body"] == expect
+
+
+def test_ball_lock_animates_a_ball_free_plate_and_falls_back():
+    # Runbook 6cu: Veo never sees the ball when locked; a failed plate falls
+    # back to animating the ball itself (raw_is_plate=False).
+    for plate, expect_plate in ((lambda png, prompt: b"PLATE", True), (lambda png, prompt: 1 / 0, False)):
+        conn, s3, seen = FakeConn(), FakeS3(), []
+        out = signage.animate(conn, dict(CTX, ball_lock=True), still_png=_png(768, 1376),
+                              veo_call=lambda png, prompt: seen.append((png, prompt)) or b"mp4", s3_client=s3,
+                              image_bucket="bkt", detect_call=lambda p, prompt: '[{"box_2d": [500, 250, 800, 750]}]',
+                              invoke_renderer=lambda p: None, plate_call=plate)
+        assert out["plate"] is expect_plate
+        assert (seen[0][0] == b"PLATE") is expect_plate
+        assert ("no ball" in seen[0][1]) is expect_plate
+        sql, params = conn.log[-1]
+        assert expect_plate in params
+
+
+def test_unlocked_ball_may_move_but_never_rotates():
+    p = signage.build_veo_prompt("ice")
+    assert "NEVER rotates" in p and "may turn very slightly" not in p
 
 
 def test_animate_uploads_clip_records_ball_and_hands_off_to_renderer():

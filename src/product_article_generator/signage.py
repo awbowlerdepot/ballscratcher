@@ -112,10 +112,23 @@ SIGNAGE COMPOSITION (this image is a 9:16 VERTICAL in-store display poster, comp
 - Keep the bottom ~18% of the frame darker and simple: a price will be overlaid there.
 - Leave the left and right edges beside the ball relatively clean: small spec labels with thin pointer lines will be overlaid there.
 - Build depth in layers (foreground, the ball, background) with clear directional energy, so the scene can later be animated.
+- The ball is UNDRILLED: a smooth sphere with no finger holes, thumb hole or any other holes.
 - Absolutely no text, numbers, words, watermarks, or logos anywhere in the image other than the ball's own printed graphics exactly as in the reference."""
 
+# Runbook 6cu -- Al: "the zero mercy tour and equinox are attempting to put
+# holes in the ball in the animations. animating the ball is fine but
+# putting holes in it doesn't need to happen". Veo's prior is a DRILLED ball:
+# when the ball turned, it painted finger/thumb holes on the side coming
+# into view (and lost the logo with them). Every prompt now states the ball
+# is undrilled, and holes are banned outright.
+UNDRILLED_BALL = (
+    "The bowling ball is UNDRILLED: a perfectly smooth sphere with NO finger holes, NO thumb hole and no holes, "
+    "dents or openings anywhere on its surface -- if it turns, the side coming into view is the same smooth "
+    "coverstock pattern. "
+)
 VEO_NEGATIVE_PROMPT = (
-    "text, words, letters, watermark, logo distortion, morphing ball, warped ball, people, hands, camera shake, "
+    "text, words, letters, watermark, logo distortion, morphing ball, warped ball, finger holes, thumb hole, "
+    "drilled holes, holes in the ball, people, hands, camera shake, "
     "flicker, embers, sparks, particles, fire, flames, explosion, lens flare, light flashes, static scene, frozen frame"
 )
 
@@ -217,7 +230,7 @@ CAMERA_LOCKED = (
     "The camera is LOCKED OFF on a tripod: no zoom, no dolly, no push-in, no pan -- the framing never changes and "
     "the ball keeps exactly the same size and position in the frame the whole time. "
 )
-VEO_EXTEND_NEGATIVE_EXTRA = ", zoom, dolly, camera movement, ball rotating away"
+VEO_EXTEND_NEGATIVE_EXTRA = ", zoom, dolly, camera movement, ball rotating, spinning ball"
 
 
 def build_veo_extend_prompt(visual_theme: str) -> str:
@@ -225,8 +238,35 @@ def build_veo_extend_prompt(visual_theme: str) -> str:
     return (
         "Continue this exact shot seamlessly. " + CAMERA_LOCKED + "The environment keeps its natural motion and any "
         "creature keeps moving, same lighting and art style. The bowling ball stays perfectly sharp with its printed "
-        "logo facing the camera exactly as shown. No new objects, no text, no people." + theme
+        "logo facing the camera exactly as shown. " + UNDRILLED_BALL + "No new objects, no text, no people." + theme
     )
+
+
+# Ball lock (runbook 6cu, migration 046): Veo animates a PLATE -- the still
+# with the ball erased -- and the renderer composites the real ball back.
+REMOVE_BALL_PROMPT = (
+    "Remove the bowling ball from this image completely. Fill the area where it was with the surrounding scene so it "
+    "looks like the ball was never there -- continue the background, ground, light and effects naturally. Keep the "
+    "soft shadow and glow on the ground beneath where the ball sat. Change NOTHING else: same composition, framing, "
+    "colors, lighting and style, same 9:16 frame. No new objects, no text."
+)
+NO_NEW_OBJECTS = "Do NOT add any object to the scene -- no ball, no sphere, no people, no text. "
+
+
+def build_veo_plate_prompt(visual_theme: str) -> str:
+    theme = f" Theme: {visual_theme.strip()}" if visual_theme else ""
+    return (
+        "Cinematic animation of this exact illustrated scene with strong, continuous natural motion throughout the "
+        "whole frame: the environment moves naturally (clouds, smoke, water, light, air, the backdrop drift at "
+        "different speeds for real depth), and any creature in the scene comes alive and moves. " + CAMERA_LOCKED
+        + "Same art style throughout. " + NO_NEW_OBJECTS.strip() + theme
+    )
+
+
+def build_veo_plate_extend_prompt(visual_theme: str) -> str:
+    theme = f" Theme: {visual_theme.strip()}" if visual_theme else ""
+    return ("Continue this exact shot seamlessly. " + CAMERA_LOCKED + "The environment keeps its natural motion, same "
+            "lighting and art style. " + NO_NEW_OBJECTS.strip() + theme)
 
 
 def build_veo_prompt(visual_theme: str) -> str:
@@ -237,8 +277,11 @@ def build_veo_prompt(visual_theme: str) -> str:
         "speeds for real depth), and any creature or figure in the scene comes alive and moves. " + CAMERA_LOCKED +
         "The bowling ball stays in the lower middle of the frame and remains perfectly "
         "sharp with its colors, swirl pattern and printed logo exactly as shown -- the logo never changes shape, "
-        "size or position; the ball may turn very slightly. Same art style throughout. No text, no new objects, "
-        "no people." + theme
+        # Al: "it can move just don't rotate it" -- turning it shows sides and
+        # logos the real ball doesn't have (runbook 6cu).
+        "size or position; the ball may float or drift gently but NEVER rotates or spins. " + UNDRILLED_BALL
+        + "Same art style throughout. No "
+        "text, no new objects, no people." + theme
     )
 
 
@@ -385,7 +428,7 @@ def load_signage_context(conn, article_id: str) -> dict:
             """
             select pa.id, pa.product_id, pa.visual_theme, p.name, b.name,
                    s.selected_still_key, s.selected_still_url,
-                   pa.action_shot_image_url, pa.product_shot_image_url
+                   pa.action_shot_image_url, pa.product_shot_image_url, coalesce(s.ball_lock, true)
             from product_articles pa
             join products p on p.id = pa.product_id
             join brands b on b.id = p.brand_id
@@ -398,7 +441,7 @@ def load_signage_context(conn, article_id: str) -> dict:
     if row is None:
         raise LookupError(f"No ball article {article_id}")
     keys = ("article_id", "product_id", "visual_theme", "name", "brand", "selected_still_key", "selected_still_url",
-            "action_shot_url", "product_shot_url")
+            "action_shot_url", "product_shot_url", "ball_lock")
     return dict(zip(keys, [str(v) if k in ("article_id", "product_id") else v for k, v in zip(keys, row)]))
 
 
@@ -468,25 +511,37 @@ def generate_stills(conn, ctx: dict, *, source_png: bytes, gemini_call, s3_clien
 
 
 def animate(conn, ctx: dict, *, still_png: bytes, veo_call, s3_client, image_bucket: str,
-            detect_call, invoke_renderer, veo_extend_call=None) -> dict:
+            detect_call, invoke_renderer, veo_extend_call=None, plate_call=None) -> dict:
     """signage="animate". veo_call(png, prompt) -> 8 s mp4 bytes;
     veo_extend_call(mp4, prompt) -> the 15 s extended mp4 (best-effort, see
-    the module docstring). Leaves status 'animating'; the renderer's loop
-    step flips it to 'ready'."""
-    clip = veo_call(still_png, build_veo_prompt(ctx["visual_theme"]))
+    the module docstring); plate_call(png, prompt) -> png, the still with the
+    ball erased (Gemini). With ctx["ball_lock"] (the default, runbook 6cu)
+    Veo animates that plate and the renderer composites the real ball back;
+    if the plate can't be made, it falls back to animating the ball itself.
+    Leaves status 'animating'; the renderer's loop step flips it to 'ready'."""
+    # The still is the clip's first frame and the camera is locked off
+    # (6cr), so where the ball is in the still is where it stays -- and,
+    # with ball lock, exactly where the renderer puts the real ball back.
+    pos = locate_ball(still_png, detect_call)
+    source, is_plate = still_png, False
+    if ctx.get("ball_lock", True) and plate_call is not None:
+        try:
+            source, is_plate = plate_call(still_png, REMOVE_BALL_PROMPT), True
+        except Exception:  # noqa: BLE001 -- fall back to animating the ball itself
+            logger.exception("ball-free plate failed for article %s -- animating the ball", ctx["article_id"])
+    theme = ctx["visual_theme"]
+    clip = veo_call(source, build_veo_plate_prompt(theme) if is_plate else build_veo_prompt(theme))
     if veo_extend_call is not None:
         try:
-            clip = veo_extend_call(clip, build_veo_extend_prompt(ctx["visual_theme"]))
+            clip = veo_extend_call(clip, build_veo_plate_extend_prompt(theme) if is_plate else build_veo_extend_prompt(theme))
         except Exception:  # noqa: BLE001 -- fall back to the 8 s clip (renderer loops it)
             logger.exception("Veo extension failed for article %s -- using the 8 s clip", ctx["article_id"])
     key = f"article-images/{ctx['product_id']}/signage/clip_raw_{new_run_id()}.mp4"
     s3_client.put_object(Bucket=image_bucket, Key=key, Body=clip, ContentType="video/mp4")
-    # The still is the clip's first frame, and the camera is locked off
-    # (6cr), so where the ball is in the still is where it stays.
-    pos = locate_ball(still_png, detect_call)
-    update_signage(conn, ctx["article_id"], raw_clip_key=key, ball_x=pos["x"], ball_y=pos["y"], ball_r=pos["r"])
+    update_signage(conn, ctx["article_id"], raw_clip_key=key, raw_is_plate=is_plate,
+                   ball_x=pos["x"], ball_y=pos["y"], ball_r=pos["r"])
     invoke_renderer({"mode": "loop", "article_id": ctx["article_id"]})
-    return {"raw_clip_key": key, "ball": pos}
+    return {"raw_clip_key": key, "ball": pos, "plate": is_plate}
 
 
 def relocate(conn, ctx: dict, *, still_png: bytes, detect_call) -> dict:

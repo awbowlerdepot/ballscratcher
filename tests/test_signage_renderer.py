@@ -48,3 +48,31 @@ def test_mp4_fades_in_from_and_out_to_black_for_pisignage_playlists():
     assert "fade=t=in:st=0:d=0.5" in f
     assert f"fade=t=out:st={app.OVERLAY_LOOP_S - 1.0}:d=1.0" in f
     assert f.index("overlay=0:0") < f.index("fade=t=in")  # the text fades with the picture
+
+
+ROW = {"ball_x": 0.441, "ball_y": 0.721, "ball_r": 0.235}
+
+
+def test_ball_tile_is_a_square_around_the_detected_ball():
+    left, top, side = app.ball_tile(ROW, 1080, 1920)
+    assert side == int(0.235 * 1080 * 2) + 8
+    assert abs(left + side / 2 - 0.441 * 1080) <= 1 and abs(top + side / 2 - 0.721 * 1920) <= 1
+
+
+def test_ball_mask_is_a_soft_disc_cut_from_the_still():
+    # Runbook 6cu: the real ball from the still, composited over a ball-free plate.
+    args = app.ball_mask_args("/tmp/still.png", "/tmp/tile.png", 1080, 1920, ROW)
+    vf = args[args.index("-vf") + 1]
+    assert vf.startswith("scale=1080:1920,crop=") and "hypot(" in vf and "\\," not in vf
+    assert args[-3:] == ["-frames:v", "1", "/tmp/tile.png"]
+
+
+def test_composited_ball_floats_and_tilts_but_never_turns_away():
+    # Al: "it can move just don't rotate it" / "rotating 90 degrees is probably fine":
+    # in-plane tilt only (+/-12 deg), bob + sway, all periods dividing the 14 s cycle.
+    args = app.lock_args("/tmp/plate.mp4", "/tmp/tile.png", "/tmp/out.mp4", ROW)
+    g = args[args.index("-filter_complex") + 1]
+    assert "rotate=a=" in g and "c=none" in g and "eval=frame" in g
+    assert app.TURN_DEG <= 15
+    for period in (app.FLOAT_BOB_S, app.FLOAT_SWAY_S, app.TURN_S):
+        assert app.OVERLAY_LOOP_S % period == 0

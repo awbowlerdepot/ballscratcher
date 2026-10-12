@@ -342,6 +342,7 @@ retries) is ~450s, leaving real margin under the 600s timeout; tune this
 via this function's own CloudWatch Duration metric once a few real
 invocations have run under the cap.
 """
+import base64
 import json
 import logging
 import os
@@ -3470,6 +3471,9 @@ def run_signage_job(conn, event, *, s3_client, bedrock_client, model_id, gemini_
                 s3_client=s3_client, image_bucket=image_bucket,
                 detect_call=lambda png, prompt: signage.call_gemini_detect(
                     session, gemini_auth["access_token"], gemini_auth["project_id"], png, prompt),
+                plate_call=lambda png, prompt: call_gemini_for_image(
+                    gemini_auth, gemini_model_id, prompt, base64.b64encode(png).decode(), signage.STILL_ASPECT_RATIO,
+                    session=session),
                 invoke_renderer=lambda payload: lambda_client.invoke(
                     FunctionName=renderer, InvocationType="Event", Payload=json.dumps(payload)),
             )

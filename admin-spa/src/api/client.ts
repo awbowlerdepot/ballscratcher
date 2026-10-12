@@ -648,7 +648,7 @@ export function renderArticleSignage(articleId: string): Promise<QueueSignageRes
 
 export function updateArticleSignage(
   articleId: string,
-  patch: { selected_still_key?: string; tagline?: string; approved?: boolean },
+  patch: { selected_still_key?: string; tagline?: string; approved?: boolean; ball_lock?: boolean },
 ): Promise<ArticleSignage> {
   return apiPatch<ArticleSignage>(`/articles/${encodeURIComponent(articleId)}/signage`, patch);
 }

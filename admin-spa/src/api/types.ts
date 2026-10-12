@@ -1196,6 +1196,11 @@ export interface ArticleSignage {
   signage_url: string | null;
   // Runbook 6co: the article's images Generate can start from.
   source_images: { action_shot: string | null; product_shot: string | null };
+  // Runbook 6cu: Veo animates the scene WITHOUT the ball and the real ball
+  // is composited back (no holes, no turning away). raw_is_plate = what the
+  // current clip actually is.
+  ball_lock: boolean;
+  raw_is_plate: boolean;
 }
 
 export type SignageStillSource = "action_shot" | "product_shot" | "new";

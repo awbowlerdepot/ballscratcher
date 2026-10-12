@@ -122,7 +122,7 @@ def load_row(conn, article_id: str) -> dict:
         cur.execute(
             """
             select s.article_id, pa.product_id, pa.slug, s.raw_clip_key, s.clip_key, s.clip_url,
-                   s.ball_x, s.ball_y, s.ball_r, s.tagline,
+                   s.ball_x, s.ball_y, s.ball_r, s.tagline, s.raw_is_plate, s.selected_still_key,
                    (select h.price from product_price_sources pps
                       join price_sites ps on ps.id = pps.price_site_id
                       join product_price_history h on h.price_source_id = pps.id
@@ -148,10 +148,87 @@ def update(conn, article_id: str, **fields) -> None:
     conn.commit()
 
 
+# Ball lock (runbook 6cu, migration 046). Veo kept re-imagining the ball --
+# finger holes painted on as it turned, logos lost -- and neither prompting
+# nor pasting the still's ball over Veo's (it doubled when Veo moved the
+# ball) fixed it. So the generator has Veo animate a PLATE -- the still with
+# the ball erased -- and this composites the real ball, cut from the
+# selected still at the Gemini-detected position, back onto every frame:
+# the scene moves around a static, pixel-for-pixel real ball. A hair inside
+# the detected edge with a tight feather -- crisp, and a ~1% detection
+# error never shows the still's old background around the ball.
+BALL_LOCK_RADIUS = 0.99
+BALL_LOCK_FEATHER = 0.015
+
+
+def ball_tile(row: dict, width: int, height: int) -> tuple:
+    """The ball's square tile on the clip: (left, top, side) in pixels."""
+    cx, cy = float(row["ball_x"]) * width, float(row["ball_y"]) * height
+    side = int(float(row["ball_r"]) * width * 2) + 8
+    return int(round(cx - side / 2)), int(round(cy - side / 2)), side
+
+
+def ball_mask_args(still_path: str, out_path: str, width: int, height: int, row: dict) -> list:
+    """One-frame ffmpeg: the real ball cut from the still (scaled to the
+    clip size) as a square RGBA tile, alpha = a soft disc. A tile, not a
+    full frame, so lock_args can turn it about the ball's own center."""
+    left, top, side = ball_tile(row, width, height)
+    rad = float(row["ball_r"]) * width * BALL_LOCK_RADIUS
+    feather = max(1.5, float(row["ball_r"]) * width * BALL_LOCK_FEATHER)
+    c = side / 2
+    alpha = f"255*clip(({rad:.1f}-hypot(X-{c:.1f},Y-{c:.1f}))/{feather:.1f},0,1)"  # commas are safe inside the quotes
+    vf = (f"scale={width}:{height},crop={side}:{side}:{left}:{top},format=rgba,"
+          f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='{alpha}'")
+    return ["ffmpeg", "-v", "error", "-y", "-i", still_path, "-vf", vf, "-frames:v", "1", out_path]
+
+
+# Al: "it can move just don't rotate it", then "rotating 90 degrees is
+# probably fine actually" -- turning in the picture plane (like a clock
+# face) never shows a side the ball doesn't have; what must not happen is
+# the ball turning AWAY (Veo's holes + missing logos). So the composited
+# ball floats (bob + sway) and turns gently in-plane -- kept to +/-12
+# degrees rather than 90, because the still's specular highlight turns with
+# it and a big swing gives away that it's a still. Small enough that the
+# callout dots (drawn at the resting position) stay on its edge; every
+# period divides the 14 s overlay cycle so the MP4 loops.
+FLOAT_BOB = 0.006   # ~12 px at 1920
+FLOAT_SWAY = 0.003  # ~6 px
+FLOAT_BOB_S = 7.0
+FLOAT_SWAY_S = 14.0
+TURN_DEG = 12.0
+TURN_S = 14.0
+
+
+def lock_args(clip_path: str, tile_path: str, out_path: str, row: dict, width: int = 1080,
+              height: int = 1920) -> list:
+    left, top, _ = ball_tile(row, width, height)
+    bob, sway = FLOAT_BOB * height, FLOAT_SWAY * height
+    turn = f"{TURN_DEG * 3.14159265 / 180:.5f}*sin(2*PI*t/{TURN_S})"
+    graph = (f"[1:v]rotate=a='{turn}':c=none:ow=iw:oh=ih[ball];"
+             f"[0:v][ball]overlay=x='{left}+{sway:.1f}*sin(2*PI*t/{FLOAT_SWAY_S})':"
+             f"y='{top}+{bob:.1f}*sin(2*PI*t/{FLOAT_BOB_S})':eval=frame:shortest=1,format=yuv420p[v]")
+    return ["ffmpeg", "-v", "error", "-y", "-i", clip_path, "-loop", "1", "-framerate", str(FPS), "-i", tile_path,
+            "-filter_complex", graph, "-map", "[v]", "-c:v", "libx264", "-crf", "16", "-preset", "veryfast", out_path]
+
+
+def clip_size(path: str) -> tuple:
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height",
+                          "-of", "csv=p=0", path], check=True, capture_output=True, text=True).stdout
+    w, h = out.strip().split(",")[:2]
+    return int(w), int(h)
+
+
 def make_loop(conn, s3, bucket: str, row: dict) -> dict:
     raw = os.path.join(TMP, "raw.mp4")
     out = os.path.join(TMP, "loop.mp4")
     s3.download_file(bucket, row["raw_clip_key"], raw)
+    if row.get("raw_is_plate") and row.get("selected_still_key") and row.get("ball_x") is not None:
+        still, mask, locked = (os.path.join(TMP, n) for n in ("still.png", "ball.png", "locked.mp4"))
+        s3.download_file(bucket, row["selected_still_key"], still)
+        w, h = clip_size(raw)
+        subprocess.run(ball_mask_args(still, mask, w, h, row), check=True)
+        subprocess.run(lock_args(raw, mask, locked, row, w, h), check=True)
+        raw = locked
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", raw, "-filter_complex", loop_filter(clip_seconds(raw)), "-map", "[v]",
                     "-c:v", "libx264", "-crf", "18", "-movflags", "+faststart", out], check=True)
     key = f"article-images/{row['product_id']}/signage/clip_loop_{uuid.uuid4().hex[:8]}.mp4"

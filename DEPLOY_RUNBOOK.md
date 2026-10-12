@@ -18370,6 +18370,96 @@ git push                    # Learn layout
 for a in <article ids>; do aws lambda invoke --region us-west-1 --function-name bowling-scraper-product-article-generator --cli-binary-format raw-in-base64-out --payload "{\"signage\": \"locate\", \"article_id\": \"$a\"}" /dev/stdout; echo; done
 ```
 
+### 6cu. Signage "ball lock": Veo animates the scene without the ball, and the real ball goes back on top (migration 046) (2026-10-12)
+
+Al:
+> "the zero mercy tour and equinox are attempting to put holes in the ball
+> in the animations. animating the ball is fine but putting holes in it
+> doesn't need to happen"
+
+then:
+
+> "can we also not rotate the ball. there are additional logos and
+> rotating it to much will expose those missing on the ball and not look
+> authentic"
+> "it can move just don't rotate it"
+> "rotating 90 degrees is probably fine actually"
+
+**What was happening.** Veo assumes a bowling ball is drilled. When the
+ball turned, Veo painted finger and thumb holes on the side coming into
+view, and the logo disappeared with them.
+
+**What I tried (live, on Zero Mercy Tour's still):**
+1. **Prompts: "UNDRILLED, no finger holes", plus holes in the negative
+   prompt.** The extension still grew a row of holes on top from about
+   10 s, and Veo also ignored the fire ban.
+2. **Paste the still's ball over Veo's.** Veo moved and grew its ball
+   (about 2.8x by 15 s), so the two balls doubled up.
+3. **Track Veo's ball per frame (Hough) and paste at its position.** The
+   tracker jumped to the wrong circles.
+4. **Never give Veo the ball. This works.**
+   - Gemini erases the ball from the still. The "plate" kept the ice,
+     smoke and fire intact.
+   - Veo animates the plate (8 s, then the extension, both with a "do not
+     add any object, no ball" prompt).
+   - The renderer composites the real ball, cut from the still at the
+     Gemini-detected position, back onto every frame.
+   - The ball is the original artwork in every frame: no holes, no turning
+     away, logos intact, and the scene moves around it.
+
+**Motion** (Al: "it can move just don't rotate it" / "rotating 90 degrees
+is probably fine"). The composited ball floats with a bob (±0.6% of the
+height, 7 s period) and a sway (±0.3%, 14 s), and turns **in the picture
+plane** by up to ±12° (14 s). An in-plane turn never shows a side the
+ball doesn't have. I kept it to ±12° rather than 90° because the still's
+specular highlight turns with the ball, and a big swing gives away that
+it's a still. Every period divides the 14 s overlay cycle, and the
+movement is small enough that the callout dots stay on the ball's edge.
+
+**Edge.** The cut uses radius 0.99 of the detected size with a 1.5%
+feather. A 4% feather (the first try) left a soft halo.
+
+**Data** (migration 046):
+- `article_signage.ball_lock` (default true): Al's choice per ball,
+  applied on the next Animate. Turn it off when something has to move
+  across the ball, such as Black Widow's spider, which would otherwise
+  freeze in place.
+- `raw_is_plate`: what the current raw clip actually is. The renderer only
+  composites the ball onto a plate. If the plate fails, the job falls back
+  to animating the ball itself.
+- Unlocked Veo prompts now say the ball "may float or drift gently but
+  NEVER rotates or spins", and the negative prompt adds holes, rotating
+  and spinning.
+
+**Code.**
+- `signage.py`: `REMOVE_BALL_PROMPT`, the `build_veo_plate*_prompt`
+  functions, `UNDRILLED_BALL`, `animate(plate_call=)`, and the context's
+  `ball_lock`.
+- Renderer: `ball_tile`, `ball_mask_args` (an RGBA tile with a soft
+  disc), `lock_args` (rotate plus a float overlay) and
+  `make_loop` (composite before looping).
+- Admin: `ball_lock` in `PATCH /articles/{id}/signage`, and a "Keep the
+  real ball" checkbox on the Signage tab.
+
+**Tested.**
+- `test_signage_generator.py` (16): plate versus fallback, the undrilled
+  rule, no rotation.
+- `test_signage_renderer.py` (8): tile geometry, mask, float and turn
+  periods.
+- All 56 test files pass, run one per file. `admin-spa` builds.
+- Ran the full pipeline live on Zero Mercy Tour: plate, Veo (15 s),
+  composite, loop (14 s). The ball stays crisp and authentic across all
+  15 s.
+
+**Deploy** (migration first; admin reads the new columns):
+```bash
+psql -v ON_ERROR_STOP=1 -f db/migrations/046_article_signage_ball_lock.sql
+sam build && sam deploy     # generator + renderer image + admin
+git push                    # Learn layout (6ct) + admin checkbox
+```
+Existing clips keep their Veo-animated balls. On each ball's Signage tab,
+click **Re-animate**, then **Approve**, then **Re-render MP4**.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
