@@ -741,3 +741,15 @@ def test_parse_bag_color_and_part_number_no_heading_returns_none_none():
     color, part_number = parse_bag_color_and_part_number(soup, "Some Bag")
     assert color is None
     assert part_number is None
+
+
+def test_material_falls_back_to_the_cover_name():
+    # Runbook 6dc: 476 balls (mostly retired) had no material because the
+    # spec field was missing or the cover name was proprietary.
+    from app import material_from_cover_name as f
+    assert f("Polyester") == "polyester_plastic"
+    assert f("NBT Pearl") == "reactive_resin"            # proprietary reactive cover
+    assert f("BTU (Better Than Urethane)") == "reactive_resin"
+    assert f("Urethane") == "urethane"
+    assert f(None) is None
+    assert f("Polyester", "reactive_resin") == "reactive_resin"  # never overrides a parsed material

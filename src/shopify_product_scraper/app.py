@@ -387,6 +387,26 @@ def parse_coverstock(coverstock_name: str, coverstock_type_raw: str) -> dict:
     return {"coverstock_material": material, "coverstock_type": cs_type}
 
 
+
+def material_from_cover_name(cover_name, material=None):
+    """Fallback when the spec field gave no material (runbook 6dc). Retired
+    pages mostly omit "Cover Type", and proprietary reactive covers ("NBT
+    Pearl", "GB 10.7", "MOTIVator-Z") match no keyword -- 476 balls ended
+    up with none and plotted on defaults (DV8's "Polyester" line among
+    them). Try the cover's own name; a named cover that still matches
+    nothing is a proprietary reactive cover. Brunswick's "BTU" is "Better
+    Than Urethane" -- reactive, not urethane. Returns the given material
+    untouched when there already is one; None only with no cover name."""
+    if material or not cover_name:
+        return material
+    lowered = cover_name.lower()
+    if "better than urethane" in lowered:
+        return "reactive_resin"
+    for keyword, value in COVERSTOCK_MATERIAL_KEYWORDS:
+        if keyword in lowered:
+            return value
+    return "reactive_resin"
+
 def parse_core_type(core_type_raw: str, skus: list):
     """Prefers the explicit "CORE TYPE" field when a product has one (only
     seen on some older retired listings this session, e.g. the real 3-D
@@ -550,7 +570,7 @@ def parse_product_page(product: dict, url: str) -> dict:
         "core_name": raw.get("core_name"),
         "core_type": parse_core_type(raw.get("core_type_raw"), skus),
         "coverstock_name": raw.get("coverstock_name"),
-        "coverstock_material": coverstock["coverstock_material"],
+        "coverstock_material": material_from_cover_name(raw.get("coverstock_name"), coverstock["coverstock_material"]),
         "coverstock_type": coverstock["coverstock_type"],
         "factory_finish": raw.get("factory_finish"),
         "weights_available": parse_weights_available(raw.get("weights_raw")),

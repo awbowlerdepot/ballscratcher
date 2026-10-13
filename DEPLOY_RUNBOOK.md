@@ -18777,6 +18777,76 @@ is worth its own pass.
 **Deploy.** `sam build && sam deploy` (the five scrapers), then the SQL
 above.
 
+### 6dc. Audit: 476 balls missing cover material, backfilled and re-positioned; scrapers fall back to the cover name (2026-10-13)
+
+Al: "yes audit the 482 balls missing cover material", then "yes go ahead
+with all three". It was 476 after 6db fixed the six Polythane balls.
+
+**Findings.**
+- 471 of the 476 are retired: Track 104, Hammer 99, Ebonite 88, DV8 57,
+  Radical 43, MOTIV 40, Brunswick 38, Storm 6, 900 Global 1.
+- The scrapers read material from the spec field ("Cover Type" on the
+  Craft sites), and retired pages mostly omit it. Even DV8's "Polyester"
+  line had none.
+- Proprietary reactive cover names ("NBT Pearl", "GB 10.7",
+  "MOTIVator-Z", "PowrKoil 17™ Reactive" without the type field) matched
+  no keyword.
+- 75 balls had no cover name at all.
+- **Impact.** Retired balls aren't on the public plotter, but their
+  position drives the retired → current replacement suggestions (6cl). A
+  retired polyester spare plotted mid-chart was being matched to reactive
+  balls.
+
+**Backfill** (`scripts/backfill_coverstock_material_6dc.py`, dry run by
+default, `--apply` to write). The decision order is in the script's
+docstring:
+1. Cover name keyword. "Better Than Urethane" (Brunswick BTU) is reactive.
+2. Ball name keyword, then "Spare" or "Clear" → polyester.
+3. Description, polyester only. Urethane or reactive in copy is usually a
+   comparison: MOTIV Blue Tank's copy mentions urethane, but its Frixion
+   cover is reactive.
+4. Manufacturer pages, checked for the 30 with no cover name: 6 polyester,
+   5 reactive.
+5. A named proprietary cover → reactive.
+6. Radical or Storm (performance-only brands) → reactive.
+7. Otherwise reactive, for 34 performance models whose pages publish no
+   material.
+
+**Result.**
+
+| Material | Balls |
+| --- | --- |
+| Reactive | 459 |
+| Polyester | 15 |
+| Urethane | 2 |
+
+- The polyester balls: DV8 Polyester ×3 and Shanpire Spare, Ebonite Angry
+  Birds and Maxim ×2, Hammer Black Widow Clear, Big Blue Spare, Carbon
+  Fiber, Skulz and Tuff, Track Flaming "T" Clear and Sugar Ray Leonard
+  Boxing Glove, and 900 Global Honey Badger Yellow Poly.
+- The urethane balls: Brunswick Avalanche Urethane and Hammer Black
+  Urethane - Original.
+- The script then re-estimated **only these 476** with admin_api's v3
+  estimator (the same as the Batch Jobs button: polyester pinned at
+  1 / 1). 13 positions changed, the polyester and urethane balls that had
+  sat on reactive-style defaults.
+- Balls with no `coverstock_material` afterwards: **0**.
+
+**Prevention.** `material_from_cover_name(cover_name, material)` was added
+to the Craft, shopify, netsuite and woocommerce scrapers. When the spec
+field gives no material it tries the cover's own name, keeping the BTU
+exception. A named cover that still matches nothing is a proprietary
+reactive cover. It never overrides a parsed material. The Storm scraper
+already defaulted to reactive.
+
+**Tested.**
+- A new test in each of the 4 scraper suites.
+- All 56 test files pass, run one per file.
+- The committed script's dry run matched the audit's dry run exactly.
+
+**Deploy.** `sam build && sam deploy` (the scrapers). The data backfill
+has already been applied.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

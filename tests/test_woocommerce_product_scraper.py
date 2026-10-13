@@ -229,3 +229,15 @@ if __name__ == "__main__":
         passed += 1
         print(f"PASS: {t.__name__}")
     print(f"\n{passed}/{len(tests)} tests passed")
+
+
+def test_material_falls_back_to_the_cover_name():
+    # Runbook 6dc: 476 balls (mostly retired) had no material because the
+    # spec field was missing or the cover name was proprietary.
+    f = app.material_from_cover_name
+    assert f("Polyester") == "polyester_plastic"
+    assert f("NBT Pearl") == "reactive_resin"            # proprietary reactive cover
+    assert f("BTU (Better Than Urethane)") == "reactive_resin"
+    assert f("Urethane") == "urethane"
+    assert f(None) is None
+    assert f("Polyester", "reactive_resin") == "reactive_resin"  # never overrides a parsed material

@@ -300,6 +300,26 @@ def parse_coverstock(cover_type_value: str) -> dict:
     return {"coverstock_material": material, "coverstock_type": cs_type}
 
 
+
+def material_from_cover_name(cover_name, material=None):
+    """Fallback when the spec field gave no material (runbook 6dc). Retired
+    pages mostly omit "Cover Type", and proprietary reactive covers ("NBT
+    Pearl", "GB 10.7", "MOTIVator-Z") match no keyword -- 476 balls ended
+    up with none and plotted on defaults (DV8's "Polyester" line among
+    them). Try the cover's own name; a named cover that still matches
+    nothing is a proprietary reactive cover. Brunswick's "BTU" is "Better
+    Than Urethane" -- reactive, not urethane. Returns the given material
+    untouched when there already is one; None only with no cover name."""
+    if material or not cover_name:
+        return material
+    lowered = cover_name.lower()
+    if "better than urethane" in lowered:
+        return "reactive_resin"
+    for keyword, value in COVERSTOCK_MATERIAL_KEYWORDS:
+        if keyword in lowered:
+            return value
+    return "reactive_resin"
+
 def parse_release_date(release_date_raw: str):
     """Parses Brunswick's real "Release Date" spec row value into a date.
     Two confirmed real shapes: day-precision "Month D, YYYY" (e.g.
@@ -747,7 +767,7 @@ def parse_product_page(html: str, url: str) -> dict:
         "color": spec.get("color"),
         "core_name": spec.get("core"),
         "coverstock_name": spec.get("coverstock"),
-        "coverstock_material": coverstock["coverstock_material"],
+        "coverstock_material": material_from_cover_name(spec.get("coverstock"), coverstock["coverstock_material"]),
         "coverstock_type": coverstock["coverstock_type"],
         "factory_finish": spec.get("finish"),
         "part_number": spec.get("part number"),
