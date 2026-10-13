@@ -440,11 +440,14 @@ def test_parse_coverstock_bare_poly_abbreviation_is_polyester():
 
 
 def test_parse_coverstock_poly_prefixed_words_are_not_polyester():
-    # Whole-word "poly" only: Polythane (urethane blend) and Microcell
-    # Polymer (reactive) must not be swept into polyester.
-    for value in ("TruShot Polythane", "Frixion Microcell Polymer"):
-        assert app.parse_coverstock(value)["coverstock_material"] != "polyester_plastic"
+    # Whole-word "poly" only: Microcell Polymer (reactive) must not match.
+    assert app.parse_coverstock("Frixion Microcell Polymer")["coverstock_material"] != "polyester_plastic"
 
+
+def test_parse_coverstock_polythane_is_polyester_family():
+    # Runbook 6db: Polythane spare covers (Hammer Tough, MOTIV Snipers)
+    # plot with the polyester balls, correcting 6ca's "urethane blend" guess.
+    assert app.parse_coverstock("TruShot Polythane")["coverstock_material"] == "polyester_plastic"
 
 def test_parse_coverstock_returns_none_when_missing():
     assert app.parse_coverstock(None) == {"coverstock_material": None, "coverstock_type": None}

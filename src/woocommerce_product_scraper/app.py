@@ -78,6 +78,11 @@ ATTRIBUTE_LABELS = {
 
 COVERSTOCK_MATERIAL_KEYWORDS = [
     ("urethane", "urethane"),
+    # Runbook 6db: "Polythane" (Hammer Tough, MOTIV's TruShot Polythane
+    # Sniper line) is a polyester-family spare cover -- Hammer: "the
+    # performance of a polyester ball with the durability of a urethane
+    # ball". Unrecognized, those balls had no material and plotted mid-chart.
+    ("polythane", "polyester_plastic"),
     ("polyester", "polyester_plastic"),
     ("plastic", "polyester_plastic"),
     ("reactive", "reactive_resin"),

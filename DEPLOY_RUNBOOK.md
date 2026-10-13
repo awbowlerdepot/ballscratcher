@@ -18726,6 +18726,57 @@ aws logs tail /aws/lambda/bowling-scraper-product-article-generator --since 30m 
 aws s3 ls s3://<image bucket>/article-images/<product id>/signage/rejected/
 ```
 
+### 6db. Fixed: "Polythane" spare balls plotted mid-chart; now polyester-family (2026-10-13)
+
+Al, on Hammer Tough's missing RG and differential:
+> "look at the tough... it was a spare ball so they might not be listed"
+
+Correct: Hammer's page lists every weight as "RG (N/A) Diff (N/A)" (a
+pancake core, "high RG and low differential"), so the blanks are right.
+
+**But it plotted at oil 4.9 / motion 12.7**, in reactive territory. Its
+cover, "Polythane", matched none of the scrapers' material keywords
+(urethane, polyester, plastic, reactive), so `coverstock_material` stayed
+null and the estimate used defaults. The same gap hit MOTIV's "TruShot
+Polythane" Sniper line (Allegiant, Hyper, Midnight, Laser and Silver
+Sniper), at oil 1–2, motion 9.4–11. All six are spare balls.
+
+Hammer says Polythane gives "the performance of a polyester ball with the
+durability of a urethane ball". 6ca had guessed it was "a urethane blend"
+and deliberately kept it out of the Storm scraper's polyester match.
+That guess is now corrected.
+
+**Changes.**
+- `("polythane", "polyester_plastic")` is added to the material keywords
+  in the shopify (Hammer, Track, Ebonite), netsuite (MOTIV), woocommerce
+  (SWAG) and Craft (Brunswick, Radical, DV8) scrapers. The Storm scraper
+  (commercebuild) also matches "polythane" now.
+- The 6ca test now asserts that Polythane is polyester and Microcell
+  Polymer is not.
+
+**Data fix** (run once). This only touches estimated positions, never
+chart-sourced ones. Polyester balls are pinned at oil 1 / motion 1, like
+every other polyester ball:
+```sql
+begin;
+update coverstocks set material = 'polyester_plastic' where name ilike '%polythane%' and material is null;
+update products set coverstock_material = 'polyester_plastic'
+ where coverstock_name ilike '%polythane%' and coverstock_material is null;
+update products set oil_rating = 1, motion_rating = 1
+ where coverstock_name ilike '%polythane%' and oil_motion_source = 'estimated';
+commit;
+```
+
+**Also noticed, not fixed here.** 482 balls have no `coverstock_material`
+at all (Track 104, Hammer 100, Ebonite 88, DV8 57, MOTIV 45, Radical 43,
+Brunswick 38). Their plotter positions come from default estimates. This
+is worth its own pass.
+
+**Tested.** All 56 test files pass, run one per file.
+
+**Deploy.** `sam build && sam deploy` (the five scrapers), then the SQL
+above.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

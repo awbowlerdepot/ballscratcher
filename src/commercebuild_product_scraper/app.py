@@ -233,9 +233,13 @@ def parse_core_type(symmetry_value):
 # all seven fell through to reactive_resin and plotted as hooking balls
 # until Al spotted it: "it looks like the cosmos is a polyester ball and
 # we have it as a reactive ball for some reason" (runbook 6ca). Whole
-# word only, so "Polythane" (a urethane blend) and "Microcell Polymer"
-# (reactive) don't match; "polyster" covers Motiv's own "DMX Polyster"
-# typo in case that spelling ever shows up here too.
+# word only, so "Microcell Polymer" (reactive) doesn't match; "polyster"
+# covers Motiv's own "DMX Polyster" typo in case that spelling ever shows
+# up here too. "Polythane" IS polyester-family (runbook 6db, correcting
+# 6ca's "urethane blend" guess): Hammer calls it "the performance of a
+# polyester ball with the durability of a urethane ball", and every
+# Polythane ball we carry (Hammer Tough, MOTIV's Sniper line) is a spare
+# ball -- matched explicitly below.
 _POLY_WORD = re.compile(r"\bpoly\b|polyster")
 
 
@@ -253,7 +257,7 @@ def parse_coverstock(coverstock_value):
     v = coverstock_value.lower()
     if "urethane" in v:
         material = "urethane"
-    elif "polyester" in v or "plastic" in v or _POLY_WORD.search(v):
+    elif "polyester" in v or "plastic" in v or "polythane" in v or _POLY_WORD.search(v):  # polythane: runbook 6db
         material = "polyester_plastic"
     else:
         material = "reactive_resin"
