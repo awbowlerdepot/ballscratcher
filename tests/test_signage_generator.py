@@ -254,12 +254,12 @@ def test_veo_extension_sends_the_clip_as_bytes_without_duration():
     assert params["resolution"] == "1080p" and "camera movement" in params["negativePrompt"]
 
 
-def test_ball_may_rotate_but_stays_undrilled():
-    # Runbook 6cw: rotation allowed again; the hole restriction stays.
-    p = signage.build_veo_prompt("ice")
-    assert "may move and rotate" in p and "NEVER rotates" not in p and "UNDRILLED" in p
-    assert "rotat" not in signage.VEO_EXTEND_NEGATIVE_EXTRA and "finger holes" in signage.VEO_NEGATIVE_PROMPT
-
+def test_ball_does_not_roll_and_stays_undrilled():
+    # Runbook 6cz: "can we just make it not roll?"
+    for p in (signage.build_veo_prompt("webs"), signage.build_veo_extend_prompt("webs")):
+        assert "does NOT roll, spin or rotate" in p and "UNDRILLED" in p
+    assert "rolling ball" in signage.VEO_NEGATIVE_PROMPT and "finger holes" in signage.VEO_NEGATIVE_PROMPT
+    assert "logo/graphics changing" in signage.HOLE_CHECK_PROMPT
 
 def test_hole_check_parsing():
     assert signage.parse_hole_check('{"holes": true, "first_second": 9}') == (True, 9)
@@ -317,7 +317,7 @@ def test_no_clean_extension_fails_never_short_or_joined():
 
 def test_extension_prompt_eases_spin_to_rest_and_check_catches_extra_ball():
     p = signage.build_veo_extend_prompt("webs")
-    assert "comes to rest" in p and "does NOT turn any further" in p and "no second ball" in p
+    assert "no second ball" in p
     assert "SECOND bowling ball" in signage.HOLE_CHECK_PROMPT
 
 

@@ -18650,6 +18650,42 @@ aws logs tail /aws/lambda/bowling-scraper-product-article-generator --since 20m 
 ```
 The clip's raw duration should be 15 s.
 
+### 6cz. Signage: the ball does not roll; the check also rejects a changed or invented logo (2026-10-13)
+
+Al, on the first 6cy clip, where the ball rolled half a turn at 7 s, the
+real logo went to the back, and the extension "rested it logo-forward" by
+inventing a cartoon spider over "WIIACW WDOW SPARE":
+> "now it has some random graphic added to the ball. what is that? this
+> isn't going well. it was better before the widow rolled. can we just make
+> it not roll?"
+
+Every roll past about a quarter turn made Veo invent the side it had never
+seen: holes (6cx), a second ball, or a fake logo.
+
+**Change.**
+- Both Veo prompts say the ball "does NOT roll, spin or rotate at all --
+  it stays in place with its printed logo facing the camera exactly as
+  shown". This replaces 6cw's "may move and rotate" and 6cy's "spin eases
+  to rest".
+- `VEO_NEGATIVE_PROMPT` adds rolling, spinning and rotating ball, and ball
+  turning. The undrilled rule stays.
+- `HOLE_CHECK_PROMPT` now rejects any of: holes, a second ball, or the
+  logo changing, disappearing, turning away or differing from the 0 s
+  tile. Something passing in front of the logo doesn't count.
+- The 6cy pipeline is unchanged: A re-made up to 2 times, the extension up
+  to 5 within budget, and otherwise a failure message, never short.
+
+**Tested.**
+- The broadened check on 4 real clips: the fake-logo clip was rejected
+  (from 7 s), the drilled one rejected (9 s), and the clean 6cr and clean
+  8 s clips passed.
+- A live no-roll run on Black Widow Spare+: clip A was clean (105 s), the
+  extension clean (237 s total), 15 s in all. The real logo is in every
+  frame, and the spider crawls over the top and perches.
+- All 56 test files pass, run one per file.
+
+**Deploy.** `sam build && sam deploy` (generator).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

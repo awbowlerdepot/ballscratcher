@@ -129,7 +129,8 @@ UNDRILLED_BALL = (
     "coverstock pattern. "
 )
 VEO_NEGATIVE_PROMPT = (
-    "text, words, letters, watermark, logo distortion, morphing ball, warped ball, finger holes, thumb hole, "
+    "text, words, letters, watermark, logo distortion, morphing ball, warped ball, rolling ball, spinning ball, "
+    "rotating ball, ball turning, finger holes, thumb hole, "
     "drilled holes, holes in the ball, people, hands, camera shake, "
     "flicker, embers, sparks, particles, fire, flames, explosion, lens flare, light flashes, static scene, frozen frame"
 )
@@ -243,9 +244,8 @@ def build_veo_extend_prompt(visual_theme: str) -> str:
     theme = f" Theme: {visual_theme.strip()}" if visual_theme else ""
     return (
         "Continue this exact shot seamlessly. " + CAMERA_LOCKED + "The environment keeps its natural motion and any "
-        "creature keeps moving, same lighting and art style. The bowling ball's rotation gently slows and it comes to "
-        "rest with its printed logo facing the camera -- from here on the ball does NOT turn any further, so no new "
-        "side of the ball comes into view; it may sway or drift slightly. " + UNDRILLED_BALL
+        "creature keeps moving, same lighting and art style. The bowling ball stays exactly as it is: it does NOT "
+        "roll, spin or rotate, and its printed logo stays facing the camera exactly as shown. " + UNDRILLED_BALL
         + "No new objects, no second ball, no text, no people." + theme
     )
 
@@ -258,9 +258,13 @@ def build_veo_prompt(visual_theme: str) -> str:
         "speeds for real depth), and any creature or figure in the scene comes alive and moves. " + CAMERA_LOCKED +
         "The bowling ball stays in the lower middle of the frame and remains perfectly "
         "sharp with its colors, swirl pattern and printed logo exactly as shown -- the logo never changes shape, "
-        # The ball may move AND rotate (runbook 6cw: "remove the restriction
-        # for rotating the ball but keep the hole restriction").
-        "size; the ball may move and rotate naturally. " + UNDRILLED_BALL
+        # The ball does NOT roll (runbook 6cz). Al, after a roll hid the real
+        # logo and Veo invented a fake one: "it was better before the widow
+        # rolled. can we just make it not roll?" Every roll past a quarter
+        # turn made Veo invent the unseen side -- holes, a fake logo, a
+        # second ball.
+        "size; the ball does NOT roll, spin or rotate at all -- it stays in place with its printed logo facing the "
+        "camera exactly as shown for the whole shot. " + UNDRILLED_BALL
         + "Same art style throughout. No "
         "text, no new objects, no people." + theme
     )
@@ -345,9 +349,11 @@ HOLE_CHECK_MODEL_ID = "global.anthropic.claude-sonnet-4-6"
 HOLE_CHECK_PROMPT = (
     "These tiles are 1-second frames (labelled 0s, 1s, ...) cropped around one bowling ball in an animation. The real "
     "ball is UNDRILLED: it must never show finger holes or a thumb hole. Look carefully at every tile, including the "
-    "ball's edges, top and lower half. Does ANY tile show a finger hole, thumb hole or any round hole/opening in the "
-    "ball's surface -- or a SECOND bowling ball appearing anywhere? Ignore the background, web or scenery and the ball's "
-    "printed logo/graphics. Respond with ONLY this JSON and nothing else (holes = true for either defect): "
+    "ball's edges, top and lower half. Does ANY tile show a DEFECT: (1) a finger hole, thumb hole or any round "
+    "hole/opening in the ball's surface; (2) a SECOND bowling ball appearing anywhere; or (3) the ball's printed "
+    "logo/graphics changing, disappearing, turning away or differing from the 0s tile (garbled or invented text or "
+    "artwork)? Something passing IN FRONT of the logo (a creature, web, smoke) is not a defect. Ignore the "
+    "background and scenery. Respond with ONLY this JSON and nothing else (holes = true for ANY defect): "
     '{"holes": true|false, "first_second": <int or null>}'
 )
 # Attempts and a time budget: animate must finish inside the generator's
