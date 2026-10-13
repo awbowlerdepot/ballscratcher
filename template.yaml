@@ -2798,6 +2798,30 @@ Resources:
               Condition:
                 StringEquals:
                   bedrock:InferenceProfileArn: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/${BedrockModelId}"
+            # Signage hole check (runbook 6cx): Claude Sonnet 4.6 via its Global
+            # CRIS profile -- same three-statement shape as above, pinned to
+            # that one model (signage.HOLE_CHECK_MODEL_ID).
+            - Sid: SignageHoleCheckProfile
+              Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/global.anthropic.claude-sonnet-4-6"
+            - Sid: SignageHoleCheckInRegionModel
+              Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-sonnet-4-6"
+              Condition:
+                StringEquals:
+                  bedrock:InferenceProfileArn: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/global.anthropic.claude-sonnet-4-6"
+            - Sid: SignageHoleCheckGlobalModel
+              Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: "arn:aws:bedrock:::foundation-model/anthropic.claude-sonnet-4-6"
+              Condition:
+                StringEquals:
+                  bedrock:InferenceProfileArn: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/global.anthropic.claude-sonnet-4-6"
             # Article images: Stable Diffusion 3.5 Large has NO Geo/Global
             # cross-Region inference profile support at all (checked --
             # every Bedrock image model's own "Regional availability"

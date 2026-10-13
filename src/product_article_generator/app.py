@@ -3471,6 +3471,7 @@ def run_signage_job(conn, event, *, s3_client, bedrock_client, model_id, gemini_
                 s3_client=s3_client, image_bucket=image_bucket,
                 detect_call=lambda png, prompt: signage.call_gemini_detect(
                     session, gemini_auth["access_token"], gemini_auth["project_id"], png, prompt),
+                hole_check=lambda mp4, pos: signage.check_holes(mp4, pos, bedrock_client),
                 invoke_renderer=lambda payload: lambda_client.invoke(
                     FunctionName=renderer, InvocationType="Event", Payload=json.dumps(payload)),
             )

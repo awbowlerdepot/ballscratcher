@@ -270,6 +270,57 @@ def test_ball_may_rotate_but_stays_undrilled():
     assert "rotat" not in signage.VEO_EXTEND_NEGATIVE_EXTRA and "finger holes" in signage.VEO_NEGATIVE_PROMPT
 
 
+def test_hole_check_parsing():
+    assert signage.parse_hole_check('{"holes": true, "first_second": 9}') == (True, 9)
+    assert signage.parse_hole_check('Looking... {"holes": false, "first_second": null}') == (False, None)
+    assert signage.parse_hole_check("garbage") == (False, None)
+
+
+def _animate(checks, ext=lambda mp4, p: mp4 + b"+ext", clock=None):
+    """Run animate with scripted hole-check answers; returns (out, uploaded body, veo calls)."""
+    conn, s3, calls, answers = FakeConn(), FakeS3(), [], list(checks)
+    def veo(png, prompt):
+        calls.append("base")
+        return b"base%d" % calls.count("base")
+    def extend(mp4, prompt):
+        calls.append("ext")
+        return ext(mp4, prompt)
+    out = signage.animate(conn, CTX, still_png=_png(768, 1376), veo_call=veo, s3_client=s3, image_bucket="bkt",
+                          detect_call=lambda p, prompt: '[{"box_2d": [500, 250, 800, 750]}]',
+                          invoke_renderer=lambda p: None, veo_extend_call=extend,
+                          hole_check=lambda mp4, pos: answers.pop(0), clock=clock or (lambda: 0))
+    return out, s3.puts[0]["Body"], calls
+
+
+def test_clean_base_and_extension_first_time():
+    out, body, calls = _animate([(False, None), (False, None)])
+    assert calls == ["base", "ext"] and body == b"base1+ext" and out["base_clean"]
+
+
+def test_drilled_base_is_remade_then_extension_retried():
+    # Runbook 6cx: base 1 drilled -> base 2 clean; extension 1 drilled -> extension 2 clean.
+    out, body, calls = _animate([(True, 5), (False, None), (True, 11), (False, None)])
+    assert calls == ["base", "base", "ext", "ext"] and body == b"base2+ext"
+
+
+def test_extension_that_keeps_drilling_falls_back_to_clean_8s():
+    out, body, calls = _animate([(False, None), (True, 10), (True, 9)])
+    assert calls == ["base", "ext", "ext"] and body == b"base1"
+
+
+def test_base_never_clean_is_cut_before_first_hole(monkeypatch):
+    monkeypatch.setattr(signage, "trim_clip", lambda mp4, s: mp4 + b"[:%d]" % s)
+    out, body, calls = _animate([(True, 3), (True, 6)])
+    assert calls == ["base", "base"] and body == b"base2[:6]" and not out["base_clean"]
+
+
+def test_retries_respect_the_time_budget(monkeypatch):
+    monkeypatch.setattr(signage, "trim_clip", lambda mp4, s: mp4)
+    t = iter([0, 700, 700, 700, 700])
+    out, body, calls = _animate([(True, 5)], clock=lambda: next(t))
+    assert calls == ["base"]  # no time for a second Veo call
+
+
 def test_animate_uploads_clip_records_ball_and_hands_off_to_renderer():
     conn, s3, invoked = FakeConn(), FakeS3(), []
     out = signage.animate(conn, CTX, still_png=_png(768, 1376), veo_call=lambda png, prompt: b"mp4", s3_client=s3,

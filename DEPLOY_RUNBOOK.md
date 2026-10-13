@@ -18536,6 +18536,62 @@ git push
 Then Re-animate any ball that was animated with the lock (Black Widow
 Spare+).
 
+### 6cx. Signage hole guard: every Veo clip is checked for finger holes and re-made, or cut, if drilled (2026-10-13)
+
+Al: "i still see holes drilled in the widow spare plus bottom left once it
+spins". Prompting can't stop it (6cu). All three live Veo-ball clips grew
+holes once the ball turned far enough:
+
+| Clip | Holes from |
+| --- | --- |
+| Black Widow Spare+ | 9 s |
+| Zero Mercy Tour | 4 s, then 9 s on |
+| Equinox Hybrid | ~2 s |
+
+**Detector.**
+- ffmpeg (the `imageio-ffmpeg` bundled binary, new generator dependency)
+  takes 1 fps frames cropped to a square 1.35x the ball's diameter, at the
+  Gemini-detected position, and tiles them 4 across with second labels.
+- Claude **Sonnet 4.6** (`global.anthropic.claude-sonnet-4-6`) answers
+  `{"holes", "first_second"}`. It got 5/5 on the live clips: 3 drilled, 2
+  clean, with sensible first seconds. Haiku 4.5 caught only 1 of the 3.
+- Through the production code it takes 2.5–5 s per clip.
+- A checker failure counts as clean, so it never blocks a job.
+
+**Guard** (`signage.animate`):
+1. The 8 s base clip is checked and re-made if drilled
+   (`BASE_ATTEMPTS = 2`).
+2. The extension is checked and re-made if drilled
+   (`EXTEND_ATTEMPTS = 2`). If it keeps drilling, the clean 8 s clip is
+   used, and the renderer loops it as before.
+3. If the base never comes back clean, the attempt whose holes start
+   latest is cut just before them (`trim_clip`), as long as that leaves
+   at least 4 s. A failed cut keeps the uncut clip.
+4. Every extra Veo call must fit `ANIMATE_BUDGET_S = 780` with a 220 s
+   allowance per call, inside the generator's 900 s timeout. Worst case
+   is 4 Veo calls (about $5).
+
+**IAM.** The generator gets the three-statement Global CRIS grant pinned
+to Sonnet 4.6.
+
+**Tested.**
+- `test_signage_generator.py` (21): parsing; clean first time; a drilled
+  base re-made and then a drilled extension retried; an extension that
+  keeps drilling falls back to 8 s; a base never clean is cut before the
+  first hole; the time budget.
+- All 56 test files pass, run one per file.
+- Live: the check through `signage.check_holes` gave BW (True, 8), ZM
+  (True, 8), EQ (True, 4) and the 6cr BW clip (False). `trim_clip` at 9 s
+  gave a 9.000 s clip.
+
+**Deploy.** `sam build && sam deploy` (generator only).
+
+**Verify.**
+```bash
+aws logs tail /aws/lambda/bowling-scraper-product-article-generator --since 20m --filter-pattern "signage"
+```
+Look for lines like "signage base clip attempt 1 ...: holes=False".
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

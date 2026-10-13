@@ -3,3 +3,4 @@ boto3>=1.34
 requests>=2.31
 pillow>=10.0
 google-auth>=2.28
+imageio-ffmpeg>=0.5

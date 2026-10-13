@@ -326,6 +326,107 @@ def call_bedrock_text(bedrock_client, model_id: str, prompt: str, max_tokens: in
     return json.loads(resp["body"].read())["content"][0]["text"].strip()
 
 
+# Hole check (runbook 6cx). Al: "i still see holes drilled in the widow
+# spare plus bottom left once it spins". Prompting can't stop Veo drilling
+# the ball -- all three real Veo-ball clips grew holes once the ball turned
+# far enough (Black Widow 9 s, Zero Mercy 4 s, Equinox ~2 s). So every clip
+# is CHECKED: 1 fps frames cropped around the ball, tiled into one contact
+# sheet, shown to Claude Sonnet 4.6 -- 5/5 right on the live clips (Haiku
+# 4.5 caught only 1 of the 3 with holes), with a sensible first second.
+HOLE_CHECK_MODEL_ID = "global.anthropic.claude-sonnet-4-6"
+HOLE_CHECK_PROMPT = (
+    "These tiles are 1-second frames (labelled 0s, 1s, ...) cropped around one bowling ball in an animation. The real "
+    "ball is UNDRILLED: it must never show finger holes or a thumb hole. Look carefully at every tile, including the "
+    "ball's edges, top and lower half. Does ANY tile show a finger hole, thumb hole or any round hole/opening in the "
+    "ball's surface? Ignore the background, web or scenery and the ball's printed logo/graphics. Respond with ONLY this "
+    'JSON and nothing else: {"holes": true|false, "first_second": <int or null>}'
+)
+# Attempts and a time budget: animate must finish inside the generator's
+# 900 s timeout, and a Veo call takes ~2-3 min.
+BASE_ATTEMPTS = 2
+EXTEND_ATTEMPTS = 2
+ANIMATE_BUDGET_S = 780
+VEO_CALL_ALLOWANCE_S = 220
+
+
+def contact_sheet(mp4: bytes, pos: dict, tile: int = 256, cols: int = 4) -> bytes:
+    """1 fps frames of the clip, cropped to a square around the ball (1.35x
+    its diameter, so a ball that drifts stays in frame), tiled with second
+    labels -> JPEG bytes. Uses the ffmpeg binary bundled by imageio-ffmpeg."""
+    import io
+    import subprocess
+    import tempfile
+
+    import imageio_ffmpeg
+    from PIL import Image, ImageDraw
+
+    w, h = 1080, 1920
+    side = int(pos["r"] * w * 2 * 1.35)
+    x = max(0, min(w - side, int(pos["x"] * w - side / 2)))
+    y = max(0, min(h - side, int(pos["y"] * h - side / 2)))
+    with tempfile.NamedTemporaryFile(suffix=".mp4") as f:
+        f.write(mp4)
+        f.flush()
+        raw = subprocess.run(
+            [imageio_ffmpeg.get_ffmpeg_exe(), "-v", "error", "-i", f.name, "-vf",
+             f"fps=1,scale={w}:{h},crop={side}:{side}:{x}:{y},scale={tile}:{tile}",
+             "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+    n = len(raw) // (tile * tile * 3)
+    rows = max(1, (n + cols - 1) // cols)
+    sheet = Image.new("RGB", (cols * tile, rows * tile), "black")
+    draw = ImageDraw.Draw(sheet)
+    for i in range(n):
+        frame = Image.frombytes("RGB", (tile, tile), raw[i * tile * tile * 3:(i + 1) * tile * tile * 3])
+        sheet.paste(frame, ((i % cols) * tile, (i // cols) * tile))
+        draw.text(((i % cols) * tile + 4, (i // cols) * tile + 4), f"{i}s", fill="yellow")
+    buf = io.BytesIO()
+    sheet.save(buf, "JPEG", quality=88)
+    return buf.getvalue()
+
+
+def parse_hole_check(raw: str):
+    """-> (holes: bool, first_second: int | None). Unparseable -> (False,
+    None): the check must never block a clip on its own failure."""
+    try:
+        d = json.loads(re.findall(r"\{[^{}]*\}", raw or "")[-1])
+        first = d.get("first_second")
+        return bool(d.get("holes")), (int(first) if first is not None else None)
+    except Exception:  # noqa: BLE001
+        return False, None
+
+
+def check_holes(mp4: bytes, pos: dict, bedrock_client) -> tuple:
+    try:
+        sheet = contact_sheet(mp4, pos)
+        body = json.dumps({"anthropic_version": "bedrock-2023-05-31", "max_tokens": 400, "messages": [{
+            "role": "user", "content": [
+                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                             "data": base64.b64encode(sheet).decode()}},
+                {"type": "text", "text": HOLE_CHECK_PROMPT}]}]})
+        resp = bedrock_client.invoke_model(modelId=HOLE_CHECK_MODEL_ID, contentType="application/json",
+                                           accept="application/json", body=body)
+        return parse_hole_check(json.loads(resp["body"].read())["content"][0]["text"])
+    except Exception:  # noqa: BLE001 -- never block on the checker itself
+        logger.exception("hole check failed -- treating the clip as clean")
+        return False, None
+
+
+def trim_clip(mp4: bytes, seconds: int) -> bytes:
+    """First `seconds` of the clip (stream copy is keyframe-bound, so
+    re-encode for an exact cut)."""
+    import subprocess
+    import tempfile
+
+    import imageio_ffmpeg
+
+    with tempfile.NamedTemporaryFile(suffix=".mp4") as src, tempfile.NamedTemporaryFile(suffix=".mp4") as out:
+        src.write(mp4)
+        src.flush()
+        subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-v", "error", "-y", "-i", src.name, "-t", str(seconds),
+                        "-c:v", "libx264", "-crf", "16", "-an", "-f", "mp4", out.name], check=True)
+        return open(out.name, "rb").read()
+
+
 def call_gemini_detect(session, access_token: str, project_id: str, png: bytes, prompt: str,
                        model_id: str = DETECT_MODEL_ID) -> str:
     """One image + prompt -> Gemini's JSON text (Vertex, global endpoint)."""
@@ -484,33 +585,76 @@ def generate_stills(conn, ctx: dict, *, source_png: bytes, gemini_call, s3_clien
 
 
 def animate(conn, ctx: dict, *, still_png: bytes, veo_call, s3_client, image_bucket: str,
-            detect_call, invoke_renderer, veo_extend_call=None) -> dict:
+            detect_call, invoke_renderer, veo_extend_call=None, hole_check=None, clock=time.monotonic) -> dict:
     """signage="animate". veo_call(png, prompt) -> 8 s mp4 bytes;
     veo_extend_call(mp4, prompt) -> the 15 s extended mp4 (best-effort, see
-    the module docstring). Leaves status 'animating'; the renderer's loop
-    step flips it to 'ready'.
+    the module docstring); hole_check(mp4, pos) -> (holes, first_second).
+    Leaves status 'animating'; the renderer's loop step flips it to 'ready'.
 
-    Veo animates the whole scene, ball included (runbook 6cw). The 6cu
-    "ball lock" -- Veo animating a ball-free plate with the still's ball
-    composited back -- was removed: Al: "locking that pixel for pixel is
-    not working. the window spare+ is a prime example. the spider was
-    animated on the fixed ball before now it is horribly cropped and
-    randomly moving with the spider from the image. remove the restriction
-    for rotating the ball but keep the hole restriction"."""
+    Veo animates the whole scene, ball included (runbook 6cw -- the 6cu
+    "ball lock" was removed: "locking that pixel for pixel is not working
+    ... remove the restriction for rotating the ball but keep the hole
+    restriction").
+
+    Hole guard (runbook 6cx): the 8 s clip is checked and re-made (up to
+    BASE_ATTEMPTS) if the ball shows finger holes; then the extension is
+    checked and re-made (up to EXTEND_ATTEMPTS). If the extension keeps
+    drilling the ball, the clean 8 s clip is used (the renderer loops it);
+    if even the base never comes back clean, the cleanest attempt is cut
+    just before its first hole (when that leaves >= 4 s). All within
+    ANIMATE_BUDGET_S of the generator's 900 s timeout."""
+    started = clock()
+
+    def time_for_another_veo():
+        return clock() - started + VEO_CALL_ALLOWANCE_S < ANIMATE_BUDGET_S
+
+    check = hole_check or (lambda mp4, p: (False, None))
     # The still is the clip's first frame and the camera is locked off
     # (6cr), so where the ball is in the still is where the dots go.
     pos = locate_ball(still_png, detect_call)
-    clip = veo_call(still_png, build_veo_prompt(ctx["visual_theme"]))
-    if veo_extend_call is not None:
+    theme = ctx["visual_theme"]
+
+    best = None  # (first_hole_second or inf, clip)
+    for attempt in range(BASE_ATTEMPTS):
+        if attempt and not time_for_another_veo():
+            break
+        clip = veo_call(still_png, build_veo_prompt(theme))
+        holes, first = check(clip, pos)
+        logger.info("signage base clip attempt %d for %s: holes=%s first=%s", attempt + 1, ctx["article_id"], holes, first)
+        score = float("inf") if not holes else (first if first is not None else 0)
+        if best is None or score > best[0]:
+            best = (score, clip)
+        if not holes:
+            break
+    score, clip = best
+    base_clean = score == float("inf")
+    if not base_clean and score >= 4:
         try:
-            clip = veo_extend_call(clip, build_veo_extend_prompt(ctx["visual_theme"]))
-        except Exception:  # noqa: BLE001 -- fall back to the 8 s clip (renderer loops it)
-            logger.exception("Veo extension failed for article %s -- using the 8 s clip", ctx["article_id"])
+            clip = trim_clip(clip, int(score))  # cut just before the first hole
+        except Exception:  # noqa: BLE001 -- an uncut clip beats a failed job
+            logger.exception("trimming the drilled clip failed for article %s", ctx["article_id"])
+
+    if base_clean and veo_extend_call is not None:
+        for attempt in range(EXTEND_ATTEMPTS):
+            if not time_for_another_veo():
+                break
+            try:
+                ext = veo_extend_call(clip, build_veo_extend_prompt(theme))
+            except Exception:  # noqa: BLE001 -- fall back to the 8 s clip (renderer loops it)
+                logger.exception("Veo extension failed for article %s -- using the 8 s clip", ctx["article_id"])
+                break
+            holes, first = check(ext, pos)
+            logger.info("signage extension attempt %d for %s: holes=%s first=%s", attempt + 1, ctx["article_id"],
+                        holes, first)
+            if not holes:
+                clip = ext
+                break
+
     key = f"article-images/{ctx['product_id']}/signage/clip_raw_{new_run_id()}.mp4"
     s3_client.put_object(Bucket=image_bucket, Key=key, Body=clip, ContentType="video/mp4")
     update_signage(conn, ctx["article_id"], raw_clip_key=key, ball_x=pos["x"], ball_y=pos["y"], ball_r=pos["r"])
     invoke_renderer({"mode": "loop", "article_id": ctx["article_id"]})
-    return {"raw_clip_key": key, "ball": pos}
+    return {"raw_clip_key": key, "ball": pos, "base_clean": base_clean}
 
 
 def relocate(conn, ctx: dict, *, still_png: bytes, detect_call) -> dict:
