@@ -236,11 +236,17 @@ VEO_EXTEND_NEGATIVE_EXTRA = ", zoom, dolly, camera movement"
 
 
 def build_veo_extend_prompt(visual_theme: str) -> str:
+    """The extension eases the ball's spin to a stop, logo forward (runbook
+    6cy): holes appear where the ball's unseen side turns into view, and the
+    extension is where cumulative spin got that far (2/2 drilled on Black
+    Widow Spare+ before this; 1 of 2 clean after)."""
     theme = f" Theme: {visual_theme.strip()}" if visual_theme else ""
     return (
         "Continue this exact shot seamlessly. " + CAMERA_LOCKED + "The environment keeps its natural motion and any "
-        "creature keeps moving, same lighting and art style. The bowling ball stays perfectly sharp; it may keep "
-        "moving and rotating naturally. " + UNDRILLED_BALL + "No new objects, no text, no people." + theme
+        "creature keeps moving, same lighting and art style. The bowling ball's rotation gently slows and it comes to "
+        "rest with its printed logo facing the camera -- from here on the ball does NOT turn any further, so no new "
+        "side of the ball comes into view; it may sway or drift slightly. " + UNDRILLED_BALL
+        + "No new objects, no second ball, no text, no people." + theme
     )
 
 
@@ -340,13 +346,19 @@ HOLE_CHECK_PROMPT = (
     "These tiles are 1-second frames (labelled 0s, 1s, ...) cropped around one bowling ball in an animation. The real "
     "ball is UNDRILLED: it must never show finger holes or a thumb hole. Look carefully at every tile, including the "
     "ball's edges, top and lower half. Does ANY tile show a finger hole, thumb hole or any round hole/opening in the "
-    "ball's surface? Ignore the background, web or scenery and the ball's printed logo/graphics. Respond with ONLY this "
-    'JSON and nothing else: {"holes": true|false, "first_second": <int or null>}'
+    "ball's surface -- or a SECOND bowling ball appearing anywhere? Ignore the background, web or scenery and the ball's "
+    "printed logo/graphics. Respond with ONLY this JSON and nothing else (holes = true for either defect): "
+    '{"holes": true|false, "first_second": <int or null>}'
 )
 # Attempts and a time budget: animate must finish inside the generator's
 # 900 s timeout, and a Veo call takes ~2-3 min.
 BASE_ATTEMPTS = 2
-EXTEND_ATTEMPTS = 2
+# The extension is the only way to a continuous 15 s (runbook 6cy: joining
+# two independent 8 s clips made Black Widow's spider jump sides -- Al: "if
+# the spider jumps from one side of the ball to the other i wouldn't call
+# that working"). With the spin easing to rest it came back clean ~1 in 2,
+# so it gets as many tries as the time budget allows (~5 -> ~97%).
+EXTEND_ATTEMPTS = 5
 ANIMATE_BUDGET_S = 780
 VEO_CALL_ALLOWANCE_S = 220
 
@@ -611,15 +623,16 @@ def animate(conn, ctx: dict, *, still_png: bytes, veo_call, s3_client, image_buc
     ... remove the restriction for rotating the ball but keep the hole
     restriction").
 
-    Hole guard (runbook 6cx): the 8 s clip is checked and re-made (up to
-    BASE_ATTEMPTS) if the ball shows finger holes; then the extension is
-    checked and re-made (up to EXTEND_ATTEMPTS). If the extension keeps
-    drilling the ball, the clean 8 s clip is used (the renderer loops it,
-    as before 6cr). If the base never comes back clean, the job FAILS with
-    a message for Al rather than shipping a drilled or shortened clip (Al,
-    on an earlier cut-before-the-holes fallback: "are you clipping the
-    videos that have holes? that seems like an odd solution"). All within
-    ANIMATE_BUDGET_S of the generator's 900 s timeout."""
+    Hole guard (runbooks 6cx/6cy) -- always a clean, full 15 s or a clear
+    failure, never a drilled or shortened clip (Al: "are you clipping the
+    videos that have holes? that seems like an odd solution", then "this
+    isn't going to work if the videos are cut short"):
+      the 8 s clip, checked, re-made up to BASE_ATTEMPTS
+      + the extension to 15 s (spin eases to rest), checked, re-made up to
+        EXTEND_ATTEMPTS while the time budget allows
+    No clean 8 s clip, or no clean extension -> the job fails with a
+    message (Al re-animates). Every extra Veo call must fit
+    ANIMATE_BUDGET_S."""
     started = clock()
 
     def time_for_another_veo():
@@ -631,38 +644,48 @@ def animate(conn, ctx: dict, *, still_png: bytes, veo_call, s3_client, image_buc
     pos = locate_ball(still_png, detect_call)
     theme = ctx["visual_theme"]
 
-    clip, tries = None, 0
-    for attempt in range(BASE_ATTEMPTS):
-        if attempt and not time_for_another_veo():
-            break
-        tries += 1
-        candidate = veo_call(still_png, build_veo_prompt(theme))
-        holes, first = check(candidate, pos)
-        logger.info("signage base clip attempt %d for %s: holes=%s first=%s", attempt + 1, ctx["article_id"], holes, first)
-        if not holes:
-            clip = candidate
-            break
-    if clip is None:
-        # run_signage_job turns this into status 'failed' with the message
-        # shown in admin's Signage tab.
-        raise RuntimeError(f"Holes appeared on the ball in every attempt ({tries}) -- Re-animate, or pick a "
-                           "different still")
+    def clean_base(label):
+        """Up to BASE_ATTEMPTS 8 s clips from the still; the first clean one
+        (or None)."""
+        for attempt in range(BASE_ATTEMPTS):
+            if (attempt or label == "B") and not time_for_another_veo():
+                return None
+            candidate = veo_call(still_png, build_veo_prompt(theme))
+            holes, first = check(candidate, pos)
+            logger.info("signage clip %s attempt %d for %s: holes=%s first=%s", label, attempt + 1,
+                        ctx["article_id"], holes, first)
+            if not holes:
+                return candidate
+        return None
 
+    clip = clean_base("A")
+    if clip is None:
+        # run_signage_job turns this into status 'failed' with this message
+        # in admin's Signage tab -- never a drilled or shortened clip.
+        raise RuntimeError("Holes appeared on the ball in every attempt -- Re-animate, or pick a different still")
+
+    # (veo_extend_call is always given in production; without one -- unit
+    # tests -- the 8 s clip stands.)
+    full = clip if veo_extend_call is None else None
     if veo_extend_call is not None:
         for attempt in range(EXTEND_ATTEMPTS):
             if not time_for_another_veo():
                 break
             try:
                 ext = veo_extend_call(clip, build_veo_extend_prompt(theme))
-            except Exception:  # noqa: BLE001 -- fall back to the 8 s clip (renderer loops it)
-                logger.exception("Veo extension failed for article %s -- using the 8 s clip", ctx["article_id"])
-                break
+            except Exception:  # noqa: BLE001 -- a failed call is just a used try
+                logger.exception("Veo extension attempt %d failed for article %s", attempt + 1, ctx["article_id"])
+                continue
             holes, first = check(ext, pos)
             logger.info("signage extension attempt %d for %s: holes=%s first=%s", attempt + 1, ctx["article_id"],
                         holes, first)
             if not holes:
-                clip = ext
+                full = ext
                 break
+    if full is None:
+        raise RuntimeError("Couldn't make a clean 15 s animation -- the ball kept getting holes (or an extra ball) "
+                           "in the extension. Re-animate, or pick a different still")
+    clip = full
 
     key = f"article-images/{ctx['product_id']}/signage/clip_raw_{new_run_id()}.mp4"
     s3_client.put_object(Bucket=image_bucket, Key=key, Body=clip, ContentType="video/mp4")

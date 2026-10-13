@@ -18600,6 +18600,56 @@ aws logs tail /aws/lambda/bowling-scraper-product-article-generator --since 20m 
 ```
 Look for lines like "signage base clip attempt 1 ...: holes=False".
 
+### 6cy. Signage: always a continuous 15 s; the extension eases the spin to rest and is retried until clean (2026-10-13)
+
+Al, after 6cx fell back to the clean 8 s clip on Black Widow Spare+ (both
+extensions drilled, at 10 s and 12 s):
+> "this isn't going to work if the videos are cut short"
+
+then, on a two-clip join I'd built:
+
+> "if the spider jumps from one side of the ball to the other i wouldn't
+> call that working"
+
+**What I learned (live, Black Widow Spare+):**
+- Holes appear where the ball's unseen side turns into view. Cumulative
+  spin gets that far during the extension.
+- I gave the extension a new prompt: the spin "gently slows and it comes
+  to rest with its printed logo facing the camera ... does NOT turn any
+  further". Two tries:
+  1. A second ball floated in, and it had a hole. The check caught it.
+  2. Clean.
+- Joining two independent clean 8 s clips (a 1 s dissolve at 7 s) gave a
+  full 15 s, but the spider jumped sides. Rejected; it never shipped.
+- The extension is the only continuous route.
+
+**Pipeline** (`signage.animate`):
+1. The 8 s clip, checked, re-made up to `BASE_ATTEMPTS = 2`.
+2. The extension (`build_veo_extend_prompt`: spin eases to rest, no
+   second ball), checked, re-made up to `EXTEND_ATTEMPTS = 5` while
+   `ANIMATE_BUDGET_S` allows. That's about 4 tries after a typical first
+   clip, roughly 94% clean at ~1 in 2 per try. A failed Veo call counts
+   as a used try.
+3. **No 8 s fallback and no join.** No clean 8 s clip, or no clean
+   extension, means the job fails with a message in admin, and Al
+   re-animates.
+
+The hole check now also rejects a second ball appearing.
+
+**Tested.**
+- `test_signage_generator.py`: clean first time; drilled A re-made;
+  extension retried until clean; no clean A fails; no clean extension
+  fails (never shorter or joined); the prompts; the time budget.
+- All 56 test files pass, run one per file.
+
+**Deploy.** `sam build && sam deploy` (generator).
+
+**Verify.**
+```bash
+aws logs tail /aws/lambda/bowling-scraper-product-article-generator --since 20m --filter-pattern "?signage ?HOLE"
+```
+The clip's raw duration should be 15 s.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

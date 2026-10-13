@@ -254,15 +254,6 @@ def test_veo_extension_sends_the_clip_as_bytes_without_duration():
     assert params["resolution"] == "1080p" and "camera movement" in params["negativePrompt"]
 
 
-def test_animate_extends_the_clip_and_falls_back_to_8s_if_extension_fails():
-    for ext, expect in ((lambda mp4, p: mp4 + b"+7s", b"mp4+7s"), (lambda mp4, p: 1 / 0, b"mp4")):
-        conn, s3 = FakeConn(), FakeS3()
-        signage.animate(conn, CTX, still_png=_png(768, 1376), veo_call=lambda png, prompt: b"mp4", s3_client=s3,
-                        image_bucket="bkt", detect_call=lambda p, prompt: '[{"box_2d": [500, 250, 800, 750]}]',
-                        invoke_renderer=lambda p: None, veo_extend_call=ext)
-        assert s3.puts[0]["Body"] == expect
-
-
 def test_ball_may_rotate_but_stays_undrilled():
     # Runbook 6cw: rotation allowed again; the hole restriction stays.
     p = signage.build_veo_prompt("ice")
@@ -292,34 +283,49 @@ def _animate(checks, ext=lambda mp4, p: mp4 + b"+ext", clock=None):
     return out, s3.puts[0]["Body"], calls
 
 
-def test_clean_base_and_extension_first_time():
-    out, body, calls = _animate([(False, None), (False, None)])
+CLEAN, DRILLED = (False, None), (True, 9)
+
+
+def test_clean_clip_and_extension_first_time():
+    out, body, calls = _animate([CLEAN, CLEAN])
     assert calls == ["base", "ext"] and body == b"base1+ext"
 
 
-def test_drilled_base_is_remade_then_extension_retried():
-    # Runbook 6cx: base 1 drilled -> base 2 clean; extension 1 drilled -> extension 2 clean.
-    out, body, calls = _animate([(True, 5), (False, None), (True, 11), (False, None)])
-    assert calls == ["base", "base", "ext", "ext"] and body == b"base2+ext"
+def test_drilled_clip_a_is_remade():
+    out, body, calls = _animate([DRILLED, CLEAN, CLEAN])
+    assert calls == ["base", "base", "ext"] and body == b"base2+ext"
 
 
-def test_extension_that_keeps_drilling_falls_back_to_clean_8s():
-    out, body, calls = _animate([(False, None), (True, 10), (True, 9)])
-    assert calls == ["base", "ext", "ext"] and body == b"base1"
+def test_extension_is_retried_until_clean():
+    out, body, calls = _animate([CLEAN, DRILLED, DRILLED, DRILLED, CLEAN])
+    assert calls == ["base", "ext", "ext", "ext", "ext"] and body == b"base1+ext"
 
 
-def test_base_never_clean_fails_the_job_with_a_message():
-    # Runbook 6cx: no clipping -- Al decides ("that seems like an odd solution").
+def test_no_clean_a_fails_with_a_message():
     import pytest
     with pytest.raises(RuntimeError, match="Holes appeared on the ball in every attempt"):
-        _animate([(True, 3), (True, 6)])
+        _animate([DRILLED, DRILLED])
+
+
+def test_no_clean_extension_fails_never_short_or_joined():
+    # Runbook 6cy: no 8 s fallback, no A+B join ("if the spider jumps from one
+    # side of the ball to the other i wouldn't call that working").
+    import pytest
+    with pytest.raises(RuntimeError, match="Couldn't make a clean 15 s animation"):
+        _animate([CLEAN] + [DRILLED] * signage.EXTEND_ATTEMPTS)
+
+
+def test_extension_prompt_eases_spin_to_rest_and_check_catches_extra_ball():
+    p = signage.build_veo_extend_prompt("webs")
+    assert "comes to rest" in p and "does NOT turn any further" in p and "no second ball" in p
+    assert "SECOND bowling ball" in signage.HOLE_CHECK_PROMPT
 
 
 def test_retries_respect_the_time_budget():
     import pytest
     t = iter([0, 700, 700, 700, 700])
-    with pytest.raises(RuntimeError, match=r"every attempt \(1\)"):
-        _animate([(True, 5)], clock=lambda: next(t))
+    with pytest.raises(RuntimeError, match="every attempt"):
+        _animate([DRILLED], clock=lambda: next(t))
 
 
 def test_animate_uploads_clip_records_ball_and_hands_off_to_renderer():
