@@ -18492,6 +18492,50 @@ aws lambda get-function-event-invoke-config --region us-west-1 --function-name b
 Then Re-animate a ball. The REPORT line should show `Max Memory Used`
 well under 1024 MB.
 
+### 6cw. Ball lock removed; Veo animates the ball again (rotation allowed, still no holes) (migration 047) (2026-10-12)
+
+Al:
+> "i think you put to many guard rails on. locking that pixel for pixel is
+> not working. the window spare+ is a prime example. the spider was
+> animated on the fixed ball before now it is horribly cropped and randomly
+> moving with the spider from the image. remove the restriction for
+> rotating the ball but keep the hole restriction"
+
+**Removed: the whole 6cu ball lock.**
+- The Gemini "erase the ball" plate, the plate Veo prompts, the
+  renderer's composite (tile, mask, float and tilt), the admin "Keep the
+  real ball" checkbox, and `PATCH ball_lock`.
+- Migration 047 drops `ball_lock` and `raw_is_plate`.
+- On Black Widow Spare+ the composited still-ball carried a frozen spider
+  that clashed with the animated one. A scene whose life is ON the ball
+  can't be locked.
+
+**Changed: rotation is allowed.**
+- `build_veo_prompt`: "the ball may move and rotate naturally" (was "NEVER
+  rotates").
+- The extension prompt: "may keep moving and rotating naturally".
+- `VEO_EXTEND_NEGATIVE_EXTRA` no longer bans rotating or spinning.
+
+**Kept:**
+- `UNDRILLED_BALL` in every Veo prompt and in the still composition, and
+  finger and thumb holes in `VEO_NEGATIVE_PROMPT`.
+- Caveat from the 6cu tests: prompting reduced holes but didn't stop
+  them every time. If a clip still shows holes, Re-animate. An automatic
+  hole check that retries could come next.
+- Also kept: the locked camera (6cr), Gemini ball detection and the
+  adaptive callouts (6ct), and 1024 MB with no async retries (6cv).
+
+**Tested.** All 56 test files pass, run one per file. `admin-spa` builds.
+
+**Deploy** (code first; the old admin API selects the dropped columns):
+```bash
+sam build && sam deploy
+psql -v ON_ERROR_STOP=1 -f db/migrations/047_drop_article_signage_ball_lock.sql
+git push
+```
+Then Re-animate any ball that was animated with the lock (Black Widow
+Spare+).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

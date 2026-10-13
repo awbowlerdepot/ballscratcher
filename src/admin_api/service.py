@@ -6287,7 +6287,6 @@ SIGNAGE_COLUMNS = (
     "status", "job_started_at", "error", "still_candidates", "selected_still_key", "selected_still_url",
     "tagline_options", "tagline", "clip_url", "clip_generated_at", "ball_x", "ball_y", "ball_r",
     "approved", "approved_at", "approved_by", "mp4_url", "mp4_rendered_at", "mp4_price", "updated_at",
-    "ball_lock", "raw_is_plate",
 )
 
 
@@ -6427,7 +6426,7 @@ def queue_signage_render(conn, article_id: str) -> dict:
 
 
 def update_article_signage(conn, article_id: str, *, selected_still_key=None, tagline=None, approved=None,
-                           approved_by=None, ball_lock=None) -> dict:
+                           approved_by=None) -> dict:
     """PATCH: pick a still (must be one of the current candidates), set the
     tagline (2-60 chars), approve/unapprove (needs a clip). Picking a
     different still clears the clip -- it must be re-animated."""
@@ -6449,11 +6448,6 @@ def update_article_signage(conn, article_id: str, *, selected_still_key=None, ta
             raise ValueError("Tagline must be 2-60 characters")
         sets.append("tagline = %s")
         vals.append(t)
-    if ball_lock is not None:
-        # Runbook 6cu: applies on the next Animate (it decides what Veo is
-        # given), so changing it alone doesn't touch the current clip.
-        sets.append("ball_lock = %s")
-        vals.append(bool(ball_lock))
     if approved is not None:
         if approved and not current.get("clip_url"):
             raise ValueError("Animate before approving")

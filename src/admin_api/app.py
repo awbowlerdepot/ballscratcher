@@ -119,7 +119,6 @@ class ArticleSignageUpdateRequest(BaseModel):
     selected_still_key: Optional[str] = None
     tagline: Optional[str] = None
     approved: Optional[bool] = None
-    ball_lock: Optional[bool] = None  # runbook 6cu
 
 
 class ArticleSignageGenerateRequest(BaseModel):
@@ -1067,7 +1066,7 @@ def render_article_signage(article_id: str):
 def update_article_signage(article_id: str, body: ArticleSignageUpdateRequest, caller: dict = Depends(get_caller)):
     return _signage_call(lambda conn: service.update_article_signage(
         conn, article_id, selected_still_key=body.selected_still_key, tagline=body.tagline,
-        approved=body.approved, approved_by=caller["resolved_by"], ball_lock=body.ball_lock))
+        approved=body.approved, approved_by=caller["resolved_by"]))
 
 
 @app.post("/learn-videos/{learn_video_id}/generate-article")

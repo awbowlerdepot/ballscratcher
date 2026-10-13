@@ -259,30 +259,6 @@ export default function SignageSection({ article }: { article: Article }) {
             {data.clip_url ? "Re-animate" : "Animate"}
           </Button>
           <span className="text-xs text-ink-500">15 s Veo video from the selected still, camera locked (~$2).</span>
-          {/* Runbook 6cu -- Al: Veo "attempting to put holes in the ball" and
-              "can we also not rotate the ball". Locked: Veo animates the scene
-              without the ball; the real ball goes back on top, floating with a
-              gentle tilt. Off only when something must move across the ball. */}
-          <label className="flex w-full items-start gap-2 text-xs text-ink-600">
-            <input
-              type="checkbox"
-              className="mt-0.5"
-              checked={data.ball_lock}
-              disabled={busy || running}
-              onChange={(e) =>
-                act(
-                  () => updateArticleSignage(article.id, { ball_lock: e.target.checked }),
-                  e.target.checked ? "Ball lock on -- applies on the next Animate." : "Ball lock off -- applies on the next Animate.",
-                )
-              }
-            />
-            <span>
-              <span className="font-medium text-ink-700">Keep the real ball</span> (recommended): the scene animates around
-              the original ball, which floats and tilts but never turns away -- no invented holes or logos. Turn off only if
-              something should move across the ball (e.g. a spider). Applies on the next Animate.
-              {data.clip_url ? (data.raw_is_plate ? " Current clip: real ball." : " Current clip: Veo-animated ball.") : null}
-            </span>
-          </label>
         </div>
       ) : null}
 
