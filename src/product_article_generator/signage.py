@@ -411,22 +411,6 @@ def check_holes(mp4: bytes, pos: dict, bedrock_client) -> tuple:
         return False, None
 
 
-def trim_clip(mp4: bytes, seconds: int) -> bytes:
-    """First `seconds` of the clip (stream copy is keyframe-bound, so
-    re-encode for an exact cut)."""
-    import subprocess
-    import tempfile
-
-    import imageio_ffmpeg
-
-    with tempfile.NamedTemporaryFile(suffix=".mp4") as src, tempfile.NamedTemporaryFile(suffix=".mp4") as out:
-        src.write(mp4)
-        src.flush()
-        subprocess.run([imageio_ffmpeg.get_ffmpeg_exe(), "-v", "error", "-y", "-i", src.name, "-t", str(seconds),
-                        "-c:v", "libx264", "-crf", "16", "-an", "-f", "mp4", out.name], check=True)
-        return open(out.name, "rb").read()
-
-
 def call_gemini_detect(session, access_token: str, project_id: str, png: bytes, prompt: str,
                        model_id: str = DETECT_MODEL_ID) -> str:
     """One image + prompt -> Gemini's JSON text (Vertex, global endpoint)."""
@@ -599,9 +583,11 @@ def animate(conn, ctx: dict, *, still_png: bytes, veo_call, s3_client, image_buc
     Hole guard (runbook 6cx): the 8 s clip is checked and re-made (up to
     BASE_ATTEMPTS) if the ball shows finger holes; then the extension is
     checked and re-made (up to EXTEND_ATTEMPTS). If the extension keeps
-    drilling the ball, the clean 8 s clip is used (the renderer loops it);
-    if even the base never comes back clean, the cleanest attempt is cut
-    just before its first hole (when that leaves >= 4 s). All within
+    drilling the ball, the clean 8 s clip is used (the renderer loops it,
+    as before 6cr). If the base never comes back clean, the job FAILS with
+    a message for Al rather than shipping a drilled or shortened clip (Al,
+    on an earlier cut-before-the-holes fallback: "are you clipping the
+    videos that have holes? that seems like an odd solution"). All within
     ANIMATE_BUDGET_S of the generator's 900 s timeout."""
     started = clock()
 
@@ -614,27 +600,24 @@ def animate(conn, ctx: dict, *, still_png: bytes, veo_call, s3_client, image_buc
     pos = locate_ball(still_png, detect_call)
     theme = ctx["visual_theme"]
 
-    best = None  # (first_hole_second or inf, clip)
+    clip, tries = None, 0
     for attempt in range(BASE_ATTEMPTS):
         if attempt and not time_for_another_veo():
             break
-        clip = veo_call(still_png, build_veo_prompt(theme))
-        holes, first = check(clip, pos)
+        tries += 1
+        candidate = veo_call(still_png, build_veo_prompt(theme))
+        holes, first = check(candidate, pos)
         logger.info("signage base clip attempt %d for %s: holes=%s first=%s", attempt + 1, ctx["article_id"], holes, first)
-        score = float("inf") if not holes else (first if first is not None else 0)
-        if best is None or score > best[0]:
-            best = (score, clip)
         if not holes:
+            clip = candidate
             break
-    score, clip = best
-    base_clean = score == float("inf")
-    if not base_clean and score >= 4:
-        try:
-            clip = trim_clip(clip, int(score))  # cut just before the first hole
-        except Exception:  # noqa: BLE001 -- an uncut clip beats a failed job
-            logger.exception("trimming the drilled clip failed for article %s", ctx["article_id"])
+    if clip is None:
+        # run_signage_job turns this into status 'failed' with the message
+        # shown in admin's Signage tab.
+        raise RuntimeError(f"Holes appeared on the ball in every attempt ({tries}) -- Re-animate, or pick a "
+                           "different still")
 
-    if base_clean and veo_extend_call is not None:
+    if veo_extend_call is not None:
         for attempt in range(EXTEND_ATTEMPTS):
             if not time_for_another_veo():
                 break
@@ -654,7 +637,7 @@ def animate(conn, ctx: dict, *, still_png: bytes, veo_call, s3_client, image_buc
     s3_client.put_object(Bucket=image_bucket, Key=key, Body=clip, ContentType="video/mp4")
     update_signage(conn, ctx["article_id"], raw_clip_key=key, ball_x=pos["x"], ball_y=pos["y"], ball_r=pos["r"])
     invoke_renderer({"mode": "loop", "article_id": ctx["article_id"]})
-    return {"raw_clip_key": key, "ball": pos, "base_clean": base_clean}
+    return {"raw_clip_key": key, "ball": pos}
 
 
 def relocate(conn, ctx: dict, *, still_png: bytes, detect_call) -> dict:

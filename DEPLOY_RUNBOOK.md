@@ -18564,9 +18564,11 @@ holes once the ball turned far enough:
 2. The extension is checked and re-made if drilled
    (`EXTEND_ATTEMPTS = 2`). If it keeps drilling, the clean 8 s clip is
    used, and the renderer loops it as before.
-3. If the base never comes back clean, the attempt whose holes start
-   latest is cut just before them (`trim_clip`), as long as that leaves
-   at least 4 s. A failed cut keeps the uncut clip.
+3. If the base never comes back clean, the job **fails** and admin
+   shows "Holes appeared on the ball in every attempt (N) -- Re-animate,
+   or pick a different still". An earlier draft cut the clip just before
+   its first hole. Al: "are you clipping the videos that have holes? that
+   seems like an odd solution", so that was removed before it shipped.
 4. Every extra Veo call must fit `ANIMATE_BUDGET_S = 780` with a 220 s
    allowance per call, inside the generator's 900 s timeout. Worst case
    is 4 Veo calls (about $5).
@@ -18577,12 +18579,11 @@ to Sonnet 4.6.
 **Tested.**
 - `test_signage_generator.py` (21): parsing; clean first time; a drilled
   base re-made and then a drilled extension retried; an extension that
-  keeps drilling falls back to 8 s; a base never clean is cut before the
-  first hole; the time budget.
+  keeps drilling falls back to 8 s; a base never clean fails with the
+  message; the time budget.
 - All 56 test files pass, run one per file.
 - Live: the check through `signage.check_holes` gave BW (True, 8), ZM
-  (True, 8), EQ (True, 4) and the 6cr BW clip (False). `trim_clip` at 9 s
-  gave a 9.000 s clip.
+  (True, 8), EQ (True, 4) and the 6cr BW clip (False).
 
 **Deploy.** `sam build && sam deploy` (generator only).
 

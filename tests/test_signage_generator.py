@@ -294,7 +294,7 @@ def _animate(checks, ext=lambda mp4, p: mp4 + b"+ext", clock=None):
 
 def test_clean_base_and_extension_first_time():
     out, body, calls = _animate([(False, None), (False, None)])
-    assert calls == ["base", "ext"] and body == b"base1+ext" and out["base_clean"]
+    assert calls == ["base", "ext"] and body == b"base1+ext"
 
 
 def test_drilled_base_is_remade_then_extension_retried():
@@ -308,17 +308,18 @@ def test_extension_that_keeps_drilling_falls_back_to_clean_8s():
     assert calls == ["base", "ext", "ext"] and body == b"base1"
 
 
-def test_base_never_clean_is_cut_before_first_hole(monkeypatch):
-    monkeypatch.setattr(signage, "trim_clip", lambda mp4, s: mp4 + b"[:%d]" % s)
-    out, body, calls = _animate([(True, 3), (True, 6)])
-    assert calls == ["base", "base"] and body == b"base2[:6]" and not out["base_clean"]
+def test_base_never_clean_fails_the_job_with_a_message():
+    # Runbook 6cx: no clipping -- Al decides ("that seems like an odd solution").
+    import pytest
+    with pytest.raises(RuntimeError, match="Holes appeared on the ball in every attempt"):
+        _animate([(True, 3), (True, 6)])
 
 
-def test_retries_respect_the_time_budget(monkeypatch):
-    monkeypatch.setattr(signage, "trim_clip", lambda mp4, s: mp4)
+def test_retries_respect_the_time_budget():
+    import pytest
     t = iter([0, 700, 700, 700, 700])
-    out, body, calls = _animate([(True, 5)], clock=lambda: next(t))
-    assert calls == ["base"]  # no time for a second Veo call
+    with pytest.raises(RuntimeError, match=r"every attempt \(1\)"):
+        _animate([(True, 5)], clock=lambda: next(t))
 
 
 def test_animate_uploads_clip_records_ball_and_hands_off_to_renderer():
