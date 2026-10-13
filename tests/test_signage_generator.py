@@ -223,7 +223,7 @@ def test_veo_prompts_lock_the_camera():
     # Runbook 6cr: a forward drift kept pushing in through the extension.
     assert "LOCKED OFF" in signage.build_veo_prompt("webs") and "forward drift" not in signage.build_veo_prompt("webs")
     p = signage.build_veo_extend_prompt("webs")
-    assert p.startswith("Continue this exact shot") and "LOCKED OFF" in p
+    assert "Continue this exact shot" in p and "LOCKED OFF" in p
 
 
 def test_veo_extension_sends_the_clip_as_bytes_without_duration():
@@ -280,7 +280,8 @@ def _animate(checks, ext=lambda mp4, p: mp4 + b"+ext", clock=None):
                           detect_call=lambda p, prompt: '[{"box_2d": [500, 250, 800, 750]}]',
                           invoke_renderer=lambda p: None, veo_extend_call=extend,
                           hole_check=lambda mp4, pos: answers.pop(0), clock=clock or (lambda: 0))
-    return out, s3.puts[0]["Body"], calls
+    raw = [p for p in s3.puts if "/clip_raw_" in p["Key"]]
+    return out, raw[0]["Body"], calls
 
 
 CLEAN, DRILLED = (False, None), (True, 9)
@@ -289,6 +290,23 @@ CLEAN, DRILLED = (False, None), (True, 9)
 def test_clean_clip_and_extension_first_time():
     out, body, calls = _animate([CLEAN, CLEAN])
     assert calls == ["base", "ext"] and body == b"base1+ext"
+
+
+def test_rejected_clips_are_kept_for_review():
+    # Runbook 6da.
+    conn, s3 = FakeConn(), FakeS3()
+    answers = [DRILLED, CLEAN, DRILLED, CLEAN]
+    signage.animate(conn, CTX, still_png=_png(768, 1376), veo_call=lambda png, p: b"a", s3_client=s3,
+                    image_bucket="bkt", detect_call=lambda p, prompt: '[{"box_2d": [500, 250, 800, 750]}]',
+                    invoke_renderer=lambda p: None, veo_extend_call=lambda m, p: b"e",
+                    hole_check=lambda mp4, pos: answers.pop(0), clock=lambda: 0)
+    rejected = [p["Key"] for p in s3.puts if "/rejected/" in p["Key"]]
+    assert len(rejected) == 2 and rejected[0].endswith("_A1.mp4") and rejected[1].endswith("_ext1.mp4")
+
+
+def test_prompts_describe_a_brand_new_undrilled_ball():
+    assert "brand new out of the box" in signage.build_veo_prompt("x") and "brand new out of the box" in signage.build_veo_extend_prompt("x")
+    assert "brand new out of the box" in signage.SIGNAGE_COMPOSITION
 
 
 def test_drilled_clip_a_is_remade():

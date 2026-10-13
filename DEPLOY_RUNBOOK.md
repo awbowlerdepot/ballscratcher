@@ -18686,6 +18686,46 @@ seen: holes (6cx), a second ball, or a fake logo.
 
 **Deploy.** `sam build && sam deploy` (generator).
 
+### 6da. Signage: Al's "brand new out of the box" framing in every prompt; rejected clips kept for review (2026-10-13)
+
+Al, after a re-animate failed on holes:
+> "do you think adding positive instruction could help. 'These videos are
+> for marketing signage in a proshop that sells undrilled bowling balls and
+> should represent them as if they were brand new out of the box'"
+
+**What the logs showed** (2026-10-13, every attempt since 6cz):
+- Clip A is almost always clean. Black Widow was rejected once, at 7 s.
+- The extension is where rejections happen: Portal 8 / 8 / 10 s, then
+  failed; Perfect Gem 8 / 8 / 8 / 8 s, then failed. It succeeded on a
+  later re-animate.
+- Several rejections landed at exactly 8 s, the extension's first second.
+  That could be a real defect Veo adds as soon as it continues, or the
+  logo-fidelity check (6cz) being strict at the hand-off. Rejected clips
+  were thrown away, so there was no way to tell.
+
+**Changes.**
+- `PROSHOP_CONTEXT` (Al's wording, slightly expanded) goes in front of
+  both Veo prompts and into `SIGNAGE_COMPOSITION` for the stills. Veo
+  follows a positive picture of the ball better than a list of don'ts.
+- Every rejected clip is saved to
+  `article-images/<product>/signage/rejected/<run>_<A1|ext2...>.mp4` and
+  logged ("rejected clip kept: s3://..."). Never raises.
+- The check now also returns `defect` ("holes" | "second_ball" | "logo")
+  and a short `note`. The full verdict is logged ("hole check verdict:
+  ...").
+
+**Tested.** `test_signage_generator.py` (25): rejected clips kept with
+their labels, the prompts carry the framing. All 56 test files pass, run
+one per file.
+
+**Deploy.** `sam build && sam deploy` (generator).
+
+**Review a rejection.**
+```bash
+aws logs tail /aws/lambda/bowling-scraper-product-article-generator --since 30m --filter-pattern "?verdict ?rejected"
+aws s3 ls s3://<image bucket>/article-images/<product id>/signage/rejected/
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

@@ -114,7 +114,7 @@ SIGNAGE COMPOSITION (this image is a 9:16 VERTICAL in-store display poster, comp
 - Keep the bottom ~18% of the frame darker and simple: a price will be overlaid there.
 - Leave the left and right edges beside the ball relatively clean: small spec labels with thin pointer lines will be overlaid there.
 - Build depth in layers (foreground, the ball, background) with clear directional energy, so the scene can later be animated.
-- The ball is UNDRILLED: a smooth sphere with no finger holes, thumb hole or any other holes.
+- This is marketing signage for a pro shop that sells undrilled bowling balls: show the ball brand new out of the box -- UNDRILLED, a smooth sphere with no finger holes, thumb hole or any other holes.
 - Absolutely no text, numbers, words, watermarks, or logos anywhere in the image other than the ball's own printed graphics exactly as in the reference."""
 
 # Runbook 6cu -- Al: "the zero mercy tour and equinox are attempting to put
@@ -123,6 +123,13 @@ SIGNAGE COMPOSITION (this image is a 9:16 VERTICAL in-store display poster, comp
 # when the ball turned, it painted finger/thumb holes on the side coming
 # into view (and lost the logo with them). Every prompt now states the ball
 # is undrilled, and holes are banned outright.
+# Al's own framing (runbook 6da): describe what the ball IS -- Veo follows
+# a positive picture better than a list of don'ts.
+PROSHOP_CONTEXT = (
+    "These videos are marketing signage in a pro shop that sells undrilled bowling balls, and should represent the "
+    "ball as if it were brand new out of the box: a flawless, factory-fresh, undrilled ball with its logo exactly as "
+    "printed. "
+)
 UNDRILLED_BALL = (
     "The bowling ball is UNDRILLED: a perfectly smooth sphere with NO finger holes, NO thumb hole and no holes, "
     "dents or openings anywhere on its surface -- if it turns, the side coming into view is the same smooth "
@@ -243,8 +250,9 @@ def build_veo_extend_prompt(visual_theme: str) -> str:
     Widow Spare+ before this; 1 of 2 clean after)."""
     theme = f" Theme: {visual_theme.strip()}" if visual_theme else ""
     return (
-        "Continue this exact shot seamlessly. " + CAMERA_LOCKED + "The environment keeps its natural motion and any "
-        "creature keeps moving, same lighting and art style. The bowling ball stays exactly as it is: it does NOT "
+        PROSHOP_CONTEXT + "Continue this exact shot seamlessly. " + CAMERA_LOCKED + "The environment keeps its "
+        "natural motion and any creature keeps moving, same lighting and art style. The bowling ball stays exactly "
+        "as it is: it does NOT "
         "roll, spin or rotate, and its printed logo stays facing the camera exactly as shown. " + UNDRILLED_BALL
         + "No new objects, no second ball, no text, no people." + theme
     )
@@ -253,6 +261,7 @@ def build_veo_extend_prompt(visual_theme: str) -> str:
 def build_veo_prompt(visual_theme: str) -> str:
     theme = f" The scene's theme: {visual_theme.strip()}" if visual_theme else ""
     return (
+        PROSHOP_CONTEXT +
         "Cinematic animation of this exact illustrated scene with strong, continuous natural motion throughout the "
         "whole frame: the environment moves naturally (clouds, water, light, air, the backdrop drift at different "
         "speeds for real depth), and any creature or figure in the scene comes alive and moves. " + CAMERA_LOCKED +
@@ -354,7 +363,8 @@ HOLE_CHECK_PROMPT = (
     "logo/graphics changing, disappearing, turning away or differing from the 0s tile (garbled or invented text or "
     "artwork)? Something passing IN FRONT of the logo (a creature, web, smoke) is not a defect. Ignore the "
     "background and scenery. Respond with ONLY this JSON and nothing else (holes = true for ANY defect): "
-    '{"holes": true|false, "first_second": <int or null>}'
+    '{"holes": true|false, "first_second": <int or null>, "defect": "holes" | "second_ball" | "logo" | null, '
+    '"note": "<12 words max>"}'
 )
 # Attempts and a time budget: animate must finish inside the generator's
 # 900 s timeout, and a Veo call takes ~2-3 min.
@@ -454,7 +464,9 @@ def check_holes(mp4: bytes, pos: dict, bedrock_client) -> tuple:
                 {"type": "text", "text": HOLE_CHECK_PROMPT}]}]})
         resp = bedrock_client.invoke_model(modelId=HOLE_CHECK_MODEL_ID, contentType="application/json",
                                            accept="application/json", body=body)
-        return parse_hole_check(json.loads(resp["body"].read())["content"][0]["text"])
+        text = json.loads(resp["body"].read())["content"][0]["text"]
+        logger.info("hole check verdict: %s", " ".join(text.split())[-300:])
+        return parse_hole_check(text)
     except Exception:  # noqa: BLE001 -- never block on the checker itself
         logger.exception("HOLE CHECK FAILED -- treating the clip as clean")
         return False, None
@@ -645,6 +657,18 @@ def animate(conn, ctx: dict, *, still_png: bytes, veo_call, s3_client, image_buc
         return clock() - started + VEO_CALL_ALLOWANCE_S < ANIMATE_BUDGET_S
 
     check = hole_check or (lambda mp4, p: (False, None))
+    run = new_run_id()
+
+    def keep_rejected(mp4, label):
+        """Rejected clips go to S3 for review (runbook 6da) -- several
+        extensions were rejected right at 8 s, which could be the checker
+        being strict at the hand-off; this makes it checkable. Never raises."""
+        try:
+            key = f"article-images/{ctx['product_id']}/signage/rejected/{run}_{label}.mp4"
+            s3_client.put_object(Bucket=image_bucket, Key=key, Body=mp4, ContentType="video/mp4")
+            logger.info("rejected clip kept: s3://%s/%s", image_bucket, key)
+        except Exception:  # noqa: BLE001
+            logger.exception("couldn't keep rejected clip")
     # The still is the clip's first frame and the camera is locked off
     # (6cr), so where the ball is in the still is where the dots go.
     pos = locate_ball(still_png, detect_call)
@@ -662,6 +686,7 @@ def animate(conn, ctx: dict, *, still_png: bytes, veo_call, s3_client, image_buc
                         ctx["article_id"], holes, first)
             if not holes:
                 return candidate
+            keep_rejected(candidate, f"{label}{attempt + 1}")
         return None
 
     clip = clean_base("A")
@@ -688,6 +713,7 @@ def animate(conn, ctx: dict, *, still_png: bytes, veo_call, s3_client, image_buc
             if not holes:
                 full = ext
                 break
+            keep_rejected(ext, f"ext{attempt + 1}")
     if full is None:
         raise RuntimeError("Couldn't make a clean 15 s animation -- the ball kept getting holes (or an extra ball) "
                            "in the extension. Re-animate, or pick a different still")
