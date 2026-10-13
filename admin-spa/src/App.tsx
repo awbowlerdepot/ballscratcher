@@ -23,6 +23,7 @@ const ProductDetailPage = lazy(() => import("./pages/ProductDetailPage"));
 const ReviewQueuePage = lazy(() => import("./pages/ReviewQueuePage"));
 const VideoCandidatesPage = lazy(() => import("./pages/VideoCandidatesPage"));
 const ArticlesPage = lazy(() => import("./pages/ArticlesPage"));
+const NewBallsPage = lazy(() => import("./pages/NewBallsPage"));
 const CategoriesPage = lazy(() => import("./pages/CategoriesPage"));
 const LearnVideosPage = lazy(() => import("./pages/LearnVideosPage"));
 const PriceSitesPage = lazy(() => import("./pages/PriceSitesPage"));
@@ -64,6 +65,7 @@ export default function App() {
                 <Route path="/review-queue" element={<ReviewQueuePage />} />
                 <Route path="/video-candidates" element={<VideoCandidatesPage />} />
                 <Route path="/articles" element={<ArticlesPage />} />
+                <Route path="/new-balls" element={<NewBallsPage />} />
                 <Route path="/categories" element={<CategoriesPage />} />
                 <Route path="/learn-videos" element={<LearnVideosPage />} />
                 <Route path="/price-sites" element={<PriceSitesPage />} />

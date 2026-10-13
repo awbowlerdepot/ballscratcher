@@ -343,10 +343,12 @@ via this function's own CloudWatch Duration metric once a few real
 invocations have run under the cap.
 """
 import base64
+import datetime
 import json
 import logging
 import os
 import re
+import time
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -3498,6 +3500,93 @@ def run_signage_job(conn, event, *, s3_client, bedrock_client, model_id, gemini_
         return {"article_id": article_id, "failed": True, "error": str(e)[:500]}
 
 
+ANNOUNCEMENT_THEME_PROMPT = """Bowling ball: {ball}
+
+Manufacturer's description:
+{description}
+
+In 1-2 sentences, describe a distinctive visual backdrop/scene concept a product photographer could use for
+this ball, grounded in what the ball's OWN NAME and branding evoke -- e.g. "Black Widow" -> a spiderweb draped
+across the backdrop; "Fallout" -> a post-apocalyptic wasteland. Naming a concrete creature, object or symbol the
+name evokes is encouraged; a mood/color treatment is fine too. No people, no text, no bowling alley crowds.
+Reply with ONLY the scene description."""
+
+
+def run_announcement_job(conn, event, *, s3_client, bedrock_client, model_id, gemini_auth, gemini_model_id,
+                         image_bucket):
+    """{"announcement": "images", "product_id"} from admin_api (runbook 6dd,
+    migration 048): the square themed feed image + the square clean product
+    shot for a new ball's announcement posts, built like the article's
+    action/product shots but from the MANUFACTURER'S description (there's
+    no article yet -- Al: "so we can get social out as soon as they are
+    announced before there are videos to generate an article"). The visual
+    theme comes from the name + description (one Haiku call), the same idea
+    as the article's visual_theme. Any failure marks the row 'failed'."""
+    import uuid
+
+    product_id = event["product_id"]
+
+    def save(**fields):
+        cols = list(fields)
+        with conn.cursor() as cur:
+            cur.execute(
+                f"insert into product_announcements (product_id, {', '.join(cols)}, updated_at) "
+                f"values (%s, {', '.join(['%s'] * len(cols))}, now()) on conflict (product_id) do update set "
+                + ", ".join(f"{c} = excluded.{c}" for c in cols) + ", updated_at = now()",
+                [product_id, *fields.values()],
+            )
+        conn.commit()
+
+    try:
+        if not gemini_auth:
+            raise RuntimeError("Google (Vertex AI) credentials aren't configured on this deployment")
+        product = fetch_product_content(conn, product_id)
+        description = (product.get("description") or "").strip()
+        if not description:
+            raise RuntimeError("This ball has no manufacturer description yet")
+        ball = f"{product.get('brand_name') or ''} {product.get('name') or ''}".strip()
+        body = json.dumps({"anthropic_version": "bedrock-2023-05-31", "max_tokens": 200, "messages": [
+            {"role": "user", "content": ANNOUNCEMENT_THEME_PROMPT.format(ball=ball, description=description[:2000])}]})
+        resp = bedrock_client.invoke_model(modelId=model_id, contentType="application/json",
+                                           accept="application/json", body=body)
+        theme = json.loads(resp["body"].read())["content"][0]["text"].strip()[:400]
+
+        raw = fetch_reference_image_bytes(fetch_reference_image_url(conn, product_id))
+        reference_b64 = _reference_image_to_base64_png(raw)
+        fill = estimate_ball_frame_fill_ratio(raw)
+        session = get_gemini_requests_session()
+        stub_article = {"visual_theme": theme}
+        run = uuid.uuid4().hex[:8]
+        out = {}
+        for variant, slot in (("action_shot", "feed"), ("product_shot", "product")):
+            prompt = build_gemini_scene_prompt(product, stub_article, variant, fill)
+            png = None
+            for attempt in range(2):  # one retry: Gemini 429s under load (runbook 6dd)
+                try:
+                    png = call_gemini_for_image(gemini_auth, gemini_model_id, prompt, reference_b64, "1:1",
+                                                session=session)
+                    break
+                except Exception:
+                    logger.exception("announcement %s image attempt %d failed for %s", slot, attempt + 1, product_id)
+                    time.sleep(8)
+            if png is None:
+                continue
+            key = f"article-images/{product_id}/announcement/{slot}_{run}.png"
+            s3_client.put_object(Bucket=image_bucket, Key=key, Body=png, ContentType="image/png")
+            out[f"{slot}_image_key"] = key
+            out[f"{slot}_image_url"] = f"https://{image_bucket}.s3.amazonaws.com/{key}"
+        if not out:
+            raise RuntimeError("Neither image could be generated -- try again in a few minutes")
+        save(**out, visual_theme=theme, image_status="ready", image_job_started_at=None, image_error=None,
+             images_generated_at=datetime.datetime.now(datetime.timezone.utc))
+        return {"product_id": product_id, **out}
+    except Exception as e:
+        logger.exception("Announcement images failed for product %s", product_id)
+        conn.rollback()
+        save(image_status="failed", image_job_started_at=None, image_error=str(e)[:500])
+        return {"product_id": product_id, "failed": True, "error": str(e)[:500]}
+
+
 def handler(event, context):
     """Two shapes: {} / {"batch": true} runs the scheduled catalog-wide
     sweep (see list_products_needing_article -- only products with no
@@ -3603,6 +3692,14 @@ def handler(event, context):
 
     conn = get_db_connection()
     try:
+        # Announcement images (runbook 6dd) -- a new ball, no article yet.
+        if event.get("announcement") == "images":
+            result = run_announcement_job(
+                conn, event, s3_client=s3_client, bedrock_client=bedrock_client, model_id=model_id,
+                gemini_auth=gemini_auth, gemini_model_id=gemini_model_id, image_bucket=image_bucket,
+            )
+            return {"statusCode": 200, "body": json.dumps(result, default=str)}
+
         # In-store signage jobs (runbook 6cn) -- see signage.py.
         if event.get("signage"):
             result = run_signage_job(

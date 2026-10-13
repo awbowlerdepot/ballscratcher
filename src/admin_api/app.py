@@ -1024,6 +1024,55 @@ def update_article_social_posts(article_id: str, body: ArticleSocialPostsUpdateR
         conn.close()
 
 
+# --- Announcement posts + images (migration 048, runbook 6dd) ----------
+# For new balls with a manufacturer description but no article yet. Posts
+# are synchronous (one Haiku call); images are fire-and-forget (poll GET).
+# 409 = no description / a job already running; 502 = model reply didn't parse.
+
+class ProductAnnouncementPostsUpdateRequest(BaseModel):
+    social_posts: dict
+
+
+def _announcement_call(fn):
+    conn = service.get_db_connection()
+    try:
+        return fn(conn)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        msg = str(e)
+        if msg.startswith("Bedrock response"):
+            raise HTTPException(status_code=502, detail=f"Couldn't generate posts, try again: {msg}")
+        raise HTTPException(status_code=409, detail=msg)
+    finally:
+        conn.close()
+
+
+@app.get("/products/{product_id}/announcement")
+def get_product_announcement(product_id: str):
+    return _announcement_call(lambda conn: service.get_product_announcement(conn, product_id))
+
+
+@app.post("/products/{product_id}/announcement/posts/generate")
+def generate_product_announcement_posts(product_id: str):
+    return _announcement_call(lambda conn: service.generate_product_announcement_posts(conn, product_id))
+
+
+@app.patch("/products/{product_id}/announcement/posts")
+def update_product_announcement_posts(product_id: str, body: ProductAnnouncementPostsUpdateRequest):
+    return _announcement_call(lambda conn: service.update_product_announcement_posts(conn, product_id, body.social_posts))
+
+
+@app.post("/products/{product_id}/announcement/images/generate")
+def generate_product_announcement_images(product_id: str):
+    return _announcement_call(lambda conn: service.queue_announcement_images(conn, product_id))
+
+
+@app.get("/social/new-balls")
+def list_new_balls_for_social(days: int = 60):
+    return _announcement_call(lambda conn: service.list_new_balls_for_social(conn, days))
+
+
 # --- In-store signage (migration 045, runbook 6cn) ---------------------
 # Generate / Animate / Render are fire-and-forget (the jobs take 1-5 min);
 # poll GET .../signage for status. 409 = a job is running or a step is out

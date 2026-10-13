@@ -62,6 +62,7 @@ import type { Column } from "../components/DataTable";
 import DataTable from "../components/DataTable";
 import Modal from "../components/Modal";
 import ProductDetailSkeleton from "../components/ProductDetailSkeleton";
+import AnnouncementSection from "../components/AnnouncementSection";
 import SignageSection from "../components/SignageSection";
 import SocialPostsSection from "../components/SocialPostsSection";
 import { useToast } from "../components/Toast";
@@ -1144,17 +1145,22 @@ export default function ProductDetailPage() {
         </div>
       )}
 
-      {(tab === "social" || tab === "signage") &&
+      {/* Social: article posts once there's an article, plus the
+          new-release announcement (runbook 6dd) -- built from the
+          manufacturer's description, so it works before any videos. */}
+      {tab === "social" && (
+        <div className="flex flex-col gap-4">
+          {article ? <SocialPostsSection article={article} /> : null}
+          <AnnouncementSection productId={product.id} />
+        </div>
+      )}
+
+      {tab === "signage" &&
         (article ? (
-          tab === "social" ? (
-            <SocialPostsSection article={article} />
-          ) : (
-            <SignageSection article={article} />
-          )
+          <SignageSection article={article} />
         ) : (
           <p className="text-sm text-ink-500">
-            Generate the ball review article first (Article tab) -- {tab === "social" ? "social posts" : "signage"} are built
-            from it.
+            Generate the ball review article first (Article tab) -- signage is built from it.
           </p>
         ))}
 

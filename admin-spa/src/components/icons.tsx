@@ -70,6 +70,17 @@ export function IconArticles(props: IconProps) {
   );
 }
 
+// Runbook 6dd: "New balls" (announcement posts for new releases).
+export function IconMegaphone(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M3 8.5v3h2.5l6 3.5V5l-6 3.5z" />
+      <path d="M5.5 11.5l1 4h2l-1-3.6" />
+      <path d="M14.5 7.5a3.5 3.5 0 010 5" />
+    </svg>
+  );
+}
+
 export function IconCategories(props: IconProps) {
   return (
     <svg {...base} {...props}>

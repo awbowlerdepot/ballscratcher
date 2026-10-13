@@ -18847,6 +18847,97 @@ already defaulted to reactive.
 **Deploy.** `sam build && sam deploy` (the scrapers). The data backfill
 has already been applied.
 
+### 6dd. New-release announcements: social posts + images from the manufacturer's description, and a "New Balls" page (migration 048) (2026-10-13)
+
+Al:
+> "can we add the ability to generate social posts and images from the
+> manufacture description if it exists so we can get social out as soon as
+> they are announced before there are videos to generate an article"
+
+Al's choices:
+- **Link:** the BowlerDepot product page if there is one, otherwise "just
+  no link with coming soon".
+- **Images:** a square 1:1 feed image and a clean product shot.
+- **Trigger:** a button, plus a "new balls" list.
+
+**Why it's separate.** Article posts (6bv) live on `product_articles` and
+are written only from the article, so a ball with no videos had nothing.
+Announcements are per **product**.
+
+**Migration 048, `product_announcements`** (keyed by `product_id`):
+- `social_posts` (the same five fields as 6bv) and
+  `social_posts_generated_at`
+- `link_url`
+- `visual_theme`
+- `image_status` (idle / generating / ready / failed),
+  `image_job_started_at` and `image_error`
+- `feed_image_*` and `product_image_*`
+- `images_generated_at`
+
+**admin_api.**
+- `GET /products/{id}/announcement`: the ball's facts (has a description?
+  a BowlerDepot listing? the article status) plus anything saved. A
+  generating job older than 15 min shows failed.
+- `POST .../announcement/posts/generate`: synchronous, one Haiku call.
+  The prompt (`build_announcement_posts_prompt`) uses ONLY the
+  manufacturer's description and our specs (cover, core, the 15 lb
+  RG / diff / mass bias, release date). It says "nobody has thrown it
+  yet", so there are no performance claims, and it never mentions
+  prices. With an approved BowlerDepot (bigcommerce) price source the
+  posts link it; otherwise they say "coming soon to The Bowler Depot" with
+  no link. X is fitted at 280 in code, as in 6bv. Without a description it
+  returns 409.
+- `PATCH .../announcement/posts`: saves edits, known fields only.
+- `POST .../announcement/images/generate`: fire-and-forget to the
+  generator.
+- `GET /social/new-balls?days=60`: current balls discovered in the last N
+  days with no APPROVED article, newest first, with description, posts
+  and image state.
+
+**Generator** (`run_announcement_job`,
+`{"announcement": "images", "product_id"}`):
+- One Haiku call derives a `visual_theme` from the name and description,
+  the same "what does the name evoke" idea as the article's visual_theme.
+- The article image prompt (`build_gemini_scene_prompt`) is reused with
+  that theme for `action_shot` (the feed image) and `product_shot`, both
+  at **1:1**, with one retry each on a Gemini error. Gemini 429'd Bionic's
+  signage stills today.
+- Images go to `article-images/<product>/announcement/{feed,product}_<run>.png`.
+
+**admin-spa.**
+- The product page's **Social posts** tab now always shows the
+  **New-release announcement** section (`AnnouncementSection`): make or
+  remake images (polls while generating, thumbnails open to download),
+  write or rewrite posts, edit, save, Copy, and the X count. Article posts
+  still show above it once there's an article.
+- A new **New Balls** page (`/new-balls`, a nav item with a megaphone
+  icon) has a 30 / 60 / 90 day window. Each row opens the ball's Social
+  tab.
+
+**Tested.**
+- `test_admin_api_service.py`: the prompt with a listing, without one
+  ("coming soon", no link), needs a description, stores posts and link,
+  refuses images without a description, the stale job, the new-balls
+  filter. 447 passed.
+- Scratch Postgres with migrations 001–048 and the real SQL: fresh get,
+  generate (no listing gives no link), edits keep the known fields only, a
+  ball with no description refused, the new-balls list. The generator job
+  ran against it with Gemini, Bedrock and S3 stubbed: a simulated 429 was
+  retried, both squares saved, the row ready with its theme, and a ball
+  with no description failed with a clear message.
+- A live Haiku preview on Hammer Reckoning (read-only, discovered today,
+  not on BowlerDepot yet): grounded in Hammer's copy (Vindicator core,
+  lower RG, more asymmetry), "Coming soon to The Bowler Depot", no link,
+  X 156/280.
+- All 56 test files pass, run one per file. `admin-spa` builds.
+
+**Deploy** (the migration first):
+```bash
+psql -v ON_ERROR_STOP=1 -f db/migrations/048_product_announcements.sql
+sam build && sam deploy     # admin_api + generator
+git push                    # admin-spa
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

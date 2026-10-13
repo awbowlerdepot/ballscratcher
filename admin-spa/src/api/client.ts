@@ -69,6 +69,8 @@ import type {
   ArticleSignage,
   QueueSignageResult,
   SignageStillSource,
+  ProductAnnouncement,
+  NewBallForSocial,
 } from "./types";
 
 // Unlike consumer-site's PublicApiFunction client, every request here
@@ -754,4 +756,30 @@ export function setUserEnabled(username: string, enabled: boolean): Promise<{ us
 
 export function deleteUser(username: string): Promise<{ username: string; deleted: boolean }> {
   return apiDelete(`/users/${encodeURIComponent(username)}`);
+}
+
+
+// --- Announcement posts + images (migration 048, runbook 6dd) -----------
+export function getProductAnnouncement(productId: string): Promise<ProductAnnouncement> {
+  return apiGet<ProductAnnouncement>(`/products/${encodeURIComponent(productId)}/announcement`);
+}
+
+export function generateAnnouncementPosts(productId: string): Promise<ProductAnnouncement> {
+  return apiPost<ProductAnnouncement>(`/products/${encodeURIComponent(productId)}/announcement/posts/generate`);
+}
+
+export function updateAnnouncementPosts(productId: string, posts: ArticleSocialPosts): Promise<ProductAnnouncement> {
+  return apiPatch<ProductAnnouncement>(`/products/${encodeURIComponent(productId)}/announcement/posts`, {
+    social_posts: posts,
+  });
+}
+
+export function generateAnnouncementImages(productId: string): Promise<{ queued: boolean; reason?: string }> {
+  return apiPost<{ queued: boolean; reason?: string }>(
+    `/products/${encodeURIComponent(productId)}/announcement/images/generate`,
+  );
+}
+
+export function listNewBallsForSocial(days = 60): Promise<NewBallForSocial[]> {
+  return apiGet<NewBallForSocial[]>("/social/new-balls", { days });
 }

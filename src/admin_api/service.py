@@ -6466,3 +6466,244 @@ def update_article_signage(conn, article_id: str, *, selected_still_key=None, ta
                         [*vals, article_id])
         conn.commit()
     return get_article_signage(conn, article_id)
+
+
+# --- Announcement posts + images (migration 048, runbook 6dd) -----------
+# Al: "can we add the ability to generate social posts and images from the
+# manufacture description if it exists so we can get social out as soon as
+# they are announced before there are videos to generate an article".
+# Product-level (no article needed), grounded ONLY in the manufacturer's
+# description + specs. Link: the ball's bowlerdepot.com listing when we have
+# an approved one, otherwise no link and "coming soon" wording (Al's
+# choice). Images: a square themed feed image + a square clean product shot,
+# generated asynchronously by the article generator Lambda.
+
+ANNOUNCEMENT_COLUMNS = (
+    "social_posts", "social_posts_generated_at", "link_url", "visual_theme", "image_status",
+    "image_job_started_at", "image_error", "feed_image_url", "product_image_url", "images_generated_at",
+    "updated_at",
+)
+ANNOUNCEMENT_STALE_MINUTES = 15
+
+
+def _announcement_product(cur, product_id: str) -> dict:
+    cur.execute(
+        """
+        select p.id, p.name, b.name, p.product_type, p.status, p.description, p.coverstock_name,
+               p.coverstock_material::text, p.coverstock_type::text, p.release_date, p.created_at,
+               c.name, c.core_type::text,
+               (select pps.product_url from product_price_sources pps
+                  join price_sites ps on ps.id = pps.price_site_id
+                 where pps.product_id = p.id and ps.api_provider = 'bigcommerce'
+                   and pps.status = 'approved' and pps.is_active = true
+                 order by pps.resolved_at desc nulls last limit 1),
+               (select pa.status::text from product_articles pa where pa.product_id = p.id limit 1),
+               (select row_to_json(s) from (
+                   select weight_lbs, rg, differential, mass_bias from product_skus
+                    where product_id = p.id order by abs(weight_lbs - 15) limit 1) s)
+        from products p
+        join brands b on b.id = p.brand_id
+        left join cores c on c.id = p.core_id
+        where p.id = %s
+        """,
+        (product_id,),
+    )
+    row = cur.fetchone()
+    if row is None:
+        raise LookupError(f"No product {product_id}")
+    keys = ("product_id", "name", "brand", "product_type", "status", "description", "coverstock_name",
+            "coverstock_material", "coverstock_type", "release_date", "created_at", "core_name", "core_type",
+            "bowlerdepot_url", "article_status", "reference_sku")
+    d = dict(zip(keys, row))
+    d["product_id"] = str(d["product_id"])
+    d["description"] = (d["description"] or "").strip() or None
+    return d
+
+
+def get_product_announcement(conn, product_id: str, now=None) -> dict:
+    """GET /products/{id}/announcement: the ball's facts the posts are built
+    from (so admin can show what's missing), plus any saved posts/images.
+    A generating job older than ANNOUNCEMENT_STALE_MINUTES shows 'failed'."""
+    import datetime
+
+    with conn.cursor() as cur:
+        product = _announcement_product(cur, product_id)
+        cur.execute(f"select {', '.join(ANNOUNCEMENT_COLUMNS)} from product_announcements where product_id = %s",
+                    (product_id,))
+        row = cur.fetchone()
+    data = dict(zip(ANNOUNCEMENT_COLUMNS, row)) if row else {"image_status": "idle"}
+    started = data.get("image_job_started_at")
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    if data.get("image_status") == "generating" and started and \
+            now - started > datetime.timedelta(minutes=ANNOUNCEMENT_STALE_MINUTES):
+        data["image_status"] = "failed"
+        data["image_error"] = data.get("image_error") or "The image job didn't finish -- try again"
+    return {
+        **data,
+        "product_id": product["product_id"],
+        "ball": f"{product['brand']} {product['name']}",
+        "has_description": bool(product["description"]),
+        "description": product["description"],
+        "bowlerdepot_url": product["bowlerdepot_url"],
+        "article_status": product["article_status"],
+    }
+
+
+def build_announcement_posts_prompt(product: dict) -> str:
+    """Grounded ONLY in the manufacturer's description + our scraped specs:
+    no performance results (nobody has thrown it yet), no prices. With a
+    bowlerdepot.com listing the posts link it; without one, no link and
+    "coming soon" wording (Al: "BowlerDepot product page if available or
+    just no link with coming soon")."""
+    ball = f"{product['brand']} {product['name']}"
+    sku = product.get("reference_sku") or {}
+    specs = [
+        f"Coverstock: {product['coverstock_name']}" if product.get("coverstock_name") else None,
+        f"Cover type: {product['coverstock_type']}" if product.get("coverstock_type") else None,
+        f"Core: {product['core_name']}" if product.get("core_name") else None,
+        f"Core type: {product['core_type']}" if product.get("core_type") else None,
+        (f"{sku['weight_lbs']} lb: RG {sku['rg']}" + (f", differential {sku['differential']}" if sku.get("differential") else "")
+         + (f", mass bias {sku['mass_bias']}" if sku.get("mass_bias") else "")) if sku.get("rg") else None,
+        f"Release date: {product['release_date']}" if product.get("release_date") else None,
+    ]
+    link = product.get("bowlerdepot_url")
+    if link:
+        cta = (f"It's available at The Bowler Depot: {link}", f"ending with the link {link}",
+               f"including the link {link}", "\"Shop link in bio\"")
+    else:
+        cta = ("It isn't listed on our site yet -- say it's coming soon to The Bowler Depot; do NOT include any "
+               "link or URL.", "ending with a short \"coming soon to The Bowler Depot\" line (no link)",
+               "with \"coming soon\" and no link", "\"Coming soon to The Bowler Depot\"")
+    brand_tag = re.sub(r"[^A-Za-z0-9]", "", product.get("brand") or "")
+    hashtag_hint = f"#bowling #bowlingball{(' #' + brand_tag) if brand_tag else ''} and 2-3 more relevant tags"
+    return (
+        f"You write social media posts for The Bowler Depot (a bowling pro shop) ANNOUNCING a new bowling ball, the "
+        f"{ball}. Voice: knowledgeable, upbeat, bowler-to-bowler -- excited about a new release, never hype-y or "
+        "salesy. Use ONLY the manufacturer's description and specs below; do not invent specs, performance claims, "
+        "reactions, results or quotes -- nobody has thrown it yet. Never mention prices or discounts.\n\n"
+        f"Manufacturer's description:\n{product['description']}\n\nSpecs:\n"
+        + "\n".join(s for s in specs if s) + f"\n\n{cta[0]}\n\n"
+        "Return ONLY a JSON object (no markdown fence) with exactly these string keys:\n"
+        f"  facebook: 2-4 sentences announcing the ball, {cta[1]}\n"
+        "  instagram: a caption of 3-6 short lines (line breaks with \\n), a hook first line, then "
+        f"{cta[3]}, then a blank line and a hashtag block ({hashtag_hint}). No URL.\n"
+        f"  x: one post {cta[2]}, at most 250 characters counting a link as 23, no more than two hashtags\n"
+        "  tiktok_hook: one punchy line (under 15 words) to say or show in the first two seconds of a short video\n"
+        f"  tiktok_caption: a 1-2 sentence caption plus 3-5 hashtags ({hashtag_hint}). No URL.\n"
+    )
+
+
+def _upsert_announcement(cur, product_id: str, **fields):
+    cols = list(fields)
+    vals = [json.dumps(v) if isinstance(v, (dict, list)) else v for v in fields.values()]
+    cur.execute(
+        f"insert into product_announcements (product_id, {', '.join(cols)}, updated_at) "
+        f"values (%s, {', '.join(['%s'] * len(cols))}, now()) on conflict (product_id) do update set "
+        + ", ".join(f"{c} = excluded.{c}" for c in cols) + ", updated_at = now()",
+        [product_id, *vals],
+    )
+
+
+def generate_product_announcement_posts(conn, product_id: str, bedrock_client=None, model_id: str = None) -> dict:
+    """POST /products/{id}/announcement/posts/generate -- synchronous, one
+    Haiku call (same as article posts). Needs a manufacturer description."""
+    with conn.cursor() as cur:
+        product = _announcement_product(cur, product_id)
+    if product["product_type"] != "ball":
+        raise ValueError("Announcements are for bowling balls")
+    if not product["description"]:
+        raise ValueError("This ball has no manufacturer description yet -- it fills in on a later scrape")
+    if bedrock_client is None:
+        import boto3
+
+        bedrock_client = boto3.client("bedrock-runtime")
+    model_id = model_id or os.environ.get("BEDROCK_MODEL_ID", DEFAULT_BEDROCK_MODEL_ID)
+    body = json.dumps({
+        "anthropic_version": "bedrock-2023-05-31",
+        "max_tokens": DEFAULT_SOCIAL_POSTS_MAX_TOKENS,
+        "messages": [{"role": "user", "content": build_announcement_posts_prompt(product)}],
+    })
+    response = bedrock_client.invoke_model(modelId=model_id, contentType="application/json",
+                                           accept="application/json", body=body)
+    posts = parse_social_posts_json(json.loads(response["body"].read())["content"][0]["text"])
+    url = product["bowlerdepot_url"]
+    posts["x"] = _fit_x_post(posts["x"], url)
+    with conn.cursor() as cur:
+        _upsert_announcement(cur, product_id, social_posts=posts, link_url=url,
+                             social_posts_generated_at=datetime_now_sql())
+    conn.commit()
+    return get_product_announcement(conn, product_id)
+
+
+def datetime_now_sql():
+    import datetime
+
+    return datetime.datetime.now(datetime.timezone.utc)
+
+
+def update_product_announcement_posts(conn, product_id: str, posts: dict) -> dict:
+    cleaned = {k: (posts.get(k) or "").strip() for k in SOCIAL_POST_FIELDS}
+    with conn.cursor() as cur:
+        _announcement_product(cur, product_id)  # 404 for an unknown product
+        _upsert_announcement(cur, product_id, social_posts=cleaned)
+    conn.commit()
+    return get_product_announcement(conn, product_id)
+
+
+def queue_announcement_images(conn, product_id: str) -> dict:
+    """POST /products/{id}/announcement/images/generate -- fire-and-forget
+    to the article generator ({"announcement": "images"}); ~1-2 min."""
+    current = get_product_announcement(conn, product_id)
+    if current["image_status"] == "generating":
+        raise ValueError("Images are already being generated for this ball")
+    if not current["has_description"]:
+        raise ValueError("This ball has no manufacturer description yet")
+    function_name = os.environ.get("PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME")
+    if not function_name:
+        return {"queued": False, "reason": "PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME is not configured"}
+    with conn.cursor() as cur:
+        _upsert_announcement(cur, product_id, image_status="generating", image_job_started_at=datetime_now_sql(),
+                             image_error=None)
+    conn.commit()
+    import boto3
+
+    try:
+        boto3.client("lambda").invoke(FunctionName=function_name, InvocationType="Event",
+                                      Payload=json.dumps({"announcement": "images", "product_id": product_id}))
+    except Exception:
+        with conn.cursor() as cur:
+            _upsert_announcement(cur, product_id, image_status="failed", image_job_started_at=None,
+                                 image_error="Couldn't start the image job")
+        conn.commit()
+        raise
+    return {"queued": True}
+
+
+def list_new_balls_for_social(conn, days: int = 60) -> list:
+    """GET /social/new-balls: balls discovered in the last `days` that are
+    current and have no APPROVED article yet -- the ones an announcement is
+    for -- newest first, with whether a description exists and what's been
+    made so far."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select p.id::text, b.name, p.name, p.created_at, p.release_date,
+                   coalesce(length(trim(p.description)), 0) > 0 as has_description,
+                   pa.status::text as article_status,
+                   an.social_posts is not null as has_posts,
+                   an.image_status,
+                   coalesce(an.feed_image_url, an.product_image_url) as image_url
+            from products p
+            join brands b on b.id = p.brand_id
+            left join product_articles pa on pa.product_id = p.id
+            left join product_announcements an on an.product_id = p.id
+            where p.product_type = 'ball' and p.status = 'current'
+              and p.created_at > now() - make_interval(days => %s)
+              and (pa.id is null or pa.status::text <> 'approved')
+            order by p.created_at desc
+            """,
+            (int(days),),
+        )
+        keys = ("product_id", "brand", "name", "created_at", "release_date", "has_description", "article_status",
+                "has_posts", "image_status", "image_url")
+        return [dict(zip(keys, r)) for r in cur.fetchall()]

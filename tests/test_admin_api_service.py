@@ -8053,3 +8053,79 @@ def test_signage_running_job_goes_stale_after_twenty_minutes():
     assert service.signage_effective_status(stale, now) == "failed"
     assert service.signage_effective_status({"status": "ready", "job_started_at": None}, now) == "ready"
     assert service.signage_effective_status({}, now) == "idle"
+
+
+# --- Announcement posts + images (migration 048, runbook 6dd) -----------
+
+def _announce_product(description="The Vexed Variant pairs the DynamiCore with an HK22 pearl cover.",
+                      url=None, product_type="ball"):
+    import datetime
+    return ("p-1", "Vexed Variant", "Radical", product_type, "current", description, "HK22 Pearl",
+            "reactive_resin", "pearl", None, datetime.datetime(2026, 10, 13), "Vexed", "symmetric", url, None,
+            {"weight_lbs": 15, "rg": 2.49, "differential": 0.046, "mass_bias": None})
+
+
+def _announce_dict(**kw):
+    keys = ("product_id", "name", "brand", "product_type", "status", "description", "coverstock_name",
+            "coverstock_material", "coverstock_type", "release_date", "created_at", "core_name", "core_type",
+            "bowlerdepot_url", "article_status", "reference_sku")
+    return dict(zip(keys, _announce_product(**kw)))
+
+
+def test_announcement_prompt_links_the_bowlerdepot_listing_when_there_is_one():
+    p = service.build_announcement_posts_prompt(_announce_dict(url="https://www.bowlerdepot.com/radical-vexed-variant/"))
+    assert "https://www.bowlerdepot.com/radical-vexed-variant/" in p
+    assert "DynamiCore" in p and "RG 2.49" in p and "Never mention prices" in p and "nobody has thrown it yet" in p
+
+
+def test_announcement_prompt_without_a_listing_says_coming_soon_and_no_link():
+    # Al: "BowlerDepot product page if available or just no link with coming soon".
+    p = service.build_announcement_posts_prompt(_announce_dict(url=None))
+    assert "coming soon" in p.lower() and "do NOT include any link" in p and "{LINK}" not in p
+
+
+def test_generate_announcement_posts_needs_a_description():
+    conn = _RuleConnection([("from products p", _announce_product(description="  "))])
+    try:
+        service.generate_product_announcement_posts(conn, "p-1", bedrock_client=_FakeSocialBedrock(_GOOD_POSTS), model_id="m")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "no manufacturer description" in str(e)
+
+
+def test_generate_announcement_posts_stores_posts_and_link():
+    conn = _RuleConnection([("from products p", _announce_product(url="https://www.bowlerdepot.com/x/")),
+                            ("from product_announcements", None)])
+    bedrock = _FakeSocialBedrock(_GOOD_POSTS)
+    out = service.generate_product_announcement_posts(conn, "p-1", bedrock_client=bedrock, model_id="haiku")
+    upsert = [e for e in conn.cursor().executed if e[0].startswith("insert into product_announcements")][0]
+    assert "social_posts" in upsert[0] and "link_url" in upsert[0]
+    assert json.loads(upsert[1][1])["facebook"].startswith("FB post") and upsert[1][2] == "https://www.bowlerdepot.com/x/"
+    assert conn.committed and out["has_description"] and out["ball"] == "Radical Vexed Variant"
+
+
+def test_queue_announcement_images_refuses_without_description():
+    conn = _RuleConnection([("from products p", _announce_product(description=None)),
+                            ("from product_announcements", None)])
+    try:
+        service.queue_announcement_images(conn, "p-1")
+        assert False, "expected ValueError"
+    except ValueError as e:
+        assert "description" in str(e)
+
+
+def test_stale_announcement_image_job_shows_failed():
+    import datetime
+    started = datetime.datetime(2026, 10, 13, 12, 0, tzinfo=datetime.timezone.utc)
+    row = (None, None, None, None, "generating", started, None, None, None, None, started)
+    conn = _RuleConnection([("from products p", _announce_product()), ("from product_announcements", row)])
+    d = service.get_product_announcement(conn, "p-1", now=started + datetime.timedelta(minutes=30))
+    assert d["image_status"] == "failed" and "didn't finish" in d["image_error"]
+
+
+def test_new_balls_list_excludes_approved_articles():
+    conn = _RuleConnection([("from products p", [])])
+    conn.cursor().fetchall = lambda: []
+    service.list_new_balls_for_social(conn, 30)
+    q, params = conn.cursor().executed[0]
+    assert "pa.status::text <> 'approved'" in q and "p.status = 'current'" in q and params == (30,)

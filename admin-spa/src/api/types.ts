@@ -1205,3 +1205,39 @@ export interface QueueSignageResult {
   reason?: string;
   status?: SignageStatus;
 }
+
+
+// Announcement posts + images for a new ball with no article yet
+// (migration 048, runbook 6dd), built from the manufacturer's description.
+export type AnnouncementImageStatus = "idle" | "generating" | "ready" | "failed";
+
+export interface ProductAnnouncement {
+  product_id: string;
+  ball: string;
+  has_description: boolean;
+  description: string | null;
+  bowlerdepot_url: string | null;
+  article_status: string | null;
+  social_posts?: ArticleSocialPosts | null;
+  social_posts_generated_at?: string | null;
+  link_url?: string | null;
+  visual_theme?: string | null;
+  image_status: AnnouncementImageStatus;
+  image_error?: string | null;
+  feed_image_url?: string | null;
+  product_image_url?: string | null;
+  images_generated_at?: string | null;
+}
+
+export interface NewBallForSocial {
+  product_id: string;
+  brand: string;
+  name: string;
+  created_at: string;
+  release_date: string | null;
+  has_description: boolean;
+  article_status: string | null;
+  has_posts: boolean;
+  image_status: AnnouncementImageStatus | null;
+  image_url: string | null;
+}
