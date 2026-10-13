@@ -73,7 +73,9 @@ without AWS or Google.
 import base64
 import json
 import logging
+import os
 import re
+import tempfile
 import time
 import uuid
 
@@ -349,15 +351,44 @@ ANIMATE_BUDGET_S = 780
 VEO_CALL_ALLOWANCE_S = 220
 
 
+_FFMPEG = None
+
+
+def ffmpeg_exe() -> str:
+    """The imageio-ffmpeg binary, made runnable. SAM packages it WITHOUT
+    the executable bit (-rw-r--r-- in the deployed zip) and /var/task is
+    read-only, so copy it to /tmp once per container and chmod it there --
+    otherwise every hole check would fail and (by design) count as clean."""
+    global _FFMPEG
+    if _FFMPEG and os.path.exists(_FFMPEG):
+        return _FFMPEG
+    import glob
+    import shutil
+    import stat
+
+    import imageio_ffmpeg
+
+    src = (glob.glob(os.path.join(os.path.dirname(imageio_ffmpeg.__file__), "binaries", "ffmpeg-*")) or [None])[0]
+    if src is None:
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    if os.access(src, os.X_OK):
+        _FFMPEG = src
+    else:
+        dst = os.path.join(tempfile.gettempdir(), os.path.basename(src))
+        if not os.path.exists(dst):
+            shutil.copyfile(src, dst)
+        os.chmod(dst, os.stat(dst).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+        _FFMPEG = dst
+    return _FFMPEG
+
+
 def contact_sheet(mp4: bytes, pos: dict, tile: int = 256, cols: int = 4) -> bytes:
     """1 fps frames of the clip, cropped to a square around the ball (1.35x
     its diameter, so a ball that drifts stays in frame), tiled with second
     labels -> JPEG bytes. Uses the ffmpeg binary bundled by imageio-ffmpeg."""
     import io
     import subprocess
-    import tempfile
 
-    import imageio_ffmpeg
     from PIL import Image, ImageDraw
 
     w, h = 1080, 1920
@@ -368,7 +399,7 @@ def contact_sheet(mp4: bytes, pos: dict, tile: int = 256, cols: int = 4) -> byte
         f.write(mp4)
         f.flush()
         raw = subprocess.run(
-            [imageio_ffmpeg.get_ffmpeg_exe(), "-v", "error", "-i", f.name, "-vf",
+            [ffmpeg_exe(), "-v", "error", "-i", f.name, "-vf",
              f"fps=1,scale={w}:{h},crop={side}:{side}:{x}:{y},scale={tile}:{tile}",
              "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
     n = len(raw) // (tile * tile * 3)
@@ -407,7 +438,7 @@ def check_holes(mp4: bytes, pos: dict, bedrock_client) -> tuple:
                                            accept="application/json", body=body)
         return parse_hole_check(json.loads(resp["body"].read())["content"][0]["text"])
     except Exception:  # noqa: BLE001 -- never block on the checker itself
-        logger.exception("hole check failed -- treating the clip as clean")
+        logger.exception("HOLE CHECK FAILED -- treating the clip as clean")
         return False, None
 
 

@@ -330,3 +330,21 @@ def test_animate_uploads_clip_records_ball_and_hands_off_to_renderer():
     assert s3.puts[0]["ContentType"] == "video/mp4" and "clip_raw_" in s3.puts[0]["Key"]
     assert out["ball"] == {"x": 0.5, "y": 0.65, "r": 0.259}
     assert invoked == [{"mode": "loop", "article_id": "a1"}]
+
+
+def test_ffmpeg_is_made_runnable_from_a_non_executable_package(tmp_path, monkeypatch):
+    # Runbook 6cx: the deployed zip had the binary as -rw-r--r--.
+    import os
+    import stat
+    import imageio_ffmpeg
+
+    pkg = tmp_path / "imageio_ffmpeg"
+    (pkg / "binaries").mkdir(parents=True)
+    fake = pkg / "binaries" / "ffmpeg-linux-x86_64-v7"
+    fake.write_bytes(b"#!/bin/sh\n")
+    os.chmod(fake, 0o644)
+    monkeypatch.setattr(imageio_ffmpeg, "__file__", str(pkg / "__init__.py"))
+    monkeypatch.setattr(signage, "_FFMPEG", None)
+    monkeypatch.setattr(signage.tempfile, "gettempdir", lambda: str(tmp_path))
+    exe = signage.ffmpeg_exe()
+    assert exe == str(tmp_path / fake.name) and os.stat(exe).st_mode & stat.S_IXUSR

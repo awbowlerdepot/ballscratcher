@@ -18576,6 +18576,13 @@ holes once the ball turned far enough:
 **IAM.** The generator gets the three-statement Global CRIS grant pinned
 to Sonnet 4.6.
 
+**Packaging gotcha.** SAM zipped the `imageio-ffmpeg` binary as
+`-rw-r--r--` (checked with `zipinfo` on the deployed package), and
+`/var/task` is read-only. `signage.ffmpeg_exe()` copies it to `/tmp` once
+per container and sets the executable bit there. Without this, every hole
+check would fail and, by design, count as clean. A real checker failure
+logs "HOLE CHECK FAILED", so grep for it after deploys.
+
 **Tested.**
 - `test_signage_generator.py` (21): parsing; clean first time; a drilled
   base re-made and then a drilled extension retried; an extension that
