@@ -18938,6 +18938,55 @@ sam build && sam deploy     # admin_api + generator
 git push                    # admin-spa
 ```
 
+### 6de. Announcement images: logo check against the official photo, re-made if changed (2026-10-13)
+
+Al, on the first live announcement images (Hammer Reckoning):
+> "It looks like one of them changed the logo on the ball which is not
+> usable"
+
+**What happened.**
+- **Feed image (gavel and anvil scene):** Gemini redesigned the logo. It
+  added a hammer-head icon, set "HAMMER" in a white arc and redrew the
+  "Reckoning" wordmark.
+- **Product shot:** the logo matched the official photo.
+
+The article image pipeline gives a choice of 3 candidates; announcements
+made exactly one with no check.
+
+**Fix** (`run_announcement_job`). Every generated image is compared
+against the official product photo (the same reference Gemini is given)
+by Claude Sonnet 4.6 (`check_logo_matches`, `LOGO_CHECK_PROMPT`):
+- The check asks for the same words, lettering, layout and colors, with
+  nothing added or removed. Perspective and lighting differences are fine.
+- On the Reckoning pair it rejected the feed image ("adds a hammer icon
+  and alters the logo layout/style") and passed the product shot.
+- A rejected image or a Gemini error is a used try. It's re-made up to
+  `ANNOUNCEMENT_IMAGE_ATTEMPTS = 3`.
+- An image that never matches isn't replaced. A previous good one stays,
+  and `image_error` explains it ("The feed image kept changing the ball's
+  logo ... Remake images to try again"). Admin shows that note even when
+  the other image succeeded.
+- A checker failure counts as a match ("LOGO CHECK FAILED" in the logs),
+  so it never blocks on its own.
+
+IAM: the generator already has the Sonnet 4.6 grant from 6cx.
+
+**Tested.**
+- A new generator test: a feed image rejected then accepted, a product
+  shot rejected 3 times, so 1 upload and the note.
+- All 56 test files pass, run one per file. `admin-spa` builds.
+
+**Deploy.**
+```bash
+sam build && sam deploy
+git push
+```
+
+**Verify.** On Reckoning, click **Remake images**, then:
+```bash
+aws logs tail /aws/lambda/bowling-scraper-product-article-generator --since 10m --filter-pattern same_logo
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

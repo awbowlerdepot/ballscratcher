@@ -4082,3 +4082,74 @@ def test_build_video_scene_prompt_strips_creator_names():
     assert "brad and kyle" not in prompt.lower()
     assert "How To Throw More Strikes" in prompt
     assert "say: breathe first" in prompt
+
+
+# --- Announcement images: logo check (runbook 6de) ---------------------
+
+class _AnnConn:
+    def __init__(self):
+        self.executed = []
+
+    def cursor(self):
+        conn = self
+
+        class C:
+            def __enter__(s):
+                return s
+
+            def __exit__(s, *a):
+                return False
+
+            def execute(s, q, p=None):
+                conn.executed.append((" ".join(q.split()), p))
+        return C()
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+
+def test_announcement_images_remake_a_changed_logo_and_flag_one_that_never_matches(monkeypatch):
+    import io
+    import json as _json
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (32, 32), "white").save(buf, "PNG")
+    png = buf.getvalue()
+    monkeypatch.setattr(app, "fetch_product_content", lambda c, p: {"name": "Reckoning", "brand_name": "Hammer",
+                                                                       "description": "A strong asym."})
+    monkeypatch.setattr(app, "fetch_reference_image_url", lambda c, p: "u")
+    monkeypatch.setattr(app, "fetch_reference_image_bytes", lambda u: png)
+    monkeypatch.setattr(app, "get_gemini_requests_session", lambda: None)
+    monkeypatch.setattr(app, "build_gemini_scene_prompt", lambda prod, art, variant, fill: variant)
+    monkeypatch.setattr(app.time, "sleep", lambda s: None)
+    gen_calls = []
+    monkeypatch.setattr(app, "call_gemini_for_image", lambda *a, **k: gen_calls.append(a[2]) or png)
+    # feed: rejected then accepted; product: rejected every time
+    verdicts = iter([(False, "adds a hammer icon"), (True, "same"), (False, "x"), (False, "x"), (False, "x")])
+    monkeypatch.setattr(app, "check_logo_matches", lambda ref, gen, client: next(verdicts))
+
+    class Bed:
+        def invoke_model(self, **k):
+            class B:
+                def read(s):
+                    return _json.dumps({"content": [{"text": "A courtroom."}]}).encode()
+            return {"body": B()}
+
+    class S3:
+        keys = []
+
+        def put_object(self, **k):
+            self.keys.append(k["Key"])
+
+    conn, s3 = _AnnConn(), S3()
+    out = app.run_announcement_job(conn, {"announcement": "images", "product_id": "p1"}, s3_client=s3,
+                                   bedrock_client=Bed(), model_id="m", gemini_auth={"x": 1}, gemini_model_id="g",
+                                   image_bucket="bkt")
+    assert gen_calls == ["action_shot", "action_shot", "product_shot", "product_shot", "product_shot"]
+    assert list(out) == ["product_id", "feed_image_key", "feed_image_url"] and len(s3.keys) == 1
+    sql, params = conn.executed[-1]
+    assert "image_error" in sql and any("product image kept changing the ball's logo" in str(p) for p in params)

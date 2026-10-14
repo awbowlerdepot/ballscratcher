@@ -3512,6 +3512,62 @@ name evokes is encouraged; a mood/color treatment is fine too. No people, no tex
 Reply with ONLY the scene description."""
 
 
+# Logo check (runbook 6de). Al, on the first live Hammer Reckoning feed
+# image: "It looks like one of them changed the logo on the ball which is
+# not usable" -- Gemini added a hammer-head icon and redrew the wordmark.
+# Each generated image is compared against the OFFICIAL product photo by
+# Claude Sonnet 4.6 (the same model and IAM grant as the signage hole check,
+# 6cx); on the Reckoning pair it rejected the redrawn feed image ("adds a
+# hammer icon and alters the logo layout/style") and passed the product
+# shot. A rejected image is re-made, up to ANNOUNCEMENT_IMAGE_ATTEMPTS.
+LOGO_CHECK_MODEL_ID = "global.anthropic.claude-sonnet-4-6"
+ANNOUNCEMENT_IMAGE_ATTEMPTS = 3
+LOGO_CHECK_PROMPT = (
+    "Image 1 is the OFFICIAL product photo of a bowling ball. Image 2 is a generated marketing image that must show "
+    "this exact same ball. Compare ONLY the ball's printed logo/graphics (the brand name, the ball name, any icon or "
+    "artwork printed on the ball): is it the SAME as in image 1 -- same words spelled the same, same lettering style, "
+    "same layout and arrangement, same colors, and NOTHING added or removed (e.g. an extra icon, a different brand "
+    "mark, a re-drawn wordmark)? Small differences from perspective, lighting or the ball's angle are fine. Also say "
+    "no if the ball's cover colors/pattern clearly differ. Respond with ONLY this JSON: "
+    '{"same_logo": true|false, "note": "<15 words max>"}'
+)
+
+
+def _jpeg_b64(image_bytes: bytes, size: int = 768) -> str:
+    import io
+
+    from PIL import Image
+
+    im = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    im.thumbnail((size, size))
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=90)
+    return base64.b64encode(buf.getvalue()).decode()
+
+
+def check_logo_matches(reference_bytes: bytes, generated_png: bytes, bedrock_client) -> tuple:
+    """-> (same_logo, note). A checker failure counts as a match (logged) so
+    it can never block images on its own -- same rule as the hole check."""
+    try:
+        body = json.dumps({"anthropic_version": "bedrock-2023-05-31", "max_tokens": 300, "messages": [{
+            "role": "user", "content": [
+                {"type": "text", "text": "Image 1:"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                             "data": _jpeg_b64(reference_bytes)}},
+                {"type": "text", "text": "Image 2:"},
+                {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg",
+                                             "data": _jpeg_b64(generated_png)}},
+                {"type": "text", "text": LOGO_CHECK_PROMPT}]}]})
+        resp = bedrock_client.invoke_model(modelId=LOGO_CHECK_MODEL_ID, contentType="application/json",
+                                           accept="application/json", body=body)
+        text = json.loads(resp["body"].read())["content"][0]["text"]
+        d = json.loads(re.findall(r"\{[^{}]*\}", text)[-1])
+        return bool(d.get("same_logo")), str(d.get("note") or "")[:120]
+    except Exception:  # noqa: BLE001
+        logger.exception("LOGO CHECK FAILED -- treating the image as a match")
+        return True, "check unavailable"
+
+
 def run_announcement_job(conn, event, *, s3_client, bedrock_client, model_id, gemini_auth, gemini_model_id,
                          image_bucket):
     """{"announcement": "images", "product_id"} from admin_api (runbook 6dd,
@@ -3558,26 +3614,39 @@ def run_announcement_job(conn, event, *, s3_client, bedrock_client, model_id, ge
         stub_article = {"visual_theme": theme}
         run = uuid.uuid4().hex[:8]
         out = {}
+        rejected = []
         for variant, slot in (("action_shot", "feed"), ("product_shot", "product")):
             prompt = build_gemini_scene_prompt(product, stub_article, variant, fill)
-            png = None
-            for attempt in range(2):  # one retry: Gemini 429s under load (runbook 6dd)
+            good = None
+            for attempt in range(ANNOUNCEMENT_IMAGE_ATTEMPTS):
                 try:
                     png = call_gemini_for_image(gemini_auth, gemini_model_id, prompt, reference_b64, "1:1",
                                                 session=session)
-                    break
-                except Exception:
+                except Exception:  # Gemini 429s under load (runbook 6dd) -- a used try
                     logger.exception("announcement %s image attempt %d failed for %s", slot, attempt + 1, product_id)
                     time.sleep(8)
-            if png is None:
+                    continue
+                same, note = check_logo_matches(raw, png, bedrock_client)
+                logger.info("announcement %s attempt %d for %s: same_logo=%s (%s)", slot, attempt + 1, product_id,
+                            same, note)
+                if same:
+                    good = png
+                    break
+            if good is None:
+                rejected.append(slot)
                 continue
             key = f"article-images/{product_id}/announcement/{slot}_{run}.png"
-            s3_client.put_object(Bucket=image_bucket, Key=key, Body=png, ContentType="image/png")
+            s3_client.put_object(Bucket=image_bucket, Key=key, Body=good, ContentType="image/png")
             out[f"{slot}_image_key"] = key
             out[f"{slot}_image_url"] = f"https://{image_bucket}.s3.amazonaws.com/{key}"
         if not out:
-            raise RuntimeError("Neither image could be generated -- try again in a few minutes")
-        save(**out, visual_theme=theme, image_status="ready", image_job_started_at=None, image_error=None,
+            raise RuntimeError("Neither image kept the ball's real logo (or Gemini was busy) -- try Remake images "
+                               "again in a few minutes")
+        note = None
+        if rejected:
+            note = (f"The {' and '.join(rejected)} image kept changing the ball's logo, so it wasn't replaced -- "
+                    "Remake images to try again")
+        save(**out, visual_theme=theme, image_status="ready", image_job_started_at=None, image_error=note,
              images_generated_at=datetime.datetime.now(datetime.timezone.utc))
         return {"product_id": product_id, **out}
     except Exception as e:

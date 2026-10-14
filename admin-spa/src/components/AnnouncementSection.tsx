@@ -159,9 +159,15 @@ export default function AnnouncementSection({ productId }: { productId: string }
               >
                 {generatingImages ? "Making images…" : data.feed_image_url || data.product_image_url ? "Remake images" : "Make images"}
               </Button>
-              <span className="text-xs text-ink-500">Square feed image + clean product shot (~$0.30).</span>
-              {data.image_status === "failed" && data.image_error ? (
-                <span className="text-xs text-danger">{data.image_error}</span>
+              <span className="text-xs text-ink-500">
+                Square feed image + clean product shot (~$0.30). Each is checked against the official photo and re-made
+                if the logo changed.
+              </span>
+              {data.image_error && data.image_status !== "generating" ? (
+                // Failed, or ready with one image rejected for a changed logo (runbook 6de).
+                <span className={`text-xs ${data.image_status === "failed" ? "text-danger" : "text-warn"}`}>
+                  {data.image_error}
+                </span>
               ) : null}
             </div>
             {data.feed_image_url || data.product_image_url ? (
