@@ -19380,6 +19380,21 @@ Then:
    update products p set published = true from brands b where b.id = p.brand_id and b.name = 'Columbia 300' and p.product_type = 'ball' and p.status = 'retired' and not p.published;
    ```
 
+**Ran it (2026-10-14).**
+- Brand `658995b6-9b40-4998-bfe3-76993c7362c7` inserted, with
+  `Columbia300BrandId` added to samconfig.
+- Deployed at 06:00 UTC, together with the 6dm partner-feed logging.
+- Discovery: 392 seen, 392 new.
+- The Shopify scrape queue drained in about 9 minutes with **0 in the
+  DLQ**.
+- In the database: 392 balls, all `retired`. 383 with a cover and
+  material, 213 with a named core, 41 with RG / differential, 392 with
+  images, 392 with an estimated plotter position. That matches the
+  pre-deploy parse exactly.
+- Published all 392. `api.bowleriq.io/products?status=retired&brand_id=…`
+  returns them. Partners get them through `/v1/changes` (the publish
+  bumps `content_changed_at`).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
