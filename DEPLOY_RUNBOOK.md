@@ -19549,6 +19549,38 @@ the new viewBox units. Ordinary laptop windows are unchanged:
 - On the ultra-wide, labels should be about normal size.
 - On iPad, full screen keeps the address bar and swipes pan the chart.
 
+### 6ds. Plotter on very wide screens: no sideways stretch when zoomed (2026-10-14)
+
+After 6dr the ultra-wide labels were the right size, but the whole oil
+range was still spread across a ~3.5:1 window. A step in oil looked two to
+three times longer than a step in motion. Al: "if you can fix the ultra
+wide that is fine for next task".
+
+**Approach** (`plotterModel.ts` `xSpanFactor` / `spans(k, xf)`; threaded
+through `clampView`, `zoomAbout`, `fitView`, `offsetForCard`, and the
+chart's pan/pinch/wheel handlers):
+- `xf` is how much wider the plot area is than the normal desktop chart
+  (1200×740). It is **1 for every normal chart**, including the article
+  panel and the desktop and mobile pages, so nothing changes there.
+- When `xf > 1` (a wide full-screen window), zooming in first narrows
+  only the motion axis. Once the oil axis reaches desktop proportions
+  (k = xf), both axes zoom together.
+- Result: **All** still fills the whole screen with no blank sides, and
+  a selected ball's zoomed view has the normal desktop proportions.
+- `PlotterChart` re-clamps the incoming view with its own `xf`, because a
+  view made at one size can sit past an edge after entering or leaving
+  full screen.
+
+**Deploy.** Push to main (Learn workflow).
+
+**Verify** (measured locally from the axis label positions; ratio is px
+per oil unit ÷ px per motion unit):
+- At 5120×1440 in full screen, **All** spans oil 1–16 across the window.
+- At 5120×1440, selecting Storm Identity gives a ratio of 1.855. The
+  normal desktop chart is also 1.855; before this fix it was about 3.4.
+- At 1400×850 the views are unchanged (normal 1200×740, ratio 1.855),
+  including after entering and leaving full screen.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

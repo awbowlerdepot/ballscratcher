@@ -17,6 +17,7 @@ import {
   formatPosition,
   rolesFor,
   spans,
+  xSpanFactor,
   zoomAbout,
   type PlotterView,
 } from "./plotterModel";
@@ -109,7 +110,7 @@ export default function PlotterChart({
   byId,
   selectedId,
   onSelect,
-  view,
+  view: viewProp,
   onViewChange,
   width,
   height,
@@ -119,7 +120,14 @@ export default function PlotterChart({
   const svgRef = useRef<SVGSVGElement>(null);
   const plotW = width - M.left - M.right;
   const plotH = height - M.top - M.bottom;
-  const { sx, sy } = spans(view.k);
+  // Wide (full-screen) charts zoom the motion axis first -- see
+  // xSpanFactor in plotterModel.ts (runbook 6ds). Every view this chart
+  // draws or emits goes through it; `view` is re-clamped here because a
+  // view made at one chart size (entering/leaving full screen) can sit
+  // past an edge at another.
+  const xf = xSpanFactor(width, height);
+  const view = clampView(viewProp, xf);
+  const { sx, sy } = spans(view.k, xf);
   const x0 = view.cx - sx / 2;
   const y1 = view.cy + sy / 2;
   const px = (oil: number) => M.left + ((oil - x0) / sx) * plotW;
@@ -235,13 +243,16 @@ export default function PlotterChart({
       gesture.current.moved = true;
       pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
       const v = viewRef.current;
-      const s = spans(v.k);
+      const s = spans(v.k, xf);
       onViewChange(
-        clampView({
-          ...v,
-          cx: v.cx - (dx / rect.width) * width * (s.sx / plotW),
-          cy: v.cy + (dy / rect.height) * height * (s.sy / plotH),
-        }),
+        clampView(
+          {
+            ...v,
+            cx: v.cx - (dx / rect.width) * width * (s.sx / plotW),
+            cy: v.cy + (dy / rect.height) * height * (s.sy / plotH),
+          },
+          xf,
+        ),
       );
     } else if (pointers.current.size === 2 && gesture.current.startDist && gesture.current.startView) {
       pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -249,12 +260,12 @@ export default function PlotterChart({
       const dist = Math.hypot(a.x - b.x, a.y - b.y);
       const mid = toViewBox((a.x + b.x) / 2, (a.y + b.y) / 2);
       const start = gesture.current.startView;
-      const s = spans(start.k);
+      const s = spans(start.k, xf);
       const anchor = {
         oil: start.cx - s.sx / 2 + ((mid.x - M.left) / plotW) * s.sx,
         motion: start.cy + s.sy / 2 - ((mid.y - M.top) / plotH) * s.sy,
       };
-      onViewChange(zoomAbout(start, dist / gesture.current.startDist, anchor.oil, anchor.motion));
+      onViewChange(zoomAbout(start, dist / gesture.current.startDist, anchor.oil, anchor.motion, xf));
     }
   }
 
@@ -279,14 +290,14 @@ export default function PlotterChart({
       e.preventDefault();
       const { x, y } = toViewBox(e.clientX, e.clientY);
       const anchor = toData(x, y);
-      onViewChange(zoomAbout(viewRef.current, Math.exp(-e.deltaY * 0.0015), anchor.oil, anchor.motion));
+      onViewChange(zoomAbout(viewRef.current, Math.exp(-e.deltaY * 0.0015), anchor.oil, anchor.motion, xf));
     }
     svg.addEventListener("wheel", onWheel, { passive: false });
     return () => svg.removeEventListener("wheel", onWheel);
   });
 
   function zoomButton(factor: number) {
-    onViewChange(zoomAbout(view, factor, view.cx, view.cy));
+    onViewChange(zoomAbout(view, factor, view.cx, view.cy, xf));
   }
 
   function onGroupClick(group: LearnPlotterPoint[], clicked: LearnPlotterPoint) {
@@ -294,7 +305,7 @@ export default function PlotterChart({
     if (group.length > 1 && !tenths) {
       // A stack at default zoom: zoom in on it so its balls separate.
       const d = displayPosition(clicked, view.k);
-      onViewChange(clampView({ cx: d.oil, cy: d.motion, k: Math.max(TENTHS_ZOOM * 1.4, view.k * 2.5) }));
+      onViewChange(clampView({ cx: d.oil, cy: d.motion, k: Math.max(TENTHS_ZOOM * 1.4, view.k * 2.5) }, xf));
       return;
     }
     onSelect(clicked.id);

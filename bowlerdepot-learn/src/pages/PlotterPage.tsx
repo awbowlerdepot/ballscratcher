@@ -5,7 +5,7 @@ import type { LearnPlotterPoint, PlotterLookupItem } from "../api/types";
 import PlotterChart from "../components/plotter/PlotterChart";
 import PlotterNeighborPanel, { PlotterNeighborCard } from "../components/plotter/PlotterNeighborPanel";
 import { useIsDesktop } from "../components/plotter/useIsDesktop";
-import { FULL_VIEW, ROLES, fitView, offsetForCard, type PlotterView } from "../components/plotter/plotterModel";
+import { FULL_VIEW, ROLES, fitView, offsetForCard, xSpanFactor, type PlotterView } from "../components/plotter/plotterModel";
 import DisplayAd from "../components/DisplayAd";
 
 // /plotter -- the Learn site's ball motion plotter (runbook 6cc). Al: "the
@@ -193,8 +193,10 @@ export default function PlotterPage() {
   // Zoom to a ball + its suggestions whenever the selection changes.
   function focusOn(p: LearnPlotterPoint) {
     const related = ROLES.flatMap((r) => p.neighbors[r.key] ?? []).map((n) => byId.get(n.id)).filter(Boolean) as LearnPlotterPoint[];
-    const fitted = fitView([p, ...related]);
-    setView(isDesktop && !cardCollapsed ? offsetForCard(fitted, chart.width, chart.cardPx) : fitted);
+    // xf > 1 only on a wide full-screen chart (runbook 6ds).
+    const xf = xSpanFactor(chart.width, chart.height);
+    const fitted = fitView([p, ...related], undefined, undefined, xf);
+    setView(isDesktop && !cardCollapsed ? offsetForCard(fitted, chart.width, chart.cardPx, xf) : fitted);
   }
 
   useEffect(() => {

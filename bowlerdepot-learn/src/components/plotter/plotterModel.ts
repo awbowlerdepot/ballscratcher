@@ -38,15 +38,33 @@ export const FULL_VIEW: PlotterView = {
   k: 1,
 };
 
-export function spans(k: number) {
-  return { sx: (DOMAIN.x1 - DOMAIN.x0) / k, sy: (DOMAIN.y1 - DOMAIN.y0) / k };
+// Wide charts (runbook 6ds). Al, after full screen on a 57" ultra-wide:
+// the whole oil range was stretched across ~3.5:1, so a step in oil looked
+// two or three times longer than a step in motion. `xf` (x-span factor) is
+// how much wider this chart's plot area is than the normal desktop one
+// (1200x740 viewBox, whose proportions are the plotter's look). It's 1 for
+// every normal chart, so nothing changes there. Above 1, zooming in first
+// narrows only the motion axis, until the oil axis reaches the desktop
+// proportions (k = xf), and then both zoom together. So "All" still fills
+// the whole screen with no blank sides, and the zoomed-in views people
+// compare balls in have correct proportions instead of a sideways stretch.
+const REFERENCE_PLOT_ASPECT = (1200 - 40 - 12) / (740 - 12 - 34);
+export function xSpanFactor(width: number, height: number) {
+  const plotW = width - CHART_MARGIN.left - CHART_MARGIN.right;
+  const plotH = height - CHART_MARGIN.top - CHART_MARGIN.bottom;
+  return Math.max(1, plotW / plotH / REFERENCE_PLOT_ASPECT);
+}
+
+export function spans(k: number, xf = 1) {
+  const w = DOMAIN.x1 - DOMAIN.x0;
+  return { sx: Math.min(w, (w * xf) / k), sy: (DOMAIN.y1 - DOMAIN.y0) / k };
 }
 
 // Keeps the view inside the chart: zoom within limits, and the visible
 // window never slides past an edge.
-export function clampView(view: PlotterView): PlotterView {
+export function clampView(view: PlotterView, xf = 1): PlotterView {
   const k = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, view.k));
-  const { sx, sy } = spans(k);
+  const { sx, sy } = spans(k, xf);
   const clampAxis = (c: number, lo: number, hi: number, span: number) =>
     span >= hi - lo ? (lo + hi) / 2 : Math.min(hi - span / 2, Math.max(lo + span / 2, c));
   return {
@@ -57,10 +75,15 @@ export function clampView(view: PlotterView): PlotterView {
 }
 
 // Zoom by `factor`, keeping data point (px, py) fixed under the cursor.
-export function zoomAbout(view: PlotterView, factor: number, px: number, py: number): PlotterView {
+export function zoomAbout(view: PlotterView, factor: number, px: number, py: number, xf = 1): PlotterView {
   const k = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, view.k * factor));
-  const ratio = view.k / k;
-  return clampView({ k, cx: px + (view.cx - px) * ratio, cy: py + (view.cy - py) * ratio });
+  // Per-axis ratios: with xf > 1 the oil span may not shrink at all yet.
+  const before = spans(view.k, xf);
+  const after = spans(k, xf);
+  return clampView(
+    { k, cx: px + (view.cx - px) * (after.sx / before.sx), cy: py + (view.cy - py) * (after.sy / before.sy) },
+    xf,
+  );
 }
 
 // A view centered on one ball, zoomed in far enough to show tenths and
@@ -72,7 +95,7 @@ export function focusView(oil: number, motion: number, k = 3): PlotterView {
 // The smallest view that fits a ball and all its recommendations -- never
 // below TENTHS_ZOOM, so the selected ball and its suggestions sit at their
 // real tenths instead of stacked on one whole-number spot.
-export function fitView(points: { oil: number; motion: number }[], minK = TENTHS_ZOOM, maxK = 4): PlotterView {
+export function fitView(points: { oil: number; motion: number }[], minK = TENTHS_ZOOM, maxK = 4, xf = 1): PlotterView {
   if (!points.length) return FULL_VIEW;
   const xs = points.map((p) => p.oil);
   const ys = points.map((p) => p.motion);
@@ -81,8 +104,8 @@ export function fitView(points: { oil: number; motion: number }[], minK = TENTHS
   const minY = Math.min(...ys) - 1.25;
   const maxY = Math.max(...ys) + 1.25;
   const full = spans(1);
-  const k = Math.max(minK, Math.min(maxK, full.sx / (maxX - minX), full.sy / (maxY - minY)));
-  return clampView({ cx: (minX + maxX) / 2, cy: (minY + maxY) / 2, k });
+  const k = Math.max(minK, Math.min(maxK, (full.sx * xf) / (maxX - minX), full.sy / (maxY - minY)));
+  return clampView({ cx: (minX + maxX) / 2, cy: (minY + maxY) / 2, k }, xf);
 }
 
 // Chart margins in viewBox px (axis labels live in them).
@@ -91,9 +114,9 @@ export const CHART_MARGIN = { left: 40, right: 12, top: 12, bottom: 34 };
 // Desktop floating details card (runbook 6ce): shift the view left by half
 // the card's width so a focused ball and its suggestions land in the open
 // part of the chart instead of under the card.
-export function offsetForCard(view: PlotterView, chartWidth: number, cardPx: number): PlotterView {
+export function offsetForCard(view: PlotterView, chartWidth: number, cardPx: number, xf = 1): PlotterView {
   const plotW = chartWidth - CHART_MARGIN.left - CHART_MARGIN.right;
-  return clampView({ ...view, cx: view.cx - (cardPx / 2) * (spans(view.k).sx / plotW) });
+  return clampView({ ...view, cx: view.cx - (cardPx / 2) * (spans(view.k, xf).sx / plotW) }, xf);
 }
 
 export function snap(value: number, decimals: number) {
