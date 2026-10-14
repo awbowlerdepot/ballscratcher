@@ -19259,6 +19259,51 @@ update products set published = true, updated_at = now()
 curl -s "https://api.bowleriq.io/products?status=retired&limit=3"
 ```
 
+### 6dm. Partner changes feed: retired balls missed by the drill sheet's update; re-touched, and the feed now logs how partners call it (2026-10-14)
+
+Al, right after 6dl:
+> "i just ran an update on the api in the drillsheet software and it
+> still didn't find them in the change sset"
+
+**Findings.**
+- The 6dl publish bumped all 1,263 balls' `content_changed_at` to
+  **05:47:55 UTC**, as the 044 trigger should.
+- `list_changes(since=05:40)` returns them as upserts: 100 on the first
+  page, `has_more` true.
+- The drill sheet ("drilld") called `/v1/changes` at 05:48:44, 05:49:54
+  and 05:49:59.
+  - **05:48:44:** the publish was 49 s old, inside
+    `CHANGE_LAG_SECONDS = 60`, so it was correctly held back.
+  - **05:49:54 and 05:49:59:** they took 21–32 ms, too fast to have
+    returned 200 balls with their child data, so they most likely
+    returned nothing.
+- That pattern fits a client that saves "my last run time" and calls
+  `?since=<that>` instead of storing `next_cursor`. Once a run happened
+  inside the lag window, "since my last run" falls after 05:47:55, and
+  those changes are skipped for good.
+- The access log recorded only the path, so it couldn't be confirmed.
+
+**Done.**
+1. **Re-touched:** `content_changed_at = now()` (05:51:03) for those
+   1,263 retired balls. This is a data-only, harmless bump. Every
+   client, cursor or `since`, gets them on its next run.
+2. **Diagnostics:** `/v1/changes` now also logs `changes <mode>
+   limit=<n> -> items=<n> has_more=<bool>`, where mode is `cursor`,
+   `since=<value>` or `from-start` (never the cursor value). There's no
+   response or contract change; the contract tests pass.
+
+**If the drill sheet still misses changes,** the fix is client-side:
+store the `next_cursor` from each response, keep calling with it while
+`has_more` is true, and on the next run call `?cursor=<stored>`. Don't
+use `?since=<last run time>`.
+
+**Deploy (the logging).** `sam build && sam deploy`.
+
+**Verify.**
+```bash
+aws logs tail /aws/lambda/bowling-scraper-partner-api --since 30m --filter-pattern changes
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

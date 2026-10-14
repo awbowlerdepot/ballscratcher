@@ -97,9 +97,21 @@ def get_changes(
     limit: int = Query(service.DEFAULT_PAGE_SIZE, ge=1, le=service.MAX_PAGE_SIZE),
 ):
     try:
-        return service.list_changes(service.get_db_connection(), cursor=cursor, since=since, limit=limit)
+        page = service.list_changes(service.get_db_connection(), cursor=cursor, since=since, limit=limit)
     except service.InvalidCursor as e:
         raise HTTPException(status_code=400, detail=str(e))
+    # Diagnostics only (runbook 6dm) -- Al: "i just ran an update on the api
+    # in the drillsheet software and it still didn't find them in the change
+    # sset". The access log had the path but not HOW a partner tracks its
+    # place, which is the usual reason a sync misses changes (?since=<last
+    # run time> instead of the stored next_cursor). Never logs the cursor
+    # itself, just which mode, plus what came back.
+    import logging
+
+    position = cursor and "cursor" or (since and f"since={since}") or "from-start"
+    logging.getLogger().info("changes %s limit=%s -> items=%d has_more=%s", position, limit,
+                             len(page["items"]), page["has_more"])
+    return page
 
 
 @app.get(
