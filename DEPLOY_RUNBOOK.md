@@ -19227,6 +19227,38 @@ recent article product shots Al had already picked.
 
 **Deploy.** `sam build && sam deploy`.
 
+### 6dl. Published every retired ball (data change) (2026-10-14)
+
+Al:
+> "can we go ahead and publish all the retired balls please. they are used
+> in the api and need to be returned"
+
+**Before:** 1,263 retired balls unpublished, 4 published.
+**After:** all 1,267 retired balls published. Current balls were not
+touched (178 published, 52 unpublished).
+
+```sql
+update products set published = true, updated_at = now()
+ where product_type = 'ball' and status = 'retired' and published = false;   -- 1263 rows
+```
+
+**Side effects checked first:**
+- `video_discovery` and `price_checker` don't filter on `published`, so
+  nothing changes there.
+- `bowlerdepot_video_sync` pushes approved videos only for published,
+  BowlerDepot-matched balls. 0 retired balls had such videos pending, so
+  nothing gets pushed.
+- `public_api` returns them only when asked for `status=retired`; it
+  defaults to current. The Learn plotter shows current balls only.
+- `partner_api` returns published balls, current and retired. The 044
+  trigger includes `published` in `content_changed_at`, so the partner
+  changes feed reports all 1,263 as upserts on the consumer's next sync.
+
+**Verify.**
+```bash
+curl -s "https://api.bowleriq.io/products?status=retired&limit=3"
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
