@@ -19138,6 +19138,49 @@ git push                    # Learn signage page
 MP4s keep the old price, and admin flags each one ("The price changed
 since this MP4 was rendered"), so click **Re-render MP4** on each.
 
+### 6dj. Fixed: unpublished balls never got a BowlerDepot price source (e.g. Brunswick TZone - Ocean Reef) (2026-10-14)
+
+Al:
+> "why is it not finding the Brunswick TZone - Ocean Reef price source on
+> bowlerdepot.com"
+
+**Findings.**
+- BowlerDepot does list it: "Brunswick TZone Ocean Reef", visible, at
+  `/brunswick-tzone-ocean-reef/`, along with the other TZone colorways.
+  I checked with a read-only BigCommerce catalog search.
+- `fuzzy_match_product("Brunswick TZone - Ocean Reef", …)` is an exact
+  1.0 match: both normalize to "brunswick tzone ocean reef".
+- But it had no `bowlerdepot_products` row, and neither does any TZone.
+  `list_our_current_products` selected `published = true and status =
+  'current'`, and **none of the 19 TZones are published** (52 current
+  balls in all: Brunswick 28, Storm 11, MOTIV 7, SWAG 2, Hammer 2, Track
+  1, Ebonite 1).
+- Price discovery only turns an existing `bowlerdepot_products` match
+  into a price source (6bm), so unpublished balls could never get a
+  BowlerDepot price, even when the store sells them.
+- The published filter came from reconciliation's original "coverage"
+  purpose (queueing "not yet listed" items for balls we feature), and
+  price matching got tied to it by accident.
+
+**Fix** (`bowlerdepot_reconciliation`):
+- **Every current ball is matched**, published or not.
+- "Not yet listed" review items and spec-mismatch (accuracy) items stay
+  scoped to **published** balls, so the review queue gains no noise.
+
+**Tested.**
+- A new handler test: an unpublished ball matched and upserted; a
+  "not yet listed" item only for the published ball; accuracy only for
+  the published match.
+- All 56 test files pass, run one per file.
+
+**Deploy and backfill.**
+```bash
+sam build && sam deploy
+aws lambda invoke --region us-west-1 --function-name bowling-scraper-bowlerdepot-reconciliation --cli-read-timeout 900 /tmp/recon.json && cat /tmp/recon.json
+```
+Then run price discovery for the newly matched balls: Batch Jobs →
+Discover price sources, or per product on its Pricing tab.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

@@ -487,16 +487,26 @@ def get_bigcommerce_credentials():
 
 
 def list_our_current_products(conn) -> list:
+    """Every CURRENT product, published or not (runbook 6dj). Al: "why is
+    it not finding the Brunswick TZone - Ocean Reef price source on
+    bowlerdepot.com" -- BowlerDepot lists "Brunswick TZone Ocean Reef"
+    (an exact match once normalized), but this used to select only
+    PUBLISHED balls, and none of the 19 TZones (52 current balls in all)
+    are published, so they were never matched and price discovery -- which
+    only turns an existing bowlerdepot_products match into a price source
+    (6bm) -- could never find them. Matching now covers every current
+    ball; `published` only scopes the review-queue items (see handler)."""
     with conn.cursor() as cur:
         cur.execute(
             """
-            select p.id, b.name, p.name
+            select p.id, b.name, p.name, p.published
             from products p
             join brands b on b.id = p.brand_id
-            where p.published = true and p.status = 'current'
+            where p.status = 'current'
             """
         )
-        return [{"product_id": row[0], "brand_name": row[1], "name": row[2]} for row in cur.fetchall()]
+        return [{"product_id": row[0], "brand_name": row[1], "name": row[2], "published": bool(row[3])}
+                for row in cur.fetchall()]
 
 
 def get_product_skus(conn, product_id) -> list:
@@ -574,8 +584,9 @@ def write_review_items(conn, mismatches: list):
 
 def handler(event, context):
     """Scheduled invocation: pulls the full BowlerDepot catalog once, then
-    checks coverage + accuracy for every current/published product in our
-    own DB against it. Coverage misses become 'not yet listed' review
+    MATCHES every current product in our own DB against it (published or
+    not -- the match is what price discovery builds on, 6dj) and checks
+    coverage + accuracy for the published ones. Coverage misses become 'not yet listed' review
     items; accuracy mismatches on matched products become the usual
     mismatch review items."""
     store_hash, auth_token = get_bigcommerce_credentials()
@@ -587,12 +598,16 @@ def handler(event, context):
         our_products = list_our_current_products(conn)
         coverage = check_coverage(our_products, bigcommerce_products)
 
+        published = {p["product_id"]: p.get("published", True) for p in our_products}
         not_yet_listed = 0
         matched_pairs = []
         for entry in coverage:
             if entry["match"] is None:
-                write_not_yet_listed_item(conn, entry["product_id"], entry["name"])
-                not_yet_listed += 1
+                # Review items stay scoped to PUBLISHED balls (runbook 6dj):
+                # an unpublished ball BowlerDepot doesn't sell isn't news.
+                if published.get(entry["product_id"], True):
+                    write_not_yet_listed_item(conn, entry["product_id"], entry["name"])
+                    not_yet_listed += 1
                 continue
 
             bc_product_id = entry["match"]["bigcommerce_product_id"]
@@ -603,6 +618,8 @@ def handler(event, context):
             bc_product = next((p for p in bigcommerce_products if str(p["id"]) == bc_product_id), None)
             if bc_product is None or match_status == "ambiguous":
                 continue  # don't run an accuracy check against a match we're not confident in
+            if not published.get(entry["product_id"], True):
+                continue  # matched (so price sources can be found), but no spec-mismatch items (6dj)
 
             for sku in get_product_skus(conn, entry["product_id"]):
                 matched_pairs.append({

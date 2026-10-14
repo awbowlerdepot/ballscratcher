@@ -499,3 +499,35 @@ if __name__ == "__main__":
         finally:
             mp.undo()
     print(f"\n{passed}/{len(tests)} tests passed")
+
+
+def test_handler_matches_unpublished_balls_but_only_flags_published_ones(monkeypatch):
+    # Runbook 6dj: "why is it not finding the Brunswick TZone - Ocean Reef
+    # price source on bowlerdepot.com" -- BowlerDepot lists it, but the
+    # TZones are unpublished, and reconciliation only matched published balls.
+    bc = [{"id": 101, "name": "Brunswick TZone Ocean Reef", "sku": ""},
+          {"id": 102, "name": "Storm Phaze II", "sku": "", "custom_fields": []}]
+    ours = [
+        {"product_id": "tz", "brand_name": "Brunswick", "name": "TZone - Ocean Reef", "published": False},
+        {"product_id": "ph", "brand_name": "Storm", "name": "Phaze II", "published": True},
+        {"product_id": "un", "brand_name": "Brunswick", "name": "Unlisted Ball", "published": False},
+        {"product_id": "pub", "brand_name": "Brunswick", "name": "Listed Nowhere", "published": True},
+    ]
+    upserts, not_listed, sku_lookups = [], [], []
+
+    class Conn:
+        def close(self):
+            pass
+
+    monkeypatch.setattr(app, "get_bigcommerce_credentials", lambda: ("store", "tok"))
+    monkeypatch.setattr(app, "fetch_all_products", lambda s, t: bc)
+    monkeypatch.setattr(app, "get_db_connection", lambda: Conn())
+    monkeypatch.setattr(app, "list_our_current_products", lambda conn: ours)
+    monkeypatch.setattr(app, "upsert_bowlerdepot_match", lambda conn, pid, bid, sku, status: upserts.append((pid, bid, status)))
+    monkeypatch.setattr(app, "write_not_yet_listed_item", lambda conn, pid, name: not_listed.append(pid))
+    monkeypatch.setattr(app, "get_product_skus", lambda conn, pid: sku_lookups.append(pid) or [])
+    monkeypatch.setattr(app, "write_review_items", lambda conn, m: None)
+    app.handler({}, None)
+    assert ("tz", "101", "matched") in upserts            # unpublished, but matched -> price source can be found
+    assert not_listed == ["pub"]                           # only published balls make "not yet listed" items
+    assert sku_lookups == ["ph"]                           # accuracy check only for published matches
