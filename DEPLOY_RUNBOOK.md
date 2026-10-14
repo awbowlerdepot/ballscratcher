@@ -19395,6 +19395,52 @@ Then:
   returns them. Partners get them through `/v1/changes` (the publish
   bumps `content_changed_at`).
 
+### 6do. Oct/Nov 2026 Brunswick chart: the 10 new releases given chart positions (2026-10-14)
+
+Al shared the new chart (Form #0826-11, Oct & Nov 2026):
+> "updated ball motion chart should just have the positions for the new
+> brunswick balls"
+
+**How it was read.**
+- The page is 1296×1728 pt, not the earlier charts' size, so the grid was
+  derived from the axis labels' text positions: 76.03 pt per step on both
+  axes, oil 1 at x = 102.2, motion 1 at y = label(2) + 76.
+- `poppler` isn't installed, so pages were rendered with pdfplumber.
+- New releases have yellow rings (CMYK 0 / .07 / 1 / .02). 12 ring-sized
+  vector circles were found: 10 balls plus the Hammer and DV8 header
+  logos.
+- Each ringed ball was cropped at 300 dpi and identified by its logo.
+  All sit exactly on whole-number intersections (±0.02).
+
+**Matched and applied** through `set_plotter_position(..., source="chart")`.
+All 10 were `estimated` before, discovered 2026-10-13. The list is in
+`scripts/data/brunswick_chart_oct_nov_2026.json`.
+
+| Ball | Was | Now |
+| --- | --- | --- |
+| Brunswick Purple Rhino Pro | (10, 9) | (5, 8) |
+| DV8 Smooth Criminal | (10, 7) | (7, 8) |
+| Ebonite Go Time | (10, 11) | (11, 10) |
+| Radical Intel Recon Hybrid | (10, 8) | (5, 11) |
+| Hammer Reckoning | (10, 15) | (16, 12) |
+| Radical Vexed Variant | (10, 11) | (13, 13) |
+| Track Synthesis Prime | (7, 16) | (11, 14) |
+| DV8 Outsider | (10, 11) | (7, 15) |
+| Brunswick Strategy Logic | (10, 11) | (11, 15) |
+| Hammer Blacklist | (7, 11) | (9, 18) |
+
+- **Rhino Pro** is our "Purple Rhino Pro" (the chart's ball is purple).
+- **Intel Recon** is the new **Intel Recon Hybrid** (aquamarine/blue), not
+  the retired purple/carbon Intel Recon, whose March chart spot (3, 11)
+  stays.
+- Per Al, only the new balls were taken from this chart. The rest of it
+  wasn't re-read.
+
+**Result.** 88 balls have chart positions (was 78). The Learn plotter API
+picks them up immediately. Prior values are in the session scratchpad
+(`octchart/before.json`); all were `estimated`, so rolling back means
+setting them to estimated and clicking Re-estimate.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

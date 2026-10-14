@@ -1,0 +1,62 @@
+[
+ {
+  "brand": "Brunswick",
+  "name": "Purple Rhino Pro",
+  "oil": 5,
+  "motion": 8
+ },
+ {
+  "brand": "DV8",
+  "name": "Smooth Criminal",
+  "oil": 7,
+  "motion": 8
+ },
+ {
+  "brand": "Ebonite",
+  "name": "Go Time",
+  "oil": 11,
+  "motion": 10
+ },
+ {
+  "brand": "Radical",
+  "name": "Intel Recon Hybrid",
+  "oil": 5,
+  "motion": 11
+ },
+ {
+  "brand": "Hammer",
+  "name": "Reckoning",
+  "oil": 16,
+  "motion": 12
+ },
+ {
+  "brand": "Radical",
+  "name": "Vexed Variant",
+  "oil": 13,
+  "motion": 13
+ },
+ {
+  "brand": "Track",
+  "name": "Synthesis Prime",
+  "oil": 11,
+  "motion": 14
+ },
+ {
+  "brand": "DV8",
+  "name": "Outsider",
+  "oil": 7,
+  "motion": 15
+ },
+ {
+  "brand": "Brunswick",
+  "name": "Strategy Logic",
+  "oil": 11,
+  "motion": 15
+ },
+ {
+  "brand": "Hammer",
+  "name": "Blacklist",
+  "oil": 9,
+  "motion": 18
+ }
+]
