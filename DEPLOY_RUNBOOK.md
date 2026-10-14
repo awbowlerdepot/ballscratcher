@@ -19654,6 +19654,24 @@ and syncs with the non-asset pass.
 - Slack and iMessage cache previews per URL for a while, so an
   already-shared link may show the old card until that expires.
 
+
+### 6du. Plotter ad moved below the phone similar-balls panel (2026-10-14)
+
+Al: "the plotter ad is below the comparison grid on mobile. it should be
+below that". On phones, 6dq's ad rendered between the color legend and
+the similar-balls panel (or the "Pick a ball" prompt), so it split the
+chart from its results. `PlotterPage.tsx` now renders `<DisplayAd>` last
+in the plotter block, after that panel.
+
+On desktop the panel is the floating card on the chart, so the ad still
+sits right under the legend there. It is still not rendered in full
+screen.
+
+**Deploy.** Push to main (Learn workflow).
+
+**Verify.** On a phone, open /plotter: the order should be chart, color
+key, Pick a ball (or the similar-balls panel), then Advertisement.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

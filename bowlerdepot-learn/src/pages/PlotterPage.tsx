@@ -385,14 +385,6 @@ export default function PlotterPage() {
             ))}
           </ul>
 
-          {/* Ad under the chart (Al: "can we add an ad placement to the bottom
-              of the ball motion chart", runbook 6dq). Not rendered in full
-              screen: that mode's chart height is sized to exactly fill the
-              window under the toolbar, and an ad there would either push the
-              chart off-screen or sit hidden, which AdSense doesn't allow. It
-              remounts (a fresh ad request) when full screen is closed. */}
-          {!fullscreen ? <DisplayAd className="mt-6" /> : null}
-
           {!isDesktop ? (
             <div className="mt-6">
               {selected ? (
@@ -415,6 +407,19 @@ export default function PlotterPage() {
               )}
             </div>
           ) : null}
+
+          {/* Ad under the chart (Al: "can we add an ad placement to the bottom
+              of the ball motion chart", runbook 6dq). Last in the block, so on
+              phones it comes after the similar-balls panel rather than between
+              it and the chart (Al: "the plotter ad is below the comparison
+              grid on mobile. it should be below that", runbook 6du); on
+              desktop that panel is the floating card, so it sits right under
+              the legend. Not rendered in full screen: that mode's chart height
+              is sized to exactly fill the window under the toolbar, and an ad
+              there would either push the chart off-screen or sit hidden, which
+              AdSense doesn't allow. It remounts (a fresh ad request) when full
+              screen is closed. */}
+          {!fullscreen ? <DisplayAd className="mt-6" /> : null}
         </div>
       ) : null}
       </div>
