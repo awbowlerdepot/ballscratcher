@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { getLearnPlotter, getPlotterBall, lookupPlotterBalls } from "../api/client";
 import type { LearnPlotterPoint, PlotterLookupItem } from "../api/types";
@@ -24,6 +24,26 @@ const DESKTOP_CHART = { width: 1200, height: 740 };
 const MOBILE_CHART = { width: 900, height: 980 };
 const CARD_PX = 330; // card width (~20rem) in chart viewBox px at desktop width
 
+// Full screen (runbook 6dp). Al: "can we add the ability to make the ball
+// motion plotter full screen so it used the entire screen space in a
+// browser window". Uses the browser's Fullscreen API where it exists, and
+// falls back to filling the window (fixed, inset 0) where it doesn't --
+// iPhone Safari only allows it for video. Either way the chart's viewBox
+// takes the window's proportions, so the SVG fills the space instead of
+// keeping its 1200x740 letterbox.
+const FS_PAD = 12; // px around the chart in full screen
+function useViewport() {
+  const [vp, setVp] = useState(() =>
+    typeof window === "undefined" ? { w: 1200, h: 800 } : { w: window.innerWidth, h: window.innerHeight },
+  );
+  useEffect(() => {
+    const on = () => setVp({ w: window.innerWidth, h: window.innerHeight });
+    window.addEventListener("resize", on);
+    return () => window.removeEventListener("resize", on);
+  }, []);
+  return vp;
+}
+
 export default function PlotterPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [points, setPoints] = useState<LearnPlotterPoint[]>([]);
@@ -34,7 +54,58 @@ export default function PlotterPage() {
   const [query, setQuery] = useState("");
   const isDesktop = useIsDesktop();
   const [cardCollapsed, setCardCollapsed] = useState(false);
-  const chart = isDesktop ? DESKTOP_CHART : MOBILE_CHART;
+  const [fullscreen, setFullscreen] = useState(false);
+  const fsRef = useRef<HTMLDivElement>(null);
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const [toolbarH, setToolbarH] = useState(56);
+  const vp = useViewport();
+  const baseChart = isDesktop ? DESKTOP_CHART : MOBILE_CHART;
+  // In full screen the viewBox matches the space left under the toolbar.
+  const chart = useMemo(() => {
+    if (!fullscreen) return baseChart;
+    const areaW = Math.max(320, vp.w - FS_PAD * 2);
+    const areaH = Math.max(240, vp.h - toolbarH - FS_PAD * 3);
+    const width = baseChart.width;
+    return { width, height: Math.round(Math.min(2400, Math.max(360, (width * areaH) / areaW))) };
+  }, [fullscreen, baseChart, vp, toolbarH]);
+
+  useEffect(() => {
+    if (fullscreen && toolbarRef.current) setToolbarH(toolbarRef.current.offsetHeight);
+  }, [fullscreen, vp]);
+
+  // Leaving the browser's full screen (Esc, swipe) ends ours too; Esc also
+  // closes the window-filling fallback. The page behind doesn't scroll.
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onChange = () => {
+      if (!document.fullscreenElement) setFullscreen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !document.fullscreenElement) setFullscreen(false);
+    };
+    document.addEventListener("fullscreenchange", onChange);
+    document.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("fullscreenchange", onChange);
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [fullscreen]);
+
+  function enterFullscreen() {
+    setFullscreen(true);
+    const el = fsRef.current;
+    if (el && el.requestFullscreen && document.fullscreenEnabled) {
+      el.requestFullscreen().catch(() => undefined); // the window-filling fallback is already on
+    }
+  }
+
+  function exitFullscreen() {
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => undefined);
+    setFullscreen(false);
+  }
 
   const selectedId = searchParams.get("ball");
   // A retired ball (runbook 6cl) isn't in the current-ball list; it's
@@ -150,7 +221,12 @@ export default function PlotterPage() {
         </p>
       </header>
 
-      <div className="mb-4 flex flex-wrap items-start gap-3">
+      <div
+        ref={fsRef}
+        className={fullscreen ? "fixed inset-0 z-50 flex flex-col overflow-auto bg-paper" : ""}
+        style={fullscreen ? { padding: FS_PAD } : undefined}
+      >
+      <div ref={toolbarRef} className={`flex flex-wrap items-start gap-3 ${fullscreen ? "mb-3" : "mb-4"}`}>
         <div className="relative w-full sm:w-80">
           <input
             type="search"
@@ -199,6 +275,21 @@ export default function PlotterPage() {
             );
           })}
         </div>
+        <button
+          type="button"
+          onClick={fullscreen ? exitFullscreen : enterFullscreen}
+          title={fullscreen ? "Exit full screen (Esc)" : "Use the whole screen for the plotter"}
+          className="ml-auto flex h-9 items-center gap-2 rounded-lg border border-paper-border bg-white px-3 text-sm font-semibold text-ink shadow-sm hover:border-ink"
+        >
+          <svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            {fullscreen ? (
+              <path d="M6 2v4H2M10 2v4h4M6 14v-4H2M10 14v-4h4" />
+            ) : (
+              <path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4" />
+            )}
+          </svg>
+          {fullscreen ? "Exit full screen" : "Full screen"}
+        </button>
       </div>
 
       {loading ? <p className="py-16 text-center text-muted">Loading the plotter…</p> : null}
@@ -254,7 +345,7 @@ export default function PlotterPage() {
               </div>
             ) : null}
           </div>
-          <p className="mt-2 text-xs text-muted">
+          <p className={`mt-2 text-xs text-muted ${fullscreen ? "hidden" : ""}`}>
             Solid ring: position read off the manufacturer&rsquo;s published ball motion chart. Dashed ring: our estimate
             from the ball&rsquo;s cover, finish, core specs and price. A number on a ball means several balls share that
             spot &mdash; click it to zoom in.
@@ -292,6 +383,7 @@ export default function PlotterPage() {
           ) : null}
         </div>
       ) : null}
+      </div>
     </div>
   );
 }

@@ -19455,6 +19455,38 @@ picks them up immediately. Prior values are in the session scratchpad
 (`octchart/before.json`); all were `estimated`, so rolling back means
 setting them to estimated and clicking Re-estimate.
 
+### 6dp. Learn plotter: full-screen mode (2026-10-14)
+
+Al: "can we add the ability to make the ball motion plotter full screen so
+it used the entire screen space in a browser window".
+
+**What changed** (`bowlerdepot-learn/src/pages/PlotterPage.tsx` only, no
+backend):
+- A **Full screen** button at the right end of the brand-filter toolbar
+  (it becomes **Exit full screen**).
+- Clicking it pins the search box, brand filters and chart to the window
+  (`fixed inset-0`, 12px padding) and also asks the browser for real
+  full screen (`requestFullscreen`), so the browser chrome goes away too.
+  If the browser refuses (iPhone Safari doesn't support it on a div), the
+  CSS "fill the window" mode still applies.
+- In full screen the chart's SVG viewBox height follows the window's
+  aspect ratio (`width × areaH / areaW`, clamped to 360–2400), so the grid
+  stretches to fill the screen instead of letterboxing. The width stays
+  the base 1200 (desktop) or 900 (mobile), so dot and label sizes don't
+  change.
+- Escape, the button, or leaving browser full screen
+  (`fullscreenchange`) all exit. Page scroll is locked while it's open.
+  The solid/dashed-ring legend line is hidden in full screen.
+- Zoom, the selected-ball card and URL `?ball=` state all keep working.
+
+**Deploy.** Push to main; the "Deploy Learn site" workflow builds and
+publishes it.
+
+**Verify.** Open https://learn.bowlerdepot.com/plotter, click **Full
+screen**: the chart should fill the screen edge to edge. Press Esc to get
+the normal page back. Checked locally at 1400×850 (the SVG filled
+1376×777 under the toolbar) and at 375×812 (no sideways scroll).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
