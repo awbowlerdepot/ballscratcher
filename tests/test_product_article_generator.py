@@ -4227,3 +4227,26 @@ def test_feed_image_ball_must_be_large():
     p = app.build_gemini_scene_prompt({"name": "Reckoning", "brand_name": "Hammer"}, {"visual_theme": "a hall"},
                                       "action_shot", feed_square=True)
     assert "55-65% of the frame width" in p and "may vary somewhat" not in p
+
+
+
+def test_product_shot_ball_must_be_within_the_catalog_range():
+    # Runbook 6dk: "add the size backstop to the product shot too".
+    import io
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (100, 100), "white").save(buf, "PNG")
+    png = buf.getvalue()
+
+    def detect(ball_w):
+        x0 = 500 - ball_w // 2
+        return lambda p, prompt: (f'[{{"box_2d": [100, {x0}, 900, {x0 + ball_w}], "label": "ball"}}, '
+                                  f'{{"box_2d": [480, {x0 + ball_w // 4}, 520, {x0 + 3 * ball_w // 4}], "label": "logo"}}]')
+
+    lo, hi = app.PRODUCT_SHOT_BALL_RANGE
+    assert not app.logo_size_ok(0.5, png, detect(440), lo, hi)[0]       # 44%: too small
+    assert app.logo_size_ok(0.5, png, detect(800), lo, hi)[0]             # 80%: Al's picked shots sit here
+    ok, note = app.logo_size_ok(0.5, png, detect(900), lo, hi)
+    assert not ok and "too big" in note                                   # 90%: a cropping close-up
+    assert app.logo_size_ok(0.5, png, detect(620), lo, hi)[0]             # 62%: the spec

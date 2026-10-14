@@ -2383,6 +2383,9 @@ def generate_article_image_candidates(conn, bedrock_image_client, bedrock_remove
     for i in range(NUM_GEMINI_CANDIDATES_PER_VARIANT):
         for variant in variants:
             aspect_ratio = _VARIANT_ASPECT_RATIOS[variant]
+            # Ball size range (runbook 6dk): product shots only -- action
+            # shots' size deliberately varies with the composition.
+            ball_range = PRODUCT_SHOT_BALL_RANGE if variant == "product_shot" else (None, None)
             try:
                 prompt = build_gemini_scene_prompt(product, article, variant,
                                                     source_ball_fill_ratio=source_ball_fill_ratio)
@@ -2404,7 +2407,7 @@ def generate_article_image_candidates(conn, bedrock_image_client, bedrock_remove
                 if logo_check_client is not None:
                     same, note = check_logo_matches(reference_bytes, png_bytes, logo_check_client)
                     if same:
-                        same, note = logo_size_ok(reference_ratio, png_bytes, detect)
+                        same, note = logo_size_ok(reference_ratio, png_bytes, detect, *ball_range)
                     if not same:
                         logger.info("article %s candidate #%d for %s changed the logo (%s) -- re-making once",
                                     variant, i + 1, product["id"], note)
@@ -2412,7 +2415,7 @@ def generate_article_image_candidates(conn, bedrock_image_client, bedrock_remove
                                                            aspect_ratio, session=gemini_session)
                         same, note = check_logo_matches(reference_bytes, png_bytes, logo_check_client)
                         if same:
-                            same, note = logo_size_ok(reference_ratio, png_bytes, detect)
+                            same, note = logo_size_ok(reference_ratio, png_bytes, detect, *ball_range)
                         if not same:
                             logger.warning("article %s candidate #%d for %s still changed the logo (%s) -- left out",
                                            variant, i + 1, product["id"], note)
@@ -3664,15 +3667,30 @@ def logo_width_ratio(image_bytes: bytes, detect_call):
 # this measures it (same detection call as the logo size) and re-makes a
 # feed image whose ball is under MIN_FEED_BALL_FRACTION of the frame width.
 MIN_FEED_BALL_FRACTION = 0.45
+# Product shot ball size (runbook 6dk). Al: "add the size backstop to the
+# product shot too" -- live Reckoning product shots came out at 74% and then
+# 44% of the frame width. Re-made outside this range, for the announcement
+# product shot AND article product_shot candidates (the same prompt and
+# catalog standard). The upper bound is 0.85, not the prompt's nominal 65%:
+# measuring the 12 most recent article product shots Al had already picked,
+# five sat at ~0.80 (Raptor Pursuit, Covert Revolt, NU Blue Hammer...) and
+# look like good, bold catalog shots -- a 0.75 ceiling would have rejected
+# half of them. What the backstop catches: too-small balls (Reckoning 0.44,
+# Crimson Jackal 0.45) and extreme close-ups that crop the ball.
+PRODUCT_SHOT_BALL_RANGE = (0.50, 0.85)
 
 
-def logo_size_ok(reference_ratio, image_bytes: bytes, detect_call, min_ball_fraction=None) -> tuple:
+def logo_size_ok(reference_ratio, image_bytes: bytes, detect_call, min_ball_fraction=None,
+                 max_ball_fraction=None) -> tuple:
     """-> (ok, note). Checks the logo's size against the official photo
-    and, when min_ball_fraction is given (the announcement feed image),
-    that the ball is big enough in the frame. Unmeasurable counts as ok."""
+    and, when given, that the ball's width is within [min, max] of the
+    frame width (feed image: a floor; product shot: a range). Unmeasurable
+    counts as ok."""
     ratio, ball_frac = measure_ball_and_logo(image_bytes, detect_call)
     if min_ball_fraction and ball_frac is not None and ball_frac < min_ball_fraction:
         return False, f"ball only {ball_frac:.0%} of the frame width"
+    if max_ball_fraction and ball_frac is not None and ball_frac > max_ball_fraction:
+        return False, f"ball {ball_frac:.0%} of the frame width -- too big"
     if not reference_ratio:
         return True, "no reference size"
     if not ratio:
@@ -3750,8 +3768,8 @@ def run_announcement_job(conn, event, *, s3_client, bedrock_client, model_id, ge
                     continue
                 same, note = check_logo_matches(raw, png, bedrock_client)
                 if same:
-                    same, note = logo_size_ok(reference_ratio, png, detect,
-                                              MIN_FEED_BALL_FRACTION if slot == "feed" else None)
+                    lo, hi = (MIN_FEED_BALL_FRACTION, None) if slot == "feed" else PRODUCT_SHOT_BALL_RANGE
+                    same, note = logo_size_ok(reference_ratio, png, detect, lo, hi)
                 logger.info("announcement %s attempt %d for %s: same_logo=%s (%s)", slot, attempt + 1, product_id,
                             same, note)
                 if same:
@@ -3769,8 +3787,8 @@ def run_announcement_job(conn, event, *, s3_client, bedrock_client, model_id, ge
                                "again in a few minutes")
         note = None
         if rejected:
-            note = (f"The {' and '.join(rejected)} image kept coming out wrong (logo design or size, or the ball too "
-                    "small), so it wasn't replaced -- Remake images to try again")
+            note = (f"The {' and '.join(rejected)} image kept coming out wrong (logo design or size, or the ball's "
+                    "size in the frame), so it wasn't replaced -- Remake images to try again")
         save(**out, visual_theme=theme, image_status="ready", image_job_started_at=None, image_error=note,
              images_generated_at=datetime.datetime.now(datetime.timezone.utc))
         return {"product_id": product_id, **out}

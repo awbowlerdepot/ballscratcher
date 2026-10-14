@@ -19197,6 +19197,36 @@ Discover price sources, or per product on its Pricing tab.
   Viz-A-Ball, Ice Storm ×2, Mix Lime-Royal-Custard, the 2 multi-color
   TZones) and the other site's 17.
 
+### 6dk. Product shot ball-size backstop (announcement and article) (2026-10-14)
+
+Al: "add the size backstop to the product shot too". It came after live
+Reckoning product shots came out at 74%, then 44%, of the frame width.
+
+**Range: 50–85% of the frame width** (`PRODUCT_SHOT_BALL_RANGE`).
+- Applied to the announcement product shot and to article `product_shot`
+  candidates. They use the same prompt and the same catalog standard.
+- Action shots and feed images are not range-checked. The feed image
+  keeps its 45% floor (6dh).
+- Measured with the same Gemini detection call as the logo size (6dg).
+  Out of range means re-made, like a wrong logo. Article candidates get
+  one re-make, then are left out.
+
+**Why 0.85 and not the prompt's nominal 65%.** I measured the 12 most
+recent article product shots Al had already picked.
+- Five sat at ~0.80 (Raptor Pursuit, Covert Revolt, Evoke, Primal Rage
+  Evolution, NU Blue Hammer ~0.76). They look like good, bold catalog
+  shots; a 0.75 ceiling would have rejected half the set.
+- The backstop catches what actually looks wrong: too-small balls
+  (Reckoning 0.44, Crimson Jackal 0.45) and extreme close-ups that crop
+  the ball (> 0.85).
+
+**Tested.**
+- A generator test: 44% rejected, 62% and 80% kept, 90% rejected with a
+  "too big" note. 182 passed.
+- All 56 test files pass, run one per file.
+
+**Deploy.** `sam build && sam deploy`.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
