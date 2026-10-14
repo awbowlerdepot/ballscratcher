@@ -1034,7 +1034,8 @@ def test_generate_article_for_product_images_only_regenerate_reuses_persisted_vi
 
     def _fake_generate_image_candidates(conn_, bedrock_image_client, bedrock_removebg_client, gemini_auth,
                                          s3_client, image_model_id, removebg_model_id, gemini_model_id,
-                                         image_bucket, product, article, variants=("action_shot", "product_shot")):
+                                         image_bucket, product, article, variants=("action_shot", "product_shot"),
+                                         logo_check_client=None):
         captured_articles.append(article)
         return {}
 
@@ -4153,3 +4154,28 @@ def test_announcement_images_remake_a_changed_logo_and_flag_one_that_never_match
     assert list(out) == ["product_id", "feed_image_key", "feed_image_url"] and len(s3.keys) == 1
     sql, params = conn.executed[-1]
     assert "image_error" in sql and any("product image kept changing the ball's logo" in str(p) for p in params)
+
+
+
+def test_article_candidates_remake_a_changed_logo_once_then_leave_it_out(monkeypatch):
+    # Runbook 6df: "add it to articles too".
+    monkeypatch.setattr(app, "ENABLE_STABILITY_CANDIDATES", False)
+    monkeypatch.setattr(app, "NUM_GEMINI_CANDIDATES_PER_VARIANT", 2)
+    monkeypatch.setattr(app, "fetch_reference_image_url", lambda c, p: "u")
+    monkeypatch.setattr(app, "fetch_reference_image_bytes", lambda u: b"ref")
+    monkeypatch.setattr(app, "_reference_image_to_base64_png", lambda b: "b64")
+    monkeypatch.setattr(app, "estimate_ball_frame_fill_ratio", lambda b: None)
+    monkeypatch.setattr(app, "get_gemini_requests_session", lambda: None)
+    monkeypatch.setattr(app, "build_gemini_scene_prompt", lambda *a, **k: "p")
+    made = []
+    monkeypatch.setattr(app, "call_gemini_for_image", lambda *a, **k: made.append(1) or b"img%d" % len(made))
+    monkeypatch.setattr(app, "store_article_image",
+                        lambda s3, bkt, pid, name, png: {"key": name, "url": "https://b/" + name})
+    # candidate 1: wrong then right (kept); candidate 2: wrong twice (left out)
+    verdicts = iter([(False, "redrawn"), (True, "ok"), (False, "x"), (False, "x")])
+    monkeypatch.setattr(app, "check_logo_matches", lambda ref, png, client: next(verdicts))
+    out = app.generate_article_image_candidates(
+        None, None, None, {"x": 1}, None, "im", "rb", "g", "bkt", {"id": "p1"}, {},
+        variants=("product_shot",), logo_check_client=object())
+    assert len(made) == 4 and len(out["product_shot"]) == 1
+    assert out["product_shot"][0]["key"].startswith("product_shot_gemini_1_")

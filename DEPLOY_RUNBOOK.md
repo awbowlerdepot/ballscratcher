@@ -18987,6 +18987,40 @@ git push
 aws logs tail /aws/lambda/bowling-scraper-product-article-generator --since 10m --filter-pattern same_logo
 ```
 
+### 6df. Article image candidates get the same logo check (2026-10-14)
+
+Al, after 6de shipped for announcement images: "add it to articles too".
+
+**Change** (`generate_article_image_candidates`, new
+`logo_check_client` parameter):
+- Every Gemini candidate, for both the action shot and the product shot,
+  is compared against the official product photo with
+  `check_logo_matches` (Sonnet 4.6, 6de).
+- A candidate whose logo changed gets ONE re-make with the same prompt.
+- If the re-make is also wrong, the candidate is **left out**, so a
+  redrawn logo can never be the auto-selected image or one of Al's
+  choices.
+- A variant can end up with fewer than 3 candidates, or none. In that case
+  Al uses the existing per-shot regenerate.
+- `generate_article_for_product` passes its Bedrock text client.
+- Video articles (no ball reference photo) are untouched.
+- A checker failure counts as a match ("LOGO CHECK FAILED" in the logs).
+
+**Cost and time.** One Sonnet check per candidate (about 6 per article),
+plus at most one extra Gemini call per rejected candidate.
+
+**Tested.**
+- A new generator test: candidate 1 wrong then right (kept), candidate 2
+  wrong twice (left out).
+- All 56 test files pass, run one per file.
+
+**Deploy.** `sam build && sam deploy`.
+
+**Verify.**
+```bash
+aws logs tail /aws/lambda/bowling-scraper-product-article-generator --since 20m --filter-pattern "?\"changed the logo\" ?\"LOGO CHECK\""
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

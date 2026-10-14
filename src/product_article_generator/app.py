@@ -2198,7 +2198,8 @@ def generate_article_image_candidates(conn, bedrock_image_client, bedrock_remove
                                        s3_client, image_model_id: str, removebg_model_id: str,
                                        gemini_model_id: str, image_bucket: str,
                                        product: dict, article: dict,
-                                       variants: tuple = ("action_shot", "product_shot")) -> dict:
+                                       variants: tuple = ("action_shot", "product_shot"),
+                                       logo_check_client=None) -> dict:
     """Best-effort, non-fatal: by the time this runs the article TEXT has
     already been generated successfully (see generate_article_for_
     product) -- an image failure here must never lose an otherwise-good
@@ -2375,6 +2376,24 @@ def generate_article_image_candidates(conn, bedrock_image_client, bedrock_remove
                     )
                 png_bytes = call_gemini_for_image(gemini_auth, gemini_model_id, prompt, reference_b64, aspect_ratio,
                                                    session=gemini_session)
+                # Logo check (runbook 6df -- Al: "add it to articles too",
+                # after an announcement image came back with a redrawn
+                # Hammer logo, 6de). A candidate whose logo doesn't match
+                # the official photo gets ONE re-make; if that's wrong too
+                # it's left out, so a changed logo can never be the
+                # auto-selected image or one of Al's choices.
+                if logo_check_client is not None:
+                    same, note = check_logo_matches(reference_bytes, png_bytes, logo_check_client)
+                    if not same:
+                        logger.info("article %s candidate #%d for %s changed the logo (%s) -- re-making once",
+                                    variant, i + 1, product["id"], note)
+                        png_bytes = call_gemini_for_image(gemini_auth, gemini_model_id, prompt, reference_b64,
+                                                           aspect_ratio, session=gemini_session)
+                        same, note = check_logo_matches(reference_bytes, png_bytes, logo_check_client)
+                        if not same:
+                            logger.warning("article %s candidate #%d for %s still changed the logo (%s) -- left out",
+                                           variant, i + 1, product["id"], note)
+                            continue
                 stored = store_article_image(s3_client, image_bucket, product["id"],
                                               f"{variant}_gemini_{i + 1}_{run_id}", png_bytes)
                 results[variant].append({"key": stored["key"], "url": stored["url"],
@@ -2841,7 +2860,7 @@ def generate_article_for_product(conn, bedrock_client, model_id: str, product_id
         candidates_by_variant = generate_article_image_candidates(
             conn, bedrock_image_client, bedrock_removebg_client, gemini_auth, s3_client,
             image_model_id, removebg_model_id, gemini_model_id, image_bucket, product, article,
-            variants=image_variants,
+            variants=image_variants, logo_check_client=bedrock_client,
         )
 
     # Which variants already have a live pick -- an admin's explicit
