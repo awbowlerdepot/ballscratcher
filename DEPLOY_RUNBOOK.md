@@ -19021,6 +19021,48 @@ plus at most one extra Gemini call per rejected candidate.
 aws logs tail /aws/lambda/bowling-scraper-product-article-generator --since 20m --filter-pattern "?\"changed the logo\" ?\"LOGO CHECK\""
 ```
 
+### 6dg. Logo SIZE check: measured with Gemini boxes, applied to announcement and article images (2026-10-14)
+
+Al, on the remade Hammer Reckoning feed image (which passed 6de's design
+check):
+> "check it again... think it scaled the logo up which is also not ideal"
+
+**What I measured** (logo width ÷ ball width):
+
+| Image | Ratio | vs. official |
+| --- | --- | --- |
+| Official photo | 0.518 | — |
+| Remade feed image | 0.77 | +49% (Al was right) |
+| Product shots | 0.512 and 0.434 | −1% and −16% |
+| Original redrawn feed image | 0.519 | right size; rejected for its design |
+
+**Why not just ask the model.** I asked Sonnet to estimate the sizes and
+the answers were useless: it said 38% for the image that's really 77%.
+Gemini 2.5 Flash's native detection (`box_2d`, the same as the 6ct ball
+detection) boxes "ball" and "logo" (the whole brand and ball-name
+wordmark) consistently. It gave identical numbers on repeat runs.
+
+**Change** (generator):
+- `logo_width_ratio(image, detect_call)`, `logo_size_ok(reference_ratio,
+  image, detect_call)` and `gemini_detect_call(auth, session)`.
+- `LOGO_SCALE_TOLERANCE = 0.20`: more than 20% bigger or smaller than the
+  official photo is rejected.
+- It runs after the design check (6de/6df) passes, in both the
+  announcement image job and the article candidates. The reference ratio
+  is measured once per job.
+- If either side can't be measured, the check passes. It never blocks on
+  its own.
+- The announcement note now says "(design or size)".
+
+**Tested.**
+- A unit test with synthetic boxes: 0.77 against 0.518 is rejected with a
+  "+49%" note; −16% passes; unparseable and no-reference cases pass.
+- The live production functions on the real Reckoning images: feed
+  +51% (rejected), product −1% and −16% (kept).
+- All 56 test files pass, run one per file.
+
+**Deploy.** `sam build && sam deploy`.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

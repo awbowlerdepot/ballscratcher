@@ -4179,3 +4179,26 @@ def test_article_candidates_remake_a_changed_logo_once_then_leave_it_out(monkeyp
         variants=("product_shot",), logo_check_client=object())
     assert len(made) == 4 and len(out["product_shot"]) == 1
     assert out["product_shot"][0]["key"].startswith("product_shot_gemini_1_")
+
+
+def test_logo_size_check_rejects_a_scaled_up_logo():
+    import pytest
+    # Runbook 6dg: "think it scaled the logo up" -- the Reckoning feed image's
+    # wordmark spanned 0.77 of the ball vs 0.52 on the official photo.
+    import io
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (100, 100), "white").save(buf, "PNG")
+    png = buf.getvalue()
+
+    def detect(ratio):
+        return lambda p, prompt: ('[{"box_2d": [200, 100, 800, 900], "label": "ball"}, '
+                                  f'{{"box_2d": [450, 300, 550, {300 + int(800 * ratio)}], "label": "logo"}}]')
+
+    assert app.logo_width_ratio(png, detect(0.518)) == pytest.approx(0.518, abs=0.01)
+    ok, note = app.logo_size_ok(0.518, png, detect(0.77))
+    assert not ok and "+49%" in note
+    assert app.logo_size_ok(0.518, png, detect(0.434))[0]          # -16%: fine
+    assert app.logo_size_ok(0.518, png, lambda p, q: "garbage")[0]  # unmeasurable never blocks
+    assert app.logo_size_ok(None, png, detect(0.9))[0]               # no reference size

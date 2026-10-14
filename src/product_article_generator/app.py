@@ -2352,6 +2352,10 @@ def generate_article_image_candidates(conn, bedrock_image_client, bedrock_remove
     # for that variant.
     run_id = _new_image_generation_run_id()
 
+    # Logo size reference (runbook 6dg): measured once on the official photo.
+    detect = gemini_detect_call(gemini_auth, gemini_session) if logo_check_client is not None else None
+    reference_ratio = logo_width_ratio(reference_bytes, detect) if detect else None
+
     results = {variant: [] for variant in variants}
 
     # v6: interleaved (action_shot #1, product_shot #1, action_shot #2,
@@ -2384,12 +2388,16 @@ def generate_article_image_candidates(conn, bedrock_image_client, bedrock_remove
                 # auto-selected image or one of Al's choices.
                 if logo_check_client is not None:
                     same, note = check_logo_matches(reference_bytes, png_bytes, logo_check_client)
+                    if same:
+                        same, note = logo_size_ok(reference_ratio, png_bytes, detect)
                     if not same:
                         logger.info("article %s candidate #%d for %s changed the logo (%s) -- re-making once",
                                     variant, i + 1, product["id"], note)
                         png_bytes = call_gemini_for_image(gemini_auth, gemini_model_id, prompt, reference_b64,
                                                            aspect_ratio, session=gemini_session)
                         same, note = check_logo_matches(reference_bytes, png_bytes, logo_check_client)
+                        if same:
+                            same, note = logo_size_ok(reference_ratio, png_bytes, detect)
                         if not same:
                             logger.warning("article %s candidate #%d for %s still changed the logo (%s) -- left out",
                                            variant, i + 1, product["id"], note)
@@ -3587,6 +3595,64 @@ def check_logo_matches(reference_bytes: bytes, generated_png: bytes, bedrock_cli
         return True, "check unavailable"
 
 
+# Logo SIZE check (runbook 6dg). Al, on the remade Reckoning feed image:
+# "think it scaled the logo up which is also not ideal" -- the design check
+# above passed it (same words/style/layout/colors), but the wordmark spanned
+# ~0.77 of the ball's width vs 0.52 on the official photo. Asking Sonnet to
+# estimate sizes was useless (it said 38% for that image), so this MEASURES:
+# Gemini's object detection boxes the ball and the logo in both images
+# (deterministic -- identical numbers on repeat runs) and compares logo
+# width / ball width. More than LOGO_SCALE_TOLERANCE off the official photo
+# = rejected. On the Reckoning images: new feed +49% (rejected), product
+# shots -1% and -16% (kept).
+LOGO_SCALE_TOLERANCE = 0.20
+LOGO_BOX_PROMPT = (
+    'Detect two things: (1) the bowling ball, label "ball"; (2) the printed logo on the ball -- the whole brand + '
+    'ball name wordmark together as one box -- label "logo". Output a JSON list of objects with "box_2d" '
+    '[ymin, xmin, ymax, xmax] normalized to 0-1000 and "label".'
+)
+
+
+def logo_width_ratio(image_bytes: bytes, detect_call):
+    """Logo width / ball width (pixels), or None if it can't be measured.
+    detect_call(png, prompt) -> Gemini's JSON text (signage.call_gemini_detect)."""
+    import io
+
+    from PIL import Image
+
+    try:
+        im = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        buf = io.BytesIO()
+        im.save(buf, "PNG")
+        boxes = json.loads(re.search(r"\[.*\]", detect_call(buf.getvalue(), LOGO_BOX_PROMPT), re.S).group(0))
+        by_label = {str(b.get("label", "")).lower(): b["box_2d"] for b in boxes}
+        ball, logo = by_label["ball"], by_label["logo"]
+        ball_w = (ball[3] - ball[1]) * im.width
+        logo_w = (logo[3] - logo[1]) * im.width
+        return logo_w / ball_w if ball_w > 0 else None
+    except Exception:  # noqa: BLE001 -- measurement is best-effort
+        logger.exception("logo size measurement failed")
+        return None
+
+
+def logo_size_ok(reference_ratio, image_bytes: bytes, detect_call) -> tuple:
+    """-> (ok, note). Unmeasurable on either side counts as ok."""
+    if not reference_ratio:
+        return True, "no reference size"
+    ratio = logo_width_ratio(image_bytes, detect_call)
+    if not ratio:
+        return True, "size unmeasured"
+    change = ratio / reference_ratio - 1
+    return abs(change) <= LOGO_SCALE_TOLERANCE, f"logo size {change:+.0%} vs the official photo"
+
+
+def gemini_detect_call(gemini_auth: dict, session):
+    import signage
+
+    return lambda png, prompt: signage.call_gemini_detect(session, gemini_auth["access_token"],
+                                                          gemini_auth["project_id"], png, prompt)
+
+
 def run_announcement_job(conn, event, *, s3_client, bedrock_client, model_id, gemini_auth, gemini_model_id,
                          image_bucket):
     """{"announcement": "images", "product_id"} from admin_api (runbook 6dd,
@@ -3634,6 +3700,8 @@ def run_announcement_job(conn, event, *, s3_client, bedrock_client, model_id, ge
         run = uuid.uuid4().hex[:8]
         out = {}
         rejected = []
+        detect = gemini_detect_call(gemini_auth, session)
+        reference_ratio = logo_width_ratio(raw, detect)
         for variant, slot in (("action_shot", "feed"), ("product_shot", "product")):
             prompt = build_gemini_scene_prompt(product, stub_article, variant, fill)
             good = None
@@ -3646,6 +3714,8 @@ def run_announcement_job(conn, event, *, s3_client, bedrock_client, model_id, ge
                     time.sleep(8)
                     continue
                 same, note = check_logo_matches(raw, png, bedrock_client)
+                if same:
+                    same, note = logo_size_ok(reference_ratio, png, detect)
                 logger.info("announcement %s attempt %d for %s: same_logo=%s (%s)", slot, attempt + 1, product_id,
                             same, note)
                 if same:
@@ -3663,8 +3733,8 @@ def run_announcement_job(conn, event, *, s3_client, bedrock_client, model_id, ge
                                "again in a few minutes")
         note = None
         if rejected:
-            note = (f"The {' and '.join(rejected)} image kept changing the ball's logo, so it wasn't replaced -- "
-                    "Remake images to try again")
+            note = (f"The {' and '.join(rejected)} image kept changing the ball's logo (design or size), so it "
+                    "wasn't replaced -- Remake images to try again")
         save(**out, visual_theme=theme, image_status="ready", image_job_started_at=None, image_error=note,
              images_generated_at=datetime.datetime.now(datetime.timezone.utc))
         return {"product_id": product_id, **out}
