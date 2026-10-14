@@ -4125,7 +4125,8 @@ def test_announcement_images_remake_a_changed_logo_and_flag_one_that_never_match
     monkeypatch.setattr(app, "fetch_reference_image_url", lambda c, p: "u")
     monkeypatch.setattr(app, "fetch_reference_image_bytes", lambda u: png)
     monkeypatch.setattr(app, "get_gemini_requests_session", lambda: None)
-    monkeypatch.setattr(app, "build_gemini_scene_prompt", lambda prod, art, variant, fill: variant)
+    monkeypatch.setattr(app, "build_gemini_scene_prompt",
+                        lambda prod, art, variant, fill, feed_square=False: variant + ("|FEED" if feed_square else ""))
     monkeypatch.setattr(app.time, "sleep", lambda s: None)
     gen_calls = []
     monkeypatch.setattr(app, "call_gemini_for_image", lambda *a, **k: gen_calls.append(a[2]) or png)
@@ -4150,10 +4151,10 @@ def test_announcement_images_remake_a_changed_logo_and_flag_one_that_never_match
     out = app.run_announcement_job(conn, {"announcement": "images", "product_id": "p1"}, s3_client=s3,
                                    bedrock_client=Bed(), model_id="m", gemini_auth={"x": 1}, gemini_model_id="g",
                                    image_bucket="bkt")
-    assert gen_calls == ["action_shot", "action_shot", "product_shot", "product_shot", "product_shot"]
+    assert gen_calls == ["action_shot|FEED", "action_shot|FEED", "product_shot", "product_shot", "product_shot"]
     assert list(out) == ["product_id", "feed_image_key", "feed_image_url"] and len(s3.keys) == 1
     sql, params = conn.executed[-1]
-    assert "image_error" in sql and any("product image kept changing the ball's logo" in str(p) for p in params)
+    assert "image_error" in sql and any("product image kept coming out wrong" in str(p) for p in params)
 
 
 
@@ -4202,3 +4203,27 @@ def test_logo_size_check_rejects_a_scaled_up_logo():
     assert app.logo_size_ok(0.518, png, detect(0.434))[0]          # -16%: fine
     assert app.logo_size_ok(0.518, png, lambda p, q: "garbage")[0]  # unmeasurable never blocks
     assert app.logo_size_ok(None, png, detect(0.9))[0]               # no reference size
+
+
+
+def test_feed_image_ball_must_be_large():
+    # Runbook 6dh: "lets keep the ball large and more prominent".
+    import io
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (100, 100), "white").save(buf, "PNG")
+    png = buf.getvalue()
+
+    def detect(ball_w):  # ball box ball_w/1000 of the width, logo half the ball
+        x0 = 500 - ball_w // 2
+        return lambda p, prompt: (f'[{{"box_2d": [300, {x0}, 700, {x0 + ball_w}], "label": "ball"}}, '
+                                  f'{{"box_2d": [480, {x0 + ball_w // 4}, 520, {x0 + 3 * ball_w // 4}], "label": "logo"}}]')
+
+    ok, note = app.logo_size_ok(0.5, png, detect(250), app.MIN_FEED_BALL_FRACTION)
+    assert not ok and "25% of the frame" in note
+    assert app.logo_size_ok(0.5, png, detect(600), app.MIN_FEED_BALL_FRACTION)[0]
+    assert app.logo_size_ok(0.5, png, detect(250))[0]          # product shot: no ball-size rule
+    p = app.build_gemini_scene_prompt({"name": "Reckoning", "brand_name": "Hammer"}, {"visual_theme": "a hall"},
+                                      "action_shot", feed_square=True)
+    assert "55-65% of the frame width" in p and "may vary somewhat" not in p

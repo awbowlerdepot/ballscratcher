@@ -19063,6 +19063,49 @@ wordmark) consistently. It gave identical numbers on repeat runs.
 
 **Deploy.** `sam build && sam deploy`.
 
+### 6dh. Announcement feed image: large, prominent ball with a correctly scaled logo (2026-10-14)
+
+Al, after I pointed out that the passing Reckoning feed image put the
+ball small in a big hall (about a quarter of the frame):
+> "yes good catch lets keep the ball large and more prominent"
+
+**What I tried (live, Hammer Reckoning):**
+1. **Appending "ball 55–65% of the frame" to the end of the prompt.** The
+   ball came out at 30%. The action-shot prompt's own size clause ("The
+   ball's on-screen size may vary somewhat shot to shot") won. That
+   image also misspelled the logo "RECHONING", which the 6de check caught.
+2. **A feed-specific size clause in place of "may vary"**
+   (`build_gemini_scene_prompt(..., feed_square=True)`). Two tries:
+   - The ball was 56%, but the logo was +37%: Gemini enlarged it along
+     with the ball (the 2026-09 failure product_shot had already fixed).
+   - The ball was 34%.
+3. **The same, plus product_shot's measured scale-factor clause** (target
+   fill 0.625 ÷ the reference photo's measured fill, with "every printed
+   feature must scale by that exact factor"). **3 of 3 passed every
+   check**: the ball 50–57% of the width, the logo −3% to +9% of the
+   official size, the design matching.
+
+**Change** (generator):
+- `build_gemini_scene_prompt` gains `feed_square`: the action-shot
+  framing with a square-feed size clause (the ball about 55–65% of the
+  width, the scene framing it), plus the product shot's measured logo
+  scale clause.
+- The announcement job uses it for the feed image.
+- `logo_size_ok(..., min_ball_fraction)` and `measure_ball_and_logo` (one
+  detection call for both) re-make a feed image whose ball is under
+  `MIN_FEED_BALL_FRACTION = 0.45` of the width. The product shot is
+  already a fixed 60–65% catalog frame, and article images are unchanged.
+
+**Tested.**
+- Generator tests: the feed prompt has the size clause and not "may
+  vary"; a ball at 25% is rejected and at 60% passes; there is no
+  ball-size rule for the product shot; the job passes `feed_square` only
+  for the feed. 181 passed.
+- The live results above.
+- All 56 test files pass, run one per file.
+
+**Deploy.** `sam build && sam deploy`.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

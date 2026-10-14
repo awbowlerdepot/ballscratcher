@@ -1410,7 +1410,7 @@ def composite_ball_on_background(cutout_png_bytes: bytes, background_png_bytes: 
 
 
 def build_gemini_scene_prompt(product: dict, article: dict, variant: str,
-                               source_ball_fill_ratio=None) -> str:
+                               source_ball_fill_ratio=None, feed_square: bool = False) -> str:
     """The single integrated prompt Gemini gets, per variant -- unlike
     Stability's split "cutout here, background prompt there" approach,
     Gemini does the placement AND generation in one call, so the prompt
@@ -1721,7 +1721,11 @@ def build_gemini_scene_prompt(product: dict, article: dict, variant: str,
         "on a smaller ball is correct; a fully legible, full-size-looking logo on "
         "a smaller ball is the mistake to avoid."
     )
-    if variant == "product_shot" and source_ball_fill_ratio:
+    # The announcement feed image (runbook 6dh) targets the same ~60% fill,
+    # so it gets the same measured scale factor: asked for a big ball
+    # without it, Gemini enlarged the logo with the ball (+37% on a live
+    # Reckoning test) -- the exact failure this clause fixed for product_shot.
+    if (variant == "product_shot" or feed_square) and source_ball_fill_ratio:
         scale_factor = TARGET_PRODUCT_SHOT_BALL_FILL_RATIO / source_ball_fill_ratio
         direction = "smaller" if scale_factor < 1 else "larger"
         scale_awareness_clause = (
@@ -1838,7 +1842,18 @@ def build_gemini_scene_prompt(product: dict, article: dict, variant: str,
         "contrast rather than blending in as a real photographed person."
     )
 
-    if variant == "action_shot":
+    if variant == "action_shot" and feed_square:
+        # Announcement feed image (runbook 6dh) -- Al: "lets keep the ball
+        # large and more prominent". Replaces the action shot's "size may
+        # vary" clause: appended at the END of the prompt instead, the ask
+        # lost to that clause (live Reckoning test: ball 30% of the width).
+        framing = "the hero of a square social-media feed image, large and prominent in the frame"
+        size_clause = (
+            "This is a SQUARE social-feed image: frame the shot so the ball's diameter fills about 55-65% of the "
+            "frame width, centered or just below center and fully in frame. The themed scene surrounds and frames "
+            "the ball -- never shrink the ball into a small object in a big space."
+        )
+    elif variant == "action_shot":
         framing = "a dynamic hero shot conveying motion and energy, with the ball large and prominent in the frame"
         size_clause = (
             "The ball's on-screen size may vary somewhat shot to shot with camera "
@@ -3613,9 +3628,9 @@ LOGO_BOX_PROMPT = (
 )
 
 
-def logo_width_ratio(image_bytes: bytes, detect_call):
-    """Logo width / ball width (pixels), or None if it can't be measured.
-    detect_call(png, prompt) -> Gemini's JSON text (signage.call_gemini_detect)."""
+def measure_ball_and_logo(image_bytes: bytes, detect_call) -> tuple:
+    """-> (logo width / ball width, ball width / image width), either None
+    if it can't be measured. One Gemini detection call for both."""
     import io
 
     from PIL import Image
@@ -3626,20 +3641,40 @@ def logo_width_ratio(image_bytes: bytes, detect_call):
         im.save(buf, "PNG")
         boxes = json.loads(re.search(r"\[.*\]", detect_call(buf.getvalue(), LOGO_BOX_PROMPT), re.S).group(0))
         by_label = {str(b.get("label", "")).lower(): b["box_2d"] for b in boxes}
-        ball, logo = by_label["ball"], by_label["logo"]
-        ball_w = (ball[3] - ball[1]) * im.width
-        logo_w = (logo[3] - logo[1]) * im.width
-        return logo_w / ball_w if ball_w > 0 else None
     except Exception:  # noqa: BLE001 -- measurement is best-effort
         logger.exception("logo size measurement failed")
-        return None
+        return None, None
+    ball = by_label.get("ball")
+    logo = by_label.get("logo")
+    ball_frac = (ball[3] - ball[1]) / 1000 if ball else None
+    logo_ratio = ((logo[3] - logo[1]) / (ball[3] - ball[1])) if (ball and logo and ball[3] > ball[1]) else None
+    return logo_ratio, ball_frac
 
 
-def logo_size_ok(reference_ratio, image_bytes: bytes, detect_call) -> tuple:
-    """-> (ok, note). Unmeasurable on either side counts as ok."""
+def logo_width_ratio(image_bytes: bytes, detect_call):
+    """Logo width / ball width (pixels), or None if it can't be measured.
+    detect_call(png, prompt) -> Gemini's JSON text (signage.call_gemini_detect)."""
+    return measure_ball_and_logo(image_bytes, detect_call)[0]
+
+
+# Feed image ball size (runbook 6dh). Al, agreeing the Reckoning feed image
+# put the ball too small in a big hall (~a quarter of the frame): "lets keep
+# the ball large and more prominent". The feed prompt asks for the ball at
+# ~55-65% of the square's width (build_gemini_scene_prompt(feed_square=True));
+# this measures it (same detection call as the logo size) and re-makes a
+# feed image whose ball is under MIN_FEED_BALL_FRACTION of the frame width.
+MIN_FEED_BALL_FRACTION = 0.45
+
+
+def logo_size_ok(reference_ratio, image_bytes: bytes, detect_call, min_ball_fraction=None) -> tuple:
+    """-> (ok, note). Checks the logo's size against the official photo
+    and, when min_ball_fraction is given (the announcement feed image),
+    that the ball is big enough in the frame. Unmeasurable counts as ok."""
+    ratio, ball_frac = measure_ball_and_logo(image_bytes, detect_call)
+    if min_ball_fraction and ball_frac is not None and ball_frac < min_ball_fraction:
+        return False, f"ball only {ball_frac:.0%} of the frame width"
     if not reference_ratio:
         return True, "no reference size"
-    ratio = logo_width_ratio(image_bytes, detect_call)
     if not ratio:
         return True, "size unmeasured"
     change = ratio / reference_ratio - 1
@@ -3703,7 +3738,7 @@ def run_announcement_job(conn, event, *, s3_client, bedrock_client, model_id, ge
         detect = gemini_detect_call(gemini_auth, session)
         reference_ratio = logo_width_ratio(raw, detect)
         for variant, slot in (("action_shot", "feed"), ("product_shot", "product")):
-            prompt = build_gemini_scene_prompt(product, stub_article, variant, fill)
+            prompt = build_gemini_scene_prompt(product, stub_article, variant, fill, feed_square=(slot == "feed"))
             good = None
             for attempt in range(ANNOUNCEMENT_IMAGE_ATTEMPTS):
                 try:
@@ -3715,7 +3750,8 @@ def run_announcement_job(conn, event, *, s3_client, bedrock_client, model_id, ge
                     continue
                 same, note = check_logo_matches(raw, png, bedrock_client)
                 if same:
-                    same, note = logo_size_ok(reference_ratio, png, detect)
+                    same, note = logo_size_ok(reference_ratio, png, detect,
+                                              MIN_FEED_BALL_FRACTION if slot == "feed" else None)
                 logger.info("announcement %s attempt %d for %s: same_logo=%s (%s)", slot, attempt + 1, product_id,
                             same, note)
                 if same:
@@ -3733,8 +3769,8 @@ def run_announcement_job(conn, event, *, s3_client, bedrock_client, model_id, ge
                                "again in a few minutes")
         note = None
         if rejected:
-            note = (f"The {' and '.join(rejected)} image kept changing the ball's logo (design or size), so it "
-                    "wasn't replaced -- Remake images to try again")
+            note = (f"The {' and '.join(rejected)} image kept coming out wrong (logo design or size, or the ball too "
+                    "small), so it wasn't replaced -- Remake images to try again")
         save(**out, visual_theme=theme, image_status="ready", image_job_started_at=None, image_error=note,
              images_generated_at=datetime.datetime.now(datetime.timezone.utc))
         return {"product_id": product_id, **out}
