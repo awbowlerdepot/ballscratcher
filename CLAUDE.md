@@ -26,7 +26,7 @@ The GitHub repo is `awbowlerdepot/ballscratcher`, and everything deploys to the 
     - `commercebuild_*` for Storm and Roto Grip
     - `netsuite_*` for Motiv
     - `woocommerce_*` for Swag
-    - `shopify_*` for Hammer, Track and Ebonite
+    - `shopify_*` for Hammer, Track, Ebonite and Columbia 300 (retired brand, discovery on demand only)
   - The pipeline chains `url_discovery` → SQS → `product_scraper` → `pdf_parser` / `image_processor`. Every queue has a dead-letter queue (DLQ), and consumers use partial batch responses.
   - Video: `video_discovery` (YouTube search, 100 searches a day) → `video_transcript_fetcher` → `video_summarizer` (Bedrock Claude Haiku).
   - `product_article_generator` writes articles and generates images with Gemini. It also runs the in-store signage stills and Veo animation jobs (`signage.py`, runbooks 6cn/6co; stills are outpainted from a source image to avoid letterboxing); `signage_renderer` makes the loop and the MP4. In admin, social posts and signage are tabs on the product page.

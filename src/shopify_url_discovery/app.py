@@ -160,7 +160,11 @@ def build_entries(store_domain: str, products_by_handle: dict) -> list:
     updated_at_by_handle = {}
 
     for handle, products in products_by_handle.items():
-        is_retired_collection = handle in RETIRED_COLLECTION_HANDLES
+        # Columbia 300's is "retired-balls-1" (Shopify appends -1 to a
+        # duplicate handle) -- runbook 6dn. An exact-set check would have
+        # marked all 392 of its balls CURRENT; any handle starting with
+        # "retired" is the retired collection.
+        is_retired_collection = handle in RETIRED_COLLECTION_HANDLES or handle.startswith("retired")
         for product in products:
             slug = product["handle"]
             updated_at_by_handle[slug] = product.get("updated_at")

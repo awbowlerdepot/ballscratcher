@@ -1,0 +1,108 @@
+{
+ "id": 2011096809587,
+ "title": "Tour Boss",
+ "body_html": "<h2>Specifications</h2>\n<div class=\"product-specs-section\">\n<h3>Attributes</h3>\n<table>\n<tbody>\n<tr>\n<td>Color</td>\n<td>Blue</td>\n</tr>\n<tr>\n<td>Coverstock</td>\n<td>Reactive</td>\n</tr>\n<tr>\n<td>Factory Finish</td>\n<td>Matte</td>\n</tr>\n<tr>\n<td>Core</td>\n<td>2-Piece</td>\n</tr>\n<tr>\n<td>Weight</td>\n<td>10-16 lbs</td>\n</tr>\n</tbody>\n</table>\n</div>",
+ "vendor": "Columbia300",
+ "product_type": "",
+ "created_at": "2019-03-26T21:14:04-04:00",
+ "handle": "tour-boss",
+ "updated_at": "2026-10-14T01:55:33-04:00",
+ "published_at": "2019-03-26T21:11:18-04:00",
+ "template_suffix": "",
+ "published_scope": "web",
+ "tags": "Retired Ball",
+ "variants": [
+  {
+   "id": 18410369712243,
+   "product_id": 2011096809587,
+   "title": "Default Title",
+   "price": "0.00",
+   "sku": "",
+   "position": 1,
+   "compare_at_price": "",
+   "fulfillment_service": "manual",
+   "inventory_management": null,
+   "option1": "Default Title",
+   "option2": null,
+   "option3": null,
+   "created_at": "2019-03-26T21:14:04-04:00",
+   "updated_at": "2026-10-14T01:55:33-04:00",
+   "taxable": false,
+   "barcode": null,
+   "grams": 0,
+   "image_id": null,
+   "weight": 0.0,
+   "weight_unit": "lb",
+   "requires_shipping": false,
+   "quantity_rule": {
+    "min": 1,
+    "max": null,
+    "increment": 1
+   },
+   "price_currency": "USD",
+   "compare_at_price_currency": "",
+   "quantity_price_breaks": []
+  }
+ ],
+ "options": [
+  {
+   "id": 3012874403955,
+   "product_id": 2011096809587,
+   "name": "Title",
+   "position": 1,
+   "values": [
+    "Default Title"
+   ]
+  }
+ ],
+ "images": [
+  {
+   "id": 38946034090099,
+   "product_id": 2011096809587,
+   "position": 1,
+   "created_at": "2025-08-21T11:57:49-04:00",
+   "updated_at": "2025-08-21T12:00:26-04:00",
+   "alt": "A blue bowling ball with the Tour Boss Titanium logo in white centered prominenlty.",
+   "width": 1600,
+   "height": 1707,
+   "src": "https://cdn.shopify.com/s/files/1/0062/0226/1619/files/Tour_Boss_1600x1707_website.png?v=1755792026",
+   "variant_ids": []
+  },
+  {
+   "id": 32576795770995,
+   "product_id": 2011096809587,
+   "position": 2,
+   "created_at": "2023-07-10T14:29:34-04:00",
+   "updated_at": "2025-08-21T11:59:07-04:00",
+   "alt": "The Tour Boss core for sixteen to fourteen pound bowling balls.",
+   "width": 2648,
+   "height": 2876,
+   "src": "https://cdn.shopify.com/s/files/1/0062/0226/1619/files/tour_boss_core_2648x2876_7ad9d72d-74fd-4a1b-94e1-854dd194a5a0.jpg?v=1755791947",
+   "variant_ids": []
+  },
+  {
+   "id": 32576796262515,
+   "product_id": 2011096809587,
+   "position": 3,
+   "created_at": "2023-07-10T14:29:54-04:00",
+   "updated_at": "2025-08-21T11:59:07-04:00",
+   "alt": "Tour Boss core for sixteen to fourteen pound bowling balls. Also including callouts for \"Pin\", \"Stabilizer Core\", \"Flare Core\", \"Titanium Ceramic Core\", \"Energy Block\", and \"Super Flex Resin II\".",
+   "width": 1280,
+   "height": 1139,
+   "src": "https://cdn.shopify.com/s/files/1/0062/0226/1619/files/BC705956-F21C-4B72-8C3450CBB4DD44D1__78516.jpg?v=1755791947",
+   "variant_ids": []
+  }
+ ],
+ "image": {
+  "id": 38946034090099,
+  "product_id": 2011096809587,
+  "position": 1,
+  "created_at": "2025-08-21T11:57:49-04:00",
+  "updated_at": "2025-08-21T12:00:26-04:00",
+  "alt": "A blue bowling ball with the Tour Boss Titanium logo in white centered prominenlty.",
+  "width": 1600,
+  "height": 1707,
+  "src": "https://cdn.shopify.com/s/files/1/0062/0226/1619/files/Tour_Boss_1600x1707_website.png?v=1755792026",
+  "variant_ids": []
+ }
+}

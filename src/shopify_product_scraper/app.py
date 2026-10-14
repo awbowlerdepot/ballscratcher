@@ -116,6 +116,7 @@ BALL_SPEC_LABEL_MAP = {
     "FINISH": "factory_finish",
     "FACTORY FINISH": "factory_finish",
     "WEIGHTS": "weights_raw",
+    "WEIGHT": "weights_raw",  # Columbia 300's older "Attributes" table (runbook 6dn)
     "AVAILABLE WEIGHTS": "weights_raw",
     "LANE CONDITION": "lane_condition",
     "BEST LANE CONDITION": "lane_condition",
@@ -188,7 +189,20 @@ def _find_section(soup: BeautifulSoup, heading_prefixes):
     for heading in soup.find_all(["h2", "h3"]):
         text = _clean(heading.get_text()).upper()
         if any(text.startswith(prefix) for prefix in heading_prefixes):
-            return heading.find_next_sibling(["ul", "p", "table"])
+            # Columbia 300's older retired pages (runbook 6dn) put the table
+            # inside a wrapper: <h2>Specifications</h2><div class=
+            # "product-specs-section"><h3>Attributes</h3><table>... A div
+            # holding a table/list that comes BEFORE any direct ul/p/table
+            # sibling is that wrapper; otherwise the first direct ul/p/table
+            # sibling, exactly as before (Hammer/Track/Ebonite unchanged).
+            for sibling in heading.find_next_siblings():
+                if sibling.name in ("ul", "p", "table"):
+                    return sibling
+                if sibling.name == "div":
+                    inner = sibling.find(["table", "ul"])
+                    if inner is not None:
+                        return inner
+            return None
     return None
 
 
@@ -307,6 +321,29 @@ def parse_ball_specs_table(specs_table) -> dict:
     return raw
 
 
+_SIDEWAYS_METRICS = {"RG": "rg", "DIFF": "differential", "DIFFERENTIAL": "differential", "ASY": "mass_bias",
+                     "MB": "mass_bias", "MASS BIAS": "mass_bias", "PSA": "mass_bias"}
+
+
+def _parse_rg_diff_table_sideways(rows, header_cells) -> list:
+    """Weights as columns, metrics as rows (Columbia 300, runbook 6dn)."""
+    weights = {i: int(re.match(r"\d+", h).group()) for i, h in enumerate(header_cells) if h}
+    skus = {w: {"weight_lbs": w, "rg": None, "differential": None, "mass_bias": None} for w in weights.values()}
+    for tr in rows[1:]:
+        cells = [_clean(td.get_text()) for td in tr.find_all("td")]
+        if not cells:
+            continue
+        key = _SIDEWAYS_METRICS.get(re.sub(r"[^A-Z ]", "", cells[0].upper()).strip())
+        if key is None:
+            continue
+        for i, w in weights.items():
+            if i < len(cells):
+                m = re.search(r"-?\d*\.\d+|-?\d+", cells[i])
+                if m:
+                    skus[w][key] = float(m.group())
+    return [s for s in skus.values() if s["rg"] is not None or s["differential"] is not None]
+
+
 def parse_rg_diff_table(rg_table) -> list:
     """Table-shaped counterpart to parse_rg_diff_list, for Track/Ebonite's
     "Core Numbers" table (confirmed live): first row is a header
@@ -327,6 +364,12 @@ def parse_rg_diff_table(rg_table) -> list:
         return []
 
     header_cells = [_clean(td.get_text()).upper() for td in rows[0].find_all("td")]
+    # Columbia 300 (runbook 6dn) prints it SIDEWAYS: weights across the
+    # header ("", "16 lb", "15 lb", ...) and one row per metric (RG, DIFF,
+    # ASY). Detected by a header whose non-blank cells are all weights.
+    weight_headers = [h for h in header_cells if h]
+    if weight_headers and all(re.fullmatch(r"\d{1,2}\s*(LBS?|#)?", h) for h in weight_headers):
+        return _parse_rg_diff_table_sideways(rows, header_cells)
     column_keys = []
     for header in header_cells:
         if header.startswith("WEIGHT"):
@@ -567,7 +610,9 @@ def parse_product_page(product: dict, url: str) -> dict:
         "name": product.get("title"),
         "color": raw.get("color"),
         "part_number": raw.get("part_number"),
-        "core_name": raw.get("core_name"),
+        # "2-Piece"/"3-Piece" on Columbia 300's older pages describes the
+        # construction, not a named core -- not stored as one (runbook 6dn).
+        "core_name": None if re.fullmatch(r"\d-PIECE", (raw.get("core_name") or "").upper()) else raw.get("core_name"),
         "core_type": parse_core_type(raw.get("core_type_raw"), skus),
         "coverstock_name": raw.get("coverstock_name"),
         "coverstock_material": material_from_cover_name(raw.get("coverstock_name"), coverstock["coverstock_material"]),

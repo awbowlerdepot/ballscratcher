@@ -19304,6 +19304,82 @@ use `?since=<last run time>`.
 aws logs tail /aws/lambda/bowling-scraper-partner-api --since 30m --filter-pattern changes
 ```
 
+### 6dn. Columbia 300 added as a retired-only Shopify brand (2026-10-14)
+
+Al:
+> "are we not pulling in columbia 300 balls?"
+
+then:
+
+> "the are a retired brand so they are 100% retired"
+
+**Findings.**
+- Columbia 300 was never set up as a brand.
+- columbia300.com is Shopify, part of Ebonite International like
+  Hammer, Track and Ebonite. `products.json` and `collections.json` are
+  open.
+- The homepage says the brand "has been retired" and "will not appear in
+  the 2026–2027 catalogs".
+- All 392 balls are in one collection, `retired-balls-1`, including the
+  2026 Piranha Solid. Every current-tier collection is empty.
+
+**Three gaps, each fixed without changing Hammer/Track/Ebonite behavior.**
+1. **Status.** `shopify_url_discovery` treated only the exact handle
+   `retired-balls` as retired, so all 392 would have been marked
+   **current**. Any handle starting with "retired" now counts.
+2. **Sideways Core Numbers table.** Recent pages print weights across the
+   header ("16 lb" … "12 lb") with RG / DIFF rows.
+   `parse_rg_diff_table` now detects that (a header made only of weights)
+   and reads it with `_parse_rg_diff_table_sideways`.
+3. **Older pages.** These wrap the specs in
+   `<div class="product-specs-section"><h3>Attributes</h3><table>`.
+   `_find_section` now returns a table or list inside a div that comes
+   before any direct ul/p/table sibling.
+   - The singular "WEIGHT" label is added.
+   - "2-Piece" / "3-Piece" is construction, so it isn't stored as a core
+     name.
+
+**Coverage, parsing all 392 live pages.** There were no errors.
+
+| Field | Pages |
+| --- | --- |
+| Cover | 383 |
+| Material | 383 (304 reactive, 52 polyester, 27 urethane) |
+| Named core | 213 |
+| RG / differential | 41 (the modern balls; older pages never published them) |
+| Images | 392 |
+| Description | 269 |
+
+**Template.** New `Columbia300StoreDomain`, `Columbia300CollectionHandles`
+(`retired-balls-1`) and `Columbia300BrandId` parameters, plus
+`Columbia300UrlDiscoveryFunction` (the same code as the other Shopify
+brands, feeding the shared `ShopifyProductScrapeQueue`). It has **no
+schedule** on purpose: the brand is retired, so it runs on demand.
+
+**Tested.**
+- Two real fixtures (`columbia300_piranha_solid.json` and
+  `columbia300_tour_boss.json`) with new parser tests, plus a discovery
+  test for `retired-balls-1` → retired.
+- Shopify scraper 52, discovery 12. All 56 test files pass, run one per
+  file. `sam validate` passes.
+
+**Deploy and load.**
+```sql
+insert into brands (name, base_url, source_platform) values ('Columbia 300', 'https://columbia300.com', 'shopify') returning id;
+```
+Then:
+1. Add `Columbia300BrandId="<that id>"` to `samconfig.toml`'s
+   `parameter_overrides` and run `sam build && sam deploy`.
+2. Run discovery:
+   ```bash
+   aws lambda invoke --region us-west-1 --function-name bowling-scraper-columbia300-url-discovery --payload '{}' --cli-binary-format raw-in-base64-out /tmp/c300.json
+   ```
+3. Once the queue drains, publish them (new products default
+   `published = false`; 6dl published every retired ball):
+   ```sql
+   update products p set published = true from brands b where b.id = p.brand_id and b.name = 'Columbia 300' and p.product_type = 'ball' and p.status = 'retired' and not p.published;
+   ```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

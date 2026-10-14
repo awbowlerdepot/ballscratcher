@@ -308,6 +308,28 @@ Parameters:
       UUID of the `brands` row for Ebonite (source_platform='shopify').
       Left blank by default, same reasoning as HammerBrandId -- required
       once you actually enable EboniteUrlDiscoveryFunction.
+  Columbia300StoreDomain:
+    Type: String
+    Default: columbia300.com
+    Description: >
+      Runbook 6dn. Same Shopify platform as Hammer/Track/Ebonite (Ebonite
+      International). Al: "are we not pulling in columbia 300 balls?" /
+      "the are a retired brand so they are 100% retired" -- the brand was
+      retired in 2026 ("Columbia 300 will not appear in the 2026-2027
+      catalogs"); every ball lives in one collection.
+  Columbia300CollectionHandles:
+    Type: String
+    Default: "retired-balls-1"
+    Description: >
+      Confirmed live: every current-tier collection is empty and all 392
+      balls are in "retired-balls-1" (Shopify's -1 suffix on a duplicate
+      handle -- shopify_url_discovery treats any handle starting with
+      "retired" as the retired collection).
+  Columbia300BrandId:
+    Type: String
+    Default: ""
+    Description: >
+      UUID of the `brands` row for Columbia 300 (source_platform='shopify').
   BigCommerceSecretArn:
     Type: String
     Default: ""
@@ -3219,6 +3241,32 @@ Resources:
             Name: bowling-scraper-ebonite-url-discovery-daily
             Description: collections/*.json diff against discovered_urls for Ebonite; emits new/changed product URLs.
             Enabled: true
+
+  Columbia300UrlDiscoveryFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-columbia300-url-discovery
+      CodeUri: src/shopify_url_discovery/
+      Runtime: python3.13
+      Handler: app.handler
+      Environment:
+        Variables:
+          STORE_DOMAIN: !Ref Columbia300StoreDomain
+          COLLECTION_HANDLES: !Ref Columbia300CollectionHandles
+          BRAND_ID: !Ref Columbia300BrandId
+          PRODUCT_SCRAPE_QUEUE_URL: !Ref ShopifyProductScrapeQueue
+      Policies:
+        - VPCAccessPolicy: {}
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt ShopifyProductScrapeQueue.QueueName
+      # Same CodeUri as EboniteUrlDiscoveryFunction, different env vars.
+      # NO schedule on purpose (runbook 6dn): Columbia 300 is a retired
+      # brand -- run it on demand (aws lambda invoke) when needed.
 
   ShopifyProductScraperFunction:
     Type: AWS::Serverless::Function

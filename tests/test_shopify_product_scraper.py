@@ -560,3 +560,28 @@ def test_material_falls_back_to_the_cover_name():
     assert f("Urethane") == "urethane"
     assert f(None) is None
     assert f("Polyester", "reactive_resin") == "reactive_resin"  # never overrides a parsed material
+
+
+# --- Columbia 300 (runbook 6dn): a retired brand on the same Shopify setup --
+
+def _columbia(name):
+    import json as _json
+    import pathlib as _pl
+    return _json.loads((_pl.Path(__file__).parent / "fixtures" / f"columbia300_{name}.json").read_text())
+
+
+def test_columbia_recent_page_reads_specs_and_the_sideways_core_numbers_table():
+    out = app.parse_product_page(_columbia("piranha_solid"), "https://columbia300.com/products/piranha-solid")
+    assert out["core_name"] == "Piranha" and out["coverstock_name"] == "Hyperflex Solid"
+    assert out["coverstock_material"] == "reactive_resin" and out["part_number"] == "60-108559-93X"
+    by_w = {s["weight_lbs"]: s for s in out["skus"]}
+    assert set(by_w) == {12, 13, 14, 15, 16}
+    assert by_w[16]["rg"] == 2.562 and by_w[16]["differential"] == 0.036 and by_w[12]["rg"] == 2.605
+
+
+def test_columbia_older_page_reads_the_wrapped_attributes_table():
+    out = app.parse_product_page(_columbia("tour_boss"), "https://columbia300.com/products/tour-boss")
+    assert out["coverstock_name"] == "Reactive" and out["coverstock_material"] == "reactive_resin"
+    assert out["factory_finish"] == "Matte" and out["color"] == "Blue"
+    assert out["core_name"] is None            # "2-Piece" is construction, not a core name
+    assert out["skus"] == []

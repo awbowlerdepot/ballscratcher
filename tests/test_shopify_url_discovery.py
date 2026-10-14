@@ -194,3 +194,10 @@ if __name__ == "__main__":
         passed += 1
         print(f"PASS: {t.__name__}")
     print(f"\n{passed}/{len(tests)} tests passed")
+
+
+def test_build_entries_columbia_retired_balls_1_is_retired():
+    # Runbook 6dn: Columbia 300's retired collection is "retired-balls-1".
+    products_by_handle = {"retired-balls-1": [{"handle": "piranha-solid", "updated_at": "2026-02-19T00:00:00-05:00"}]}
+    entries = app.build_entries("columbia300.com", products_by_handle)
+    assert entries[0]["status"] == "retired"
