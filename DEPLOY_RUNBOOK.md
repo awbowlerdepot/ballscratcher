@@ -19487,6 +19487,40 @@ screen**: the chart should fill the screen edge to edge. Press Esc to get
 the normal page back. Checked locally at 1400×850 (the SVG filled
 1376×777 under the toolbar) and at 375×812 (no sideways scroll).
 
+### 6dq. Learn plotter: display ad under the chart (2026-10-14)
+
+Al: "can we add an ad placement to the bottom of the ball motion chart".
+
+**Ad unit.** Al created a new AdSense **Display ads** unit (responsive),
+slot `5838656128`, on the same publisher (`ca-pub-9681652990338336`) as
+the 6bi in-article and in-feed units. It's a third unit, not a reuse,
+because in-article is meant for between paragraphs and in-feed for a row
+in a list. Neither fits a tool page.
+
+**Code (Learn only, no backend):**
+- `bowlerdepot-learn/src/components/DisplayAd.tsx` (new). It uses
+  `data-ad-format="horizontal"` and `data-full-width-responsive`, so it
+  asks for banner shapes. Otherwise it is the same as `InArticleAd.tsx`:
+  - it pushes once per mount;
+  - it has an "Advertisement" label;
+  - it collapses on `unfilled`, or when no status arrives within 4 s;
+  - its height is capped at 90px while pending.
+- `PlotterPage.tsx` renders it below the brand-color legend, and above
+  the mobile "Pick a ball" panel.
+- It is **not rendered in full screen (6dp)**. There the chart height
+  exactly fills the window, and a hidden ad isn't allowed under AdSense
+  policy. It remounts, which makes a fresh request, when full screen
+  closes.
+- It is client-only. The prerendered static /plotter table has no ad
+  code, same as the article pages.
+
+**Deploy.** Push to main; "Deploy Learn site" publishes it.
+
+**Verify.** On https://learn.bowlerdepot.com/plotter, an "Advertisement"
+banner should appear under the color legend. If AdSense has nothing to
+serve, the slot disappears with no gap. A new unit can take up to about
+an hour to start filling. Full screen shouldn't show it.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

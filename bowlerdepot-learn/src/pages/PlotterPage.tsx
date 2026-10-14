@@ -6,6 +6,7 @@ import PlotterChart from "../components/plotter/PlotterChart";
 import PlotterNeighborPanel, { PlotterNeighborCard } from "../components/plotter/PlotterNeighborPanel";
 import { useIsDesktop } from "../components/plotter/useIsDesktop";
 import { FULL_VIEW, ROLES, fitView, offsetForCard, type PlotterView } from "../components/plotter/plotterModel";
+import DisplayAd from "../components/DisplayAd";
 
 // /plotter -- the Learn site's ball motion plotter (runbook 6cc). Al: "the
 // goal here is to move this to the learn site in some way with a more
@@ -358,6 +359,14 @@ export default function PlotterPage() {
               </li>
             ))}
           </ul>
+
+          {/* Ad under the chart (Al: "can we add an ad placement to the bottom
+              of the ball motion chart", runbook 6dq). Not rendered in full
+              screen: that mode's chart height is sized to exactly fill the
+              window under the toolbar, and an ad there would either push the
+              chart off-screen or sit hidden, which AdSense doesn't allow. It
+              remounts (a fresh ad request) when full screen is closed. */}
+          {!fullscreen ? <DisplayAd className="mt-6" /> : null}
 
           {!isDesktop ? (
             <div className="mt-6">
