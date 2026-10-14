@@ -19436,7 +19436,21 @@ All 10 were `estimated` before, discovered 2026-10-13. The list is in
 - Per Al, only the new balls were taken from this chart. The rest of it
   wasn't re-read.
 
-**Result.** 88 balls have chart positions (was 78). The Learn plotter API
+**Columbia 300 from the March chart.** Applied the same day, at Al's
+go-ahead ("yes apply the columbia 300 positions too"). 6ch had skipped
+these as not in the catalog; 6dn has since added the brand. Each was
+re-cropped from the March PDF and matched by photo:
+- Ricochet Return (6, 16)
+- **Piranha Solid** (11, 8): the bright-orange 2026 ball, not the
+  redder-orange Piranha or Piranha Retro.
+- **Pulse** (13, 7): the bright-red 2025 ball with the white triangle,
+  not the maroon "Original" or "Remake".
+- Street Rally (13, 16)
+
+`scripts/data/brunswick_chart_march_2026.json` moved them from
+`not_in_catalog` to `applied`. Hammer Special Effect stays unmatched.
+
+**Result.** 92 balls have chart positions (was 78). The Learn plotter API
 picks them up immediately. Prior values are in the session scratchpad
 (`octchart/before.json`); all were `estimated`, so rolling back means
 setting them to estimated and clicking Re-estimate.
