@@ -52,7 +52,8 @@ logger.setLevel(logging.INFO)
 
 FPS = 24
 OVERLAY_LOOP_S = 14  # must match HERO_LOOP_S in bowlerdepot-learn SignageBallPage.tsx
-DRILLING_UPCHARGE = 50  # must match DRILLING_UPCHARGE there
+# Al: "can you update the drilled price to be $50.04 more than the bowlerdepot.com price" (runbook 6di).
+DRILLING_UPCHARGE = 50.04  # must match DRILLING_UPCHARGE there
 WIDTH, HEIGHT = 1080, 1920
 FADE_IN_S = 0.5   # short, the overlay text animates in on its own anyway
 FADE_OUT_S = 1.0  # ends on true black, matching piSignage's gap between videos
@@ -191,7 +192,7 @@ def render_mp4(conn, s3, bucket: str, row: dict, learn_site: str) -> dict:
     key = f"article-images/{row['product_id']}/signage/signage_{uuid.uuid4().hex[:8]}.mp4"
     s3.upload_file(out, bucket, key, ExtraArgs={"ContentType": "video/mp4"})
     mp4_url = f"https://{bucket}.s3.amazonaws.com/{key}"
-    price = float(row["listing_price"]) + DRILLING_UPCHARGE if row["listing_price"] is not None else None
+    price = round(float(row["listing_price"]) + DRILLING_UPCHARGE, 2) if row["listing_price"] is not None else None
     update(conn, row["article_id"], mp4_key=key, mp4_url=mp4_url, mp4_rendered_at="now", mp4_price=price,
            status="ready", job_started_at=None, error=None)
     return {"mp4_url": mp4_url}

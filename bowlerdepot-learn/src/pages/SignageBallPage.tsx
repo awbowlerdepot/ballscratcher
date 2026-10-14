@@ -40,7 +40,9 @@ const STORE_PROMPT = "Built to strike.";
 // In-store price = DRILLED price: the BowlerDepot.com listing price plus
 // drilling (Al: "can we publish drilled pricing. which is $50 more than the
 // online pricing"). One constant if the drilling charge ever changes.
-const DRILLING_UPCHARGE = 50;
+// Now $50.04 (runbook 6di) -- Al: "can you update the drilled price to be $50.04 more than the
+// bowlerdepot.com price". Rounded to cents below.
+const DRILLING_UPCHARGE = 50.04;
 const W = 1080;
 const H = 1920;
 
@@ -144,7 +146,7 @@ export default function SignageBallPage() {
   }, [product]);
   const similar = (point?.neighbors.twins ?? []).map((n) => byId.get(n.id)).filter(Boolean).slice(0, 2) as LearnPlotterPoint[];
   const price = fmtPrice(
-    product?.ecommerce_price != null ? product.ecommerce_price + DRILLING_UPCHARGE : null,
+    product?.ecommerce_price != null ? Math.round((product.ecommerce_price + DRILLING_UPCHARGE) * 100) / 100 : null,
     product?.ecommerce_price_currency,
   );
   // Tagline under the price, themed per ball (Al: "can get bottom call to

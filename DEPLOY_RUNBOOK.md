@@ -19106,6 +19106,38 @@ ball small in a big hall (about a quarter of the frame):
 
 **Deploy.** `sam build && sam deploy`.
 
+### 6di. Signage drilled price: BowlerDepot.com price + $50.04 (was + $50) (2026-10-14)
+
+Al:
+> "can you update the drilled price to be $50.04 more than the
+> bowlerdepot.com price"
+
+**Change.** The upcharge is now 50.04 in all three places, and they must
+stay in sync:
+- the Learn signage page's `DRILLING_UPCHARGE` (what the screens and MP4
+  overlays draw)
+- the renderer's `DRILLING_UPCHARGE` (the MP4's recorded `mp4_price`)
+- admin_api's `SIGNAGE_DRILLING_UPCHARGE` (the `drilled_price` shown, and
+  the stale-MP4 warning)
+
+Every sum is rounded to cents. 199.95 + 50.04 is 249.98999... in floating
+point; unrounded, admin's `drilled_price` would never equal an MP4's
+`numeric(10,2)` `mp4_price`, and every MP4 would show as stale.
+
+**Tested.**
+- An admin test: a 199.95 listing gives a drilled price of 249.99.
+- 441 admin tests and 5 renderer tests pass. Learn `tsc` is clean.
+
+**Deploy.**
+```bash
+sam build && sam deploy     # renderer image + admin_api
+git push                    # Learn signage page
+```
+
+**After deploy.** The web links show the new price right away. Rendered
+MP4s keep the old price, and admin flags each one ("The price changed
+since this MP4 was rendered"), so click **Re-render MP4** on each.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

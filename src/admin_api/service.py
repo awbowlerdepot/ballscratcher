@@ -6343,7 +6343,9 @@ def get_article_signage(conn, article_id: str) -> dict:
     data["status"] = signage_effective_status(data)
     data["article_id"] = art["article_id"]
     data["slug"] = art["slug"]
-    data["drilled_price"] = float(price_row[0]) + SIGNAGE_DRILLING_UPCHARGE if price_row else None
+    # Rounded to cents so it compares equal to a rendered MP4's numeric(10,2)
+    # mp4_price -- 199.95 + 50.04 is 249.98999... in floating point.
+    data["drilled_price"] = round(float(price_row[0]) + SIGNAGE_DRILLING_UPCHARGE, 2) if price_row else None
     data["signage_url"] = f"{LEARN_SITE_BASE_URL}/signage/ball/{art['slug']}" if art["slug"] else None
     # The images Generate can start from (runbook 6co), for the source picker.
     data["source_images"] = {"action_shot": art["action_shot_url"], "product_shot": art["product_shot_url"]}
@@ -6353,7 +6355,8 @@ def get_article_signage(conn, article_id: str) -> dict:
     return data
 
 
-SIGNAGE_DRILLING_UPCHARGE = 50  # must match DRILLING_UPCHARGE in the Learn signage page
+# Al: "can you update the drilled price to be $50.04 more than the bowlerdepot.com price" (runbook 6di).
+SIGNAGE_DRILLING_UPCHARGE = 50.04  # must match DRILLING_UPCHARGE in the Learn signage page
 LEARN_SITE_BASE_URL = os.environ.get("LEARN_SITE_URL", "https://learn.bowlerdepot.com").rstrip("/")
 
 

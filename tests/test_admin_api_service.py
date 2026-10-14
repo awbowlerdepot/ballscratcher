@@ -8129,3 +8129,17 @@ def test_new_balls_list_excludes_approved_articles():
     service.list_new_balls_for_social(conn, 30)
     q, params = conn.cursor().executed[0]
     assert "pa.status::text <> 'approved'" in q and "p.status = 'current'" in q and params == (30,)
+
+
+def test_drilled_price_is_listing_plus_50_04_rounded_to_cents():
+    # Runbook 6di: "$50.04 more than the bowlerdepot.com price". 199.95 + 50.04
+    # is 249.98999... in floating point; rounded so it equals a rendered MP4's
+    # numeric(10,2) mp4_price (otherwise admin would flag every MP4 stale).
+    from decimal import Decimal
+    conn = _RuleConnection([
+        ("from product_articles pa", ("a1", "p1", "hammer-reckoning", "approved", None, None)),
+        ("from article_signage", None),
+        ("from product_price_sources", (Decimal("199.95"),)),
+    ])
+    d = service.get_article_signage(conn, "a1")
+    assert service.SIGNAGE_DRILLING_UPCHARGE == 50.04 and d["drilled_price"] == 249.99
