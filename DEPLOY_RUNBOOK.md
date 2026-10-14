@@ -19521,6 +19521,34 @@ banner should appear under the color legend. If AdSense has nothing to
 serve, the slot disappears with no gap. A new unit can take up to about
 an hour to start filling. Full screen shouldn't show it.
 
+### 6dr. Plotter full screen: iPad swipes and ultra-wide scaling (2026-10-14)
+
+Al tested 6dp: "on a tablet(ipad) it is hard to swipe around because down
+swipes close full screen. on my 57 ultra wide the full screen zooms in on
+the label so much that they overtake the ui".
+
+**iPad.** In iPadOS Safari's element full screen, a downward swipe is the
+system exit gesture, and it beats the chart's pan. Touch screens
+(`(pointer: coarse)`) now get only the window-filling mode (fixed,
+inset 0), never `requestFullscreen`. The page is still hidden behind the
+chart; only Safari's address bar stays.
+
+**Ultra-wide.** 6dp kept the viewBox 1200 wide and stretched only its
+height. On a window about 7,600 CSS px wide, every dot, label and tick
+drew about 6× bigger. In full screen the viewBox width is now
+`max(base width, areaW / 1.25)`, so the chart never draws more than 1.25×
+its normal size. A big screen shows the chart at a normal scale rather
+than enlarged. The floating card's offset (`CARD_PX`) is converted to
+the new viewBox units. Ordinary laptop windows are unchanged:
+1376 / 1.25 is under 1200, so the width stays 1200.
+
+**Deploy.** Push to main (Learn workflow).
+
+**Verify.**
+- At 5120×1440 locally, the viewBox is 4077×1093 and draws at 1.25×.
+- On the ultra-wide, labels should be about normal size.
+- On iPad, full screen keeps the address bar and swipes pan the chart.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

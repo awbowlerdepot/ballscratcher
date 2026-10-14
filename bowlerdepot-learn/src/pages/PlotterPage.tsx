@@ -33,6 +33,23 @@ const CARD_PX = 330; // card width (~20rem) in chart viewBox px at desktop width
 // takes the window's proportions, so the SVG fills the space instead of
 // keeping its 1200x740 letterbox.
 const FS_PAD = 12; // px around the chart in full screen
+// How much bigger than its normal size the chart may draw in full screen.
+// Al, after testing on a 57" ultra-wide: "the full screen zooms in on the
+// label so much that they overtake the ui" (runbook 6dr). The first cut
+// kept the viewBox 1200 wide and only stretched its height, so on a
+// ~7600px-wide window every dot, label and tick was scaled ~6x. Now the
+// viewBox grows with the window past 1.25x, so a big screen shows more
+// chart at a normal size instead of the same chart enlarged.
+const FS_MAX_SCALE = 1.25;
+// Touch screens get the window-filling mode only, never the browser's own
+// full screen. Al: "on a tablet(ipad) it is hard to swipe around because
+// down swipes close full screen" -- in iPadOS Safari's element full
+// screen a downward swipe is the system exit gesture, and it beats the
+// chart's own pan. The fixed, inset-0 fallback already hides the page;
+// it just keeps Safari's address bar.
+function prefersWindowFill() {
+  return typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches;
+}
 function useViewport() {
   const [vp, setVp] = useState(() =>
     typeof window === "undefined" ? { w: 1200, h: 800 } : { w: window.innerWidth, h: window.innerHeight },
@@ -61,13 +78,19 @@ export default function PlotterPage() {
   const [toolbarH, setToolbarH] = useState(56);
   const vp = useViewport();
   const baseChart = isDesktop ? DESKTOP_CHART : MOBILE_CHART;
-  // In full screen the viewBox matches the space left under the toolbar.
+  // In full screen the viewBox matches the space left under the toolbar,
+  // with its width growing so it never draws more than FS_MAX_SCALE x.
+  // cardPx is the floating card's width in viewBox units at this size.
   const chart = useMemo(() => {
-    if (!fullscreen) return baseChart;
+    if (!fullscreen) return { ...baseChart, cardPx: CARD_PX };
     const areaW = Math.max(320, vp.w - FS_PAD * 2);
     const areaH = Math.max(240, vp.h - toolbarH - FS_PAD * 3);
-    const width = baseChart.width;
-    return { width, height: Math.round(Math.min(2400, Math.max(360, (width * areaH) / areaW))) };
+    const width = Math.round(Math.max(baseChart.width, areaW / FS_MAX_SCALE));
+    return {
+      width,
+      height: Math.round(Math.max(360, (width * areaH) / areaW)),
+      cardPx: Math.round((CARD_PX * width) / areaW),
+    };
   }, [fullscreen, baseChart, vp, toolbarH]);
 
   useEffect(() => {
@@ -98,7 +121,7 @@ export default function PlotterPage() {
   function enterFullscreen() {
     setFullscreen(true);
     const el = fsRef.current;
-    if (el && el.requestFullscreen && document.fullscreenEnabled) {
+    if (el && el.requestFullscreen && document.fullscreenEnabled && !prefersWindowFill()) {
       el.requestFullscreen().catch(() => undefined); // the window-filling fallback is already on
     }
   }
@@ -171,7 +194,7 @@ export default function PlotterPage() {
   function focusOn(p: LearnPlotterPoint) {
     const related = ROLES.flatMap((r) => p.neighbors[r.key] ?? []).map((n) => byId.get(n.id)).filter(Boolean) as LearnPlotterPoint[];
     const fitted = fitView([p, ...related]);
-    setView(isDesktop && !cardCollapsed ? offsetForCard(fitted, chart.width, CARD_PX) : fitted);
+    setView(isDesktop && !cardCollapsed ? offsetForCard(fitted, chart.width, chart.cardPx) : fitted);
   }
 
   useEffect(() => {
