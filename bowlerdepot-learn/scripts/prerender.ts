@@ -239,6 +239,67 @@ function escapeHtml(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
+// Social/SEO share tags (runbook 6dt). Al: "can we add some better seo
+// and social tags and images for when things are shared from learn site.
+// Main image and plotter image. articles seem to be good." One builder
+// for every prerendered page so they all carry the same full set:
+// - Open Graph (Facebook, LinkedIn, iMessage, Slack, Discord): og:site_name
+//   plus the image's size and alt text, so unfurlers can lay out the
+//   card before fetching the image.
+// - X/Twitter: twitter:card=summary_large_image. Without it X falls back
+//   to a small square thumbnail even when og:image is set; it reads
+//   title/description/image from the og: tags but repeats them here for
+//   older unfurlers.
+// The home page and /plotter use the 1200x630 cards made by
+// scripts/make_learn_og_images.py (committed under public/og/).
+// Articles keep their hero shot (computeHeroImage, also 1200x630).
+const SITE_NAME = "BowlerDepot Learn";
+
+// Share-card descriptions: link previews show roughly the first 200
+// characters, and an article hook cut mid-word ("...saves its snap f")
+// looks broken, so clip at a word boundary and add an ellipsis.
+function clipForShare(text: string, max = 200): string {
+  const t = text.replace(/\s+/g, " ").trim();
+  if (t.length <= max) return t;
+  const cut = t.slice(0, max - 1);
+  const atWord = cut.slice(0, Math.max(cut.lastIndexOf(" "), max * 0.6)).replace(/[\s,;:.\u2014-]+$/, "");
+  return `${atWord}\u2026`;
+}
+const OG_IMAGE_SIZE = { width: 1200, height: 630 };
+
+function socialTags(opts: {
+  type: "website" | "article";
+  title: string;
+  description: string;
+  url: string;
+  image?: string | null;
+  imageAlt?: string;
+}): string {
+  const tags: [string, string, string][] = [
+    ["property", "og:site_name", SITE_NAME],
+    ["property", "og:type", opts.type],
+    ["property", "og:title", opts.title],
+    ["property", "og:description", opts.description],
+    ["property", "og:url", opts.url],
+    ["property", "og:locale", "en_US"],
+    ["name", "twitter:card", opts.image ? "summary_large_image" : "summary"],
+    ["name", "twitter:title", opts.title],
+    ["name", "twitter:description", opts.description],
+  ];
+  if (opts.image) {
+    tags.push(
+      ["property", "og:image", opts.image],
+      ["property", "og:image:secure_url", opts.image],
+      ["property", "og:image:type", "image/jpeg"],
+      ["property", "og:image:width", String(OG_IMAGE_SIZE.width)],
+      ["property", "og:image:height", String(OG_IMAGE_SIZE.height)],
+      ["name", "twitter:image", opts.image],
+    );
+    if (opts.imageAlt) tags.push(["property", "og:image:alt", opts.imageAlt], ["name", "twitter:image:alt", opts.imageAlt]);
+  }
+  return tags.map(([attr, key, value]) => `<meta ${attr}="${key}" content="${escapeHtml(value)}" />`).join("\n    ");
+}
+
 // On-demand image resizer/optimizer (src/image_resizer in the main repo,
 // fronted by CloudFront at img.bowleriq.io) -- see src/api/client.ts's
 // resizedImageUrl for the browser-side twin of this; duplicated here
@@ -796,11 +857,14 @@ function renderArticlePage(baseHtml: string, card: ArticleCard, article: Article
   const headExtras = `
     <meta name="description" content="${metaDescription}" />
     <link rel="canonical" href="${canonicalUrl}" />
-    <meta property="og:type" content="article" />
-    <meta property="og:title" content="${escapeHtml(article.title)}" />
-    <meta property="og:description" content="${metaDescription}" />
-    <meta property="og:url" content="${canonicalUrl}" />
-    ${heroImage ? `<meta property="og:image" content="${escapeHtml(heroImage)}" />` : ""}
+    ${socialTags({
+      type: "article",
+      title: article.title,
+      description: clipForShare(article.hook || card.hook || ""),
+      url: canonicalUrl,
+      image: heroImage,
+      imageAlt: article.title,
+    })}
     ${renderStructuredData(card, article, heroImage, canonicalUrl)}
   </head>`;
   html = html.replace("</head>", headExtras);
@@ -865,13 +929,95 @@ function renderPlotterPage(baseHtml: string, rows: PlotterRow[]): string {
     `
     <meta name="description" content="${escapeHtml(description)}" />
     <link rel="canonical" href="${canonicalUrl}" />
-    <meta property="og:type" content="website" />
-    <meta property="og:title" content="Ball Motion Plotter" />
-    <meta property="og:description" content="${escapeHtml(description)}" />
-    <meta property="og:url" content="${canonicalUrl}" />
+    ${socialTags({
+      type: "website",
+      title: "Ball Motion Plotter: compare every bowling ball on one chart",
+      description,
+      url: canonicalUrl,
+      image: PLOTTER_OG_IMAGE,
+      imageAlt: "The BowlerDepot ball motion plotter: bowling balls placed on an oil handling vs. backend motion chart",
+    })}
+    <script type="application/ld+json">${JSON.stringify(buildPlotterLd(description, canonicalUrl, rows.length))}</script>
   </head>`,
   );
   html = html.replace('<div id="root"></div>', `<div id="root">${content}</div>`);
+  return html;
+}
+
+const HOME_OG_IMAGE = `${SITE_URL}/og/learn-home.jpg`;
+const PLOTTER_OG_IMAGE = `${SITE_URL}/og/plotter.jpg`;
+
+// The plotter as a free web tool (schema.org WebApplication), so search
+// results can describe it as one rather than as a plain page.
+function buildPlotterLd(description: string, canonicalUrl: string, ballCount: number) {
+  return {
+    "@context": "https://schema.org",
+    "@type": "WebApplication",
+    name: "Ball Motion Plotter",
+    url: canonicalUrl,
+    description: ballCount ? `${description} Covers ${ballCount} current balls.` : description,
+    image: PLOTTER_OG_IMAGE,
+    applicationCategory: "SportsApplication",
+    operatingSystem: "Any (web browser)",
+    isAccessibleForFree: true,
+    offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+    publisher: { "@type": "Organization", name: "The Bowler Depot", url: "https://bowlerdepot.com/" },
+  };
+}
+
+// Home page (runbook 6dt). dist/index.html is both "/" and the SPA
+// fallback CloudFront serves for any other unknown path, and it's also
+// the base every article/plotter page above is built from. So the home
+// tags are written into dist/index.html only at the very end of main(),
+// after every other page has been built from the untouched base;
+// otherwise each article would carry the home page's tags as well as its own.
+// WebSite + Organization JSON-LD is what Google reads for the site name
+// shown above search results.
+function renderHomePage(baseHtml: string): string {
+  const title = "BowlerDepot Learn: bowling ball reviews, guides & the ball motion plotter";
+  const description =
+    "In-depth bowling ball reviews, buying guides and specs from The Bowler Depot, plus a free ball motion plotter to compare every current ball across brands.";
+  const canonicalUrl = `${SITE_URL}/`;
+  const ld = {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebSite",
+        "@id": `${canonicalUrl}#website`,
+        name: SITE_NAME,
+        alternateName: "Learn | The Bowler Depot",
+        url: canonicalUrl,
+        description,
+        publisher: { "@id": "https://bowlerdepot.com/#organization" },
+      },
+      {
+        "@type": "Organization",
+        "@id": "https://bowlerdepot.com/#organization",
+        name: "The Bowler Depot",
+        url: "https://bowlerdepot.com/",
+        logo: PUBLISHER_LOGO_URL,
+      },
+    ],
+  };
+  let html = baseHtml;
+  html = html.replace(/<title>.*?<\/title>/, `<title>${escapeHtml(title)}</title>`);
+  // index.html carries a generic description; swap it rather than add a second one.
+  html = html.replace(/<meta\s+name="description"[\s\S]*?\/>/, `<meta name="description" content="${escapeHtml(description)}" />`);
+  html = html.replace(
+    "</head>",
+    `
+    <link rel="canonical" href="${canonicalUrl}" />
+    ${socialTags({
+      type: "website",
+      title,
+      description,
+      url: canonicalUrl,
+      image: HOME_OG_IMAGE,
+      imageAlt: "BowlerDepot Learn: bowling ball reviews, guides and the ball motion plotter",
+    })}
+    <script type="application/ld+json">${JSON.stringify(ld)}</script>
+  </head>`,
+  );
   return html;
 }
 
@@ -994,6 +1140,10 @@ ${sitemapUrls
 </urlset>
 `;
   await writeFile(join(DIST_DIR, "sitemap.xml"), sitemapXml, "utf-8");
+
+  // Last, so every page above was built from the untouched base (see
+  // renderHomePage's comment).
+  await writeFile(join(DIST_DIR, "index.html"), renderHomePage(baseHtml), "utf-8");
 
   // eslint-disable-next-line no-console
   console.log(

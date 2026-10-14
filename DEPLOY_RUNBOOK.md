@@ -19581,6 +19581,79 @@ per oil unit ÷ px per motion unit):
 - At 1400×850 the views are unchanged (normal 1200×740, ratio 1.855),
   including after entering and leaving full screen.
 
+### 6dt. Learn: share images and social/SEO tags for the home page and plotter (2026-10-14)
+
+Al: "can we add some better seo and social tags and images for when things
+are shared from learn site. Main image and plotter image. articles seem to
+be good."
+
+**Before.**
+- The home page had only a `<title>` and a generic description: no
+  Open Graph tags, no image, no canonical link, no structured data.
+- `/plotter` had og: title, description and URL, but no image.
+- No page had X/Twitter tags, so X showed a small thumbnail at best.
+
+**Share images** (`bowlerdepot-learn/public/og/`, committed):
+- `learn-home.jpg` (1200×630): a navy brand panel with the logo, a
+  "LEARN" tag and a headline, plus the product shots from the six most
+  recent ball reviews.
+- `plotter.jpg` (1200×630): "Ball Motion Plotter / FREE TOOL" with a mini
+  chart. It shows every current ball's photo at its whole-number spot
+  (one per spot, as at the default zoom), with the ball and brand counts.
+- Made by `scripts/make_learn_og_images.py`. It builds each card as HTML
+  (site fonts and colors, live API data, img.bowleriq.io photos) and
+  screenshots it with headless Chrome. They're committed rather than
+  rebuilt in CI, because a share card doesn't need to change with every
+  new ball and this keeps Chrome out of the build. **To refresh** (e.g.
+  after a big release wave), run the command below, then commit and push:
+
+      python3 scripts/make_learn_og_images.py
+
+**Tags** (`bowlerdepot-learn/scripts/prerender.ts`):
+- `socialTags()` is shared by every prerendered page. It writes:
+  - `og:site_name`, type, title, description, url and `og:locale`;
+  - `og:image` with `secure_url`, type, 1200×630 dimensions and alt text;
+  - `twitter:card=summary_large_image` with the title, description,
+    image and alt.
+- **Home** (`renderHomePage`) is written into `dist/index.html` **last**,
+  after every article and the plotter page are built from the untouched
+  base. Otherwise every article would also carry the home page's tags.
+  It sets:
+  - a new title and description, and a canonical link to `/`;
+  - JSON-LD `WebSite` + `Organization`, which Google uses for the site
+    name in search results.
+
+  `dist/index.html` is also the SPA fallback for unknown paths, so those
+  get the home tags too. That's harmless: the only client-only route is
+  `/signage/...`.
+- **Plotter:**
+  - `og:title` "Ball Motion Plotter: compare every bowling ball on one
+    chart" and `og:image` set to `/og/plotter.jpg`;
+  - JSON-LD `WebApplication`: a free tool, SportsApplication, with the
+    ball count.
+- **Articles** keep their hero image. They now also get the X large card,
+  site name, image size and alt (the article title). Their share
+  description is clipped at a word boundary around 200 characters with
+  "…", instead of cutting mid-word at 300. The `<meta name="description">`
+  is unchanged.
+- The share cards are **not** added to sitemap.xml. Google's
+  image-sitemap guidance expects the image to appear on the page, and
+  these cards don't.
+- Organization URLs use `https://bowlerdepot.com/`, because www
+  301-redirects there.
+
+**Deploy.** Push to main (Learn workflow). `public/og/*` lands in dist/
+and syncs with the non-asset pass.
+
+**Verify.**
+- `curl -s https://learn.bowlerdepot.com/ | grep -o '<meta property="og:image"[^>]*>'`
+  (and the same for `/plotter/`) should show the card URLs.
+- Paste the URLs into https://www.opengraph.xyz/ or Facebook's
+  Sharing Debugger (which also clears Facebook's cached preview).
+- LinkedIn's Post Inspector refreshes LinkedIn's cache.
+- Slack and iMessage cache previews per URL for a while, so an
+  already-shared link may show the old card until that expires.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
