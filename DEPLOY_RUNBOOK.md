@@ -19181,6 +19181,22 @@ aws lambda invoke --region us-west-1 --function-name bowling-scraper-bowlerdepot
 Then run price discovery for the newly matched balls: Batch Jobs →
 Discover price sources, or per product on its Pricing tab.
 
+**Ran it (2026-10-14).**
+- Reconciliation now covers 230 current balls (up from ~178 published)
+  against 2,220 BowlerDepot products. 19 unpublished balls matched: 17
+  as matched and 2 as ambiguous, the multi-color TZones that BowlerDepot
+  writes as "blackpurplesilver" and "scarletgoldblack".
+- Discovery for those 19 found 36 candidates (BowlerDepot plus the other
+  site, 0 errors).
+- At Al's go-ahead, the **13** high-confidence, exact BowlerDepot matches
+  were approved through `approve_price_source` (resolved_by "Al Wolfe (via
+  Claude Code)"): 10 TZones, plus Storm Clear Storm Teal, Lightning Storm
+  Clear and Mix Platinum. A check-now recorded 14 / 14 succeeded. For
+  example, TZone - Ocean Reef is $74.95, so $124.99 drilled.
+- Left for Al: 6 low-confidence BowlerDepot candidates (Ebonite
+  Viz-A-Ball, Ice Storm ×2, Mix Lime-Royal-Custard, the 2 multi-color
+  TZones) and the other site's 17.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
