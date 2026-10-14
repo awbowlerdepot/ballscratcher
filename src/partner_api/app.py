@@ -106,11 +106,11 @@ def get_changes(
     # place, which is the usual reason a sync misses changes (?since=<last
     # run time> instead of the stored next_cursor). Never logs the cursor
     # itself, just which mode, plus what came back.
-    import logging
-
+    # The module's own "partner_api" logger (INFO enabled), not the root
+    # logger -- the root drops INFO on Lambda, which hid the first version.
     position = cursor and "cursor" or (since and f"since={since}") or "from-start"
-    logging.getLogger().info("changes %s limit=%s -> items=%d has_more=%s", position, limit,
-                             len(page["items"]), page["has_more"])
+    logger.info("changes %s limit=%s -> items=%d has_more=%s", position, limit,
+                len(page["items"]), page["has_more"])
     return page
 
 
