@@ -1152,7 +1152,16 @@ Resources:
             Schedule: rate(1 day)
             Name: bowling-scraper-brunswick-bags-url-discovery-daily
             Description: Sitemap diff against discovered_urls for Brunswick bags; emits new/changed bag product URLs.
-            Enabled: true
+            # Off (runbook 6dv): this has failed every run since it shipped
+            # (2026-08-19). The bag capture group lands in
+            # discovered_urls.status_path, which is the product_status enum
+            # ('current'/'retired'), not free text as 6p assumed, so every
+            # bag URL insert raises InvalidTextRepresentation and no bag has
+            # ever been scraped. Al: "turn off the bags job for now". Turn
+            # back on only after the status_path fix and a check that
+            # ball-only surfaces (partner/public APIs, plotter, Learn,
+            # consumer site) filter product_type = 'ball'.
+            Enabled: false
 
   ProductScraperFunction:
     Type: AWS::Serverless::Function

@@ -19672,6 +19672,61 @@ screen.
 **Verify.** On a phone, open /plotter: the order should be chart, color
 key, Pick a ball (or the similar-balls panel), then Advertisement.
 
+
+### 6dv. Brunswick bags discovery switched off: it has never worked (2026-10-17)
+
+**Found in a routine health check.**
+`bowling-scraper-brunswick-bags-url-discovery` (6p) has errored on every
+daily run since 2026-08-19: 59 days, 3 errors a day counting retries.
+There are **zero bags** in `products` and no `/products/bags/` rows in
+`discovered_urls`.
+
+**Cause.** 6p reused `url_discovery` unchanged. It assumed the
+`(roller-bags|carry-bags)` capture group would "just land in
+discovered_urls.status_path ... which that column doesn't validate".
+It does validate: `status_path` is the `product_status` enum
+('current'/'retired', migration 001). So the first insert raises
+`InvalidTextRepresentation: invalid input value for enum product_status:
+"roller-bags"`, and the run aborts before anything is queued.
+
+**Change.** Al: "turn off the bags job for now".
+- Disabled now: `aws events disable-rule --name
+  bowling-scraper-brunswick-bags-url-discovery-daily`.
+- `template.yaml` sets `Enabled: false` on that schedule, so the next
+  `sam deploy` keeps it off. No deploy is needed for this alone.
+
+**To turn bags on later** (not done):
+1. In `url_discovery`, store `status_path` only when the capture is
+   current/retired; otherwise leave it null (the column is nullable), and
+   add a test.
+2. Check that every ball-only surface filters `product_type = 'ball'`:
+   - the partner API (drill-sheet feed: a contract change if bags leak);
+   - the public API, the plotter and Learn;
+   - the consumer site, and admin lists and dashboards.
+3. Re-enable it, in both the template and the rule. About 51 Brunswick
+   bags would load.
+
+**Same health check, also 2026-10-17:**
+- **`product-scrape-dlq` had 71 messages.** These are Brunswick ball pages
+  that Brunswick's own site returns HTTP 500 for (tie-dye-burst,
+  stars-and-stripes, white-ball, team-brunswick, and some retired ones).
+  Daily discovery re-queues them. This is not our bug. The queue was
+  purged; the pages scrape normally once Brunswick fixes them.
+- **Five of the week's 13 new articles were missing images.** The Gemini
+  image calls hit 429 RESOURCE_EXHAUSTED in the nightly run, even with
+  the retry session. The five:
+  - Hammer 3-D Offset: both images;
+  - MOTIV Raptor Fury, Supra Rally, Ripcord Flight and Cruel Intent:
+    product shot only.
+
+  They were re-queued through `service.queue_article_generation`
+  (`images` / `product_shot` modes), 3 minutes apart so they don't
+  rate-limit each other. All five were still pending review.
+
+**Verify.**
+`aws events describe-rule --name bowling-scraper-brunswick-bags-url-discovery-daily --query State`
+should return `DISABLED`.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
