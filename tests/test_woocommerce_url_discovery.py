@@ -157,3 +157,71 @@ if __name__ == "__main__":
         passed += 1
         print(f"PASS: {t.__name__}")
     print(f"\n{passed}/{len(tests)} tests passed")
+
+
+# --- lastmod_changed / full_refresh (runbook 6dx) ---
+
+import datetime as _dt  # noqa: E402
+import importlib as _importlib  # noqa: E402
+
+_disc = _importlib.import_module("app")
+
+
+def test_lastmod_changed_compares_instants_not_strings():
+    # The real bug: psycopg2 returns a tz-aware datetime in UTC, the feed
+    # gives the same moment in the site's own offset. Must be "unchanged".
+    stored = _dt.datetime(2025, 7, 15, 13, 14, 20, tzinfo=_dt.timezone.utc)
+    assert _disc.lastmod_changed(stored, "2025-07-15T09:14:20-04:00") is False
+    assert _disc.lastmod_changed(stored, "2025-07-15T13:14:20Z") is False
+    # A real edit is still caught.
+    assert _disc.lastmod_changed(stored, "2025-07-16T09:14:20-04:00") is True
+    # Same rules when the stored value comes back as a string (test fakes).
+    assert _disc.lastmod_changed("2025-07-15 13:14:20+00:00", "2025-07-15T09:14:20-04:00") is False
+
+
+def test_lastmod_changed_edge_cases_match_the_old_behavior():
+    assert _disc.lastmod_changed("2025-07-15T09:14:20-04:00", None) is False   # no incoming lastmod
+    assert _disc.lastmod_changed(None, "2025-07-15T09:14:20-04:00") is True    # first lastmod seen
+    assert _disc.lastmod_changed("garbage", "also garbage") is True            # unparseable: string compare
+    assert _disc.lastmod_changed("same", "same") is False
+
+
+def test_handler_full_refresh_queues_unchanged_urls_too():
+    import types
+
+    sent = []
+    diff = {"new": ["n"], "changed": ["c"], "unchanged": ["u1", "u2"]}
+    saved = {k: getattr(_disc, k) for k in ("diff_against_known", "get_db_connection", "publish_messages")}
+    fakes = {}
+    for name in dir(_disc):
+        if name.startswith(("fetch_", "parse_", "discover_", "collect_", "list_")) and callable(getattr(_disc, name)):
+            fakes[name] = getattr(_disc, name)
+    try:
+        for name in fakes:
+            setattr(_disc, name, lambda *a, **k: [])
+        _disc.get_db_connection = lambda: types.SimpleNamespace(close=lambda: None)
+        _disc.diff_against_known = lambda *a, **k: diff
+        _disc.publish_messages = lambda sqs, q, msgs: sent.append(list(msgs)) or len(msgs)
+        os.environ.setdefault("BRAND_ID", "b")
+        os.environ["PRODUCT_SCRAPE_QUEUE_URL"] = "q"
+        fake_boto3 = types.ModuleType("boto3")
+        fake_boto3.client = lambda *a, **k: object()
+        real_boto3 = sys.modules.get("boto3")
+        sys.modules["boto3"] = fake_boto3
+        try:
+            _disc.handler({}, None)
+            _disc.handler({"full_refresh": True}, None)
+        finally:
+            if real_boto3 is not None:
+                sys.modules["boto3"] = real_boto3
+            else:
+                sys.modules.pop("boto3", None)
+    finally:
+        for k, v in saved.items():
+            setattr(_disc, k, v)
+        for k, v in fakes.items():
+            setattr(_disc, k, v)
+        os.environ.pop("PRODUCT_SCRAPE_QUEUE_URL", None)
+    daily, weekly = sent
+    assert len(daily) == 2           # new + changed only
+    assert len(weekly) == 4          # plus both unchanged URLs

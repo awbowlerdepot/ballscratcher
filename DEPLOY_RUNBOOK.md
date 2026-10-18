@@ -19823,6 +19823,98 @@ take a few invokes:
   Next steps are a human's call: retry in admin, use a different source
   photo, or relax the check for that ball.
 
+
+### 6dx. Discovery lastmod bug: every URL re-scraped daily. Fixed, plus a weekly full re-scrape (2026-10-17)
+
+Al asked to stop the product-scrape DLQ refilling with the ~70 Brunswick
+pages that brunswickbowling.com itself returns 500 for. Digging into why
+they were re-queued daily turned up the real bug. Every daily discovery
+log read like this:
+
+- Brunswick: `0 new, 260 changed, 0 unchanged`
+- Radical: 131 changed; DV8: 128 changed
+- Hammer: 222; Track: 170; Ebonite: 194; Swag (WooCommerce): 96
+
+That is **about 1,100 pages re-scraped every day**, all counted as
+changed. The runbook never mentioned it, so it was never a deliberate
+choice.
+
+**Cause.** `diff_against_known` compared `str(existing_lastmod) !=
+incoming_lastmod`. psycopg2 returns `discovered_urls.sitemap_lastmod` as
+a tz-aware datetime, which prints as `2025-07-15 13:14:20+00:00`. The
+sitemap or feed gives `2025-07-15T09:14:20-04:00`. That is the same
+instant, but the strings never match. The same line was in
+`url_discovery` (Craft CMS: Brunswick/Radical/DV8 and the disabled
+bags), `shopify_url_discovery` (Hammer/Track/Ebonite/Columbia 300) and
+`woocommerce_url_discovery` (Swag). CommerceBuild and NetSuite have no
+per-URL lastmod, so they are unaffected.
+
+**Fix.** Al picked "Fix + weekly full".
+- **`lastmod_changed(existing, incoming)`** in all three modules
+  compares instants (`datetime.fromisoformat`, with a UTC default for
+  naive values). It keeps the old edge cases:
+  - no incoming lastmod means not changed;
+  - a stored NULL means changed;
+  - an unparseable value falls back to the string compare.
+- **Checked against live data:** on today's Brunswick sitemap against the
+  stored values, the old comparison gives 260 changed and the new one
+  gives 0.
+- **`{"full_refresh": true}`** makes the handler queue the unchanged URLs
+  too.
+- **`WeeklyFullRefresh`** is a schedule on all 7 daily discovery
+  functions, on Sundays, staggered 10 minutes apart:
+
+  | Function | UTC |
+  |---|---|
+  | Brunswick | 10:00 |
+  | Radical | 10:10 |
+  | DV8 | 10:20 |
+  | Swag | 10:30 |
+  | Hammer | 10:40 |
+  | Track | 10:50 |
+  | Ebonite | 11:00 |
+
+  This is the safety net for a page edited without a lastmod bump, such
+  as a description added later. Columbia 300 (on demand only) and the
+  disabled bags job get no weekly run. Invoke them with
+  `{"full_refresh": true}` when needed.
+- **Admin copy** (`AnnouncementSection`): a missing description now
+  "fills in automatically once they do: usually the next day, and within
+  a week at most". Before, it promised the next daily scrape.
+
+**Effect.**
+- Daily scrape volume drops from about 1,100 pages to whatever actually
+  changed.
+- The 500-ing Brunswick pages now hit `product-scrape-dlq` once a week,
+  from the Sunday full refresh, not daily. Purge it after Sunday if it's
+  only those.
+- The first daily run after deploy should log mostly `unchanged`.
+
+**Tests** (`test_url_discovery.py` 20, `test_shopify_url_discovery.py`
+15, `test_woocommerce_url_discovery.py` 11, all passing):
+- the datetime-vs-offset-string case;
+- a real change;
+- the edge cases;
+- daily vs `full_refresh` queueing in the handler.
+
+**Deploy.**
+- Backend: full `sam build && sam deploy`. This changes three discovery
+  code paths and adds 7 rules.
+- Admin copy: push to main (admin-spa workflow).
+
+**Verify.**
+- After the next daily runs, check that discovery is now reporting
+  unchanged URLs:
+
+      aws logs tail /aws/lambda/bowling-scraper-url-discovery --since 1d | grep "Discovery complete"
+
+  The log should show something like `0 new, 0 changed, 260 unchanged`.
+  Repeat for the radical, dv8, woocommerce, hammer, track and ebonite
+  `-url-discovery` log groups.
+- All 7 rules should be ENABLED:
+
+      aws events list-rules --name-prefix bowling-scraper --query "Rules[?contains(Name,'weekly-full')].[Name,State]"
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

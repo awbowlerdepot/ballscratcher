@@ -143,8 +143,8 @@ export default function AnnouncementSection({ productId }: { productId: string }
 
       {!data.has_description ? (
         <p className="rounded-md bg-warn-light px-3 py-2 text-xs text-warn">
-          The manufacturer hasn&rsquo;t published a description for this ball yet. It fills in automatically on the
-          daily scrape once they do.
+          The manufacturer hasn&rsquo;t published a description for this ball yet. It fills in automatically once
+          they do: usually the next day, and within a week at most.
         </p>
       ) : (
         <>

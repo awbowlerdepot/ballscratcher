@@ -37,6 +37,7 @@ a direct fetch of a real product page this session), which is more
 reliable than trying to infer it from category-listing groupings on this
 page. See woocommerce_product_scraper/app.py.
 """
+import datetime
 import json
 import logging
 import os
@@ -152,6 +153,43 @@ def build_entries(ball_urls: set, lastmods_by_url: dict) -> list:
     return [{"url": url, "lastmod": lastmods_by_url.get(url)} for url in sorted(ball_urls)]
 
 
+
+def lastmod_changed(existing, incoming) -> bool:
+    """Has this URL's lastmod moved? Compares instants, not strings
+    (runbook 6dx). REAL INCIDENT, found 2026-10-17: this used to be
+    `str(existing_lastmod) != incoming_lastmod`, but psycopg2 hands back
+    discovered_urls.sitemap_lastmod as a timezone-aware datetime
+    ("2025-07-15 13:14:20+00:00") while the sitemap/feed gives ISO 8601 in
+    the site's own offset ("2025-07-15T09:14:20-04:00"). Those strings
+    never match, so every URL counted as "changed" on every run:
+    "0 new, 260 changed, 0 unchanged" for Brunswick, and the same for
+    Radical, DV8, Hammer, Track, Ebonite and Swag (about 1,100 pointless
+    scrapes a day). Pages the manufacturer's site 500s on landed in the
+    DLQ daily. Al picked "Fix + weekly full": only new/changed URLs daily,
+    plus a weekly {"full_refresh": true} run as a safety net for edits made
+    without a lastmod bump.
+
+    No incoming lastmod -> not changed (same as before). A stored NULL with
+    an incoming value -> changed. An unparseable value falls back to the
+    old string comparison rather than raising.
+    """
+    if not incoming:
+        return False
+    if existing is None:
+        return True
+
+    def as_instant(value):
+        if isinstance(value, datetime.datetime):
+            dt = value
+        else:
+            dt = datetime.datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+        return dt if dt.tzinfo else dt.replace(tzinfo=datetime.timezone.utc)
+
+    try:
+        return as_instant(existing) != as_instant(incoming)
+    except ValueError:
+        return str(existing) != incoming
+
 def diff_against_known(conn, brand_id: str, entries: list) -> dict:
     """Same new/changed/unchanged diff behavior as
     url_discovery.diff_against_known, against the same discovered_urls
@@ -181,7 +219,7 @@ def diff_against_known(conn, brand_id: str, entries: list) -> dict:
             else:
                 existing_lastmod = row[0]
                 incoming_lastmod = entry["lastmod"]
-                if incoming_lastmod and str(existing_lastmod) != incoming_lastmod:
+                if lastmod_changed(existing_lastmod, incoming_lastmod):
                     cur.execute(
                         """
                         update discovered_urls
@@ -260,6 +298,12 @@ def handler(event, context):
     )
 
     urls_to_scrape = diff["new"] + diff["changed"]
+    # Weekly safety net (runbook 6dx): {"full_refresh": true} re-queues every
+    # URL still in the feed, the unchanged ones too, so an edit the site
+    # made without moving lastmod is still picked up within a week.
+    if (event or {}).get("full_refresh"):
+        urls_to_scrape = urls_to_scrape + diff["unchanged"]
+        logger.info("Full refresh: also queueing %d unchanged URL(s)", len(diff["unchanged"]))
     published_count = 0
     queue_url = os.environ.get("PRODUCT_SCRAPE_QUEUE_URL")
     if urls_to_scrape and queue_url:

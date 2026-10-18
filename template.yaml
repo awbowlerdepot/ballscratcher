@@ -1027,6 +1027,22 @@ Resources:
             Name: bowling-scraper-url-discovery-daily
             Description: Sitemap diff against discovered_urls; emits new/changed product URLs.
             Enabled: true
+        # Weekly full re-scrape (runbook 6dx), Al's "Fix + weekly full" pick.
+        # The daily run above only queues new/changed URLs now that the
+        # lastmod comparison is fixed; this re-queues every URL still in the
+        # sitemap once a week, so a page edited without a lastmod bump (e.g.
+        # a description added later) is still picked up within a week. The
+        # same schedule is on each daily discovery function, staggered 10
+        # minutes apart on Sunday so they don't all hit the scrape queues
+        # at once.
+        WeeklyFullRefresh:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 10 ? * SUN *)
+            Input: '{"full_refresh": true}'
+            Name: bowling-scraper-url-discovery-weekly-full
+            Description: Weekly full re-scrape of every Brunswick URL, a safety net for page edits that don't move lastmod (runbook 6dx).
+            Enabled: true
 
   # Radical and DV8 -- same Craft CMS platform as Brunswick (confirmed live
   # this session: identical SEOmatic sitemap shape, identical
@@ -1083,6 +1099,14 @@ Resources:
             Name: bowling-scraper-radical-url-discovery-daily
             Description: Sitemap diff against discovered_urls for Radical; emits new/changed product URLs.
             Enabled: true
+        WeeklyFullRefresh:
+          Type: Schedule
+          Properties:
+            Schedule: cron(10 10 ? * SUN *)
+            Input: '{"full_refresh": true}'
+            Name: bowling-scraper-radical-url-discovery-weekly-full
+            Description: Weekly full re-scrape of every Radical URL, a safety net for page edits that don't move lastmod (runbook 6dx).
+            Enabled: true
 
   Dv8UrlDiscoveryFunction:
     Type: AWS::Serverless::Function
@@ -1113,6 +1137,14 @@ Resources:
             Schedule: rate(1 day)
             Name: bowling-scraper-dv8-url-discovery-daily
             Description: Sitemap diff against discovered_urls for DV8; emits new/changed product URLs.
+            Enabled: true
+        WeeklyFullRefresh:
+          Type: Schedule
+          Properties:
+            Schedule: cron(20 10 ? * SUN *)
+            Input: '{"full_refresh": true}'
+            Name: bowling-scraper-dv8-url-discovery-weekly-full
+            Description: Weekly full re-scrape of every DV8 URL, a safety net for page edits that don't move lastmod (runbook 6dx).
             Enabled: true
 
   # Bags on Brunswick (migration 019) -- same brand/sitemap/BrandId as
@@ -2249,6 +2281,14 @@ Resources:
             Name: bowling-scraper-woocommerce-url-discovery-daily
             Description: Category/sitemap diff against discovered_urls for SWAG; emits new/changed product URLs.
             Enabled: true
+        WeeklyFullRefresh:
+          Type: Schedule
+          Properties:
+            Schedule: cron(30 10 ? * SUN *)
+            Input: '{"full_refresh": true}'
+            Name: bowling-scraper-woocommerce-url-discovery-weekly-full
+            Description: Weekly full re-scrape of every Swag URL, a safety net for page edits that don't move lastmod (runbook 6dx).
+            Enabled: true
 
   WooCommerceProductScraperFunction:
     Type: AWS::Serverless::Function
@@ -3196,6 +3236,14 @@ Resources:
             Name: bowling-scraper-hammer-url-discovery-daily
             Description: collections/*.json diff against discovered_urls for Hammer; emits new/changed product URLs.
             Enabled: true
+        WeeklyFullRefresh:
+          Type: Schedule
+          Properties:
+            Schedule: cron(40 10 ? * SUN *)
+            Input: '{"full_refresh": true}'
+            Name: bowling-scraper-hammer-url-discovery-weekly-full
+            Description: Weekly full re-scrape of every Hammer URL, a safety net for page edits that don't move lastmod (runbook 6dx).
+            Enabled: true
 
   TrackUrlDiscoveryFunction:
     Type: AWS::Serverless::Function
@@ -3232,6 +3280,14 @@ Resources:
             Name: bowling-scraper-track-url-discovery-daily
             Description: collections/*.json diff against discovered_urls for Track; emits new/changed product URLs.
             Enabled: true
+        WeeklyFullRefresh:
+          Type: Schedule
+          Properties:
+            Schedule: cron(50 10 ? * SUN *)
+            Input: '{"full_refresh": true}'
+            Name: bowling-scraper-track-url-discovery-weekly-full
+            Description: Weekly full re-scrape of every Track URL, a safety net for page edits that don't move lastmod (runbook 6dx).
+            Enabled: true
 
   EboniteUrlDiscoveryFunction:
     Type: AWS::Serverless::Function
@@ -3265,6 +3321,14 @@ Resources:
             Schedule: rate(1 day)
             Name: bowling-scraper-ebonite-url-discovery-daily
             Description: collections/*.json diff against discovered_urls for Ebonite; emits new/changed product URLs.
+            Enabled: true
+        WeeklyFullRefresh:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 11 ? * SUN *)
+            Input: '{"full_refresh": true}'
+            Name: bowling-scraper-ebonite-url-discovery-weekly-full
+            Description: Weekly full re-scrape of every Ebonite URL, a safety net for page edits that don't move lastmod (runbook 6dx).
             Enabled: true
 
   Columbia300UrlDiscoveryFunction:
