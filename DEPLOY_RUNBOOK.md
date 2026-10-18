@@ -19915,6 +19915,14 @@ per-URL lastmod, so they are unaffected.
 
       aws events list-rules --name-prefix bowling-scraper --query "Rules[?contains(Name,'weekly-full')].[Name,State]"
 
+**Deployed 2026-10-17.**
+- The stack is UPDATE_COMPLETE, all 7 `*-weekly-full` rules are ENABLED,
+  and the bags rule is still DISABLED.
+- A manual invoke of `bowling-scraper-url-discovery` (Brunswick) gave
+  `total_seen 260, new 0, changed 0, unchanged 260, published 0`. Before
+  the fix it was 260 changed.
+- The admin-site deploy for the copy change succeeded.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
