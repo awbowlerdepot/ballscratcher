@@ -20003,6 +20003,17 @@ is no release date (about 1 in 6 current balls):
   tier: {...}" and no circuit-breaker trip.
 - New candidates land in admin's video review queue as usual.
 
+**Deployed 2026-10-17.**
+- The stack is UPDATE_COMPLETE, and the rule
+  `bowling-scraper-video-discovery-due-daily` is ENABLED with
+  `cron(0 12 * * ? *)` and input `{"due": true, "limit": 60}`.
+- A smoke test of `{"due": true, "limit": 2}` logged "Due search: 2
+  ball(s) due, by search-every-N-days tier: {1: 2}". It found:
+  - MOTIV Raptor Pursuit: 17 results, 4 new candidates;
+  - Storm Ion Pro Pearl: 6 results, 2 new candidates.
+
+  There were no errors, and it used 2 searches of the day's quota.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
