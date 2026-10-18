@@ -19799,6 +19799,30 @@ take a few invokes:
 
   The log shows "Image sweep: N article(s) missing images".
 
+**Deployed and backfilled (2026-10-17).**
+- **Deploy:** the stack is UPDATE_COMPLETE. The rule
+  `bowling-scraper-article-image-sweep` is ENABLED with
+  `cron(0 7,9 * * ? *)`, and the bags rule is still DISABLED.
+- **Backfill:** four sequential runs with `window_hours` 2000, which
+  brought the 15 articles down to 5 and then stalled.
+- **Fixed (10):**
+  - approved: Combat, Raptor Rush, ABSOLUTE, Pride Liberty, Supra GT;
+  - pending: Rhino Purple/Black, MIX PLATINUM, Tropical Surge
+    Silver-Purple and Black-Blue-Pink, Ascend.
+- **Not fixable by retrying (5).** Each was tried 3–4 times:
+  - **Hammer Black Widow Viz-A-Ball** (action shot): Gemini returns
+    `finishReason=IMAGE_PROHIBITED_CONTENT` every time, probably the
+    spider artwork.
+  - **MOTIV Nuclear Forge** (approved; product shot), **Storm Tropical
+    Surge Pink-Purple** (product shot), **MOTIV Jackal Legacy** (both
+    images) and **MOTIV Tank Rampage Pearl** (product shot): every
+    candidate was rejected by the 6de/6dk logo checks. The reasons were
+    the logo 40–56% too big, the ball 37–47% of the frame, or the
+    "FORGE" lettering missing, with 429s on top.
+
+  Next steps are a human's call: retry in admin, use a different source
+  photo, or relax the check for that ball.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
