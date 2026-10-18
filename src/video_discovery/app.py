@@ -6,10 +6,13 @@ service.py's list_video_candidates/approve_video_candidate/
 reject_video_candidate, and 004_product_videos.sql's module comment for why
 this is a dedicated table rather than reusing review_queue).
 
-Manual/direct invoke only, same convention as this project's other discovery
-functions being invoked by hand rather than on a schedule (see
-DEPLOY_RUNBOOK.md) -- there's no SQS trigger here. The invoking event
-decides scope:
+Searches run daily on a schedule since runbook 6dy ({"due": true}, the
+release cadence below); before that this was manual/direct invoke only.
+Manual runs from the admin Batch Jobs tab still work as before -- there's
+no SQS trigger here. The invoking event decides scope:
+    {"due": true, "limit": N}          -- balls due under RELEASE CADENCE (see the constants
+                                            below): daily from discovery to release + 14 days,
+                                            then every 2/4/7/30 days. The daily schedule's job.
     {"product_ids": ["<uuid>", ...]}   -- specific products, any status/published value
     {"brand_id": "<uuid>"}             -- all 'current' (non-retired) products for one brand
     {}                                  -- all 'current' (non-retired) products (capped, see below)
@@ -364,6 +367,35 @@ PRE_RELEASE_REJECTED_BY = "video_discovery (published before product's announcem
 # products.created_at inside this window sort ahead of every older
 # product in fetch_products_to_search's default/brand_id ordering.
 NEW_BALL_PRIORITY_WINDOW_DAYS = 30
+
+# RELEASE CADENCE (runbook 6dy) -- the {"due": true} job shape, run daily
+# by template.yaml's DailyDueSearch schedule. Al: "can we figure out a
+# cadence that makes sense for the first n number of days or weeks after a
+# ball is released to search for new videos. once the balls are found the
+# videos will get published in the first month or so at a pretty good rate
+# per day." Measured on 1,472 approved videos for the 114 balls released
+# 2024-01 to 2026-06, by days from release_date:
+#   49% before release (the announcement window; the pre-release filter
+#   already drops anything older than release - 45 days), 65% by day 6,
+#   72% by day 13, 83% by day 29, 90% by day 59, 94% by day 119, and a
+#   6% long tail after that.
+# We discover a ball a median of 9 days before release (8-37), so it is
+# searched daily from discovery until release + 14, then backs off as the
+# rate of new videos falls. Each tier is (age in days from the anchor,
+# inclusive upper bound -> search every N days); a negative age (not
+# released yet) falls in the first tier. The anchor is release_date, or
+# created_at + NO_RELEASE_DATE_OFFSET_DAYS when release_date is unknown
+# (about 1 in 6 current balls), i.e. the median discovery-to-release gap.
+# Expected cost: ~25-35 searches/day, ~40 in a release-burst week, under
+# the DEFAULT_DUE_SEARCH_LIMIT cap -- leaving the rest of the 100/day
+# YouTube quota for manual runs.
+RELEASE_CADENCE_TIERS = ((14, 1), (30, 2), (60, 4), (120, 7))
+LONG_TAIL_EVERY_DAYS = 30
+NO_RELEASE_DATE_OFFSET_DAYS = 10
+DEFAULT_DUE_SEARCH_LIMIT = 60
+# A ball searched at 12:05 yesterday is due again at today's 12:00 run, not
+# tomorrow's: last_video_discovery_at drifts a few minutes each run.
+DUE_SLACK_HOURS = 3
 
 # Retried status codes: 429 is the real, confirmed cause here (YouTube's
 # per-minute search.list rate limit -- see module docstring's incident
@@ -858,6 +890,51 @@ def fetch_products_to_search(conn, job: dict, max_products: int) -> list:
         return [dict(zip(columns, row)) for row in cur.fetchall()]
 
 
+def search_every_days(age_days: int) -> int:
+    """How often (days) a ball this many days from its anchor date is
+    searched -- see RELEASE CADENCE. Mirrors the SQL CASE in
+    fetch_due_products (both are built from RELEASE_CADENCE_TIERS)."""
+    for max_age, every in RELEASE_CADENCE_TIERS:
+        if age_days <= max_age:
+            return every
+    return LONG_TAIL_EVERY_DAYS
+
+
+def _cadence_case_sql(age_expr: str) -> str:
+    whens = " ".join(f"when {age_expr} <= {max_age} then {every}" for max_age, every in RELEASE_CADENCE_TIERS)
+    return f"case {whens} else {LONG_TAIL_EVERY_DAYS} end"
+
+
+def fetch_due_products(conn, max_products: int = DEFAULT_DUE_SEARCH_LIMIT) -> list:
+    """The {"due": true} scope (RELEASE CADENCE): current balls whose last
+    search is older than their tier's interval (or that were never
+    searched). Most frequent tier first, so in a burst week the cap cuts
+    the long tail, never a ball in its launch window; within a tier, the
+    least recently searched first."""
+    query = f"""
+        with c as (
+            select p.id, p.name, b.name as brand_name, p.release_date, p.announced_date,
+                   p.last_video_discovery_at,
+                   current_date - coalesce(p.release_date, p.created_at::date + %s) as age_days
+            from products p
+            join brands b on b.id = p.brand_id
+            where p.status = 'current' and p.product_type = 'ball'
+        ), t as (
+            select c.*, {_cadence_case_sql("c.age_days")} as every_days from c
+        )
+        select id, name, brand_name, release_date, announced_date, age_days, every_days
+        from t
+        where last_video_discovery_at is null
+           or last_video_discovery_at <= now() - make_interval(days => every_days) + make_interval(hours => %s)
+        order by every_days asc, last_video_discovery_at asc nulls first, id asc
+        limit %s
+    """
+    with conn.cursor() as cur:
+        cur.execute(query, (NO_RELEASE_DATE_OFFSET_DAYS, DUE_SLACK_HOURS, max_products))
+        columns = [desc[0] for desc in cur.description]
+        return [dict(zip(columns, row)) for row in cur.fetchall()]
+
+
 def mark_product_searched(conn, product_id: str) -> None:
     """Records that video_discovery actually completed a search.list call
     for this product -- called from handler's success path only (after
@@ -1174,7 +1251,19 @@ def handler(event, context):
         max_results = int(os.environ.get("MAX_RESULTS_PER_PRODUCT", DEFAULT_MAX_RESULTS_PER_PRODUCT))
         circuit_breaker_threshold = int(os.environ.get("CIRCUIT_BREAKER_THRESHOLD", DEFAULT_CIRCUIT_BREAKER_THRESHOLD))
 
-        products = fetch_products_to_search(conn, job, max_products)
+        if job.get("due"):
+            # Scheduled release-cadence run (RELEASE CADENCE, runbook 6dy).
+            # Its own, lower cap so a manual run the same day still has
+            # quota; never more than MAX_SEARCHES_PER_INVOCATION.
+            max_products = min(max_products, int(job.get("limit") or DEFAULT_DUE_SEARCH_LIMIT))
+            products = fetch_due_products(conn, max_products)
+            tiers = {}
+            for prod in products:
+                tiers[prod["every_days"]] = tiers.get(prod["every_days"], 0) + 1
+            logger.info("Due search: %d ball(s) due, by search-every-N-days tier: %s", len(products),
+                        dict(sorted(tiers.items())))
+        else:
+            products = fetch_products_to_search(conn, job, max_products)
         logger.info("Searching YouTube for %d product(s) (cap=%d)", len(products), max_products)
 
         total_candidates = 0

@@ -19923,6 +19923,86 @@ per-URL lastmod, so they are unaffected.
   the fix it was 260 changed.
 - The admin-site deploy for the copy change succeeded.
 
+
+### 6dy. Video search on a release cadence, run daily (2026-10-17)
+
+Al: "can we figure out a cadence that makes sense for the first n number
+of days or weeks after a ball is released to search for new videos. once
+the balls are found the videos will get published in the first month or
+so at a pretty good rate per day". Then: "yes build all of it".
+
+**Data.** 1,472 approved videos for the 114 balls released 2024-01 to
+2026-06, by days from `release_date`:
+
+| Days from release | Share | Cumulative |
+|---|---|---|
+| −45 to −1 (announcement) | 49% | 49% |
+| 0–6 | 15% | 65% |
+| 7–13 | 8% | 72% |
+| 14–29 | 11% | 83% |
+| 30–59 | 7% | 90% |
+| 60–119 | 4% | 94% |
+| 120+ | 6% | 100% |
+
+We discover a ball a median of 9 days before release (8–37, balls
+discovered since 2026-08-10). The 6.5% long tail is real: 51 of the 114
+balls got a video after day 120.
+
+**Cadence** (`RELEASE_CADENCE_TIERS` in `video_discovery/app.py`). The age
+is counted from `release_date`, or from `created_at` + 10 days when there
+is no release date (about 1 in 6 current balls):
+
+| Age (days) | Search every |
+|---|---|
+| ≤ 14, including before release | 1 day |
+| 15–30 | 2 days |
+| 31–60 | 4 days |
+| 61–120 | 7 days |
+| > 120 | 30 days |
+
+**How it works.**
+- `{"due": true, "limit": N}` → `fetch_due_products` picks current balls
+  whose `last_video_discovery_at` is older than their tier's interval
+  (with 3h of slack for run-time drift), or that were never searched.
+- Ordering is the most frequent tier first, so in a burst week the cap
+  trims the long tail and never a launch-window ball. Within a tier, the
+  least recently searched goes first.
+- The SQL CASE is generated from the same tier list as
+  `search_every_days`, so the two can't drift.
+- The new schedule, **`DailyDueSearch`**, is `cron(0 12 * * ? *)` with
+  `{"due": true, "limit": 60}`. 12:00 UTC is about 5h after the YouTube
+  quota resets (midnight Pacific).
+- Video search was manual-only until now. Manual Batch Jobs runs (`{}`,
+  `brand_id`, `product_ids`) are unchanged and share the rest of the
+  100/day.
+- **Results per search: unchanged.** The deployed function already sets
+  `MAX_RESULTS_PER_PRODUCT=20`. The code default of 5 is overridden, so
+  the planned "15 for new balls" change wasn't needed.
+
+**Expected load**, measured on live data (read-only):
+- Steady state is about 30 searches a day: 12 balls daily, 4 every 2
+  days, 7 every 4 days, 67 weekly and 141 monthly.
+- The first runs clear a backlog of 218 due balls (mostly older ones
+  last searched over 30 days ago) at the 60 cap, so about 4 days.
+
+**Tests.** 3 new tests in `tests/test_video_discovery.py` (104 passing):
+- the tier boundaries;
+- the due-query SQL (tiers, anchor, filters, ordering);
+- the handler routing the due job with its own cap, clamped to
+  `MAX_SEARCHES_PER_INVOCATION`.
+
+**Deploy.** Full `sam build && sam deploy` (code plus 1 rule).
+`CLAUDE.md` is updated: video search is no longer manual-only.
+
+**Verify.**
+- After 12:00 UTC:
+
+      aws logs tail /aws/lambda/bowling-scraper-video-discovery --since 2h | grep -E "Due search|Searching YouTube"
+
+  This should show "Due search: N ball(s) due, by search-every-N-days
+  tier: {...}" and no circuit-breaker trip.
+- New candidates land in admin's video review queue as usual.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

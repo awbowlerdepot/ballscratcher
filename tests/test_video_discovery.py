@@ -1651,3 +1651,93 @@ if __name__ == "__main__":
         finally:
             mp.undo()
     print(f"\n{passed}/{len(tests)} tests passed")
+
+
+# --- RELEASE CADENCE / {"due": true} (runbook 6dy) ---
+
+def test_search_every_days_follows_the_release_cadence_tiers():
+    # Not released yet (negative age) and the first two weeks: daily.
+    assert app.search_every_days(-30) == 1
+    assert app.search_every_days(0) == 1
+    assert app.search_every_days(14) == 1
+    # Then backing off as new videos slow down.
+    assert app.search_every_days(15) == 2
+    assert app.search_every_days(30) == 2
+    assert app.search_every_days(31) == 4
+    assert app.search_every_days(60) == 4
+    assert app.search_every_days(61) == 7
+    assert app.search_every_days(120) == 7
+    assert app.search_every_days(121) == app.LONG_TAIL_EVERY_DAYS
+
+
+class _DueCursor:
+    def __init__(self, rows):
+        self.rows = rows
+        self.executed = []
+        self.description = [("id",), ("name",), ("brand_name",), ("release_date",), ("announced_date",),
+                            ("age_days",), ("every_days",)]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, sql, params=None):
+        self.executed.append((" ".join(sql.split()), params))
+
+    def fetchall(self):
+        return self.rows
+
+
+class _DueConn:
+    def __init__(self, rows=()):
+        self.cur = _DueCursor(list(rows))
+
+    def cursor(self):
+        return self.cur
+
+
+def test_fetch_due_products_sql_matches_the_python_tiers_and_orders_launch_window_first():
+    conn = _DueConn([("p1", "Reckoning", "Hammer", None, None, -5, 1)])
+    out = app.fetch_due_products(conn, 60)
+    assert out == [{"id": "p1", "name": "Reckoning", "brand_name": "Hammer", "release_date": None,
+                    "announced_date": None, "age_days": -5, "every_days": 1}]
+    sql, params = conn.cur.executed[0]
+    # The CASE is generated from RELEASE_CADENCE_TIERS, so SQL and Python can't drift.
+    assert "case when c.age_days <= 14 then 1 when c.age_days <= 30 then 2 when c.age_days <= 60 then 4 " \
+           "when c.age_days <= 120 then 7 else 30 end" in sql
+    assert "coalesce(p.release_date, p.created_at::date + %s)" in sql
+    assert "p.status = 'current' and p.product_type = 'ball'" in sql
+    assert "last_video_discovery_at is null" in sql
+    # Most frequent tier first, so a burst week's cap trims the long tail.
+    assert "order by every_days asc, last_video_discovery_at asc nulls first" in sql
+    assert params == (app.NO_RELEASE_DATE_OFFSET_DAYS, app.DUE_SLACK_HOURS, 60)
+
+
+def test_handler_due_job_uses_the_cadence_query_with_its_own_cap(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(app, "get_youtube_api_key", lambda: "fake-key")
+    monkeypatch.setattr(app, "get_db_connection", lambda: _FakeConn())
+    monkeypatch.setattr(app, "get_youtube_requests_session", lambda: object())
+    monkeypatch.setattr(app, "fetch_products_to_search",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("due job must not use the rotation")))
+
+    def fake_due(conn, max_products):
+        seen["cap"] = max_products
+        return [{"id": "p1", "name": "Reckoning", "brand_name": "Hammer", "release_date": None,
+                 "announced_date": None, "age_days": 3, "every_days": 1}]
+
+    monkeypatch.setattr(app, "fetch_due_products", fake_due)
+    monkeypatch.setattr(app, "search_youtube", lambda *a, **k: [])
+    monkeypatch.setattr(app, "insert_candidates", lambda *a, **k: 0)
+    monkeypatch.setattr(app, "mark_product_searched", lambda conn, pid: seen.setdefault("marked", pid))
+    monkeypatch.setenv("MAX_SEARCHES_PER_INVOCATION", "70")
+
+    body = json.loads(app.handler({"due": True, "limit": 60}, None)["body"])
+    assert seen["cap"] == 60 and seen["marked"] == "p1"
+    assert body["products_searched"] == 1
+
+    # A limit above MAX_SEARCHES_PER_INVOCATION is clamped to it.
+    app.handler({"due": True, "limit": 500}, None)
+    assert seen["cap"] == 70

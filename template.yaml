@@ -2574,6 +2574,24 @@ Resources:
             Description: Re-pulls view/like/comment/duration stats for existing product_videos rows, oldest-fetched-first (see refresh_video_stats).
             Input: '{"refresh_stats": true, "limit": 1000}'
             Enabled: true
+        # Release-cadence video search (runbook 6dy). Al: "can we figure out
+        # a cadence that makes sense for the first n number of days or weeks
+        # after a ball is released to search for new videos". Before this,
+        # searches were manual-only, so a new ball was searched only when
+        # someone clicked Batch Jobs. {"due": true} searches only the balls
+        # due under RELEASE_CADENCE_TIERS in video_discovery/app.py (daily
+        # through release + 14 days, then every 2/4/7/30 days), capped at 60
+        # of the 100/day search.list quota; typical cost is ~25-35. 12:00
+        # UTC is ~5h after the quota resets (midnight Pacific), so a
+        # manual run later in Al's day shares the remaining ~40.
+        DailyDueSearch:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 12 * * ? *)
+            Name: bowling-scraper-video-discovery-due-daily
+            Description: Searches YouTube for balls due under the release cadence (daily near launch, backing off after), capped at 60 searches.
+            Input: '{"due": true, "limit": 60}'
+            Enabled: true
 
   VideoTranscriptFetcherFunction:
     Type: AWS::Serverless::Function
