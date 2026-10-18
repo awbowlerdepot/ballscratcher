@@ -19727,6 +19727,78 @@ It does validate: `status_path` is the `product_status` enum
 `aws events describe-rule --name bowling-scraper-brunswick-bags-url-discovery-daily --query State`
 should return `DISABLED`.
 
+
+### 6dw. Automatic second pass for article images lost to Gemini rate limits (2026-10-17)
+
+Al: "yes add the automatic image second pass". In the 6dv health check,
+5 of the week's 13 nightly articles were missing an image. Vertex AI
+returned 429 on `gemini-3-pro-image` even after the retry session.
+Nothing flagged it; the article just sat in admin with a blank slot.
+
+**What it does** (`product_article_generator/app.py`,
+`sweep_missing_article_images`):
+- A new schedule (`ImageSweepSchedule`, `cron(0 7,9 * * ? *)`) invokes the
+  generator with `{"image_sweep": true}` at 07:00 and 09:00 UTC. That is
+  2h and 4h after the ~05:00 UTC nightly batch.
+- It finds ball articles (`product_id` set) that are pending or approved,
+  written in the **last 48h**, and missing an action shot or a product
+  shot. It skips any whose generation is in flight (a status row under
+  15 minutes old).
+- It regenerates **only the missing variant(s)**, through the same
+  `generate_article_for_product` path admin's Regenerate buttons use:
+  - text untouched and review status untouched;
+  - the other variant's image kept;
+  - admin shows "Generating…" while it works.
+- **One article at a time** in a single invocation, so the jobs can't
+  rate-limit each other.
+- At most 4 per run, and it starts a new one only with at least 6
+  minutes left on the 900s timeout.
+- A failure on one ball doesn't stop the rest.
+- **No migration.** The window is on `generated_at`, and an images-only
+  regenerate stamps only `images_generated_at`. A retry can't extend its
+  own window, so each article gets at most 4 attempts over 2 days. A
+  ball that always fails (no source photo, every candidate rejected by
+  the logo check) stops costing money on day 3, and is still visible in
+  admin.
+- Video articles aren't swept.
+
+**Older gaps, not covered by the 48h window.** The read-only check found
+15 ball articles missing an image:
+- **6 approved, so live on Learn:**
+  - product shot missing: Brunswick Combat, MOTIV Raptor Rush,
+    Storm ABSOLUTE, MOTIV Nuclear Forge;
+  - action shot missing: MOTIV Pride Liberty, MOTIV Supra GT.
+- **9 pending**, four of which have neither image: Brunswick Rhino
+  Purple/Black, Storm MIX PLATINUM, Storm Tropical Surge Pink-Purple,
+  and MOTIV Jackal Legacy.
+
+A manual invoke can widen the window for a one-time backfill. Each run
+still does one article at a time within the time budget, so 15 articles
+take a few invokes:
+
+    aws lambda invoke --function-name bowling-scraper-product-article-generator \
+      --invocation-type Event --cli-binary-format raw-in-base64-out \
+      --payload '{"image_sweep": true, "window_hours": 2000, "limit": 20}' /dev/null
+
+**Tests.** There are 4 new tests in `tests/test_product_article_generator.py`
+(186 passing):
+- the query's window, status, ball-only and in-flight guards;
+- only missing variants, with `regenerate_text=False`, and one failure
+  not stopping the sweep;
+- the time budget;
+- the handler routing, including the backfill overrides.
+
+**Deploy.** A full `sam build && sam deploy` (code plus the new schedule).
+
+**Verify.**
+- `aws events describe-rule --name bowling-scraper-article-image-sweep`
+  should be `ENABLED`.
+- After 07:00 UTC, run:
+
+      aws logs tail /aws/lambda/bowling-scraper-product-article-generator --since 3h | grep "Image sweep"
+
+  The log shows "Image sweep: N article(s) missing images".
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

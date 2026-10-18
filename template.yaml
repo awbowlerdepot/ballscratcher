@@ -2987,6 +2987,22 @@ Resources:
             Name: bowling-scraper-product-article-generator-daily
             Description: Generates a pending review article for every product that newly qualifies (has an approved, non-blocked-channel, summarized video) and has none yet.
             Enabled: true
+        # Missing-image second pass (runbook 6dw). Al: "yes add the
+        # automatic image second pass" after 5 of a week's 13 nightly
+        # articles came out missing an image to Gemini 429s. Fixed UTC
+        # times 2h and 4h after the nightly batch (which runs ~05:00 UTC).
+        # cron, not rate(), so the times don't drift with each deploy.
+        # Each run regenerates only the missing variant for articles
+        # written in the last 48h, one article at a time -- see
+        # sweep_missing_article_images in app.py.
+        ImageSweepSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 7,9 * * ? *)
+            Input: '{"image_sweep": true}'
+            Name: bowling-scraper-article-image-sweep
+            Description: Regenerates missing action/product shots on articles written in the last 48h (second pass after Gemini rate limits).
+            Enabled: true
       # Also accepts direct/manual invocation with {"product_id": "..."}
       # for an admin-triggered on-demand (re)generate -- see
       # admin_api.queue_article_generation / POST /products/{id}/

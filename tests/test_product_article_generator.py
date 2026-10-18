@@ -4250,3 +4250,143 @@ def test_product_shot_ball_must_be_within_the_catalog_range():
     ok, note = app.logo_size_ok(0.5, png, detect(900), lo, hi)
     assert not ok and "too big" in note                                   # 90%: a cropping close-up
     assert app.logo_size_ok(0.5, png, detect(620), lo, hi)[0]             # 62%: the spec
+
+
+# --- Missing-image second pass (runbook 6dw) ---
+
+class _SweepCursor:
+    def __init__(self, rows):
+        self.rows = rows
+        self.executed = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, sql, params=None):
+        self.executed.append((sql, params))
+
+    def fetchall(self):
+        return self.rows
+
+
+class _SweepConn:
+    def __init__(self, rows=()):
+        self.cur = _SweepCursor(list(rows))
+        self.commits = 0
+
+    def cursor(self):
+        return self.cur
+
+    def commit(self):
+        self.commits += 1
+
+
+def test_list_articles_missing_images_maps_flags_to_variants_and_bounds_the_window():
+    conn = _SweepConn([("p1", True, True), ("p2", False, True), ("p3", True, False)])
+    out = app.list_articles_missing_images(conn)
+    assert out == [("p1", ["action_shot", "product_shot"]), ("p2", ["product_shot"]), ("p3", ["action_shot"])]
+    sql, params = conn.cur.executed[0]
+    # The window is on generated_at (an images-only regenerate never moves
+    # it, so a retry can't extend its own window), ball articles only,
+    # never a rejected one, and never one an admin is generating right now.
+    assert "pa.generated_at > now() - make_interval(hours => %s)" in sql
+    assert "pa.product_id is not null" in sql
+    assert "pa.status in ('pending', 'approved')" in sql
+    assert "product_article_generation_status" in sql
+    assert params == (app.IMAGE_SWEEP_WINDOW_HOURS, app.IMAGE_SWEEP_MAX_PER_RUN)
+
+
+def test_sweep_regenerates_only_the_missing_variants_one_at_a_time():
+    calls = []
+
+    def fake_generate(conn, bedrock, model_id, product_id, **kw):
+        calls.append((product_id, kw))
+        if product_id == "p2":
+            raise RuntimeError("429 again")
+        return {"product_id": product_id, "generated": True}
+
+    guard = _HandlerPatchGuard()
+    try:
+        guard.set(app, "list_articles_missing_images",
+                  lambda conn, **kw: [("p1", ["action_shot", "product_shot"]), ("p2", ["product_shot"]), ("p3", ["product_shot"])])
+        guard.set(app, "generate_article_for_product", fake_generate)
+        cleared = []
+        guard.set(app, "clear_article_generation_status", lambda conn, pid: cleared.append(pid))
+        conn = _SweepConn()
+        out = app.sweep_missing_article_images(conn, "bedrock", "model", gemini_model_id="g")
+    finally:
+        guard.restore()
+
+    assert [c[0] for c in calls] == ["p1", "p2", "p3"]  # p2 failing doesn't stop p3
+    p1 = calls[0][1]
+    assert p1["image_variants"] == ("action_shot", "product_shot")
+    assert p1["regenerate_text"] is False and p1["regenerate_images"] is True and p1["force"] is True
+    assert p1["gemini_model_id"] == "g"
+    assert calls[1][1]["image_variants"] == ("product_shot",)
+    assert cleared == ["p1", "p2", "p3"]  # the admin "Generating..." marker is always cleared
+    # admin sees the right mode while each runs
+    modes = [params[1] for sql, params in conn.cur.executed if "product_article_generation_status" in sql]
+    assert modes == ["images", "product_shot", "product_shot"]
+    assert out["results"][1]["error"] is True
+
+
+def test_sweep_stops_starting_new_articles_when_the_lambda_is_nearly_out_of_time():
+    class Ctx:
+        def __init__(self):
+            self.left = [app.IMAGE_SWEEP_MIN_REMAINING_MS + 1, app.IMAGE_SWEEP_MIN_REMAINING_MS - 1]
+
+        def get_remaining_time_in_millis(self):
+            return self.left.pop(0)
+
+    calls = []
+    guard = _HandlerPatchGuard()
+    try:
+        guard.set(app, "list_articles_missing_images", lambda conn, **kw: [("p1", ["product_shot"]), ("p2", ["product_shot"])])
+        guard.set(app, "generate_article_for_product", lambda *a, **k: calls.append(a[3]) or {})
+        guard.set(app, "clear_article_generation_status", lambda conn, pid: None)
+        out = app.sweep_missing_article_images(_SweepConn(), "b", "m", context=Ctx())
+    finally:
+        guard.restore()
+    assert calls == ["p1"]
+    assert out["results"][1]["skipped"] == "time_budget"
+
+
+def test_handler_routes_image_sweep_events():
+    seen = {}
+
+    def fake_sweep(conn, bedrock, model_id, context=None, **kw):
+        seen.update(kw, context=context)
+        return {"checked": 0, "results": []}
+
+    def run(event):
+        guard = _HandlerPatchGuard()
+        try:
+            guard.set_module("boto3", _fake_boto3_module(_FakeBedrockClient("{}")))
+            guard.set(app, "get_db_connection", lambda: _FakeConnection())
+            guard.set(app, "sweep_missing_article_images", fake_sweep)
+            return app.handler(event, "ctx")
+        finally:
+            guard.restore()
+
+    run({"image_sweep": True, "window_hours": 2000, "limit": 20})
+    # A manual backfill invoke can widen the window and batch...
+    assert (seen["window_hours"], seen["limit"]) == (2000, 20)
+    run({"image_sweep": True})
+    # ...the schedule's plain event always gets the defaults.
+    assert (seen["window_hours"], seen["limit"]) == (app.IMAGE_SWEEP_WINDOW_HOURS, app.IMAGE_SWEEP_MAX_PER_RUN)
+
+    guard = _HandlerPatchGuard()
+    try:
+        guard.set_module("boto3", _fake_boto3_module(_FakeBedrockClient("{}")))
+        guard.set(app, "get_db_connection", lambda: _FakeConnection())
+        guard.set(app, "sweep_missing_article_images", fake_sweep)
+        guard.set(app, "list_products_needing_article",
+                  lambda *a, **k: (_ for _ in ()).throw(AssertionError("nightly batch must not run")))
+        result = app.handler({"image_sweep": True}, "ctx")
+    finally:
+        guard.restore()
+    assert json.loads(result["body"]) == {"checked": 0, "results": []}
+    assert seen["context"] == "ctx" and "image_bucket" in seen and "gemini_model_id" in seen

@@ -637,6 +637,133 @@ def list_products_needing_article(conn, max_products: int = None) -> list:
         return [row[0] for row in cur.fetchall()]
 
 
+# --- Missing-image second pass (runbook 6dw) ---
+#
+# Al: "yes add the automatic image second pass". REAL INCIDENT (found in
+# the 2026-10-17 health check, runbook 6dv): 5 of the week's 13 nightly
+# articles came out missing an image -- Hammer 3-D Offset with neither,
+# four MOTIV balls with no product shot. Vertex AI returned 429
+# RESOURCE_EXHAUSTED on gemini-3-pro-image even after
+# get_gemini_requests_session's retry-with-backoff, so every candidate
+# for that variant failed. Nothing reported it: the article landed in
+# admin as pending with a blank image slot until a human noticed.
+#
+# The fix is a scheduled sweep ({"image_sweep": true}, template.yaml
+# ImageSweepSchedule at 07:00 and 09:00 UTC, i.e. 2h and 4h after the
+# ~05:00 UTC nightly batch). It regenerates ONLY the missing variant(s),
+# through the same generate_article_for_product path admin's "Regenerate
+# product shot"/"Regenerate images" buttons use: regenerate_text=False,
+# review status untouched, an existing image of the other variant kept.
+#
+# Design choices:
+# - A window on generated_at, not a retry counter: only articles written
+#   in the last IMAGE_SWEEP_WINDOW_HOURS are eligible. An images-only
+#   regenerate stamps images_generated_at, never generated_at (see
+#   update_article_images_only), so a retry can't restart its own window.
+#   Two runs a day over 48h caps any one article at 4 attempts without a
+#   migration -- a ball whose shots fail for a non-transient reason (no
+#   source photo, logo check rejecting everything) stops costing money on
+#   day 3, and is still visible in admin for a human.
+# - One article at a time, inside one invocation: the whole point is to
+#   stop parallel Gemini calls rate-limiting each other, so this never
+#   fans out into separate invocations.
+# - A time budget on top of the per-run cap: an images-only run is ~2-5
+#   minutes, and the Lambda Timeout is 900s, so a new article is started
+#   only with IMAGE_SWEEP_MIN_REMAINING_MS left. Whatever doesn't fit
+#   waits for the next sweep.
+# - Ball articles only (product_id set). Video articles (migration 040)
+#   have their own image rules, and pending/approved only -- a rejected
+#   article is a human's call, same as list_products_needing_article.
+# - Skips a product whose generation is already in flight (a fresh
+#   product_article_generation_status row) so it never races an admin
+#   click; a stale row (older than the Lambda timeout) doesn't block it.
+IMAGE_SWEEP_WINDOW_HOURS = 48
+IMAGE_SWEEP_MAX_PER_RUN = 4
+IMAGE_SWEEP_MIN_REMAINING_MS = 6 * 60 * 1000
+
+
+def list_articles_missing_images(conn, window_hours: int = IMAGE_SWEEP_WINDOW_HOURS,
+                                 limit: int = IMAGE_SWEEP_MAX_PER_RUN) -> list:
+    """[(product_id, [missing variant, ...]), ...], oldest article first."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select pa.product_id,
+                   pa.action_shot_image_url is null,
+                   pa.product_shot_image_url is null
+            from product_articles pa
+            where pa.product_id is not null
+              and pa.status in ('pending', 'approved')
+              and pa.generated_at > now() - make_interval(hours => %s)
+              and (pa.action_shot_image_url is null or pa.product_shot_image_url is null)
+              and not exists (
+                  select 1 from product_article_generation_status s
+                  where s.product_id = pa.product_id
+                    and s.started_at > now() - interval '15 minutes'
+              )
+            order by pa.generated_at
+            limit %s
+            """,
+            (window_hours, limit),
+        )
+        out = []
+        for product_id, no_action, no_product in cur.fetchall():
+            missing = [v for v, gone in (("action_shot", no_action), ("product_shot", no_product)) if gone]
+            out.append((str(product_id), missing))
+        return out
+
+
+def set_sweep_generation_status(conn, product_id: str, mode: str) -> None:
+    """Same upsert admin_api.queue_article_generation does, so admin shows
+    "Generating product shot..." while the sweep works on a ball."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into product_article_generation_status (product_id, started_at, mode)
+            values (%s, now(), %s)
+            on conflict (product_id) do update set started_at = excluded.started_at, mode = excluded.mode
+            """,
+            (product_id, mode),
+        )
+    conn.commit()
+
+
+def sweep_missing_article_images(conn, bedrock_client, model_id: str, context=None,
+                                 window_hours: int = IMAGE_SWEEP_WINDOW_HOURS,
+                                 limit: int = IMAGE_SWEEP_MAX_PER_RUN, **image_kwargs) -> dict:
+    """One sweep run -- see the section comment above. image_kwargs are the
+    image clients/model ids/bucket handler() builds for every path.
+    window_hours/limit are only overridden by a deliberate manual invoke
+    ({"image_sweep": true, "window_hours": 2000, "limit": 20}) -- the
+    one-time backfill of older articles the 2026-10-17 check found
+    (runbook 6dw); the schedule always uses the defaults."""
+    candidates = list_articles_missing_images(conn, window_hours=window_hours, limit=limit)
+    logger.info("Image sweep: %d article(s) missing images", len(candidates))
+    results = []
+    for product_id, missing in candidates:
+        remaining = context.get_remaining_time_in_millis() if context else None
+        if remaining is not None and remaining < IMAGE_SWEEP_MIN_REMAINING_MS:
+            logger.info("Image sweep: %d ms left, leaving the rest for the next run", remaining)
+            results.append({"product_id": product_id, "missing": missing, "skipped": "time_budget"})
+            continue
+        mode = "images" if len(missing) == 2 else missing[0]
+        set_sweep_generation_status(conn, product_id, mode)
+        try:
+            result = generate_article_for_product(
+                conn, bedrock_client, model_id, product_id, **image_kwargs,
+                force=True, regenerate_text=False, regenerate_images=True, image_variants=tuple(missing),
+            )
+            results.append({"product_id": product_id, "missing": missing, "result": result})
+        except Exception:
+            # One ball failing (a 429 storm again, a bad source photo)
+            # mustn't stop the rest of the sweep.
+            logger.exception("Image sweep failed for product_id=%s", product_id)
+            results.append({"product_id": product_id, "missing": missing, "error": True})
+        finally:
+            clear_article_generation_status(conn, product_id)
+    return {"checked": len(candidates), "results": results}
+
+
 def fetch_product_content(conn, product_id: str) -> dict:
     """Everything this module needs to write about ONE product: specs/
     description (same select shape public_api.get_product uses for its
@@ -3939,6 +4066,20 @@ def handler(event, context):
             finally:
                 clear_learn_video_generation_status(conn, event["learn_video_id"])
             return {"statusCode": 200, "body": json.dumps({"results": [result]}, default=str)}
+
+        if event.get("image_sweep"):
+            # Missing-image second pass (runbook 6dw) -- see
+            # sweep_missing_article_images. Scheduled twice a day.
+            result = sweep_missing_article_images(
+                conn, bedrock_client, model_id, context=context,
+                window_hours=int(event.get("window_hours") or IMAGE_SWEEP_WINDOW_HOURS),
+                limit=int(event.get("limit") or IMAGE_SWEEP_MAX_PER_RUN),
+                s3_client=s3_client, bedrock_image_client=bedrock_image_client,
+                bedrock_removebg_client=bedrock_removebg_client, gemini_auth=gemini_auth,
+                image_model_id=image_model_id, removebg_model_id=removebg_model_id,
+                gemini_model_id=gemini_model_id, image_bucket=image_bucket,
+            )
+            return {"statusCode": 200, "body": json.dumps(result, default=str)}
 
         if event.get("product_id"):
             # v8: event["image_variants"], if present, is a JSON list (e.g.
