@@ -20166,6 +20166,70 @@ Repeat for `track-url-discovery` and `ebonite-url-discovery`.
   Before this fix, every run showed 224 changed.
 - All 590 Shopify rows now have a `content_fingerprint`.
 
+
+### 6eb. Strict auto-reject for video candidates (2026-10-20)
+
+Al: "yes look at the rejected videos for auto-reject patterns". This is the
+other half of 6dz. The review queue was 523 after the 6dy catch-up days.
+
+**Measured** against 3,747 human decisions (excluding scripts and the
+Shorts filter), 39.7% of them rejected. No single signal reached the 98%
+bar:
+
+| Signal | Rejected |
+|---|---|
+| Names another same-brand ball, own name absent | 94.8% |
+| Longer sibling name in title | 93.3% |
+| Attached to 5+ balls | 88.3% |
+| Low confidence, own name absent | 84.7% |
+| Names another brand only | 60.6% |
+| Already approved on a ball named in the title, own name absent | 94.0% |
+
+The combination that passes:
+- the title names a **different same-brand ball** (a catalog name of 4+
+  chars that neither contains nor is contained in this ball's);
+- this ball's **own name is absent**, compared with punctuation and spaces
+  stripped. That fixed "Gremlin Tour-X" / "Tour X" and "!Q TOUR 78/U" /
+  "IQ Tour 78-U";
+- the video is on **5+ balls**.
+
+It scores **99.3% rejected (280 of 282)**. At 3+ balls it was 97.5%, and
+at least 4 of those 12 "approved" look like human mistakes (Zero Mercy
+Hybrid videos on Zero Mercy Tour, a Raptor Fury video on Jackal Fury, a
+Top Thrill Hybrid video on Max Thrill Hybrid). Al chose the 5+ option.
+
+**Change** (`video_discovery/app.py`):
+- `auto_reject_cross_ball_matches` is a single UPDATE … RETURNING with
+  exactly the measured rule. It sets
+  `resolved_by = 'video_discovery auto-reject (names another same-brand
+  ball, own name absent, on 5+ balls)'`.
+- It runs after `auto_approve_strict_matches` at the end of every search
+  job, in its own try.
+- The response body gains `auto_rejected`.
+- It can't overlap auto-approve, which requires the full name and exactly
+  one ball.
+
+**One-time pass, same function:** 54 rejected, and the queue went from
+523 to **469**. The sample was all clearly wrong: a Purple Rhino Pro
+launch video on 11 Brunswick balls (White Ball, Hearts, Fury and others),
+a Storm Concept review on MIX balls, a Venom Hysteria review on Evoke
+Hysteria.
+
+**Tests.** 107 passing in `tests/test_video_discovery.py`:
+- the SQL carries each clause;
+- the handler runs approve, then reject, and reports both.
+
+**Deploy.** Full `sam build && sam deploy`. No schema change.
+
+**Verify.**
+- After 12:00 UTC:
+
+      aws logs tail /aws/lambda/bowling-scraper-video-discovery --since 2h | grep -E "Auto-(approved|rejected)"
+
+- Audit with `select … where resolved_by like 'video_discovery auto-reject%'`.
+  To restore one: `update product_videos set status = 'pending',
+  resolved_by = null, resolved_at = null where id = '<id>';`
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

@@ -1151,6 +1151,7 @@ def test_handler_marks_only_successfully_searched_products(monkeypatch):
     monkeypatch.setattr(app, "insert_candidates", lambda conn, pid, q, videos: inserted_for.append(pid) or len(videos))
     monkeypatch.setattr(app, "mark_product_searched", lambda conn, pid: marked.append(pid))
     monkeypatch.setattr(app, "auto_approve_strict_matches", lambda conn: [])
+    monkeypatch.setattr(app, "auto_reject_cross_ball_matches", lambda conn: [])
 
     result = app.handler({}, None)
     body = json.loads(result["body"])
@@ -1158,7 +1159,7 @@ def test_handler_marks_only_successfully_searched_products(monkeypatch):
     assert marked == ["prod-good"]  # NOT prod-bad -- its search raised
     assert inserted_for == ["prod-good"]
     assert body == {
-        "auto_approved": 0,
+        "auto_approved": 0, "auto_rejected": 0,
         "products_searched": 2, "new_candidates": 1, "search_errors": 1,
         "circuit_breaker_tripped": False, "products_skipped": 0,
     }
@@ -1803,9 +1804,10 @@ def test_handler_runs_auto_approve_after_searching_and_survives_its_failure(monk
     monkeypatch.setattr(app, "insert_candidates", lambda *a, **k: 0)
     monkeypatch.setattr(app, "mark_product_searched", lambda *a: None)
 
+    monkeypatch.setattr(app, "auto_reject_cross_ball_matches", lambda conn: order.append("reject") or [("c", "d")] * 2)
     monkeypatch.setattr(app, "auto_approve_strict_matches", lambda conn: order.append("approve") or [("a", "b")] * 3)
     body = json.loads(app.handler({}, None)["body"])
-    assert order == ["search", "approve"] and body["auto_approved"] == 3
+    assert order == ["search", "approve", "reject"] and body["auto_approved"] == 3 and body["auto_rejected"] == 2
 
     def boom(conn):
         raise RuntimeError("db hiccup")
@@ -1813,3 +1815,19 @@ def test_handler_runs_auto_approve_after_searching_and_survives_its_failure(monk
     monkeypatch.setattr(app, "auto_approve_strict_matches", boom)
     body = json.loads(app.handler({}, None)["body"])
     assert body["auto_approved"] == 0 and body["products_searched"] == 1
+
+
+def test_auto_reject_cross_ball_matches_applies_exactly_the_measured_rule():
+    conn = _ApproveConn([("pv9", "yt9")])
+    assert app.auto_reject_cross_ball_matches(conn) == [("pv9", "yt9")]
+    sql, params = conn.cur.executed[0]
+    assert params == (app.AUTO_REJECT_RESOLVED_BY, 5)
+    assert "set status = 'rejected'" in sql and "pv.status = 'pending'" in sql
+    # own name absent, punctuation/space-insensitive
+    assert "strpos(regexp_replace(lower(pv.title), '[^a-z0-9]', '', 'g'), " \
+           "regexp_replace(lower(p.name), '[^a-z0-9]', '', 'g')) = 0" in sql
+    # names a different same-brand ball that isn't a sub/superstring of this one
+    assert "s.brand_id = p.brand_id and s.id <> p.id and length(s.name) >= 4" in sql
+    assert "strpos(lower(p.name), lower(s.name)) = 0 and strpos(lower(s.name), lower(p.name)) = 0" in sql
+    # attached to 5+ balls
+    assert "count(distinct o.product_id)" in sql and ") >= %s" in sql

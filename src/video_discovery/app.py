@@ -990,6 +990,59 @@ def auto_approve_strict_matches(conn) -> list:
     return rows
 
 
+# STRICT AUTO-REJECT (runbook 6eb) -- the other half of 6dz. Al: "yes look
+# at the rejected videos for auto-reject patterns". Measured against 3,747
+# human decisions (40% rejected). No single signal reached 98% (best:
+# naming another same-brand ball, 94.8%; on 5+ balls, 88.3%). One
+# combination did:
+#   - the title names a DIFFERENT ball from the same brand (a catalog name
+#     of 4+ chars that neither contains nor is contained in this ball's), AND
+#   - this ball's own name is NOT in the title, compared with punctuation and
+#     spaces stripped ("Gremlin Tour-X" = "Gremlin Tour X", "!Q Tour 78/U" ~
+#     "IQ Tour 78-U"), AND
+#   - the video is attached to 5+ balls.
+# 99.3% rejected by humans (280 of 282). The typical case is a popular
+# launch video (Purple Rhino Pro, Warning Alert) that searches for a
+# niche same-brand ball keep returning. At 3+ balls it was 97.5% (Al picked
+# the 5+ option). It can't overlap the auto-approve rule (that needs the full
+# name and exactly one ball).
+AUTO_REJECT_MIN_BALLS = 5
+AUTO_REJECT_RESOLVED_BY = "video_discovery auto-reject (names another same-brand ball, own name absent, on 5+ balls)"
+
+
+def auto_reject_cross_ball_matches(conn) -> list:
+    """Rejects every pending candidate that meets the STRICT AUTO-REJECT
+    rule; returns [(product_videos.id, youtube_video_id), ...]."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            update product_videos pv
+            set status = 'rejected', resolved_at = now(), resolved_by = %s
+            from products p
+            where p.id = pv.product_id
+              and pv.status = 'pending'
+              and strpos(regexp_replace(lower(pv.title), '[^a-z0-9]', '', 'g'),
+                         regexp_replace(lower(p.name), '[^a-z0-9]', '', 'g')) = 0
+              and exists (
+                  select 1 from products s
+                  where s.brand_id = p.brand_id and s.id <> p.id and length(s.name) >= 4
+                    and strpos(lower(pv.title), lower(s.name)) > 0
+                    and strpos(lower(p.name), lower(s.name)) = 0
+                    and strpos(lower(s.name), lower(p.name)) = 0
+              )
+              and (
+                  select count(distinct o.product_id) from product_videos o
+                  where o.youtube_video_id = pv.youtube_video_id
+              ) >= %s
+            returning pv.id, pv.youtube_video_id
+            """,
+            (AUTO_REJECT_RESOLVED_BY, AUTO_REJECT_MIN_BALLS),
+        )
+        rows = cur.fetchall()
+    conn.commit()
+    return rows
+
+
 def mark_product_searched(conn, product_id: str) -> None:
     """Records that video_discovery actually completed a search.list call
     for this product -- called from handler's success path only (after
@@ -1434,6 +1487,13 @@ def handler(event, context):
         except Exception:
             logger.exception("Strict auto-approve failed; candidates stay pending for review")
             auto_approved = 0
+        # STRICT AUTO-REJECT (runbook 6eb), same independent-try treatment.
+        try:
+            auto_rejected = len(auto_reject_cross_ball_matches(conn))
+            logger.info("Auto-rejected %d candidate(s) under the strict rule", auto_rejected)
+        except Exception:
+            logger.exception("Strict auto-reject failed; candidates stay pending for review")
+            auto_rejected = 0
     finally:
         conn.close()
 
@@ -1441,6 +1501,7 @@ def handler(event, context):
         "statusCode": 200,
         "body": json.dumps({
             "auto_approved": auto_approved,
+            "auto_rejected": auto_rejected,
             "products_searched": len(products),
             "new_candidates": total_candidates,
             "search_errors": len(errors),
