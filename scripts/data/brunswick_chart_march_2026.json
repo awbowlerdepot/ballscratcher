@@ -131,14 +131,15 @@
    "oil": 13,
    "motion": 16,
    "applied_on": "2026-10-14 (runbook 6do, after Columbia 300 was added in 6dn)"
-  }
- ],
- "not_in_catalog": [
+  },
   {
    "brand": "Hammer",
    "name": "Special Effect",
    "oil": 11,
-   "motion": 15
+   "motion": 15,
+   "matched_product": "Hammer Special Effect (cf90cbb5-b844-474f-baa3-ab12909293c0)",
+   "applied_on": "2026-10-20 (runbook 6ec, after the Shopify retired-tagged sweep added it)"
   }
- ]
+ ],
+ "not_in_catalog": []
 }

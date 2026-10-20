@@ -20234,6 +20234,67 @@ Hysteria.
 (Storm Ion Pro Pearl) returned `auto_approved: 0, auto_rejected: 0`, and
 both steps logged with no failure.
 
+
+### 6ec. Hammer Special Effect placed; Shopify discovery sweeps "all" for orphaned retired balls (2026-10-20)
+
+Al: "what is the thing you need to close the hammer special effect", then
+"yes go ahead with all three and deploy". Special Effect (March Brunswick
+chart, oil 11 / motion 15) had been "not in catalog" since 6ch.
+
+**Cause.** Hammer sells it (`hammer-special-effect`), but files it in
+**none** of the collections `shopify_url_discovery` reads. It appears only
+in the store-wide `all` collection, tagged "Retired", with an empty
+`product_type`, and not in Hammer's own `retired-balls`. Comparing all 368
+products in Hammer's `all` against `discovered_urls` found 144 missing:
+- **5 retired balls filed this way:** Special Effect, Hammerhead, Ocean
+  Vibe, RAW Hammer Black, and RAW Hammer Blue/Silver/White;
+- the rest correctly skipped: shoes, bags, accessories, pro-staff and
+  collegiate pages.
+
+Track, Ebonite and Columbia 300 had no orphaned balls.
+
+**1. Discovery** (`shopify_url_discovery/app.py`, RETIRED-TAGGED SWEEP):
+- Every run also reads `all` and adds any product that no configured
+  collection returned, that is tagged "Retired", and whose `product_type`
+  is ball-ish (`''` or "Bowling Ball").
+- Staff tags are excluded.
+- These go in under the pseudo-collection `retired-tagged-in-all`, which
+  `build_entries` classes as retired.
+- It runs in its own try, so a failure reading `all` never blocks normal
+  discovery.
+- It applies to all four Shopify functions. A live dry run found
+  exactly Hammer's 5 and nothing on Track, Ebonite or Columbia 300.
+- 2 new tests; 21 passing.
+
+**2. Deploy + scrape.**
+- The stack is UPDATE_COMPLETE.
+- Hammer discovery: 229 seen, 5 new, 224 unchanged; 5 published to the
+  scrape queue.
+- All 5 are in `products`, each with images, SKUs and coverstock.
+  Hammerhead turned out to exist already (since 2026-08-05, published),
+  so 4 were new.
+- **The 4 new ones were published.** 6dl published retired balls once and
+  nothing publishes new retired balls automatically. Al's 6dl intent
+  ("used in the api and need to be returned") applies, so they were
+  published with the same update. No other unpublished retired balls
+  exist.
+
+      update products set published = true, updated_at = now()
+       where product_type = 'ball' and status = 'retired' and published = false;  -- 4 rows
+
+**3. Chart position.**
+- Set with `set_plotter_position(conn, 'cf90cbb5-…', 11, 15, source='chart')`.
+- It was estimated at 10.0/14.0 before.
+- `scripts/data/brunswick_chart_march_2026.json` moved Special Effect from
+  `not_in_catalog` to `applied`. Nothing from that chart is unmatched now.
+- `api.bowleriq.io/learn/plotter/ball/cf90cbb5-…` returns oil 11, motion
+  15, source chart, status retired.
+
+**Gap noted, not changed.** New retired balls arrive unpublished (6dl was
+a one-time update). If retired balls should always be returned by the APIs,
+the scrapers' insert could default `published` to true for status
+'retired'. That's Al's call.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
