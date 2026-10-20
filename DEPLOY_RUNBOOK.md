@@ -20151,6 +20151,21 @@ products whose content actually changed:
 
 Repeat for `track-url-discovery` and `ebonite-url-discovery`.
 
+**Deployed 2026-10-20.**
+- Migration 049 was applied (in a transaction); the column exists, nullable.
+- The stack is UPDATE_COMPLETE.
+- Manual invokes:
+
+  | Run | Seen | Changed | Unchanged | Published |
+  |---|---|---|---|---|
+  | Hammer (first, baselines) | 224 | 0 | 224 | 0 |
+  | Track (first, baselines) | 171 | 0 | 171 | 0 |
+  | Ebonite (first, baselines) | 195 | 0 | 195 | 0 |
+  | Hammer (second, real fingerprints) | 224 | 0 | 224 | 0 |
+
+  Before this fix, every run showed 224 changed.
+- All 590 Shopify rows now have a `content_fingerprint`.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
