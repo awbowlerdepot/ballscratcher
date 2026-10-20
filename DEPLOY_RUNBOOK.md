@@ -20295,6 +20295,56 @@ a one-time update). If retired balls should always be returned by the APIs,
 the scrapers' insert could default `published` to true for status
 'retired'. That's Al's call.
 
+
+### 6ed. Retired balls are published automatically (migration 050) (2026-10-20)
+
+Al: "yes publish retired balls automatically". 6dl published every retired
+ball once, but new retired balls still arrived with `published`'s default
+(false). The 4 Hammer balls from 6ec had to be published by hand.
+
+**Migration 050** (`050_products_publish_retired_balls.sql`) adds a trigger,
+`products_aa_publish_retired`, BEFORE INSERT OR UPDATE OF status. It sets
+`published = true` for a ball when it is:
+- **inserted** with status 'retired', or
+- **updated from another status to 'retired'** (a current ball retiring).
+
+Other updates are left alone, so an admin's deliberate unpublish of a
+retired ball isn't undone by the next scrape.
+
+A trigger rather than scraper changes, because five scrapers insert
+products (Craft CMS, CommerceBuild, NetSuite, WooCommerce, Shopify), plus
+anything added later.
+
+It is named `aa_` so it runs before 044's `products_content_changed_at`.
+Postgres runs same-timing row triggers alphabetically, so a retirement's
+publish bumps `content_changed_at` and reaches the partner changes feed.
+
+**Tested on the live DB inside a rolled-back transaction:**
+
+| Case | Result |
+|---|---|
+| Insert as retired | published |
+| Insert as current | not published |
+| Current → retired | published, and the 044 trigger bumped `content_changed_at` (with the row backdated first, since `now()` is fixed within one transaction) |
+| Admin unpublish, then a re-scrape setting status 'retired' again | stays unpublished |
+
+After the rollback, the test left no rows and no trigger, and 044 was
+still enabled.
+
+**Applied 2026-10-20.** Both triggers are enabled. 0 unpublished retired
+balls. No Lambda deploy needed. CLAUDE.md's migration range now says
+001–050.
+
+**Verify.**
+
+    select tgname, tgenabled from pg_trigger where tgrelid = 'products'::regclass and not tgisinternal;
+    select count(*) from products where product_type = 'ball' and status = 'retired' and not published;  -- 0
+
+**Rollback.**
+
+    drop trigger products_aa_publish_retired on products;
+    drop function products_publish_retired_balls();
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
