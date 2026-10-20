@@ -96,6 +96,7 @@ don't-assume applies to re-checking these later, not just the initial
 onboarding.
 """
 import datetime
+import hashlib
 import json
 import logging
 import os
@@ -151,6 +152,32 @@ def discover_collection_products(fetch_fn, store_domain: str, handle: str, limit
     return products
 
 
+def product_fingerprint(product: dict) -> str:
+    """sha256 of exactly what shopify_product_scraper reads from a product
+    (runbook 6ea): title, body_html (specs, description, RG/diff all live
+    in it), product_type, tags, and the images' position/src. A changed
+    image re-uploads with a new src (Shopify's ?v= version), so image
+    changes are caught. Deliberately NOT included: updated_at (Shopify
+    re-stamps it store-wide several times a day -- the reason this exists)
+    and variants (stock/price churn; the scraper parses SKUs/weights from
+    body_html, not variants)."""
+    tags = product.get("tags") or []
+    if isinstance(tags, str):
+        tags = [t.strip() for t in tags.split(",") if t.strip()]
+    images = sorted(
+        ([img.get("position") or 0, img.get("src") or ""] for img in product.get("images") or []),
+        key=lambda pair: (pair[0], pair[1]),
+    )
+    material = {
+        "title": product.get("title") or "",
+        "body_html": product.get("body_html") or "",
+        "product_type": product.get("product_type") or "",
+        "tags": sorted(tags),
+        "images": images,
+    }
+    return hashlib.sha256(json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
 def build_entries(store_domain: str, products_by_handle: dict) -> list:
     """Reduces {collection_handle: [product dict, ...]} into the
     {url, lastmod, status} shape diff_against_known() expects, applying
@@ -159,6 +186,7 @@ def build_entries(store_domain: str, products_by_handle: dict) -> list:
     a product turned up in more than one collection dict."""
     status_by_handle = {}
     updated_at_by_handle = {}
+    fingerprint_by_handle = {}
 
     for handle, products in products_by_handle.items():
         # Columbia 300's is "retired-balls-1" (Shopify appends -1 to a
@@ -169,6 +197,7 @@ def build_entries(store_domain: str, products_by_handle: dict) -> list:
         for product in products:
             slug = product["handle"]
             updated_at_by_handle[slug] = product.get("updated_at")
+            fingerprint_by_handle[slug] = product_fingerprint(product)
             if is_retired_collection:
                 status_by_handle.setdefault(slug, "retired")
             else:
@@ -178,6 +207,7 @@ def build_entries(store_domain: str, products_by_handle: dict) -> list:
         {
             "url": f"https://{store_domain}/products/{slug}",
             "lastmod": updated_at_by_handle.get(slug),
+            "fingerprint": fingerprint_by_handle.get(slug),
             "status": status,
         }
         for slug, status in status_by_handle.items()
@@ -223,50 +253,69 @@ def lastmod_changed(existing, incoming) -> bool:
         return str(existing) != incoming
 
 def diff_against_known(conn, brand_id: str, entries: list) -> dict:
-    """Same new/changed/unchanged diff behavior as url_discovery.
-    diff_against_known and woocommerce_url_discovery.diff_against_known
-    against the same discovered_urls table -- duplicated rather than
-    imported cross-module, see product_scraper/app.py's publish_messages
-    docstring for why (each Lambda here is its own independent deployment
-    package)."""
+    """Same new/changed/unchanged diff as url_discovery's and
+    woocommerce_url_discovery's, against the same discovered_urls table --
+    duplicated rather than imported cross-module (each Lambda here is its
+    own deployment package).
+
+    Change detection (runbook 6ea): an entry with a "fingerprint" (every
+    real Shopify entry, see product_fingerprint) is changed only when its
+    fingerprint differs from the stored content_fingerprint. A row with no
+    stored fingerprint yet just records one as its baseline and counts as
+    unchanged -- the Sunday full re-scrape (6dx) covers anything that
+    changed before the baseline. sitemap_lastmod is still stored, for
+    reference only. An entry without a fingerprint (not produced by
+    build_entries today) falls back to lastmod_changed."""
     new_urls, changed_urls, unchanged_urls = [], [], []
 
     with conn.cursor() as cur:
         for entry in entries:
             cur.execute(
-                "select sitemap_lastmod from discovered_urls where url = %s",
+                "select sitemap_lastmod, content_fingerprint from discovered_urls where url = %s",
                 (entry["url"],),
             )
             row = cur.fetchone()
+            incoming_fp = entry.get("fingerprint")
 
             if row is None:
                 cur.execute(
                     """
-                    insert into discovered_urls (brand_id, url, status_path, sitemap_lastmod)
-                    values (%s, %s, %s, %s)
+                    insert into discovered_urls (brand_id, url, status_path, sitemap_lastmod, content_fingerprint)
+                    values (%s, %s, %s, %s, %s)
                     """,
-                    (brand_id, entry["url"], entry["status"], entry["lastmod"]),
+                    (brand_id, entry["url"], entry["status"], entry["lastmod"], incoming_fp),
                 )
                 new_urls.append(entry["url"])
+                continue
+
+            existing_lastmod, existing_fp = row[0], row[1]
+            if incoming_fp is not None:
+                changed = existing_fp is not None and existing_fp != incoming_fp
             else:
-                existing_lastmod = row[0]
-                incoming_lastmod = entry["lastmod"]
-                if lastmod_changed(existing_lastmod, incoming_lastmod):
-                    cur.execute(
-                        """
-                        update discovered_urls
-                        set sitemap_lastmod = %s, status_path = %s, last_seen_at = now(), scrape_status = 'pending'
-                        where url = %s
-                        """,
-                        (incoming_lastmod, entry["status"], entry["url"]),
-                    )
-                    changed_urls.append(entry["url"])
-                else:
-                    cur.execute(
-                        "update discovered_urls set status_path = %s, last_seen_at = now() where url = %s",
-                        (entry["status"], entry["url"]),
-                    )
-                    unchanged_urls.append(entry["url"])
+                changed = lastmod_changed(existing_lastmod, entry["lastmod"])
+
+            if changed:
+                cur.execute(
+                    """
+                    update discovered_urls
+                    set sitemap_lastmod = %s, content_fingerprint = %s, status_path = %s,
+                        last_seen_at = now(), scrape_status = 'pending'
+                    where url = %s
+                    """,
+                    (entry["lastmod"], incoming_fp, entry["status"], entry["url"]),
+                )
+                changed_urls.append(entry["url"])
+            else:
+                cur.execute(
+                    """
+                    update discovered_urls
+                    set status_path = %s, sitemap_lastmod = coalesce(%s, sitemap_lastmod),
+                        content_fingerprint = coalesce(%s, content_fingerprint), last_seen_at = now()
+                    where url = %s
+                    """,
+                    (entry["status"], entry["lastmod"], incoming_fp, entry["url"]),
+                )
+                unchanged_urls.append(entry["url"])
     conn.commit()
 
     return {"new": new_urls, "changed": changed_urls, "unchanged": unchanged_urls}

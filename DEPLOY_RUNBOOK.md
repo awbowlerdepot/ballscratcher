@@ -20092,6 +20092,65 @@ The existing handler test now expects `auto_approved` in the body.
   the strict rule", with no failure. That is the expected result: no new
   candidates, and the backlog was already cleared by the one-time approval.
 
+
+### 6ea. Shopify discovery: change detection by content fingerprint (2026-10-19)
+
+After the 6dx lastmod fix, Brunswick, Radical, DV8 and Swag dropped to 0
+"changed" a day. Hammer (224), Track (171) and Ebonite (195) still
+reported every product changed on every run, about 590 pointless scrapes
+a day. That isn't the 6dx string-vs-datetime bug. Those Shopify stores
+genuinely re-stamp `updated_at` on every product at once. Al: "yes build
+the shopify fingerprint fix".
+
+**Proof** (2026-10-19). Two fetches of Hammer's collections, 90s apart:
+- `updated_at` changed on **224 of 224** products;
+- the content fingerprint changed on **0**;
+- only 2 distinct `updated_at` values exist across the whole catalog.
+
+**Change:**
+- **Migration 049** adds `discovered_urls.content_fingerprint text` (nullable;
+  Shopify only).
+- **`product_fingerprint(product)`** in `shopify_url_discovery/app.py` is a
+  sha256 of exactly what `shopify_product_scraper` reads:
+  - title, `body_html` (specs, description and RG/diff all live there),
+    product_type and the tags (sorted);
+  - the images' position and src. A re-uploaded image gets a new `?v=`,
+    so image changes are caught.
+  - Excluded: `updated_at` and variants (stock and price churn). The
+    scraper parses SKUs and weights from `body_html`.
+- **`diff_against_known`** marks a URL changed only when its stored
+  fingerprint exists and differs.
+  - The first fingerprint is a **baseline**, not a change, so the deploy
+    doesn't trigger a one-off full re-scrape. The Sunday full refresh
+    (6dx) covers anything that changed earlier.
+  - `sitemap_lastmod` is still stored, for reference only.
+  - An entry without a fingerprint falls back to `lastmod_changed`.
+- This applies to Hammer, Track, Ebonite and Columbia 300, which share
+  the code. Their Sunday `WeeklyFullRefresh` stays as the safety net.
+
+**Tests.** `tests/test_shopify_url_discovery.py`, 19 passing (4 new):
+- the fingerprint ignores re-stamps, stock, price and tag order, but
+  catches title, body, type, tag and image changes;
+- `build_entries` carries the fingerprint;
+- the first fingerprint is a baseline;
+- the diff uses the fingerprint, not `updated_at`.
+
+The fake cursor was updated for the new query shapes.
+
+**Deploy:**
+1. `psql -f db/migrations/049_discovered_urls_content_fingerprint.sql`
+   (must run **before** the deploy, because the new code selects the
+   column).
+2. `sam build && sam deploy`.
+
+**Verify.** The first run after deploy records baselines, so it should
+log `0 changed`. From the second run on, changed should be only the
+products whose content actually changed:
+
+    aws logs tail /aws/lambda/bowling-scraper-shopify-url-discovery --since 1d | grep "Discovery complete"
+
+Repeat for `track-url-discovery` and `ebonite-url-discovery`.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

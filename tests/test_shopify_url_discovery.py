@@ -97,26 +97,31 @@ def test_build_entries_collapses_duplicate_handle_to_one_entry():
 # --- diff_against_known: same fake-cursor pattern as every other family's tests ---
 
 class FakeCursor:
-    def __init__(self, known):
+    def __init__(self, known, fingerprints=None):
         self._known = known  # url -> (status, lastmod)
+        self.fingerprints = fingerprints if fingerprints is not None else {}  # url -> content_fingerprint
         self._result = None
 
     def execute(self, query, params=None):
-        q = query.strip().lower()
+        q = " ".join(query.split()).lower()
         if q.startswith("select"):
             (url,) = params
             row = self._known.get(url)
-            self._result = (row[1],) if row is not None else None
+            self._result = (row[1], self.fingerprints.get(url)) if row is not None else None
         elif q.startswith("insert"):
-            _brand_id, url, status, lastmod = params
+            _brand_id, url, status, lastmod, fp = params
             self._known[url] = (status, lastmod)
-        elif q.startswith("update") and "sitemap_lastmod" in q:
-            lastmod, status, url = params
+            self.fingerprints[url] = fp
+        elif "scrape_status = 'pending'" in q:  # changed path
+            lastmod, fp, status, url = params
             self._known[url] = (status, lastmod)
-        elif q.startswith("update"):  # unchanged-path status_path-only update
-            status, url = params
-            existing_status, existing_lastmod = self._known.get(url, (None, None))
-            self._known[url] = (status, existing_lastmod)
+            self.fingerprints[url] = fp
+        elif q.startswith("update"):  # unchanged path: coalesce lastmod/fingerprint
+            status, lastmod, fp, url = params
+            _, old_lastmod = self._known.get(url, (None, None))
+            self._known[url] = (status, lastmod if lastmod is not None else old_lastmod)
+            if fp is not None:
+                self.fingerprints[url] = fp
 
     def fetchone(self):
         return self._result
@@ -269,3 +274,61 @@ def test_handler_full_refresh_queues_unchanged_urls_too():
     daily, weekly = sent
     assert len(daily) == 2           # new + changed only
     assert len(weekly) == 4          # plus both unchanged URLs
+
+
+# --- content fingerprint (runbook 6ea) ---
+
+_PRODUCT = {
+    "handle": "reckoning", "title": "Reckoning", "body_html": "<h3>BALL SPECS</h3><ul><li>RG 2.49</li></ul>",
+    "product_type": "Bowling Ball", "tags": ["high-performance", "new"],
+    "updated_at": "2026-10-19T16:21:08-04:00",
+    "images": [{"position": 1, "src": "https://cdn.shopify.com/a.png?v=1"}, {"position": 2, "src": "https://cdn.shopify.com/b.png?v=1"}],
+    "variants": [{"sku": "H1", "available": True, "price": "189.95", "updated_at": "2026-10-19T16:21:08-04:00"}],
+}
+
+
+def test_fingerprint_ignores_the_store_wide_churn_but_catches_real_page_changes():
+    import copy
+
+    base = app.product_fingerprint(_PRODUCT)
+    churned = copy.deepcopy(_PRODUCT)
+    churned["updated_at"] = "2026-10-19T19:02:44-04:00"           # Shopify re-stamp
+    churned["variants"][0].update(available=False, price="179.95")  # stock / price
+    churned["tags"] = ["new", "high-performance"]                  # same tags, other order
+    assert app.product_fingerprint(churned) == base
+
+    for field, value in (("title", "Reckoning Pearl"), ("body_html", "<h3>BALL SPECS</h3><ul><li>RG 2.50</li></ul>"),
+                         ("product_type", "Spare Ball"), ("tags", ["high-performance"])):
+        changed = copy.deepcopy(_PRODUCT)
+        changed[field] = value
+        assert app.product_fingerprint(changed) != base, field
+    reimaged = copy.deepcopy(_PRODUCT)
+    reimaged["images"][0]["src"] = "https://cdn.shopify.com/a.png?v=2"
+    assert app.product_fingerprint(reimaged) != base
+
+
+def test_build_entries_carries_the_fingerprint():
+    entries = app.build_entries("hammerbowling.com", {"high-performance": [_PRODUCT]})
+    assert entries[0]["fingerprint"] == app.product_fingerprint(_PRODUCT)
+
+
+def test_diff_first_fingerprint_is_a_baseline_not_a_change():
+    url = "https://hammerbowling.com/products/reckoning"
+    conn = FakeConnection(known={url: ("current", "2026-10-18T10:00:00-04:00")})
+    entries = [{"url": url, "lastmod": "2026-10-19T16:21:08-04:00", "fingerprint": "fp1", "status": "current"}]
+    diff = app.diff_against_known(conn, brand_id="b", entries=entries)
+    assert diff["unchanged"] == [url] and diff["changed"] == []
+    assert conn._cursor.fingerprints[url] == "fp1"
+
+
+def test_diff_uses_the_fingerprint_not_updated_at():
+    url = "https://hammerbowling.com/products/reckoning"
+    conn = FakeConnection(known={url: ("current", "2026-10-18T10:00:00-04:00")})
+    conn._cursor.fingerprints[url] = "fp1"
+    # updated_at moved, content didn't: unchanged.
+    same = [{"url": url, "lastmod": "2026-10-19T16:21:08-04:00", "fingerprint": "fp1", "status": "current"}]
+    assert app.diff_against_known(conn, brand_id="b", entries=same)["unchanged"] == [url]
+    # content changed: changed, and the new fingerprint is stored.
+    moved = [{"url": url, "lastmod": "2026-10-19T16:21:08-04:00", "fingerprint": "fp2", "status": "current"}]
+    assert app.diff_against_known(conn, brand_id="b", entries=moved)["changed"] == [url]
+    assert conn._cursor.fingerprints[url] == "fp2"
