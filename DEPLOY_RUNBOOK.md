@@ -20014,6 +20014,76 @@ is no release date (about 1 in 6 current balls):
 
   There were no errors, and it used 2 searches of the day's quota.
 
+
+### 6dz. Strict auto-approve for video candidates (2026-10-19)
+
+The 6dy daily due search added 510 candidates in its first two days (255
+'high', 255 'low'); the queue was empty before. When offered the old
+`scripts/auto_approve_video_candidates.py` (approve every 'high'), Al
+replied: "i highly doubt all 255 high confidence videos are actually
+correct".
+
+**Measured** against every candidate a person resolved by hand
+(excluding the auto-approve script and the Shorts filter):
+- 'high': 69% approved; 'low': 35%. So 'high' alone would have meant about
+  75 wrong videos out of the 255.
+
+| Group ('high' candidates) | Approved |
+|---|---|
+| One ball, full name in title | 97.1% (n=1,369) |
+| One ball, name not in title | 46% |
+| Shared with other balls, full name in title | 75% |
+| Shared with other balls, name not in title | 13% |
+
+- Most of the remaining misses were a **longer sibling name**: "MOTIV
+  Pride" vs "Pride Empire", Forge vs Forge Flare/Ember, Thrash vs
+  "Thrash Frenzy", Frenzy vs "Thrash Frenzy", Hy-Road vs Hy-Road 40/X.
+- **Rule:** 'high', full name in title, not attached to any other ball,
+  and no longer same-brand name containing this ball's name in the title.
+  It scores **98.1% (1,329 of 1,355)**. Everything outside it scores 42%.
+
+**Changes.** Al picked "1 and 2".
+1. **One-time:** approved the 103 pending videos that meet the rule. The
+   152 'high' that don't, plus all 255 'low', stay pending (407).
+2. **Automatic:** `auto_approve_strict_matches` in
+   `video_discovery/app.py` is a single UPDATE … RETURNING with exactly
+   the measured rule.
+   - It runs at the end of every search job: the daily due run and manual
+     Batch Jobs runs.
+   - It is in its own try, so a failure leaves candidates pending and
+     doesn't lose the search.
+   - It returns `auto_approved` in the response body.
+   - Matching uses `strpos`, not LIKE, so a name containing `%` or `_`
+     can't act as a wildcard.
+   - It sets `resolved_by = 'video_discovery auto-approve (full name in
+     title, one ball, no longer sibling)'`, so these are easy to audit and
+     reject in admin.
+
+   The one-time approval used this same function.
+
+The old `scripts/auto_approve_video_candidates.py` (approve every 'high')
+is superseded. Don't run it.
+
+**Tests.** 2 new tests in `tests/test_video_discovery.py` (106 passing):
+- the SQL carries each clause of the rule;
+- the handler runs it after searching and survives its failure.
+
+The existing handler test now expects `auto_approved` in the body.
+
+**Deploy.** Full `sam build && sam deploy`. No schema change.
+
+**Verify.**
+- After the next 12:00 UTC run:
+
+      aws logs tail /aws/lambda/bowling-scraper-video-discovery --since 2h | grep "Auto-approved"
+
+- Audit the auto-approvals:
+
+      select p.name, pv.title from product_videos pv join products p on p.id = pv.product_id
+      where pv.resolved_by like 'video_discovery auto-approve%' order by pv.resolved_at desc;
+
+  Expect about 2% wrong; reject those in admin.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

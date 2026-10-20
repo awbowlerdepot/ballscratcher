@@ -1150,6 +1150,7 @@ def test_handler_marks_only_successfully_searched_products(monkeypatch):
     monkeypatch.setattr(app, "search_youtube", fake_search_youtube)
     monkeypatch.setattr(app, "insert_candidates", lambda conn, pid, q, videos: inserted_for.append(pid) or len(videos))
     monkeypatch.setattr(app, "mark_product_searched", lambda conn, pid: marked.append(pid))
+    monkeypatch.setattr(app, "auto_approve_strict_matches", lambda conn: [])
 
     result = app.handler({}, None)
     body = json.loads(result["body"])
@@ -1157,6 +1158,7 @@ def test_handler_marks_only_successfully_searched_products(monkeypatch):
     assert marked == ["prod-good"]  # NOT prod-bad -- its search raised
     assert inserted_for == ["prod-good"]
     assert body == {
+        "auto_approved": 0,
         "products_searched": 2, "new_candidates": 1, "search_errors": 1,
         "circuit_breaker_tripped": False, "products_skipped": 0,
     }
@@ -1741,3 +1743,73 @@ def test_handler_due_job_uses_the_cadence_query_with_its_own_cap(monkeypatch):
     # A limit above MAX_SEARCHES_PER_INVOCATION is clamped to it.
     app.handler({"due": True, "limit": 500}, None)
     assert seen["cap"] == 70
+
+
+# --- STRICT AUTO-APPROVE (runbook 6dz) ---
+
+class _ApproveCursor:
+    def __init__(self, rows):
+        self.rows, self.executed = rows, []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, sql, params=None):
+        self.executed.append((" ".join(sql.split()), params))
+
+    def fetchall(self):
+        return self.rows
+
+
+class _ApproveConn:
+    def __init__(self, rows=()):
+        self.cur = _ApproveCursor(list(rows))
+        self.commits = 0
+
+    def cursor(self):
+        return self.cur
+
+    def commit(self):
+        self.commits += 1
+
+
+def test_auto_approve_strict_matches_applies_exactly_the_measured_rule():
+    conn = _ApproveConn([("pv1", "yt1")])
+    assert app.auto_approve_strict_matches(conn) == [("pv1", "yt1")]
+    sql, params = conn.cur.executed[0]
+    assert params == (app.AUTO_APPROVE_RESOLVED_BY,)
+    assert "pv.status = 'pending'" in sql and "pv.match_confidence = 'high'" in sql
+    # full name in title, via strpos so % and _ in a name aren't wildcards
+    assert "strpos(lower(pv.title), lower(p.name)) > 0" in sql
+    # not attached to any other ball
+    assert "o.youtube_video_id = pv.youtube_video_id and o.product_id <> pv.product_id" in sql
+    # no longer same-brand sibling name containing this one is in the title
+    assert "s.brand_id = p.brand_id" in sql and "length(s.name) > length(p.name)" in sql
+    assert "strpos(lower(s.name), lower(p.name)) > 0 and strpos(lower(pv.title), lower(s.name)) > 0" in sql
+    assert conn.commits == 1
+
+
+def test_handler_runs_auto_approve_after_searching_and_survives_its_failure(monkeypatch):
+    order = []
+    monkeypatch.setattr(app, "get_youtube_api_key", lambda: "k")
+    monkeypatch.setattr(app, "get_db_connection", lambda: _FakeConn())
+    monkeypatch.setattr(app, "get_youtube_requests_session", lambda: object())
+    monkeypatch.setattr(app, "fetch_products_to_search",
+                        lambda conn, job, n: [{"id": "p1", "name": "Absolute", "brand_name": "Storm"}])
+    monkeypatch.setattr(app, "search_youtube", lambda *a, **k: order.append("search") or [])
+    monkeypatch.setattr(app, "insert_candidates", lambda *a, **k: 0)
+    monkeypatch.setattr(app, "mark_product_searched", lambda *a: None)
+
+    monkeypatch.setattr(app, "auto_approve_strict_matches", lambda conn: order.append("approve") or [("a", "b")] * 3)
+    body = json.loads(app.handler({}, None)["body"])
+    assert order == ["search", "approve"] and body["auto_approved"] == 3
+
+    def boom(conn):
+        raise RuntimeError("db hiccup")
+
+    monkeypatch.setattr(app, "auto_approve_strict_matches", boom)
+    body = json.loads(app.handler({}, None)["body"])
+    assert body["auto_approved"] == 0 and body["products_searched"] == 1

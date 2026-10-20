@@ -935,6 +935,61 @@ def fetch_due_products(conn, max_products: int = DEFAULT_DUE_SEARCH_LIMIT) -> li
         return [dict(zip(columns, row)) for row in cur.fetchall()]
 
 
+# STRICT AUTO-APPROVE (runbook 6dz). The daily due search (6dy) put 510
+# candidates in the review queue in its first two days. Al, on approving
+# every 'high' one: "i highly doubt all 255 high confidence videos are
+# actually correct" -- right: humans rejected 30% of the 'high' candidates
+# they reviewed (845 of 2,763). Measured against those same human
+# decisions, one narrower rule held up:
+#   - match_confidence = 'high', AND
+#   - the ball's full name appears in the title, AND
+#   - the video isn't attached to any other ball, AND
+#   - no longer same-brand name containing this ball's name is also in the
+#     title ("MOTIV Pride" vs a "Pride Empire" video, "Frenzy" vs "Thrash
+#     Frenzy", "Hy-Road" vs "Hy-Road 40").
+# 98.1% approved (1,329 of 1,355); everything outside it was approved only
+# 42% of the time, so it stays for a human. Al picked "1 and 2": approve the
+# qualifying backlog once, and run the rule automatically after every
+# search. Approval is only a status/resolved_by change (see admin_api
+# approve_video_candidate), so this is a single UPDATE; resolved_by names
+# the rule so these are easy to find and reject in admin if one is wrong.
+AUTO_APPROVE_RESOLVED_BY = "video_discovery auto-approve (full name in title, one ball, no longer sibling)"
+
+
+def auto_approve_strict_matches(conn) -> list:
+    """Approves every pending candidate that meets the STRICT AUTO-APPROVE
+    rule; returns [(product_videos.id, youtube_video_id), ...]. strpos, not
+    LIKE, so a name containing % or _ can't act as a wildcard."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            update product_videos pv
+            set status = 'approved', resolved_at = now(), resolved_by = %s
+            from products p
+            where p.id = pv.product_id
+              and pv.status = 'pending'
+              and pv.match_confidence = 'high'
+              and strpos(lower(pv.title), lower(p.name)) > 0
+              and not exists (
+                  select 1 from product_videos o
+                  where o.youtube_video_id = pv.youtube_video_id and o.product_id <> pv.product_id
+              )
+              and not exists (
+                  select 1 from products s
+                  where s.brand_id = p.brand_id and s.id <> p.id
+                    and length(s.name) > length(p.name)
+                    and strpos(lower(s.name), lower(p.name)) > 0
+                    and strpos(lower(pv.title), lower(s.name)) > 0
+              )
+            returning pv.id, pv.youtube_video_id
+            """,
+            (AUTO_APPROVE_RESOLVED_BY,),
+        )
+        rows = cur.fetchall()
+    conn.commit()
+    return rows
+
+
 def mark_product_searched(conn, product_id: str) -> None:
     """Records that video_discovery actually completed a search.list call
     for this product -- called from handler's success path only (after
@@ -1370,12 +1425,22 @@ def handler(event, context):
                 "product_id=%s query=%r -> %d results, %d new candidates",
                 product["id"], query, len(videos), inserted,
             )
+        # STRICT AUTO-APPROVE (runbook 6dz) -- after the searches, so the
+        # "attached to another ball" check sees this run's new rows too. Its
+        # own try: a failure here must not lose the search results above.
+        try:
+            auto_approved = len(auto_approve_strict_matches(conn))
+            logger.info("Auto-approved %d candidate(s) under the strict rule", auto_approved)
+        except Exception:
+            logger.exception("Strict auto-approve failed; candidates stay pending for review")
+            auto_approved = 0
     finally:
         conn.close()
 
     return {
         "statusCode": 200,
         "body": json.dumps({
+            "auto_approved": auto_approved,
             "products_searched": len(products),
             "new_candidates": total_candidates,
             "search_errors": len(errors),
