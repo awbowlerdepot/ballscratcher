@@ -20084,6 +20084,14 @@ The existing handler test now expects `auto_approved` in the body.
 
   Expect about 2% wrong; reject those in admin.
 
+**Deployed 2026-10-19.**
+- The stack is UPDATE_COMPLETE; the due and stats-refresh rules are still
+  ENABLED.
+- Smoke test: a 1-search run on MOTIV Raptor Pursuit returned
+  `auto_approved: 0`. The log shows "Auto-approved 0 candidate(s) under
+  the strict rule", with no failure. That is the expected result: no new
+  candidates, and the backlog was already cleared by the one-time approval.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
