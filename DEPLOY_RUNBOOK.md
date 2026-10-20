@@ -20230,6 +20230,10 @@ Hysteria.
   To restore one: `update product_videos set status = 'pending',
   resolved_by = null, resolved_at = null where id = '<id>';`
 
+**Deployed 2026-10-20.** The stack is UPDATE_COMPLETE. A 1-search smoke test
+(Storm Ion Pro Pearl) returned `auto_approved: 0, auto_rejected: 0`, and
+both steps logged with no failure.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
