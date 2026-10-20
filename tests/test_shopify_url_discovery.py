@@ -332,3 +332,26 @@ def test_diff_uses_the_fingerprint_not_updated_at():
     moved = [{"url": url, "lastmod": "2026-10-19T16:21:08-04:00", "fingerprint": "fp2", "status": "current"}]
     assert app.diff_against_known(conn, brand_id="b", entries=moved)["changed"] == [url]
     assert conn._cursor.fingerprints[url] == "fp2"
+
+
+# --- retired-tagged sweep (runbook 6ec) ---
+
+def test_retired_tagged_orphans_picks_only_unfiled_retired_balls():
+    allp = [
+        {"handle": "hammer-special-effect", "product_type": "", "tags": ["Retired"]},
+        {"handle": "raw-hammer-black", "product_type": "Bowling Ball", "tags": ["Retired"]},
+        {"handle": "zero-mercy-tour", "product_type": "Bowling Ball", "tags": ["Retired"]},  # already found
+        {"handle": "black-magic-polish", "product_type": "Accessories", "tags": ["Retired"]},
+        {"handle": "fierce", "product_type": "Shoes", "tags": ["Men Shoes"]},
+        {"handle": "darren-ong", "product_type": "", "tags": ["International Staffer", "Retired"]},
+        {"handle": "reckoning", "product_type": "Bowling Ball", "tags": ["New"]},  # not retired
+    ]
+    got = [p["handle"] for p in app.retired_tagged_orphans(allp, {"zero-mercy-tour"})]
+    assert got == ["hammer-special-effect", "raw-hammer-black"]
+
+
+def test_build_entries_classifies_the_sweep_as_retired():
+    product = {"handle": "hammer-special-effect", "title": "Hammer Special Effect", "tags": ["Retired"]}
+    entries = app.build_entries("hammerbowling.com", {app.RETIRED_TAGGED_HANDLE: [product]})
+    assert entries[0]["url"] == "https://hammerbowling.com/products/hammer-special-effect"
+    assert entries[0]["status"] == "retired"

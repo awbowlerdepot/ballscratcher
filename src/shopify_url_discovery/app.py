@@ -178,6 +178,46 @@ def product_fingerprint(product: dict) -> str:
     return hashlib.sha256(json.dumps(material, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
+# RETIRED-TAGGED SWEEP (runbook 6ec). Al asked what it would take to place
+# Hammer Special Effect from the March Brunswick chart (oil 11, motion 15,
+# unmatched since 6ch). Hammer sells it, but files it in none of the
+# collections above: it's only in the store-wide "all" collection, tagged
+# "Retired", with an empty product_type -- not in Hammer's own retired-balls
+# collection. Four more retired Hammer balls are filed the same way
+# (Hammerhead, Ocean Vibe, RAW Hammer Black and Blue/Silver/White), so none
+# of the five had ever been scraped. Track and Ebonite have no such orphans
+# today. Every run now also reads "all" and adds any product that
+# (a) none of the configured collections returned, (b) is tagged
+# "Retired", and (c) has a ball-ish product_type ('' or "Bowling Ball").
+# Shoes, bags and accessories carry their own product_type; pro-staff and
+# collegiate pages are typed "Pro Staff"/"Bowler"/"Collegiate Bowling" or
+# tagged as staffers, so they're excluded. They go in under the pseudo
+# collection RETIRED_TAGGED_HANDLE, which build_entries classifies as
+# retired because it starts with "retired".
+ALL_COLLECTION_HANDLE = "all"
+RETIRED_TAGGED_HANDLE = "retired-tagged-in-all"
+BALL_PRODUCT_TYPES = {"", "bowling ball", "bowling balls", "ball", "balls"}
+STAFF_TAGS = {"national staffer", "international staffer", "bowler", "collegiate bowling staff"}
+
+
+def retired_tagged_orphans(all_products: list, already_seen: set) -> list:
+    """Products from the "all" collection that RETIRED-TAGGED SWEEP adds."""
+    out = []
+    for product in all_products:
+        if product.get("handle") in already_seen:
+            continue
+        tags = product.get("tags") or []
+        if isinstance(tags, str):
+            tags = [t.strip() for t in tags.split(",")]
+        lowered = {t.strip().lower() for t in tags}
+        if "retired" not in lowered or lowered & STAFF_TAGS:
+            continue
+        if (product.get("product_type") or "").strip().lower() not in BALL_PRODUCT_TYPES:
+            continue
+        out.append(product)
+    return out
+
+
 def build_entries(store_domain: str, products_by_handle: dict) -> list:
     """Reduces {collection_handle: [product dict, ...]} into the
     {url, lastmod, status} shape diff_against_known() expects, applying
@@ -366,6 +406,20 @@ def handler(event, context):
         logger.info("Discovering products in collection %s", handle)
         products_by_handle[handle] = discover_collection_products(fetch_collection_page, store_domain, handle)
         logger.info("Found %d products in %s", len(products_by_handle[handle]), handle)
+
+    # RETIRED-TAGGED SWEEP (runbook 6ec). Its own try: a hiccup reading
+    # "all" must never block the normal collections' discovery.
+    try:
+        seen = {p["handle"] for products in products_by_handle.values() for p in products}
+        all_products = discover_collection_products(fetch_collection_page, store_domain, ALL_COLLECTION_HANDLE)
+        orphans = retired_tagged_orphans(all_products, seen)
+        if orphans:
+            products_by_handle[RETIRED_TAGGED_HANDLE] = orphans
+        logger.info("Retired-tagged sweep: %d product(s) only in '%s' (%s)", len(orphans), ALL_COLLECTION_HANDLE,
+                    ", ".join(p["handle"] for p in orphans) or "none")
+    except Exception:
+        logger.exception("Retired-tagged sweep of '%s' failed; continuing with the configured collections",
+                         ALL_COLLECTION_HANDLE)
 
     entries = build_entries(store_domain, products_by_handle)
 
