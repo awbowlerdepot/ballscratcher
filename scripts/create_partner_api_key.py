@@ -1,8 +1,11 @@
 """
 Mint (or rotate) a Partner API key (DEPLOY_RUNBOOK.md 6cj).
 
-    python3 scripts/create_partner_api_key.py <partner-name>
-    python3 scripts/create_partner_api_key.py <partner-name> --revoke
+    .venv/bin/python scripts/create_partner_api_key.py <partner-name>
+    .venv/bin/python scripts/create_partner_api_key.py <partner-name> --revoke
+
+(The project venv, which has boto3. The system python3 doesn't: runbook
+6ef, "ModuleNotFoundError: No module named 'boto3'".)
 
 Generates a random key, prints it ONCE to this terminal (hand it to the
 partner over a secure channel -- it is not stored anywhere), and writes

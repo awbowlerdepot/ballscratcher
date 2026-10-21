@@ -17521,7 +17521,7 @@ admin token can write data, so it can't be handed to a partner either.
 ```bash
 psql -v ON_ERROR_STOP=1 -f db/migrations/044_products_content_changed_at.sql
 sam build && sam deploy
-python3 scripts/create_partner_api_key.py <partner-name>   # prints the key once
+.venv/bin/python scripts/create_partner_api_key.py <partner-name>   # prints the key once
 ```
 Send the partner the key and `docs/partner-api-v1.md` plus
 `tests/fixtures/partner_api_v1_openapi.json`.
@@ -20413,7 +20413,7 @@ Tests: contract 3/3, authorizer 6/6, service 11/11.
 
 **Onboarding a new partner.** Give each partner its own key, so its calls
 are attributable in the logs and it can be revoked alone:
-1. Run `scripts/create_partner_api_key.py <partner name>`. It prints the
+1. Run `.venv/bin/python scripts/create_partner_api_key.py <partner name>`. It prints the
    key once and stores only its hash.
 2. Send them the key over a private channel, plus the docs URL.
 
