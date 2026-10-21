@@ -790,6 +790,24 @@ Parameters:
       separate single-name certs (CloudFront only accepts one cert per
       distribution, and every Alias must be covered by that one cert).
 
+  DocsSiteDomainName:
+    Type: String
+    Default: ""
+    Description: >
+      Custom domain for the Partner API reference (runbook 6ef), e.g.
+      docs.bowleriq.io. Al: "can we actually make that docs.bowleriq.io".
+      Same blank-means-*.cloudfront.net-only convention as the other site
+      domains; set it together with DocsSiteCertificateArn. Also the one
+      origin the partner API allows for browser (CORS) calls, so the docs'
+      live "Try it" works from this domain. DNS: a CNAME at GoDaddy from
+      this name to the DocsSiteDistribution domain (Outputs).
+  DocsSiteCertificateArn:
+    Type: String
+    Default: ""
+    Description: >
+      ACM certificate ARN for DocsSiteDomainName. us-east-1, like every
+      CloudFront certificate in this template.
+
 Conditions:
   HasBigCommerceSecret: !Not [!Equals [!Ref BigCommerceSecretArn, ""]]
   HasAdminApiToken: !Not [!Equals [!Ref AdminApiTokenSecretArn, ""]]
@@ -801,6 +819,7 @@ Conditions:
   HasImageResizerDomain: !Not [!Equals [!Ref ImageResizerDomainName, ""]]
   HasPublicApiDomain: !Not [!Equals [!Ref PublicApiDomainName, ""]]
   HasMarketingSiteDomain: !Not [!Equals [!Ref MarketingSiteDomainName, ""]]
+  HasDocsSiteDomain: !Not [!Equals [!Ref DocsSiteDomainName, ""]]
   HasGitHubRepo: !Not [!Equals [!Ref GitHubRepo, ""]]
   ShouldCreateGitHubOidcProvider: !And
     - !Condition HasGitHubRepo
@@ -2187,6 +2206,23 @@ Resources:
       DefaultRouteSettings:
         ThrottlingBurstLimit: 20
         ThrottlingRateLimit: 10
+      # Live "Try it" on docs.bowleriq.io (runbook 6ef) calls this API from
+      # the browser, cross-origin. Only that one origin is allowed, GET
+      # only, and only the Authorization header; partner servers don't use
+      # CORS at all. API Gateway answers the OPTIONS preflight itself
+      # (there's no OPTIONS route), so the key authorizer isn't involved
+      # in it, and every data call still needs a key. Without a docs domain
+      # the list is empty and no browser origin is allowed.
+      CorsConfiguration:
+        AllowOrigins: !If
+          - HasDocsSiteDomain
+          - - !Sub "https://${DocsSiteDomainName}"
+          - !Ref AWS::NoValue
+        AllowMethods:
+          - GET
+        AllowHeaders:
+          - authorization
+        MaxAge: 3600
 
   PartnerApiFunction:
     Type: AWS::Serverless::Function
@@ -4367,6 +4403,81 @@ Resources:
   # the GitHub repo Variables it needs). NOTE: this same GitHubOidcProvider
   # is also what LearnSiteDeployRole above trusts -- only ONE provider
   # resource for the whole account, shared by both sites' deploy roles.
+  # Partner API reference site, docs.bowleriq.io (runbook 6ef). Al: "can we
+  # actually make that docs.bowleriq.io" -- the reference lives on its own
+  # subdomain, with a technical Developers page on bowleriq.com linking to
+  # it. This is a thin CloudFront front for the two public partner-API
+  # routes from 6ee, so there's nothing separate to build or deploy and the
+  # docs stay identical to the API: "/" -> /partner/docs, "/openapi.json"
+  # -> /partner/openapi.json. The router function 404s every other path, so
+  # this domain can't be used to reach the data routes.
+  DocsSiteRouterFunction:
+    Type: AWS::CloudFront::Function
+    Properties:
+      Name: !Sub "${AWS::StackName}-docs-site-router"
+      AutoPublish: true
+      FunctionConfig:
+        Comment: "docs.bowleriq.io: serve only the API reference and its schema"
+        Runtime: cloudfront-js-2.0
+      FunctionCode: |
+        function handler(event) {
+          var uri = event.request.uri;
+          if (uri === '/' || uri === '/index.html' || uri === '/docs') {
+            event.request.uri = '/docs';
+            return event.request;
+          }
+          if (uri === '/openapi.json') {
+            return event.request;
+          }
+          return {
+            statusCode: 404,
+            statusDescription: 'Not Found',
+            headers: {'content-type': {value: 'text/plain'}},
+            body: 'Not found. The API reference is at https://' + event.request.headers.host.value + '/'
+          };
+        }
+
+  DocsSiteDistribution:
+    Type: AWS::CloudFront::Distribution
+    Condition: HasPublicApiDomain
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: Partner API reference (docs.bowleriq.io), runbook 6ef
+        PriceClass: PriceClass_100
+        HttpVersion: http2
+        Aliases: !If
+          - HasDocsSiteDomain
+          - - !Ref DocsSiteDomainName
+          - !Ref AWS::NoValue
+        ViewerCertificate: !If
+          - HasDocsSiteDomain
+          - AcmCertificateArn: !Ref DocsSiteCertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        Origins:
+          - Id: PartnerApiOrigin
+            DomainName: !Ref PublicApiDomainName
+            OriginPath: /partner
+            CustomOriginConfig:
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols:
+                - TLSv1.2
+        DefaultCacheBehavior:
+          TargetOriginId: PartnerApiOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          AllowedMethods:
+            - GET
+            - HEAD
+          Compress: true
+          # CachingDisabled: the page is tiny and rarely visited, and the
+          # docs must change the moment the API deploys.
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+          FunctionAssociations:
+            - EventType: viewer-request
+              FunctionARN: !GetAtt DocsSiteRouterFunction.FunctionMetadata.FunctionARN
+
   GitHubOidcProvider:
     Type: AWS::IAM::OIDCProvider
     Condition: ShouldCreateGitHubOidcProvider
@@ -4664,6 +4775,10 @@ Resources:
           CachePolicyId: !Ref ImageResizerCachePolicy
 
 Outputs:
+  DocsSiteDistributionDomain:
+    Condition: HasPublicApiDomain
+    Description: CloudFront domain for docs.bowleriq.io -- the CNAME target at GoDaddy (runbook 6ef).
+    Value: !GetAtt DocsSiteDistribution.DomainName
   UrlDiscoveryFunctionArn:
     Value: !GetAtt UrlDiscoveryFunction.Arn
   RadicalUrlDiscoveryFunctionArn:
