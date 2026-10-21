@@ -20684,6 +20684,19 @@ issues shows up on the page as active, with "Issued outside admin
 - In admin as an Admin: Partners shows usage. As an Editor: there's no nav
   item, and `/partners` is refused.
 
+**Deployed 2026-10-21.**
+- Migration 051 applied; it seeded drilld and Virtue_Bowling_Supply.
+- The stack is UPDATE_COMPLETE; only AdminApiFunction, its role and its
+  routes changed.
+- Live checks with the shared admin token, read-only:
+  - `GET /partners` lists drilld and Virtue_Bowling_Supply as active;
+  - `GET /partners/usage` returns drilld 550 (7d) / 1,200 (30d) and
+    Virtue 8 / 8, with 0 errors.
+- The "Deploy admin site" workflow succeeded, and the live bundle
+  includes the PartnersPage chunk.
+- Create, rotate and revoke weren't exercised in prod, so as not to mint
+  or replace real keys. Al tries them from the page.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
