@@ -20581,6 +20581,109 @@ Checked locally: no horizontal overflow at 375, 768 or 1440 px.
   forwarding (if offered), or move the apex to an ALIAS-capable DNS
   provider (Route 53 or Cloudflare).
 
+
+### 6eg. Partner API access management in admin (migration 051) (2026-10-21)
+
+Al: "is the access management and keys something we can add to the
+admin.bowleriq.com" -> "yes build it". Until now, partner keys were managed
+only with `scripts/create_partner_api_key.py`.
+
+**Design:**
+- **The authorizer is unchanged.** It still reads only the Secrets
+  Manager secret `bowling-scraper-partner-api-keys`,
+  `{"keys": {"<partner>": "<sha256>"}}`. A partner is **active** exactly
+  when its name is in it. The admin API writes the same shape as the
+  script, so existing keys (drilld, Virtue_Bowling_Supply) and the
+  script both keep working.
+- **Migration 051, `partner_api_partners`:** the admin record alongside
+  the secret. It holds name (PK, the same name as the secret key and the
+  log's `partner=`), contact, notes, `key_last4`, created/rotated/revoked
+  at and by, and updated_at. It **never stores a key or hash**. It is
+  seeded with drilld and Virtue_Bowling_Supply; their creation dates are
+  approximate and last-4 is unknown (issued by the script).
+- **The secret is written first.** If the DB write then fails, access is
+  correct and only the record is stale.
+- **New and rotated keys are returned once** in the API response (like a
+  new user's password) and never stored. Changes take effect within the
+  authorizer's ~5-minute cache.
+- **Usage:** one CloudWatch Logs Insights query over
+  `/aws/lambda/bowling-scraper-partner-api`. It parses `partner_api`'s
+  `partner=<name> GET <path> -> <status> in <ms>` lines and groups by
+  partner, status and day, giving calls for 7d (today plus 6 days, UTC)
+  and 30d, errors (≥400) and the last call. It is a separate endpoint so
+  the list loads instantly. It has a 20s timeout, returning 503
+  "Usage unavailable".
+
+  Run read-only against prod on 2026-10-21:
+  - drilld: 548 calls (7d), 1,198 (30d), 0 errors.
+  - Virtue_Bowling_Supply: 8 calls, 0 errors (already testing).
+
+**admin_api** (Admins only, `_require_admin` first, the same gate as
+/users):
+
+| Route | What it does |
+|---|---|
+| `GET /partners` | list |
+| `GET /partners/usage` | usage numbers |
+| `POST /partners` | create, `{name, contact?, notes?}`; 422 on a bad name or an already-active name |
+| `POST /partners/{name}/rotate` | new key; 404 if not active |
+| `POST /partners/{name}/revoke` | remove the key; 404 if not active |
+| `PATCH /partners/{name}` | edit contact and notes; the name is fixed |
+
+Logic is in `service.py` ("Partner API access management"), with
+injected Secrets Manager and Logs clients.
+
+**Template** (AdminApiFunction):
+- environment variables `PARTNER_API_KEYS_SECRET_ID` and
+  `PARTNER_API_LOG_GROUP`;
+- IAM: `secretsmanager:GetSecretValue` and `PutSecretValue` on
+  `secret:bowling-scraper-partner-api-keys-*` only;
+- `logs:StartQuery` on the partner API log group;
+- `logs:GetQueryResults` and `StopQuery` on `*`, because they have no
+  resource-level permissions.
+
+**admin-spa:**
+- `PartnersPage.tsx` at `/partners`, with an adminOnly nav item ("Partners",
+  a key icon) and the route wrapped in AdminRoute.
+- An **Issue key** form: name, contact, notes.
+- A table with status, `…last4`, usage (7d/30d, last call, 7d errors),
+  history, and Edit / Rotate key / Revoke, or Re-issue for revoked
+  partners.
+- A one-time key dialog with **Copy**, the docs URL and the Bearer
+  header.
+- Confirmation dialogs for rotate and revoke.
+
+**Tests:** 9 new tests in `tests/test_admin_api_service.py` (450
+passing):
+- create writes the authorizer's exact shape, stores only the hash, and
+  returns the key once;
+- bad, duplicate and active names are rejected, with nothing written;
+- rotate and revoke;
+- a revoked partner can be re-issued;
+- list status comes from the secret, including script-issued names;
+- the secret not existing yet;
+- the details edit;
+- usage windows and error sums;
+- the usage timeout.
+
+`tsc` and `npm run build` pass. The page wasn't previewed locally:
+admin needs a real Cognito sign-in.
+
+**`scripts/create_partner_api_key.py` stays** as a CLI fallback. A key it
+issues shows up on the page as active, with "Issued outside admin
+(script); no record yet" until it is rotated or edited from admin.
+
+**Deploy:**
+1. `psql -f db/migrations/051_partner_api_partners.sql`
+2. `sam build && sam deploy`
+3. `git push` (the admin-spa workflow)
+
+**Verify:**
+- `GET /partners` lists drilld and Virtue_Bowling_Supply as active.
+- `GET /partners/usage` returns both.
+- In admin as an Admin: Partners shows usage. As an Editor: there's no nav
+  item, and `/partners` is refused.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

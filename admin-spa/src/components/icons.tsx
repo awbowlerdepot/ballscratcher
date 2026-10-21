@@ -165,6 +165,17 @@ export function IconUsers(props: IconProps) {
   );
 }
 
+// Partners (runbook 6eg) -- a key, for Partner API access. Admins-only
+// nav item, like Users.
+export function IconKey(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <circle cx="6.5" cy="13.5" r="3.5" />
+      <path d="m9 11 7.5-7.5M14 6l2 2M12 8l1.5 1.5" />
+    </svg>
+  );
+}
+
 export function IconChevronsLeft(props: IconProps) {
   return (
     <svg {...base} {...props}>

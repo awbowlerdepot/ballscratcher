@@ -1753,6 +1753,11 @@ Resources:
           # Admin* Cognito API calls (list/create/delete users, change
           # group membership) against the right pool.
           COGNITO_USER_POOL_ID: !Ref AdminUserPool
+          # Partner API access management (runbook 6eg): the secret the
+          # partner API authorizer reads, and the partner API's log group
+          # for the usage numbers.
+          PARTNER_API_KEYS_SECRET_ID: bowling-scraper-partner-api-keys
+          PARTNER_API_LOG_GROUP: /aws/lambda/bowling-scraper-partner-api
           # Read by service.py's queue_url_discovery (POST /url-discovery/
           # {target}/run, URL_DISCOVERY_TARGETS) -- Al: "add some buttons
           # to the batch jobs on for each of the url discovery lambdas
@@ -1917,6 +1922,26 @@ Resources:
                 - cognito-idp:AdminDisableUser
                 - cognito-idp:AdminDeleteUser
               Resource: !GetAtt AdminUserPool.Arn
+        # Partner API access management (runbook 6eg): read and update the
+        # ONE partner-keys secret (the -* covers Secrets Manager's random
+        # ARN suffix), and run the usage query over the partner API's log
+        # group. GetQueryResults/StopQuery don't support resource-level
+        # permissions, hence "*" for those two only.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+                - secretsmanager:PutSecretValue
+              Resource: !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:bowling-scraper-partner-api-keys-*"
+            - Effect: Allow
+              Action:
+                - logs:StartQuery
+              Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/bowling-scraper-partner-api:*"
+            - Effect: Allow
+              Action:
+                - logs:GetQueryResults
+                - logs:StopQuery
+              Resource: "*"
         # For queue_url_discovery (POST /url-discovery/{target}/run) --
         # one Resource entry per *UrlDiscoveryFunction this stack has
         # deployed (see URL_DISCOVERY_FUNCTION_NAME and friends above),

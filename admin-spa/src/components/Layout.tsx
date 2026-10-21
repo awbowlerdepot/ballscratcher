@@ -20,6 +20,7 @@ import {
   IconPriceTag,
   IconProducts,
   IconReviewQueue,
+  IconKey,
   IconUsers,
   IconVideo,
 } from "./icons";
@@ -47,6 +48,8 @@ const NAV_ITEMS = [
   { to: "/blocked-channels", label: "Blocked Channels", end: false, icon: IconBlocked },
   { to: "/batch-jobs", label: "Batch Jobs", end: false, icon: IconBatch },
   { to: "/users", label: "Users", end: false, icon: IconUsers, adminOnly: true },
+  // Partner API keys (runbook 6eg) -- Admins only, like Users.
+  { to: "/partners", label: "Partners", end: false, icon: IconKey, adminOnly: true },
 ];
 
 // Persisted across reloads/sessions -- a "dense pro-tool" reviewer

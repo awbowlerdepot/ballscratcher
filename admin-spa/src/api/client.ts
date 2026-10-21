@@ -1,6 +1,9 @@
 import { getValidIdToken } from "../auth/cognito";
 import type {
   AdminUser,
+  Partner,
+  PartnerUsage,
+  PartnerWithKey,
   Article,
   ArticleListItem,
   ArticleSocialPosts,
@@ -758,6 +761,33 @@ export function deleteUser(username: string): Promise<{ username: string; delete
   return apiDelete(`/users/${encodeURIComponent(username)}`);
 }
 
+
+// --- Partner API access (runbook 6eg) -----------------------------------
+// Admins only (admin_api's _require_admin). create/rotate return the new
+// key once; it's never stored anywhere, so the page must show it then.
+export function listPartners(): Promise<Partner[]> {
+  return apiGet<Partner[]>("/partners");
+}
+
+export function getPartnerUsage(): Promise<Record<string, PartnerUsage>> {
+  return apiGet<Record<string, PartnerUsage>>("/partners/usage");
+}
+
+export function createPartner(input: { name: string; contact?: string; notes?: string }): Promise<PartnerWithKey> {
+  return apiPost<PartnerWithKey>("/partners", input);
+}
+
+export function rotatePartnerKey(name: string): Promise<PartnerWithKey> {
+  return apiPost<PartnerWithKey>(`/partners/${encodeURIComponent(name)}/rotate`, {});
+}
+
+export function revokePartner(name: string): Promise<Partner> {
+  return apiPost<Partner>(`/partners/${encodeURIComponent(name)}/revoke`, {});
+}
+
+export function updatePartner(name: string, input: { contact: string | null; notes: string | null }): Promise<Partner> {
+  return apiPatch<Partner>(`/partners/${encodeURIComponent(name)}`, input);
+}
 
 // --- Announcement posts + images (migration 048, runbook 6dd) -----------
 export function getProductAnnouncement(productId: string): Promise<ProductAnnouncement> {

@@ -32,6 +32,7 @@ const CoverstocksPage = lazy(() => import("./pages/CoverstocksPage"));
 const BlockedChannelsPage = lazy(() => import("./pages/BlockedChannelsPage"));
 const BatchJobsPage = lazy(() => import("./pages/BatchJobsPage"));
 const UsersPage = lazy(() => import("./pages/UsersPage"));
+const PartnersPage = lazy(() => import("./pages/PartnersPage"));
 
 // Deliberately plain and generic -- covers only the brief window while a
 // route's own JS chunk downloads (typically much faster than the
@@ -78,6 +79,14 @@ export default function App() {
                   element={
                     <AdminRoute>
                       <UsersPage />
+                    </AdminRoute>
+                  }
+                />
+                <Route
+                  path="/partners"
+                  element={
+                    <AdminRoute>
+                      <PartnersPage />
                     </AdminRoute>
                   }
                 />

@@ -2045,4 +2045,108 @@ def delete_user(username: str, caller: dict = Depends(get_caller)):
         raise HTTPException(status_code=422, detail=str(e))
 
 
+
+# --- Partner API access management (runbook 6eg) ---
+#
+# Al: "is the access management and keys something we can add to the
+# admin.bowleriq.com". Admins only, same _require_admin gate as /users,
+# called before any AWS or DB access. See service.py's "Partner API access
+# management" section for the two stores (the authorizer's secret + the
+# partner_api_partners record) and why keys are returned once and never
+# stored.
+
+
+def _secrets_client():
+    import boto3
+
+    return boto3.client("secretsmanager")
+
+
+def _logs_client():
+    import boto3
+
+    return boto3.client("logs")
+
+
+class CreatePartnerRequest(BaseModel):
+    name: str
+    contact: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class UpdatePartnerRequest(BaseModel):
+    contact: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@app.get("/partners")
+def get_partners(caller: dict = Depends(get_caller)):
+    _require_admin(caller)
+    conn = service.get_db_connection()
+    try:
+        return service.list_partners(conn, _secrets_client())
+    finally:
+        conn.close()
+
+
+@app.get("/partners/usage")
+def get_partner_usage(caller: dict = Depends(get_caller)):
+    # Separate from GET /partners so the list loads instantly and usage
+    # (a Logs Insights query, a few seconds) fills in after.
+    _require_admin(caller)
+    try:
+        return service.partner_usage(_logs_client())
+    except (TimeoutError, RuntimeError) as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
+
+@app.post("/partners")
+def post_partner(body: CreatePartnerRequest, caller: dict = Depends(get_caller)):
+    _require_admin(caller)
+    conn = service.get_db_connection()
+    try:
+        return service.create_partner(conn, _secrets_client(), body.name, body.contact, body.notes,
+                                      created_by=caller.get("resolved_by"))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/partners/{name}/rotate")
+def post_partner_rotate(name: str, caller: dict = Depends(get_caller)):
+    _require_admin(caller)
+    conn = service.get_db_connection()
+    try:
+        return service.rotate_partner_key(conn, _secrets_client(), name, rotated_by=caller.get("resolved_by"))
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/partners/{name}/revoke")
+def post_partner_revoke(name: str, caller: dict = Depends(get_caller)):
+    _require_admin(caller)
+    conn = service.get_db_connection()
+    try:
+        return service.revoke_partner(conn, _secrets_client(), name, revoked_by=caller.get("resolved_by"))
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.patch("/partners/{name}")
+def patch_partner(name: str, body: UpdatePartnerRequest, caller: dict = Depends(get_caller)):
+    _require_admin(caller)
+    conn = service.get_db_connection()
+    try:
+        return service.update_partner_details(conn, name, body.contact, body.notes)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
 handler = Mangum(app)

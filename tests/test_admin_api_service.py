@@ -8143,3 +8143,209 @@ def test_drilled_price_is_listing_plus_50_04_rounded_to_cents():
     ])
     d = service.get_article_signage(conn, "a1")
     assert service.SIGNAGE_DRILLING_UPCHARGE == 50.04 and d["drilled_price"] == 249.99
+
+
+# --- Partner API access management (runbook 6eg) ---
+
+import hashlib as _hashlib  # noqa: E402
+import json as _json  # noqa: E402
+
+
+class _FakeSecrets:
+    class exceptions:
+        class ResourceNotFoundException(Exception):
+            pass
+
+    def __init__(self, keys=None):
+        self.value = None if keys is None else _json.dumps({"keys": keys})
+        self.puts = 0
+
+    def get_secret_value(self, SecretId):
+        if self.value is None:
+            raise self.exceptions.ResourceNotFoundException()
+        return {"SecretString": self.value}
+
+    def put_secret_value(self, SecretId, SecretString):
+        self.value = SecretString
+        self.puts += 1
+
+    def keys(self):
+        return _json.loads(self.value)["keys"]
+
+
+class _PartnerCursor:
+    """Just enough of partner_api_partners for the service functions."""
+
+    def __init__(self, rows):
+        self.rows, self._result, self.rowcount = rows, None, 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def _tuple(self, name):
+        r = self.rows[name]
+        return tuple(r.get(c) for c in service._PARTNER_COLUMNS)
+
+    def execute(self, sql, params=None):
+        q = " ".join(sql.split()).lower()
+        if q.startswith("select") and "where name = %s" in q:
+            self._result = [self._tuple(params[0])] if params[0] in self.rows else []
+        elif q.startswith("select"):
+            self._result = [self._tuple(n) for n in sorted(self.rows, key=str.lower)]
+        elif q.startswith("insert") and "contact, notes, key_last4" in q:  # create
+            name, contact, notes, last4, by = params
+            r = self.rows.setdefault(name, {"name": name, "created_at": "now", "created_by": by})
+            r.update(key_last4=last4, revoked_at=None, revoked_by=None)
+            r["contact"] = contact or r.get("contact")
+            r["notes"] = notes or r.get("notes")
+        elif q.startswith("insert") and "rotated_at" in q:  # rotate
+            name, last4, _created_by, by = params
+            self.rows.setdefault(name, {"name": name}).update(key_last4=last4, rotated_at="now", rotated_by=by)
+        elif q.startswith("insert") and "revoked_at" in q:  # revoke
+            name, by = params
+            self.rows.setdefault(name, {"name": name}).update(revoked_at="now", revoked_by=by)
+        elif q.startswith("update partner_api_partners set contact"):
+            contact, notes, name = params
+            self.rowcount = 1 if name in self.rows else 0
+            if self.rowcount:
+                self.rows[name].update(contact=contact, notes=notes)
+        else:
+            raise AssertionError(f"unexpected SQL: {q}")
+
+    def fetchone(self):
+        return self._result[0] if self._result else None
+
+    def fetchall(self):
+        return self._result
+
+
+class _PartnerConn:
+    def __init__(self, rows=None):
+        self.rows = rows if rows is not None else {}
+        self.commits = 0
+
+    def cursor(self):
+        return _PartnerCursor(self.rows)
+
+    def commit(self):
+        self.commits += 1
+
+
+def test_create_partner_writes_the_authorizers_secret_shape_and_returns_the_key_once():
+    sm, conn = _FakeSecrets({"drilld": "h1"}), _PartnerConn()
+    out = service.create_partner(conn, sm, "Virtue_Bowling_Supply", contact="Jane", notes="pro shop", created_by="al@x")
+    key = out["key"]
+    assert key.startswith("biq_partner_") and out["status"] == "active" and out["key_last4"] == key[-4:]
+    # Same format the script writes; only the hash is stored, drilld untouched.
+    assert sm.keys() == {"drilld": "h1", "Virtue_Bowling_Supply": _hashlib.sha256(key.encode()).hexdigest()}
+    assert key not in _json.dumps(conn.rows) and key not in sm.value
+    assert conn.rows["Virtue_Bowling_Supply"]["created_by"] == "al@x"
+
+
+def test_create_partner_rejects_bad_names_and_existing_active_partners():
+    sm, conn = _FakeSecrets({"drilld": "h1"}), _PartnerConn()
+    for bad in ("", "a", "has space", "x" * 65, "semi;colon"):
+        try:
+            service.create_partner(conn, sm, bad)
+            assert False, bad
+        except ValueError:
+            pass
+    try:
+        service.create_partner(conn, sm, "drilld")
+        assert False
+    except ValueError as e:
+        assert "Rotate" in str(e)
+    assert sm.puts == 0  # nothing written on a rejected request
+
+
+def test_rotate_replaces_the_hash_and_revoke_removes_it():
+    sm, conn = _FakeSecrets({"drilld": "old"}), _PartnerConn({"drilld": {"name": "drilld"}})
+    out = service.rotate_partner_key(conn, sm, "drilld", rotated_by="al@x")
+    assert sm.keys()["drilld"] == _hashlib.sha256(out["key"].encode()).hexdigest() != "old"
+    assert conn.rows["drilld"]["rotated_by"] == "al@x"
+    rev = service.revoke_partner(conn, sm, "drilld", revoked_by="al@x")
+    assert sm.keys() == {} and rev["status"] == "revoked" and conn.rows["drilld"]["revoked_by"] == "al@x"
+    for fn in (service.rotate_partner_key, service.revoke_partner):
+        try:
+            fn(conn, sm, "drilld")
+            assert False
+        except LookupError:
+            pass
+
+
+def test_revoked_partner_can_be_issued_a_key_again():
+    sm = _FakeSecrets({})
+    conn = _PartnerConn({"acme": {"name": "acme", "revoked_at": "then", "revoked_by": "al@x", "notes": "old note"}})
+    out = service.create_partner(conn, sm, "acme")
+    assert "acme" in sm.keys() and conn.rows["acme"]["revoked_at"] is None and conn.rows["acme"]["notes"] == "old note"
+    assert out["status"] == "active"
+
+
+def test_list_partners_status_comes_from_the_secret_and_includes_script_issued_names():
+    sm = _FakeSecrets({"drilld": "h1", "from_script": "h2"})
+    conn = _PartnerConn({"drilld": {"name": "drilld"}, "gone": {"name": "gone", "revoked_at": "then"}})
+    rows = service.list_partners(conn, sm)
+    assert [(r["name"], r["status"]) for r in rows] == [("drilld", "active"), ("from_script", "active"), ("gone", "revoked")]
+
+
+def test_list_partners_when_the_secret_does_not_exist_yet():
+    assert service.list_partners(_PartnerConn({"x1": {"name": "x1"}}), _FakeSecrets(None))[0]["status"] == "revoked"
+
+
+def test_update_partner_details_edits_contact_and_notes_only():
+    conn = _PartnerConn({"drilld": {"name": "drilld", "key_last4": "abcd"}})
+    out = service.update_partner_details(conn, "drilld", contact="Bob", notes="")
+    assert out["contact"] == "Bob" and out["notes"] is None and out["key_last4"] == "abcd"
+    try:
+        service.update_partner_details(conn, "nobody", contact="x")
+        assert False
+    except LookupError:
+        pass
+
+
+class _FakeLogs:
+    def __init__(self, results, statuses=("Running", "Complete")):
+        self.results, self.statuses, self.started = results, list(statuses), None
+
+    def start_query(self, **kw):
+        self.started = kw
+        return {"queryId": "q1"}
+
+    def get_query_results(self, queryId):
+        status = self.statuses.pop(0) if len(self.statuses) > 1 else self.statuses[0]
+        return {"status": status, "results": self.results if status == "Complete" else []}
+
+
+def _row(partner, status, calls, day, last):
+    return [{"field": "partner", "value": partner}, {"field": "status", "value": status},
+            {"field": "calls", "value": str(calls)}, {"field": "day", "value": day}, {"field": "last_at", "value": last}]
+
+
+def test_partner_usage_sums_calls_and_errors_by_window():
+    import time as _time
+    from datetime import datetime, timezone
+
+    today = datetime.fromtimestamp((int(_time.time()) // 86400) * 86400, timezone.utc).strftime("%Y-%m-%d %H:%M:%S.000")
+    old = datetime.fromtimestamp((int(_time.time()) // 86400 - 20) * 86400, timezone.utc).strftime("%Y-%m-%d %H:%M:%S.000")
+    logs = _FakeLogs([
+        _row("drilld", "200", 10, today, today[:10] + " 12:00:00.000"),
+        _row("drilld", "429", 2, today, today[:10] + " 13:00:00.000"),
+        _row("drilld", "200", 5, old, old[:10] + " 09:00:00.000"),
+        _row("?", "200", 3, today, today),  # calls with no partner context are ignored
+    ])
+    usage = service.partner_usage(logs, sleep=lambda s: None)
+    assert usage == {"drilld": {"last_call_at": today[:10] + "T13:00:00+00:00",
+                                "calls_7d": 12, "calls_30d": 17, "errors_7d": 2, "errors_30d": 2}}
+    assert logs.started["logGroupName"] == "/aws/lambda/bowling-scraper-partner-api"
+    assert "parse @message" in logs.started["queryString"]
+
+
+def test_partner_usage_times_out_instead_of_hanging():
+    try:
+        service.partner_usage(_FakeLogs([], statuses=("Running",)), timeout_seconds=3, sleep=lambda s: None)
+        assert False
+    except TimeoutError:
+        pass

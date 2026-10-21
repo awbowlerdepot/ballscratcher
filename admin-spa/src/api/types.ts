@@ -1241,3 +1241,33 @@ export interface NewBallForSocial {
   image_status: AnnouncementImageStatus | null;
   image_url: string | null;
 }
+
+
+// Partner API access management (runbook 6eg). Admins only.
+export interface Partner {
+  name: string;
+  status: "active" | "revoked";
+  contact: string | null;
+  notes: string | null;
+  key_last4: string | null;
+  created_at: string | null;
+  created_by: string | null;
+  rotated_at: string | null;
+  rotated_by: string | null;
+  revoked_at: string | null;
+  revoked_by: string | null;
+  updated_at: string | null;
+}
+
+// Returned by create/rotate only: `key` is shown once and never stored.
+export interface PartnerWithKey extends Partner {
+  key: string;
+}
+
+export interface PartnerUsage {
+  last_call_at: string | null;
+  calls_7d: number;
+  calls_30d: number;
+  errors_7d: number;
+  errors_30d: number;
+}

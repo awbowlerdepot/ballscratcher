@@ -6710,3 +6710,261 @@ def list_new_balls_for_social(conn, days: int = 60) -> list:
         keys = ("product_id", "brand", "name", "created_at", "release_date", "has_description", "article_status",
                 "has_posts", "image_status", "image_url")
         return [dict(zip(keys, r)) for r in cur.fetchall()]
+
+
+# --- Partner API access management (runbook 6eg) ---
+#
+# Al: "is the access management and keys something we can add to the
+# admin.bowleriq.com" -> "yes build it". Admins-only, same gate as the
+# /users routes (app.py calls require_admin_role first).
+#
+# Two stores, on purpose:
+#   * The Secrets Manager secret PARTNER_API_KEYS_SECRET_ID,
+#     {"keys": {"<partner>": "<sha256 hex of key>"}}, is the ONLY thing
+#     partner_api_authorizer reads. A partner is active exactly when its
+#     name is in it. This code writes it in the same shape
+#     scripts/create_partner_api_key.py always has, so the authorizer, the
+#     script and existing keys are untouched.
+#   * partner_api_partners (migration 051) is the admin record alongside
+#     it: who created/rotated/revoked a key and when, the current key's
+#     last 4 characters, contact and notes. It never holds a key or hash.
+# The secret is written first: if the DB write then failed, access is
+# still correct and only the record is stale, never the reverse.
+#
+# A new key is returned to the admin ONCE in the API response, like
+# create_user's password, and is never stored. The authorizer caches the
+# secret for up to ~5 minutes, so new/rotated/revoked keys take effect
+# within that.
+#
+# Usage comes from the partner API's own access log lines
+# ("partner=<name> GET /v1/... -> 200 in 12ms", partner_api/app.py's
+# log_partner_call), via one CloudWatch Logs Insights query.
+PARTNER_KEY_PREFIX = "biq_partner_"
+PARTNER_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{2,64}$")
+DEFAULT_PARTNER_KEYS_SECRET_ID = "bowling-scraper-partner-api-keys"
+DEFAULT_PARTNER_API_LOG_GROUP = "/aws/lambda/bowling-scraper-partner-api"
+PARTNER_USAGE_DAYS = 30
+_PARTNER_COLUMNS = ("name", "contact", "notes", "key_last4", "created_at", "created_by",
+                    "rotated_at", "rotated_by", "revoked_at", "revoked_by", "updated_at")
+
+
+def _partner_secret_id() -> str:
+    return os.environ.get("PARTNER_API_KEYS_SECRET_ID", DEFAULT_PARTNER_KEYS_SECRET_ID)
+
+
+def _load_partner_keys(secrets_client) -> dict:
+    """{"<partner>": "<sha256>"} from the secret; {} if it doesn't exist yet."""
+    try:
+        raw = secrets_client.get_secret_value(SecretId=_partner_secret_id())["SecretString"]
+    except secrets_client.exceptions.ResourceNotFoundException:
+        return {}
+    return dict(json.loads(raw).get("keys", {}))
+
+
+def _save_partner_keys(secrets_client, keys: dict) -> None:
+    secrets_client.put_secret_value(
+        SecretId=_partner_secret_id(), SecretString=json.dumps({"keys": keys}, sort_keys=True)
+    )
+
+
+def _new_partner_key() -> tuple:
+    """(key, sha256 hex) -- the same format the script mints."""
+    import hashlib
+    import secrets as _secrets
+
+    key = PARTNER_KEY_PREFIX + _secrets.token_urlsafe(32)
+    return key, hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def _validate_partner_name(name: str) -> str:
+    name = (name or "").strip()
+    if not PARTNER_NAME_RE.match(name):
+        raise ValueError("Partner name must be 2-64 letters, digits, '-' or '_' (it appears in logs and can't be changed).")
+    return name
+
+
+def _partner_row(conn, name: str):
+    with conn.cursor() as cur:
+        cur.execute(f"select {', '.join(_PARTNER_COLUMNS)} from partner_api_partners where name = %s", (name,))
+        row = cur.fetchone()
+    return dict(zip(_PARTNER_COLUMNS, row)) if row else None
+
+
+def list_partners(conn, secrets_client) -> list:
+    """Every partner ever issued a key (rows) plus any name in the secret
+    with no row yet (issued by the script after migration 051), with
+    status "active" (name in the secret) or "revoked"."""
+    active = set(_load_partner_keys(secrets_client))
+    with conn.cursor() as cur:
+        cur.execute(f"select {', '.join(_PARTNER_COLUMNS)} from partner_api_partners order by lower(name)")
+        rows = [dict(zip(_PARTNER_COLUMNS, r)) for r in cur.fetchall()]
+    seen = {r["name"] for r in rows}
+    for name in sorted(active - seen, key=str.lower):
+        rows.append({c: None for c in _PARTNER_COLUMNS} | {"name": name, "notes": "Issued outside admin (script); no record yet."})
+    for r in rows:
+        r["status"] = "active" if r["name"] in active else "revoked"
+    rows.sort(key=lambda r: (r["status"] != "active", r["name"].lower()))
+    return rows
+
+
+def create_partner(conn, secrets_client, name: str, contact: str = None, notes: str = None, created_by: str = None) -> dict:
+    """Issues a key for a new partner (or a previously revoked one).
+    Returns the partner record plus "key", shown once."""
+    name = _validate_partner_name(name)
+    keys = _load_partner_keys(secrets_client)
+    if name in keys:
+        raise ValueError(f"{name} already has an active key. Use Rotate to replace it.")
+    key, digest = _new_partner_key()
+    keys[name] = digest
+    _save_partner_keys(secrets_client, keys)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into partner_api_partners (name, contact, notes, key_last4, created_at, created_by)
+            values (%s, %s, %s, %s, now(), %s)
+            on conflict (name) do update set
+                contact = coalesce(excluded.contact, partner_api_partners.contact),
+                notes = coalesce(excluded.notes, partner_api_partners.notes),
+                key_last4 = excluded.key_last4,
+                rotated_at = now(), rotated_by = excluded.created_by,
+                revoked_at = null, revoked_by = null, updated_at = now()
+            """,
+            (name, contact or None, notes or None, key[-4:], created_by),
+        )
+    conn.commit()
+    return _partner_row(conn, name) | {"status": "active", "key": key}
+
+
+def rotate_partner_key(conn, secrets_client, name: str, rotated_by: str = None) -> dict:
+    """Replaces an active partner's key; the old one stops working within
+    the authorizer's cache window. Returns the record plus "key", shown once."""
+    keys = _load_partner_keys(secrets_client)
+    if name not in keys:
+        raise LookupError(f"{name} has no active key to rotate.")
+    key, digest = _new_partner_key()
+    keys[name] = digest
+    _save_partner_keys(secrets_client, keys)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into partner_api_partners (name, key_last4, created_by, rotated_at, rotated_by)
+            values (%s, %s, %s, now(), %s)
+            on conflict (name) do update set key_last4 = excluded.key_last4,
+                rotated_at = now(), rotated_by = excluded.rotated_by, updated_at = now()
+            """,
+            (name, key[-4:], rotated_by, rotated_by),
+        )
+    conn.commit()
+    return _partner_row(conn, name) | {"status": "active", "key": key}
+
+
+def revoke_partner(conn, secrets_client, name: str, revoked_by: str = None) -> dict:
+    """Removes a partner's key from the secret (access ends within the
+    authorizer's cache window) and records who revoked it."""
+    keys = _load_partner_keys(secrets_client)
+    if name not in keys:
+        raise LookupError(f"{name} has no active key.")
+    del keys[name]
+    _save_partner_keys(secrets_client, keys)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            insert into partner_api_partners (name, revoked_at, revoked_by)
+            values (%s, now(), %s)
+            on conflict (name) do update set revoked_at = now(), revoked_by = excluded.revoked_by, updated_at = now()
+            """,
+            (name, revoked_by),
+        )
+    conn.commit()
+    return _partner_row(conn, name) | {"status": "revoked"}
+
+
+def update_partner_details(conn, name: str, contact: str = None, notes: str = None) -> dict:
+    """Edits contact/notes only (the name is fixed: it's in the logs)."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "update partner_api_partners set contact = %s, notes = %s, updated_at = now() where name = %s",
+            (contact or None, notes or None, name),
+        )
+        if cur.rowcount == 0:
+            raise LookupError(f"No partner named {name}.")
+    conn.commit()
+    return _partner_row(conn, name)
+
+
+def partner_usage(logs_client, days: int = PARTNER_USAGE_DAYS, timeout_seconds: float = 20.0, sleep=None) -> dict:
+    """{"<partner>": {"last_call_at", "calls_7d", "calls_30d", "errors_7d",
+    "errors_30d"}} from the partner API's access log over the last `days`
+    days. One Logs Insights query, grouped by partner, status and day; 4xx
+    and 5xx count as errors. Raises TimeoutError if the query doesn't
+    finish in time (the page shows usage as unavailable)."""
+    import time as _time
+
+    sleep = sleep or _time.sleep
+    now = int(_time.time())
+    query = (
+        'filter @message like /partner=\\S+ \\S+ \\S+ -> \\d+ in/ '
+        '| parse @message /partner=(?<partner>\\S+) (?<method>\\S+) (?<path>\\S+) -> (?<status>\\d+) in/ '
+        '| stats count(*) as calls, max(@timestamp) as last_at by partner, status, datefloor(@timestamp, 1d) as day'
+    )
+    started = logs_client.start_query(
+        logGroupName=os.environ.get("PARTNER_API_LOG_GROUP", DEFAULT_PARTNER_API_LOG_GROUP),
+        startTime=now - days * 86400, endTime=now, queryString=query, limit=10000,
+    )
+    waited = 0.0
+    while True:
+        res = logs_client.get_query_results(queryId=started["queryId"])
+        if res["status"] in ("Complete", "Failed", "Cancelled", "Timeout"):
+            break
+        if waited >= timeout_seconds:
+            raise TimeoutError("Usage query is taking too long; try again.")
+        sleep(1.0)
+        waited += 1.0
+    if res["status"] != "Complete":
+        raise RuntimeError(f"Usage query {res['status'].lower()}.")
+
+    # "Last 7 days" = today (UTC) plus the previous 6 full days.
+    week_start = (now // 86400) * 86400 - 6 * 86400
+    out = {}
+    for row in res.get("results", []):
+        f = {c["field"]: c["value"] for c in row}
+        partner = f.get("partner")
+        if not partner or partner == "?":
+            continue
+        calls = int(float(f.get("calls", 0)))
+        is_error = int(f.get("status", "0")) >= 400
+        last_at = f.get("last_at")
+        day_epoch = _logs_insights_epoch(f.get("day"))
+        u = out.setdefault(partner, {"last_call_at": None, "calls_7d": 0, "calls_30d": 0, "errors_7d": 0, "errors_30d": 0})
+        u["calls_30d"] += calls
+        u["errors_30d"] += calls if is_error else 0
+        if day_epoch is not None and day_epoch >= week_start:
+            u["calls_7d"] += calls
+            u["errors_7d"] += calls if is_error else 0
+        if last_at and (u["last_call_at"] is None or last_at > u["last_call_at"]):
+            u["last_call_at"] = last_at
+    for u in out.values():
+        u["last_call_at"] = _logs_insights_iso(u["last_call_at"])
+    return out
+
+
+def _logs_insights_epoch(value):
+    """Logs Insights timestamps look like '2026-10-21 17:29:03.123'
+    (UTC). Returns epoch seconds, or None."""
+    from datetime import datetime, timezone
+
+    if not value:
+        return None
+    try:
+        return int(datetime.strptime(value[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc).timestamp())
+    except ValueError:
+        return None
+
+
+def _logs_insights_iso(value):
+    epoch = _logs_insights_epoch(value)
+    if epoch is None:
+        return None
+    from datetime import datetime, timezone
+
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
