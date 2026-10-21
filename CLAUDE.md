@@ -8,6 +8,7 @@ This is a serverless pipeline built with AWS SAM. It scrapes bowling ball manufa
 - the marketing site at bowleriq.com
 - the public API at api.bowleriq.io
 - the partner API at api.bowleriq.io/partner/v1, a versioned, key-protected read-only contract for other platforms (runbook 6cj, docs/partner-api-v1.md)
+- the partner API reference at docs.bowleriq.io (Scalar, generated from the API's OpenAPI schema; runbooks 6ee/6ef), and the Developers page at bowleriq.com/developers
 - the image resizer at img.bowleriq.io
 
 The GitHub repo is `awbowlerdepot/ballscratcher`, and everything deploys to the AWS region `us-west-1`.

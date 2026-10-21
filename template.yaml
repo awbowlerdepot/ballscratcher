@@ -2211,13 +2211,15 @@ Resources:
       # only, and only the Authorization header; partner servers don't use
       # CORS at all. API Gateway answers the OPTIONS preflight itself
       # (there's no OPTIONS route), so the key authorizer isn't involved
-      # in it, and every data call still needs a key. Without a docs domain
-      # the list is empty and no browser origin is allowed.
+      # in it, and every data call still needs a key.
+      # No !If around AllowOrigins: SAM writes such a conditional in place of
+      # the WHOLE x-amazon-apigateway-cors block, which API Gateway then
+      # drops (the first 6ef deploy ended up with no CORS at all). With
+      # DocsSiteDomainName blank this is "https://", which matches no
+      # browser origin, so it's still closed.
       CorsConfiguration:
-        AllowOrigins: !If
-          - HasDocsSiteDomain
-          - - !Sub "https://${DocsSiteDomainName}"
-          - !Ref AWS::NoValue
+        AllowOrigins:
+          - !Sub "https://${DocsSiteDomainName}"
         AllowMethods:
           - GET
         AllowHeaders:

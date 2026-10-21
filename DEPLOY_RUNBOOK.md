@@ -20530,6 +20530,34 @@ Checked locally: no horizontal overflow at 375, 768 or 1440 px.
   | `d1do6bpin419o1.cloudfront.net/v1/brands` | 404 |
 
   The page renders with no console errors and no AI/MCP buttons.
+- **Steps 3–4 done.** Al added both GoDaddy CNAMEs. The cert was ISSUED
+  at 17:29 UTC. samconfig now sets `DocsSiteDomainName` and
+  `DocsSiteCertificateArn`, and the stack was deployed.
+- **Incident: CORS silently missing.** After that deploy the API's
+  `CorsConfiguration` was **null** and the preflight returned 404.
+
+  The processed template showed SAM had written the `!If` around
+  `AllowOrigins` *as* the whole `x-amazon-apigateway-cors` value, which
+  API Gateway discarded.
+
+  Fixed by dropping the conditional: `AllowOrigins: [!Sub
+  "https://${DocsSiteDomainName}"]`. With a blank domain that's
+  "https://", which matches nothing, so it's still closed. Redeployed.
+- **Verified live:**
+  - `https://docs.bowleriq.io/` and `/openapi.json` return 200;
+    `/v1/brands` returns 404.
+  - The API's CORS is `https://docs.bowleriq.io`, GET, authorization,
+    max-age 3600.
+  - The preflight from docs.bowleriq.io returns 204 with the
+    allow-origin, methods and headers.
+  - The preflight from another origin returns 204 with **no**
+    allow-origin, so browsers block it.
+  - A GET with no key returns 401 with the allow-origin header.
+  - A `fetch` from inside the live docs page with a bogus key returns a
+    readable 403 `{"message":"Forbidden"}`, so with a real key Try-it
+    returns data.
+- **Remaining:** step 5, the marketing pages, once developers@bowleriq.com
+  exists.
 
 ## 7. Ongoing operations
 
