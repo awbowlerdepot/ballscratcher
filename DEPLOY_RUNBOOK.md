@@ -20556,8 +20556,30 @@ Checked locally: no horizontal overflow at 375, 768 or 1440 px.
   - A `fetch` from inside the live docs page with a bogus key returns a
     readable 403 `{"message":"Forbidden"}`, so with a real key Try-it
     returns data.
-- **Remaining:** step 5, the marketing pages, once developers@bowleriq.com
-  exists.
+- **Step 5 done, without the email.** Al: "can you publish the page with
+  out the email on there". The mailto button, the email step and the
+  footer address were removed, plus the address in an HTML comment
+  (visible in page source).
+  - The hero's second button is now "How to get access" (#start).
+  - Step 01 is "Talk to us: access is by arrangement; partner keys are
+    issued by BowlerIQ to platforms we work with directly".
+  - Add a contact address back once one exists.
+- **Published 2026-10-21.** Bucket `bowling-scraper-marketing-site-563981859606`:
+  - `index.html` (nav link and Developers footer column). The live copy
+    was backed up first; it matched the repo version before 6ef.
+  - `developers` (key with no extension, `Content-Type: text/html`).
+
+  Invalidated `/`, `/index.html` and `/developers` on E3HEP5U9OCRGSV.
+  Checked: `https://www.bowleriq.com/developers` returns 200 and contains
+  no email; the home page has the Developers link.
+- **Known, not fixed: GoDaddy apex forwarding drops paths.**
+  `https://bowleriq.com/` returns 301 to `http://www.bowleriq.com`, but
+  `bowleriq.com/developers` returns GoDaddy's own 404. That's the
+  apex-forwarding setup from the MarketingSiteCertificateArn note. Every
+  on-site link uses www or a relative path, so only a hand-typed bare
+  URL is affected. To fix, turn on path forwarding in GoDaddy's domain
+  forwarding (if offered), or move the apex to an ALIAS-capable DNS
+  provider (Route 53 or Cloudflare).
 
 ## 7. Ongoing operations
 
