@@ -20810,6 +20810,32 @@ optional secret `KIOSK_CONFIG_PIN`.
 **Phase 2** is the Windows 11 / Edge kiosk setup guide for the GMKtec G10.
 **Phase 3** is anonymous usage stats per location in admin.
 
+**Go-live progress, 2026-10-21** (Al: "yes start steps 1-4, use the
+default pin"):
+- **Step 1:** cert
+  `arn:aws:acm:us-east-1:563981859606:certificate/fbf3cd2b-9527-4a8e-aede-e2a532304bf0`
+  is PENDING_VALIDATION. Validation CNAME at GoDaddy (bowlerdepot.com):
+  `_c451a74badc707cfa56a0fd814f50313.kiosk` →
+  `_1bbfcf5e6668f4fc4c0ee5f950e7f233.wzccmgtwzk.acm-validations.aws.`
+- **Step 2:** UPDATE_COMPLETE. Bucket
+  `bowling-scraper-kiosk-site-563981859606`, distribution `E2O9SUYOUTLTEF`
+  (`d1c1o6cpna7go9.cloudfront.net`), deploy role
+  `bowling-scraper-kiosk-site-deploy-563981859606`.
+- **Step 3:** `gh variable set` for `KIOSK_SITE_BUCKET`,
+  `KIOSK_SITE_DISTRIBUTION_ID` and `KIOSK_SITE_DEPLOY_ROLE_ARN`. There is no
+  `KIOSK_CONFIG_PIN` secret, so the default PIN 2468 applies.
+- **Step 4:** push. "Deploy kiosk site" run 39667670041 succeeded.
+  - `/`, `/home`, `/ball/…`, `/m/…`, the logo and robots.txt all return 200
+    from CloudFront.
+  - The live `/ball/<Portal>` renders with the chart, 8 videos and the new
+    logo, with no console errors.
+  - QR codes use the page origin, so they point at the cloudfront.net
+    domain until step 5.
+- **Remaining, step 5:** after Al adds the validation CNAME and the cert is
+  ISSUED, add `KioskSiteDomainName="kiosk.bowlerdepot.com"
+  KioskSiteCertificateArn="<arn above>"` to samconfig and deploy. Then add a
+  CNAME at GoDaddy: `kiosk` → `d1c1o6cpna7go9.cloudfront.net`.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
