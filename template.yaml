@@ -790,6 +790,22 @@ Parameters:
       separate single-name certs (CloudFront only accepts one cert per
       distribution, and every Alias must be covered by that one cert).
 
+  KioskSiteDomainName:
+    Type: String
+    Default: ""
+    Description: >
+      Custom domain for the BowlerDepot in-store kiosk app (runbook 6eh),
+      e.g. kiosk.bowlerdepot.com. Al: "if we go with web it could be
+      kiosk.bowlerdepot.com". Same blank-means-*.cloudfront.net-only
+      convention as the other site domains; set together with
+      KioskSiteCertificateArn.
+  KioskSiteCertificateArn:
+    Type: String
+    Default: ""
+    Description: >
+      ACM certificate ARN for KioskSiteDomainName (us-east-1, like every
+      CloudFront certificate in this template).
+
   DocsSiteDomainName:
     Type: String
     Default: ""
@@ -820,6 +836,7 @@ Conditions:
   HasPublicApiDomain: !Not [!Equals [!Ref PublicApiDomainName, ""]]
   HasMarketingSiteDomain: !Not [!Equals [!Ref MarketingSiteDomainName, ""]]
   HasDocsSiteDomain: !Not [!Equals [!Ref DocsSiteDomainName, ""]]
+  HasKioskSiteDomain: !Not [!Equals [!Ref KioskSiteDomainName, ""]]
   HasGitHubRepo: !Not [!Equals [!Ref GitHubRepo, ""]]
   ShouldCreateGitHubOidcProvider: !And
     - !Condition HasGitHubRepo
@@ -4505,6 +4522,122 @@ Resources:
             - EventType: viewer-request
               FunctionARN: !GetAtt DocsSiteRouterFunction.FunctionMetadata.FunctionARN
 
+  # BowlerDepot in-store kiosk app (runbook 6eh), kiosk.bowlerdepot.com.
+  # Same S3 + OAC + CloudFront + GitHub-OIDC deploy shape as the Learn site,
+  # minus Learn's pretty-URL function and prerender: the kiosk is a plain
+  # SPA, so every unknown path falls back to index.html (403/404 -> 200).
+  KioskSiteBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub bowling-scraper-kiosk-site-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  KioskSiteOAC:
+    Type: AWS::CloudFront::OriginAccessControl
+    Properties:
+      OriginAccessControlConfig:
+        Name: !Sub bowling-scraper-kiosk-site-oac-${AWS::AccountId}
+        OriginAccessControlOriginType: s3
+        SigningBehavior: always
+        SigningProtocol: sigv4
+
+  KioskSiteDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Comment: BowlerDepot in-store kiosk (runbook 6eh)
+        DefaultRootObject: index.html
+        PriceClass: PriceClass_100
+        HttpVersion: http2
+        Aliases: !If
+          - HasKioskSiteDomain
+          - - !Ref KioskSiteDomainName
+          - !Ref AWS::NoValue
+        ViewerCertificate: !If
+          - HasKioskSiteDomain
+          - AcmCertificateArn: !Ref KioskSiteCertificateArn
+            SslSupportMethod: sni-only
+            MinimumProtocolVersion: TLSv1.2_2021
+          - CloudFrontDefaultCertificate: true
+        Origins:
+          - Id: KioskSiteBucketOrigin
+            DomainName: !GetAtt KioskSiteBucket.RegionalDomainName
+            OriginAccessControlId: !GetAtt KioskSiteOAC.Id
+            S3OriginConfig:
+              OriginAccessIdentity: ""
+        DefaultCacheBehavior:
+          TargetOriginId: KioskSiteBucketOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          Compress: true
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+        CustomErrorResponses:
+          - ErrorCode: 403
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+          - ErrorCode: 404
+            ResponseCode: 200
+            ResponsePagePath: /index.html
+
+  KioskSiteBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref KioskSiteBucket
+      PolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudfront.amazonaws.com
+            Action: s3:GetObject
+            Resource: !Sub arn:aws:s3:::${KioskSiteBucket}/*
+            Condition:
+              StringEquals:
+                AWS:SourceArn: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${KioskSiteDistribution}
+
+  KioskSiteDeployRole:
+    Type: AWS::IAM::Role
+    Condition: HasGitHubRepo
+    Properties:
+      RoleName: !Sub bowling-scraper-kiosk-site-deploy-${AWS::AccountId}
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Sub arn:aws:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub:
+                  !Sub
+                  - "repo:${Owner}*/${Repo}*:ref:refs/heads/main"
+                  - Owner: !Select [0, !Split ["/", !Ref GitHubRepo]]
+                    Repo: !Select [1, !Split ["/", !Ref GitHubRepo]]
+      Policies:
+        - PolicyName: kiosk-site-deploy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:ListBucket
+                Resource: !GetAtt KioskSiteBucket.Arn
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: !Sub arn:aws:s3:::${KioskSiteBucket}/*
+              - Effect: Allow
+                Action:
+                  - cloudfront:CreateInvalidation
+                Resource: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${KioskSiteDistribution}
+
   GitHubOidcProvider:
     Type: AWS::IAM::OIDCProvider
     Condition: ShouldCreateGitHubOidcProvider
@@ -4802,6 +4935,16 @@ Resources:
           CachePolicyId: !Ref ImageResizerCachePolicy
 
 Outputs:
+  KioskSiteBucketName:
+    Value: !Ref KioskSiteBucket
+  KioskSiteDistributionId:
+    Value: !Ref KioskSiteDistribution
+  KioskSiteDistributionDomain:
+    Description: CloudFront domain for kiosk.bowlerdepot.com -- the CNAME target (runbook 6eh).
+    Value: !GetAtt KioskSiteDistribution.DomainName
+  KioskSiteDeployRoleArn:
+    Condition: HasGitHubRepo
+    Value: !GetAtt KioskSiteDeployRole.Arn
   DocsSiteDistributionDomain:
     Condition: HasPublicApiDomain
     Description: CloudFront domain for docs.bowleriq.io -- the CNAME target at GoDaddy (runbook 6ef).

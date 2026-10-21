@@ -10,6 +10,7 @@ This is a serverless pipeline built with AWS SAM. It scrapes bowling ball manufa
 - the partner API at api.bowleriq.io/partner/v1, a versioned, key-protected read-only contract for other platforms (runbook 6cj, docs/partner-api-v1.md)
 - the partner API reference at docs.bowleriq.io (Scalar, generated from the API's OpenAPI schema; runbooks 6ee/6ef), and the Developers page at bowleriq.com/developers
 - the image resizer at img.bowleriq.io
+- the BowlerDepot in-store kiosk at kiosk.bowlerdepot.com (`kiosk/`, runbook 6eh): a touch app for 27" landscape screens, built on the public API
 
 The GitHub repo is `awbowlerdepot/ballscratcher`, and everything deploys to the AWS region `us-west-1`.
 
@@ -38,7 +39,7 @@ The GitHub repo is `awbowlerdepot/ballscratcher`, and everything deploys to the 
 - `db/migrations/NNN_*.sql` holds numbered migrations (001–050), applied by hand with `psql` in order. Add a new migration with the next number.
 - `scripts/` holds one-off backfill and rescrape jobs, run locally against the database. `scripts/home_transcript_fetcher*.py` runs on a Raspberry Pi at home, because YouTube blocks transcript fetches from AWS IP addresses.
 - `tests/` has one `test_<module>.py` per module. Each test file inserts `src/<module>` into `sys.path` and does `import app`, and there is no conftest.
-- The frontends are Vite + React + TypeScript + Tailwind: `admin-spa/`, `bowlerdepot-learn/` (its build prerenders pages) and `consumer-site/`. `marketing-site/` and `admin-site/` are single static `index.html` files.
+- The frontends are Vite + React + TypeScript + Tailwind: `admin-spa/`, `bowlerdepot-learn/` (its build prerenders pages), `consumer-site/` and `kiosk/`. `marketing-site/` and `admin-site/` are single static `index.html` files.
 
 ## Commands
 

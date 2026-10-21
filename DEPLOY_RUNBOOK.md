@@ -20697,6 +20697,119 @@ issues shows up on the page as active, with "Issued outside admin
 - Create, rotate and revoke weren't exercised in prod, so as not to mint
   or replace real keys. Al tries them from the page.
 
+
+### 6eh. BowlerDepot in-store kiosk app, phase 1 (`kiosk/`, kiosk.bowlerdepot.com) (2026-10-21)
+
+Al: "i purchased a 27" touchscreen and a small GMKtec G10 Mini PC ... build
+a kiosk that is locked down to bowlerdepot.com sites ... Really it could be
+an entirely new 'kiosk' ui that is built with bowleriq properties only ...
+the experience to match instore not online ... it could be
+kiosk.bowlerdepot.com".
+
+**Decisions:**
+- **Scope:** finding the right ball, browse and compare, reviews and
+  videos, and Learn articles, plus extras worth having.
+- **Acting on a ball:** "Staff and scan qr code that opens ball on a kiosk
+  specific page that has links to the public sites learn,ecom,etc".
+- **Device:** Windows 11 kiosk mode. The setup guide is phase 2.
+- **Prices:** none.
+- **Orientation:** landscape.
+- **Location:** "these will be installed at locations and knowing which is
+  which is helpful. so maybe a config screen that you can set the
+  location".
+- **Logo:** "use the bowler depot logo not the .com version". It is
+  rendered from Al's `thebowlerdepot-for-print.ai` (PDF-compatible) into
+  `kiosk/public/bowlerdepot-logo-white.png` and `-dark.png`, trimmed and
+  resized to 1200px wide. The white copy keeps the alpha.
+
+**Why a new app, not a locked-down bowlerdepot.com:** the store has
+checkout, logins, payment forms, links out and phone/desktop navigation,
+none of which belong on a shared in-store screen.
+
+**App** (`kiosk/`): Vite + React + TS + Tailwind, a dark high-contrast
+theme in BowlerDepot navy/blue, and touch targets of 56–64px and up. Data
+all comes from the public API (CORS `*`): `/learn/plotter`,
+`/learn/plotter/ball/{id}`, `/learn/plotter/lookup`, `/products`,
+`/products/{id}`, `/products/{id}/article`, `/articles`,
+`/articles/{slug}` and `/learn/signage/{slug}`. There's a 30-minute
+in-memory cache. The plotter chart and model are copied from
+bowlerdepot-learn.
+
+| Route | Screen |
+|---|---|
+| `/` | Attract loop: the newest ball reviews, using a ball's approved signage clip when it has one, otherwise the article hero with a push-in. Images are preloaded. |
+| `/home` | Tiles, plus "Just released". Fits exactly in 1920×1080. |
+| `/find` | Three big-button questions (lane oil, motion shape, cover), giving `recommendable` current balls ranked by distance on the plotter. The range widens by 1.5 if fewer than 4 match. |
+| `/browse` | Brand, cover and lane-oil chips; newest, popular or A–Z. |
+| `/ball/:id` | Hero, the hook and buttons, QR "take it with you"; specs and per-weight RG/diff/MB; plotter focus plus all suggestion groups; reviewer summary (Markdown) and article pros/cons/who; review videos (youtube-nocookie modal, rel=0, no fullscreen). |
+| `/compare` | Up to 3 balls; a spec table plus a mini oil×motion chart. |
+| `/replace` | "My ball was discontinued": search, then a retired ball's `closest` current balls, the chart and the steps. |
+| `/next` | "What's next for my bag": pick your ball, then the 4 directional steps and similar balls. |
+| `/new` | Release-date order, with "Coming soon" badges. |
+| `/learn`, `/learn/:slug` | Kiosk article reader; never opens the live Learn site. |
+| `/m/:id` | **Phone hand-off** (the QR target): a light mobile page with links to the bowlerdepot.com product (`ecommerce_url`), the Learn review, the Learn plotter and the manufacturer. Links are tagged `utm_source=kiosk&utm_medium=qr&utm_campaign=<location>`. |
+| `/config` | Hidden: hold the logo for 3s, then the PIN (`VITE_KIOSK_CONFIG_PIN`, default 2468). Holds the location (localStorage, with `?location=` in the start URL winning), the device id (random, per device), the build stamp, and Reload. The PIN only keeps customers out; it sits in the JS bundle. |
+
+- **Idle reset:** 90s without a touch clears the compare tray and per-page
+  state (`sessionKey`) and returns to `/`. It is off on `/`, `/m/*` and
+  `/config`.
+- **On-screen keyboard:** for search and location. Both it and the PIN pad
+  build each press on the latest value, a fix after quick taps dropped
+  characters in testing.
+- **No pinch-zoom, text selection or callouts** on the kiosk; the phone
+  page allows selection.
+- **Edge mode:** use **interactive signage** (not "public browsing", whose
+  InPrivate wipe would erase the stored location). The app does its own
+  reset.
+
+**Checked locally** at 1920×1080 against the live API:
+- **Finder:** three answers gave "12 balls that fit".
+- **Ball page (900 Global Portal):** specs, chart, all 5 suggestion groups,
+  pros, 8 videos and the QR code.
+- **Compare:** Portal vs Reckoning, all rows, both dots.
+- **Replace:** "black widow" gave the retired Black Widows; picking one
+  showed the closest current balls, the chart and the steps.
+- **Learn:** 48 cards; the Portal article showed Performance, Pros, Cons,
+  Verdict, FAQ, a ball link and the QR code.
+- **New:** 24 cards, with coming-soon badges.
+- **Browse:** Storm plus Heavy oil gave 4 of 177.
+- **Hand-off at 375px:** links tagged with the location; no horizontal
+  overflow.
+- **Config:** the PIN unlocks, the location saves and shows in the header.
+- `npm run build` passes.
+
+**Hosting** (`template.yaml`):
+- `KioskSiteBucket`, `KioskSiteOAC`, `KioskSiteDistribution` (an SPA:
+  403/404 return `/index.html` with 200), `KioskSiteBucketPolicy` and
+  `KioskSiteDeployRole` (GitHub OIDC; S3 put/delete and invalidation);
+- parameters `KioskSiteDomainName` and `KioskSiteCertificateArn`;
+- outputs `KioskSiteBucketName`, `KioskSiteDistributionId`,
+  `KioskSiteDistributionDomain` and `KioskSiteDeployRoleArn`.
+
+**CI:** `.github/workflows/deploy-kiosk-site.yml` runs on push to
+`kiosk/**`. It needs the repo variables `KIOSK_SITE_BUCKET`,
+`KIOSK_SITE_DISTRIBUTION_ID` and `KIOSK_SITE_DEPLOY_ROLE_ARN`, and an
+optional secret `KIOSK_CONFIG_PIN`.
+
+**Go-live:**
+1. Request the cert:
+
+       aws acm request-certificate --region us-east-1 --domain-name kiosk.bowlerdepot.com --validation-method DNS
+
+   Add the validation CNAME at GoDaddy (bowlerdepot.com is on
+   domaincontrol.com, the same as the learn. CNAME).
+2. `sam build && sam deploy`, which creates the bucket, distribution and
+   role.
+3. Set the 3 repo variables from the outputs (`gh variable set ...`), and
+   optionally `gh secret set KIOSK_CONFIG_PIN`.
+4. Push, so the workflow builds and deploys.
+5. Once the cert is ISSUED, add `KioskSiteDomainName` and
+   `KioskSiteCertificateArn` to samconfig and deploy. At GoDaddy, add a
+   CNAME `kiosk` pointing to `KioskSiteDistributionDomain`.
+
+**Phase 2** is the Windows 11 / Edge kiosk setup guide for the GMKtec G10.
+**Phase 3** is anonymous usage stats per location in admin.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
