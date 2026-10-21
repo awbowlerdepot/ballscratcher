@@ -2210,6 +2210,29 @@ Resources:
             ApiId: !Ref PartnerHttpApi
             Path: /{proxy+}
             Method: GET
+        # Public API reference (runbook 6ee). Al: "can we start with some api
+        # documentation?" -- a public page (Al's pick) at
+        # https://api.bowleriq.io/partner/docs, rendered by Scalar from
+        # /openapi.json. These two exact routes skip the key check, so
+        # anyone can READ the docs; every /v1 data route still matches
+        # /{proxy+} above and needs a partner key. HTTP API picks the most
+        # specific route, so these win over the proxy.
+        PartnerApiDocs:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref PartnerHttpApi
+            Path: /docs
+            Method: GET
+            Auth:
+              Authorizer: NONE
+        PartnerApiOpenApi:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref PartnerHttpApi
+            Path: /openapi.json
+            Method: GET
+            Auth:
+              Authorizer: NONE
 
   PartnerApiMapping:
     Type: AWS::ApiGatewayV2::ApiMapping

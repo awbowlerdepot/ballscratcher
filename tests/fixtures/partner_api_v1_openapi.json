@@ -3,6 +3,53 @@
     "schemas": {
       "Ball": {
         "additionalProperties": false,
+        "examples": [
+          {
+            "bowlerdepot_url": "https://bowlerdepot.com/storm-phaze-ii/",
+            "brand": {
+              "id": "6a1f0c1e-2b5d-4c55-9a51-0f4e1b2c3d4e",
+              "name": "Storm"
+            },
+            "color": "Pitch Purple",
+            "content_changed_at": "2026-10-05T15:42:10.123Z",
+            "core": {
+              "name": "Velocity",
+              "type": "symmetric"
+            },
+            "coverstock": {
+              "material": "reactive_resin",
+              "name": "TX-16 Solid",
+              "type": "solid"
+            },
+            "factory_finish": "1500 Grit Polished",
+            "finish_category": "polished",
+            "has_particle": false,
+            "id": "ff32beb3-57fc-4c61-abb4-c4cab2b46240",
+            "image_url": "https://img.bowleriq.io/product-images/ff32beb3/detail.png?w=800",
+            "learn_article_url": "https://learn.bowlerdepot.com/articles/storm-phaze-ii/",
+            "manufacturer_url": "https://www.stormbowling.com/phaze-ii",
+            "name": "PHAZE II",
+            "plotter": {
+              "motion": 14.4,
+              "oil": 9.1,
+              "source": "estimated"
+            },
+            "release_date": "2018-01-25",
+            "status": "current",
+            "weights": [
+              {
+                "differential": 0.051,
+                "rg": 2.48,
+                "weight_lbs": 16
+              },
+              {
+                "differential": 0.05,
+                "rg": 2.49,
+                "weight_lbs": 15
+              }
+            ]
+          }
+        ],
         "properties": {
           "bowlerdepot_url": {
             "anyOf": [
@@ -28,6 +75,7 @@
                 "type": "null"
               }
             ],
+            "description": "Colorway as the manufacturer names it.",
             "title": "Color"
           },
           "content_changed_at": {
@@ -68,9 +116,11 @@
                 "type": "null"
               }
             ],
+            "description": "The factory finish, grouped as polished, satin or dull.",
             "title": "Finish Category"
           },
           "has_particle": {
+            "description": "True when the cover contains particle (additive) material.",
             "title": "Has Particle",
             "type": "boolean"
           },
@@ -88,6 +138,7 @@
                 "type": "null"
               }
             ],
+            "description": "Product photo (resized, CDN-hosted).",
             "title": "Image Url"
           },
           "learn_article_url": {
@@ -103,6 +154,7 @@
             "title": "Learn Article Url"
           },
           "manufacturer_url": {
+            "description": "The ball's page on the manufacturer's site.",
             "title": "Manufacturer Url",
             "type": "string"
           },
@@ -118,7 +170,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Position on the ball motion plotter; null if the ball isn't plotted."
           },
           "release_date": {
             "anyOf": [
@@ -130,6 +183,7 @@
                 "type": "null"
               }
             ],
+            "description": "Manufacturer release date, when known.",
             "title": "Release Date"
           },
           "status": {
@@ -228,6 +282,7 @@
             "type": "string"
           },
           "name": {
+            "description": "Brand name as the manufacturer writes it, e.g. 'Storm', 'Roto Grip'.",
             "title": "Name",
             "type": "string"
           }
@@ -286,6 +341,7 @@
             "type": "string"
           },
           "changed_at": {
+            "description": "When the change happened.",
             "format": "date-time",
             "title": "Changed At",
             "type": "string"
@@ -351,6 +407,7 @@
                 "type": "null"
               }
             ],
+            "description": "Manufacturer's core name, e.g. 'Velocity'.",
             "title": "Name"
           },
           "type": {
@@ -366,6 +423,7 @@
                 "type": "null"
               }
             ],
+            "description": "Symmetric or asymmetric core.",
             "title": "Type"
           }
         },
@@ -389,6 +447,7 @@
                 "type": "null"
               }
             ],
+            "description": "Cover chemistry family.",
             "title": "Material"
           },
           "name": {
@@ -417,10 +476,41 @@
                 "type": "null"
               }
             ],
+            "description": "Solid, pearl or hybrid cover.",
             "title": "Type"
           }
         },
         "title": "Coverstock",
+        "type": "object"
+      },
+      "ErrorDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "description": "What went wrong.",
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "ErrorDetail",
+        "type": "object"
+      },
+      "GatewayError": {
+        "additionalProperties": false,
+        "properties": {
+          "message": {
+            "description": "'Unauthorized', 'Forbidden' or 'Too Many Requests'.",
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "GatewayError",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -509,6 +599,7 @@
         "additionalProperties": false,
         "properties": {
           "less_oil": {
+            "description": "Nearest step toward lighter oil.",
             "items": {
               "$ref": "#/components/schemas/PlotterNeighbor"
             },
@@ -516,6 +607,7 @@
             "type": "array"
           },
           "more_angular": {
+            "description": "Nearest step toward a more angular backend.",
             "items": {
               "$ref": "#/components/schemas/PlotterNeighbor"
             },
@@ -523,6 +615,7 @@
             "type": "array"
           },
           "more_oil": {
+            "description": "Nearest step toward heavier oil.",
             "items": {
               "$ref": "#/components/schemas/PlotterNeighbor"
             },
@@ -530,6 +623,7 @@
             "type": "array"
           },
           "smoother": {
+            "description": "Nearest step toward a smoother backend.",
             "items": {
               "$ref": "#/components/schemas/PlotterNeighbor"
             },
@@ -667,6 +761,7 @@
             "title": "Rg"
           },
           "weight_lbs": {
+            "description": "Ball weight in pounds (typically 10-16).",
             "title": "Weight Lbs",
             "type": "integer"
           }
@@ -677,10 +772,18 @@
         "title": "Weight",
         "type": "object"
       }
+    },
+    "securitySchemes": {
+      "PartnerKey": {
+        "description": "Your BowlerIQ partner key, sent as `Authorization: Bearer <key>`.",
+        "scheme": "bearer",
+        "type": "http"
+      }
     }
   },
   "info": {
-    "description": "Read-only bowling ball data for BowlerIQ partner platforms. Authenticate with `Authorization: Bearer <partner key>`. v1 only ever grows (new optional fields/endpoints); breaking changes ship as /v2.",
+    "description": "\nRead-only bowling ball data for BowlerIQ partner platforms: specs per weight,\ncover and core, ball motion plotter positions with suggestions, and links to\nBowlerDepot Learn reviews and BowlerDepot product pages.\n\n## Getting started\n\n1. **Get a key.** BowlerIQ issues one key per partner platform. Keep it\n   server-side: never ship it in a browser or mobile app.\n2. **Send it on every request** as `Authorization: Bearer <your key>`.\n   To try calls on this page, click **Authentication** and paste your key;\n   it's sent only to `api.bowleriq.io`.\n3. **Load everything once**, then **keep in sync** with `GET /v1/changes`\n   (see *Syncing* below).\n\n```bash\ncurl -s -H \"Authorization: Bearer $BOWLERIQ_PARTNER_KEY\" \\\n  \"https://api.bowleriq.io/partner/v1/changes?limit=50\"\n```\n\n## Basics\n\n- **Format:** JSON. Every response includes `\"api_version\": \"1\"`.\n- **Rate limit:** about 10 requests/second, bursts of 20. Over that you get\n  `429`; back off and retry.\n- **Paging:** `limit` defaults to 200, maximum 500. Follow `next_cursor`.\n- **Ids** are stable UUIDs; use them as your keys. Each colorway is its own ball.\n\n## The v1 promise\n\nv1 only **grows**: we may add optional fields and new endpoints, so ignore\nfields you don't recognise. Within v1 we will never rename or remove a field\nor endpoint, change a field's type, units or meaning, or make an optional\nfield required. Any of those ships as `/v2`, and `/v1` keeps running while\nyou migrate.\n\n## Syncing\n\n```text\ncursor = load_saved_cursor()                    # None on the very first run\nloop:\n    page = GET /v1/changes?cursor=<cursor>      # omit cursor the first time\n    for change in page.items:\n        if change.change == \"upsert\": save(change.ball)   # create/replace by id\n        if change.change == \"remove\": delete(change.id)\n    cursor = page.next_cursor\n    save_cursor(cursor)                         # after applying the page\n    if not page.has_more: break\n```\n\n- Run it every 15-60 minutes. The **first run** returns every published ball\n  as an `upsert`; to start from a point in time pass `?since=2026-10-01T00:00:00Z`.\n- **Always store `next_cursor`** and send it next time. Don't use the time of\n  your last run as `since`: that can skip changes.\n- Re-running from your last saved cursor is safe; upserts and removes can be\n  applied more than once.\n- A ball appears once per page with its latest state. Changes appear about\n  60 seconds after they happen.\n- A ball counts as changed when its own fields, any weight's specs, its\n  images or its Learn review link change.\n\n## Errors\n\n| Status | Meaning |\n|---|---|\n| `400` | Bad `cursor` or `since`. Restart from your last good cursor. |\n| `401` / `403` | Missing or invalid key |\n| `404` | Ball not found or not published |\n| `429` | Rate limited; retry with backoff |\n| `5xx` | Our problem; retry with backoff |\n",
+    "summary": "Read-only bowling ball data for BowlerIQ partner platforms.",
     "title": "BowlerIQ Partner API",
     "version": "1"
   },
@@ -688,6 +791,7 @@
   "paths": {
     "/v1/balls": {
       "get": {
+        "description": "Every published ball, current and retired. Good for a one-time full load; use /v1/changes to stay in sync.",
         "operationId": "get_balls_v1_balls_get",
         "parameters": [
           {
@@ -732,6 +836,36 @@
             },
             "description": "Successful Response"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            },
+            "description": "Bad cursor or since."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "description": "Missing key."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "description": "Invalid key."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -741,9 +875,22 @@
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "description": "Rate limited; retry with backoff."
           }
         },
-        "summary": "All published balls (full load), paged by id"
+        "summary": "All published balls (full load), paged by id",
+        "tags": [
+          "Balls"
+        ]
       }
     },
     "/v1/balls/{ball_id}": {
@@ -771,6 +918,36 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "description": "Missing key."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "description": "Invalid key."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            },
+            "description": "Not found or not published."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -780,9 +957,22 @@
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "description": "Rate limited; retry with backoff."
           }
         },
-        "summary": "One published ball"
+        "summary": "One published ball",
+        "tags": [
+          "Balls"
+        ]
       }
     },
     "/v1/brands": {
@@ -798,9 +988,42 @@
               }
             },
             "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "description": "Missing key."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "description": "Invalid key."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "description": "Rate limited; retry with backoff."
           }
         },
-        "summary": "Brands with at least one published ball"
+        "summary": "Brands with at least one published ball",
+        "tags": [
+          "Brands"
+        ]
       }
     },
     "/v1/changes": {
@@ -868,6 +1091,36 @@
             },
             "description": "Successful Response"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            },
+            "description": "Bad cursor or since."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "description": "Missing key."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "description": "Invalid key."
+          },
           "422": {
             "content": {
               "application/json": {
@@ -877,9 +1130,22 @@
               }
             },
             "description": "Validation Error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "description": "Rate limited; retry with backoff."
           }
         },
-        "summary": "Sync feed: balls changed since your last cursor"
+        "summary": "Sync feed: balls changed since your last cursor",
+        "tags": [
+          "Sync"
+        ]
       }
     },
     "/v1/plotter": {
@@ -895,10 +1161,72 @@
               }
             },
             "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "description": "Missing key."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "description": "Invalid key."
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "description": "Rate limited; retry with backoff."
           }
         },
-        "summary": "Ball motion plotter: positions + similar balls and directional steps for every current ball"
+        "summary": "Ball motion plotter: positions + similar balls and directional steps for every current ball",
+        "tags": [
+          "Plotter"
+        ]
       }
     }
-  }
+  },
+  "security": [
+    {
+      "PartnerKey": []
+    }
+  ],
+  "servers": [
+    {
+      "description": "Production",
+      "url": "https://api.bowleriq.io/partner"
+    }
+  ],
+  "tags": [
+    {
+      "description": "Keep your copy of the catalog up to date. Start here.",
+      "name": "Sync"
+    },
+    {
+      "description": "Full loads and single-ball lookups.",
+      "name": "Balls"
+    },
+    {
+      "description": "Brands with published balls.",
+      "name": "Brands"
+    },
+    {
+      "description": "Ball motion plotter positions and suggestions.",
+      "name": "Plotter"
+    }
+  ]
 }

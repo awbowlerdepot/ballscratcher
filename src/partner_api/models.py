@@ -7,6 +7,11 @@ integration to other platform." So these models are deliberately separate
 from public_api's response dicts: the Learn/consumer sites can reshape
 public_api freely, and nothing here moves unless someone edits THIS file.
 
+Docs (runbook 6ee): descriptions and examples here feed the public API
+reference at https://api.bowleriq.io/partner/docs. Adding or rewording a
+description or example changes the OpenAPI snapshot but not the contract;
+regenerate the snapshot on purpose (see the contract test's docstring).
+
 Rules for v1 (enforced by tests/test_partner_api_contract.py, which diffs
 the generated OpenAPI schema against tests/fixtures/partner_api_v1_openapi.json):
   * Additive only: new OPTIONAL fields or new endpoints are fine (update
@@ -37,22 +42,22 @@ class _Model(BaseModel):
 
 class Brand(_Model):
     id: str = Field(description="Stable brand id (UUID).")
-    name: str
+    name: str = Field(description="Brand name as the manufacturer writes it, e.g. 'Storm', 'Roto Grip'.")
 
 
 class Coverstock(_Model):
     name: Optional[str] = Field(None, description="Manufacturer's coverstock name, e.g. 'HK22 - Aggression Pearl'.")
-    material: Optional[CoverstockMaterial] = None
-    type: Optional[CoverstockType] = None
+    material: Optional[CoverstockMaterial] = Field(None, description="Cover chemistry family.")
+    type: Optional[CoverstockType] = Field(None, description="Solid, pearl or hybrid cover.")
 
 
 class Core(_Model):
-    name: Optional[str] = None
-    type: Optional[CoreType] = None
+    name: Optional[str] = Field(None, description="Manufacturer's core name, e.g. 'Velocity'.")
+    type: Optional[CoreType] = Field(None, description="Symmetric or asymmetric core.")
 
 
 class Weight(_Model):
-    weight_lbs: int
+    weight_lbs: int = Field(description="Ball weight in pounds (typically 10-16).")
     rg: Optional[float] = Field(None, description="Radius of gyration, inches (e.g. 2.49).")
     differential: Optional[float] = Field(None, description="Total differential, inches (e.g. 0.054).")
     mass_bias: Optional[float] = Field(None, description="Intermediate differential, inches. Null for symmetric cores.")
@@ -72,20 +77,49 @@ class Ball(_Model):
     name: str
     brand: Brand
     status: BallStatus = Field(description="'retired' = no longer made; still a valid ball.")
-    release_date: Optional[date] = None
-    color: Optional[str] = None
+    release_date: Optional[date] = Field(None, description="Manufacturer release date, when known.")
+    color: Optional[str] = Field(None, description="Colorway as the manufacturer names it.")
     coverstock: Coverstock
     core: Core
-    has_particle: bool
+    has_particle: bool = Field(description="True when the cover contains particle (additive) material.")
     factory_finish: Optional[str] = Field(None, description="Manufacturer's finish text, e.g. '500, 1000, 1500 Siaair / Factory Compound'.")
-    finish_category: Optional[FinishCategory] = None
+    finish_category: Optional[FinishCategory] = Field(None, description="The factory finish, grouped as polished, satin or dull.")
     weights: list[Weight] = Field(description="Specs per weight, heaviest first. May be empty.")
-    plotter: Optional[PlotterPosition] = None
-    image_url: Optional[str] = None
-    manufacturer_url: str
+    plotter: Optional[PlotterPosition] = Field(None, description="Position on the ball motion plotter; null if the ball isn't plotted.")
+    image_url: Optional[str] = Field(None, description="Product photo (resized, CDN-hosted).")
+    manufacturer_url: str = Field(description="The ball's page on the manufacturer's site.")
     learn_article_url: Optional[str] = Field(None, description="BowlerDepot Learn review, when one is published.")
     bowlerdepot_url: Optional[str] = Field(None, description="BowlerDepot product page, when BowlerDepot carries the ball.")
     content_changed_at: datetime = Field(description="When anything in this object last changed.")
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "examples": [{
+                "id": "ff32beb3-57fc-4c61-abb4-c4cab2b46240",
+                "name": "PHAZE II",
+                "brand": {"id": "6a1f0c1e-2b5d-4c55-9a51-0f4e1b2c3d4e", "name": "Storm"},
+                "status": "current",
+                "release_date": "2018-01-25",
+                "color": "Pitch Purple",
+                "coverstock": {"name": "TX-16 Solid", "material": "reactive_resin", "type": "solid"},
+                "core": {"name": "Velocity", "type": "symmetric"},
+                "has_particle": False,
+                "factory_finish": "1500 Grit Polished",
+                "finish_category": "polished",
+                "weights": [
+                    {"weight_lbs": 16, "rg": 2.48, "differential": 0.051, "mass_bias": None},
+                    {"weight_lbs": 15, "rg": 2.49, "differential": 0.050, "mass_bias": None},
+                ],
+                "plotter": {"oil": 9.1, "motion": 14.4, "source": "estimated"},
+                "image_url": "https://img.bowleriq.io/product-images/ff32beb3/detail.png?w=800",
+                "manufacturer_url": "https://www.stormbowling.com/phaze-ii",
+                "learn_article_url": "https://learn.bowlerdepot.com/articles/storm-phaze-ii/",
+                "bowlerdepot_url": "https://bowlerdepot.com/storm-phaze-ii/",
+                "content_changed_at": "2026-10-05T15:42:10.123Z",
+            }]
+        },
+    )
 
 
 class BrandList(_Model):
@@ -109,7 +143,7 @@ class Change(_Model):
     change: Literal["upsert", "remove"] = Field(
         description="'upsert' = create or replace your copy with `ball`; 'remove' = delete your copy (the ball is no longer published)."
     )
-    changed_at: datetime
+    changed_at: datetime = Field(description="When the change happened.")
     ball: Optional[Ball] = Field(None, description="Present for 'upsert', null for 'remove'.")
 
 
@@ -129,10 +163,10 @@ class PlotterNeighbor(_Model):
 
 class PlotterNeighbors(_Model):
     twins: list[PlotterNeighbor] = Field(description="Closest balls from OTHER brands (within 1.5 units).")
-    more_oil: list[PlotterNeighbor]
-    less_oil: list[PlotterNeighbor]
-    more_angular: list[PlotterNeighbor]
-    smoother: list[PlotterNeighbor]
+    more_oil: list[PlotterNeighbor] = Field(description="Nearest step toward heavier oil.")
+    less_oil: list[PlotterNeighbor] = Field(description="Nearest step toward lighter oil.")
+    more_angular: list[PlotterNeighbor] = Field(description="Nearest step toward a more angular backend.")
+    smoother: list[PlotterNeighbor] = Field(description="Nearest step toward a smoother backend.")
 
 
 class PlotterEntry(_Model):
@@ -146,3 +180,14 @@ class PlotterEntry(_Model):
 class PlotterList(_Model):
     api_version: Literal["1"] = API_VERSION
     items: list[PlotterEntry] = Field(description="Every current, published ball.")
+
+
+# Error bodies, for the docs only (runbook 6ee). The API's own errors
+# (400/404) are FastAPI's {"detail": ...}; 401/403/429 come from API
+# Gateway (the key check and throttling) as {"message": ...}.
+class ErrorDetail(_Model):
+    detail: str = Field(description="What went wrong.")
+
+
+class GatewayError(_Model):
+    message: str = Field(description="'Unauthorized', 'Forbidden' or 'Too Many Requests'.")

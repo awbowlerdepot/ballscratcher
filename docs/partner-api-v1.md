@@ -1,5 +1,10 @@
 # BowlerIQ Partner API v1
 
+> **The full, interactive API reference is at https://api.bowleriq.io/partner/docs**
+> (every endpoint, field and error, with copy-paste examples and live "Try it").
+> It is generated from the API itself, so it's always current. This page is the
+> short overview to send alongside it.
+
 Read-only bowling ball data for BowlerIQ partner platforms. It covers specs per weight, cover and core, ball motion plotter positions with suggestions, and links to Learn reviews and BowlerDepot.
 
 - **Base URL:** `https://api.bowleriq.io/partner/`
@@ -8,7 +13,7 @@ Read-only bowling ball data for BowlerIQ partner platforms. It covers specs per 
   - A missing or wrong key gets `401`/`403`.
 - **Format:** JSON. Every response includes `"api_version": "1"`.
 - **Rate limit:** about 10 requests/second, with bursts of 20. Over that you get `429`; back off and retry.
-- **Schema:** the full OpenAPI 3 schema is `GET /partner/openapi.json` (with your key), and is also provided as a file, `partner_api_v1_openapi.json`.
+- **Schema:** the OpenAPI 3.1 schema is public at `https://api.bowleriq.io/partner/openapi.json` (no key needed); import it into Postman, Insomnia or a code generator.
 
 ## The v1 promise
 

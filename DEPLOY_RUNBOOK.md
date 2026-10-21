@@ -20345,6 +20345,78 @@ balls. No Lambda deploy needed. CLAUDE.md's migration range now says
     drop trigger products_aa_publish_retired on products;
     drop function products_publish_retired_balls();
 
+
+### 6ee. Partner API reference: OpenAPI 3.1 + Scalar at /partner/docs (2026-10-21)
+
+Al: "can we work on the API that we created for drilld. we have another
+entity that wants to use it. can we start with some api documentation? the
+last time i did this we used swagger but can we use whatever the modern most
+used api documentation is".
+
+**Choice.** "Swagger" is now **OpenAPI**, still the standard, and the
+partner API already generates OpenAPI 3.1 from `models.py` (locked by the
+contract test). The modern viewer is **Scalar**: open source, the default
+reference in several major frameworks, with code samples and search.
+Redoc, and hosted Mintlify/ReadMe, were the alternatives. Al chose a
+**public page on our domain** with **live "Try it"**.
+
+**What changed:**
+- `src/partner_api/app.py`:
+  - The schema description now carries the whole guide that lived in
+    `docs/partner-api-v1.md`: getting started, basics and rate limits,
+    the v1 promise, syncing, and errors.
+  - Endpoints are grouped by tags (Sync, Balls, Brands, Plotter).
+  - `servers` is `https://api.bowleriq.io/partner`.
+  - A `PartnerKey` HTTP Bearer security scheme is added via a custom
+    `app.openapi`, so Try-it sends the key.
+  - 400/401/403/404/429 responses are documented per route.
+  - `GET /docs` serves the Scalar page, pinned to
+    `@scalar/api-reference@1.72.3` from jsdelivr (released 2026-09-30).
+    Scalar's dev toolbar, "Ask AI" and "Generate MCP" are off.
+    `persistAuth` stays false, so a pasted key isn't kept between visits.
+- `src/partner_api/models.py`: descriptions on every field, a full example
+  Ball, and two docs-only error schemas (`ErrorDetail`, `GatewayError`).
+- **Contract snapshot regenerated on purpose.** Compared with the previous
+  fixture: paths identical; every field's type, nullability and required
+  list identical; 2 schemas added; descriptions and examples added. The
+  v1-rules test passes.
+- `template.yaml`: two public routes on `PartnerHttpApi`, `GET /docs` and
+  `GET /openapi.json`, with `Auth: Authorizer: NONE`. HTTP API matches
+  the most specific route, so every `/v1/...` call still hits
+  `/{proxy+}` and the key authorizer.
+- **No CORS needed for Try-it.** The docs page and the API share the
+  origin `api.bowleriq.io`, so the browser's calls are same-origin.
+- `docs/partner-api-v1.md` now points to the reference and says the
+  schema is public.
+
+**Local check.** The generated page was served statically:
+- the guide, server, Authentication box and grouped endpoints render, with
+  no console errors;
+- `/v1/changes` shows the parameters, a curl sample with the production
+  URL, the example response and all errors, plus **Test Request**;
+- no Scalar toolbar, AI or MCP buttons;
+- no horizontal scroll at 375px.
+
+Tests: contract 3/3, authorizer 6/6, service 11/11.
+
+**Deploy.** Full `sam build && sam deploy`.
+
+**Verify.**
+- `curl -s -o /dev/null -w "%{http_code}" https://api.bowleriq.io/partner/docs`
+  should return 200, with no key.
+- `curl -s https://api.bowleriq.io/partner/openapi.json | head -c 200`
+  should return 200, with no key.
+- `curl -s -o /dev/null -w "%{http_code}" https://api.bowleriq.io/partner/v1/brands`
+  should return **401**, because data still needs a key.
+- In a browser, open /partner/docs, click Authentication, paste a key and
+  use Test Request on `GET /v1/brands`.
+
+**Onboarding a new partner.** Give each partner its own key, so its calls
+are attributable in the logs and it can be revoked alone:
+1. Run `scripts/create_partner_api_key.py <partner name>`. It prints the
+   key once and stores only its hash.
+2. Send them the key over a private channel, plus the docs URL.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
