@@ -20510,6 +20510,27 @@ Checked locally: no horizontal overflow at 375, 768 or 1440 px.
 - In a browser, Try-it on `/v1/brands` with a key returns 200.
 - `https://www.bowleriq.com/developers` returns 200.
 
+**Progress, 2026-10-21:**
+- **Step 1 done.** Cert
+  `arn:aws:acm:us-east-1:563981859606:certificate/256fe1c3-aff9-4b41-9a83-7e6743d6f2d7`
+  is PENDING_VALIDATION. Validation CNAME:
+  `_55c3f0b24fa2a74b344a6e04c00b7c45.docs.bowleriq.io` →
+  `_37707f34fa5a368567d43969444b571d.wzccmgtwzk.acm-validations.aws.`
+- **Step 2 done.** The stack is UPDATE_COMPLETE.
+  `DocsSiteDistributionDomain` = `d1do6bpin419o1.cloudfront.net`.
+  Checked:
+
+  | URL | Result |
+  |---|---|
+  | `api.bowleriq.io/partner/docs` (no key) | 200 |
+  | `api.bowleriq.io/partner/openapi.json` (no key) | 200 |
+  | `api.bowleriq.io/partner/v1/brands` (no key) | 401 |
+  | `d1do6bpin419o1.cloudfront.net/` | 200 |
+  | `d1do6bpin419o1.cloudfront.net/openapi.json` | 200 |
+  | `d1do6bpin419o1.cloudfront.net/v1/brands` | 404 |
+
+  The page renders with no console errors and no AI/MCP buttons.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
