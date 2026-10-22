@@ -113,6 +113,12 @@ OPENAPI_TAGS = [
     {"name": "Balls", "description": "Full loads and single-ball lookups."},
     {"name": "Brands", "description": "Brands with published balls."},
     {"name": "Plotter", "description": "Ball motion plotter positions and suggestions."},
+    {
+        "name": "Patterns",
+        "description": "Oil patterns: the machine program, board totals and a per-board, per-foot oil grid "
+        "(`profile`), synced like balls with their own feed. Every pattern is checked against its sheet "
+        "and approved by BowlerIQ staff before it appears here.",
+    },
 ]
 
 app = FastAPI(
@@ -297,6 +303,69 @@ def get_changes(
 )
 def get_plotter():
     return {"items": service.list_plotter(service.get_db_connection())}
+
+
+# --- Oil patterns (runbook 6ej; docs/partner-api-v1-patterns.md) ---------
+# /v1/patterns/changes is declared before /v1/patterns/{pattern_id} so
+# "changes" isn't read as an id.
+
+
+@app.get(
+    "/v1/patterns",
+    response_model=models.PatternPage,
+    summary="All published oil patterns (full load), paged by id",
+    tags=["Patterns"],
+    responses=_CURSOR_ERRORS,
+)
+def get_patterns(
+    cursor: Optional[str] = Query(None, description="next_cursor from the previous page."),
+    limit: int = Query(service.DEFAULT_PAGE_SIZE, ge=1, le=service.MAX_PAGE_SIZE),
+):
+    try:
+        return service.list_patterns(service.get_db_connection(), cursor=cursor, limit=limit)
+    except service.InvalidCursor as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get(
+    "/v1/patterns/changes",
+    response_model=models.PatternChangePage,
+    summary="Pattern sync feed: patterns changed since your last cursor",
+    description=(
+        "Same rules as /v1/changes, for patterns: first sync with no cursor (or ?since=), page until "
+        "has_more is false, store next_cursor, and next time pass ?cursor=<stored>. 'upsert' = create or "
+        "replace your copy; 'remove' = delete it. "
+        f"Changes appear about {service.CHANGE_LAG_SECONDS} seconds after they happen."
+    ),
+    tags=["Patterns"],
+    responses=_CURSOR_ERRORS,
+)
+def get_pattern_changes(
+    cursor: Optional[str] = Query(None, description="next_cursor from your previous call."),
+    since: Optional[str] = Query(None, description="ISO 8601 time to start from when you have no cursor."),
+    limit: int = Query(service.DEFAULT_PAGE_SIZE, ge=1, le=service.MAX_PAGE_SIZE),
+):
+    try:
+        page = service.list_pattern_changes(service.get_db_connection(), cursor=cursor, since=since, limit=limit)
+    except service.InvalidCursor as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    position = cursor and "cursor" or (since and f"since={since}") or "from-start"
+    logger.info("pattern changes %s limit=%s -> items=%d has_more=%s", position, limit, len(page["items"]), page["has_more"])
+    return page
+
+
+@app.get(
+    "/v1/patterns/{pattern_id}",
+    response_model=models.PatternResponse,
+    summary="One published oil pattern",
+    tags=["Patterns"],
+    responses={**_AUTH_ERRORS, 404: {"model": models.ErrorDetail, "description": "Not found or not published."}},
+)
+def get_pattern(pattern_id: str):
+    pattern = service.get_pattern(service.get_db_connection(), pattern_id)
+    if pattern is None:
+        raise HTTPException(status_code=404, detail="No published pattern with that id")
+    return {"item": pattern}
 
 
 # api_gateway_base_path: on api.bowleriq.io/partner/... the event path can

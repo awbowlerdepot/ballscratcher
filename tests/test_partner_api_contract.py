@@ -34,8 +34,24 @@ V1_BASELINE = {
     "Change": {"required": {"id", "change", "changed_at"}, "optional": {"ball"}},
     "ChangePage": {"required": {"items", "next_cursor", "has_more"}, "optional": {"api_version"}},
     "BallPage": {"required": {"items"}, "optional": {"api_version", "next_cursor"}},
+    # Oil patterns (runbook 6ej), locked from their first release.
+    "Pattern": {
+        "required": {"id", "name", "category", "source", "status", "track_zones", "machine", "steps", "profile_source", "content_changed_at"},
+        "optional": {"short_name", "series", "source_url", "sheet_url", "image_url", "length_feet", "reverse_brush_drop_feet",
+                     "oil_per_board_ul", "forward_ml", "reverse_ml", "volume_ml", "ratio", "board_totals", "profile"},
+    },
+    "PatternStep": {
+        "required": {"direction", "order", "loads"},
+        "optional": {"start", "stop", "from_board", "to_board", "speed_ips", "buffer", "tank", "crossed", "start_feet",
+                     "end_feet", "feet", "oil_ul"},
+    },
+    "PatternProfile": {"required": {"foot_step", "units", "rows"}, "optional": set()},
+    "BoardTotals": {"required": {"forward_ul", "reverse_ul"}, "optional": set()},
+    "PatternChange": {"required": {"id", "change", "changed_at"}, "optional": {"pattern"}},
+    "PatternChangePage": {"required": {"items", "next_cursor", "has_more"}, "optional": {"api_version"}},
 }
-V1_PATHS = {"/v1/brands", "/v1/balls", "/v1/balls/{ball_id}", "/v1/changes", "/v1/plotter"}
+V1_PATHS = {"/v1/brands", "/v1/balls", "/v1/balls/{ball_id}", "/v1/changes", "/v1/plotter",
+            "/v1/patterns", "/v1/patterns/{pattern_id}", "/v1/patterns/changes"}
 
 
 def _schema():

@@ -15,6 +15,7 @@ import {
   IconDashboard,
   IconMegaphone,
   IconMenu,
+  IconOilDrop,
   IconPanelLeft,
   IconPlaylist,
   IconPriceTag,
@@ -46,6 +47,7 @@ const NAV_ITEMS = [
   { to: "/cores", label: "Cores", end: false, icon: IconCore },
   { to: "/coverstocks", label: "Coverstocks", end: false, icon: IconCoverstock },
   { to: "/blocked-channels", label: "Blocked Channels", end: false, icon: IconBlocked },
+  { to: "/oil-patterns", label: "Oil Patterns", end: false, icon: IconOilDrop },
   { to: "/batch-jobs", label: "Batch Jobs", end: false, icon: IconBatch },
   { to: "/users", label: "Users", end: false, icon: IconUsers, adminOnly: true },
   // Partner API keys (runbook 6eg) -- Admins only, like Users.

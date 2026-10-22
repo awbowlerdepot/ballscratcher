@@ -191,3 +191,121 @@ class ErrorDetail(_Model):
 
 class GatewayError(_Model):
     message: str = Field(description="'Unauthorized', 'Forbidden' or 'Too Many Requests'.")
+
+
+# --- Oil patterns (runbook 6ej; docs/partner-api-v1-patterns.md) -----------
+# Added to v1 as new endpoints only (additive, per the v1 rules above).
+# Drilld syncs these like balls and uses `profile` in Flare.
+
+PatternCategory = Literal["house", "sport", "challenge", "recreational", "tournament"]
+PatternSource = Literal["kegel", "pba", "usbc", "wtba", "brunswick", "center", "manual", "upload"]
+PatternStatus = Literal["current", "retired"]
+
+
+class TrackZone(_Model):
+    from_: Optional[str] = Field(None, alias="from", description="Zone start board, as the sheet labels it (e.g. '3L').")
+    to: Optional[str] = Field(None, description="Zone end board label (e.g. '7L').")
+    against_from: Optional[str] = Field(None, description="Comparison zone start label (e.g. '18L').")
+    against_to: Optional[str] = Field(None, description="Comparison zone end label (e.g. '18R').")
+    label: Optional[str] = Field(None, description="The sheet's description, e.g. 'Outside:Middle'.")
+    ratio: Optional[float] = Field(None, description="Oil ratio between the two zones.")
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+
+class PatternMachine(_Model):
+    make: Optional[str] = Field(None, description="e.g. 'Kegel'.")
+    model: Optional[str] = Field(None, description="e.g. 'Flex'.")
+    tank_configuration: Optional[str] = None
+    tank_a_conditioner: Optional[str] = None
+    tank_b_conditioner: Optional[str] = None
+    cleaner_ratio_main: Optional[str] = None
+    cleaner_ratio_back_end: Optional[str] = None
+    cleaner_back_end_distance_feet: Optional[float] = None
+    buffer_rpm: Optional[dict[str, float]] = Field(None, description="Buffer setting -> RPM, e.g. {'3': 500}.")
+
+
+class PatternStep(_Model):
+    direction: Literal["forward", "reverse"]
+    order: int = Field(description="Position in that direction's program, from 1.")
+    start: Optional[str] = Field(None, description="Start board as the sheet labels it (e.g. '2L').")
+    stop: Optional[str] = Field(None, description="Stop board label (e.g. '2R').")
+    from_board: Optional[int] = Field(None, description="Lower board, 1-39 from the left.")
+    to_board: Optional[int] = Field(None, description="Upper board, 1-39 from the left.")
+    loads: int = Field(description="Passes of oil; 0 = a buff-only pass.")
+    speed_ips: Optional[float] = Field(None, description="Machine speed, inches per second.")
+    buffer: Optional[float] = Field(None, description="Buffer setting (1-4).")
+    tank: Optional[str] = None
+    crossed: Optional[int] = Field(None, description="Board crossings = boards x loads.")
+    start_feet: Optional[float] = Field(None, description="Feet from the foul line; greater than end_feet for reverse.")
+    end_feet: Optional[float] = None
+    feet: Optional[float] = Field(None, description="The sheet's distance column (negative for reverse).")
+    oil_ul: Optional[int] = Field(None, description="Oil this step lays, µL = crossed x oil_per_board_ul.")
+
+
+class BoardTotals(_Model):
+    forward_ul: list[int] = Field(description="µL laid on each board by the forward pass; 39 values, board 1 from the left first.")
+    reverse_ul: list[int] = Field(description="µL laid on each board by the reverse pass; 39 values.")
+
+
+class PatternProfile(_Model):
+    foot_step: float = Field(description="Row height in feet (1).")
+    units: Literal["ul_per_board_per_foot"]
+    rows: list[list[float]] = Field(
+        description="Row i covers feet [i*foot_step, (i+1)*foot_step) from the foul line; 39 values per row, board 1 "
+        "from the left first, µL to 0.1. Sums to volume_ml x 1000."
+    )
+
+
+class Pattern(_Model):
+    id: str = Field(description="Stable pattern id (UUID).")
+    name: str
+    short_name: Optional[str] = None
+    category: PatternCategory
+    series: Optional[str] = None
+    source: PatternSource = Field(description="Where BowlerIQ got it; 'upload' = a sheet uploaded by BowlerIQ staff.")
+    source_url: Optional[str] = None
+    sheet_url: Optional[str] = Field(None, description="The original publisher's sheet; null for uploads.")
+    image_url: Optional[str] = Field(None, description="The original publisher's graph image; null for uploads.")
+    status: PatternStatus
+    length_feet: Optional[float] = Field(None, description="Oil pattern distance, feet.")
+    reverse_brush_drop_feet: Optional[float] = None
+    oil_per_board_ul: Optional[float] = Field(None, description="µL laid on one board by one load.")
+    forward_ml: Optional[float] = None
+    reverse_ml: Optional[float] = None
+    volume_ml: Optional[float] = None
+    ratio: Optional[float] = Field(None, description="Headline ratio: the largest track zone ratio.")
+    track_zones: list[TrackZone]
+    machine: PatternMachine
+    steps: list[PatternStep] = Field(description="The machine program: forward steps, then reverse, each in order.")
+    board_totals: Optional[BoardTotals] = None
+    profile: Optional[PatternProfile] = Field(None, description="Oil laid on each board in each foot (computed from steps).")
+    profile_source: Literal["steps", "graph"]
+    content_changed_at: datetime = Field(description="When anything in this object last changed.")
+
+
+class PatternPage(_Model):
+    api_version: Literal["1"] = API_VERSION
+    items: list[Pattern]
+    next_cursor: Optional[str] = Field(None, description="Pass as ?cursor= for the next page; null on the last page.")
+
+
+class PatternResponse(_Model):
+    api_version: Literal["1"] = API_VERSION
+    item: Pattern
+
+
+class PatternChange(_Model):
+    id: str = Field(description="Pattern id.")
+    change: Literal["upsert", "remove"] = Field(
+        description="'upsert' = create or replace your copy with `pattern`; 'remove' = delete it (no longer published)."
+    )
+    changed_at: datetime
+    pattern: Optional[Pattern] = Field(None, description="Present for 'upsert', null for 'remove'.")
+
+
+class PatternChangePage(_Model):
+    api_version: Literal["1"] = API_VERSION
+    items: list[PatternChange]
+    next_cursor: str = Field(description="ALWAYS present. Store it and pass it as ?cursor= next time.")
+    has_more: bool

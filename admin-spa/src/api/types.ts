@@ -1271,3 +1271,100 @@ export interface PartnerUsage {
   errors_7d: number;
   errors_30d: number;
 }
+
+
+// Oil pattern catalog (runbook 6ej; docs/partner-api-v1-patterns.md).
+export type PatternReviewStatus = "pending" | "approved" | "rejected";
+export type PatternExtractionStatus = "none" | "queued" | "running" | "ready" | "failed";
+export const PATTERN_CATEGORIES = ["house", "sport", "challenge", "recreational", "tournament"] as const;
+export const PATTERN_SOURCES = ["upload", "kegel", "pba", "usbc", "wtba", "brunswick", "center", "manual"] as const;
+
+export interface PatternStep {
+  direction: "forward" | "reverse";
+  order: number;
+  start: string | null;
+  stop: string | null;
+  loads: number | null;
+  speed_ips: number | null;
+  buffer: number | null;
+  tank: string | null;
+  crossed?: number | null; // computed on save
+  start_feet: number | null;
+  end_feet: number | null;
+  feet?: number | null;
+  oil_ul?: number | null; // computed on save
+  from_board?: number | null;
+  to_board?: number | null;
+  reported_crossed?: number | null; // what the sheet says (kept for checks)
+  reported_oil_ul?: number | null;
+}
+
+export interface TrackZone {
+  from?: string | null;
+  to?: string | null;
+  against_from?: string | null;
+  against_to?: string | null;
+  label?: string | null;
+  ratio?: number | null;
+}
+
+export interface PatternCheck {
+  level: "error" | "warning";
+  step: string | null; // "forward 3"
+  message: string;
+}
+
+export interface PatternSummary {
+  id: string;
+  name: string;
+  short_name: string | null;
+  category: string;
+  series: string | null;
+  source: string;
+  status: "current" | "retired";
+  length_feet: number | null;
+  volume_ml: number | null;
+  ratio: number | null;
+  review_status: PatternReviewStatus;
+  published: boolean;
+  extraction_status: PatternExtractionStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PatternDetail extends PatternSummary {
+  source_url: string | null;
+  sheet_url: string | null;
+  image_url: string | null;
+  reverse_brush_drop_feet: number | null;
+  oil_per_board_ul: number | null;
+  forward_ml: number | null;
+  reverse_ml: number | null;
+  track_zones: TrackZone[];
+  machine: Record<string, unknown>;
+  steps: PatternStep[];
+  review_note: string | null;
+  resolved_at: string | null;
+  resolved_by: string | null;
+  upload_filename: string | null;
+  extraction_error: string | null;
+  extracted_at: string | null;
+  created_by: string | null;
+  computed: {
+    steps: PatternStep[];
+    board_totals: { forward_ul: number[]; reverse_ul: number[] };
+    profile: { foot_step: number; units: string; rows: number[][] };
+    ratio: number | null;
+  };
+  checks: PatternCheck[];
+  sheet_pdf_url: string | null;
+  page_image_url: string | null;
+}
+
+export type PatternEdit = Partial<
+  Pick<
+    PatternDetail,
+    | "name" | "short_name" | "category" | "series" | "source" | "source_url" | "status" | "length_feet"
+    | "reverse_brush_drop_feet" | "oil_per_board_ul" | "forward_ml" | "reverse_ml" | "volume_ml" | "track_zones" | "machine" | "steps"
+  >
+>;

@@ -36,6 +36,9 @@ Any of those ships as `/v2`, and `/v1` keeps running while you migrate. Internal
 | `GET /v1/balls/{id}` | One ball; `404` if it doesn't exist or isn't published |
 | `GET /v1/changes?cursor=&since=&limit=` | **The sync feed** (below) |
 | `GET /v1/plotter` | Every current ball's plotter position, plus similar balls from other brands and the nearest step toward more oil, less oil, more angular and smoother |
+| `GET /v1/patterns?cursor=&limit=` | Approved oil patterns (steps, board totals, a µL-per-board-per-foot `profile`). Spec: [partner-api-v1-patterns.md](partner-api-v1-patterns.md) |
+| `GET /v1/patterns/{id}` | One pattern; `404` if it doesn't exist or isn't approved |
+| `GET /v1/patterns/changes?cursor=&since=&limit=` | The pattern sync feed, same cursor rules as `/v1/changes` |
 
 `limit` defaults to 200, maximum 500.
 

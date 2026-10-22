@@ -273,6 +273,33 @@
         "title": "BallResponse",
         "type": "object"
       },
+      "BoardTotals": {
+        "additionalProperties": false,
+        "properties": {
+          "forward_ul": {
+            "description": "\u00b5L laid on each board by the forward pass; 39 values, board 1 from the left first.",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Forward Ul",
+            "type": "array"
+          },
+          "reverse_ul": {
+            "description": "\u00b5L laid on each board by the reverse pass; 39 values.",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Reverse Ul",
+            "type": "array"
+          }
+        },
+        "required": [
+          "forward_ul",
+          "reverse_ul"
+        ],
+        "title": "BoardTotals",
+        "type": "object"
+      },
       "Brand": {
         "additionalProperties": false,
         "properties": {
@@ -526,6 +553,705 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "Pattern": {
+        "additionalProperties": false,
+        "properties": {
+          "board_totals": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/BoardTotals"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "category": {
+            "enum": [
+              "house",
+              "sport",
+              "challenge",
+              "recreational",
+              "tournament"
+            ],
+            "title": "Category",
+            "type": "string"
+          },
+          "content_changed_at": {
+            "description": "When anything in this object last changed.",
+            "format": "date-time",
+            "title": "Content Changed At",
+            "type": "string"
+          },
+          "forward_ml": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Forward Ml"
+          },
+          "id": {
+            "description": "Stable pattern id (UUID).",
+            "title": "Id",
+            "type": "string"
+          },
+          "image_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The original publisher's graph image; null for uploads.",
+            "title": "Image Url"
+          },
+          "length_feet": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Oil pattern distance, feet.",
+            "title": "Length Feet"
+          },
+          "machine": {
+            "$ref": "#/components/schemas/PatternMachine"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "oil_per_board_ul": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "\u00b5L laid on one board by one load.",
+            "title": "Oil Per Board Ul"
+          },
+          "profile": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PatternProfile"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Oil laid on each board in each foot (computed from steps)."
+          },
+          "profile_source": {
+            "enum": [
+              "steps",
+              "graph"
+            ],
+            "title": "Profile Source",
+            "type": "string"
+          },
+          "ratio": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Headline ratio: the largest track zone ratio.",
+            "title": "Ratio"
+          },
+          "reverse_brush_drop_feet": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reverse Brush Drop Feet"
+          },
+          "reverse_ml": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reverse Ml"
+          },
+          "series": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Series"
+          },
+          "sheet_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The original publisher's sheet; null for uploads.",
+            "title": "Sheet Url"
+          },
+          "short_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Short Name"
+          },
+          "source": {
+            "description": "Where BowlerIQ got it; 'upload' = a sheet uploaded by BowlerIQ staff.",
+            "enum": [
+              "kegel",
+              "pba",
+              "usbc",
+              "wtba",
+              "brunswick",
+              "center",
+              "manual",
+              "upload"
+            ],
+            "title": "Source",
+            "type": "string"
+          },
+          "source_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Url"
+          },
+          "status": {
+            "enum": [
+              "current",
+              "retired"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "steps": {
+            "description": "The machine program: forward steps, then reverse, each in order.",
+            "items": {
+              "$ref": "#/components/schemas/PatternStep"
+            },
+            "title": "Steps",
+            "type": "array"
+          },
+          "track_zones": {
+            "items": {
+              "$ref": "#/components/schemas/TrackZone"
+            },
+            "title": "Track Zones",
+            "type": "array"
+          },
+          "volume_ml": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Volume Ml"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "category",
+          "source",
+          "status",
+          "track_zones",
+          "machine",
+          "steps",
+          "profile_source",
+          "content_changed_at"
+        ],
+        "title": "Pattern",
+        "type": "object"
+      },
+      "PatternChange": {
+        "additionalProperties": false,
+        "properties": {
+          "change": {
+            "description": "'upsert' = create or replace your copy with `pattern`; 'remove' = delete it (no longer published).",
+            "enum": [
+              "upsert",
+              "remove"
+            ],
+            "title": "Change",
+            "type": "string"
+          },
+          "changed_at": {
+            "format": "date-time",
+            "title": "Changed At",
+            "type": "string"
+          },
+          "id": {
+            "description": "Pattern id.",
+            "title": "Id",
+            "type": "string"
+          },
+          "pattern": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Pattern"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Present for 'upsert', null for 'remove'."
+          }
+        },
+        "required": [
+          "id",
+          "change",
+          "changed_at"
+        ],
+        "title": "PatternChange",
+        "type": "object"
+      },
+      "PatternChangePage": {
+        "additionalProperties": false,
+        "properties": {
+          "api_version": {
+            "const": "1",
+            "default": "1",
+            "title": "Api Version",
+            "type": "string"
+          },
+          "has_more": {
+            "title": "Has More",
+            "type": "boolean"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/PatternChange"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "description": "ALWAYS present. Store it and pass it as ?cursor= next time.",
+            "title": "Next Cursor",
+            "type": "string"
+          }
+        },
+        "required": [
+          "items",
+          "next_cursor",
+          "has_more"
+        ],
+        "title": "PatternChangePage",
+        "type": "object"
+      },
+      "PatternMachine": {
+        "additionalProperties": false,
+        "properties": {
+          "buffer_rpm": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "number"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Buffer setting -> RPM, e.g. {'3': 500}.",
+            "title": "Buffer Rpm"
+          },
+          "cleaner_back_end_distance_feet": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cleaner Back End Distance Feet"
+          },
+          "cleaner_ratio_back_end": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cleaner Ratio Back End"
+          },
+          "cleaner_ratio_main": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cleaner Ratio Main"
+          },
+          "make": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "e.g. 'Kegel'.",
+            "title": "Make"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "e.g. 'Flex'.",
+            "title": "Model"
+          },
+          "tank_a_conditioner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tank A Conditioner"
+          },
+          "tank_b_conditioner": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tank B Conditioner"
+          },
+          "tank_configuration": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tank Configuration"
+          }
+        },
+        "title": "PatternMachine",
+        "type": "object"
+      },
+      "PatternPage": {
+        "additionalProperties": false,
+        "properties": {
+          "api_version": {
+            "const": "1",
+            "default": "1",
+            "title": "Api Version",
+            "type": "string"
+          },
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/Pattern"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Pass as ?cursor= for the next page; null on the last page.",
+            "title": "Next Cursor"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "PatternPage",
+        "type": "object"
+      },
+      "PatternProfile": {
+        "additionalProperties": false,
+        "properties": {
+          "foot_step": {
+            "description": "Row height in feet (1).",
+            "title": "Foot Step",
+            "type": "number"
+          },
+          "rows": {
+            "description": "Row i covers feet [i*foot_step, (i+1)*foot_step) from the foul line; 39 values per row, board 1 from the left first, \u00b5L to 0.1. Sums to volume_ml x 1000.",
+            "items": {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            "title": "Rows",
+            "type": "array"
+          },
+          "units": {
+            "const": "ul_per_board_per_foot",
+            "title": "Units",
+            "type": "string"
+          }
+        },
+        "required": [
+          "foot_step",
+          "units",
+          "rows"
+        ],
+        "title": "PatternProfile",
+        "type": "object"
+      },
+      "PatternResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "api_version": {
+            "const": "1",
+            "default": "1",
+            "title": "Api Version",
+            "type": "string"
+          },
+          "item": {
+            "$ref": "#/components/schemas/Pattern"
+          }
+        },
+        "required": [
+          "item"
+        ],
+        "title": "PatternResponse",
+        "type": "object"
+      },
+      "PatternStep": {
+        "additionalProperties": false,
+        "properties": {
+          "buffer": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Buffer setting (1-4).",
+            "title": "Buffer"
+          },
+          "crossed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Board crossings = boards x loads.",
+            "title": "Crossed"
+          },
+          "direction": {
+            "enum": [
+              "forward",
+              "reverse"
+            ],
+            "title": "Direction",
+            "type": "string"
+          },
+          "end_feet": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "End Feet"
+          },
+          "feet": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The sheet's distance column (negative for reverse).",
+            "title": "Feet"
+          },
+          "from_board": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Lower board, 1-39 from the left.",
+            "title": "From Board"
+          },
+          "loads": {
+            "description": "Passes of oil; 0 = a buff-only pass.",
+            "title": "Loads",
+            "type": "integer"
+          },
+          "oil_ul": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Oil this step lays, \u00b5L = crossed x oil_per_board_ul.",
+            "title": "Oil Ul"
+          },
+          "order": {
+            "description": "Position in that direction's program, from 1.",
+            "title": "Order",
+            "type": "integer"
+          },
+          "speed_ips": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Machine speed, inches per second.",
+            "title": "Speed Ips"
+          },
+          "start": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Start board as the sheet labels it (e.g. '2L').",
+            "title": "Start"
+          },
+          "start_feet": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Feet from the foul line; greater than end_feet for reverse.",
+            "title": "Start Feet"
+          },
+          "stop": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Stop board label (e.g. '2R').",
+            "title": "Stop"
+          },
+          "tank": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tank"
+          },
+          "to_board": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Upper board, 1-39 from the left.",
+            "title": "To Board"
+          }
+        },
+        "required": [
+          "direction",
+          "order",
+          "loads"
+        ],
+        "title": "PatternStep",
+        "type": "object"
+      },
       "PlotterEntry": {
         "additionalProperties": false,
         "properties": {
@@ -679,6 +1405,85 @@
           "source"
         ],
         "title": "PlotterPosition",
+        "type": "object"
+      },
+      "TrackZone": {
+        "additionalProperties": false,
+        "properties": {
+          "against_from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Comparison zone start label (e.g. '18L').",
+            "title": "Against From"
+          },
+          "against_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Comparison zone end label (e.g. '18R').",
+            "title": "Against To"
+          },
+          "from": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Zone start board, as the sheet labels it (e.g. '3L').",
+            "title": "From"
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The sheet's description, e.g. 'Outside:Middle'.",
+            "title": "Label"
+          },
+          "ratio": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Oil ratio between the two zones.",
+            "title": "Ratio"
+          },
+          "to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Zone end board label (e.g. '7L').",
+            "title": "To"
+          }
+        },
+        "title": "TrackZone",
         "type": "object"
       },
       "ValidationError": {
@@ -1148,6 +1953,313 @@
         ]
       }
     },
+    "/v1/patterns": {
+      "get": {
+        "operationId": "get_patterns_v1_patterns_get",
+        "parameters": [
+          {
+            "description": "next_cursor from the previous page.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "next_cursor from the previous page.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatternPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            },
+            "description": "Bad cursor or since."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "description": "Missing key."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "description": "Invalid key."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "description": "Rate limited; retry with backoff."
+          }
+        },
+        "summary": "All published oil patterns (full load), paged by id",
+        "tags": [
+          "Patterns"
+        ]
+      }
+    },
+    "/v1/patterns/changes": {
+      "get": {
+        "description": "Same rules as /v1/changes, for patterns: first sync with no cursor (or ?since=), page until has_more is false, store next_cursor, and next time pass ?cursor=<stored>. 'upsert' = create or replace your copy; 'remove' = delete it. Changes appear about 60 seconds after they happen.",
+        "operationId": "get_pattern_changes_v1_patterns_changes_get",
+        "parameters": [
+          {
+            "description": "next_cursor from your previous call.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "next_cursor from your previous call.",
+              "title": "Cursor"
+            }
+          },
+          {
+            "description": "ISO 8601 time to start from when you have no cursor.",
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "ISO 8601 time to start from when you have no cursor.",
+              "title": "Since"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 200,
+              "maximum": 500,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatternChangePage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            },
+            "description": "Bad cursor or since."
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "description": "Missing key."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "description": "Invalid key."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "description": "Rate limited; retry with backoff."
+          }
+        },
+        "summary": "Pattern sync feed: patterns changed since your last cursor",
+        "tags": [
+          "Patterns"
+        ]
+      }
+    },
+    "/v1/patterns/{pattern_id}": {
+      "get": {
+        "operationId": "get_pattern_v1_patterns__pattern_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pattern_id",
+            "required": true,
+            "schema": {
+              "title": "Pattern Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PatternResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "description": "Missing key."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "description": "Invalid key."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            },
+            "description": "Not found or not published."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "description": "Rate limited; retry with backoff."
+          }
+        },
+        "summary": "One published oil pattern",
+        "tags": [
+          "Patterns"
+        ]
+      }
+    },
     "/v1/plotter": {
       "get": {
         "operationId": "get_plotter_v1_plotter_get",
@@ -1227,6 +2339,10 @@
     {
       "description": "Ball motion plotter positions and suggestions.",
       "name": "Plotter"
+    },
+    {
+      "description": "Oil patterns: the machine program, board totals and a per-board, per-foot oil grid (`profile`), synced like balls with their own feed. Every pattern is checked against its sheet and approved by BowlerIQ staff before it appears here.",
+      "name": "Patterns"
     }
   ]
 }

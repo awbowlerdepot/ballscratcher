@@ -8349,3 +8349,136 @@ def test_partner_usage_times_out_instead_of_hanging():
         assert False
     except TimeoutError:
         pass
+
+
+# --- Oil pattern catalog (runbook 6ej) ---
+
+_ELITE48 = os.path.join(os.path.dirname(__file__), "fixtures", "pattern_elite48.json")
+
+
+def _elite48_row(**over):
+    with open(_ELITE48) as f:
+        p = json.load(f)
+    base = {c: None for c in service.PATTERN_COLUMNS}
+    base.update(p, id="p1", review_status="pending", published=False, upload_key="patterns/p1/sheet.pdf")
+    base.update(over)
+    return base
+
+
+class _PCur:
+    def __init__(self, log, returning=None):
+        self.log, self.returning, self.rowcount = log, returning, 1
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, sql, params=None):
+        self.log.append((" ".join(sql.split()).lower(), params))
+
+    def fetchone(self):
+        return (self.returning,)
+
+    def fetchall(self):
+        return []
+
+
+class _PConn:
+    def __init__(self, returning="p1"):
+        self.log, self.returning, self.commits = [], returning, 0
+
+    def cursor(self):
+        return _PCur(self.log, self.returning)
+
+    def commit(self):
+        self.commits += 1
+
+
+def test_approve_pattern_publishes_with_computed_fields(monkeypatch):
+    monkeypatch.setattr(service, "_load_pattern", lambda conn, pid: _elite48_row())
+    monkeypatch.setattr(service, "get_pattern", lambda conn, pid, s3=None: {"id": pid})
+    conn = _PConn()
+    service.approve_pattern(conn, "p1", resolved_by="al@x")
+    writes = [p for q, p in conn.log if q.startswith("update oil_patterns set steps")]
+    assert writes, conn.log
+    stored = writes[0]
+    board_totals = json.loads(stored[1])
+    assert board_totals["forward_ul"][19] == 450 and board_totals["reverse_ul"][19] == 650
+    assert any("review_status = 'approved', published = true" in q for q, _ in conn.log)
+
+
+def test_approve_pattern_is_blocked_by_failing_checks(monkeypatch):
+    bad = _elite48_row()
+    bad["steps"][2]["loads"] = 3
+    monkeypatch.setattr(service, "_load_pattern", lambda conn, pid: bad)
+    conn = _PConn()
+    try:
+        service.approve_pattern(conn, "p1", resolved_by="al@x")
+        assert False
+    except ValueError as e:
+        assert "Fix these before approving" in str(e) and "Crossed should be" in str(e)
+    assert not any("approved" in q for q, _ in conn.log)
+
+
+def test_update_refuses_to_break_a_live_pattern_but_saves_pending_ones(monkeypatch):
+    monkeypatch.setattr(service, "get_pattern", lambda conn, pid, s3=None: {"id": pid})
+    broken_steps = _elite48_row()["steps"]
+    broken_steps[0]["loads"] = 9
+    monkeypatch.setattr(service, "_load_pattern", lambda conn, pid: _elite48_row(review_status="approved", published=True))
+    try:
+        service.update_pattern(_PConn(), "p1", {"steps": broken_steps})
+        assert False
+    except ValueError as e:
+        assert "live" in str(e)
+    monkeypatch.setattr(service, "_load_pattern", lambda conn, pid: _elite48_row())
+    conn = _PConn()
+    service.update_pattern(conn, "p1", {"steps": broken_steps, "not_a_field": 1})
+    assert conn.commits == 1 and not any("not_a_field" in q for q, _ in conn.log)
+
+
+def test_reject_pattern_unpublishes(monkeypatch):
+    monkeypatch.setattr(service, "_load_pattern", lambda conn, pid: _elite48_row(review_status="approved", published=True))
+    monkeypatch.setattr(service, "get_pattern", lambda conn, pid, s3=None: {"id": pid})
+    conn = _PConn()
+    service.reject_pattern(conn, "p1", resolved_by="al@x", note="  wrong sheet ")
+    q, params = conn.log[-1]
+    assert "review_status = 'rejected', published = false" in q and params == ("al@x", "wrong sheet", "p1")
+
+
+def test_create_pattern_upload_needs_a_pdf_and_gives_a_presigned_put(monkeypatch):
+    monkeypatch.setenv("PATTERN_SHEETS_BUCKET", "sheets")
+
+    class S3:
+        def generate_presigned_url(self, op_name, Params, ExpiresIn):
+            return f"https://s3/{op_name}/{Params['Bucket']}/{Params['Key']}?ct={Params.get('ContentType')}"
+
+    try:
+        service.create_pattern_upload(_PConn(), S3(), "sheet.png")
+        assert False
+    except ValueError:
+        pass
+    out = service.create_pattern_upload(_PConn(returning="abc"), S3(), "Elite48.pdf", created_by="al@x")
+    assert out["pattern_id"] == "abc"
+    assert out["upload_url"] == "https://s3/put_object/sheets/patterns/abc/sheet.pdf?ct=application/pdf"
+
+
+def test_queue_pattern_extraction_invokes_the_reader(monkeypatch):
+    monkeypatch.setenv("PATTERN_INGEST_FUNCTION_NAME", "ingest-fn")
+    monkeypatch.setattr(service, "_load_pattern", lambda conn, pid: _elite48_row())
+    calls = []
+
+    class L:
+        def invoke(self, **kw):
+            calls.append(kw)
+
+    out = service.queue_pattern_extraction(_PConn(), L(), "p1")
+    assert out == {"queued": True, "pattern_id": "p1"}
+    assert calls[0]["InvocationType"] == "Event" and json.loads(calls[0]["Payload"]) == {"pattern_id": "p1"}
+    monkeypatch.setattr(service, "_load_pattern", lambda conn, pid: _elite48_row(review_status="approved"))
+    try:
+        service.queue_pattern_extraction(_PConn(), L(), "p1")
+        assert False
+    except ValueError:
+        pass

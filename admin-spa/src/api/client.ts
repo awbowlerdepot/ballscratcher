@@ -1,6 +1,9 @@
 import { getValidIdToken } from "../auth/cognito";
 import type {
   AdminUser,
+  PatternDetail,
+  PatternEdit,
+  PatternSummary,
   Partner,
   PartnerUsage,
   PartnerWithKey,
@@ -761,6 +764,48 @@ export function deleteUser(username: string): Promise<{ username: string; delete
   return apiDelete(`/users/${encodeURIComponent(username)}`);
 }
 
+
+// --- Oil pattern catalog (runbook 6ej) ------------------------------------
+export function listPatterns(params: { review_status?: string; search?: string } = {}): Promise<PatternSummary[]> {
+  return apiGet<PatternSummary[]>("/patterns", params);
+}
+
+export function getPattern(id: string): Promise<PatternDetail> {
+  return apiGet<PatternDetail>(`/patterns/${encodeURIComponent(id)}`);
+}
+
+export function createPattern(input: PatternEdit): Promise<PatternDetail> {
+  return apiPost<PatternDetail>("/patterns", input);
+}
+
+export function updatePattern(id: string, input: PatternEdit): Promise<PatternDetail> {
+  return apiPatch<PatternDetail>(`/patterns/${encodeURIComponent(id)}`, input);
+}
+
+// Upload a sheet: a pending pattern + presigned PUT, then the PUT itself
+// (straight to the private S3 bucket), then start the OCR reader.
+export async function uploadPatternSheet(file: File): Promise<string> {
+  const { pattern_id, upload_url, content_type } = await apiPost<{ pattern_id: string; upload_url: string; content_type: string }>(
+    "/patterns/uploads",
+    { filename: file.name },
+  );
+  const put = await fetch(upload_url, { method: "PUT", headers: { "Content-Type": content_type }, body: file });
+  if (!put.ok) throw new Error(`Upload failed (${put.status})`);
+  await apiPost(`/patterns/${encodeURIComponent(pattern_id)}/extract`);
+  return pattern_id;
+}
+
+export function readPatternSheet(id: string): Promise<{ queued: boolean; reason?: string }> {
+  return apiPost(`/patterns/${encodeURIComponent(id)}/extract`);
+}
+
+export function approvePattern(id: string): Promise<PatternDetail> {
+  return apiPost<PatternDetail>(`/patterns/${encodeURIComponent(id)}/approve`);
+}
+
+export function rejectPattern(id: string, note?: string): Promise<PatternDetail> {
+  return apiPost<PatternDetail>(`/patterns/${encodeURIComponent(id)}/reject`, { note });
+}
 
 // --- Partner API access (runbook 6eg) -----------------------------------
 // Admins only (admin_api's _require_admin). create/rotate return the new

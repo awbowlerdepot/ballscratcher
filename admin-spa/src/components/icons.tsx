@@ -165,6 +165,17 @@ export function IconUsers(props: IconProps) {
   );
 }
 
+// Oil Patterns (runbook 6ej) -- a lane seen from above with an oil
+// droplet on it.
+export function IconOilDrop(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M5 2.5v15M15 2.5v15" />
+      <path d="M10 6.5c1.8 2.3 2.7 3.9 2.7 5.1a2.7 2.7 0 0 1-5.4 0c0-1.2.9-2.8 2.7-5.1Z" />
+    </svg>
+  );
+}
+
 // Partners (runbook 6eg) -- a key, for Partner API access. Admins-only
 // nav item, like Users.
 export function IconKey(props: IconProps) {

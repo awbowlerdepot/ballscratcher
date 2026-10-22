@@ -207,3 +207,86 @@ def test_since_starts_from_a_time_and_bad_since_is_rejected():
     assert [c["id"] for c in page["items"]] == [_id(2)]
     with pytest.raises(service.InvalidCursor):
         service.list_changes(FakeConn(db), since="yesterday")
+
+
+# --- Oil patterns (runbook 6ej) ---
+
+import datetime as _dt  # noqa: E402
+
+_PATTERN_COLS = ["id", "name", "short_name", "category", "series", "source", "source_url", "sheet_url", "image_url", "status",
+                 "length_feet", "reverse_brush_drop_feet", "oil_per_board_ul", "forward_ml", "reverse_ml", "volume_ml", "ratio",
+                 "track_zones", "machine", "steps", "board_totals", "profile", "profile_source", "published", "review_status",
+                 "content_changed_at"]
+
+
+def _prow(pid, published=True, review="approved", t=None, **over):
+    base = {c: None for c in _PATTERN_COLS}
+    base.update(id=pid, name=f"Pattern {pid[:4]}", category="sport", source="upload", status="current", length_feet=48,
+                track_zones=[{"from": "3L", "to": "7L", "label": "Outside:Middle", "ratio": 2, "item": "junk"}],
+                machine={"make": "Kegel", "model": "Flex", "buffer_rpm": {"3": 500}, "weird": 1},
+                steps=[{"direction": "forward", "order": 1, "start": "2L", "stop": "2R", "from_board": 2, "to_board": 38,
+                        "loads": 3, "crossed": 111, "oil_ul": 5550, "reported_crossed": 111, "reported_oil_ul": 5550}],
+                board_totals={"forward_ul": [0] * 39, "reverse_ul": [0] * 39},
+                profile={"foot_step": 1, "units": "ul_per_board_per_foot", "rows": [[0.0] * 39]},
+                profile_source="steps", published=published, review_status=review,
+                content_changed_at=t or _dt.datetime(2026, 10, 22, 12, 0, tzinfo=_dt.timezone.utc))
+    base.update(over)
+    return base
+
+
+class _PatCur:
+    def __init__(self, rows):
+        self.rows, self.sql = rows, []
+        self.description = [(c,) for c in _PATTERN_COLS]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, sql, params=None):
+        self.sql.append((" ".join(sql.split()), params))
+
+    def fetchall(self):
+        return [tuple(r[c] for c in _PATTERN_COLS) for r in self.rows]
+
+
+class _PatConn:
+    def __init__(self, rows):
+        self.cur = _PatCur(rows)
+
+    def cursor(self):
+        return self.cur
+
+
+def test_map_pattern_drops_review_only_and_unknown_keys():
+    out = service.map_pattern(_prow("6f1d0000-0000-4000-8000-000000000001"))
+    assert "reported_crossed" not in out["steps"][0] and "reported_oil_ul" not in out["steps"][0]
+    assert "item" not in out["track_zones"][0] and "weird" not in out["machine"]
+    assert out["machine"]["buffer_rpm"] == {"3": 500.0}
+
+
+def test_list_patterns_only_reads_published_approved():
+    conn = _PatConn([_prow("6f1d0000-0000-4000-8000-000000000001")])
+    page = service.list_patterns(conn, limit=10)
+    assert len(page["items"]) == 1 and page["next_cursor"] is None
+    sql, _ = conn.cur.sql[0]
+    assert "published = true and review_status = 'approved'" in sql
+
+
+def test_pattern_feed_upserts_live_and_removes_unpublished_except_on_first_sync():
+    rows = [_prow("6f1d0000-0000-4000-8000-000000000001"),
+            _prow("6f1d0000-0000-4000-8000-000000000002", published=False, review="rejected")]
+    first = service.list_pattern_changes(_PatConn(rows))
+    assert [(i["change"], i["id"][-1]) for i in first["items"]] == [("upsert", "1")]
+    later = service.list_pattern_changes(_PatConn(rows), since="2026-10-01T00:00:00Z")
+    assert [(i["change"], i["id"][-1]) for i in later["items"]] == [("upsert", "1"), ("remove", "2")]
+    assert later["items"][1]["pattern"] is None and later["next_cursor"]
+    nxt = service.list_pattern_changes(_PatConn([]), cursor=later["next_cursor"])
+    assert nxt["items"] == [] and nxt["next_cursor"] == later["next_cursor"]
+
+
+def test_get_pattern_rejects_non_uuid_ids_without_querying():
+    conn = _PatConn([])
+    assert service.get_pattern(conn, "not-a-uuid") is None and conn.cur.sql == []

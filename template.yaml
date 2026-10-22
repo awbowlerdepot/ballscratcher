@@ -1748,6 +1748,10 @@ Resources:
           # direct lambda:InvokeFunction call, no queue in front of it"
           # shape as VIDEO_DISCOVERY_FUNCTION_NAME/PRICE_CHECKER_FUNCTION_NAME.
           PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME: !Ref ProductArticleGeneratorFunction
+          # Oil pattern catalog (runbook 6ej): the private sheet bucket and
+          # the OCR reader admin_api starts after an upload.
+          PATTERN_SHEETS_BUCKET: !Ref PatternSheetsBucket
+          PATTERN_INGEST_FUNCTION_NAME: !Ref PatternIngestFunction
           # Read by service.py's queue_article_sync (POST /articles/{id}/
           # sync-to-bigcommerce, the Articles tab's "Sync now" button) --
           # same "function NAME for a direct lambda:InvokeFunction call,
@@ -1904,6 +1908,18 @@ Resources:
               Action:
                 - lambda:InvokeFunction
               Resource: !GetAtt ProductArticleGeneratorFunction.Arn
+        # Oil pattern catalog (runbook 6ej): presign uploads/views of sheets
+        # in the private bucket, and start the OCR reader.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource: !Sub "${PatternSheetsBucket.Arn}/*"
+            - Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource: !GetAtt PatternIngestFunction.Arn
         # In-store signage "Render MP4" (runbook 6cn).
         - Statement:
             - Effect: Allow
@@ -2842,6 +2858,86 @@ Resources:
                 - s3:GetObject
                 - s3:PutObject
               Resource: !Sub arn:aws:s3:::${ImageBucket}/article-images/*
+
+  # Oil pattern catalog (runbook 6ej; spec docs/partner-api-v1-patterns.md).
+  # Uploaded pattern sheets live in their OWN private bucket: ImageBucket is
+  # publicly readable, and BowlerIQ doesn't redistribute sheet files (only
+  # the data, after review). Admin reads/writes them through presigned URLs,
+  # so the bucket allows browser PUT/GET from the admin site only.
+  PatternSheetsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub bowling-scraper-pattern-sheets-${AWS::AccountId}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      CorsConfiguration:
+        CorsRules:
+          - AllowedMethods: [PUT, GET]
+            AllowedOrigins:
+              - !Sub "https://${AdminSiteDomainName}"
+              - http://localhost:5173
+            AllowedHeaders: ["content-type"]
+            MaxAge: 3600
+      LifecycleConfiguration:
+        Rules:
+          - Id: abort-stale-multipart
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+
+  # Reads an uploaded sheet with Claude vision into a PENDING oil_patterns
+  # row (see src/pattern_ingest/app.py). Invoked async by admin_api; never
+  # approves or publishes. No retries: a failure is reported on the row and
+  # the admin can press Read again.
+  PatternIngestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-pattern-ingest
+      CodeUri: src/pattern_ingest/
+      Runtime: python3.13
+      Handler: app.handler
+      Timeout: 180
+      MemorySize: 1024
+      EventInvokeConfig:
+        MaximumRetryAttempts: 0
+      Environment:
+        Variables:
+          PATTERN_SHEETS_BUCKET: !Ref PatternSheetsBucket
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref DbSecretArn
+            - Effect: Allow
+              Action:
+                - s3:GetObject
+                - s3:PutObject
+              Resource: !Sub "${PatternSheetsBucket.Arn}/*"
+            - Sid: PatternReadProfile
+              Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/global.anthropic.claude-sonnet-4-6"
+            - Sid: PatternReadInRegionModel
+              Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/anthropic.claude-sonnet-4-6"
+              Condition:
+                StringEquals:
+                  bedrock:InferenceProfileArn: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/global.anthropic.claude-sonnet-4-6"
+            - Sid: PatternReadGlobalModel
+              Effect: Allow
+              Action:
+                - bedrock:InvokeModel
+              Resource: "arn:aws:bedrock:::foundation-model/anthropic.claude-sonnet-4-6"
+              Condition:
+                StringEquals:
+                  bedrock:InferenceProfileArn: !Sub "arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:inference-profile/global.anthropic.claude-sonnet-4-6"
 
   ProductArticleGeneratorFunction:
     Type: AWS::Serverless::Function

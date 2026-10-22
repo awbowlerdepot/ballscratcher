@@ -1,0 +1,3 @@
+psycopg2-binary
+pypdfium2==5.14.0
+pillow

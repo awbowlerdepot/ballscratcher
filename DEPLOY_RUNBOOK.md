@@ -20895,6 +20895,88 @@ It also sets Windows `EdgeUI\AllowEdgeSwipe` = 0.
 unit. The checklist's video-title/YouTube-logo tap confirms the block, and
 the guide says to report if videos won't play.
 
+### 6ej. Oil pattern catalog: sheet upload + OCR + review, Partner API `/v1/patterns` (2026-10-22)
+
+The Drilld session (Flare) proposed an oil pattern catalog in the partner
+API so Flare can roll a ball over a real pattern's oil. Al: "go with your
+suggestion, i feel like pulling in the patterns and using OCR is fine but
+they need approved before they are added to the live catalog. similar
+pattern to the videos. manual uploads of patterns as the first way they get
+pulled in then we can look for sources later. leave house shots as just
+another pattern for now."
+
+**Spec:** `docs/partner-api-v1-patterns.md` is the final version. Its table
+lists the 10 changes from Drilld's proposal (float µL profile cells, the
+exact row/spreading rule, steps carry feet, `ratio` = largest zone ratio,
+`house` is a category, source `upload`, `sheet_url`/`image_url` only from
+the original publisher, only approved patterns in the API).
+
+**Flow** (like video review):
+1. Admin → **Oil Patterns** → **Upload sheet** (PDF). `POST /patterns/uploads`
+   creates a pending row and returns a presigned PUT into the new private
+   `PatternSheetsBucket` (`patterns/{id}/sheet.pdf`, 15-minute URL); the
+   SPA uploads, then `POST /patterns/{id}/extract` invokes
+   **`PatternIngestFunction`** asynchronously.
+2. `pattern_ingest` renders page 1 with pypdfium2 (the sheet's tables are
+   images, not text), saves `page-1.png` beside the PDF, reads it with
+   Claude Sonnet 4.6 vision on Bedrock and writes the fields into the
+   pending row (`extraction_status` ready/failed). It never touches an
+   approved or rejected row.
+3. The review page shows the sheet beside editable header/step/zone
+   fields, a lane preview of the computed profile, and the **checks**
+   (`admin_api/oil_patterns.py`): every step's crossed/oil is recomputed
+   from boards × loads × µL per board and compared with what the sheet
+   says, and forward/reverse/volume totals are compared with the header.
+   Failing steps are highlighted. **Approve & publish** is disabled while
+   any check is an error; approving writes the derived fields
+   (`board_totals`, `profile`, `ratio`) and sets `published`. Reject /
+   Unpublish takes an optional note. A pattern can also be **typed in**
+   without a sheet.
+
+Prototype on the Kegel Elite 48 sheet: 12 s; everything right except one
+"crossed" (16 read as 14), which the checks flagged on that exact step.
+`tests/fixtures/pattern_elite48.json` is the hand-checked transcription.
+
+**Partner API (additive, v1):** `GET /v1/patterns`, `/v1/patterns/{id}`,
+`/v1/patterns/changes` (same cursor/remove rules as `/v1/changes`; a
+pattern that's unpublished appears as a remove). Only rows with
+`review_status = 'approved' and published` are visible; review/OCR
+bookkeeping and the sheet's `reported_*` values never reach partners.
+Contract snapshot regenerated: 10 schemas + 3 paths added, nothing changed.
+Sheets stay private (licensing); `sheet_url`/`image_url` are null for uploads.
+
+**Files:** `db/migrations/052_oil_patterns.sql`; `src/pattern_ingest/`
+(`app.py`, `extract.py`); `src/admin_api/oil_patterns.py` plus
+`service.py`/`app.py` pattern routes (not admin-only, like video review);
+`src/partner_api/{models,service,app}.py`; `template.yaml`
+(`PatternSheetsBucket` with CORS for the admin site, `PatternIngestFunction`
+180 s / 1024 MB / no retries, AdminApi env + IAM); admin-spa
+`PatternsPage.tsx`, `PatternDetailPage.tsx`, routes `/oil-patterns`,
+nav item **Oil Patterns**; tests `test_oil_patterns.py`,
+`test_pattern_ingest.py`, plus additions to the admin, partner service and
+contract tests.
+
+**Deploy:**
+```bash
+# 1. Migration (PG* exported from the bowling-scraper-db secret)
+psql -X -v ON_ERROR_STOP=1 -f db/migrations/052_oil_patterns.sql
+# 2. Backend
+sam build && sam deploy
+# 3. Admin SPA: push to main (GitHub Actions)
+git push
+```
+
+**Verify:**
+- Admin → Oil Patterns → Upload sheet with the Elite 48 PDF; within ~20 s
+  the fields fill in. Fix anything the checks flag, Save, Approve.
+- `curl -s -H "Authorization: Bearer $BOWLERIQ_PARTNER_KEY" https://api.bowleriq.io/partner/v1/patterns | jq '.items[0].name, (.items[0].profile.rows | length)'`
+  → `"Elite 48"`-ish name and 48 rows.
+- `aws logs tail /aws/lambda/bowling-scraper-pattern-ingest --since 1h`
+  shows the token usage line.
+
+Later (not built): fetching sheets from publisher sources, and richer
+house-shot support.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

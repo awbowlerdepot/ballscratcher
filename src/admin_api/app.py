@@ -2149,4 +2149,122 @@ def patch_partner(name: str, body: UpdatePartnerRequest, caller: dict = Depends(
         conn.close()
 
 
+
+# --- Oil pattern catalog (runbook 6ej) ---
+#
+# Review flow like video candidates (any signed-in admin user): upload a
+# sheet, let pattern_ingest read it, fix what oil_patterns.check flags,
+# approve (published to the partner API) or reject. Logic in service.py.
+
+
+def _s3_client():
+    import boto3
+
+    return boto3.client("s3")
+
+
+def _lambda_client():
+    import boto3
+
+    return boto3.client("lambda")
+
+
+class PatternUploadRequest(BaseModel):
+    filename: str
+
+
+class PatternRejectRequest(BaseModel):
+    note: Optional[str] = None
+
+
+@app.get("/patterns")
+def get_patterns(review_status: Optional[str] = Query(None), search: Optional[str] = Query(None)):
+    conn = service.get_db_connection()
+    try:
+        return service.list_patterns(conn, review_status=review_status, search=search)
+    finally:
+        conn.close()
+
+
+@app.post("/patterns")
+def post_pattern(body: dict, caller: dict = Depends(get_caller)):
+    conn = service.get_db_connection()
+    try:
+        return service.create_pattern(conn, body, created_by=caller.get("resolved_by"))
+    finally:
+        conn.close()
+
+
+@app.post("/patterns/uploads")
+def post_pattern_upload(body: PatternUploadRequest, caller: dict = Depends(get_caller)):
+    conn = service.get_db_connection()
+    try:
+        return service.create_pattern_upload(conn, _s3_client(), body.filename, created_by=caller.get("resolved_by"))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.get("/patterns/{pattern_id}")
+def get_pattern(pattern_id: str):
+    conn = service.get_db_connection()
+    try:
+        return service.get_pattern(conn, pattern_id, _s3_client())
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/patterns/{pattern_id}/extract")
+def post_pattern_extract(pattern_id: str):
+    conn = service.get_db_connection()
+    try:
+        return service.queue_pattern_extraction(conn, _lambda_client(), pattern_id)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.patch("/patterns/{pattern_id}")
+def patch_pattern(pattern_id: str, body: dict):
+    conn = service.get_db_connection()
+    try:
+        return service.update_pattern(conn, pattern_id, body)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/patterns/{pattern_id}/approve")
+def post_pattern_approve(pattern_id: str, caller: dict = Depends(get_caller)):
+    conn = service.get_db_connection()
+    try:
+        return service.approve_pattern(conn, pattern_id, resolved_by=caller.get("resolved_by"))
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    finally:
+        conn.close()
+
+
+@app.post("/patterns/{pattern_id}/reject")
+def post_pattern_reject(pattern_id: str, body: PatternRejectRequest, caller: dict = Depends(get_caller)):
+    conn = service.get_db_connection()
+    try:
+        return service.reject_pattern(conn, pattern_id, resolved_by=caller.get("resolved_by"), note=body.note)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    finally:
+        conn.close()
+
+
 handler = Mangum(app)

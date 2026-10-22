@@ -6968,3 +6968,228 @@ def _logs_insights_iso(value):
     from datetime import datetime, timezone
 
     return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
+
+
+# --- Oil pattern catalog (runbook 6ej; spec docs/partner-api-v1-patterns.md) ---
+#
+# Al: "pulling in the patterns and using OCR is fine but they need approved
+# before they are added to the live catalog. similar pattern to the videos.
+# manual uploads of patterns as the first way they get pulled in".
+#
+# Flow: POST /patterns/uploads (a pending row + a presigned PUT for the
+# sheet PDF into the PRIVATE PatternSheetsBucket) -> the SPA uploads ->
+# POST /patterns/{id}/extract (pattern_ingest reads it with Claude vision)
+# -> staff fix anything oil_patterns.check flags -> approve (published) or
+# reject. Every save stores oil_patterns.compute's derived fields, so what
+# partners get is always computed the same way. Same reviewer gate as
+# video candidates (any signed-in admin user, Editors included).
+
+import oil_patterns  # noqa: E402
+
+PATTERN_COLUMNS = (
+    "id", "name", "short_name", "category", "series", "source", "source_url", "sheet_url", "image_url", "status",
+    "length_feet", "reverse_brush_drop_feet", "oil_per_board_ul", "forward_ml", "reverse_ml", "volume_ml", "ratio",
+    "track_zones", "machine", "steps", "board_totals", "profile", "profile_source",
+    "review_status", "published", "review_note", "resolved_at", "resolved_by",
+    "upload_key", "upload_filename", "page_image_key", "extraction_status", "extraction_error", "extraction_model",
+    "extracted_at", "created_at", "created_by", "updated_at", "content_changed_at",
+)
+PATTERN_EDITABLE = (
+    "name", "short_name", "category", "series", "source", "source_url", "sheet_url", "image_url", "status",
+    "length_feet", "reverse_brush_drop_feet", "oil_per_board_ul", "forward_ml", "reverse_ml", "volume_ml",
+    "track_zones", "machine", "steps",
+)
+_PATTERN_JSON = {"track_zones", "machine", "steps", "board_totals", "profile"}
+_PATTERN_NUMERIC = {"length_feet", "reverse_brush_drop_feet", "oil_per_board_ul", "forward_ml", "reverse_ml", "volume_ml", "ratio"}
+PATTERN_URL_TTL = 900
+
+
+def _pattern_bucket() -> str:
+    bucket = os.environ.get("PATTERN_SHEETS_BUCKET")
+    if not bucket:
+        raise RuntimeError("PATTERN_SHEETS_BUCKET is not configured on this deployment")
+    return bucket
+
+
+def _pattern_from_row(row) -> dict:
+    p = dict(zip(PATTERN_COLUMNS, row))
+    p["id"] = str(p["id"])
+    for k in _PATTERN_NUMERIC:
+        if p.get(k) is not None:
+            p[k] = float(p[k])
+    return p
+
+
+def _load_pattern(conn, pattern_id: str) -> dict:
+    with conn.cursor() as cur:
+        cur.execute(f"select {', '.join(PATTERN_COLUMNS)} from oil_patterns where id = %s", (pattern_id,))
+        row = cur.fetchone()
+    if not row:
+        raise LookupError(f"No oil pattern with id {pattern_id}")
+    return _pattern_from_row(row)
+
+
+def list_patterns(conn, review_status: str = None, search: str = None) -> list:
+    where, params = [], []
+    if review_status:
+        where.append("review_status = %s")
+        params.append(review_status)
+    if search:
+        where.append("(name ilike %s or short_name ilike %s or series ilike %s)")
+        params += [f"%{search}%"] * 3
+    cols = ("id", "name", "short_name", "category", "series", "source", "status", "length_feet", "volume_ml", "ratio",
+            "review_status", "published", "extraction_status", "created_at", "updated_at")
+    with conn.cursor() as cur:
+        cur.execute(
+            f"select {', '.join(cols)} from oil_patterns"
+            + (" where " + " and ".join(where) if where else "")
+            + " order by (review_status = 'pending') desc, updated_at desc",
+            params,
+        )
+        out = []
+        for row in cur.fetchall():
+            d = dict(zip(cols, row))
+            d["id"] = str(d["id"])
+            for k in ("length_feet", "volume_ml", "ratio"):
+                if d[k] is not None:
+                    d[k] = float(d[k])
+            out.append(d)
+    return out
+
+
+def get_pattern(conn, pattern_id: str, s3_client=None) -> dict:
+    """The stored pattern, plus what a review screen needs: `computed`
+    (oil_patterns.compute on the current fields, so the lane preview and
+    totals reflect unsaved-to-partners edits), `checks`, and short-lived
+    links to the private sheet PDF and page image."""
+    p = _load_pattern(conn, pattern_id)
+    p["computed"] = oil_patterns.compute(p)
+    p["checks"] = oil_patterns.check(p)
+    p["sheet_pdf_url"] = p["page_image_url"] = None
+    if s3_client is not None:
+        bucket = os.environ.get("PATTERN_SHEETS_BUCKET")
+        if bucket and p.get("upload_key"):
+            p["sheet_pdf_url"] = s3_client.generate_presigned_url(
+                "get_object", Params={"Bucket": bucket, "Key": p["upload_key"]}, ExpiresIn=PATTERN_URL_TTL)
+        if bucket and p.get("page_image_key"):
+            p["page_image_url"] = s3_client.generate_presigned_url(
+                "get_object", Params={"Bucket": bucket, "Key": p["page_image_key"]}, ExpiresIn=PATTERN_URL_TTL)
+    return p
+
+
+def _write_pattern(cur, pattern_id: str, fields: dict) -> None:
+    keys = list(fields)
+    cur.execute(
+        f"update oil_patterns set {', '.join(f'{k} = %s' for k in keys)} where id = %s",
+        [json.dumps(fields[k]) if k in _PATTERN_JSON else fields[k] for k in keys] + [pattern_id],
+    )
+
+
+def _derived(merged: dict) -> dict:
+    c = oil_patterns.compute(merged)
+    return {"steps": c["steps"], "board_totals": c["board_totals"], "profile": c["profile"], "ratio": c["ratio"],
+            "profile_source": c["profile_source"]}
+
+
+def create_pattern(conn, data: dict = None, created_by: str = None) -> dict:
+    """A pattern typed in by hand (no sheet), saved as pending."""
+    data = {k: v for k, v in (data or {}).items() if k in PATTERN_EDITABLE}
+    name = (data.get("name") or "").strip() or "New pattern"
+    with conn.cursor() as cur:
+        cur.execute("insert into oil_patterns (name, created_by, source) values (%s, %s, %s) returning id",
+                    (name, created_by, data.get("source") or "manual"))
+        pid = str(cur.fetchone()[0])
+        merged = {**data, "name": name}
+        _write_pattern(cur, pid, {**data, "name": name, **_derived(merged)})
+    conn.commit()
+    return get_pattern(conn, pid)
+
+
+def create_pattern_upload(conn, s3_client, filename: str, created_by: str = None) -> dict:
+    """A pending row for an uploaded sheet + a presigned PUT for the PDF."""
+    filename = (filename or "sheet.pdf").strip()[:200]
+    if not filename.lower().endswith(".pdf"):
+        raise ValueError("Upload the pattern sheet as a PDF.")
+    bucket = _pattern_bucket()
+    with conn.cursor() as cur:
+        cur.execute(
+            "insert into oil_patterns (name, source, created_by, upload_filename) values (%s, 'upload', %s, %s) returning id",
+            (f"Uploaded sheet: {filename}", created_by, filename),
+        )
+        pid = str(cur.fetchone()[0])
+        key = f"patterns/{pid}/sheet.pdf"
+        cur.execute("update oil_patterns set upload_key = %s where id = %s", (key, pid))
+    conn.commit()
+    url = s3_client.generate_presigned_url(
+        "put_object", Params={"Bucket": bucket, "Key": key, "ContentType": "application/pdf"}, ExpiresIn=PATTERN_URL_TTL)
+    return {"pattern_id": pid, "upload_url": url, "content_type": "application/pdf"}
+
+
+def queue_pattern_extraction(conn, lambda_client, pattern_id: str) -> dict:
+    p = _load_pattern(conn, pattern_id)
+    if not p.get("upload_key"):
+        raise ValueError("This pattern has no uploaded sheet to read.")
+    if p["review_status"] != "pending":
+        raise ValueError("Only pending patterns can be re-read.")
+    fn = os.environ.get("PATTERN_INGEST_FUNCTION_NAME")
+    if not fn:
+        return {"queued": False, "reason": "PATTERN_INGEST_FUNCTION_NAME is not configured on this deployment"}
+    with conn.cursor() as cur:
+        cur.execute("update oil_patterns set extraction_status = 'queued', extraction_error = null where id = %s", (pattern_id,))
+    conn.commit()
+    try:
+        lambda_client.invoke(FunctionName=fn, InvocationType="Event", Payload=json.dumps({"pattern_id": pattern_id}))
+    except Exception:
+        with conn.cursor() as cur:
+            cur.execute("update oil_patterns set extraction_status = 'failed', extraction_error = 'Could not start the reader' where id = %s", (pattern_id,))
+        conn.commit()
+        raise
+    return {"queued": True, "pattern_id": pattern_id}
+
+
+def update_pattern(conn, pattern_id: str, data: dict) -> dict:
+    """Saves edits and recomputes the derived fields. An APPROVED pattern
+    stays published only if it still passes every check: otherwise the save
+    is refused (ValueError listing the errors), so partners never get a
+    pattern that doesn't add up. Pending/rejected patterns save as-is."""
+    current = _load_pattern(conn, pattern_id)
+    edits = {k: v for k, v in (data or {}).items() if k in PATTERN_EDITABLE}
+    merged = {**current, **edits}
+    if current["review_status"] == "approved":
+        errors = [i for i in oil_patterns.check(merged) if i["level"] == "error"]
+        if errors:
+            raise ValueError("This pattern is live, so it must pass every check before saving: "
+                             + "; ".join(e["message"] for e in errors[:3]))
+    with conn.cursor() as cur:
+        _write_pattern(cur, pattern_id, {**edits, **_derived(merged)})
+    conn.commit()
+    return get_pattern(conn, pattern_id)
+
+
+def approve_pattern(conn, pattern_id: str, resolved_by: str) -> dict:
+    p = _load_pattern(conn, pattern_id)
+    errors = [i for i in oil_patterns.check(p) if i["level"] == "error"]
+    if errors:
+        raise ValueError("Fix these before approving: " + "; ".join(e["message"] for e in errors[:5]))
+    with conn.cursor() as cur:
+        _write_pattern(cur, pattern_id, _derived(p))
+        cur.execute(
+            "update oil_patterns set review_status = 'approved', published = true, resolved_at = now(), resolved_by = %s,"
+            " review_note = null where id = %s",
+            (resolved_by, pattern_id),
+        )
+    conn.commit()
+    return get_pattern(conn, pattern_id)
+
+
+def reject_pattern(conn, pattern_id: str, resolved_by: str, note: str = None) -> dict:
+    """Rejects (and unpublishes, so partners get a remove) a pattern."""
+    _load_pattern(conn, pattern_id)
+    with conn.cursor() as cur:
+        cur.execute(
+            "update oil_patterns set review_status = 'rejected', published = false, resolved_at = now(), resolved_by = %s,"
+            " review_note = %s where id = %s",
+            (resolved_by, (note or "").strip() or None, pattern_id),
+        )
+    conn.commit()
+    return get_pattern(conn, pattern_id)

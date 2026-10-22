@@ -33,6 +33,8 @@ const BlockedChannelsPage = lazy(() => import("./pages/BlockedChannelsPage"));
 const BatchJobsPage = lazy(() => import("./pages/BatchJobsPage"));
 const UsersPage = lazy(() => import("./pages/UsersPage"));
 const PartnersPage = lazy(() => import("./pages/PartnersPage"));
+const PatternsPage = lazy(() => import("./pages/PatternsPage"));
+const PatternDetailPage = lazy(() => import("./pages/PatternDetailPage"));
 
 // Deliberately plain and generic -- covers only the brief window while a
 // route's own JS chunk downloads (typically much faster than the
@@ -73,6 +75,8 @@ export default function App() {
                 <Route path="/cores" element={<CoresPage />} />
                 <Route path="/coverstocks" element={<CoverstocksPage />} />
                 <Route path="/blocked-channels" element={<BlockedChannelsPage />} />
+                <Route path="/oil-patterns" element={<PatternsPage />} />
+                <Route path="/oil-patterns/:id" element={<PatternDetailPage />} />
                 <Route path="/batch-jobs" element={<BatchJobsPage />} />
                 <Route
                   path="/users"

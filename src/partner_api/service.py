@@ -484,3 +484,135 @@ def compute_plotter_neighbors(points: list) -> dict:
     return result
 
 # <<< PLOTTER NEIGHBORS v1 <<<
+
+
+# --- Oil patterns (runbook 6ej; docs/partner-api-v1-patterns.md) -----------
+# Only approved + published patterns. The feed has the same rules as
+# list_changes (content_changed_at/id cursor, CHANGE_LAG_SECONDS holdback,
+# removes for unpublished, removes skipped on a first sync). Stored JSON is
+# filtered to the contract's keys: admin keeps review-only extras on steps
+# (reported_crossed/reported_oil_ul) that partners must never see.
+
+PATTERN_SELECT = """
+    select id, name, short_name, category, series, source, source_url, sheet_url, image_url, status,
+           length_feet, reverse_brush_drop_feet, oil_per_board_ul, forward_ml, reverse_ml, volume_ml, ratio,
+           track_zones, machine, steps, board_totals, profile, profile_source, published, review_status,
+           content_changed_at
+    from oil_patterns
+"""
+_PUBLISHED_PATTERN = "published = true and review_status = 'approved'"
+_STEP_KEYS = ("direction", "order", "start", "stop", "from_board", "to_board", "loads", "speed_ips", "buffer", "tank",
+              "crossed", "start_feet", "end_feet", "feet", "oil_ul")
+_ZONE_KEYS = ("from", "to", "against_from", "against_to", "label", "ratio")
+_MACHINE_KEYS = ("make", "model", "tank_configuration", "tank_a_conditioner", "tank_b_conditioner", "cleaner_ratio_main",
+                 "cleaner_ratio_back_end", "cleaner_back_end_distance_feet", "buffer_rpm")
+
+
+def _pick(d, keys):
+    return {k: d.get(k) for k in keys if d.get(k) is not None} if isinstance(d, dict) else {}
+
+
+def map_pattern(row: dict) -> dict:
+    steps = []
+    for s in row.get("steps") or []:
+        step = _pick(s, _STEP_KEYS)
+        if "order" in step:
+            step["order"] = int(step["order"])
+        for k in ("from_board", "to_board", "loads", "crossed", "oil_ul"):
+            if step.get(k) is not None:
+                step[k] = int(round(float(step[k])))
+        step.setdefault("loads", 0)
+        steps.append(step)
+    machine = _pick(row.get("machine"), _MACHINE_KEYS)
+    if isinstance(machine.get("buffer_rpm"), dict):
+        machine["buffer_rpm"] = {str(k): float(v) for k, v in machine["buffer_rpm"].items() if v is not None}
+    return {
+        "id": str(row["id"]),
+        "name": row["name"],
+        "short_name": row.get("short_name"),
+        "category": row["category"],
+        "series": row.get("series"),
+        "source": row["source"],
+        "source_url": row.get("source_url"),
+        "sheet_url": row.get("sheet_url"),
+        "image_url": row.get("image_url"),
+        "status": row["status"],
+        **{k: _float_or_none(row.get(k)) for k in ("length_feet", "reverse_brush_drop_feet", "oil_per_board_ul",
+                                                     "forward_ml", "reverse_ml", "volume_ml", "ratio")},
+        "track_zones": [_pick(z, _ZONE_KEYS) for z in row.get("track_zones") or []],
+        "machine": machine,
+        "steps": steps,
+        "board_totals": row.get("board_totals"),
+        "profile": row.get("profile"),
+        "profile_source": row.get("profile_source") or "steps",
+        "content_changed_at": row["content_changed_at"],
+    }
+
+
+def list_patterns(conn, cursor: str = None, limit: int = None) -> dict:
+    limit = clamp_limit(limit)
+    after = _ZERO_ID
+    if cursor:
+        try:
+            after = _cursor_id(decode_cursor(cursor)["id"])
+        except (KeyError, InvalidCursor) as e:
+            raise InvalidCursor("cursor is not one this API issued") from e
+    with conn.cursor() as cur:
+        cur.execute(PATTERN_SELECT + f" where {_PUBLISHED_PATTERN} and id > %s::uuid order by id limit %s", (after, limit + 1))
+        rows = _rows(cur)
+    more = len(rows) > limit
+    rows = rows[:limit]
+    return {
+        "items": [map_pattern(r) for r in rows],
+        "next_cursor": encode_cursor({"id": str(rows[-1]["id"])}) if more and rows else None,
+    }
+
+
+def get_pattern(conn, pattern_id: str):
+    try:
+        pid = _cursor_id(pattern_id)
+    except InvalidCursor:
+        return None
+    with conn.cursor() as cur:
+        cur.execute(PATTERN_SELECT + f" where {_PUBLISHED_PATTERN} and id = %s::uuid", (pid,))
+        rows = _rows(cur)
+    return map_pattern(rows[0]) if rows else None
+
+
+def list_pattern_changes(conn, cursor: str = None, since: str = None, limit: int = None) -> dict:
+    limit = clamp_limit(limit)
+    if cursor:
+        data = decode_cursor(cursor)
+        try:
+            pos_t, pos_id = parse_since(data["t"]), _cursor_id(data["id"])
+        except (KeyError, InvalidCursor) as e:
+            raise InvalidCursor("cursor is not one this API issued") from e
+        initial = False
+    elif since:
+        pos_t, pos_id, initial = parse_since(since), _ZERO_ID, False
+    else:
+        pos_t, pos_id, initial = _EPOCH, _ZERO_ID, True
+    with conn.cursor() as cur:
+        cur.execute(
+            PATTERN_SELECT
+            + " where (content_changed_at, id) > (%s, %s::uuid)"
+            "   and content_changed_at < now() - make_interval(secs => %s)"
+            " order by content_changed_at, id limit %s",
+            (pos_t, pos_id, CHANGE_LAG_SECONDS, limit + 1),
+        )
+        rows = _rows(cur)
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    items = []
+    for r in rows:
+        live = r["published"] and r["review_status"] == "approved"
+        if live:
+            items.append({"id": str(r["id"]), "change": "upsert", "changed_at": r["content_changed_at"], "pattern": map_pattern(r)})
+        elif not initial:
+            items.append({"id": str(r["id"]), "change": "remove", "changed_at": r["content_changed_at"], "pattern": None})
+    if rows:
+        last = rows[-1]
+        next_cursor = encode_cursor({"t": last["content_changed_at"].isoformat(), "id": str(last["id"])})
+    else:
+        next_cursor = encode_cursor({"t": pos_t.isoformat(), "id": pos_id})
+    return {"items": items, "next_cursor": next_cursor, "has_more": has_more}
