@@ -130,9 +130,15 @@ export default function ProductsPage() {
   const missingCoverstock = searchParams.get("missing_coverstock") === "1";
   const missingSkus = searchParams.get("missing_skus") === "1";
   const offset = Number(searchParams.get("offset") ?? "0") || 0;
+  // Al: "can we add something to the products list view that shows if they
+  // are published or not". "published" in the URL is "yes" or "no";
+  // absent means any. The API's published filter already existed.
+  const publishedParam = searchParams.get("published");
+  const published = publishedParam === "yes" ? true : publishedParam === "no" ? false : undefined;
 
   const filters: ListProductsParams = {
     status,
+    published,
     brand_id: brandId || undefined,
     search: search || undefined,
     source_platform: sourcePlatform || undefined,
@@ -159,7 +165,7 @@ export default function ProductsPage() {
     // updateFilter), so this doesn't need offset in a way that fights
     // that.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, brandId, search, sourcePlatform, sort, missingCore, missingCoverstock, missingSkus, offset]);
+  }, [status, published, brandId, search, sourcePlatform, sort, missingCore, missingCoverstock, missingSkus, offset]);
 
   // Single writer for every filter control -- deletes a param entirely
   // rather than writing its "empty" value (blank string, "false") so
@@ -241,6 +247,14 @@ export default function ProductsPage() {
       key: "status",
       header: "Status",
       render: (p) => <Badge tone={p.status === "current" ? "ok" : "muted"}>{p.status}</Badge>,
+    },
+    {
+      // Whether the ball is published, i.e. shown on the consumer site and
+      // returned by the public and partner APIs.
+      key: "published",
+      header: "Published",
+      render: (p) =>
+        p.published ? <Badge tone="ok">published</Badge> : <Badge tone="pending">not published</Badge>,
     },
     {
       key: "article",
@@ -325,6 +339,18 @@ export default function ProductsPage() {
           >
             <option value="current">Current</option>
             <option value="retired">Retired</option>
+          </select>
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-ink-600">Published</label>
+          <select
+            value={publishedParam === "yes" || publishedParam === "no" ? publishedParam : ""}
+            onChange={(e) => updateFilter("published", e.target.value)}
+            className="rounded-md border border-ink-300 px-2 py-1.5 text-sm"
+          >
+            <option value="">Any</option>
+            <option value="yes">Published</option>
+            <option value="no">Not published</option>
           </select>
         </div>
         <div>
