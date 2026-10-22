@@ -20835,6 +20835,16 @@ default pin"):
   ISSUED, add `KioskSiteDomainName="kiosk.bowlerdepot.com"
   KioskSiteCertificateArn="<arn above>"` to samconfig and deploy. Then add a
   CNAME at GoDaddy: `kiosk` → `d1c1o6cpna7go9.cloudfront.net`.
+- **Step 5 done, live 2026-10-21.**
+  - Al added both GoDaddy CNAMEs. The cert was ISSUED at 14:49 MDT.
+  - samconfig (local, gitignored) now sets the kiosk domain and cert. The
+    deploy changed only `KioskSiteDistribution` (alias plus cert):
+    UPDATE_COMPLETE.
+  - `https://kiosk.bowlerdepot.com` serves `/`, `/home`, `/ball/…`, `/m/…`
+    and the logo with 200. The TLS cert is CN=kiosk.bowlerdepot.com,
+    valid until 2027-05-06.
+  - The live Portal page renders the chart, 8 videos and the QR code, and
+    the QR origin is kiosk.bowlerdepot.com. No console errors.
 
 ## 7. Ongoing operations
 
