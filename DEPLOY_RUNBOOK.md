@@ -20846,6 +20846,55 @@ default pin"):
   - The live Portal page renders the chart, 8 videos and the QR code, and
     the QR origin is kiosk.bowlerdepot.com. No console errors.
 
+
+### 6ei. Kiosk phase 2: Windows 11 setup guide + lockdown script (2026-10-21)
+
+Al: "yes write the phase 2 setup guide".
+
+**`docs/kiosk-setup-windows.md`** is a step-by-step guide for one GMKtec
+G10 plus touchscreen, about 45 minutes:
+1. Windows 11 **Pro** is required (Assigned Access isn't available on Home),
+   plus updates.
+2. The BIOS "Restore on AC Power Loss → Power On" setting, with the name
+   varying by BIOS.
+3. Never sleep, and Windows Update active hours.
+4. Touch calibration (Tablet PC Settings).
+5. The lockdown script.
+6. **Settings → Accounts → Other users → Set up a kiosk**: account `Kiosk`,
+   app Microsoft Edge, "**As a digital sign or interactive display**" (not
+   "public browser", whose InPrivate wipe would erase the app's stored
+   settings), URL `https://kiosk.bowlerdepot.com/?location=<name>`. The
+   location lives in the start URL, so it survives anything; the app's
+   config screen shows it.
+7. A test checklist: boot, navigation, video links blocked, QR, edge swipes,
+   idle reset, power cut, config PIN.
+
+It also covers day-to-day tasks (Ctrl+Alt+Del to get out, changing the
+location, an optional nightly restart via `schtasks`) and a
+troubleshooting table.
+
+**`kiosk/public/setup/kiosk-lockdown.ps1`** is served at
+`https://kiosk.bowlerdepot.com/setup/kiosk-lockdown.ps1`, so the G10 can
+fetch it. Run it as admin. It sets machine policies under
+`HKLM:\SOFTWARE\Policies\Microsoft\Edge`:
+- `URLBlocklist` `*`;
+- `URLAllowlist`: the kiosk, `www.youtube-nocookie.com/embed`, plus the
+  data, image, font and video hosts (api.bowleriq.io, img.bowleriq.io, the
+  images S3 bucket, i.ytimg.com, googlevideo.com and Google Fonts), so
+  nothing breaks if Edge applies the list beyond navigations;
+- `HideFirstRunExperience`, `BrowserSignin` 0, `SyncDisabled`, password,
+  address and card autofill off, Translate, Shopping, Rewards, the sidebar
+  and Collections off;
+- `DownloadRestrictions` 3, `PrintingEnabled` 0 and
+  `DeveloperToolsAvailability` 2.
+
+It also sets Windows `EdgeUI\AllowEdgeSwipe` = 0.
+`kiosk-unlock.ps1` removes them.
+
+**Not verified on a Windows machine.** Al runs the guide on the first
+unit. The checklist's video-title/YouTube-logo tap confirms the block, and
+the guide says to report if videos won't play.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
