@@ -29,7 +29,7 @@ const DOTS = [3, 5, 8, 11, 14, 26, 29, 32, 35, 37];
 export default function LanePreview({ rows }: { rows: number[][] }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const PX_IN = 6.5; // horizontal px per inch
-  const PX_FT = 8; // vertical px per foot
+  const PX_FT = 11; // vertical px per foot (Al: "can we make it a bit longer please")
   const LEFT = 30; // foot labels
   const TOP = 14; // pit
   const BOTTOM = 14; // approach strip under the foul line

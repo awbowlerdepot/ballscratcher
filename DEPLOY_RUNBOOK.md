@@ -21042,7 +21042,9 @@ The preview moved out of `PatternDetailPage.tsx` into
 
 Width and length use different scales. At true scale the lane is about 18
 times taller than wide, which would turn the oil into a hairline, so the
-caption says "width not to scale". The pin triangle is squashed the same
+caption says "width not to scale". It's drawn at 11 px per foot against
+6.5 px per inch across; Al asked for "a bit longer" than the first cut
+(8 px per foot). The pin triangle is squashed the same
 way. The canvas is drawn at devicePixelRatio for sharp lines.
 
 **Deploy:** push to main (admin site GitHub Action).
