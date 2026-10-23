@@ -286,8 +286,68 @@ def profile(steps: list, length_feet, oil_per_board_ul, foot_step: float = 1.0, 
     }
 
 
-def headline_ratio(track_zones):
-    ratios = [_num(z.get("ratio")) for z in track_zones or []]
+# Track zone ratios from the loads (runbook 6ep). Al: "it looks like you
+# have pulled the track zones from the oil sheet. those are likely
+# calculated from the oil loads. can you see if you can reverse engineer
+# those" and then "if we are calculating off loads that would be the more
+# reliable number. Spot checking prior to approval and flagging any that
+# might be wrong is the more appropriate path". Kegel's ratio is each zone's
+# AVERAGE total oil per board (forward + reverse board_totals) divided
+# between the two zones, the one nearer the middle (board 20) on top,
+# rounded to 2 places -- it reproduced all 12 zones on the Elite 48 and
+# Short 37 sheets exactly. So `ratio` is always computed; the sheet's (or a
+# typist's) value is kept as `reported_ratio` (never published) and check()
+# warns when they disagree. A pattern with no zones gets Kegel's standard six.
+STANDARD_ZONES = (
+    ("3L", "7L", "18L", "18R", "Outside:Middle"),
+    ("8L", "12L", "18L", "18R", "Middle:Middle"),
+    ("13L", "17L", "18L", "18R", "Inside:Middle"),
+    ("18L", "18R", "17R", "13R", "Middle:Inside"),
+    ("18L", "18R", "12R", "8R", "Middle:Middle"),
+    ("18L", "18R", "7R", "3R", "Middle:Outside"),
+)
+RATIO_TOLERANCE = 0.011  # both sides round to 0.01
+
+
+def _zone_span(a, b):
+    lo, hi = sorted((board_from_label(a), board_from_label(b)))
+    return lo, hi
+
+
+def zone_ratio(totals: list, zone: dict):
+    """Computed ratio for one zone from per-board totals (µL), or None if a
+    label is bad or the outer zone is dry."""
+    try:
+        a = _zone_span(zone.get("from"), zone.get("to"))
+        c = _zone_span(zone.get("against_from"), zone.get("against_to"))
+    except ValueError:
+        return None
+    avg = lambda lo, hi: sum(totals[lo - 1:hi]) / (hi - lo + 1)  # noqa: E731
+    # The zone whose center is nearer board 20 is the numerator.
+    inner, outer = (a, c) if abs(sum(a) / 2 - 20) <= abs(sum(c) / 2 - 20) else (c, a)
+    num, den = avg(*inner), avg(*outer)
+    return round(num / den, 2) if den > 0 else None
+
+
+def track_zones(zones, board_totals_: dict) -> list:
+    """Zones with `ratio` computed from the loads and the sheet's value kept
+    as `reported_ratio`."""
+    totals = [f + r for f, r in zip(board_totals_["forward_ul"], board_totals_["reverse_ul"])]
+    if not zones:
+        zones = [{"from": f, "to": t, "against_from": af, "against_to": at, "label": lab}
+                 for f, t, af, at, lab in STANDARD_ZONES]
+    out = []
+    for z in zones:
+        zone = dict(z)
+        if "reported_ratio" not in zone:
+            zone["reported_ratio"] = _num(zone.get("ratio"))
+        zone["ratio"] = zone_ratio(totals, zone)
+        out.append(zone)
+    return out
+
+
+def headline_ratio(track_zones_):
+    ratios = [_num(z.get("ratio")) for z in track_zones_ or []]
     ratios = [r for r in ratios if r is not None]
     return max(ratios) if ratios else None
 
@@ -297,14 +357,17 @@ def compute(pattern: dict) -> dict:
     steps = ordered(normalize_steps(pattern.get("steps") or [], pattern.get("oil_per_board_ul")))
     series = lanes(steps, pattern.get("length_feet"), pattern.get("oil_per_board_ul"), BURN_LANES + 1,
                    reverse_brush_drop_feet=pattern.get("reverse_brush_drop_feet"))
+    totals = board_totals(steps, pattern.get("oil_per_board_ul"))
+    zones = track_zones(pattern.get("track_zones"), totals)
     return {
         "steps": steps,
-        "board_totals": board_totals(steps, pattern.get("oil_per_board_ul")),
+        "board_totals": totals,
+        "track_zones": zones,
         "profile": profile(steps, pattern.get("length_feet"), pattern.get("oil_per_board_ul"), _lanes=series),
         # Admin preview only (not stored or published): the first lane on
         # clean brushes, before the burn pair.
         "first_lane_rows": series[0],
-        "ratio": headline_ratio(pattern.get("track_zones")),
+        "ratio": headline_ratio(zones),
         "profile_source": "steps",
     }
 
@@ -369,6 +432,24 @@ def check(pattern: dict) -> list:
             add("warning", f"The sheet's {name} total is missing.")
         elif abs(total / 1000 - sheet) > ML_TOLERANCE:
             add("error", f"The {name} steps add up to {total / 1000:.2f} mL; the sheet says {sheet:g} mL.")
+    # Track zones: the ratio is computed from the loads; flag a sheet value
+    # that disagrees (a misread ratio, or steps that don't match the sheet).
+    bt = board_totals(steps, opb)
+    for z in track_zones(pattern.get("track_zones"), bt):
+        name = f"{z.get('from')}-{z.get('to')} : {z.get('against_from')}-{z.get('against_to')}"
+        if z["ratio"] is None:
+            try:
+                _zone_span(z.get("from"), z.get("to"))
+                _zone_span(z.get("against_from"), z.get("against_to"))
+                add("warning", f"Track zone {name} has no oil on its outer boards, so it has no ratio.")
+            except ValueError:
+                add("error", f"Track zone {name} has a board label that isn't valid.")
+            continue
+        rep_ = z.get("reported_ratio")
+        if rep_ is not None and abs(rep_ - z["ratio"]) > RATIO_TOLERANCE:
+            add("warning", f"Track zone {name} ({z.get('label') or 'no label'}): the loads give {z['ratio']:.2f}; "
+                           f"the sheet reads {rep_:g}. The computed ratio is what's published.")
+
     vol = _num(pattern.get("volume_ml"))
     if vol is not None and abs((sums["forward"] + sums["reverse"]) / 1000 - vol) > ML_TOLERANCE:
         add("error", f"Forward + reverse is {(sums['forward'] + sums['reverse']) / 1000:.2f} mL; the sheet's volume is {vol:g} mL.")

@@ -59,7 +59,9 @@ function toDraft(p: PatternDetail): Draft {
     reverse_ml: p.reverse_ml,
     volume_ml: p.volume_ml,
     machine: { ...(p.machine || {}) },
-    track_zones: (p.track_zones || []).map((z) => ({ ...z })),
+    // The computed zones: the stored ones (or Kegel's standard six) with
+    // ratio from the loads and the sheet's value as reported_ratio.
+    track_zones: (p.computed.track_zones || p.track_zones || []).map((z) => ({ ...z })),
     // Edit what the SHEET says: reported_* hold its crossed/oil columns.
     steps: (p.steps || []).map((s) => ({
       ...s,
@@ -327,7 +329,7 @@ export default function PatternDetailPage() {
           <div className="rounded-lg border border-ink-200 p-3">
             <div className="mb-2 flex items-center justify-between">
               <h2 className="text-sm font-semibold text-ink-800">Track zones</h2>
-              <Button size="sm" variant="ghost" onClick={() => set({ track_zones: [...draft.track_zones, { from: "", to: "", against_from: "18L", against_to: "18R", label: "", ratio: null }] })}>
+              <Button size="sm" variant="ghost" onClick={() => set({ track_zones: [...draft.track_zones, { from: "", to: "", against_from: "18L", against_to: "18R", label: "", reported_ratio: null }] })}>
                 + Zone
               </Button>
             </div>
@@ -335,7 +337,7 @@ export default function PatternDetailPage() {
               <table className="text-sm">
                 <thead>
                   <tr className="text-left text-xs text-ink-500">
-                    {["From", "To", "Against", "", "Description", "Ratio", ""].map((h, i) => (
+                    {["From", "To", "Against", "", "Description", "Sheet", "From loads", ""].map((h, i) => (
                       <th key={i} className="px-1 pb-1 font-medium">
                         {h}
                       </th>
@@ -351,7 +353,21 @@ export default function PatternDetailPage() {
                         </td>
                       ))}
                       <td className="px-1 py-0.5">
-                        <input value={z.ratio ?? ""} onChange={(e) => setZone(i, { ratio: numOrNull(e.target.value) })} className="w-16 rounded border border-ink-300 px-1.5 py-0.5" />
+                        <input value={z.reported_ratio ?? ""} onChange={(e) => setZone(i, { reported_ratio: numOrNull(e.target.value) })} className="w-16 rounded border border-ink-300 px-1.5 py-0.5" title="The sheet's ratio, for checking" />
+                      </td>
+                      <td className="px-1 py-0.5 tabular-nums">
+                        {(() => {
+                          // Computed from the loads at the last save -- what's published.
+                          const comp = p.computed.track_zones?.[i]?.ratio;
+                          const sheet = z.reported_ratio;
+                          const off = comp != null && sheet != null && Math.abs(comp - sheet) > 0.011;
+                          return (
+                            <span className={off ? "font-medium text-warn" : "text-ink-800"} title={off ? "Doesn't match the sheet" : undefined}>
+                              {comp != null ? comp.toFixed(2) : "--"}
+                              {off ? " ⚠" : ""}
+                            </span>
+                          );
+                        })()}
                       </td>
                       <td>
                         <button type="button" className="px-1 text-ink-400 hover:text-danger" onClick={() => set({ track_zones: draft.track_zones.filter((_, n) => n !== i) })} aria-label="Remove zone">
@@ -363,7 +379,10 @@ export default function PatternDetailPage() {
                 </tbody>
               </table>
             </div>
-            <p className="mt-2 text-xs text-ink-500">Headline ratio (largest zone): {p.computed.ratio != null ? `${p.computed.ratio}:1` : "--"}</p>
+            <p className="mt-2 text-xs text-ink-500">
+              Ratios are calculated from the loads: each zone's average oil per board, the zone nearer the middle over the other. The sheet's numbers are only there to
+              check against. Headline ratio (largest zone): {p.computed.ratio != null ? `${p.computed.ratio}:1` : "--"}
+            </p>
           </div>
         </div>
       </div>

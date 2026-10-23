@@ -21157,6 +21157,46 @@ so partners syncing `/v1/patterns/changes` re-fetch them. Ran it with
 ```
 (PG* exported from the bowling-scraper-db secret.)
 
+### 6ep. Oil pattern track zone ratios computed from the loads (2026-10-23)
+
+Al: "it looks like you have pulled the track zones from the oil sheet.
+those are likely calculated from the oil loads. can you see if you can
+reverse engineer those from the loads and end up at the same numbers", then
+"yes build it that way. i think if we are calculating off loads that would
+be the more reliable number. Spot checking prior to approval and flagging
+any that might be wrong is the more appropriate path".
+
+**Kegel's ratio:** take each board's total oil (`board_totals` forward +
+reverse) and average it over each zone's boards; the zone nearer the middle
+(board 20) is divided by the other, rounded to 0.01. 18L–18R means boards
+18–22. Computed this way, it matched all 12 sheet values exactly (Elite 48:
+2.00 / 1.59 / 1.03 / 1.01 / 1.43 / 2.00; Short 37: 1.72 / 1.03 / 1.00 /
+1.00 / 1.02 / 1.64). It doesn't depend on the brush model.
+
+**`oil_patterns`:**
+- `track_zones()` computes each zone's `ratio` and keeps the sheet's or
+  typist's value as `reported_ratio`. That one is review-only; the partner
+  API drops it.
+- A pattern with no zones gets Kegel's standard six.
+- `compute()` returns `track_zones`, and the headline `ratio` is the
+  largest computed one.
+- `check()` warns, without blocking approval, when a sheet ratio differs
+  from the computed one by more than 0.01. It errors on a bad zone label.
+- `admin_api._derived` now stores `track_zones`, and
+  `scripts/recompute_oil_patterns.py` rewrites them.
+
+**Admin:** the zone table has a "Sheet" column (editable, for checking) and
+a "From loads" column (published), with ⚠ on a mismatch.
+
+The contract only changed `TrackZone.ratio`'s description; the snapshot is
+regenerated. The spec's change 6 is updated.
+
+**Deploy:** `sam build && sam deploy`, then push (admin site), then
+`.venv/bin/python scripts/recompute_oil_patterns.py --apply`.
+**Verify:** `.venv/bin/python -m pytest -q tests/test_oil_patterns.py`.
+Both current patterns show the same ratios in Sheet and From loads, with no
+warnings.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

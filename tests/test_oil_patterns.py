@@ -179,3 +179,43 @@ def test_reverse_brush_drop_holds_oil_until_the_drop():
     assert op.compute(p)["profile"]["rows"] != op.profile(
         op.ordered(op.normalize_steps(p["steps"], 50)), 48, 50
     )["rows"]
+
+
+def test_track_zone_ratios_come_from_the_loads():
+    """Runbook 6ep: Kegel's ratios are the zones' average total oil per
+    board; the computed values match every Elite 48 sheet value."""
+    p = elite48()
+    c = op.compute(p)
+    assert [z["ratio"] for z in c["track_zones"]] == [2.0, 1.59, 1.03, 1.01, 1.43, 2.0]
+    assert [z["reported_ratio"] for z in c["track_zones"]] == [2.0, 1.59, 1.03, 1.01, 1.43, 2.0]
+    assert c["ratio"] == 2.0 and op.check(p) == []
+
+
+def test_misread_ratio_is_flagged_and_the_loads_win():
+    p = elite48()
+    p["track_zones"][1]["ratio"] = 1.95  # OCR misread of 1.59
+    c = op.compute(p)
+    assert c["track_zones"][1]["ratio"] == 1.59 and c["track_zones"][1]["reported_ratio"] == 1.95
+    issues = op.check(p)
+    assert [i["level"] for i in issues] == ["warning"]
+    assert "the loads give 1.59; the sheet reads 1.95" in issues[0]["message"]
+    # Once stored, the sheet's value stays the reported one on recompute.
+    again = op.compute({**p, "track_zones": c["track_zones"]})
+    assert again["track_zones"][1]["reported_ratio"] == 1.95 and again["track_zones"][1]["ratio"] == 1.59
+
+
+def test_typed_pattern_gets_the_standard_zones():
+    p = elite48()
+    p["track_zones"] = []
+    zones = op.compute(p)["track_zones"]
+    assert [z["label"] for z in zones] == [
+        "Outside:Middle", "Middle:Middle", "Inside:Middle", "Middle:Inside", "Middle:Middle", "Middle:Outside"
+    ]
+    assert [z["ratio"] for z in zones] == [2.0, 1.59, 1.03, 1.01, 1.43, 2.0]
+    assert all(z["reported_ratio"] is None for z in zones)
+
+
+def test_bad_zone_label_is_an_error():
+    p = elite48()
+    p["track_zones"][0]["to"] = "7X"
+    assert any(i["level"] == "error" and "Track zone" in i["message"] for i in op.check(p))

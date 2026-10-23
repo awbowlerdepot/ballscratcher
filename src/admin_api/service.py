@@ -7087,8 +7087,9 @@ def _write_pattern(cur, pattern_id: str, fields: dict) -> None:
 
 def _derived(merged: dict) -> dict:
     c = oil_patterns.compute(merged)
-    return {"steps": c["steps"], "board_totals": c["board_totals"], "profile": c["profile"], "ratio": c["ratio"],
-            "profile_source": c["profile_source"]}
+    # track_zones too (runbook 6ep): their ratios are computed from the loads.
+    return {"steps": c["steps"], "board_totals": c["board_totals"], "track_zones": c["track_zones"],
+            "profile": c["profile"], "ratio": c["ratio"], "profile_source": c["profile_source"]}
 
 
 def create_pattern(conn, data: dict = None, created_by: str = None) -> dict:

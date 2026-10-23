@@ -208,7 +208,11 @@ class TrackZone(_Model):
     against_from: Optional[str] = Field(None, description="Comparison zone start label (e.g. '18L').")
     against_to: Optional[str] = Field(None, description="Comparison zone end label (e.g. '18R').")
     label: Optional[str] = Field(None, description="The sheet's description, e.g. 'Outside:Middle'.")
-    ratio: Optional[float] = Field(None, description="Oil ratio between the two zones.")
+    ratio: Optional[float] = Field(
+        None,
+        description="Oil ratio between the two zones: the average total oil per board (board_totals forward + "
+        "reverse) of the zone nearer the middle over the other's, to 0.01. Computed from the steps.",
+    )
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 

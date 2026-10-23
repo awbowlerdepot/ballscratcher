@@ -31,7 +31,7 @@ import oil_patterns  # noqa: E402
 
 SOURCE = ("name", "category", "length_feet", "oil_per_board_ul", "forward_ml", "reverse_ml", "volume_ml",
           "reverse_brush_drop_feet", "track_zones", "steps")
-DERIVED = ("steps", "board_totals", "profile", "ratio", "profile_source")
+DERIVED = ("steps", "board_totals", "track_zones", "profile", "ratio", "profile_source")
 JSON_COLS = {"steps", "board_totals", "profile", "track_zones"}
 
 

@@ -1305,7 +1305,8 @@ export interface TrackZone {
   against_from?: string | null;
   against_to?: string | null;
   label?: string | null;
-  ratio?: number | null;
+  ratio?: number | null; // computed from the loads (runbook 6ep)
+  reported_ratio?: number | null; // what the sheet says; review only, never published
 }
 
 export interface PatternCheck {
@@ -1354,6 +1355,7 @@ export interface PatternDetail extends PatternSummary {
     steps: PatternStep[];
     board_totals: { forward_ul: number[]; reverse_ul: number[] };
     profile: { foot_step: number; units: string; model?: string; burn_lanes?: number; rows: number[][] };
+    track_zones: TrackZone[]; // ratios computed from the loads; the standard six if the pattern has none
     first_lane_rows?: number[][]; // the first lane on clean brushes, before the burn pair (runbook 6em)
     ratio: number | null;
   };
