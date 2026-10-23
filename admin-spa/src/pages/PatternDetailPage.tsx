@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { approvePattern, getPattern, readPatternSheet, rejectPattern, updatePattern } from "../api/client";
 import { PATTERN_CATEGORIES, PATTERN_SOURCES } from "../api/types";
 import type { PatternCheck, PatternDetail, PatternEdit, PatternStep, TrackZone } from "../api/types";
 import Button from "../components/Button";
+import LanePreview from "../components/LanePreview";
 import Modal from "../components/Modal";
 import { useToast } from "../components/Toast";
 import { readBadge, reviewBadge } from "./PatternsPage";
@@ -469,41 +470,6 @@ function StepTable({
         </table>
       </div>
       {rows.length === 0 && <p className="text-xs text-ink-500">No {direction} steps yet.</p>}
-    </div>
-  );
-}
-
-// Top-down lane: boards across (1 at left), feet up from the foul line,
-// shaded by the oil each board gets in each foot (the partner API's profile).
-function LanePreview({ rows }: { rows: number[][] }) {
-  const ref = useRef<HTMLCanvasElement>(null);
-  useEffect(() => {
-    const c = ref.current;
-    if (!c || !rows.length) return;
-    const ctx = c.getContext("2d");
-    if (!ctx) return;
-    const cols = 39;
-    const cell = { w: c.width / cols, h: c.height / rows.length };
-    const max = Math.max(1, ...rows.flat());
-    ctx.fillStyle = "#e9d8b4";
-    ctx.fillRect(0, 0, c.width, c.height);
-    rows.forEach((row, r) =>
-      row.forEach((v, b) => {
-        if (v <= 0) return;
-        ctx.fillStyle = `rgba(31,67,158,${0.15 + 0.85 * (v / max)})`;
-        ctx.fillRect(b * cell.w, c.height - (r + 1) * cell.h, Math.ceil(cell.w), Math.ceil(cell.h));
-      }),
-    );
-  }, [rows]);
-  const total = rows.flat().reduce((a, b) => a + b, 0);
-  return (
-    <div className="rounded-md border border-ink-200 p-2">
-      <div className="mb-1 flex justify-between text-xs text-ink-500">
-        <span>Lane preview (foul line at the bottom, board 1 at left)</span>
-        <span className="tabular-nums">{(total / 1000).toFixed(2)} mL</span>
-      </div>
-      <canvas ref={ref} width={390} height={Math.max(120, rows.length * 8)} className="h-auto w-full rounded" />
-      <div className="mt-1 text-right text-xs text-ink-400">{rows.length} ft</div>
     </div>
   );
 }

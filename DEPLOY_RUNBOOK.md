@@ -21022,6 +21022,33 @@ approval), so no partner has old-model data.
 open the pending Elite 48 pattern in admin. The lane preview should taper
 past 16.7 ft on the outside boards.
 
+### 6el. Oil pattern lane preview: full lane, pin deck and pin spots (2026-10-23)
+
+Al: "for the lane preview can we make it the actual length of the lane with
+the pin deck and pin spots. 60' from the foul line to the headpin".
+
+The preview moved out of `PatternDetailPage.tsx` into
+`admin-spa/src/components/LanePreview.tsx`. It now draws the whole bed:
+- the approach strip and a red foul line, then 60 ft to the headpin's
+  center, then the pin deck to just behind the 7-10 and the pit;
+- the gutters (9.25 in each);
+- the ten pin spots, 12 in apart in the triangle with rows 10.39 in apart,
+  headpin on board 20;
+- the markings: the dots at 7 ft (boards 3, 5, 8, 11, 14 and mirrored),
+  the arrows as a V from 12.5 ft on boards 5/35 to 15.5 ft on board 20, and
+  the range finders on boards 10/30 at 34–40 ft;
+- the pattern's end as a dashed line with its length on the foot scale
+  (every 10 ft).
+
+Width and length use different scales. At true scale the lane is about 18
+times taller than wide, which would turn the oil into a hairline, so the
+caption says "width not to scale". The pin triangle is squashed the same
+way. The canvas is drawn at devicePixelRatio for sharp lines.
+
+**Deploy:** push to main (admin site GitHub Action).
+**Verify:** open any pattern in admin → Oil Patterns. The preview runs from
+the foul line to the pit, with ten pin spots and the dashed pattern end.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
