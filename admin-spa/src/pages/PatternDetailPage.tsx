@@ -329,15 +329,14 @@ export default function PatternDetailPage() {
           <div className="rounded-lg border border-ink-200 p-3">
             <div className="mb-2 flex items-center justify-between">
               <h2 className="text-sm font-semibold text-ink-800">Track zones</h2>
-              <Button size="sm" variant="ghost" onClick={() => set({ track_zones: [...draft.track_zones, { from: "", to: "", against_from: "18L", against_to: "18R", label: "", reported_ratio: null }] })}>
-                + Zone
-              </Button>
+              {/* Fixed to Kegel's standard six (runbook 6eq): only the sheet's value is editable. */}
+              <span className="text-xs text-ink-500">Kegel's standard six</span>
             </div>
             <div className="overflow-x-auto">
               <table className="text-sm">
                 <thead>
                   <tr className="text-left text-xs text-ink-500">
-                    {["From", "To", "Against", "", "Description", "Sheet", "From loads", ""].map((h, i) => (
+                    {["Zone", "Against", "Description", "Sheet", "From loads"].map((h, i) => (
                       <th key={i} className="px-1 pb-1 font-medium">
                         {h}
                       </th>
@@ -347,11 +346,13 @@ export default function PatternDetailPage() {
                 <tbody>
                   {draft.track_zones.map((z, i) => (
                     <tr key={i}>
-                      {(["from", "to", "against_from", "against_to", "label"] as const).map((k) => (
-                        <td key={k} className="px-1 py-0.5">
-                          <input value={z[k] ?? ""} onChange={(e) => setZone(i, { [k]: e.target.value })} className={`${k === "label" ? "w-36" : "w-14"} rounded border border-ink-300 px-1.5 py-0.5`} />
-                        </td>
-                      ))}
+                      <td className="whitespace-nowrap px-1 py-0.5 text-ink-800">
+                        {z.from}–{z.to}
+                      </td>
+                      <td className="whitespace-nowrap px-1 py-0.5 text-ink-800">
+                        {z.against_from}–{z.against_to}
+                      </td>
+                      <td className="whitespace-nowrap px-1 py-0.5 text-ink-600">{z.label}</td>
                       <td className="px-1 py-0.5">
                         <input value={z.reported_ratio ?? ""} onChange={(e) => setZone(i, { reported_ratio: numOrNull(e.target.value) })} className="w-16 rounded border border-ink-300 px-1.5 py-0.5" title="The sheet's ratio, for checking" />
                       </td>
@@ -369,19 +370,14 @@ export default function PatternDetailPage() {
                           );
                         })()}
                       </td>
-                      <td>
-                        <button type="button" className="px-1 text-ink-400 hover:text-danger" onClick={() => set({ track_zones: draft.track_zones.filter((_, n) => n !== i) })} aria-label="Remove zone">
-                          ✕
-                        </button>
-                      </td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
             <p className="mt-2 text-xs text-ink-500">
-              Ratios are calculated from the loads: each zone's average oil per board, the zone nearer the middle over the other. The sheet's numbers are only there to
-              check against. Headline ratio (largest zone): {p.computed.ratio != null ? `${p.computed.ratio}:1` : "--"}
+              Ratios are calculated from the loads: each zone's average oil per board, the zone nearer the middle over the other. The zones are fixed;
+              the Sheet column is only there to check against. Headline ratio (largest zone): {p.computed.ratio != null ? `${p.computed.ratio}:1` : "--"}
             </p>
           </div>
         </div>

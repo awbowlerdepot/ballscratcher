@@ -21197,6 +21197,33 @@ regenerated. The spec's change 6 is updated.
 Both current patterns show the same ratios in Sheet and From loads, with no
 warnings.
 
+### 6eq. Oil pattern track zones fixed to Kegel's standard six (2026-10-23)
+
+Al: "because the track zones are calcuated should they be mutable?" →
+"yes build it that way and deploy".
+
+Since 6ep the ratio is computed, but a zone's boards were still editable,
+and editing them would quietly change which boards a published ratio
+covers. Now **every pattern gets exactly Kegel's standard six zones**, with
+fixed boards and labels:
+- 3L–7L, 8L–12L and 13L–17L against 18L–18R;
+- 18L–18R against 17R–13R, 12R–8R and 7R–3R.
+
+The sheet's ratio for the same boards, in either order, is kept as
+`reported_ratio`, which is the only thing that can be edited. `check()`
+warns about any sheet zone that isn't one of the six, including one with a
+misread label, and that zone is dropped on save. A non-Kegel sheet with
+other zones would get its own set when one turns up.
+
+In admin, the zone table shows the boards and description as text. The
+Sheet column is editable, the "From loads" column is published, and the
++ Zone and remove buttons are gone. The spec's change 6 is updated; the
+contract is unchanged.
+
+**Deploy:** `sam build && sam deploy`, then push, then
+`scripts/recompute_oil_patterns.py`. It should find nothing to change,
+since both current patterns already have the standard six.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

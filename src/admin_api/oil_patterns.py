@@ -297,7 +297,16 @@ def profile(steps: list, length_feet, oil_per_board_ul, foot_step: float = 1.0, 
 # rounded to 2 places -- it reproduced all 12 zones on the Elite 48 and
 # Short 37 sheets exactly. So `ratio` is always computed; the sheet's (or a
 # typist's) value is kept as `reported_ratio` (never published) and check()
-# warns when they disagree. A pattern with no zones gets Kegel's standard six.
+# warns when they disagree.
+#
+# Zones are fixed to Kegel's standard six (runbook 6eq). Al: "because the
+# track zones are calcuated should they be mutable?" -> "yes build it that
+# way": editing a zone's boards would silently change which boards a
+# published ratio covers, so every pattern gets exactly these six (boards and
+# labels fixed); only the sheet's value (reported_ratio) can be edited, for
+# checking. A sheet zone that isn't one of the six is warned about and
+# dropped on save. Non-Kegel sheets with other zones can get their own set
+# when one turns up.
 STANDARD_ZONES = (
     ("3L", "7L", "18L", "18R", "Outside:Middle"),
     ("8L", "12L", "18L", "18R", "Middle:Middle"),
@@ -329,18 +338,40 @@ def zone_ratio(totals: list, zone: dict):
     return round(num / den, 2) if den > 0 else None
 
 
+def _zone_key(zone: dict):
+    """The pair of board spans a zone compares, order-free; None if a label
+    is bad."""
+    try:
+        return frozenset((_zone_span(zone.get("from"), zone.get("to")),
+                          _zone_span(zone.get("against_from"), zone.get("against_to"))))
+    except ValueError:
+        return None
+
+
+def _standard_key(z):
+    f, t, af, at, _ = z
+    return frozenset((_zone_span(f, t), _zone_span(af, at)))
+
+
+def nonstandard_zones(zones) -> list:
+    """The input zones that aren't one of the standard six (dropped on save)."""
+    keys = {_standard_key(z) for z in STANDARD_ZONES}
+    return [z for z in zones or [] if _zone_key(z) not in keys]
+
+
 def track_zones(zones, board_totals_: dict) -> list:
-    """Zones with `ratio` computed from the loads and the sheet's value kept
-    as `reported_ratio`."""
+    """Kegel's standard six zones with `ratio` computed from the loads and the
+    sheet's value for the same boards (if it has one) as `reported_ratio`."""
     totals = [f + r for f, r in zip(board_totals_["forward_ul"], board_totals_["reverse_ul"])]
-    if not zones:
-        zones = [{"from": f, "to": t, "against_from": af, "against_to": at, "label": lab}
-                 for f, t, af, at, lab in STANDARD_ZONES]
+    reported = {}
+    for z in zones or []:
+        key = _zone_key(z)
+        if key is not None and key not in reported:
+            reported[key] = _num(z["reported_ratio"]) if "reported_ratio" in z else _num(z.get("ratio"))
     out = []
-    for z in zones:
-        zone = dict(z)
-        if "reported_ratio" not in zone:
-            zone["reported_ratio"] = _num(zone.get("ratio"))
+    for f, t, af, at, label in STANDARD_ZONES:
+        zone = {"from": f, "to": t, "against_from": af, "against_to": at, "label": label}
+        zone["reported_ratio"] = reported.get(_standard_key((f, t, af, at, label)))
         zone["ratio"] = zone_ratio(totals, zone)
         out.append(zone)
     return out
@@ -435,15 +466,13 @@ def check(pattern: dict) -> list:
     # Track zones: the ratio is computed from the loads; flag a sheet value
     # that disagrees (a misread ratio, or steps that don't match the sheet).
     bt = board_totals(steps, opb)
+    for z in nonstandard_zones(pattern.get("track_zones")):
+        name = f"{z.get('from')}-{z.get('to')} : {z.get('against_from')}-{z.get('against_to')}"
+        add("warning", f"The sheet's track zone {name} isn't one of the six standard zones; it's dropped on save.")
     for z in track_zones(pattern.get("track_zones"), bt):
         name = f"{z.get('from')}-{z.get('to')} : {z.get('against_from')}-{z.get('against_to')}"
         if z["ratio"] is None:
-            try:
-                _zone_span(z.get("from"), z.get("to"))
-                _zone_span(z.get("against_from"), z.get("against_to"))
-                add("warning", f"Track zone {name} has no oil on its outer boards, so it has no ratio.")
-            except ValueError:
-                add("error", f"Track zone {name} has a board label that isn't valid.")
+            add("warning", f"Track zone {name} has no oil on its outer boards, so it has no ratio.")
             continue
         rep_ = z.get("reported_ratio")
         if rep_ is not None and abs(rep_ - z["ratio"]) > RATIO_TOLERANCE:

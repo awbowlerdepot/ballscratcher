@@ -215,7 +215,24 @@ def test_typed_pattern_gets_the_standard_zones():
     assert all(z["reported_ratio"] is None for z in zones)
 
 
-def test_bad_zone_label_is_an_error():
+def test_zones_are_fixed_to_the_standard_six():
+    """Runbook 6eq: zone boards can't be edited; a sheet zone that isn't
+    one of the six is warned about and dropped, a bad label too."""
     p = elite48()
-    p["track_zones"][0]["to"] = "7X"
-    assert any(i["level"] == "error" and "Track zone" in i["message"] for i in op.check(p))
+    p["track_zones"][0]["to"] = "7X"  # misread label: no longer a standard zone
+    p["track_zones"].append({"from": "1L", "to": "5L", "against_from": "18L", "against_to": "18R", "ratio": 3.1})
+    issues = op.check(p)
+    assert [i["level"] for i in issues] == ["warning", "warning"]
+    assert all("isn't one of the six standard zones" in i["message"] for i in issues)
+    zones = op.compute(p)["track_zones"]
+    assert [(z["from"], z["to"]) for z in zones] == [("3L", "7L"), ("8L", "12L"), ("13L", "17L"), ("18L", "18R"), ("18L", "18R"), ("18L", "18R")]
+    assert zones[0]["reported_ratio"] is None and zones[0]["ratio"] == 2.0  # still computed
+    assert zones[1]["reported_ratio"] == 1.59
+
+
+def test_sheet_zone_written_the_other_way_round_still_matches():
+    p = elite48()
+    z = p["track_zones"][0]
+    z["from"], z["to"], z["against_from"], z["against_to"] = "18R", "18L", "7L", "3L"
+    assert op.check(p) == []
+    assert op.compute(p)["track_zones"][0]["reported_ratio"] == 2.0
