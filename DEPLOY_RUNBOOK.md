@@ -20977,6 +20977,51 @@ git push
 Later (not built): fetching sheets from publisher sources, and richer
 house-shot support.
 
+### 6ek. Oil pattern profile: transfer brush → buffer brush carry model (2026-10-23)
+
+Al, looking at the 6ej lane preview: "in the machines the oil is applied to
+a spinning brush and then is buffed onto the lane. so oil applied is thick
+where it is first applied and then tapered out over a distance. the lane
+preview is very rigid in the application. think of it dragging it in the
+direction of the application and then getting thinner as it goes without
+more application. forward is tapered forward and reverse blends in with the
+forward and tapers backwards", then, with a diagram of the head (oil head →
+nozzle → transfer brush → buffer brush → lane): "so not a rod but something
+called a transfer brush down to the buffer brush. your new output looks
+more accurate".
+
+The 6ej profile spread each step's oil evenly over its own distance, so on
+Elite 48 every forward drop stopped dead at 16.7 ft (the last loaded forward
+step) and the edges were square.
+
+**`oil_patterns.profile` now** models each run as two reservoirs moving with
+the head. A step's loads go onto the transfer brush, evenly over the step's
+distance. Each foot, the buffer brush takes a share of the transfer brush's
+oil, and lays a share of its own onto the lane. Carry lengths (1/e) at
+14 in/s are 0.5 ft (transfer → buffer) and 4.0 ft (buffer → lane), scaled by
+`speed_ips / 14`. Forward drags toward the pins; reverse drags back toward
+the foul line and adds to the forward. Oil left on the brushes at a run's
+end is spread back over that run per board, so `board_totals`, the checks
+and the volume are unchanged.
+
+The profile carries `model: "transfer_buffer_carry_v1"`, a new optional
+field on `PatternProfile`; the contract snapshot change is additive only.
+The spec (`docs/partner-api-v1-patterns.md`, change 3) is updated, and
+`docs/oil-pattern-carry-before-after.png` shows Elite 48 under both models.
+The constants are a first-order guess, tuned by eye with Al, not measured
+from a lane graph. A better model gets a new `model` name.
+
+**Known look:** oil lands just behind where it's loaded, so the first foot
+past the foul line is lighter than feet 2–5.
+
+Nothing is published yet (the Elite 48 pending row recomputes on view and on
+approval), so no partner has old-model data.
+
+**Deploy:** `sam build && sam deploy` (admin_api + partner_api).
+**Verify:** `.venv/bin/python -m pytest -q tests/test_oil_patterns.py`; then
+open the pending Elite 48 pattern in admin. The lane preview should taper
+past 16.7 ft on the outside boards.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

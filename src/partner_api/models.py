@@ -251,6 +251,12 @@ class BoardTotals(_Model):
 class PatternProfile(_Model):
     foot_step: float = Field(description="Row height in feet (1).")
     units: Literal["ul_per_board_per_foot"]
+    model: Optional[str] = Field(
+        None,
+        description="How the machine program was turned into lane oil. \"transfer_buffer_carry_v1\": each step's loads "
+        "go onto the transfer brush, the buffer brush picks them up and lays them on the lane, so oil drags out in each run's "
+        "direction of travel and thins (see the patterns spec).",
+    )
     rows: list[list[float]] = Field(
         description="Row i covers feet [i*foot_step, (i+1)*foot_step) from the foul line; 39 values per row, board 1 "
         "from the left first, µL to 0.1. Sums to volume_ml x 1000."

@@ -17,10 +17,12 @@ the same way (the spec's "every partner shares one interpretation").
 Conventions (from the spec):
   * Boards 1-39 from the left as the bowler faces the pins; Kegel labels
     convert as nL -> n, nR -> 40 - n.
-  * Oil in microliters (µL); a step lays loads x oil_per_board_ul on every
-    board in its range, spread evenly over its distance
-    [min(start, end), max(start, end)]. Forward and reverse are the same
-    for the profile; direction only orders the program.
+  * Oil in microliters (µL); a step loads loads x oil_per_board_ul for
+    every board in its range onto the transfer brush, evenly over its
+    distance [min(start, end), max(start, end)]; the transfer brush ->
+    buffer brush -> lane carry
+    model (see profile) decides where on the lane it ends up, dragged in
+    each run's direction of travel.
   * Profile rows: ceil(length / foot_step); row i covers
     [i*step, (i+1)*step). Oil past the last row's end lands in the last row.
 """
@@ -103,36 +105,131 @@ def board_totals(steps: list, oil_per_board_ul) -> dict:
     return {"forward_ul": [int(round(v)) for v in fwd], "reverse_ul": [int(round(v)) for v in rev]}
 
 
-def profile(steps: list, length_feet, oil_per_board_ul, foot_step: float = 1.0) -> dict:
-    """µL per board per foot (spec change #2/#3)."""
-    length = _num(length_feet) or 0
-    opb = _num(oil_per_board_ul) or 0
-    n_rows = max(1, math.ceil(length / foot_step)) if length > 0 else 1
-    rows = [[0.0] * BOARDS for _ in range(n_rows)]
+# Brush-carry model (runbook 6ek). Al: "in the machines the oil is applied
+# to a spinning brush and then is buffed onto the lane. so oil applied is
+# thick where it is first applied and then tapered out over a distance ...
+# think of it dragging it in the direction of the application and then
+# getting thinner as it goes without more application. forward is tapered
+# forward and reverse blends in with the forward and tapers backwards" and
+# "really it is applied to a rod then to the transfer brush then the lane so
+# the brush is pulling it from the rod that it got applied to then putting
+# it on the lane", then, with a diagram of the head (oil head -> nozzle ->
+# transfer brush -> buffer brush -> lane surface): "so not a rod but
+# something called a transfer brush down to the buffer brush. your new
+# output looks more accurate".
+#
+# So each run (forward, then reverse) is two reservoirs in series that move
+# with the head: a step's loads come out of the nozzle onto the TRANSFER
+# brush, evenly over the step's distance; each foot of travel the spinning
+# BUFFER brush takes a share of what's on the transfer brush and lays a share
+# of what it carries onto the LANE. Oil therefore
+# lands just behind where it was loaded and drags out in the direction of
+# travel, thinning as the head keeps moving with no new loads (the 0-load
+# "buff" steps). The buffer brush turns at a fixed rpm, so the share per FOOT falls
+# as the head moves faster: carry lengths scale with speed / REF_SPEED_IPS.
+# Whatever is still on the brushes when a run reaches its end (the pattern
+# length going forward, the foul line coming back) is spread back over that
+# run's lane oil per board, so every board still totals exactly what the
+# sheet loads (board_totals, the checks and volume_ml are unchanged).
+# A first-order physical model, not a lane-graph measurement; partners see
+# it named in profile.model.
+PROFILE_MODEL = "transfer_buffer_carry_v1"
+REF_SPEED_IPS = 14.0
+TRANSFER_TO_BUFFER_FEET = 0.5  # carry length (1/e) transfer brush -> buffer brush at REF_SPEED_IPS
+BUFFER_TO_LANE_FEET = 4.0  # carry length (1/e) buffer brush -> lane at REF_SPEED_IPS
+_DX = 0.05  # integration step, feet
+
+
+def _run_deposits(steps, n_cells, opb, direction):
+    """Oil per cell per board loaded onto the transfer brush by one run's steps, plus the
+    head speed over each cell (for the carry lengths)."""
+    loads = [[0.0] * BOARDS for _ in range(n_cells)]
+    speed = [None] * n_cells
     for s in steps:
-        if s.get("from_board") is None or not s.get("loads"):
+        if s.get("direction") != direction or s.get("from_board") is None:
             continue
-        per_board = s["loads"] * opb
         a, b = _num(s.get("start_feet")), _num(s.get("end_feet"))
         if a is None or b is None:
             continue
-        lo, hi = min(a, b), max(a, b)
-        spans = []
+        lo, hi = max(0.0, min(a, b)), max(0.0, max(a, b))
+        i_lo = min(int(lo / _DX), n_cells - 1)
+        i_hi = max(i_lo, min(int(math.ceil(hi / _DX - 1e-9)) - 1, n_cells - 1))
+        v = _num(s.get("speed_ips")) or REF_SPEED_IPS
+        for i in range(i_lo, i_hi + 1):
+            speed[i] = v
+        if not s.get("loads"):
+            continue
+        per_board = s["loads"] * opb
+        cells = []
         if hi - lo < 1e-9:
-            spans.append((min(int(lo // foot_step), n_rows - 1), 1.0))
+            cells.append((i_lo, 1.0))
         else:
-            r = int(lo // foot_step)
-            while r * foot_step < hi - 1e-9:
-                seg_lo, seg_hi = max(lo, r * foot_step), min(hi, (r + 1) * foot_step)
-                if seg_hi > seg_lo:
-                    spans.append((min(r, n_rows - 1), (seg_hi - seg_lo) / (hi - lo)))
-                r += 1
-        for row, frac in spans:
-            for board in range(s["from_board"], s["to_board"] + 1):
-                rows[row][board - 1] += per_board * frac
+            for i in range(i_lo, i_hi + 1):
+                seg = min(hi, (i + 1) * _DX) - max(lo, i * _DX)
+                if seg > 0:
+                    cells.append((i, seg / (hi - lo)))
+        for i, frac in cells:
+            row = loads[i]
+            for board in range(s["from_board"] - 1, s["to_board"]):
+                row[board] += per_board * frac
+    return loads, speed
+
+
+def _carry(loads, speed, order):
+    """Sweep the transfer brush -> buffer brush -> lane reservoirs along `order` (cell indexes
+    in travel direction); returns lane oil per cell per board, rescaled so
+    each board's lane total equals what was loaded."""
+    lane = [[0.0] * BOARDS for _ in loads]
+    transfer, buffer = [0.0] * BOARDS, [0.0] * BOARDS
+    loaded = [0.0] * BOARDS
+    last_speed = REF_SPEED_IPS
+    for i in order:
+        last_speed = speed[i] or last_speed
+        k = last_speed / REF_SPEED_IPS
+        to_buffer = 1 - math.exp(-_DX / (TRANSFER_TO_BUFFER_FEET * k))
+        to_lane = 1 - math.exp(-_DX / (BUFFER_TO_LANE_FEET * k))
+        row_in, row_out = loads[i], lane[i]
+        for b in range(BOARDS):
+            q = row_in[b]
+            if q:
+                transfer[b] += q
+                loaded[b] += q
+            if transfer[b] or buffer[b]:
+                moved = transfer[b] * to_buffer
+                transfer[b] -= moved
+                buffer[b] += moved
+                laid = buffer[b] * to_lane
+                buffer[b] -= laid
+                row_out[b] = laid
+    for b in range(BOARDS):
+        laid = loaded[b] - transfer[b] - buffer[b]
+        if laid > 1e-12 and loaded[b] > 0:
+            scale = loaded[b] / laid
+            for row in lane:
+                row[b] *= scale
+    return lane
+
+
+def profile(steps: list, length_feet, oil_per_board_ul, foot_step: float = 1.0) -> dict:
+    """µL per board per foot under the transfer/buffer brush carry model above."""
+    length = _num(length_feet) or 0
+    opb = _num(oil_per_board_ul) or 0
+    n_rows = max(1, math.ceil(length / foot_step)) if length > 0 else 1
+    n_cells = max(1, int(round(n_rows * foot_step / _DX)))
+    rows = [[0.0] * BOARDS for _ in range(n_rows)]
+    for direction, order in (("forward", range(n_cells)), ("reverse", range(n_cells - 1, -1, -1))):
+        loads, speed = _run_deposits(steps, n_cells, opb, direction)
+        if not any(any(r) for r in loads):
+            continue
+        for i, cell in enumerate(_carry(loads, speed, order)):
+            row = rows[min(int(i * _DX / foot_step + 1e-9), n_rows - 1)]
+            for b, v in enumerate(cell):
+                if v:
+                    row[b] += v
     return {
         "foot_step": foot_step,
         "units": "ul_per_board_per_foot",
+        "model": PROFILE_MODEL,
         "rows": [[round(v, 1) for v in row] for row in rows],
     }
 

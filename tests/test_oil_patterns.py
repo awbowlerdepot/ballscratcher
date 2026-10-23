@@ -54,11 +54,18 @@ def test_elite48_profile_shape_and_volume():
     assert prof["units"] == "ul_per_board_per_foot" and prof["foot_step"] == 1.0
     assert len(prof["rows"]) == 48 and all(len(r) == 39 for r in prof["rows"])
     assert abs(sum(sum(r) for r in prof["rows"]) - 30200) <= 48  # within 1 µL per row of rounding
-    # No oil past the reverse brush's longest loaded step (40 ft), none on board 1.
-    assert sum(sum(r) for r in prof["rows"][40:]) == 0
-    assert all(r[0] == 0 for r in prof["rows"])
-    # Feet 0-3.9 carry step 1 (150 µL per board over 3.9 ft) plus nothing else forward... and reverse step 10 is 0 loads.
-    assert abs(prof["rows"][0][1] - 150 / 3.9) < 0.11
+    assert prof["model"] == "transfer_buffer_carry_v1"
+    assert all(r[0] == 0 for r in prof["rows"])  # nothing loads board 1
+    # Every board still gets exactly what the sheet loads (board 20: 1,100 µL).
+    assert abs(sum(r[19] for r in prof["rows"]) - 1100) < 5
+    # Transfer brush -> buffer brush -> lane carry (runbook 6ek): the forward loads end at
+    # 16.7 ft but the brush keeps dragging them toward the pins, thinning;
+    # under the old even spread board 3 was dry past 16.7 ft.
+    b3 = [r[2] for r in prof["rows"]]
+    assert b3[17] > 10 and b3[20] > b3[25] > b3[30] > b3[35] > 0
+    # Oil lands just behind where it's loaded, so the foul line row is lighter
+    # than the rows the first steps' oil drags into.
+    assert b3[0] < b3[3]
 
 
 def test_elite48_passes_every_check_and_ratio_is_the_headline():
@@ -92,9 +99,32 @@ def test_checks_catch_ocr_mistakes():
     assert any("Category" in i["message"] for i in op.check(bad))
 
 
-def test_zero_length_step_lands_in_its_row():
+def test_zero_length_step_drags_forward_from_its_row():
     steps = op.normalize_steps(
         [{"direction": "forward", "order": 1, "start": "10L", "stop": "10L", "loads": 1, "start_feet": 5.0, "end_feet": 5.0}], 50
     )
-    prof = op.profile(steps, 10, 50)
-    assert prof["rows"][5][9] == 50.0
+    rows = op.profile(steps, 10, 50)["rows"]
+    col = [r[9] for r in rows]
+    assert abs(sum(col) - 50) < 0.5  # conserved
+    assert sum(col[:5]) == 0  # forward oil never drags back toward the foul line
+    assert col[5] > 0 and col[6] > col[8] > 0  # thins as it drags
+
+
+def test_reverse_oil_drags_back_toward_the_foul_line():
+    steps = op.normalize_steps(
+        [{"direction": "reverse", "order": 1, "start": "10L", "stop": "10L", "loads": 1, "start_feet": 20.0, "end_feet": 20.0}], 50
+    )
+    col = [r[9] for r in op.profile(steps, 30, 50)["rows"]]
+    assert sum(col[21:]) == 0 and col[19] > col[15] > 0
+    assert abs(sum(col) - 50) < 0.5
+
+
+def test_faster_head_drags_oil_further():
+    def tail(speed):
+        steps = op.normalize_steps(
+            [{"direction": "forward", "order": 1, "start": "10L", "stop": "10L", "loads": 1, "speed_ips": speed,
+              "start_feet": 2.0, "end_feet": 2.0}], 50
+        )
+        return sum(r[9] for r in op.profile(steps, 40, 50)["rows"][10:])
+
+    assert tail(30) > tail(14)

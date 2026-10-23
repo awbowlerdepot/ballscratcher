@@ -1036,6 +1036,18 @@
             "title": "Foot Step",
             "type": "number"
           },
+          "model": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How the machine program was turned into lane oil. \"transfer_buffer_carry_v1\": each step's loads go onto the transfer brush, the buffer brush picks them up and lays them on the lane, so oil drags out in each run's direction of travel and thins (see the patterns spec).",
+            "title": "Model"
+          },
           "rows": {
             "description": "Row i covers feet [i*foot_step, (i+1)*foot_step) from the foul line; 39 values per row, board 1 from the left first, \u00b5L to 0.1. Sums to volume_ml x 1000.",
             "items": {
