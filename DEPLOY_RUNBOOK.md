@@ -21051,6 +21051,49 @@ way. The canvas is drawn at devicePixelRatio for sharp lines.
 **Verify:** open any pattern in admin → Oil Patterns. The preview runs from
 the foul line to the pit, with ten pin spots and the dashed pattern end.
 
+### 6em. Oil pattern profile v2: brush carry-over between lanes, burn pair (2026-10-23)
+
+Al: "is there a way to use what the pattern would have done on the previous
+lane pass to determine what the residual oil would be carried to the next
+lane. typically the last few loads and the existing oil on the lane would
+still be left in the brush as the lane moves to the next lane. they will do
+'burn pairs' which preloads everything so that the machine oils the first
+lane for use having oiled 2 to 'precondition' itself".
+
+In 6ek's model, whatever was left on the brushes at the end of each run was
+rescaled back into that run. **`oil_patterns` now keeps it:**
+- what's on the brushes at the far end of the forward run goes into the
+  reverse run;
+- what's left at the foul line after the reverse run starts the next lane's
+  forward run.
+
+`lanes(steps, length, opb, n)` simulates n lanes in a row, starting on clean
+brushes. `profile()` publishes lane `BURN_LANES + 1`: two burn lanes, then
+the lane bowlers get. The profile is now `model: "transfer_buffer_carry_v2"`
+with a new optional `burn_lanes: 2` (additive contract change; snapshot
+regenerated). `compute()` also returns `first_lane_rows`, which is for the
+admin preview only and is never stored or published.
+
+**Prototype on Elite 48:**
+- The brushes hold about 0.59 mL at the end of a lane, so the first lane on
+  clean brushes gets 29.61 mL (outside boards about 2–3% light).
+- From the second lane on, every lane is identical and each board gets
+  exactly the sheet's load, so one burn lane already conditions the brushes.
+- The carried oil goes down in the first feet: the first foot goes from
+  about 6.6 to 9.5–10.7 µL per board.
+- From 16 ft on, the change is under 0.5 µL.
+
+Oil the buffer brush picks back up off the lane was tried and left out. At
+a plausible rate (1/e 20 ft) it changed under 0.1 µL anywhere.
+
+**Admin:** the lane preview has a toggle, "After a burn pair (published)" or
+"First lane, clean brushes", with both views on one color scale.
+
+**Deploy:** `sam build && sam deploy`, then push (admin site).
+**Verify:** `.venv/bin/python -m pytest -q tests/test_oil_patterns.py`. Open
+the pending Elite 48 in admin and flip the toggle: the first foot should be
+lighter on the clean-brush lane, and the total 29.6 mL against 30.2 mL.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

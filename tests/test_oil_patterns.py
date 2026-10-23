@@ -54,7 +54,7 @@ def test_elite48_profile_shape_and_volume():
     assert prof["units"] == "ul_per_board_per_foot" and prof["foot_step"] == 1.0
     assert len(prof["rows"]) == 48 and all(len(r) == 39 for r in prof["rows"])
     assert abs(sum(sum(r) for r in prof["rows"]) - 30200) <= 48  # within 1 µL per row of rounding
-    assert prof["model"] == "transfer_buffer_carry_v1"
+    assert prof["model"] == "transfer_buffer_carry_v2" and prof["burn_lanes"] == 2
     assert all(r[0] == 0 for r in prof["rows"])  # nothing loads board 1
     # Every board still gets exactly what the sheet loads (board 20: 1,100 µL).
     assert abs(sum(r[19] for r in prof["rows"]) - 1100) < 5
@@ -103,20 +103,40 @@ def test_zero_length_step_drags_forward_from_its_row():
     steps = op.normalize_steps(
         [{"direction": "forward", "order": 1, "start": "10L", "stop": "10L", "loads": 1, "start_feet": 5.0, "end_feet": 5.0}], 50
     )
-    rows = op.profile(steps, 10, 50)["rows"]
-    col = [r[9] for r in rows]
-    assert abs(sum(col) - 50) < 0.5  # conserved
-    assert sum(col[:5]) == 0  # forward oil never drags back toward the foul line
-    assert col[5] > 0 and col[6] > col[8] > 0  # thins as it drags
+    first, _, burned = op.lanes(steps, 10, 50, 3)
+    col = [r[9] for r in first]
+    # Peaks just past where it's loaded and thins toward the pins; what's
+    # still on the brushes at 10 ft comes back on the reverse run, so there is
+    # a little behind it too, but less than at the step.
+    assert col[5] > col[4] and col[6] > col[8] > 0
+    # After the burn pair every lane takes off exactly what's loaded.
+    assert abs(sum(r[9] for r in burned) - 50) < 0.5
+    assert op.profile(steps, 10, 50)["rows"] == burned
 
 
 def test_reverse_oil_drags_back_toward_the_foul_line():
     steps = op.normalize_steps(
-        [{"direction": "reverse", "order": 1, "start": "10L", "stop": "10L", "loads": 1, "start_feet": 20.0, "end_feet": 20.0}], 50
+        [{"direction": "reverse", "order": 1, "start": "10L", "stop": "10L", "loads": 1, "start_feet": 20.0, "end_feet": 20.0}], 30
     )
-    col = [r[9] for r in op.profile(steps, 30, 50)["rows"]]
-    assert sum(col[21:]) == 0 and col[19] > col[15] > 0
-    assert abs(sum(col) - 50) < 0.5
+    first, _, burned = op.lanes(steps, 30, 50, 3)
+    col = [r[9] for r in first]
+    assert sum(col[21:]) == 0 and col[19] > col[15] > 0  # clean brushes: nothing past the step
+    assert abs(sum(r[9] for r in burned) - 50) < 0.5
+
+
+def test_burn_pair_conditions_the_brushes():
+    """Runbook 6em: the first lane on clean brushes is light (oil stays on the
+    brushes); from then on each lane gets what's loaded, and what the brushes
+    carry from the previous lane goes down in the first feet."""
+    p = elite48()
+    steps = op.ordered(op.normalize_steps(p["steps"], 50))
+    first, second, third = op.lanes(steps, 48, 50, 3)
+    total = lambda rows: sum(map(sum, rows))  # noqa: E731
+    assert total(first) < 30200 - 300
+    assert abs(total(second) - 30200) < 50 and abs(total(third) - 30200) < 50
+    assert third[0][2] > first[0][2] + 2  # board 3, first foot
+    c = op.compute(p)
+    assert c["profile"]["rows"] == third and c["first_lane_rows"] == first
 
 
 def test_faster_head_drags_oil_further():

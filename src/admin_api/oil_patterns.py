@@ -127,13 +127,29 @@ def board_totals(steps: list, oil_per_board_ul) -> dict:
 # travel, thinning as the head keeps moving with no new loads (the 0-load
 # "buff" steps). The buffer brush turns at a fixed rpm, so the share per FOOT falls
 # as the head moves faster: carry lengths scale with speed / REF_SPEED_IPS.
-# Whatever is still on the brushes when a run reaches its end (the pattern
-# length going forward, the foul line coming back) is spread back over that
-# run's lane oil per board, so every board still totals exactly what the
-# sheet loads (board_totals, the checks and volume_ml are unchanged).
+#
+# Carry-over and burn pairs (runbook 6em). Al: "is there a way to use what
+# the pattern would have done on the previous lane pass to determine what the
+# residual oil would be carried to the next lane. typically the last few
+# loads and the existing oil on the lane would still be left in the brush as
+# the lane moves to the next lane. they will do 'burn pairs' which preloads
+# everything so that the machine oils the first lane for use having oiled 2
+# to 'precondition' itself". So nothing on the brushes is thrown away or
+# rescaled: what's left at the far end of the forward run goes into the
+# reverse run, and what's left at the foul line after the reverse run starts
+# the NEXT lane's forward run (it goes down in the first feet). We run
+# BURN_LANES lanes on clean brushes, then publish the next one -- the lane a
+# bowler actually gets. In steady state each lane takes off exactly what's
+# loaded, so every board still totals board_totals; on Elite 48 the second
+# lane is already steady (the first, on clean brushes, is ~2% light because
+# ~0.59 mL stays on the brushes). The admin preview can also show that first
+# clean-brush lane. Oil the buffer brush lifts back off the lane was tried
+# and left out: at any plausible rate it moved < 0.1 µL anywhere.
 # A first-order physical model, not a lane-graph measurement; partners see
-# it named in profile.model.
-PROFILE_MODEL = "transfer_buffer_carry_v1"
+# it named in profile.model (v1 was the same carry without the carry-over:
+# leftovers were rescaled into each run).
+PROFILE_MODEL = "transfer_buffer_carry_v2"
+BURN_LANES = 2
 REF_SPEED_IPS = 14.0
 TRANSFER_TO_BUFFER_FEET = 0.5  # carry length (1/e) transfer brush -> buffer brush at REF_SPEED_IPS
 BUFFER_TO_LANE_FEET = 4.0  # carry length (1/e) buffer brush -> lane at REF_SPEED_IPS
@@ -175,13 +191,11 @@ def _run_deposits(steps, n_cells, opb, direction):
     return loads, speed
 
 
-def _carry(loads, speed, order):
-    """Sweep the transfer brush -> buffer brush -> lane reservoirs along `order` (cell indexes
-    in travel direction); returns lane oil per cell per board, rescaled so
-    each board's lane total equals what was loaded."""
-    lane = [[0.0] * BOARDS for _ in loads]
-    transfer, buffer = [0.0] * BOARDS, [0.0] * BOARDS
-    loaded = [0.0] * BOARDS
+def _carry(lane, loads, speed, order, transfer, buffer):
+    """Sweep the transfer brush -> buffer brush -> lane reservoirs along
+    `order` (cell indexes in travel direction), adding to `lane` (oil per
+    cell per board). `transfer`/`buffer` are the brushes' oil per board, in
+    and out: whatever they hold at the end carries on to the next run."""
     last_speed = REF_SPEED_IPS
     for i in order:
         last_speed = speed[i] or last_speed
@@ -193,44 +207,53 @@ def _carry(loads, speed, order):
             q = row_in[b]
             if q:
                 transfer[b] += q
-                loaded[b] += q
             if transfer[b] or buffer[b]:
                 moved = transfer[b] * to_buffer
                 transfer[b] -= moved
                 buffer[b] += moved
                 laid = buffer[b] * to_lane
                 buffer[b] -= laid
-                row_out[b] = laid
-    for b in range(BOARDS):
-        laid = loaded[b] - transfer[b] - buffer[b]
-        if laid > 1e-12 and loaded[b] > 0:
-            scale = loaded[b] / laid
-            for row in lane:
-                row[b] *= scale
-    return lane
+                row_out[b] += laid
 
 
-def profile(steps: list, length_feet, oil_per_board_ul, foot_step: float = 1.0) -> dict:
-    """µL per board per foot under the transfer/buffer brush carry model above."""
+def lanes(steps: list, length_feet, oil_per_board_ul, count: int, foot_step: float = 1.0) -> list:
+    """Rows (µL per board per foot) for `count` lanes oiled one after another
+    by the same machine, starting on clean brushes: lanes(...)[0] is the
+    first lane, [BURN_LANES] the one after the burn pair."""
     length = _num(length_feet) or 0
     opb = _num(oil_per_board_ul) or 0
     n_rows = max(1, math.ceil(length / foot_step)) if length > 0 else 1
     n_cells = max(1, int(round(n_rows * foot_step / _DX)))
-    rows = [[0.0] * BOARDS for _ in range(n_rows)]
+    runs = []
     for direction, order in (("forward", range(n_cells)), ("reverse", range(n_cells - 1, -1, -1))):
         loads, speed = _run_deposits(steps, n_cells, opb, direction)
-        if not any(any(r) for r in loads):
-            continue
-        for i, cell in enumerate(_carry(loads, speed, order)):
+        runs.append((loads, speed, order))
+    transfer, buffer = [0.0] * BOARDS, [0.0] * BOARDS
+    out = []
+    for _ in range(count):
+        lane = [[0.0] * BOARDS for _ in range(n_cells)]
+        for loads, speed, order in runs:
+            _carry(lane, loads, speed, order, transfer, buffer)
+        rows = [[0.0] * BOARDS for _ in range(n_rows)]
+        for i, cell in enumerate(lane):
             row = rows[min(int(i * _DX / foot_step + 1e-9), n_rows - 1)]
             for b, v in enumerate(cell):
                 if v:
                     row[b] += v
+        out.append([[round(v, 1) for v in row] for row in rows])
+    return out
+
+
+def profile(steps: list, length_feet, oil_per_board_ul, foot_step: float = 1.0, _lanes: list | None = None) -> dict:
+    """µL per board per foot on the lane after a burn pair, under the
+    transfer/buffer brush carry model above."""
+    series = _lanes or lanes(steps, length_feet, oil_per_board_ul, BURN_LANES + 1, foot_step)
     return {
         "foot_step": foot_step,
         "units": "ul_per_board_per_foot",
         "model": PROFILE_MODEL,
-        "rows": [[round(v, 1) for v in row] for row in rows],
+        "burn_lanes": BURN_LANES,
+        "rows": series[BURN_LANES],
     }
 
 
@@ -243,10 +266,14 @@ def headline_ratio(track_zones):
 def compute(pattern: dict) -> dict:
     """Normalized steps + every derived field, ready to store/publish."""
     steps = ordered(normalize_steps(pattern.get("steps") or [], pattern.get("oil_per_board_ul")))
+    series = lanes(steps, pattern.get("length_feet"), pattern.get("oil_per_board_ul"), BURN_LANES + 1)
     return {
         "steps": steps,
         "board_totals": board_totals(steps, pattern.get("oil_per_board_ul")),
-        "profile": profile(steps, pattern.get("length_feet"), pattern.get("oil_per_board_ul")),
+        "profile": profile(steps, pattern.get("length_feet"), pattern.get("oil_per_board_ul"), _lanes=series),
+        # Admin preview only (not stored or published): the first lane on
+        # clean brushes, before the burn pair.
+        "first_lane_rows": series[0],
         "ratio": headline_ratio(pattern.get("track_zones")),
         "profile_source": "steps",
     }

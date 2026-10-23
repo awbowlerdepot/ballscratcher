@@ -258,7 +258,7 @@ export default function PatternDetailPage() {
               {p.upload_filename ? "The sheet preview appears once it's been read." : "Typed in by hand: no sheet."}
             </div>
           )}
-          <LanePreview rows={p.computed.profile.rows} />
+          <LanePreview rows={p.computed.profile.rows} firstLaneRows={p.computed.first_lane_rows} burnLanes={p.computed.profile.burn_lanes} />
         </div>
 
         {/* Fields */}

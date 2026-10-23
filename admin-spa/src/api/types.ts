@@ -1353,7 +1353,8 @@ export interface PatternDetail extends PatternSummary {
   computed: {
     steps: PatternStep[];
     board_totals: { forward_ul: number[]; reverse_ul: number[] };
-    profile: { foot_step: number; units: string; rows: number[][] };
+    profile: { foot_step: number; units: string; model?: string; burn_lanes?: number; rows: number[][] };
+    first_lane_rows?: number[][]; // the first lane on clean brushes, before the burn pair (runbook 6em)
     ratio: number | null;
   };
   checks: PatternCheck[];

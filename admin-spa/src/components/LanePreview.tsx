@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 // Top-down lane, the whole bed (runbook 6el). Al: "for the lane preview can
 // we make it the actual length of the lane with the pin deck and pin spots.
@@ -11,6 +11,10 @@ import { useEffect, useRef } from "react";
 // scales (a true-scale lane is 18x taller than wide, which would turn the
 // oil into a hairline); the triangle is squashed the same way. Oil is the
 // partner API's profile (µL per board per foot), one row per foot.
+//
+// Runbook 6em: the published profile is the lane after a burn pair (the
+// brushes carry oil lane to lane). The toggle shows the first lane on clean
+// brushes instead, on the same color scale so the difference is visible.
 const LANE_IN = 41.5;
 const BOARD_IN = LANE_IN / 39;
 const GUTTER_IN = 9.25;
@@ -26,8 +30,20 @@ const PINS: [number, number][] = [
 const ARROWS: [number, number][] = [[5, 12.5], [10, 13.5], [15, 14.5], [20, 15.5], [25, 14.5], [30, 13.5], [35, 12.5]];
 const DOTS = [3, 5, 8, 11, 14, 26, 29, 32, 35, 37];
 
-export default function LanePreview({ rows }: { rows: number[][] }) {
+export default function LanePreview({
+  rows: burnedRows,
+  firstLaneRows,
+  burnLanes = 2,
+}: {
+  rows: number[][];
+  firstLaneRows?: number[][];
+  burnLanes?: number;
+}) {
   const ref = useRef<HTMLCanvasElement>(null);
+  const [view, setView] = useState<"burned" | "first">("burned");
+  const rows = view === "first" && firstLaneRows ? firstLaneRows : burnedRows;
+  // One color scale for both views.
+  const scaleMax = Math.max(1, ...burnedRows.flat(), ...(firstLaneRows ?? []).flat());
   const PX_IN = 6.5; // horizontal px per inch
   const PX_FT = 11; // vertical px per foot (Al: "can we make it a bit longer please")
   const LEFT = 30; // foot labels
@@ -65,7 +81,7 @@ export default function LanePreview({ rows }: { rows: number[][] }) {
     ctx.fillRect(laneX, TOP, laneW, (DECK_END_FT - HEADPIN_FT + 0.4) * PX_FT);
 
     // Oil.
-    const max = Math.max(1, ...rows.flat());
+    const max = scaleMax;
     const bw = BOARD_IN * PX_IN;
     rows.forEach((row, r) =>
       row.forEach((v, b) => {
@@ -148,7 +164,7 @@ export default function LanePreview({ rows }: { rows: number[][] }) {
       ctx.fillStyle = "#6366f1";
       ctx.fillText(`${rows.length}'`, LEFT - 4, y(rows.length));
     }
-  }, [rows, W, H]);
+  }, [rows, W, H, scaleMax]);
   const total = rows.flat().reduce((a, b) => a + b, 0);
   return (
     <div className="rounded-md border border-ink-200 p-2">
@@ -156,6 +172,25 @@ export default function LanePreview({ rows }: { rows: number[][] }) {
         <span>Lane: foul line to the pin deck, board 1 at left (width not to scale)</span>
         <span className="tabular-nums">{(total / 1000).toFixed(2)} mL</span>
       </div>
+      {firstLaneRows && (
+        <div className="mb-2 flex gap-1 text-xs">
+          {(
+            [
+              ["burned", `After a burn pair (${burnLanes} lanes) — published`],
+              ["first", "First lane, clean brushes"],
+            ] as const
+          ).map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              onClick={() => setView(key)}
+              className={`rounded px-2 py-1 font-medium ${view === key ? "bg-primary text-white" : "bg-ink-100 text-ink-600 hover:bg-ink-200"}`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
       <canvas ref={ref} style={{ aspectRatio: `${W} / ${H}` }} className="mx-auto block h-auto w-full max-w-[460px]" />
       <div className="mt-1 text-right text-xs text-ink-400">Pattern {rows.length} ft · headpin 60 ft</div>
     </div>

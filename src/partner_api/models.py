@@ -253,9 +253,13 @@ class PatternProfile(_Model):
     units: Literal["ul_per_board_per_foot"]
     model: Optional[str] = Field(
         None,
-        description="How the machine program was turned into lane oil. \"transfer_buffer_carry_v1\": each step's loads "
-        "go onto the transfer brush, the buffer brush picks them up and lays them on the lane, so oil drags out in each run's "
-        "direction of travel and thins (see the patterns spec).",
+        description="How the machine program was turned into lane oil. \"transfer_buffer_carry_v2\": each step's loads "
+        "go onto the transfer brush, the buffer brush picks them up and lays them on the lane, so oil drags out in each "
+        "run's direction of travel and thins; oil left on the brushes carries into the next run and the next lane, and "
+        "rows are the lane after a burn pair (see the patterns spec).",
+    )
+    burn_lanes: Optional[int] = Field(
+        None, description="Lanes oiled first to condition the brushes; rows are the next lane (2 = a burn pair)."
     )
     rows: list[list[float]] = Field(
         description="Row i covers feet [i*foot_step, (i+1)*foot_step) from the foul line; 39 values per row, board 1 "
