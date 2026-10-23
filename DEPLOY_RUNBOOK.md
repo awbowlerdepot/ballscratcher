@@ -21094,6 +21094,12 @@ a plausible rate (1/e 20 ft) it changed under 0.1 µL anywhere.
 the pending Elite 48 in admin and flip the toggle: the first foot should be
 lighter on the clean-brush lane, and the total 29.6 mL against 30.2 mL.
 
+**Follow-up fix (same day):** Drilld's port (drilld PR #167) found that
+`_run_deposits` dropped the oil of a step whose distance runs past the
+pattern's end. Spec change 2 says that oil goes into the last row; it now
+does. `check()` already blocks approving such a step, so only previews of
+unapproved drafts were affected, and Elite 48 doesn't change.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

@@ -184,6 +184,14 @@ def _run_deposits(steps, n_cells, opb, direction):
                 seg = min(hi, (i + 1) * _DX) - max(lo, i * _DX)
                 if seg > 0:
                     cells.append((i, seg / (hi - lo)))
+            # Spec change 2: oil from a step whose distance runs past the
+            # last row's end goes into the last row (the shares above stop at
+            # the last cell, so put the remainder there). Drilld spotted it
+            # was being dropped (drilld PR #167); check() already blocks
+            # approving such a step, so only previews were affected.
+            rest = 1.0 - sum(f for _, f in cells)
+            if rest > 1e-9:
+                cells.append((n_cells - 1, rest))
         for i, frac in cells:
             row = loads[i]
             for board in range(s["from_board"] - 1, s["to_board"]):

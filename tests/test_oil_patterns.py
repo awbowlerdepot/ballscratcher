@@ -148,3 +148,16 @@ def test_faster_head_drags_oil_further():
         return sum(r[9] for r in op.profile(steps, 40, 50)["rows"][10:])
 
     assert tail(30) > tail(14)
+
+
+def test_step_past_the_pattern_end_lands_in_the_last_row():
+    """Spec change 2 (drilld PR #167 found it dropped): a step running past
+    length_feet still loads all its oil; the overrun goes in at the end."""
+    steps = op.normalize_steps(
+        [{"direction": "forward", "order": 1, "start": "10L", "stop": "10L", "loads": 1, "start_feet": 8.0, "end_feet": 12.0}], 50
+    )
+    loads, _ = op._run_deposits(steps, int(10 / op._DX), 50, "forward")
+    assert abs(sum(r[9] for r in loads) - 50) < 1e-9
+    assert abs(loads[-1][9] - 25 - 50 * op._DX / 4) < 1e-9
+    burned = op.profile(steps, 10, 50)["rows"]
+    assert abs(sum(r[9] for r in burned) - 50) < 0.5
