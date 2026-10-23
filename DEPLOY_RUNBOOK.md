@@ -21131,6 +21131,32 @@ carry lengths stay.
 **Verify:** `.venv/bin/python -m pytest -q tests/test_oil_patterns.py`
 (`test_reverse_brush_drop_holds_oil_until_the_drop`).
 
+### 6eo. Recompute stored oil pattern profiles after a model change (2026-10-23)
+
+Al approved Elite 48 at 13:49 UTC under the older profile model. admin_api
+writes `oil_patterns.compute`'s derived fields (steps' board numbers,
+`board_totals`, `profile`, `ratio`) only when a pattern is saved or
+approved, and the partner API serves the stored row. So after 6ek → 6em →
+6en the live Elite 48 was still publishing a profile with no `model`, and
+the pending Short 37 had a stale grid too.
+
+**`scripts/recompute_oil_patterns.py`** recomputes the derived fields for
+every row, approved and pending. It never touches the sheet's own numbers
+or the review state. It's a dry run by default; pass `--apply` to write.
+The `content_changed_at` trigger moves only for rows whose output changed,
+so partners syncing `/v1/patterns/changes` re-fetch them. Ran it with
+`--apply`: both rows are now `transfer_buffer_carry_v3` with `burn_lanes`
+2 (Elite 48: 30.20 mL, Short 37: 25.04 mL). A second dry run reports
+0 rows to change.
+
+**Run it after every change to `oil_patterns.profile`/`compute`** (and bump
+`PROFILE_MODEL`):
+```bash
+.venv/bin/python scripts/recompute_oil_patterns.py
+.venv/bin/python scripts/recompute_oil_patterns.py --apply
+```
+(PG* exported from the bowling-scraper-db secret.)
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

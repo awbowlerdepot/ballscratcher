@@ -161,6 +161,8 @@ def board_totals(steps: list, oil_per_board_ul) -> dict:
 # A first-order physical model, not a lane-graph measurement; partners see
 # it named in profile.model. v1 rescaled each run's leftovers into that run;
 # v2 added the carry-over and burn pair; v3 adds the reverse brush drop.
+# Changing the model? Bump this and run scripts/recompute_oil_patterns.py
+# --apply afterwards: stored rows keep the old grid until then (runbook 6eo).
 PROFILE_MODEL = "transfer_buffer_carry_v3"
 BURN_LANES = 2
 REF_SPEED_IPS = 14.0
