@@ -54,7 +54,7 @@ def test_elite48_profile_shape_and_volume():
     assert prof["units"] == "ul_per_board_per_foot" and prof["foot_step"] == 1.0
     assert len(prof["rows"]) == 48 and all(len(r) == 39 for r in prof["rows"])
     assert abs(sum(sum(r) for r in prof["rows"]) - 30200) <= 48  # within 1 µL per row of rounding
-    assert prof["model"] == "transfer_buffer_carry_v2" and prof["burn_lanes"] == 2
+    assert prof["model"] == "transfer_buffer_carry_v3" and prof["burn_lanes"] == 2
     assert all(r[0] == 0 for r in prof["rows"])  # nothing loads board 1
     # Every board still gets exactly what the sheet loads (board 20: 1,100 µL).
     assert abs(sum(r[19] for r in prof["rows"]) - 1100) < 5
@@ -130,7 +130,7 @@ def test_burn_pair_conditions_the_brushes():
     carry from the previous lane goes down in the first feet."""
     p = elite48()
     steps = op.ordered(op.normalize_steps(p["steps"], 50))
-    first, second, third = op.lanes(steps, 48, 50, 3)
+    first, second, third = op.lanes(steps, 48, 50, 3, reverse_brush_drop_feet=42)
     total = lambda rows: sum(map(sum, rows))  # noqa: E731
     assert total(first) < 30200 - 300
     assert abs(total(second) - 30200) < 50 and abs(total(third) - 30200) < 50
@@ -161,3 +161,21 @@ def test_step_past_the_pattern_end_lands_in_the_last_row():
     assert abs(loads[-1][9] - 25 - 50 * op._DX / 4) < 1e-9
     burned = op.profile(steps, 10, 50)["rows"]
     assert abs(sum(r[9] for r in burned) - 50) < 0.5
+
+
+def test_reverse_brush_drop_holds_oil_until_the_drop():
+    """Runbook 6en: on the reverse run the buffer brush is up until
+    reverse_brush_drop_feet, so reverse loads before the drop go down from
+    the drop toward the foul line."""
+    steps = op.normalize_steps(
+        [{"direction": "reverse", "order": 1, "start": "10L", "stop": "10L", "loads": 1, "start_feet": 30.0, "end_feet": 26.0}], 50
+    )
+    no_drop = [r[9] for r in op.lanes(steps, 30, 50, 1)[0]]
+    drop = [r[9] for r in op.lanes(steps, 30, 50, 1, reverse_brush_drop_feet=22)[0]]
+    assert sum(no_drop[22:]) > 20  # brush down: most goes down where it's loaded
+    assert sum(drop[22:]) == 0 and drop[21] > drop[15] > 0  # brush up until 22 ft
+    # Through compute(): the pattern's own field is used.
+    p = elite48()
+    assert op.compute(p)["profile"]["rows"] != op.profile(
+        op.ordered(op.normalize_steps(p["steps"], 50)), 48, 50
+    )["rows"]

@@ -145,10 +145,23 @@ def board_totals(steps: list, oil_per_board_ul) -> dict:
 # ~0.59 mL stays on the brushes). The admin preview can also show that first
 # clean-brush lane. Oil the buffer brush lifts back off the lane was tried
 # and left out: at any plausible rate it moved < 0.1 µL anywhere.
+#
+# Reverse brush drop (runbook 6en). Al: "the forward run ... to the end of
+# the forward pass the brush is down" and "what you can do is the drop brush
+# at 42 feet or whatever is specified. on some patterns it will matter even
+# if it doesn't matter much here." So on the reverse run the buffer brush is
+# UP (lays nothing) until the head comes back to reverse_brush_drop_feet,
+# then down to the foul line. While it's up the transfer brush keeps feeding
+# it, so any reverse loads before the drop -- and what the forward run left
+# on the brushes -- go down starting at the drop. Forward, the brush is down
+# the whole pass. No drop on the sheet (or one at/after the far end) means
+# down the whole way. On Elite 48 (drop 42 ft, first reverse load at 40 ft)
+# it moves < 0.1 µL anywhere.
+#
 # A first-order physical model, not a lane-graph measurement; partners see
-# it named in profile.model (v1 was the same carry without the carry-over:
-# leftovers were rescaled into each run).
-PROFILE_MODEL = "transfer_buffer_carry_v2"
+# it named in profile.model. v1 rescaled each run's leftovers into that run;
+# v2 added the carry-over and burn pair; v3 adds the reverse brush drop.
+PROFILE_MODEL = "transfer_buffer_carry_v3"
 BURN_LANES = 2
 REF_SPEED_IPS = 14.0
 TRANSFER_TO_BUFFER_FEET = 0.5  # carry length (1/e) transfer brush -> buffer brush at REF_SPEED_IPS
@@ -199,17 +212,19 @@ def _run_deposits(steps, n_cells, opb, direction):
     return loads, speed
 
 
-def _carry(lane, loads, speed, order, transfer, buffer):
+def _carry(lane, loads, speed, order, transfer, buffer, down=None):
     """Sweep the transfer brush -> buffer brush -> lane reservoirs along
     `order` (cell indexes in travel direction), adding to `lane` (oil per
     cell per board). `transfer`/`buffer` are the brushes' oil per board, in
-    and out: whatever they hold at the end carries on to the next run."""
+    and out: whatever they hold at the end carries on to the next run.
+    `down(i)` says whether the buffer brush is on the lane over cell i
+    (None: always)."""
     last_speed = REF_SPEED_IPS
     for i in order:
         last_speed = speed[i] or last_speed
         k = last_speed / REF_SPEED_IPS
         to_buffer = 1 - math.exp(-_DX / (TRANSFER_TO_BUFFER_FEET * k))
-        to_lane = 1 - math.exp(-_DX / (BUFFER_TO_LANE_FEET * k))
+        to_lane = 1 - math.exp(-_DX / (BUFFER_TO_LANE_FEET * k)) if down is None or down(i) else 0.0
         row_in, row_out = loads[i], lane[i]
         for b in range(BOARDS):
             q = row_in[b]
@@ -224,24 +239,27 @@ def _carry(lane, loads, speed, order, transfer, buffer):
                 row_out[b] += laid
 
 
-def lanes(steps: list, length_feet, oil_per_board_ul, count: int, foot_step: float = 1.0) -> list:
+def lanes(steps: list, length_feet, oil_per_board_ul, count: int, foot_step: float = 1.0,
+          reverse_brush_drop_feet=None) -> list:
     """Rows (µL per board per foot) for `count` lanes oiled one after another
     by the same machine, starting on clean brushes: lanes(...)[0] is the
     first lane, [BURN_LANES] the one after the burn pair."""
     length = _num(length_feet) or 0
     opb = _num(oil_per_board_ul) or 0
+    drop = _num(reverse_brush_drop_feet)
     n_rows = max(1, math.ceil(length / foot_step)) if length > 0 else 1
     n_cells = max(1, int(round(n_rows * foot_step / _DX)))
     runs = []
-    for direction, order in (("forward", range(n_cells)), ("reverse", range(n_cells - 1, -1, -1))):
+    reverse_down = None if drop is None else (lambda i: (i + 0.5) * _DX <= drop)
+    for direction, order, down in (("forward", range(n_cells), None), ("reverse", range(n_cells - 1, -1, -1), reverse_down)):
         loads, speed = _run_deposits(steps, n_cells, opb, direction)
-        runs.append((loads, speed, order))
+        runs.append((loads, speed, order, down))
     transfer, buffer = [0.0] * BOARDS, [0.0] * BOARDS
     out = []
     for _ in range(count):
         lane = [[0.0] * BOARDS for _ in range(n_cells)]
-        for loads, speed, order in runs:
-            _carry(lane, loads, speed, order, transfer, buffer)
+        for loads, speed, order, down in runs:
+            _carry(lane, loads, speed, order, transfer, buffer, down)
         rows = [[0.0] * BOARDS for _ in range(n_rows)]
         for i, cell in enumerate(lane):
             row = rows[min(int(i * _DX / foot_step + 1e-9), n_rows - 1)]
@@ -252,10 +270,11 @@ def lanes(steps: list, length_feet, oil_per_board_ul, count: int, foot_step: flo
     return out
 
 
-def profile(steps: list, length_feet, oil_per_board_ul, foot_step: float = 1.0, _lanes: list | None = None) -> dict:
+def profile(steps: list, length_feet, oil_per_board_ul, foot_step: float = 1.0, _lanes: list | None = None,
+            reverse_brush_drop_feet=None) -> dict:
     """µL per board per foot on the lane after a burn pair, under the
     transfer/buffer brush carry model above."""
-    series = _lanes or lanes(steps, length_feet, oil_per_board_ul, BURN_LANES + 1, foot_step)
+    series = _lanes or lanes(steps, length_feet, oil_per_board_ul, BURN_LANES + 1, foot_step, reverse_brush_drop_feet)
     return {
         "foot_step": foot_step,
         "units": "ul_per_board_per_foot",
@@ -274,7 +293,8 @@ def headline_ratio(track_zones):
 def compute(pattern: dict) -> dict:
     """Normalized steps + every derived field, ready to store/publish."""
     steps = ordered(normalize_steps(pattern.get("steps") or [], pattern.get("oil_per_board_ul")))
-    series = lanes(steps, pattern.get("length_feet"), pattern.get("oil_per_board_ul"), BURN_LANES + 1)
+    series = lanes(steps, pattern.get("length_feet"), pattern.get("oil_per_board_ul"), BURN_LANES + 1,
+                   reverse_brush_drop_feet=pattern.get("reverse_brush_drop_feet"))
     return {
         "steps": steps,
         "board_totals": board_totals(steps, pattern.get("oil_per_board_ul")),

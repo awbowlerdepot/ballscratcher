@@ -21100,6 +21100,37 @@ pattern's end. Spec change 2 says that oil goes into the last row; it now
 does. `check()` already blocks approving such a step, so only previews of
 unapproved drafts were affected, and Elite 48 doesn't change.
 
+### 6en. Oil pattern profile v3: reverse brush drop (2026-10-23)
+
+Al, about the thin 40–48 ft on Elite 48: "the forward run ... to the end of
+the forward pass the brush is down", "the real sheet doesn't really show
+that very well so i trust your math. what you can do is the drop brush at
+42 feet or whatever is specified. on some patterns it will matter even if
+it doesn't matter much here."
+
+On the reverse run, the buffer brush is now **up** (it lays nothing) until
+the head is back at the pattern's `reverse_brush_drop_feet`. From there it's
+down to the foul line. While the brush is up, the transfer brush keeps
+feeding it, so any reverse loads before the drop, and the oil carried over
+from the forward run, go down starting at the drop. On the forward run the
+brush is down the whole pass, as before. A pattern with no drop on its
+sheet has the brush down the whole way.
+
+`lanes()`/`profile()` take `reverse_brush_drop_feet`, and `compute()` passes
+the pattern's own value. The profile is now
+`model: "transfer_buffer_carry_v3"`; only that description text changed in
+the contract snapshot. The spec's change 3 is updated.
+
+On Elite 48 (drop at 42 ft, first reverse load at 40 ft) the change is
+under 0.1 µL anywhere, and the total is still 30.2 mL. The thin 40–48 ft
+there comes from how quickly the buffer brush empties after the last
+forward load at 16.7 ft. Al trusts the model over the sheet's graph, so the
+carry lengths stay.
+
+**Deploy:** `sam build && sam deploy`.
+**Verify:** `.venv/bin/python -m pytest -q tests/test_oil_patterns.py`
+(`test_reverse_brush_drop_holds_oil_until_the_drop`).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
