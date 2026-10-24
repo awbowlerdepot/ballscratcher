@@ -89,6 +89,36 @@ def _zone(z: dict) -> dict:
     return out
 
 
+# Title case for names (runbook 6er). Kegel sheets print titles in capitals
+# ("PBA ELITE SERIES 37"), which Drilld's pattern picker showed as-is next to
+# its own "House shot"; Al: "you can do title case going forward". Only a
+# name that's (nearly) all capitals is changed -- a mixed-case name is kept
+# as the sheet has it. Known acronyms stay upper; short joining words go
+# lower except first; words with digits (a "WTBA2"-style code) are kept.
+NAME_ACRONYMS = {"PBA", "PWBA", "USBC", "WTBA", "ABC", "WIBC", "ETBF", "BPAA", "NCAA", "PBA50", "PTQ", "TV", "USA",
+                 "US", "UK", "NJCAA", "PBAR", "ITF", "ISBPA", "SR", "JR", "II", "III", "IV", "QB"}
+NAME_MINOR = {"a", "an", "and", "at", "by", "for", "in", "of", "on", "or", "the", "to", "vs"}
+
+
+def tidy_name(name):
+    if not name:
+        return name
+    letters = [c for c in name if c.isalpha()]
+    if not letters or sum(c.isupper() for c in letters) / len(letters) < 0.8:
+        return name
+
+    def word(w, first):
+        core = w.strip("()[]\"'.,:;-")
+        if not core or any(c.isdigit() for c in core) or core.upper() in NAME_ACRONYMS:
+            return w
+        if not first and core.lower() in NAME_MINOR:
+            return w.lower()
+        return "-".join(part[:1].upper() + part[1:].lower() for part in w.split("-"))
+
+    words = name.split(" ")
+    return " ".join(word(w, i == 0) for i, w in enumerate(words))
+
+
 def parse_response(text: str) -> dict:
     """The model's JSON -> oil_patterns fields (names as the spec's)."""
     d = _json_object(text)
@@ -113,7 +143,7 @@ def parse_response(text: str) -> dict:
     if d.get("machine_model"):
         machine = {"make": "Kegel", "model": d["machine_model"], **machine}
     return {
-        "name": (d.get("name") or "").strip() or None,
+        "name": tidy_name((d.get("name") or "").strip() or None),
         "length_feet": d.get("length_feet"),
         "reverse_brush_drop_feet": d.get("reverse_brush_drop_feet"),
         "oil_per_board_ul": d.get("oil_per_board_ul"),

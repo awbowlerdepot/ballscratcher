@@ -100,7 +100,7 @@ def test_ingest_writes_fields_and_page_image_for_a_pending_pattern(monkeypatch):
     assert s3.put[0]["Key"] == "patterns/p1/page-1.png" and s3.put[0]["ContentType"] == "image/png"
     final_sql, params = conn.executed[-1]
     assert "extraction_status = 'ready'" in final_sql and "review_status = 'pending'" in final_sql
-    assert "PBA ELITE SERIES 48 - 42" in params
+    assert "PBA Elite Series 48 - 42" in params  # title-cased (runbook 6er)
 
 
 def test_ingest_keeps_a_name_the_admin_already_typed(monkeypatch):
@@ -123,3 +123,17 @@ def test_ingest_requires_an_upload():
         assert False
     except ValueError as e:
         assert "No sheet" in str(e)
+
+
+def test_names_in_capitals_become_title_case():
+    """Runbook 6er: Kegel prints titles in capitals; acronyms stay upper,
+    joining words go lower, codes with digits and mixed-case names are kept."""
+    t = extract.tidy_name
+    assert t("PBA ELITE SERIES 37") == "PBA Elite Series 37"
+    assert t("PBA ELITE SERIES 48 - 42") == "PBA Elite Series 48 - 42"
+    assert t("USBC OPEN CHAMPIONSHIPS OF THE YEAR") == "USBC Open Championships of the Year"
+    assert t("WTBA BEIJING 2026") == "WTBA Beijing 2026"
+    assert t("KEGEL CHALLENGE-SERIES BADLANDS") == "Kegel Challenge-Series Badlands"
+    assert t("THE BEAST") == "The Beast"
+    assert t("Kegel Navigation 3.0 Route 66") == "Kegel Navigation 3.0 Route 66"
+    assert t(None) is None and t("") == ""

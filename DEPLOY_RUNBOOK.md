@@ -21224,6 +21224,29 @@ contract is unchanged.
 `scripts/recompute_oil_patterns.py`. It should find nothing to change,
 since both current patterns already have the standard six.
 
+### 6er. Oil pattern names from sheets in title case (2026-10-24)
+
+Drilld's Flare plays both published patterns over a real partner key; the
+sync went through API Gateway with no errors. But the names came through as
+the sheets print them ("PBA ELITE SERIES 37"), which looked loud next to
+Drilld's "House shot". Al renamed both to "PBA Elite Series 48 / 37" in
+admin and said "you can do title case going forward".
+
+`pattern_ingest/extract.tidy_name` title-cases the name the reader pulls
+off a sheet, and only when the name is (nearly) all capitals; a mixed-case
+name is kept as printed. The rules:
+- known acronyms stay in capitals (PBA, PWBA, USBC, WTBA and others);
+- joining words (of, the, and, ...) are lower case unless first;
+- words containing digits stay as printed;
+- hyphenated words are cased per part.
+
+Staff still review the name before approving. Existing patterns are
+unchanged.
+
+**Deploy:** `sam build && sam deploy` (PatternIngestFunction).
+**Verify:** `.venv/bin/python -m pytest -q tests/test_pattern_ingest.py`.
+The next uploaded Kegel sheet arrives as e.g. "PBA Elite Series 41".
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
