@@ -780,13 +780,23 @@ export interface ListPatternsParams {
   sort?: string; // attention | updated | name | length | volume | ratio
   limit?: number;
   offset?: number;
+  // Slider ranges, inclusive (runbook 6ew).
+  length_min?: number;
+  length_max?: number;
+  oil_min?: number;
+  oil_max?: number;
+  ratio_min?: number;
+  ratio_max?: number;
 }
+
+export type PatternRange = { min: number | null; max: number | null };
 
 export interface PatternListResult {
   items: PatternSummary[];
   total: number;
   counts: { pending: number; approved: number; rejected: number };
   series: { series: string; count: number }[];
+  ranges: { length: PatternRange; oil: PatternRange; ratio: PatternRange };
 }
 
 export function listPatterns(params: ListPatternsParams = {}): Promise<PatternListResult> {

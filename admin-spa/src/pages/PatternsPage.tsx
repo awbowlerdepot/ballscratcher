@@ -8,6 +8,7 @@ import Button from "../components/Button";
 import type { Column } from "../components/DataTable";
 import DataTable from "../components/DataTable";
 import Pagination from "../components/Pagination";
+import RangeSlider from "../components/RangeSlider";
 import { useToast } from "../components/Toast";
 
 // Oil pattern catalog (runbook 6ej). Al: "pulling in the patterns and using
@@ -25,9 +26,6 @@ const LIMIT = 100;
 const FILTERS: { key: string; label: string; options: [string, string][] }[] = [
   { key: "source", label: "Source", options: PATTERN_SOURCES.map((s) => [s, s === "kegel" ? "Kegel library" : s === "upload" ? "Uploaded sheet" : s]) },
   { key: "category", label: "Type", options: PATTERN_CATEGORIES.map((c) => [c, c]) },
-  { key: "length", label: "Length", options: [["short", "Short (≤38 ft)"], ["medium", "Medium (39–44 ft)"], ["long", "Long (45+ ft)"]] },
-  { key: "oil", label: "Oil", options: [["light", "Light (<22 mL)"], ["medium", "Medium (22–28 mL)"], ["heavy", "Heavy (>28 mL)"]] },
-  { key: "ratio", label: "Ratio", options: [["flat", "Flat (<4:1)"], ["medium", "Medium (4–7:1)"], ["house", "House (7:1+)"]] },
   {
     key: "flag",
     label: "Why pending",
@@ -40,6 +38,18 @@ const FILTERS: { key: string; label: string; options: [string, string][] }[] = [
     ],
   },
 ];
+// Min/max sliders (runbook 6ew). Al: "can we improve the filtering to be
+// sliders with min an max values". Bounds come from the data (the API's
+// `ranges`), rounded out to the step; the URL holds e.g. length_min=40.
+// Ratio tops out at 12 ("12:1 or more"): the library runs to 23:1 but
+// nearly every pattern is under 4:1. A handle at an end means no limit.
+const SLIDERS: { key: "length" | "oil" | "ratio"; label: string; step: number; cap?: number; format: (v: number) => string }[] = [
+  { key: "length", label: "Length", step: 1, format: (v) => `${v} ft` },
+  { key: "oil", label: "Oil volume", step: 0.5, format: (v) => `${v} mL` },
+  { key: "ratio", label: "Ratio", step: 0.5, cap: 12, format: (v) => (v >= 12 ? "12+:1" : `${v}:1`) },
+];
+const SLIDER_PARAMS = SLIDERS.flatMap((r) => [`${r.key}_min`, `${r.key}_max`]);
+
 const SORTS: [string, string][] = [
   ["attention", "Needs attention first"],
   ["updated", "Recently updated"],
@@ -99,6 +109,7 @@ export default function PatternsPage() {
       search: params.get("q") || undefined,
       ...Object.fromEntries(FILTERS.map((f) => [f.key, filterValue(f.key) || undefined])),
       series: filterValue("series") || undefined,
+      ...Object.fromEntries(SLIDER_PARAMS.filter((k) => params.get(k)).map((k) => [k, Number(params.get(k))])),
       sort: filterValue("sort") || undefined,
       limit: LIMIT,
       offset,
@@ -265,7 +276,7 @@ export default function PatternsPage() {
             </option>
           ))}
         </select>
-        {[...FILTERS.map((f) => f.key), "series", "q"].some((k) => params.get(k)) && (
+        {[...FILTERS.map((f) => f.key), "series", "q", ...SLIDER_PARAMS].some((k) => params.get(k)) && (
           <Button
             size="sm"
             variant="ghost"
@@ -280,6 +291,37 @@ export default function PatternsPage() {
           </Button>
         )}
         <span className="ml-auto text-sm text-ink-500">{result ? `${result.total} pattern${result.total === 1 ? "" : "s"}` : ""}</span>
+        {result && (
+          <div className="flex w-full flex-wrap gap-6 border-t border-ink-200 pt-3">
+            {SLIDERS.map((r) => {
+              const b = result.ranges[r.key];
+              if (b.min == null || b.max == null) return null;
+              const min = Math.floor(b.min / r.step) * r.step;
+              const max = Math.min(Math.ceil(b.max / r.step) * r.step, r.cap ?? Infinity);
+              const num = (k: string) => (params.get(k) ? Number(params.get(k)) : null);
+              return (
+                <RangeSlider
+                  key={r.key}
+                  label={r.label}
+                  min={min}
+                  max={max}
+                  step={r.step}
+                  format={r.format}
+                  value={[num(`${r.key}_min`), num(`${r.key}_max`)]}
+                  onChange={([lo, hi]) => {
+                    const next = new URLSearchParams(params);
+                    for (const [k, v] of [[`${r.key}_min`, lo], [`${r.key}_max`, hi]] as const) {
+                      if (v == null) next.delete(k);
+                      else next.set(k, String(v));
+                    }
+                    next.delete("offset");
+                    setParams(next, { replace: true });
+                  }}
+                />
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <DataTable columns={columns} rows={rows} getRowId={(p) => p.id} loading={loading} emptyMessage="No patterns match these filters." />

@@ -18,3 +18,36 @@ body {
   position: relative;
   height: 280px;
 }
+
+/* Two-handle range slider (components/RangeSlider.tsx, runbook 6ew): two
+   native range inputs stacked on one track; only their thumbs take the
+   pointer, so each handle drags on its own. */
+.range-dual input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  pointer-events: none;
+}
+.range-dual input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  pointer-events: auto;
+  width: 16px;
+  height: 16px;
+  border-radius: 9999px;
+  background: #6366f1;
+  border: 2px solid #f4f5f6;
+  cursor: grab;
+}
+.range-dual input[type="range"]::-moz-range-thumb {
+  pointer-events: auto;
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  background: #6366f1;
+  border: 2px solid #f4f5f6;
+  cursor: grab;
+}

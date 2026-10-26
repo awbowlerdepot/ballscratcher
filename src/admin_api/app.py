@@ -2191,13 +2191,20 @@ def get_patterns(
     sort: Optional[str] = Query(None, description="attention | updated | name | length | volume | ratio"),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    length_min: Optional[float] = Query(None),
+    length_max: Optional[float] = Query(None),
+    oil_min: Optional[float] = Query(None, description="Total volume, mL"),
+    oil_max: Optional[float] = Query(None),
+    ratio_min: Optional[float] = Query(None),
+    ratio_max: Optional[float] = Query(None),
 ):
-    # Runbook 6ev: filters, sort and paging for the ~1,340 patterns.
+    # Runbook 6ev: filters, sort and paging for the ~1,340 patterns; 6ew: slider ranges.
     conn = service.get_db_connection()
     try:
         return service.list_patterns(conn, review_status=review_status, search=search, source=source, category=category,
                                      series=series, length=length, oil=oil, ratio=ratio, flag=flag, sort=sort,
-                                     limit=limit, offset=offset)
+                                     limit=limit, offset=offset, length_min=length_min, length_max=length_max,
+                                     oil_min=oil_min, oil_max=oil_max, ratio_min=ratio_min, ratio_max=ratio_max)
     finally:
         conn.close()
 

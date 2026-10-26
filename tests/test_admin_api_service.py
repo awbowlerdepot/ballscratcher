@@ -8512,6 +8512,9 @@ def test_list_patterns_filters_sort_and_paging():
                 return [("pending", 137), ("approved", 1202)]
             return [("Landmark Patterns", 12)]
 
+        def fetchone(self):
+            return (28, 58, 5.25, 37.89, 1.0, 23.0)
+
     class Conn:
         def cursor(self):
             return Cur()
@@ -8534,3 +8537,36 @@ def test_list_patterns_filters_sort_and_paging():
     sql, params = executed[0]
     assert "huge" not in sql and "drop table" not in sql and "review_status = 'pending') desc" in sql
     assert params[-2] == service.PATTERN_LIST_MAX_LIMIT
+
+
+def test_list_patterns_slider_ranges():
+    """Runbook 6ew: inclusive min/max ranges, and the data's own bounds
+    for the sliders."""
+    executed = []
+
+    class Cur:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, sql, params=None):
+            executed.append((" ".join(sql.split()), list(params or [])))
+
+        def fetchall(self):
+            return []
+
+        def fetchone(self):
+            return (28, 58, 5.25, 37.89, 1.0, 23.0)
+
+    class Conn:
+        def cursor(self):
+            return Cur()
+
+    out = service.list_patterns(Conn(), length_min=40, length_max=44, oil_min=20.5, ratio_max=4)
+    sql, params = executed[0]
+    assert "length_feet >= %s" in sql and "length_feet <= %s" in sql and "volume_ml >= %s" in sql and "ratio <= %s" in sql
+    assert "volume_ml <= %s" not in sql and params[:4] == [40.0, 44.0, 20.5, 4.0]
+    assert out["ranges"] == {"length": {"min": 28.0, "max": 58.0}, "oil": {"min": 5.25, "max": 37.89},
+                             "ratio": {"min": 1.0, "max": 23.0}}

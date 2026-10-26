@@ -7059,9 +7059,17 @@ PATTERN_LIST_DEFAULT_LIMIT, PATTERN_LIST_MAX_LIMIT = 100, 500
 
 def list_patterns(conn, review_status: str = None, search: str = None, source: str = None, category: str = None,
                   series: str = None, length: str = None, oil: str = None, ratio: str = None, flag: str = None,
-                  sort: str = None, limit: int = None, offset: int = 0) -> dict:
+                  sort: str = None, limit: int = None, offset: int = 0, length_min: float = None,
+                  length_max: float = None, oil_min: float = None, oil_max: float = None, ratio_min: float = None,
+                  ratio_max: float = None) -> dict:
     """{"items", "total", "counts" (per review status, under every filter
-    but the status tab), "series" (the values to pick from)}."""
+    but the status tab), "series" (the values to pick from), "ranges"
+    (min/max of length, volume and ratio across all patterns, for the
+    sliders)}.
+
+    Sliders (runbook 6ew). Al: "can we improve the filtering to be sliders
+    with min an max values" -- length_min/max (ft), oil_min/max (mL) and
+    ratio_min/max are inclusive ranges; the named bands above still work."""
     where, params = [], []
     if search:
         where.append("(name ilike %s or short_name ilike %s or series ilike %s or description ilike %s)")
@@ -7079,6 +7087,14 @@ def list_patterns(conn, review_status: str = None, search: str = None, source: s
                          (flag, _PATTERN_FLAGS)):
         if value in bands:
             where.append(f"({bands[value]})")
+    for col, lo, hi in (("length_feet", length_min, length_max), ("volume_ml", oil_min, oil_max),
+                        ("ratio", ratio_min, ratio_max)):
+        if lo is not None:
+            where.append(f"{col} >= %s")
+            params.append(float(lo))
+        if hi is not None:
+            where.append(f"{col} <= %s")
+            params.append(float(hi))
     base = " where " + " and ".join(where) if where else ""
     status_where = where + (["review_status = %s"] if review_status else [])
     status_params = params + ([review_status] if review_status else [])
@@ -7099,6 +7115,9 @@ def list_patterns(conn, review_status: str = None, search: str = None, source: s
         counts = {k: v for k, v in cur.fetchall()}
         cur.execute("select series, count(*) from oil_patterns where series is not null group by series order by series")
         series_values = [{"series": r[0], "count": r[1]} for r in cur.fetchall()]
+        cur.execute("select min(length_feet), max(length_feet), min(volume_ml), max(volume_ml), min(ratio), max(ratio) "
+                    "from oil_patterns")
+        rng = cur.fetchone() or (None,) * 6
     items = []
     for row in rows:
         d = dict(zip(cols, row[:-1]))
@@ -7112,6 +7131,11 @@ def list_patterns(conn, review_status: str = None, search: str = None, source: s
         "total": rows[0][-1] if rows else 0,
         "counts": {k: counts.get(k, 0) for k in ("pending", "approved", "rejected")},
         "series": series_values,
+        "ranges": {
+            key: {"min": float(rng[i]) if rng[i] is not None else None,
+                  "max": float(rng[i + 1]) if rng[i + 1] is not None else None}
+            for key, i in (("length", 0), ("oil", 2), ("ratio", 4))
+        },
     }
 
 

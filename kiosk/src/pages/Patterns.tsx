@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { getPattern, getPatterns, type PatternDetail, type PatternSummary } from "../lib/api";
 import { useKiosk } from "../lib/kiosk";
 import { BigButton, Chip, Keyboard, PageTitle, SearchField, Spinner } from "../components/ui";
+import RangeSlider from "../components/RangeSlider";
 
 // Oil Patterns (runbook 6eu). Al: "can we add an oil pattern section to the
 // kiosk... also do you think we can suggest balls for each pattern" and
@@ -21,16 +22,16 @@ const TYPES: { key: string; label: string }[] = [
   { key: "tournament", label: "Tournament" },
   { key: "recreational", label: "Recreational" },
 ];
-// Feet / mL bands, matching the words the ball suggestions use.
-const LENGTHS: { key: string; label: string; test: (ft: number) => boolean }[] = [
-  { key: "short", label: "Short (38 ft or less)", test: (ft) => ft <= 38 },
-  { key: "medium", label: "Medium (39–44 ft)", test: (ft) => ft > 38 && ft < 45 },
-  { key: "long", label: "Long (45 ft+)", test: (ft) => ft >= 45 },
-];
-const OILS: { key: string; label: string; test: (ml: number) => boolean }[] = [
-  { key: "light", label: "Light oil", test: (ml) => ml < 22 },
-  { key: "medium", label: "Medium oil", test: (ml) => ml >= 22 && ml <= 28 },
-  { key: "heavy", label: "Heavy oil", test: (ml) => ml > 28 },
+// Min/max sliders (runbook 6ew). Al: "can we improve the filtering to be
+// sliders with min an max values". Bounds come from the patterns
+// themselves, rounded out to the step.
+// Ratio runs 1-23:1 but nearly every pattern is under 4:1, so its slider
+// tops out at 12 ("12:1 or more") to keep the useful part wide.
+type RangeKey = "length_feet" | "volume_ml" | "ratio";
+const SLIDERS: { key: RangeKey; label: string; step: number; cap?: number; format: (v: number) => string }[] = [
+  { key: "length_feet", label: "Length", step: 1, format: (v) => `${v} ft` },
+  { key: "volume_ml", label: "Oil", step: 0.5, format: (v) => `${v} mL` },
+  { key: "ratio", label: "Ratio", step: 0.5, cap: 12, format: (v) => (v >= 12 ? "12+:1" : `${v}:1`) },
 ];
 const PAGE = 48;
 
@@ -39,16 +40,15 @@ export default function Patterns() {
   const [all, setAll] = useState<PatternSummary[] | null>(null);
   const [house, setHouse] = useState<PatternDetail | null>(null);
   const [type, setType] = useState<string | null>(null);
-  const [length, setLength] = useState<string | null>(null);
-  const [oil, setOil] = useState<string | null>(null);
+  // [min, max] per slider; null until the patterns load (then = the bounds).
+  const [ranges, setRanges] = useState<Partial<Record<RangeKey, [number, number]>>>({});
   const [q, setQ] = useState("");
   const [typing, setTyping] = useState(false);
   const [shown, setShown] = useState(PAGE);
 
   useEffect(() => {
     setType(null);
-    setLength(null);
-    setOil(null);
+    setRanges({});
     setQ("");
     setTyping(false);
     setShown(PAGE);
@@ -64,19 +64,44 @@ export default function Patterns() {
     if (housePatternId) getPattern(housePatternId).then(setHouse).catch(() => undefined);
   }, [housePatternId]);
 
+  const bounds = useMemo(() => {
+    const out: Partial<Record<RangeKey, [number, number]>> = {};
+    for (const r of SLIDERS) {
+      const vals = (all ?? []).map((p) => p[r.key]).filter((v): v is number => v != null);
+      if (vals.length) {
+        const hi = Math.ceil(Math.max(...vals) / r.step) * r.step;
+        out[r.key] = [Math.floor(Math.min(...vals) / r.step) * r.step, r.cap ? Math.min(hi, r.cap) : hi];
+      }
+    }
+    return out;
+  }, [all]);
+  // Each end of a slider only filters once it's moved off that end.
+  const inRanges = (p: PatternSummary) =>
+    SLIDERS.every((r) => {
+      const sel = ranges[r.key];
+      const b = bounds[r.key];
+      if (!sel || !b) return true;
+      const v = p[r.key];
+      const lo = sel[0] > b[0], hi = sel[1] < b[1];
+      if (!lo && !hi) return true;
+      return v != null && (!lo || v >= sel[0]) && (!hi || v <= sel[1]);
+    });
+  const rangesActive = SLIDERS.some((r) => {
+    const sel = ranges[r.key];
+    const b = bounds[r.key];
+    return sel && b && (sel[0] > b[0] || sel[1] < b[1]);
+  });
+
   const list = useMemo(() => {
     const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
-    const lb = LENGTHS.find((b) => b.key === length);
-    const ob = OILS.find((b) => b.key === oil);
     return (all ?? []).filter(
       (p) =>
         (!type || p.category === type || (type === "house" && (p.ratio ?? 0) >= 7)) &&
-        (!lb || (p.length_feet != null && lb.test(p.length_feet))) &&
-        (!ob || (p.volume_ml != null && ob.test(p.volume_ml))) &&
+        inRanges(p) &&
         words.every((w) => `${p.name} ${p.series ?? ""}`.toLowerCase().includes(w)),
     ).sort(newestFirst);
-  }, [all, type, length, oil, q]);
-  useEffect(() => setShown(PAGE), [type, length, oil, q]);
+  }, [all, type, ranges, bounds, q]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => setShown(PAGE), [type, ranges, q]);
 
   return (
     <div>
@@ -86,7 +111,7 @@ export default function Patterns() {
         sub="Pick a pattern to see where the oil goes and which balls we'd start you with."
       />
 
-      {house && !q && !type && !length && !oil && (
+      {house && !q && !type && !rangesActive && (
         <Link
           to={`/pattern/${house.id}`}
           className="mb-8 flex items-center justify-between gap-6 rounded-3xl border-2 border-brand bg-gradient-to-br from-brand to-brand-deep p-7 active:opacity-90"
@@ -111,29 +136,31 @@ export default function Patterns() {
             </Chip>
           ))}
         </FilterRow>
-        <FilterRow label="Length">
-          <Chip active={!length} onClick={() => setLength(null)}>
-            Any
-          </Chip>
-          {LENGTHS.map((b) => (
-            <Chip key={b.key} active={length === b.key} onClick={() => setLength(length === b.key ? null : b.key)}>
-              {b.label}
-            </Chip>
-          ))}
-        </FilterRow>
-        <FilterRow label="Oil">
-          <Chip active={!oil} onClick={() => setOil(null)}>
-            Any
-          </Chip>
-          {OILS.map((b) => (
-            <Chip key={b.key} active={oil === b.key} onClick={() => setOil(oil === b.key ? null : b.key)}>
-              {b.label}
-            </Chip>
-          ))}
-          <span className="mx-4 h-8 w-0.5 bg-edge" />
+        {SLIDERS.map((r) => {
+          const b = bounds[r.key];
+          if (!b) return null;
+          return (
+            <RangeSlider
+              key={r.key}
+              label={r.label}
+              min={b[0]}
+              max={b[1]}
+              step={r.step}
+              format={r.format}
+              value={ranges[r.key] ?? b}
+              onChange={(v) => setRanges((cur) => ({ ...cur, [r.key]: v }))}
+            />
+          );
+        })}
+        <FilterRow label="">
           <Chip active={typing || Boolean(q)} onClick={() => setTyping(!typing)}>
             🔎 {q ? `“${q}”` : "Search by name"}
           </Chip>
+          {rangesActive && (
+            <Chip active={false} onClick={() => setRanges({})}>
+              Reset sliders
+            </Chip>
+          )}
         </FilterRow>
         {typing && (
           <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-6">

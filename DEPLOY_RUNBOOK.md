@@ -21490,6 +21490,43 @@ shows 0 to change).
 **Verify:** in admin → Oil Patterns, choose Why pending: Forward drop brush,
 which should show 137. Sort by Most oil. Page 2 should work.
 
+### 6ew. Oil pattern filters as min/max sliders (admin + kiosk) (2026-10-26)
+
+Al: "can we improve the filtering to be sliders with min an max values",
+answered as both admin and kiosk.
+
+**Length, oil volume and ratio** are now two-handle sliders in both apps
+(`components/RangeSlider.tsx` in each, styled by `.range-dual` in their
+`index.css`). Each is two native range inputs on one track: no dependency,
+and it works with mouse, touch and keyboard.
+- The bounds come from the data, rounded out to the step: length 1 ft,
+  oil 0.5 mL, ratio 0.5.
+- **Ratio tops out at 12 ("12+:1").** The library runs to 23:1, but nearly
+  every pattern is under 4:1, so a linear 1–23 track would squeeze them
+  into its first sixth.
+- An end only filters once its handle has moved off that end.
+
+**Admin:**
+- `GET /patterns` takes `length_min/max`, `oil_min/max` and
+  `ratio_min/max` (inclusive) and returns `ranges` (the min/max of each
+  across all patterns).
+- The sliders sit under the dropdowns, which keep source, type, series and
+  "why pending". They apply on release, and the values live in the URL
+  (e.g. `length_min=40`).
+- The old band parameters still work on the API; the UI no longer uses
+  them.
+
+**Kiosk:**
+- The sliders replace the Length/Oil chips and filter live while dragging.
+- The thumbs are 44px, for a finger.
+- "Reset sliders" appears once one moves, and the sliders reset with the
+  session.
+- Tested against the live API: length 40–44 ft gives 626 of 1,201, and
+  adding ratio up to 4:1 gives 545.
+
+**Deploy:** `sam build && sam deploy` (admin API), then push (admin +
+kiosk).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
