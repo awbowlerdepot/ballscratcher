@@ -54,7 +54,7 @@ def test_elite48_profile_shape_and_volume():
     assert prof["units"] == "ul_per_board_per_foot" and prof["foot_step"] == 1.0
     assert len(prof["rows"]) == 48 and all(len(r) == 39 for r in prof["rows"])
     assert abs(sum(sum(r) for r in prof["rows"]) - 30200) <= 48  # within 1 µL per row of rounding
-    assert prof["model"] == "transfer_buffer_carry_v3" and prof["burn_lanes"] == 2
+    assert prof["model"] == "transfer_buffer_carry_v4" and prof["burn_lanes"] == 2
     assert all(r[0] == 0 for r in prof["rows"])  # nothing loads board 1
     # Every board still gets exactly what the sheet loads (board 20: 1,100 µL).
     assert abs(sum(r[19] for r in prof["rows"]) - 1100) < 5
@@ -277,3 +277,21 @@ def test_a_and_b_step_pumps_both_tanks():
     assert st[0]["crossed"] == 74 and st[0]["oil_ul"] == 5920
     assert op.board_totals(st, None)["forward_ul"][1] == 160
     assert op.tank_factor("A") == 1 and op.tank_factor("B") == 1 and op.tank_factor("A+B") == 2
+
+
+def test_forward_drop_brush_holds_the_first_inches():
+    """Runbook 6ey: Kegel's forward drop (9 or 12, read as inches) keeps the
+    buffer brush up from the foul line to that point on the forward pass;
+    the oil still all goes down, starting at the drop."""
+    steps = op.normalize_steps(
+        [{"direction": "forward", "order": 1, "start": "10L", "stop": "10L", "loads": 1, "start_feet": 0.0, "end_feet": 0.0}], 50
+    )
+    plain = [r[9] for r in op.lanes(steps, 10, 50, 1)[0]]
+    held = [r[9] for r in op.lanes(steps, 10, 50, 1, forward_brush_drop_feet=0.75)[0]]
+    assert plain[0] > held[0]  # less in the first foot
+    assert abs(sum(plain) - sum(held)) < 0.5  # same oil overall
+    # Through compute(): the pattern's own field is used.
+    p = elite48()
+    a = op.compute(p)["profile"]["rows"]
+    b = op.compute({**p, "forward_brush_drop_feet": 0.75})["profile"]["rows"]
+    assert a != b and abs(sum(map(sum, a)) - sum(map(sum, b))) < 10

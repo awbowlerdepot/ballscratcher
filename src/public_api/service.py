@@ -2386,7 +2386,8 @@ def get_learn_signage(conn, slug: str):
 # measurement -- the response says so.
 PATTERN_PUBLIC_COLUMNS = (
     "id", "name", "short_name", "category", "series", "source", "source_url", "status", "length_feet",
-    "reverse_brush_drop_feet", "oil_per_board_ul", "forward_ml", "reverse_ml", "volume_ml", "ratio", "track_zones",
+    "reverse_brush_drop_feet", "forward_brush_drop_feet", "oil_per_board_ul", "forward_ml", "reverse_ml", "volume_ml",
+    "ratio", "track_zones",
     "machine", "steps", "board_totals", "profile", "description",
 )
 PATTERN_SUMMARY_COLUMNS = ("id", "name", "category", "series", "source", "status", "length_feet", "volume_ml", "ratio",
@@ -2408,7 +2409,8 @@ def _num_or_none(v):
 def _pattern_from_row(cols, row) -> dict:
     p = dict(zip(cols, row))
     p["id"] = str(p["id"])
-    for k in ("length_feet", "reverse_brush_drop_feet", "oil_per_board_ul", "forward_ml", "reverse_ml", "volume_ml", "ratio"):
+    for k in ("length_feet", "reverse_brush_drop_feet", "forward_brush_drop_feet", "oil_per_board_ul", "forward_ml",
+              "reverse_ml", "volume_ml", "ratio"):
         if k in p:
             p[k] = _num_or_none(p[k])
     if "track_zones" in p:

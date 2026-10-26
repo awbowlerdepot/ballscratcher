@@ -180,12 +180,22 @@ def board_totals(steps: list, oil_per_board_ul) -> dict:
 # down the whole way. On Elite 48 (drop 42 ft, first reverse load at 40 ft)
 # it moves < 0.1 µL anywhere.
 #
+# Forward drop brush (runbook 6ey). 137 Kegel library patterns carry
+# ForwardDropBrushDistance 9 or 12 with no unit; the sheets never print it,
+# and those patterns load half or more of their forward oil in the first
+# 9 ft, so it can't be feet. Al: "go with inches and bulk approve them".
+# So forward_brush_drop_feet (stored in feet: 9 in -> 0.75) keeps the buffer
+# brush UP from the foul line to that point on the forward pass -- the
+# transfer brush still takes the loads, and they go down from the drop on.
+# Effect: under a foot.
+#
 # A first-order physical model, not a lane-graph measurement; partners see
 # it named in profile.model. v1 rescaled each run's leftovers into that run;
-# v2 added the carry-over and burn pair; v3 adds the reverse brush drop.
+# v2 added the carry-over and burn pair; v3 adds the reverse brush drop; v4
+# adds the forward drop brush.
 # Changing the model? Bump this and run scripts/recompute_oil_patterns.py
 # --apply afterwards: stored rows keep the old grid until then (runbook 6eo).
-PROFILE_MODEL = "transfer_buffer_carry_v3"
+PROFILE_MODEL = "transfer_buffer_carry_v4"
 BURN_LANES = 2
 REF_SPEED_IPS = 14.0
 TRANSFER_TO_BUFFER_FEET = 0.5  # carry length (1/e) transfer brush -> buffer brush at REF_SPEED_IPS
@@ -264,18 +274,20 @@ def _carry(lane, loads, speed, order, transfer, buffer, down=None):
 
 
 def lanes(steps: list, length_feet, oil_per_board_ul, count: int, foot_step: float = 1.0,
-          reverse_brush_drop_feet=None) -> list:
+          reverse_brush_drop_feet=None, forward_brush_drop_feet=None) -> list:
     """Rows (µL per board per foot) for `count` lanes oiled one after another
     by the same machine, starting on clean brushes: lanes(...)[0] is the
     first lane, [BURN_LANES] the one after the burn pair."""
     length = _num(length_feet) or 0
     opb = _num(oil_per_board_ul) or 0
     drop = _num(reverse_brush_drop_feet)
+    fdrop = _num(forward_brush_drop_feet)
     n_rows = max(1, math.ceil(length / foot_step)) if length > 0 else 1
     n_cells = max(1, int(round(n_rows * foot_step / _DX)))
     runs = []
     reverse_down = None if drop is None else (lambda i: (i + 0.5) * _DX <= drop)
-    for direction, order, down in (("forward", range(n_cells), None), ("reverse", range(n_cells - 1, -1, -1), reverse_down)):
+    forward_down = None if not fdrop else (lambda i: (i + 0.5) * _DX >= fdrop)
+    for direction, order, down in (("forward", range(n_cells), forward_down), ("reverse", range(n_cells - 1, -1, -1), reverse_down)):
         loads, speed = _run_deposits(steps, n_cells, opb, direction)
         runs.append((loads, speed, order, down))
     transfer, buffer = [0.0] * BOARDS, [0.0] * BOARDS
@@ -295,10 +307,11 @@ def lanes(steps: list, length_feet, oil_per_board_ul, count: int, foot_step: flo
 
 
 def profile(steps: list, length_feet, oil_per_board_ul, foot_step: float = 1.0, _lanes: list | None = None,
-            reverse_brush_drop_feet=None) -> dict:
+            reverse_brush_drop_feet=None, forward_brush_drop_feet=None) -> dict:
     """µL per board per foot on the lane after a burn pair, under the
     transfer/buffer brush carry model above."""
-    series = _lanes or lanes(steps, length_feet, oil_per_board_ul, BURN_LANES + 1, foot_step, reverse_brush_drop_feet)
+    series = _lanes or lanes(steps, length_feet, oil_per_board_ul, BURN_LANES + 1, foot_step, reverse_brush_drop_feet,
+                             forward_brush_drop_feet)
     return {
         "foot_step": foot_step,
         "units": "ul_per_board_per_foot",
@@ -409,7 +422,8 @@ def compute(pattern: dict) -> dict:
     """Normalized steps + every derived field, ready to store/publish."""
     steps = ordered(normalize_steps(pattern.get("steps") or [], pattern.get("oil_per_board_ul")))
     series = lanes(steps, pattern.get("length_feet"), pattern.get("oil_per_board_ul"), BURN_LANES + 1,
-                   reverse_brush_drop_feet=pattern.get("reverse_brush_drop_feet"))
+                   reverse_brush_drop_feet=pattern.get("reverse_brush_drop_feet"),
+                   forward_brush_drop_feet=pattern.get("forward_brush_drop_feet"))
     totals = board_totals(steps, pattern.get("oil_per_board_ul"))
     zones = track_zones(pattern.get("track_zones"), totals)
     return {

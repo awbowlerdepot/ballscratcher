@@ -501,7 +501,8 @@ def compute_plotter_neighbors(points: list) -> dict:
 
 PATTERN_SELECT = """
     select id, name, short_name, category, series, source, source_url, sheet_url, image_url, status,
-           length_feet, reverse_brush_drop_feet, oil_per_board_ul, forward_ml, reverse_ml, volume_ml, ratio,
+           length_feet, reverse_brush_drop_feet, forward_brush_drop_feet, oil_per_board_ul, forward_ml, reverse_ml,
+           volume_ml, ratio,
            track_zones, machine, steps, board_totals, profile, profile_source, published, review_status,
            download_count, content_changed_at
     from oil_patterns
@@ -543,7 +544,8 @@ def map_pattern(row: dict) -> dict:
         "sheet_url": row.get("sheet_url"),
         "image_url": row.get("image_url"),
         "status": row["status"],
-        **{k: _float_or_none(row.get(k)) for k in ("length_feet", "reverse_brush_drop_feet", "oil_per_board_ul",
+        **{k: _float_or_none(row.get(k)) for k in ("length_feet", "reverse_brush_drop_feet", "forward_brush_drop_feet",
+                                                     "oil_per_board_ul",
                                                      "forward_ml", "reverse_ml", "volume_ml", "ratio")},
         "download_count": int(row["download_count"]) if row.get("download_count") is not None else None,
         "track_zones": [_pick(z, _ZONE_KEYS) for z in row.get("track_zones") or []],

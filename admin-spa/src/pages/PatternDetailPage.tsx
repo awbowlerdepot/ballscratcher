@@ -23,6 +23,8 @@ const HEADER_FIELDS: { key: keyof PatternEdit; label: string; type: "text" | "nu
   { key: "series", label: "Series", type: "text" },
   { key: "length_feet", label: "Pattern length", type: "number", unit: "ft" },
   { key: "reverse_brush_drop_feet", label: "Reverse brush drop", type: "number", unit: "ft" },
+  // Kegel's forward drop brush, read as inches and stored in feet (runbook 6ey).
+  { key: "forward_brush_drop_feet", label: "Forward brush drop", type: "number", unit: "ft" },
   { key: "oil_per_board_ul", label: "Oil per board", type: "number", unit: "µL" },
   { key: "forward_ml", label: "Forward total", type: "number", unit: "mL" },
   { key: "reverse_ml", label: "Reverse total", type: "number", unit: "mL" },
@@ -55,6 +57,7 @@ function toDraft(p: PatternDetail): Draft {
     status: p.status,
     length_feet: p.length_feet,
     reverse_brush_drop_feet: p.reverse_brush_drop_feet,
+    forward_brush_drop_feet: p.forward_brush_drop_feet ?? null,
     oil_per_board_ul: p.oil_per_board_ul,
     forward_ml: p.forward_ml,
     reverse_ml: p.reverse_ml,

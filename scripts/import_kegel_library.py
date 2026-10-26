@@ -174,6 +174,10 @@ def map_pattern(d: dict) -> dict:
         "status": "current",
         "length_feet": p.get("Distance"),
         "reverse_brush_drop_feet": p.get("ReverseDropBrushDistance") if p.get("IsReverseDropBrush") else None,
+        # Kegel's forward drop (9 or 12) has no unit and never appears on the
+        # sheet; read as INCHES (runbook 6ey -- Al: "go with inches"), stored in feet.
+        "forward_brush_drop_feet": round(p["ForwardDropBrushDistance"] / 12, 3)
+        if p.get("IsForwardDropBrush") and p.get("ForwardDropBrushDistance") else None,
         "oil_per_board_ul": float(pump.group(1)) if pump else None,  # "MULTI": each step's mics
         # Kegel's JSON carries float noise (27.200000000000003); its sheets
         # print 3 places at most.
@@ -204,15 +208,13 @@ def not_clean_reasons(d: dict, pattern: dict) -> list:
             break
     if p.get("HasErrors"):
         reasons.append("Kegel flags this pattern as having errors.")
-    if p.get("IsForwardDropBrush") or (p.get("ForwardDropBrushDistance") or 0) > 0:
-        reasons.append("Uses a forward drop brush, which the oil model doesn't cover yet.")
     if p.get("EndOfPatternRaiseBrush"):
         reasons.append("Raises the brush at the end of the pattern, which the oil model doesn't cover yet.")
     return reasons
 
 
 WRITE_COLS = ("name", "category", "series", "source", "source_url", "sheet_url", "status", "length_feet",
-              "reverse_brush_drop_feet", "oil_per_board_ul", "forward_ml", "reverse_ml", "volume_ml", "machine",
+              "reverse_brush_drop_feet", "forward_brush_drop_feet", "oil_per_board_ul", "forward_ml", "reverse_ml", "volume_ml", "machine",
               "steps", "track_zones", "board_totals", "profile", "ratio", "profile_source", "description",
               "download_count", "external_source", "external_id", "external_hash", "kosi_key", "raw_key")
 JSON_COLS = {"machine", "steps", "track_zones", "board_totals", "profile"}

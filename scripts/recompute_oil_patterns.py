@@ -30,7 +30,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src", "admin_a
 import oil_patterns  # noqa: E402
 
 SOURCE = ("name", "category", "length_feet", "oil_per_board_ul", "forward_ml", "reverse_ml", "volume_ml",
-          "reverse_brush_drop_feet", "track_zones", "steps")
+          "reverse_brush_drop_feet", "forward_brush_drop_feet", "track_zones", "steps")
 DERIVED = ("steps", "board_totals", "track_zones", "profile", "ratio", "profile_source")
 JSON_COLS = {"steps", "board_totals", "profile", "track_zones"}
 
@@ -45,7 +45,7 @@ def main(apply: bool) -> None:
     changed = 0
     for row in rows:
         p = {k: (float(v) if k in ("length_feet", "oil_per_board_ul", "forward_ml", "reverse_ml", "volume_ml",
-                                   "reverse_brush_drop_feet") and v is not None else v) for k, v in row.items()}
+                                   "reverse_brush_drop_feet", "forward_brush_drop_feet") and v is not None else v) for k, v in row.items()}
         c = oil_patterns.compute(p)
         new = {k: c[k] for k in DERIVED}
         old_model = (row.get("profile") or {}).get("model")

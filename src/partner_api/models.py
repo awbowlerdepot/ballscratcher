@@ -260,9 +260,10 @@ class PatternProfile(_Model):
     units: Literal["ul_per_board_per_foot"]
     model: Optional[str] = Field(
         None,
-        description="How the machine program was turned into lane oil. \"transfer_buffer_carry_v3\": each step's loads "
+        description="How the machine program was turned into lane oil. \"transfer_buffer_carry_v4\": each step's loads "
         "go onto the transfer brush, the buffer brush picks them up and lays them on the lane, so oil drags out in each "
-        "run's direction of travel and thins; on the reverse run the buffer brush is up until reverse_brush_drop_feet; "
+        "run's direction of travel and thins; on the reverse run the buffer brush is up until reverse_brush_drop_feet and on the forward run until "
+        "forward_brush_drop_feet; "
         "oil left on the brushes carries into the next run and the next lane, and rows are the lane after a burn pair "
         "(see the patterns spec).",
     )
@@ -288,6 +289,11 @@ class Pattern(_Model):
     status: PatternStatus
     length_feet: Optional[float] = Field(None, description="Oil pattern distance, feet.")
     reverse_brush_drop_feet: Optional[float] = None
+    forward_brush_drop_feet: Optional[float] = Field(
+        None,
+        description="Where the buffer brush comes down on the forward pass, feet from the foul line (Kegel's forward "
+        "drop brush, published in inches: 9 in = 0.75). Null = down from the foul line.",
+    )
     oil_per_board_ul: Optional[float] = Field(None, description="µL laid on one board by one load.")
     forward_ml: Optional[float] = None
     reverse_ml: Optional[float] = None

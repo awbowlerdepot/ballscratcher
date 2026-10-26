@@ -42,9 +42,13 @@ def test_big_ben_is_clean_and_matches_kegel():
 
 
 def test_features_the_model_does_not_cover_keep_a_pattern_pending():
+    # Forward drop brush: modelled since 6ey (Kegel's 9 read as inches).
     d = json.loads(json.dumps(BIG_BEN))
     d["Pattern"]["IsForwardDropBrush"], d["Pattern"]["ForwardDropBrushDistance"] = True, 9
-    assert any("forward drop brush" in r for r in kl.not_clean_reasons(d, kl.map_pattern(d)))
+    m = kl.map_pattern(d)
+    assert m["forward_brush_drop_feet"] == 0.75 and kl.not_clean_reasons(d, m) == []
+    d["Pattern"]["EndOfPatternRaiseBrush"] = True
+    assert any("Raises the brush" in r for r in kl.not_clean_reasons(d, kl.map_pattern(d)))
     d = json.loads(json.dumps(BIG_BEN))
     d["Pattern"]["HasErrors"] = True
     assert any("Kegel flags" in r for r in kl.not_clean_reasons(d, kl.map_pattern(d)))

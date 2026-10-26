@@ -1342,6 +1342,7 @@ export interface PatternDetail extends PatternSummary {
   sheet_url: string | null;
   image_url: string | null;
   reverse_brush_drop_feet: number | null;
+  forward_brush_drop_feet?: number | null; // runbook 6ey
   oil_per_board_ul: number | null;
   forward_ml: number | null;
   reverse_ml: number | null;
@@ -1372,6 +1373,6 @@ export type PatternEdit = Partial<
   Pick<
     PatternDetail,
     | "name" | "short_name" | "category" | "series" | "source" | "source_url" | "status" | "length_feet"
-    | "reverse_brush_drop_feet" | "oil_per_board_ul" | "forward_ml" | "reverse_ml" | "volume_ml" | "track_zones" | "machine" | "steps"
+    | "reverse_brush_drop_feet" | "forward_brush_drop_feet" | "oil_per_board_ul" | "forward_ml" | "reverse_ml" | "volume_ml" | "track_zones" | "machine" | "steps"
   >
 >;

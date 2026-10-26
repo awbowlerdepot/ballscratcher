@@ -21571,6 +21571,40 @@ Filling them first would have re-sent every pattern without the field.
 sheet. Partner `/v1/patterns` items carry `download_count`. Admin sort
 "Most downloaded" puts the most-downloaded pattern first.
 
+### 6ey. Forward drop brush modelled (read as inches); 137 patterns bulk-approved (2026-10-26)
+
+Al, after seeing the raw data for 2024 PBA Wolf: "could that be in inches
+or does it call out feet", then "go with inches and bulk approve them".
+
+**The evidence.** 137 Kegel library patterns have `IsForwardDropBrush` with
+`ForwardDropBrushDistance` 9 (134 of them) or 12 (3). The value has no
+unit. It's line 6 of the KOSI file, which is 0 on patterns without the
+feature. It never appears on the sheet: the sheet prints only the reverse
+drop, in FEET. Those patterns load 30–100% of their forward oil before
+9 ft, so feet makes no sense, and inches does (the brush touches down just
+past the foul line).
+
+**Model v4.**
+- New column `forward_brush_drop_feet` (migration 055, in the content
+  trigger) holds Kegel's value converted from inches (9 → 0.75 ft).
+- `oil_patterns.lanes` keeps the buffer brush **up** on the forward pass
+  until that point. The transfer brush still takes the loads, and they go
+  down from the drop on, so the effect is under a foot.
+- `PROFILE_MODEL = "transfer_buffer_carry_v4"`.
+- The importer maps the field and no longer holds these patterns back. The
+  "raise brush at end of pattern" reason remains (no pattern uses it yet).
+- New optional partner field `Pattern.forward_brush_drop_feet` (additive),
+  plus the public API detail and admin's review form.
+
+**Rollout:**
+1. Migration 055.
+2. Deploy.
+3. Set the field on the 137 from the cached Kegel data.
+4. `scripts/recompute_oil_patterns.py --apply`: every row moves to v4, so
+   partners get a full re-send.
+5. Bulk-approve the 137 that pass every check (`resolved_by =
+   'kegel-import (forward drop read as inches)'`).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

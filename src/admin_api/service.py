@@ -6988,7 +6988,7 @@ import oil_patterns  # noqa: E402
 
 PATTERN_COLUMNS = (
     "id", "name", "short_name", "category", "series", "source", "source_url", "sheet_url", "image_url", "status",
-    "length_feet", "reverse_brush_drop_feet", "oil_per_board_ul", "forward_ml", "reverse_ml", "volume_ml", "ratio",
+    "length_feet", "reverse_brush_drop_feet", "forward_brush_drop_feet", "oil_per_board_ul", "forward_ml", "reverse_ml", "volume_ml", "ratio",
     "track_zones", "machine", "steps", "board_totals", "profile", "profile_source",
     "review_status", "published", "review_note", "resolved_at", "resolved_by",
     "upload_key", "upload_filename", "page_image_key", "extraction_status", "extraction_error", "extraction_model",
@@ -6996,11 +6996,11 @@ PATTERN_COLUMNS = (
 )
 PATTERN_EDITABLE = (
     "name", "short_name", "category", "series", "source", "source_url", "sheet_url", "image_url", "status",
-    "length_feet", "reverse_brush_drop_feet", "oil_per_board_ul", "forward_ml", "reverse_ml", "volume_ml",
+    "length_feet", "reverse_brush_drop_feet", "forward_brush_drop_feet", "oil_per_board_ul", "forward_ml", "reverse_ml", "volume_ml",
     "track_zones", "machine", "steps",
 )
 _PATTERN_JSON = {"track_zones", "machine", "steps", "board_totals", "profile"}
-_PATTERN_NUMERIC = {"length_feet", "reverse_brush_drop_feet", "oil_per_board_ul", "forward_ml", "reverse_ml", "volume_ml", "ratio"}
+_PATTERN_NUMERIC = {"length_feet", "reverse_brush_drop_feet", "forward_brush_drop_feet", "oil_per_board_ul", "forward_ml", "reverse_ml", "volume_ml", "ratio"}
 PATTERN_URL_TTL = 900
 
 
