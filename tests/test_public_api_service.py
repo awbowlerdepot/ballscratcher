@@ -3139,7 +3139,8 @@ def test_black_pearl_and_purple_pearls_lead_the_fresh_urethane_group():
     out = service.suggest_for_pattern({"id": "p", "volume_ml": 24, "length_feet": 36, "ratio": 3}, _POP, balls + named)
     names = [b["name"] for b in out["groups"][0]["balls"]]
     assert names[:3] == ["Black Pearl Urethane", "Purple Pearl Urethane", "Purple Pearl Urethane 78D"]
-    assert len(names) == 4
+    # Al: "what about the other urethane from other brands?" -- all of them show (up to 8).
+    assert len(names) == 7
     # Not on a long or high-ratio pattern.
     out = service.suggest_for_pattern({"id": "p", "volume_ml": 24, "length_feet": 42, "ratio": 3}, _POP, balls + named)
     assert out["groups"][0]["key"] == "best"

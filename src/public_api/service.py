@@ -2411,7 +2411,12 @@ URETHANE_MAX_LENGTH_FT, URETHANE_MAX_RATIO = 38, 5
 # whenever they're current and on BowlerDepot, ahead of the plotter-nearest
 # urethanes (which fill the rest). Matched by exact name, case-insensitive.
 FRESH_URETHANE_PICKS = ("black pearl urethane", "purple pearl urethane", "purple pearl urethane 78d")
-URETHANE_GROUP_SIZE = 4
+# Al: "what about the other urethane from other brands?" -- with three
+# pinned picks a 4-ball group left one slot, so Crown 78U, !Q Tour 78/U,
+# Pitch Black, Turbo X NU and NU 2.0 rarely showed. Only ~9 current
+# urethanes exist, so the group shows them all (one colourway each), up to
+# 8 (two kiosk rows): the picks first, then by fit.
+URETHANE_GROUP_SIZE = 8
 
 
 def _num_or_none(v):
@@ -2545,7 +2550,15 @@ def suggest_for_pattern(pattern: dict, population: list, balls: list) -> dict:
         picks = sorted((b for b in ranked if (b.get("name") or "").strip().lower() in FRESH_URETHANE_PICKS),
                        key=lambda b: FRESH_URETHANE_PICKS.index(b["name"].strip().lower()))
         rest = [b for b in ranked if b not in picks]
-        urethanes = (picks + rest)[:max(URETHANE_GROUP_SIZE, len(picks))]
+        urethanes, seen = [], set()
+        for b in picks + rest:
+            keys = model_keys(b)
+            if keys & seen:
+                continue
+            seen |= keys
+            urethanes.append(b)
+            if len(urethanes) == max(URETHANE_GROUP_SIZE, len(picks)):
+                break
         for b in urethanes:
             exclude_models.update(model_keys(b))
     # With a urethane group, the other groups are reactive only.

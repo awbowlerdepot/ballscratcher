@@ -21639,6 +21639,19 @@ The kiosk renders groups as the API sends them; only the `key` type gained
 
 **Deploy:** `sam build && sam deploy` (PublicApiFunction), then push (kiosk
 type change).
+**Follow-up:** Al: "what about the other urethane from other brands?". With
+three pinned picks, a 4-ball group left one slot. The catalog has only
+about nine current urethanes:
+- Hammer: Black Pearl, Purple Pearl, Purple Pearl 78D, NU 2.0;
+- Storm: !Q Tour 78/U, Pitch Black, Mix;
+- Brunswick: Crown 78U;
+- Ebonite: Turbo X NU.
+
+Every Motiv, Radical, DV8, Roto Grip, Track, Columbia 300 and SWAG
+urethane in it is retired. So the group now shows all of them, one
+colourway each, up to 8 (`URETHANE_GROUP_SIZE`): the picks first, then by
+fit.
+
 **Verify:** on the kiosk, 2024 PBA Wolf (34 ft, 2.13:1) leads with Black
 Pearl, Purple Pearl and Purple Pearl 78D. Big Ben (44 ft) is unchanged:
 Best match / break down / fresher.
