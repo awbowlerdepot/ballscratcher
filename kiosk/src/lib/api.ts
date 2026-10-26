@@ -323,7 +323,7 @@ export interface PatternSuggestions {
   target: { oil: number; motion: number };
   summary: string;
   note: string;
-  groups: { key: "best" | "lighter" | "heavier"; title: string; blurb: string; balls: SuggestedBall[] }[];
+  groups: { key: "urethane" | "best" | "lighter" | "heavier"; title: string; blurb: string; balls: SuggestedBall[] }[];
 }
 
 export const getPatterns = () =>

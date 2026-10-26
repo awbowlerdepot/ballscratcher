@@ -3050,7 +3050,7 @@ def test_pattern_targets_follow_volume_length_and_ratio():
 
 def test_suggestions_rank_by_the_plotter_and_skip_unbuyable_and_plastic():
     balls = [_ball(1, 8, 9), _ball(2, 8.5, 9.5), _ball(3, 12, 9), _ball(4, 4, 9), _ball(5, 8, 9, rec=False),
-             _ball(6, 1, 1, material="polyester"), _ball(7, 9, 10), _ball(8, 7.5, 8), _ball(9, 13, 10), _ball(10, 5, 8)]
+             _ball(6, 1, 1, material="polyester_plastic"), _ball(7, 9, 10), _ball(8, 7.5, 8), _ball(9, 13, 10), _ball(10, 5, 8)]
     pattern = {"id": "p1", "volume_ml": 25, "length_feet": 42, "ratio": 8.0}
     t = service.pattern_targets(pattern, _POP)
     out = service.suggest_for_pattern(pattern, _POP, balls)
@@ -3108,3 +3108,55 @@ def test_public_pattern_only_returns_published_and_curated_fields():
     assert "x" not in p["profile"] and p["length_feet"] == 40.0
     for hidden in ("kosi_key", "raw_key", "upload_key", "review_status", "review_note"):
         assert hidden not in service.PATTERN_PUBLIC_COLUMNS
+
+
+def test_short_flat_patterns_lead_with_urethane():
+    """Runbook 6ez. Al: "for patterns under 38' urethane is almost always the
+    best option as long as it is 5:1 or lower"."""
+    balls = [_ball(1, 3, 2), _ball(2, 4, 3), _ball(3, 3, 1, material="urethane"), _ball(4, 7, 2, material="urethane"),
+             _ball(5, 5, 6, material="urethane"), _ball(6, 6, 5), _ball(7, 9, 8), _ball(8, 2, 2, material="polyester_plastic")]
+    short_flat = {"id": "p", "volume_ml": 22, "length_feet": 36, "ratio": 2.5}
+    out = service.suggest_for_pattern(short_flat, _POP, balls)
+    assert out["groups"][0]["key"] == "urethane"
+    assert {b["id"] for b in out["groups"][0]["balls"]} == {"b3", "b4", "b5"}
+    assert "heavier" not in [g["key"] for g in out["groups"]]  # urethane is the fresh answer
+    assert "urethane" in out["summary"]
+    later = [b["id"] for g in out["groups"][1:] for b in g["balls"]]
+    assert not {"b3", "b4", "b5"} & set(later) and "b8" not in later
+    for p in ({"volume_ml": 22, "length_feet": 39, "ratio": 2.5}, {"volume_ml": 22, "length_feet": 36, "ratio": 5.5}):
+        assert service.suggest_for_pattern({"id": "p", **p}, _POP, balls)["groups"][0]["key"] == "best"
+
+
+def test_black_pearl_and_purple_pearls_lead_the_fresh_urethane_group():
+    """Al: "so the black pearl and purple pearls should be recomended on
+    fresh for all those patterns" -- even when other urethanes sit nearer
+    the plotter target."""
+    balls = [_ball(1, 5, 2, material="urethane"), _ball(2, 5.9, 2, material="urethane"), _ball(3, 4.5, 2.1, material="urethane"),
+             _ball(4, 5, 6, material="urethane"), _ball(5, 5, 4)]
+    named = [{**_ball(6, 3, 1, material="urethane"), "name": "Black Pearl Urethane"},
+             {**_ball(7, 7, 2, material="urethane"), "name": "Purple Pearl Urethane"},
+             {**_ball(8, 6, 3, material="urethane"), "name": "Purple Pearl Urethane 78D"}]
+    out = service.suggest_for_pattern({"id": "p", "volume_ml": 24, "length_feet": 36, "ratio": 3}, _POP, balls + named)
+    names = [b["name"] for b in out["groups"][0]["balls"]]
+    assert names[:3] == ["Black Pearl Urethane", "Purple Pearl Urethane", "Purple Pearl Urethane 78D"]
+    assert len(names) == 4
+    # Not on a long or high-ratio pattern.
+    out = service.suggest_for_pattern({"id": "p", "volume_ml": 24, "length_feet": 42, "ratio": 3}, _POP, balls + named)
+    assert out["groups"][0]["key"] == "best"
+
+
+def test_reactive_groups_skip_urethane_and_repeat_colorways():
+    """Runbook 6ez: with a urethane group the other groups are reactive
+    only, and colorways of one ball show once."""
+    balls = [{**_ball(1, 3, 2, material="urethane"), "name": "Black Pearl Urethane"},
+             _ball(2, 5, 2, material="urethane"),
+             {**_ball(3, 2, 6), "name": "Axe - Purple / Smoke", "brand_name": "Hammer"},
+             {**_ball(4, 2, 6), "name": "Axe - Black / Smoke", "brand_name": "Hammer"},
+             {**_ball(8, 2.5, 6), "name": "TROPICAL SURGE SILVER-PURPLE", "brand_name": "Storm"},
+             {**_ball(9, 3, 6.5), "name": "Tropical Surge Kiwi-Apple-Avocado", "brand_name": "Storm"},
+             _ball(5, 4, 4), _ball(6, 6, 6), _ball(7, 3, 5)]
+    out = service.suggest_for_pattern({"id": "p", "volume_ml": 22, "length_feet": 35, "ratio": 2}, _POP, balls)
+    reactive = [b for g in out["groups"][1:] for b in g["balls"]]
+    assert all(b["id"] not in ("b1", "b2") for b in reactive)
+    assert sum(1 for b in reactive if b["name"].startswith("Axe")) <= 1
+    assert sum(1 for b in reactive if b["name"].lower().startswith("tropical surge")) <= 1

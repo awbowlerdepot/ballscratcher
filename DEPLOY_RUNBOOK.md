@@ -21605,6 +21605,44 @@ past the foul line).
 5. Bulk-approve the 137 that pass every check (`resolved_by =
    'kegel-import (forward drop read as inches)'`).
 
+### 6ez. Pattern suggestions: urethane first on short, flat patterns; no plastic or repeat colourways (2026-10-26)
+
+Al, spot-checking the kiosk: "the black pearl most of the urethanes are
+being left off. for patterns under 38' urethane is almost always the best
+option as long as it is 5:1 or lower", then "so the black pearl and purple
+pearls should be recomended on fresh for all those patterns".
+
+`public_api.suggest_for_pattern` changes:
+- **Urethane rule.** For patterns of 38 ft or less with a ratio of 5:1 or
+  lower (300 of 1,338), the first group is **"On a fresh shot: urethane"**:
+  - it leads with `FRESH_URETHANE_PICKS` (Hammer Black Pearl Urethane,
+    Purple Pearl Urethane, Purple Pearl Urethane 78D; exact names, only
+    when current and on BowlerDepot);
+  - the plotter-nearest other urethanes fill it to four.
+  The summary says to start with urethane. Because urethane is the
+  fresh-shot answer, the "For fresher or heavier oil" group is dropped.
+  "Reactive options" (renamed from Best match) and "When the lanes break
+  down" are reactive only.
+- **Plastic bug.** The polyester filter compared against `"polyester"`, but
+  the material is stored as `polyester_plastic`, so plastic spares could
+  appear. It now matches on "polyester".
+- **One colourway per ball.** Hammer's "Axe - Purple / Smoke" / "Axe -
+  Black / Smoke" and Storm's "TROPICAL SURGE SILVER-PURPLE" / "Tropical
+  Surge Kiwi-Apple-Avocado" were filling a group with one ball. A ball is
+  skipped when it shares a name stem with one already shown (the part
+  before " - ", or with a Storm-style trailing colour list removed), or
+  shares the same brand, coverstock and plotter spot. A sample of 54
+  patterns showed no repeats.
+
+The kiosk renders groups as the API sends them; only the `key` type gained
+"urethane".
+
+**Deploy:** `sam build && sam deploy` (PublicApiFunction), then push (kiosk
+type change).
+**Verify:** on the kiosk, 2024 PBA Wolf (34 ft, 2.13:1) leads with Black
+Pearl, Purple Pearl and Purple Pearl 78D. Big Ben (44 ft) is unchanged:
+Best match / break down / fresher.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

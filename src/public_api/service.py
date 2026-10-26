@@ -2400,6 +2400,18 @@ OIL_TARGET_RANGE = (3.0, 14.0)
 MOTION_TARGET_RANGE = (3.0, 15.0)
 SUGGEST_STEP = 2.5  # oil-axis step for the break-down / heavier groups
 SUGGEST_BEST, SUGGEST_OTHER = 4, 3
+# Urethane rule (runbook 6ez). Al, spot-checking the kiosk: "the black pearl
+# most of the urethanes are being left off. for patterns under 38' urethane
+# is almost always the best option as long as it is 5:1 or lower". The
+# plotter alone can't say that (urethane sits low on both axes, but so do
+# weak reactives), so short, flat patterns get a Urethane group first.
+URETHANE_MAX_LENGTH_FT, URETHANE_MAX_RATIO = 38, 5
+# ... and Al: "so the black pearl and purple pearls should be recomended on
+# fresh for all those patterns". These lead the fresh-shot urethane group
+# whenever they're current and on BowlerDepot, ahead of the plotter-nearest
+# urethanes (which fill the rest). Matched by exact name, case-insensitive.
+FRESH_URETHANE_PICKS = ("black pearl urethane", "purple pearl urethane", "purple pearl urethane 78d")
+URETHANE_GROUP_SIZE = 4
 
 
 def _num_or_none(v):
@@ -2485,36 +2497,94 @@ def suggest_for_pattern(pattern: dict, population: list, balls: list) -> dict:
     """Ball suggestions for one pattern (pure: balls are /learn/plotter
     points)."""
     t = pattern_targets(pattern, population)
+    # No plastic: the material is stored as "polyester_plastic" (a plain
+    # == "polyester" never matched, so spares were slipping in).
     pool = [b for b in balls if b.get("recommendable") and b.get("oil") is not None and b.get("motion") is not None
-            and (b.get("coverstock_material") or "").lower() != "polyester"]
+            and "polyester" not in (b.get("coverstock_material") or "").lower()]
+    is_urethane = lambda b: "urethane" in (b.get("coverstock_material") or "").lower()  # noqa: E731
+    length, ratio = pattern.get("length_feet"), pattern.get("ratio")
+    urethane_fit = (length is not None and ratio is not None and length <= URETHANE_MAX_LENGTH_FT
+                    and ratio <= URETHANE_MAX_RATIO)
 
-    def nearest(oil, motion, n, exclude):
-        ranked = sorted((b for b in pool if b["id"] not in exclude),
+    # One colorway per ball (runbook 6ez): "Axe - Purple / Smoke" and "Axe -
+    # Black / Smoke", or Storm's "TROPICAL SURGE SILVER-PURPLE" and
+    # "TROPICAL SURGE BLACK-BLUE-PINK", are the same ball. Two keys catch
+    # both naming styles: the name before " - ", and the same brand +
+    # coverstock + plotter spot (colorways share all three).
+    def model_keys(b):
+        brand = (b.get("brand_name") or "").lower()
+        base = (b.get("name") or "").split(" - ")[0].strip().lower()
+        # Storm-style trailing colour list: "tropical surge kiwi-apple-avocado" -> "tropical surge".
+        words = base.split()
+        stem = " ".join(words[:-1]) if len(words) > 1 and "-" in words[-1] and not any(c.isdigit() for c in words[-1]) else base
+        return {("name", brand, stem),
+                ("spot", brand, (b.get("coverstock_name") or "").lower(), b.get("oil"), b.get("motion"))}
+
+    def nearest(oil, motion, n, exclude, allow=lambda b: True):
+        ranked = sorted((b for b in pool if b["id"] not in exclude and allow(b)),
                         key=lambda b: math.hypot(b["oil"] - oil, (b["motion"] - motion) * 0.8))
-        return ranked[:n]
+        out, seen = [], set(exclude_models)
+        for b in ranked:
+            keys = model_keys(b)
+            if keys & seen:
+                continue
+            seen |= keys
+            out.append(b)
+            if len(out) == n:
+                break
+        for b in out:
+            exclude_models.update(model_keys(b))
+        return out
 
-    best = nearest(t["oil"], t["motion"], SUGGEST_BEST, set())
-    used = {b["id"] for b in best}
-    lighter = nearest(max(1.0, t["oil"] - SUGGEST_STEP), t["motion"], SUGGEST_OTHER, used)
+    exclude_models = set()
+
+    urethanes = []
+    if urethane_fit:
+        dist = lambda b: math.hypot(b["oil"] - t["oil"], (b["motion"] - t["motion"]) * 0.8)  # noqa: E731
+        ranked = sorted((b for b in pool if is_urethane(b)), key=dist)
+        picks = sorted((b for b in ranked if (b.get("name") or "").strip().lower() in FRESH_URETHANE_PICKS),
+                       key=lambda b: FRESH_URETHANE_PICKS.index(b["name"].strip().lower()))
+        rest = [b for b in ranked if b not in picks]
+        urethanes = (picks + rest)[:max(URETHANE_GROUP_SIZE, len(picks))]
+        for b in urethanes:
+            exclude_models.update(model_keys(b))
+    # With a urethane group, the other groups are reactive only.
+    allow = (lambda b: not is_urethane(b)) if urethanes else (lambda b: True)
+    best = nearest(t["oil"], t["motion"], SUGGEST_BEST, {b["id"] for b in urethanes}, allow)
+    used = {b["id"] for b in best} | {b["id"] for b in urethanes}
+    lighter = nearest(max(1.0, t["oil"] - SUGGEST_STEP), t["motion"], SUGGEST_OTHER, used, allow)
     used |= {b["id"] for b in lighter}
-    heavier = nearest(min(16.0, t["oil"] + SUGGEST_STEP), t["motion"], SUGGEST_OTHER, used)
+    heavier = [] if urethanes else nearest(min(16.0, t["oil"] + SUGGEST_STEP), t["motion"], SUGGEST_OTHER, used)
     strength = "a strong" if t["oil"] >= 10.5 else "a weaker" if t["oil"] <= 6.5 else "a medium-strength"
     shape = "an angular" if t["motion"] >= 11 else "a smooth" if t["motion"] <= 7 else "a medium"
     keep = ("id", "name", "brand_name", "primary_image_url", "oil", "motion", "coverstock_name", "finish_category",
             "article_slug")
     slim = lambda bs: [{k: b.get(k) for k in keep} for b in bs]  # noqa: E731
+    groups = [
+        {"key": "best", "title": "Best match" if not urethanes else "Reactive options",
+         "blurb": "Closest to what this pattern calls for." if not urethanes
+         else "If you'd rather throw reactive, these are closest to what this pattern calls for.", "balls": slim(best)},
+        {"key": "lighter", "title": "When the lanes break down",
+         "blurb": "A step weaker, for later in the set once the oil thins out.", "balls": slim(lighter)},
+        {"key": "heavier", "title": "For fresher or heavier oil",
+         "blurb": "A step stronger, for a fresh shot or more oil than usual.", "balls": slim(heavier)},
+    ]
+    if urethanes:
+        # Urethane is the fresh-shot answer here, so it replaces the
+        # "fresher or heavier oil" group.
+        groups = [g for g in groups if g["key"] != "heavier"]
+        groups.insert(0, {"key": "urethane", "title": "On a fresh shot: urethane",
+                          "blurb": "Short, flat patterns (38 ft or less, 5:1 or lower) almost always play best with urethane.",
+                          "balls": slim(urethanes)})
+    summary = f"A {describe_pattern(pattern)}: start with {strength} ball with {shape} motion."
+    if urethanes:
+        summary = f"A {describe_pattern(pattern)}: start with urethane; it's almost always the best option here."
     return {
         "pattern_id": pattern.get("id"),
         "target": {"oil": t["oil"], "motion": t["motion"]},
-        "summary": f"A {describe_pattern(pattern)}: start with {strength} ball with {shape} motion.",
+        "summary": summary,
         "note": "A starting point from the Ball Motion Chart, not a guarantee. Ask a pro shop about your own game.",
-        "groups": [
-            {"key": "best", "title": "Best match", "blurb": "Closest to what this pattern calls for.", "balls": slim(best)},
-            {"key": "lighter", "title": "When the lanes break down",
-             "blurb": "A step weaker, for later in the set once the oil thins out.", "balls": slim(lighter)},
-            {"key": "heavier", "title": "For fresher or heavier oil",
-             "blurb": "A step stronger, for a fresh shot or more oil than usual.", "balls": slim(heavier)},
-        ],
+        "groups": groups,
     }
 
 
