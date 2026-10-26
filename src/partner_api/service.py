@@ -502,7 +502,7 @@ PATTERN_SELECT = """
 """
 _PUBLISHED_PATTERN = "published = true and review_status = 'approved'"
 _STEP_KEYS = ("direction", "order", "start", "stop", "from_board", "to_board", "loads", "speed_ips", "buffer", "tank",
-              "crossed", "start_feet", "end_feet", "feet", "oil_ul")
+              "crossed", "mics", "start_feet", "end_feet", "feet", "oil_ul")
 _ZONE_KEYS = ("from", "to", "against_from", "against_to", "label", "ratio")
 _MACHINE_KEYS = ("make", "model", "tank_configuration", "tank_a_conditioner", "tank_b_conditioner", "cleaner_ratio_main",
                  "cleaner_ratio_back_end", "cleaner_back_end_distance_feet", "buffer_rpm")

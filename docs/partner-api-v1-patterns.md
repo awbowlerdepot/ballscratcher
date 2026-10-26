@@ -19,6 +19,7 @@ see what moved. A copy sits next to the proposal for the Drilld sessions.
 | 8 | **`source` adds `upload`**: a sheet uploaded by BowlerIQ staff, with no public source URL. | That's how every pattern arrives at first (manual uploads). |
 | 9 | **`sheet_url` and `image_url` point to the original publisher only.** They are `null` for uploads. BowlerIQ doesn't redistribute the sheet files. | Licensing. The data is the product; the PDF isn't. |
 | 10 | **Only approved patterns are in the API.** Every pattern is reviewed by BowlerIQ staff before it's published (see Ingest). | Al: "they need approved before they are added to the live catalog. similar pattern to the videos." |
+| 11 | **Steps carry `mics`** (added 2026-10-26): µL per board per load for that step. Kegel Pattern Library sheets print a MICS column on every step; for older sheets it's the pattern's `oil_per_board_ul`. Every step's oil, `board_totals` and `profile` use the step's own `mics`. | Al: "mics is published". A pattern can mix mics between steps, and `oil_per_board_ul` alone can't express that. Optional and additive. |
 
 Everything else is as proposed: the three endpoints, the separate changes feed with
 the same rules as `/v1/changes`, boards 1–39 from the left (`nL` → `n`,
@@ -52,7 +53,7 @@ As in the proposal's example, plus `feet` on steps and `profile_source`
 - **`steps[]`**, in program order:
   - `direction`, `order`, `start`, `stop`, `from_board`, `to_board`, `loads`;
   - `speed_ips`, `buffer`, `tank`, `crossed`;
-  - `start_feet`, `end_feet`, `feet`, `oil_ul`.
+  - `mics` (µL per board per load for that step; see change 11), `start_feet`, `end_feet`, `feet`, `oil_ul` (= `crossed` × `mics`).
 - **`board_totals`:** `forward_ul[39]` and `reverse_ul[39]`. These are integers,
   computed from the steps.
 - **`profile`:** `foot_step` (1), `units` (`"ul_per_board_per_foot"`),

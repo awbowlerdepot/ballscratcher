@@ -1179,6 +1179,18 @@
             "title": "Loads",
             "type": "integer"
           },
+          "mics": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "\u00b5L per board per load for this step (the sheet's MICS column, else the pattern's oil_per_board_ul).",
+            "title": "Mics"
+          },
           "oil_ul": {
             "anyOf": [
               {
@@ -1188,7 +1200,7 @@
                 "type": "null"
               }
             ],
-            "description": "Oil this step lays, \u00b5L = crossed x oil_per_board_ul.",
+            "description": "Oil this step lays, \u00b5L = crossed x mics.",
             "title": "Oil Ul"
           },
           "order": {

@@ -116,7 +116,7 @@ def test_zero_length_step_drags_forward_from_its_row():
 
 def test_reverse_oil_drags_back_toward_the_foul_line():
     steps = op.normalize_steps(
-        [{"direction": "reverse", "order": 1, "start": "10L", "stop": "10L", "loads": 1, "start_feet": 20.0, "end_feet": 20.0}], 30
+        [{"direction": "reverse", "order": 1, "start": "10L", "stop": "10L", "loads": 1, "start_feet": 20.0, "end_feet": 20.0}], 50
     )
     first, _, burned = op.lanes(steps, 30, 50, 3)
     col = [r[9] for r in first]
@@ -236,3 +236,34 @@ def test_sheet_zone_written_the_other_way_round_still_matches():
     z["from"], z["to"], z["against_from"], z["against_to"] = "18R", "18L", "7L", "3L"
     assert op.check(p) == []
     assert op.compute(p)["track_zones"][0]["reported_ratio"] == 2.0
+
+
+def test_step_mics_override_the_pattern_oil_per_board():
+    """Runbook 6es: Pattern Library sheets print MICS per step; a step's own
+    mics drives its oil, board totals and profile."""
+    steps = [
+        {"direction": "forward", "order": 1, "start": "10L", "stop": "10L", "loads": 1, "mics": 30, "start_feet": 0.0, "end_feet": 5.0},
+        {"direction": "forward", "order": 2, "start": "11L", "stop": "11L", "loads": 1, "start_feet": 5.0, "end_feet": 10.0},
+    ]
+    n = op.normalize_steps(steps, 50)
+    assert [(s["mics"], s["oil_ul"]) for s in n] == [(30.0, 30), (50.0, 50)]
+    bt = op.board_totals(n, 50)
+    assert bt["forward_ul"][9] == 30 and bt["forward_ul"][10] == 50
+    rows = op.profile(n, 20, 50)["rows"]
+    assert abs(sum(r[9] for r in rows) - 30) < 0.5 and abs(sum(r[10] for r in rows) - 50) < 0.5
+    # No pattern-wide value is fine when every loaded step has its own.
+    p = {"name": "x", "category": "house", "length_feet": 20, "oil_per_board_ul": None, "steps": [dict(steps[0])]}
+    assert not any("Oil per board" in i["message"] for i in op.check(p))
+    p["steps"].append(dict(steps[1]))
+    assert any("Oil per board" in i["message"] for i in op.check(p))
+
+
+def test_pattern_library_house_sheet_adds_up():
+    """The 2022 Starting House Pattern (Kegel Pattern Library format): every
+    check passes and all six zone ratios match the sheet's graph."""
+    import json, os  # noqa: E401
+    p = json.load(open(os.path.join(os.path.dirname(__file__), "fixtures", "pattern_house_2022.json")))
+    c = op.compute(p)
+    assert op.check(p) == []
+    assert [z["ratio"] for z in c["track_zones"]] == [12.0, 1.94, 1.0, 1.0, 1.94, 12.0] and c["ratio"] == 12.0
+    assert abs(sum(map(sum, c["profile"]["rows"])) - 25400) < 45

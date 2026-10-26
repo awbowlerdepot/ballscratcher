@@ -21247,6 +21247,62 @@ unchanged.
 **Verify:** `.venv/bin/python -m pytest -q tests/test_pattern_ingest.py`.
 The next uploaded Kegel sheet arrives as e.g. "PBA Elite Series 41".
 
+### 6es. Oil patterns: Kegel Pattern Library sheet format + per-step mics (2026-10-26)
+
+Al, sending `2022 Starting House Pattern.pdf`: "kegel posts an alternative
+pattern sheet. the grid is a bit different and boards crossed is no longer
+displayed but is likely just a calculation. here is the second format", and
+"mics is published".
+
+**The format** (patternlibrary.kegel.net): the header has DISTANCE,
+VOLUME, RATIO, FORWARD, DROP BRUSH, REVERSE, TANKS and PUMP. Each row has
+`# START STOP LOADS MICS SPEED BUFF TANK DISTANCE(a→b) T.OIL`; there's no
+crossed column. The zone ratios are only drawn into the graph. Unlike the
+older sheet, the PDF has a **text layer**.
+
+As Al guessed, crossed = boards × loads, and T.OIL = boards × loads × MICS
+(step 1: 37 boards × 1 × 50 = 1,850). Our model reproduces the whole sheet:
+- every check passes;
+- all six zone ratios match the graph (12.00 / 1.94 / 1.00 / 1.00 / 1.94 /
+  12.00, headline 12.00:1);
+- the profile totals 25.4 mL.
+
+**Per-step mics:**
+- `oil_patterns.normalize_steps` gives every step a `mics`: the sheet's
+  value, else the pattern's `oil_per_board_ul`.
+- `oil_ul`, `board_totals` and the profile all use the step's own mics.
+- `check()` only requires the pattern-wide oil per board when a loaded
+  step has no mics of its own.
+- The partner `PatternStep` gains optional `mics` (additive; snapshot
+  regenerated). The spec has a new change 11.
+- Admin's step table has a Mics column.
+
+**Reader:** `pattern_ingest.extract.parse_pattern_library` reads this
+format straight from the PDF text, with no vision call and nothing to
+misread. It fills:
+- the name, title-cased;
+- the category: house when the name says so;
+- the header numbers, with PUMP as the oil per board;
+- the machine (make Kegel, the tank conditioners);
+- all steps, with mics and the sheet's T.OIL kept for checking;
+- no zones, so the standard six are computed.
+
+Anything that isn't this format returns None and goes to Claude vision as
+before. The ingest records `extraction_model =
+"text-layer:kegel-pattern-library"` for these. Fixtures:
+`tests/fixtures/pattern_library_house_2022.txt` (the sheet's text) and
+`pattern_house_2022.json`. Tested on the real PDF: 16 of 16 steps match
+the hand transcription, and the older Elite 48 sheet correctly falls
+through to vision.
+
+**Deploy:** `sam build && sam deploy`, push (admin), then
+`.venv/bin/python scripts/recompute_oil_patterns.py --apply`. That adds
+`mics` to the stored steps of the two live patterns; their oil is
+unchanged.
+**Verify:** upload `2022 Starting House Pattern.pdf` in admin → Oil
+Patterns. It should be read in a couple of seconds with no warnings, ratio
+12:1, category house.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

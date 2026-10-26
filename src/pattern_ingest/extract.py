@@ -152,3 +152,93 @@ def parse_response(text: str) -> dict:
         "steps": steps(d.get("forward_steps"), "forward") + steps(d.get("reverse_steps"), "reverse"),
         "track_zones": [_zone(z) for z in d.get("track_zones") or []],
     }
+
+
+# ---------------------------------------------------------------------------
+# Kegel Pattern Library sheets (runbook 6es). Al: "kegel posts an alternative
+# pattern sheet. the grid is a bit different and boards crossed is no longer
+# displayed but is likely just a calculation" and "mics is published". These
+# sheets (patternlibrary.kegel.net, e.g. "2022 Starting House Pattern") are
+# real PDFs with a TEXT LAYER, unlike the older sheet whose tables are
+# images, so they're read exactly from the text -- no vision model, no
+# misreads. Per row: # START STOP LOADS MICS SPEED BUFF TANK DISTANCE T.OIL,
+# with DISTANCE as "a→b" and no crossed column (oil_patterns computes it;
+# T.OIL = boards x loads x MICS is kept as the sheet's value to check).
+# The zone ratios are drawn into the graph (not text), so they come from the
+# loads only. Anything that doesn't look like this format returns None and
+# the vision reader handles the sheet.
+TEXT_MODEL_ID = "text-layer:kegel-pattern-library"
+_ROW_RE = re.compile(
+    r"^\s*(\d+)\s+(\d{1,2}[LR])\s+(\d{1,2}[LR])\s+(\d+)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+)\s+"
+    r"([AB])\s*-\s*(.+?)\s+(\d+(?:\.\d+)?)\s*(?:→|->)\s*(\d+(?:\.\d+)?)\s+([\d,]+)\s*$"
+)
+_NUM = r"(\d+(?:\.\d+)?)"
+
+
+def text_layer(pdf_bytes: bytes, max_pages: int = MAX_PAGES) -> str:
+    """The PDF's own text (empty for image-only sheets)."""
+    import pypdfium2 as pdfium
+
+    pdf = pdfium.PdfDocument(pdf_bytes)
+    return "\n".join(pdf[i].get_textpage().get_text_range() for i in range(min(len(pdf), max_pages)))
+
+
+def parse_pattern_library(text: str):
+    """Fields from a Kegel Pattern Library sheet's text layer, or None if the
+    text isn't that format (or doesn't hold a complete program)."""
+    if not text or "FORWARD LOADS DATA" not in text or "REVERSE LOADS DATA" not in text or "MICS" not in text:
+        return None
+    lines = [ln.strip() for ln in text.replace("\r", "").split("\n")]
+    head = "\n".join(lines[: lines.index("FORWARD LOADS DATA")]) if "FORWARD LOADS DATA" in lines else text
+    feet = [float(x) for x in re.findall(_NUM + r"\s*FEET", head)]
+    mls = [float(x) for x in re.findall(_NUM + r"\s*mL", head)]
+    pump = re.search(r"([A-Z][A-Z0-9 &.-]*?)\s+" + _NUM + r"\s*[µμu]L", head)
+    if len(feet) < 2 or len(mls) < 3 or not pump:
+        return None
+
+    steps, direction, conditioners = [], None, set()
+    for ln in lines:
+        if ln == "FORWARD LOADS DATA":
+            direction = "forward"
+            continue
+        if ln == "REVERSE LOADS DATA":
+            direction = "reverse"
+            continue
+        m = _ROW_RE.match(ln) if direction else None
+        if not m:
+            continue
+        order, start, stop, loads, mics, speed, buff, tank, cond, a, b, oil = m.groups()
+        conditioners.add((tank, cond.strip()))
+        a, b = float(a), float(b)
+        steps.append({
+            "direction": direction, "order": int(order), "start": start, "stop": stop, "loads": int(loads),
+            "mics": float(mics), "speed_ips": float(speed), "buffer": int(buff), "tank": tank,
+            "start_feet": a, "end_feet": b, "feet": round(b - a, 2), "oil_ul": int(oil.replace(",", "")),
+        })
+    if not any(s["direction"] == "forward" for s in steps) or not any(s["direction"] == "reverse" for s in steps):
+        return None
+
+    # The title is the line just before the app banner.
+    name = None
+    if "KEGEL PATTERN LIBRARY APP" in lines:
+        i = lines.index("KEGEL PATTERN LIBRARY APP")
+        name = next((lines[j] for j in range(i - 1, -1, -1) if lines[j]), None)
+    machine = {"make": "Kegel"}
+    for tank, cond in sorted(conditioners):
+        machine[f"tank_{tank.lower()}_conditioner"] = cond
+    tanks = sorted({t for t, _ in conditioners})
+    machine["tank_configuration"] = f"{' + '.join(tanks)} Only" if len(tanks) == 1 else " + ".join(tanks)
+    name = tidy_name(name)
+    return {
+        "name": name,
+        # Kegel's library files house shots as such; anything else is left
+        # for the reviewer to categorize.
+        "category": "house" if name and "house" in name.lower() else None,
+        "length_feet": feet[0],
+        "reverse_brush_drop_feet": feet[1],
+        "oil_per_board_ul": float(pump.group(2)),
+        "volume_ml": mls[0], "forward_ml": mls[1], "reverse_ml": mls[2],
+        "machine": machine,
+        "steps": steps,
+        "track_zones": [],  # the standard six, computed from the loads
+    }

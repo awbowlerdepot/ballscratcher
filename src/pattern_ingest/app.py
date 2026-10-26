@@ -31,7 +31,7 @@ import extract
 logger = logging.getLogger("pattern_ingest")
 logger.setLevel(logging.INFO)
 
-FIELDS = ("name", "length_feet", "reverse_brush_drop_feet", "oil_per_board_ul", "forward_ml", "reverse_ml",
+FIELDS = ("name", "category", "length_feet", "reverse_brush_drop_feet", "oil_per_board_ul", "forward_ml", "reverse_ml",
           "volume_ml", "machine", "steps", "track_zones")
 JSON_FIELDS = {"machine", "steps", "track_zones"}
 
@@ -76,11 +76,19 @@ def ingest(conn, s3, bedrock, bucket: str, pattern_id: str) -> dict:
     image_key = upload_key.rsplit("/", 1)[0] + "/page-1.png"
     s3.put_object(Bucket=bucket, Key=image_key, Body=pngs[0], ContentType="image/png")
 
-    resp = bedrock.invoke_model(modelId=extract.MODEL_ID, contentType="application/json", accept="application/json",
-                                body=extract.build_request(pngs))
-    body = json.loads(resp["body"].read())
-    logger.info("pattern %s read: usage %s", pattern_id, body.get("usage"))
-    fields = extract.parse_response(body["content"][0]["text"])
+    # Kegel Pattern Library sheets carry a text layer: read it exactly
+    # (runbook 6es). Image-only sheets (the older format) go to Claude vision.
+    fields = extract.parse_pattern_library(extract.text_layer(pdf))
+    model_used = extract.TEXT_MODEL_ID
+    if fields is None:
+        resp = bedrock.invoke_model(modelId=extract.MODEL_ID, contentType="application/json", accept="application/json",
+                                    body=extract.build_request(pngs))
+        body = json.loads(resp["body"].read())
+        logger.info("pattern %s read: usage %s", pattern_id, body.get("usage"))
+        fields = extract.parse_response(body["content"][0]["text"])
+        model_used = extract.MODEL_ID
+    else:
+        logger.info("pattern %s read from the text layer (%d steps)", pattern_id, len(fields["steps"]))
     updates = {k: fields[k] for k in FIELDS if fields.get(k) not in (None, "", [], {})}
     # Keep a name the admin already typed over the placeholder from the filename.
     if current_name and not current_name.startswith("Uploaded sheet"):
@@ -90,10 +98,10 @@ def ingest(conn, s3, bedrock, bucket: str, pattern_id: str) -> dict:
         cur.execute(
             f"update oil_patterns set {''.join(f'{k} = %s, ' for k in keys)}page_image_key = %s, extraction_status = 'ready', "
             "extraction_error = null, extraction_model = %s, extracted_at = now() where id = %s and review_status = 'pending'",
-            [json.dumps(updates[k]) if k in JSON_FIELDS else updates[k] for k in keys] + [image_key, extract.MODEL_ID, pattern_id],
+            [json.dumps(updates[k]) if k in JSON_FIELDS else updates[k] for k in keys] + [image_key, model_used, pattern_id],
         )
     conn.commit()
-    return {"pattern_id": pattern_id, "steps": len(fields.get("steps") or []), "fields": sorted(updates)}
+    return {"pattern_id": pattern_id, "steps": len(fields.get("steps") or []), "fields": sorted(updates), "reader": model_used}
 
 
 def handler(event, context):

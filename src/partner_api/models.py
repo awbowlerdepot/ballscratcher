@@ -241,10 +241,13 @@ class PatternStep(_Model):
     buffer: Optional[float] = Field(None, description="Buffer setting (1-4).")
     tank: Optional[str] = None
     crossed: Optional[int] = Field(None, description="Board crossings = boards x loads.")
+    mics: Optional[float] = Field(
+        None, description="µL per board per load for this step (the sheet's MICS column, else the pattern's oil_per_board_ul)."
+    )
     start_feet: Optional[float] = Field(None, description="Feet from the foul line; greater than end_feet for reverse.")
     end_feet: Optional[float] = None
     feet: Optional[float] = Field(None, description="The sheet's distance column (negative for reverse).")
-    oil_ul: Optional[int] = Field(None, description="Oil this step lays, µL = crossed x oil_per_board_ul.")
+    oil_ul: Optional[int] = Field(None, description="Oil this step lays, µL = crossed x mics.")
 
 
 class BoardTotals(_Model):

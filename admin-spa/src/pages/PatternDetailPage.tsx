@@ -34,6 +34,7 @@ const STEP_COLS: { key: keyof PatternStep; label: string; w: string; num?: boole
   { key: "start", label: "Start", w: "w-14" },
   { key: "stop", label: "Stop", w: "w-14" },
   { key: "loads", label: "Loads", w: "w-14", num: true },
+  { key: "mics", label: "Mics", w: "w-14", num: true }, // per step on Pattern Library sheets (runbook 6es)
   { key: "speed_ips", label: "Speed", w: "w-14", num: true },
   { key: "buffer", label: "Buff", w: "w-12", num: true },
   { key: "tank", label: "Tank", w: "w-12" },

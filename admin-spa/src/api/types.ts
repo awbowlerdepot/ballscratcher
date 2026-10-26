@@ -1288,6 +1288,7 @@ export interface PatternStep {
   speed_ips: number | null;
   buffer: number | null;
   tank: string | null;
+  mics?: number | null; // µL per board per load for this step (runbook 6es); else the pattern's oil per board
   crossed?: number | null; // computed on save
   start_feet: number | null;
   end_feet: number | null;

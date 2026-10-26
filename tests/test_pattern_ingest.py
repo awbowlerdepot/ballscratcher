@@ -94,6 +94,7 @@ class _Bedrock:
 
 def test_ingest_writes_fields_and_page_image_for_a_pending_pattern(monkeypatch):
     monkeypatch.setattr(extract, "render_pages", lambda pdf: [b"PNG1"])
+    monkeypatch.setattr(extract, "text_layer", lambda pdf: "")  # image-only sheet -> vision
     conn, s3 = _Conn(), _S3()
     out = app.ingest(conn, s3, _Bedrock(), "bucket", "p1")
     assert out["steps"] == 2 and "name" in out["fields"]
@@ -105,6 +106,7 @@ def test_ingest_writes_fields_and_page_image_for_a_pending_pattern(monkeypatch):
 
 def test_ingest_keeps_a_name_the_admin_already_typed(monkeypatch):
     monkeypatch.setattr(extract, "render_pages", lambda pdf: [b"PNG1"])
+    monkeypatch.setattr(extract, "text_layer", lambda pdf: "")
     conn = _Conn(name="Elite 48 (2026)")
     out = app.ingest(conn, _S3(), _Bedrock(), "bucket", "p1")
     assert "name" not in out["fields"]
@@ -137,3 +139,48 @@ def test_names_in_capitals_become_title_case():
     assert t("THE BEAST") == "The Beast"
     assert t("Kegel Navigation 3.0 Route 66") == "Kegel Navigation 3.0 Route 66"
     assert t(None) is None and t("") == ""
+
+
+HOUSE_TEXT = open(os.path.join(os.path.dirname(__file__), "fixtures", "pattern_library_house_2022.txt")).read()
+
+
+def test_pattern_library_text_layer_is_read_exactly():
+    """Runbook 6es: Kegel Pattern Library sheets are read from the PDF's
+    text (no vision); MICS per step, distance as a->b, no crossed column."""
+    f = extract.parse_pattern_library(HOUSE_TEXT)
+    assert f["name"] == "2022 Starting House Pattern" and f["category"] == "house"
+    assert (f["length_feet"], f["reverse_brush_drop_feet"], f["oil_per_board_ul"]) == (43.0, 40.0, 50.0)
+    assert (f["volume_ml"], f["forward_ml"], f["reverse_ml"]) == (25.4, 12.1, 13.3)
+    assert f["machine"] == {"make": "Kegel", "tank_a_conditioner": "KEGEL", "tank_configuration": "A Only"}
+    fwd = [s for s in f["steps"] if s["direction"] == "forward"]
+    rev = [s for s in f["steps"] if s["direction"] == "reverse"]
+    assert len(fwd) == 8 and len(rev) == 8
+    assert fwd[0] == {"direction": "forward", "order": 1, "start": "2L", "stop": "2R", "loads": 1, "mics": 50.0,
+                      "speed_ips": 14.0, "buffer": 3, "tank": "A", "start_feet": 0.0, "end_feet": 0.0, "feet": 0.0,
+                      "oil_ul": 1850}
+    assert (rev[3]["start"], rev[3]["loads"], rev[3]["start_feet"], rev[3]["end_feet"], rev[3]["feet"], rev[3]["oil_ul"]) == (
+        "10L", 3, 27.0, 19.0, -8.0, 3150)
+    assert "crossed" not in fwd[0]
+    assert f["track_zones"] == []
+
+
+def test_other_text_is_not_mistaken_for_a_pattern_library_sheet():
+    assert extract.parse_pattern_library("") is None
+    assert extract.parse_pattern_library("PBA ELITE SERIES 48 Oil Per Board 50") is None
+    # Missing the reverse table -> not a complete program.
+    assert extract.parse_pattern_library(HOUSE_TEXT.split("REVERSE LOADS DATA")[0]) is None
+
+
+def test_ingest_uses_the_text_layer_without_calling_bedrock(monkeypatch):
+    monkeypatch.setattr(extract, "render_pages", lambda pdf: [b"PNG1"])
+    monkeypatch.setattr(extract, "text_layer", lambda pdf: HOUSE_TEXT)
+
+    class NoBedrock:
+        def invoke_model(self, **kw):
+            raise AssertionError("vision should not be called for a text-layer sheet")
+
+    conn = _Conn()
+    out = app.ingest(conn, _S3(), NoBedrock(), "bucket", "p1")
+    assert out["reader"] == extract.TEXT_MODEL_ID and out["steps"] == 16 and "category" in out["fields"]
+    final_sql, params = conn.executed[-1]
+    assert extract.TEXT_MODEL_ID in params and "house" in params
