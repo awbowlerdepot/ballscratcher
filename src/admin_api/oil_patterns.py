@@ -58,6 +58,20 @@ def _num(v):
         return None
 
 
+def tank_factor(tank) -> int:
+    """Tanks a step pumps from at once (runbook 6et): a dual-tank machine's
+    "A & B" step lays mics from BOTH tanks per load, so twice the oil --
+    Kegel's own T.OIL for "A & B" steps is boards x loads x mics x 2."""
+    t = str(tank or "").upper()
+    return 2 if "A" in t and "B" in t else 1
+
+
+def per_board_ul(step: dict, oil_per_board_ul=None) -> float:
+    """µL one board gets from one step: loads x mics x tanks."""
+    mics = _num(step.get("mics")) or _num(oil_per_board_ul) or 0
+    return (step.get("loads") or 0) * mics * tank_factor(step.get("tank"))
+
+
 def normalize_steps(steps: list, oil_per_board_ul) -> list:
     """Fills from_board/to_board/crossed/mics/oil_ul from each step's labels
     and loads. The sheet's own crossed/oil values are kept as reported_* so
@@ -88,7 +102,7 @@ def normalize_steps(steps: list, oil_per_board_ul) -> list:
             step["reported_oil_ul"] = step.get("oil_ul")
         if step["from_board"] is not None:
             step["crossed"] = (step["to_board"] - step["from_board"] + 1) * loads
-            step["oil_ul"] = int(round(step["crossed"] * (step["mics"] or 0)))
+            step["oil_ul"] = int(round(step["crossed"] * (step["mics"] or 0) * tank_factor(step.get("tank"))))
         for k in ("start_feet", "end_feet", "feet", "speed_ips"):
             if step.get(k) is not None:
                 step[k] = _num(step[k])
@@ -109,7 +123,7 @@ def board_totals(steps: list, oil_per_board_ul) -> dict:
             continue
         target = fwd if s.get("direction") == "forward" else rev
         for board in range(s["from_board"], s["to_board"] + 1):
-            target[board - 1] += s["loads"] * (_num(s.get("mics")) or opb)
+            target[board - 1] += per_board_ul(s, opb)
     return {"forward_ul": [int(round(v)) for v in fwd], "reverse_ul": [int(round(v)) for v in rev]}
 
 
@@ -198,7 +212,7 @@ def _run_deposits(steps, n_cells, opb, direction):
             speed[i] = v
         if not s.get("loads"):
             continue
-        per_board = s["loads"] * (_num(s.get("mics")) or opb)
+        per_board = per_board_ul(s, opb)
         cells = []
         if hi - lo < 1e-9:
             cells.append((i_lo, 1.0))
@@ -443,7 +457,8 @@ def check(pattern: dict) -> list:
         if rc is not None and int(rc) != s["crossed"]:
             add("error", f"Crossed should be {s['crossed']} ({s['to_board'] - s['from_board'] + 1} boards × {s['loads']} loads); the sheet reads {int(rc)}.", label)
         if ro is not None and int(round(ro)) != s["oil_ul"]:
-            add("error", f"Oil should be {s['oil_ul']} µL ({s['crossed']} crossed × {s.get('mics') or 0:g} µL); the sheet reads {int(round(ro))}.", label)
+            add("error", f"Oil should be {s['oil_ul']} µL ({s['crossed']} crossed × {s.get('mics') or 0:g} µL"
+                f"{' × 2 tanks' if tank_factor(s.get('tank')) == 2 else ''}); the sheet reads {int(round(ro))}.", label)
         a, b = _num(s.get("start_feet")), _num(s.get("end_feet"))
         if a is None or b is None:
             add("error", "Start and end distance are missing.", label)

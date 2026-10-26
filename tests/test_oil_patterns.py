@@ -267,3 +267,13 @@ def test_pattern_library_house_sheet_adds_up():
     assert op.check(p) == []
     assert [z["ratio"] for z in c["track_zones"]] == [12.0, 1.94, 1.0, 1.0, 1.94, 12.0] and c["ratio"] == 12.0
     assert abs(sum(map(sum, c["profile"]["rows"])) - 25400) < 45
+
+
+def test_a_and_b_step_pumps_both_tanks():
+    """Runbook 6et: Kegel's T.OIL for an "A & B" step is boards x loads x
+    mics x 2 (2026 IBF World Cup forward 1: 74 crossed x 40 x 2 = 5,920)."""
+    st = op.normalize_steps([{"direction": "forward", "order": 1, "start": "2L", "stop": "2R", "loads": 2, "mics": 40,
+                              "tank": "A & B", "start_feet": 0.0, "end_feet": 4.0, "oil_ul": 5920}], None)
+    assert st[0]["crossed"] == 74 and st[0]["oil_ul"] == 5920
+    assert op.board_totals(st, None)["forward_ul"][1] == 160
+    assert op.tank_factor("A") == 1 and op.tank_factor("B") == 1 and op.tank_factor("A+B") == 2
