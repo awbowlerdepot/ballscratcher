@@ -7038,13 +7038,16 @@ _PATTERN_LENGTH_BANDS = {"short": "length_feet <= 38", "medium": "length_feet > 
                          "long": "length_feet >= 45"}
 _PATTERN_OIL_BANDS = {"light": "volume_ml < 22", "medium": "volume_ml >= 22 and volume_ml <= 28", "heavy": "volume_ml > 28"}
 _PATTERN_RATIO_BANDS = {"flat": "ratio < 4", "medium": "ratio >= 4 and ratio < 7", "house": "ratio >= 7"}
-# Why a pattern is still pending: the importer's / reader's reasons.
+# Why a pattern is still pending: the importer's / reader's reasons, as
+# (SQL, params). The LIKE text MUST go in as a parameter: a literal '%' in
+# the SQL is read by psycopg2 as a placeholder and the query fails
+# (IndexError) -- that emptied the Pending list (runbook 6ew follow-up).
 _PATTERN_FLAGS = {
-    "forward_drop": "review_note ilike '%forward drop brush%'",
-    "raise_brush": "review_note ilike '%raises the brush%'",
-    "check_errors": "review_note ilike '%error:%'",
-    "read_failed": "extraction_status = 'failed'",
-    "no_note": "review_status = 'pending' and review_note is null",
+    "forward_drop": ("review_note ilike %s", ["%forward drop brush%"]),
+    "raise_brush": ("review_note ilike %s", ["%raises the brush%"]),
+    "check_errors": ("review_note ilike %s", ["%error:%"]),
+    "read_failed": ("extraction_status = 'failed'", []),
+    "no_note": ("review_status = 'pending' and review_note is null", []),
 }
 _PATTERN_SORT_ORDER_BY = {
     "attention": "(review_status = 'pending') desc, updated_at desc",
@@ -7083,10 +7086,13 @@ def list_patterns(conn, review_status: str = None, search: str = None, source: s
     if series:
         where.append("series = %s")
         params.append(series)
-    for value, bands in ((length, _PATTERN_LENGTH_BANDS), (oil, _PATTERN_OIL_BANDS), (ratio, _PATTERN_RATIO_BANDS),
-                         (flag, _PATTERN_FLAGS)):
+    for value, bands in ((length, _PATTERN_LENGTH_BANDS), (oil, _PATTERN_OIL_BANDS), (ratio, _PATTERN_RATIO_BANDS)):
         if value in bands:
             where.append(f"({bands[value]})")
+    if flag in _PATTERN_FLAGS:
+        sql, flag_params = _PATTERN_FLAGS[flag]
+        where.append(f"({sql})")
+        params += flag_params
     for col, lo, hi in (("length_feet", length_min, length_max), ("volume_ml", oil_min, oil_max),
                         ("ratio", ratio_min, ratio_max)):
         if lo is not None:

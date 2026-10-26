@@ -21527,6 +21527,13 @@ and it works with mouse, touch and keyboard.
 **Deploy:** `sam build && sam deploy` (admin API), then push (admin +
 kiosk).
 
+**Follow-up fix:** the "Why pending" filter (`flag=`) put `ilike
+'%forward drop brush%'` straight into the SQL. psycopg2 reads a bare `%`
+as a placeholder, so any flag errored (IndexError) and the list came back
+empty. The LIKE text is now a parameter. Checked against the real
+database: forward_drop 137, no_note 2, and the sliders, search and sort
+combine correctly.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

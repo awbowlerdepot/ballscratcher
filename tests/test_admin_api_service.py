@@ -8524,7 +8524,9 @@ def test_list_patterns_filters_sort_and_paging():
     main_sql, main_params = executed[0]
     assert "source = %s" in main_sql and "review_status = %s" in main_sql
     assert "length_feet >= 45" in main_sql and "volume_ml >= 22 and volume_ml <= 28" in main_sql and "ratio >= 7" in main_sql
-    assert "forward drop brush" in main_sql
+    # The LIKE text is a parameter: a literal % in the SQL breaks psycopg2.
+    assert "%forward drop brush%" in main_params and "%forward" not in main_sql
+    assert all("%" not in sql.replace("%s", "") for sql, _ in service._PATTERN_FLAGS.values())
     assert "order by volume_ml desc nulls last" in main_sql and main_params[-2:] == [50, 100]
     # Tab counts ignore the status tab but keep the other filters.
     count_sql, count_params = executed[1]
