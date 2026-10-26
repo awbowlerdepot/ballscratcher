@@ -8482,3 +8482,55 @@ def test_queue_pattern_extraction_invokes_the_reader(monkeypatch):
         assert False
     except ValueError:
         pass
+
+
+def test_list_patterns_filters_sort_and_paging():
+    """Runbook 6ev: filters, the sort dict, paging and tab counts for the
+    oil pattern list (unknown band/sort values fall back safely)."""
+    executed = []
+
+    class Cur:
+        def __init__(self):
+            self.n = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, sql, params=None):
+            executed.append((" ".join(sql.split()), list(params or [])))
+
+        def fetchall(self):
+            sql = executed[-1][0]
+            if "count(*) over ()" in sql:
+                return [("11111111-1111-1111-1111-111111111111", "Big Ben", None, "challenge", "Landmark Patterns", "kegel",
+                         "current", 44, 24.7, 7.33, 39, "pending", False, "Not bulk-approved: forward drop brush", "ready",
+                         None, None, 37)]
+            if "group by review_status" in sql:
+                return [("pending", 137), ("approved", 1202)]
+            return [("Landmark Patterns", 12)]
+
+    class Conn:
+        def cursor(self):
+            return Cur()
+
+    out = service.list_patterns(Conn(), review_status="pending", source="kegel", length="long", oil="medium",
+                                ratio="house", flag="forward_drop", sort="volume", limit=50, offset=100)
+    main_sql, main_params = executed[0]
+    assert "source = %s" in main_sql and "review_status = %s" in main_sql
+    assert "length_feet >= 45" in main_sql and "volume_ml >= 22 and volume_ml <= 28" in main_sql and "ratio >= 7" in main_sql
+    assert "forward drop brush" in main_sql
+    assert "order by volume_ml desc nulls last" in main_sql and main_params[-2:] == [50, 100]
+    # Tab counts ignore the status tab but keep the other filters.
+    count_sql, count_params = executed[1]
+    assert "review_status = %s" not in count_sql and "source = %s" in count_sql and "pending" not in count_params
+    assert out["total"] == 37 and out["counts"] == {"pending": 137, "approved": 1202, "rejected": 0}
+    assert out["items"][0]["ratio"] == 7.33 and out["series"] == [{"series": "Landmark Patterns", "count": 12}]
+
+    executed.clear()
+    service.list_patterns(Conn(), length="huge", sort="nonsense; drop table", limit=9999)
+    sql, params = executed[0]
+    assert "huge" not in sql and "drop table" not in sql and "review_status = 'pending') desc" in sql
+    assert params[-2] == service.PATTERN_LIST_MAX_LIMIT

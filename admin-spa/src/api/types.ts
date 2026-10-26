@@ -1329,6 +1329,8 @@ export interface PatternSummary {
   ratio: number | null;
   review_status: PatternReviewStatus;
   published: boolean;
+  review_note?: string | null;
+  reverse_brush_drop_feet?: number | null;
   extraction_status: PatternExtractionStatus;
   created_at: string;
   updated_at: string;

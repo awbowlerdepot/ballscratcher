@@ -290,3 +290,36 @@ def test_pattern_feed_upserts_live_and_removes_unpublished_except_on_first_sync(
 def test_get_pattern_rejects_non_uuid_ids_without_querying():
     conn = _PatConn([])
     assert service.get_pattern(conn, "not-a-uuid") is None and conn.cur.sql == []
+
+
+def test_pattern_pages_cap_at_200_so_a_page_fits_a_lambda_response():
+    """Runbook 6ev: ?limit=500 overflowed Lambda's 6 MB response once the
+    Kegel library landed; pattern pages hold at most 200 (still with a
+    cursor for the rest)."""
+    seen = []
+
+    class Cur:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, sql, params=None):
+            seen.append(params)
+
+        description = []
+
+        def fetchall(self):
+            return []
+
+    class Conn:
+        def cursor(self):
+            return Cur()
+
+    service.list_patterns(Conn(), limit=500)
+    assert seen[-1][-1] == service.PATTERN_MAX_PAGE_SIZE + 1 == 201
+    service.list_pattern_changes(Conn(), limit=500)
+    assert seen[-1][-1] == 201
+    service.list_patterns(Conn(), limit=50)
+    assert seen[-1][-1] == 51

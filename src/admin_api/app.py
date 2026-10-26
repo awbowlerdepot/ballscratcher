@@ -2178,10 +2178,26 @@ class PatternRejectRequest(BaseModel):
 
 
 @app.get("/patterns")
-def get_patterns(review_status: Optional[str] = Query(None), search: Optional[str] = Query(None)):
+def get_patterns(
+    review_status: Optional[str] = Query(None),
+    search: Optional[str] = Query(None),
+    source: Optional[str] = Query(None),
+    category: Optional[str] = Query(None),
+    series: Optional[str] = Query(None),
+    length: Optional[str] = Query(None, description="short | medium | long"),
+    oil: Optional[str] = Query(None, description="light | medium | heavy"),
+    ratio: Optional[str] = Query(None, description="flat | medium | house"),
+    flag: Optional[str] = Query(None, description="Why it's pending: forward_drop | raise_brush | check_errors | read_failed | no_note"),
+    sort: Optional[str] = Query(None, description="attention | updated | name | length | volume | ratio"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    # Runbook 6ev: filters, sort and paging for the ~1,340 patterns.
     conn = service.get_db_connection()
     try:
-        return service.list_patterns(conn, review_status=review_status, search=search)
+        return service.list_patterns(conn, review_status=review_status, search=search, source=source, category=category,
+                                     series=series, length=length, oil=oil, ratio=ratio, flag=flag, sort=sort,
+                                     limit=limit, offset=offset)
     finally:
         conn.close()
 

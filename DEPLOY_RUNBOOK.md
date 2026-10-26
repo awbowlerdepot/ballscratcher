@@ -21303,6 +21303,193 @@ unchanged.
 Patterns. It should be read in a couple of seconds with no warnings, ratio
 12:1, category house.
 
+### 6et. Kegel Pattern Library imported (1,339 patterns), dual-tank oil (2026-10-26)
+
+Al: "https://patternlibrary.kegel.net/ do you think you can pull in all the
+patterns from here... each one has a downloadable pdf. KOSI files are there
+too, which is the format for the lane machines. that might be helpful for
+future use", then "go ahead, i have already mentioned this and they said
+they it would be great. clean patterns for this case should be bulk
+approved."
+
+**Source.** The library's own JSON API, so no PDF reading is needed:
+- `GET /api/v1/patterns/all`: every pattern's summary.
+- `GET /api/v1/patterns/{id}`: the full program, including:
+  - forward/reverse load screens with mics per step, crossed and T.OIL;
+  - Kegel's zone ratios;
+  - conditioners, drop brush and keywords;
+  - per-board `ForwardData`/`ReverseData`;
+  - `HashSignature`;
+  - the KOSI file text (`PatternFile`).
+
+**`scripts/import_kegel_library.py`** runs in two phases:
+- **`fetch`** makes one request a second and caches each pattern's JSON
+  with the base64 images stripped (about 30 KB each). A re-run only fetches
+  ids that aren't cached yet.
+- **`import`** does the following for each pattern:
+  - maps it with `map_pattern`:
+    - name, category from the keywords/name/group, series (Kegel's
+      category), source `kegel`;
+    - `source_url` is the pattern page and `sheet_url` Kegel's PDF
+      download;
+    - drop brush, the header volumes, the machine (model from "Designed for
+      FLEX", conditioners, buffer RPMs);
+    - the visible steps, with mics and the sheet's crossed/T.OIL kept to
+      check against;
+    - the standard six track zones;
+  - runs `oil_patterns.check`;
+  - saves the raw JSON and the KOSI file to the private PatternSheetsBucket
+    (`patterns/kegel/{id}.json`, `.kosi.txt`);
+  - **bulk-approves the clean ones**: no check errors or warnings, our
+    per-board oil equal to Kegel's own `ForwardData`/`ReverseData` (within
+    1 µL), `HasErrors` false, and no machine feature the model doesn't
+    cover yet;
+  - leaves everything else pending, with the reason in `review_note`.
+
+  Re-runs update a row only when Kegel's hash has changed, and `--link
+  KEGEL_ID=OUR_ID` attaches a pattern we already had from an uploaded sheet
+  without touching its name or review status.
+
+**Migration 053** adds the columns `external_source`, `external_id` (with a
+unique index), `external_hash`, `kosi_key`, `raw_key` and `description`.
+
+**Dual tank.** An "A & B" step pumps from both tanks at once. Kegel's T.OIL
+for it is boards × loads × mics × 2 (2026 IBF World Cup forward 1: 74 × 40
+× 2 = 5,920). `oil_patterns.tank_factor` / `per_board_ul` now apply this to
+`oil_ul`, the board totals and the profile.
+
+**Result:**
+- 1,339 fetched with no failed requests.
+- **1,202 clean** and bulk-approved, including our three, which were
+  linked: PBA Elite 37 and 48, and 2022 Starting House Pattern. Our
+  board totals were identical to Kegel's for all three.
+- **137 left pending.** Every one of them uses the forward drop brush
+  (e.g. down at 9 ft while loads start at 0). How that changes the oil
+  isn't modelled yet, so they wait for Al's review or for a model of the
+  feature.
+- No pattern failed on its numbers.
+
+**Re-run** (new or changed patterns):
+```bash
+.venv/bin/python scripts/import_kegel_library.py fetch --cache /tmp/kegel_cache
+.venv/bin/python scripts/import_kegel_library.py import --cache /tmp/kegel_cache --apply
+```
+PG* come from the bowling-scraper-db secret; AWS creds are needed for S3.
+Tests: `tests/test_import_kegel_library.py` (fixture
+`kegel_library_big_ben.json`, whose per-board oil matches Kegel's exactly).
+
+### 6eu. Kiosk Oil Patterns section + ball suggestions + per-location house shot (2026-10-26)
+
+Al: "can we add an oil pattern section to the kiosk... also do you think we
+can suggest balls for each pattern based off the data we have", then, on
+the motion rule, "your motion target is backwards. short is early and
+smooth, long is more aggressive and angular", and "yes build it and add the
+per location house shot".
+
+**Public API** (`src/public_api`; read-only, with the partner API's
+published rule; the existing `/{proxy+}` route needs no template change):
+- `GET /patterns`: every approved pattern as a summary (id, name,
+  category, series, source, length, volume, ratio, drop). The kiosk
+  filters it on the device.
+- `GET /patterns/{id}`: curated detail (track zones, steps without
+  `reported_*`, board totals, the profile, Kegel's description). KOSI
+  files, raw keys and review fields are never selected.
+- `GET /patterns/{id}/suggestions` maps the pattern onto the Ball Motion
+  Chart's axes (oil 1 light → 16 heavy; motion 1 smooth → 18 angular):
+  - **Oil target** = 3 + 11 × (0.6 × volume percentile + 0.4 × length
+    percentile), with percentiles across every published pattern.
+  - **Motion target** = 3 + 12 × (0.6 × length percentile + 0.4 × ratio
+    percentile). Longer means more angular, as Al said, and a higher ratio
+    allows more angular.
+  - Ranking reuses the kiosk Finder's: current, recommendable (has a
+    BowlerDepot link), not polyester, nearest by hypot(oil gap, 0.8 ×
+    motion gap).
+  - Groups:
+    - **Best match** (4);
+    - **When the lanes break down** (3, oil target −2.5);
+    - **For fresher or heavier oil** (3, +2.5).
+  - It returns a plain-words summary ("A long heavy-oil flat sport pattern:
+    start with a strong ball with an angular motion.") and a note saying
+    it's a starting point from the chart.
+- Tests are in `tests/test_public_api_service.py`.
+
+**Kiosk:**
+- `/patterns` page:
+  - Type, Length (≤38 / 39–44 / 45+ ft) and Oil (<22 / 22–28 / >28 mL)
+    chips;
+  - name search with the on-screen keyboard;
+  - 48 results at a time, with "Show more";
+  - this location's house shot featured first.
+- `/pattern/:id` page:
+  - the lane (`components/LanePreview.tsx`, a kiosk-styled copy of
+    admin's);
+  - length, volume, ratio in words, and drop;
+  - the three left-side zone ratios explained;
+  - the suggested balls as BallCards;
+  - a QR code to `/m/pattern/:id`, a phone page that links each ball to its
+    own hand-off;
+  - "Pattern from the Kegel Pattern Library".
+- Home has a full-width Oil Patterns banner under the six tiles (naming the
+  house shot when set). The tiles and the Just released strip were
+  tightened so /home still fits 1920×1080 exactly.
+
+**House shot:** set on the config screen (search, tap to save), kept in
+localStorage as `kiosk:house-pattern`. `?house=<pattern id>` on the start
+URL wins, like `?location=`.
+
+**Deploy:** `sam build && sam deploy` (PublicApiFunction), then push
+(kiosk). No allowlist change is needed: everything is on api.bowleriq.io.
+
+**Verify:**
+- `curl -s https://api.bowleriq.io/patterns | jq '.items | length'` gives
+  about 1,200.
+- On the kiosk: Home → Oil patterns → pick one → the lane, the stats and
+  three groups of balls.
+- Config → House shot → pick one → the home banner and the top of Oil
+  Patterns name it.
+
+### 6ev. Admin oil pattern filters; partner pattern pages capped at 200 (2026-10-26)
+
+Al, after the Kegel import (6et) put about 1,340 patterns in admin: "in the
+bowleriq admin can we add the proper filtering for these".
+
+**`GET /patterns` (admin)** is now filtered, sorted and paged on the server:
+- `search` matches name, short name, series and description.
+- Filters:
+  - `source`, `category`, `series`;
+  - `length`: short ≤38 / medium 39–44 / long 45+ ft;
+  - `oil`: light <22 / medium 22–28 / heavy >28 mL;
+  - `ratio`: flat <4 / medium 4–7 / house 7:1+;
+  - `flag` (why it's pending): forward_drop / raise_brush / check_errors /
+    read_failed / no_note.
+- `sort` uses the `_PATTERN_SORT_ORDER_BY` dict: attention (the default:
+  pending first, then newest), updated, name, length, volume, ratio.
+- `limit` (100, max 500) and `offset`.
+- The response is `{items, total, counts per review status (under every
+  filter except the tab), series values with counts}`.
+
+The bands match the kiosk's chips and the suggestion words.
+
+**Admin Oil Patterns page:** filter dropdowns plus Series and Sort, a Clear
+filters button, the total, counts on the tabs, page numbers, and a Note
+column showing why a pending pattern wasn't bulk-approved. All of it lives
+in the URL, so a view can be bookmarked.
+
+**Partner API:** a `?limit=500` page of patterns overflowed Lambda's 6 MB
+response once the library landed (a 200-pattern page is about 2.7 MB).
+`PATTERN_MAX_PAGE_SIZE = 200` caps `/v1/patterns` and
+`/v1/patterns/changes`. A larger limit still gets a `next_cursor` /
+`has_more`, so the v1 schema is unchanged and the contract test passes.
+
+**Data cleanup:** 302 imported rows carried float noise from Kegel's JSON
+(27.200000000000003 mL). Rounded to 3 places in the database, and the
+importer now rounds as well. No profile changed (the recompute dry run
+shows 0 to change).
+
+**Deploy:** `sam build && sam deploy` (admin + partner), then push (admin).
+**Verify:** in admin → Oil Patterns, choose Why pending: Forward drop brush,
+which should show 137. Sort by Most oil. Page 2 should work.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

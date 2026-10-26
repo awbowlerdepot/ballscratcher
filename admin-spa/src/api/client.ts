@@ -766,8 +766,31 @@ export function deleteUser(username: string): Promise<{ username: string; delete
 
 
 // --- Oil pattern catalog (runbook 6ej) ------------------------------------
-export function listPatterns(params: { review_status?: string; search?: string } = {}): Promise<PatternSummary[]> {
-  return apiGet<PatternSummary[]>("/patterns", params);
+// Runbook 6ev: server-side filters, sort and paging (~1,340 patterns).
+export interface ListPatternsParams {
+  review_status?: string;
+  search?: string;
+  source?: string;
+  category?: string;
+  series?: string;
+  length?: string; // short | medium | long
+  oil?: string; // light | medium | heavy
+  ratio?: string; // flat | medium | house
+  flag?: string; // forward_drop | raise_brush | check_errors | read_failed | no_note
+  sort?: string; // attention | updated | name | length | volume | ratio
+  limit?: number;
+  offset?: number;
+}
+
+export interface PatternListResult {
+  items: PatternSummary[];
+  total: number;
+  counts: { pending: number; approved: number; rejected: number };
+  series: { series: string; count: number }[];
+}
+
+export function listPatterns(params: ListPatternsParams = {}): Promise<PatternListResult> {
+  return apiGet<PatternListResult>("/patterns", { ...params });
 }
 
 export function getPattern(id: string): Promise<PatternDetail> {

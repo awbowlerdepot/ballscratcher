@@ -7029,32 +7029,90 @@ def _load_pattern(conn, pattern_id: str) -> dict:
     return _pattern_from_row(row)
 
 
-def list_patterns(conn, review_status: str = None, search: str = None) -> list:
+# Oil pattern list filters (runbook 6ev). Al, after the Kegel import put
+# ~1,340 patterns in admin: "in the bowleriq admin can we add the proper
+# filtering for these". The bands match the kiosk's Oil Patterns chips and
+# the suggestion words (public_api describe_pattern), so staff and
+# customers see the same groupings.
+_PATTERN_LENGTH_BANDS = {"short": "length_feet <= 38", "medium": "length_feet > 38 and length_feet < 45",
+                         "long": "length_feet >= 45"}
+_PATTERN_OIL_BANDS = {"light": "volume_ml < 22", "medium": "volume_ml >= 22 and volume_ml <= 28", "heavy": "volume_ml > 28"}
+_PATTERN_RATIO_BANDS = {"flat": "ratio < 4", "medium": "ratio >= 4 and ratio < 7", "house": "ratio >= 7"}
+# Why a pattern is still pending: the importer's / reader's reasons.
+_PATTERN_FLAGS = {
+    "forward_drop": "review_note ilike '%forward drop brush%'",
+    "raise_brush": "review_note ilike '%raises the brush%'",
+    "check_errors": "review_note ilike '%error:%'",
+    "read_failed": "extraction_status = 'failed'",
+    "no_note": "review_status = 'pending' and review_note is null",
+}
+_PATTERN_SORT_ORDER_BY = {
+    "attention": "(review_status = 'pending') desc, updated_at desc",
+    "updated": "updated_at desc",
+    "name": "name asc",
+    "length": "length_feet desc nulls last, name",
+    "volume": "volume_ml desc nulls last, name",
+    "ratio": "ratio desc nulls last, name",
+}
+PATTERN_LIST_DEFAULT_LIMIT, PATTERN_LIST_MAX_LIMIT = 100, 500
+
+
+def list_patterns(conn, review_status: str = None, search: str = None, source: str = None, category: str = None,
+                  series: str = None, length: str = None, oil: str = None, ratio: str = None, flag: str = None,
+                  sort: str = None, limit: int = None, offset: int = 0) -> dict:
+    """{"items", "total", "counts" (per review status, under every filter
+    but the status tab), "series" (the values to pick from)}."""
     where, params = [], []
-    if review_status:
-        where.append("review_status = %s")
-        params.append(review_status)
     if search:
-        where.append("(name ilike %s or short_name ilike %s or series ilike %s)")
-        params += [f"%{search}%"] * 3
+        where.append("(name ilike %s or short_name ilike %s or series ilike %s or description ilike %s)")
+        params += [f"%{search}%"] * 4
+    if source:
+        where.append("source = %s")
+        params.append(source)
+    if category:
+        where.append("category = %s")
+        params.append(category)
+    if series:
+        where.append("series = %s")
+        params.append(series)
+    for value, bands in ((length, _PATTERN_LENGTH_BANDS), (oil, _PATTERN_OIL_BANDS), (ratio, _PATTERN_RATIO_BANDS),
+                         (flag, _PATTERN_FLAGS)):
+        if value in bands:
+            where.append(f"({bands[value]})")
+    base = " where " + " and ".join(where) if where else ""
+    status_where = where + (["review_status = %s"] if review_status else [])
+    status_params = params + ([review_status] if review_status else [])
+    filtered = " where " + " and ".join(status_where) if status_where else ""
+    limit = max(1, min(int(limit or PATTERN_LIST_DEFAULT_LIMIT), PATTERN_LIST_MAX_LIMIT))
+    offset = max(0, int(offset or 0))
     cols = ("id", "name", "short_name", "category", "series", "source", "status", "length_feet", "volume_ml", "ratio",
-            "review_status", "published", "extraction_status", "created_at", "updated_at")
+            "reverse_brush_drop_feet", "review_status", "published", "review_note", "extraction_status", "created_at",
+            "updated_at")
     with conn.cursor() as cur:
         cur.execute(
-            f"select {', '.join(cols)} from oil_patterns"
-            + (" where " + " and ".join(where) if where else "")
-            + " order by (review_status = 'pending') desc, updated_at desc",
-            params,
+            f"select {', '.join(cols)}, count(*) over () from oil_patterns{filtered} "
+            f"order by {_PATTERN_SORT_ORDER_BY.get(sort, _PATTERN_SORT_ORDER_BY['attention'])} limit %s offset %s",
+            status_params + [limit, offset],
         )
-        out = []
-        for row in cur.fetchall():
-            d = dict(zip(cols, row))
-            d["id"] = str(d["id"])
-            for k in ("length_feet", "volume_ml", "ratio"):
-                if d[k] is not None:
-                    d[k] = float(d[k])
-            out.append(d)
-    return out
+        rows = cur.fetchall()
+        cur.execute(f"select review_status, count(*) from oil_patterns{base} group by review_status", params)
+        counts = {k: v for k, v in cur.fetchall()}
+        cur.execute("select series, count(*) from oil_patterns where series is not null group by series order by series")
+        series_values = [{"series": r[0], "count": r[1]} for r in cur.fetchall()]
+    items = []
+    for row in rows:
+        d = dict(zip(cols, row[:-1]))
+        d["id"] = str(d["id"])
+        for k in ("length_feet", "volume_ml", "ratio", "reverse_brush_drop_feet"):
+            if d[k] is not None:
+                d[k] = float(d[k])
+        items.append(d)
+    return {
+        "items": items,
+        "total": rows[0][-1] if rows else 0,
+        "counts": {k: counts.get(k, 0) for k in ("pending", "approved", "rejected")},
+        "series": series_values,
+    }
 
 
 def get_pattern(conn, pattern_id: str, s3_client=None) -> dict:

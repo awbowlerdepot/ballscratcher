@@ -35,6 +35,12 @@ LEARN_SITE_URL = os.environ.get("LEARN_SITE_URL", "https://learn.bowlerdepot.com
 
 DEFAULT_PAGE_SIZE = 200
 MAX_PAGE_SIZE = 500
+# Patterns are big (steps + 39-wide oil grid per foot: ~13 KB each), and a
+# Lambda response tops out at 6 MB: 500 patterns overflowed it once the
+# Kegel library landed (runbook 6ev). Pattern pages hold at most this many;
+# a larger ?limit= still gets a next_cursor / has_more, so cursor-following
+# clients are unaffected and the v1 schema doesn't change.
+PATTERN_MAX_PAGE_SIZE = 200
 # /v1/changes only returns changes at least this old. A write's
 # content_changed_at is its transaction's start time, so a long transaction
 # can commit AFTER a poll that already moved past that timestamp; holding
@@ -550,7 +556,7 @@ def map_pattern(row: dict) -> dict:
 
 
 def list_patterns(conn, cursor: str = None, limit: int = None) -> dict:
-    limit = clamp_limit(limit)
+    limit = min(clamp_limit(limit), PATTERN_MAX_PAGE_SIZE)
     after = _ZERO_ID
     if cursor:
         try:
@@ -580,7 +586,7 @@ def get_pattern(conn, pattern_id: str):
 
 
 def list_pattern_changes(conn, cursor: str = None, since: str = None, limit: int = None) -> dict:
-    limit = clamp_limit(limit)
+    limit = min(clamp_limit(limit), PATTERN_MAX_PAGE_SIZE)
     if cursor:
         data = decode_cursor(cursor)
         try:
