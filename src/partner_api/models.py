@@ -293,6 +293,11 @@ class Pattern(_Model):
     reverse_ml: Optional[float] = None
     volume_ml: Optional[float] = None
     ratio: Optional[float] = Field(None, description="Headline ratio: the largest track zone ratio.")
+    download_count: Optional[int] = Field(
+        None,
+        description="Times the pattern has been downloaded from its publisher's library (Kegel), as of BowlerIQ's last "
+        "import; a popularity signal for ordering. Null for patterns from uploaded sheets.",
+    )
     track_zones: list[TrackZone]
     machine: PatternMachine
     steps: list[PatternStep] = Field(description="The machine program: forward steps, then reverse, each in order.")

@@ -7056,6 +7056,7 @@ _PATTERN_SORT_ORDER_BY = {
     "length": "length_feet desc nulls last, name",
     "volume": "volume_ml desc nulls last, name",
     "ratio": "ratio desc nulls last, name",
+    "downloads": "download_count desc nulls last, name",
 }
 PATTERN_LIST_DEFAULT_LIMIT, PATTERN_LIST_MAX_LIMIT = 100, 500
 
@@ -7109,7 +7110,7 @@ def list_patterns(conn, review_status: str = None, search: str = None, source: s
     offset = max(0, int(offset or 0))
     cols = ("id", "name", "short_name", "category", "series", "source", "status", "length_feet", "volume_ml", "ratio",
             "reverse_brush_drop_feet", "review_status", "published", "review_note", "extraction_status", "created_at",
-            "updated_at")
+            "updated_at", "download_count")
     with conn.cursor() as cur:
         cur.execute(
             f"select {', '.join(cols)}, count(*) over () from oil_patterns{filtered} "

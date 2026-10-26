@@ -182,6 +182,8 @@ def map_pattern(d: dict) -> dict:
         "steps": steps,
         "track_zones": _zones(p),
         "description": desc,
+        # Runbook 6ex: Kegel's download count, published as a popularity signal.
+        "download_count": int(d["DownloadCount"]) if d.get("DownloadCount") is not None else None,
         "external_source": "kegel",
         "external_id": kid,
         "external_hash": (p.get("Metadata") or {}).get("HashSignature"),
@@ -212,10 +214,10 @@ def not_clean_reasons(d: dict, pattern: dict) -> list:
 WRITE_COLS = ("name", "category", "series", "source", "source_url", "sheet_url", "status", "length_feet",
               "reverse_brush_drop_feet", "oil_per_board_ul", "forward_ml", "reverse_ml", "volume_ml", "machine",
               "steps", "track_zones", "board_totals", "profile", "ratio", "profile_source", "description",
-              "external_source", "external_id", "external_hash", "kosi_key", "raw_key")
+              "download_count", "external_source", "external_id", "external_hash", "kosi_key", "raw_key")
 JSON_COLS = {"machine", "steps", "track_zones", "board_totals", "profile"}
-LINK_COLS = ("source", "source_url", "sheet_url", "description", "external_source", "external_id", "external_hash",
-             "kosi_key", "raw_key")
+LINK_COLS = ("source", "source_url", "sheet_url", "description", "download_count", "external_source", "external_id",
+             "external_hash", "kosi_key", "raw_key")
 
 
 def run_import(cache: str, apply: bool = False, links: list = (), bucket: str = None) -> None:
@@ -259,7 +261,12 @@ def run_import(cache: str, apply: bool = False, links: list = (), bucket: str = 
             elif kid in existing:
                 _, old_hash, status = existing[kid]
                 if old_hash == m["external_hash"]:
+                    # The program is the same; still refresh the download count.
+                    cur.execute("update oil_patterns set download_count = %s where external_source = 'kegel' "
+                                "and external_id = %s and download_count is distinct from %s",
+                                (m["download_count"], kid, m["download_count"]))
                     stats["unchanged"] += 1
+                    conn.commit()
                     continue
                 cur.execute(f"update oil_patterns set {', '.join(f'{k} = %s' for k in WRITE_COLS)} where external_source = 'kegel' and external_id = %s",
                             vals(WRITE_COLS) + [kid])

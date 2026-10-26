@@ -583,6 +583,18 @@
             "title": "Content Changed At",
             "type": "string"
           },
+          "download_count": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Times the pattern has been downloaded from its publisher's library (Kegel), as of BowlerIQ's last import; a popularity signal for ordering. Null for patterns from uploaded sheets.",
+            "title": "Download Count"
+          },
           "forward_ml": {
             "anyOf": [
               {

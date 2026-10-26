@@ -8507,7 +8507,7 @@ def test_list_patterns_filters_sort_and_paging():
             if "count(*) over ()" in sql:
                 return [("11111111-1111-1111-1111-111111111111", "Big Ben", None, "challenge", "Landmark Patterns", "kegel",
                          "current", 44, 24.7, 7.33, 39, "pending", False, "Not bulk-approved: forward drop brush", "ready",
-                         None, None, 37)]
+                         None, None, 9377, 37)]
             if "group by review_status" in sql:
                 return [("pending", 137), ("approved", 1202)]
             return [("Landmark Patterns", 12)]

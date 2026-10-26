@@ -1331,6 +1331,7 @@ export interface PatternSummary {
   published: boolean;
   review_note?: string | null;
   reverse_brush_drop_feet?: number | null;
+  download_count?: number | null; // Kegel library downloads (runbook 6ex)
   extraction_status: PatternExtractionStatus;
   created_at: string;
   updated_at: string;

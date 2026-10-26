@@ -38,7 +38,8 @@ V1_BASELINE = {
     "Pattern": {
         "required": {"id", "name", "category", "source", "status", "track_zones", "machine", "steps", "profile_source", "content_changed_at"},
         "optional": {"short_name", "series", "source_url", "sheet_url", "image_url", "length_feet", "reverse_brush_drop_feet",
-                     "oil_per_board_ul", "forward_ml", "reverse_ml", "volume_ml", "ratio", "board_totals", "profile"},
+                     "oil_per_board_ul", "forward_ml", "reverse_ml", "volume_ml", "ratio", "board_totals", "profile",
+                     "download_count"},
     },
     "PatternStep": {
         "required": {"direction", "order", "loads"},

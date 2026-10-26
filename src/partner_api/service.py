@@ -503,7 +503,7 @@ PATTERN_SELECT = """
     select id, name, short_name, category, series, source, source_url, sheet_url, image_url, status,
            length_feet, reverse_brush_drop_feet, oil_per_board_ul, forward_ml, reverse_ml, volume_ml, ratio,
            track_zones, machine, steps, board_totals, profile, profile_source, published, review_status,
-           content_changed_at
+           download_count, content_changed_at
     from oil_patterns
 """
 _PUBLISHED_PATTERN = "published = true and review_status = 'approved'"
@@ -545,6 +545,7 @@ def map_pattern(row: dict) -> dict:
         "status": row["status"],
         **{k: _float_or_none(row.get(k)) for k in ("length_feet", "reverse_brush_drop_feet", "oil_per_board_ul",
                                                      "forward_ml", "reverse_ml", "volume_ml", "ratio")},
+        "download_count": int(row["download_count"]) if row.get("download_count") is not None else None,
         "track_zones": [_pick(z, _ZONE_KEYS) for z in row.get("track_zones") or []],
         "machine": machine,
         "steps": steps,

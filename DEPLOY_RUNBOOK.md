@@ -21534,6 +21534,43 @@ empty. The LIKE text is now a parameter. Checked against the real
 database: forward_drop 137, no_note 2, and the sliders, search and sort
 combine correctly.
 
+### 6ex. Kegel PDFs on the review page; download count published (2026-10-26)
+
+Al: "im not following the uses forward drop brush, which also isn't clear
+because you didn't pull in the PDFs", then "pull all the pdfs and yes
+publish the download count". (Drilld had asked for a popularity signal to
+order its pattern picker.)
+
+**PDFs.** `scripts/fetch_kegel_pdfs.py` downloads each imported Kegel
+pattern's sheet from `api/v1/patterns/download?format=pdf` at one request a
+second, pending patterns first.
+- It stores `patterns/kegel/{id}.pdf` plus a rendered `page-1.png` (the
+  upload reader's scale 2.5) in the private PatternSheetsBucket.
+- It sets the row's `upload_key` / `page_image_key`, so admin's review page
+  shows the sheet beside the numbers exactly as it does for an uploaded
+  sheet. Those keys aren't partner content, so `content_changed_at` doesn't
+  move.
+- It's re-runnable: rows that already have a page image are skipped.
+- Each pattern is about 0.9 MB of PDF plus 0.5 MB of PNG, roughly 1.9 GB
+  for the library.
+
+**Download count:**
+- Migration 054 adds `download_count` and puts it in the content trigger,
+  so filling it re-sends each Kegel pattern once on `/v1/patterns/changes`.
+- The partner `Pattern` gains an optional `download_count` (additive;
+  snapshot regenerated and baseline updated). It's null for uploaded
+  sheets.
+- The importer fills it, and refreshes it even when a pattern's program
+  hasn't changed.
+- Admin has a Downloads column and a "Most downloaded" sort.
+
+Order on rollout: apply 054, deploy the partner API, then fill the counts.
+Filling them first would have re-sent every pattern without the field.
+
+**Verify:** a forward-drop pattern in admin → Oil Patterns shows its Kegel
+sheet. Partner `/v1/patterns` items carry `download_count`. Admin sort
+"Most downloaded" puts the most-downloaded pattern first.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

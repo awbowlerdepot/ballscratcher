@@ -57,6 +57,7 @@ const SORTS: [string, string][] = [
   ["length", "Longest"],
   ["volume", "Most oil"],
   ["ratio", "Highest ratio"],
+  ["downloads", "Most downloaded"],
 ];
 
 const TABS: { key: string; label: string }[] = [
@@ -177,6 +178,7 @@ export default function PatternsPage() {
     { key: "volume", header: "Volume", render: (p) => (p.volume_ml != null ? `${p.volume_ml} mL` : "--") },
     { key: "ratio", header: "Ratio", render: (p) => (p.ratio != null ? `${p.ratio}:1` : "--") },
     { key: "source", header: "Source", render: (p) => p.source },
+    { key: "downloads", header: "Downloads", render: (p) => (p.download_count != null ? p.download_count.toLocaleString() : "--") },
     {
       key: "note",
       header: "Note",

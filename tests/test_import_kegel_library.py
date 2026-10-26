@@ -20,6 +20,7 @@ def test_big_ben_maps_onto_the_spec():
     assert m["sheet_url"].endswith("format=pdf")
     assert (m["length_feet"], m["reverse_brush_drop_feet"], m["volume_ml"]) == (44, 39, 24.7)
     assert m["oil_per_board_ul"] is None  # PUMP: MULTI -- each step has its own mics
+    assert m["download_count"] == 9377
     assert m["machine"]["model"] == "Flex" and m["machine"]["tank_a_conditioner"] == "FIRE"
     assert "tank_b_conditioner" not in m["machine"]  # single tank
     fwd = [s for s in m["steps"] if s["direction"] == "forward"]
