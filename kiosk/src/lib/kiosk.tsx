@@ -13,6 +13,12 @@ import { useLocation, useNavigate } from "react-router-dom";
 // whose storage was cleared. The device id is a random id generated once
 // per device, so two kiosks at one location can still be told apart.
 //
+// HOUSE SHOT (runbook 6eu). Al: "add the per location house shot". The oil
+// pattern this location's lanes run, picked on the config screen from the
+// published patterns and kept in localStorage like the location; a
+// `?house=<pattern id>` on the start URL wins, the same fallback. The Oil
+// Patterns section features it first.
+//
 // SESSION. The compare tray and anything a customer typed belong to one
 // customer: after IDLE_MS without a touch the app clears them and returns
 // to the attract loop, so the next person starts fresh. The phone hand-off
@@ -20,6 +26,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 
 const LOCATION_KEY = "kiosk:location";
 const DEVICE_KEY = "kiosk:device-id";
+const HOUSE_KEY = "kiosk:house-pattern";
 export const IDLE_MS = 90_000;
 export const MAX_COMPARE = 3;
 
@@ -54,6 +61,9 @@ interface KioskState {
   locationFromUrl: boolean;
   deviceId: string;
   setLocation: (value: string | null) => void;
+  housePatternId: string | null;
+  houseFromUrl: boolean;
+  setHousePattern: (id: string | null) => void;
   compare: string[];
   toggleCompare: (id: string) => void;
   clearCompare: () => void;
@@ -66,6 +76,8 @@ const Ctx = createContext<KioskState | null>(null);
 export function KioskProvider({ children }: { children: ReactNode }) {
   const urlLocation = useMemo(() => new URLSearchParams(window.location.search).get("location"), []);
   const [stored, setStored] = useState<string | null>(() => safeGet(LOCATION_KEY));
+  const urlHouse = useMemo(() => new URLSearchParams(window.location.search).get("house"), []);
+  const [storedHouse, setStoredHouse] = useState<string | null>(() => safeGet(HOUSE_KEY));
   const [compare, setCompare] = useState<string[]>([]);
   const [sessionKey, setSessionKey] = useState(0);
   const id = useMemo(deviceId, []);
@@ -74,6 +86,11 @@ export function KioskProvider({ children }: { children: ReactNode }) {
     const v = value?.trim() || null;
     safeSet(LOCATION_KEY, v);
     setStored(v);
+  }, []);
+
+  const setHousePattern = useCallback((id: string | null) => {
+    safeSet(HOUSE_KEY, id);
+    setStoredHouse(id);
   }, []);
 
   const toggleCompare = useCallback((ballId: string) => {
@@ -92,6 +109,9 @@ export function KioskProvider({ children }: { children: ReactNode }) {
     locationFromUrl: Boolean(urlLocation),
     deviceId: id,
     setLocation,
+    housePatternId: urlHouse || storedHouse,
+    houseFromUrl: Boolean(urlHouse),
+    setHousePattern,
     compare,
     toggleCompare,
     clearCompare,
@@ -138,6 +158,12 @@ export function useIdleReset(disabled: boolean) {
 // Builds the QR hand-off URL for a ball: a phone-friendly page on this same
 // site with links out to Learn, bowlerdepot.com and the rest. The location
 // rides along so the phone page's outbound links can be tagged per store.
+export function patternHandoffUrl(patternId: string, location: string | null): string {
+  const url = new URL(`/m/pattern/${patternId}`, window.location.origin);
+  if (location) url.searchParams.set("from", location);
+  return url.toString();
+}
+
 export function handoffUrl(ballId: string, location: string | null): string {
   const url = new URL(`/m/${ballId}`, window.location.origin);
   if (location) url.searchParams.set("from", location);

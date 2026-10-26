@@ -2354,3 +2354,183 @@ def get_learn_signage(conn, slug: str):
     return {"clip_url": row[0], "ball_x": float(row[1]) if row[1] is not None else 0.5,
             "ball_y": float(row[2]) if row[2] is not None else 0.62,
             "ball_r": float(row[3]) if row[3] is not None else 0.27, "tagline": row[4]}
+
+
+# ---------------------------------------------------------------------------
+# Oil patterns + ball suggestions (runbook 6eu).
+#
+# Al: "can we add an oil pattern section to the kiosk... also do you think
+# we can suggest balls for each pattern based off the data we have" -> "yes
+# build it and add the per location house shot". The kiosk reads only this
+# public API (its Edge allowlist covers api.bowleriq.io), so the approved
+# oil_patterns rows the partner API serves are exposed here too, read-only,
+# with the same published rule. Review/OCR bookkeeping, KOSI files and raw
+# publisher JSON are never selected.
+#
+# SUGGESTIONS map a pattern onto the plotter's two axes (oil 1 light ->
+# 16 heavy; motion 1 smooth -> 18 angular -- Brunswick's Ball Motion
+# Comparison Chart, migration 011):
+#   * oil target: more volume and more length need a stronger ball. Scored
+#     as percentiles across every published pattern (0.6 volume + 0.4
+#     length), so the library's lightest patterns land near oil 3 and its
+#     heaviest near 14 instead of on hand-picked thresholds.
+#   * motion target: Al: "short is early and smooth, long is more
+#     aggressive and angular" -- length percentile -- blended with ratio
+#     (flat, low-ratio sport shots want a smoother, controllable ball;
+#     high-ratio house shots allow more angular). Length weighs 0.6, ratio
+#     0.4, so on a long flat sport pattern length wins slightly.
+# Then the kiosk Finder's ranking: current balls with a BowlerDepot link
+# (recommendable), nearest by hypot(oil gap, 0.8 x motion gap); plus one
+# group a step lighter on oil ("when the lanes break down") and one a step
+# heavier ("fresher or heavier oil"). A rule of thumb from the chart, not a
+# measurement -- the response says so.
+PATTERN_PUBLIC_COLUMNS = (
+    "id", "name", "short_name", "category", "series", "source", "source_url", "status", "length_feet",
+    "reverse_brush_drop_feet", "oil_per_board_ul", "forward_ml", "reverse_ml", "volume_ml", "ratio", "track_zones",
+    "machine", "steps", "board_totals", "profile", "description",
+)
+PATTERN_SUMMARY_COLUMNS = ("id", "name", "category", "series", "source", "status", "length_feet", "volume_ml", "ratio",
+                           "reverse_brush_drop_feet")
+_PUBLISHED_PATTERN = "published = true and review_status = 'approved'"
+_ZONE_KEYS = ("from", "to", "against_from", "against_to", "label", "ratio")
+_STEP_KEYS = ("direction", "order", "start", "stop", "from_board", "to_board", "loads", "mics", "speed_ips", "buffer",
+              "tank", "crossed", "start_feet", "end_feet", "feet", "oil_ul")
+OIL_TARGET_RANGE = (3.0, 14.0)
+MOTION_TARGET_RANGE = (3.0, 15.0)
+SUGGEST_STEP = 2.5  # oil-axis step for the break-down / heavier groups
+SUGGEST_BEST, SUGGEST_OTHER = 4, 3
+
+
+def _num_or_none(v):
+    return float(v) if v is not None else None
+
+
+def _pattern_from_row(cols, row) -> dict:
+    p = dict(zip(cols, row))
+    p["id"] = str(p["id"])
+    for k in ("length_feet", "reverse_brush_drop_feet", "oil_per_board_ul", "forward_ml", "reverse_ml", "volume_ml", "ratio"):
+        if k in p:
+            p[k] = _num_or_none(p[k])
+    if "track_zones" in p:
+        p["track_zones"] = [{k: z.get(k) for k in _ZONE_KEYS} for z in p.get("track_zones") or []]
+    if "steps" in p:
+        p["steps"] = [{k: s.get(k) for k in _STEP_KEYS} for s in p.get("steps") or []]
+    if "profile" in p and p["profile"]:
+        p["profile"] = {k: p["profile"].get(k) for k in ("foot_step", "units", "model", "burn_lanes", "rows")}
+    return p
+
+
+def list_public_patterns(conn) -> list:
+    """GET /patterns: every approved pattern as a small summary (the kiosk
+    filters and searches client-side; ~1,300 rows is ~150 KB)."""
+    with conn.cursor() as cur:
+        cur.execute(f"select {', '.join(PATTERN_SUMMARY_COLUMNS)} from oil_patterns where {_PUBLISHED_PATTERN} order by name")
+        return [_pattern_from_row(PATTERN_SUMMARY_COLUMNS, r) for r in cur.fetchall()]
+
+
+def get_public_pattern(conn, pattern_id: str):
+    try:
+        uuid.UUID(str(pattern_id))
+    except ValueError:
+        return None
+    with conn.cursor() as cur:
+        cur.execute(f"select {', '.join(PATTERN_PUBLIC_COLUMNS)} from oil_patterns where id = %s and {_PUBLISHED_PATTERN}",
+                    (pattern_id,))
+        row = cur.fetchone()
+    return _pattern_from_row(PATTERN_PUBLIC_COLUMNS, row) if row else None
+
+
+def _percentile(x, values) -> float:
+    """Mid-rank percentile of x among values, 0..1 (0.5 with no data)."""
+    vals = [v for v in values if v is not None]
+    if x is None or not vals:
+        return 0.5
+    below = sum(1 for v in vals if v < x)
+    equal = sum(1 for v in vals if v == x)
+    return (below + 0.5 * equal) / len(vals)
+
+
+def pattern_targets(pattern: dict, population: list) -> dict:
+    """The plotter spot a pattern points at: {"oil", "motion"} plus the
+    percentiles behind them (pure; population = summaries of every
+    published pattern)."""
+    pv = _percentile(pattern.get("volume_ml"), [p.get("volume_ml") for p in population])
+    pl = _percentile(pattern.get("length_feet"), [p.get("length_feet") for p in population])
+    pr = _percentile(pattern.get("ratio"), [p.get("ratio") for p in population])
+    lo, hi = OIL_TARGET_RANGE
+    oil = lo + (hi - lo) * (0.6 * pv + 0.4 * pl)
+    lo, hi = MOTION_TARGET_RANGE
+    motion = lo + (hi - lo) * (0.6 * pl + 0.4 * pr)
+    return {"oil": round(oil, 1), "motion": round(motion, 1),
+            "percentiles": {"volume": round(pv, 2), "length": round(pl, 2), "ratio": round(pr, 2)}}
+
+
+def describe_pattern(pattern: dict) -> str:
+    """Plain words for a pattern's length, oil and ratio."""
+    length, vol, ratio = pattern.get("length_feet"), pattern.get("volume_ml"), pattern.get("ratio")
+    parts = []
+    if length is not None:
+        parts.append("short" if length <= 38 else "long" if length >= 45 else "medium-length")
+    if vol is not None:
+        parts.append("light-oil" if vol < 22 else "heavy-oil" if vol > 28 else "medium-oil")
+    kind = None
+    if ratio is not None:
+        kind = "flat sport pattern" if ratio < 4 else "challenge pattern" if ratio < 7 else "house shot"
+    return " ".join(parts + [kind or "pattern"])
+
+
+def suggest_for_pattern(pattern: dict, population: list, balls: list) -> dict:
+    """Ball suggestions for one pattern (pure: balls are /learn/plotter
+    points)."""
+    t = pattern_targets(pattern, population)
+    pool = [b for b in balls if b.get("recommendable") and b.get("oil") is not None and b.get("motion") is not None
+            and (b.get("coverstock_material") or "").lower() != "polyester"]
+
+    def nearest(oil, motion, n, exclude):
+        ranked = sorted((b for b in pool if b["id"] not in exclude),
+                        key=lambda b: math.hypot(b["oil"] - oil, (b["motion"] - motion) * 0.8))
+        return ranked[:n]
+
+    best = nearest(t["oil"], t["motion"], SUGGEST_BEST, set())
+    used = {b["id"] for b in best}
+    lighter = nearest(max(1.0, t["oil"] - SUGGEST_STEP), t["motion"], SUGGEST_OTHER, used)
+    used |= {b["id"] for b in lighter}
+    heavier = nearest(min(16.0, t["oil"] + SUGGEST_STEP), t["motion"], SUGGEST_OTHER, used)
+    strength = "a strong" if t["oil"] >= 10.5 else "a weaker" if t["oil"] <= 6.5 else "a medium-strength"
+    shape = "an angular" if t["motion"] >= 11 else "a smooth" if t["motion"] <= 7 else "a medium"
+    keep = ("id", "name", "brand_name", "primary_image_url", "oil", "motion", "coverstock_name", "finish_category",
+            "article_slug")
+    slim = lambda bs: [{k: b.get(k) for k in keep} for b in bs]  # noqa: E731
+    return {
+        "pattern_id": pattern.get("id"),
+        "target": {"oil": t["oil"], "motion": t["motion"]},
+        "summary": f"A {describe_pattern(pattern)}: start with {strength} ball with {shape} motion.",
+        "note": "A starting point from the Ball Motion Chart, not a guarantee. Ask a pro shop about your own game.",
+        "groups": [
+            {"key": "best", "title": "Best match", "blurb": "Closest to what this pattern calls for.", "balls": slim(best)},
+            {"key": "lighter", "title": "When the lanes break down",
+             "blurb": "A step weaker, for later in the set once the oil thins out.", "balls": slim(lighter)},
+            {"key": "heavier", "title": "For fresher or heavier oil",
+             "blurb": "A step stronger, for a fresh shot or more oil than usual.", "balls": slim(heavier)},
+        ],
+    }
+
+
+_PATTERN_POPULATION = {"at": 0.0, "rows": None}
+
+
+def _pattern_population(conn) -> list:
+    import time
+
+    if _PATTERN_POPULATION["rows"] is None or time.time() - _PATTERN_POPULATION["at"] > 600:
+        _PATTERN_POPULATION["rows"] = list_public_patterns(conn)
+        _PATTERN_POPULATION["at"] = time.time()
+    return _PATTERN_POPULATION["rows"]
+
+
+def get_pattern_suggestions(conn, pattern_id: str):
+    pattern = get_public_pattern(conn, pattern_id)
+    if pattern is None:
+        return None
+    balls = [_strip_internal(p) for p in _learn_plotter_points(conn)]
+    return suggest_for_pattern(pattern, _pattern_population(conn), balls)

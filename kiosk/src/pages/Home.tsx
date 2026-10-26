@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { getCurrentCards, img, type ProductCard } from "../lib/api";
+import { getCurrentCards, getPattern, img, type ProductCard } from "../lib/api";
+import { useKiosk } from "../lib/kiosk";
 
 // Home (runbook 6eh): one big tile per thing a customer came to the screen
 // for, plus a strip of the newest balls.
@@ -15,6 +16,12 @@ const TILES: { to: string; title: string; sub: string; icon: string; feature?: b
 
 export default function Home() {
   const [newest, setNewest] = useState<ProductCard[]>([]);
+  const { housePatternId } = useKiosk();
+  const [house, setHouse] = useState<string | null>(null);
+  useEffect(() => {
+    setHouse(null);
+    if (housePatternId) getPattern(housePatternId).then((p) => setHouse(p.name)).catch(() => undefined);
+  }, [housePatternId]);
   useEffect(() => {
     getCurrentCards()
       .then((cards) => setNewest(cards.filter((c) => c.primary_image_url).slice(0, 6)))
@@ -22,21 +29,21 @@ export default function Home() {
   }, []);
 
   return (
-    <div className="flex flex-col gap-7">
+    <div className="flex flex-col gap-5">
       <div>
         <h1 className="font-display text-5xl font-bold text-ink">What are you looking for?</h1>
-        <p className="mt-3 text-2xl text-mute">Touch a tile to get started. Our staff are always happy to help, too.</p>
+        <p className="mt-2 text-2xl text-mute">Touch a tile to get started. Our staff are always happy to help, too.</p>
       </div>
-      <div className="grid grid-cols-3 gap-6">
+      <div className="grid grid-cols-3 gap-5">
         {TILES.map((t) => (
           <Link
             key={t.to}
             to={t.to}
-            className={`flex min-h-[190px] flex-col justify-between rounded-3xl border-2 p-7 transition active:scale-[0.99] ${
+            className={`flex min-h-[150px] flex-col justify-between rounded-3xl border-2 px-7 py-6 transition active:scale-[0.99] ${
               t.feature ? "border-brand bg-gradient-to-br from-brand to-brand-deep" : "border-edge bg-panel active:bg-panel-2"
             }`}
           >
-            <span className="text-5xl">{t.icon}</span>
+            <span className="text-[44px] leading-none">{t.icon}</span>
             <div>
               <div className="font-display text-3xl font-bold text-ink">{t.title}</div>
               <div className={`mt-2 text-lg ${t.feature ? "text-white/85" : "text-mute"}`}>{t.sub}</div>
@@ -44,6 +51,21 @@ export default function Home() {
           </Link>
         ))}
       </div>
+      {/* Oil Patterns (runbook 6eu): a full-width banner under the six tiles,
+          so the 3x2 grid and the 1080p fit stay as they were. */}
+      <Link
+        to="/patterns"
+        className="flex items-center justify-between gap-6 rounded-3xl border-2 border-edge bg-panel px-7 py-4 transition active:scale-[0.99] active:bg-panel-2"
+      >
+        <div className="flex items-center gap-5">
+          <span className="text-5xl">🛢️</span>
+          <div>
+            <div className="font-display text-3xl font-bold text-ink">Oil patterns</div>
+            <div className="mt-1 text-lg text-mute">See where the oil goes on {house ? "our house shot" : "any pattern"} and which balls fit it.</div>
+          </div>
+        </div>
+        <span className="font-display text-2xl font-bold text-brand">{house ? `Our house shot: ${house} ›` : "Browse patterns ›"}</span>
+      </Link>
       {newest.length > 0 && (
         <div>
           <div className="mb-4 flex items-baseline justify-between">
@@ -52,7 +74,7 @@ export default function Home() {
               See all ›
             </Link>
           </div>
-          <div className="grid grid-cols-8 gap-4">
+          <div className="grid grid-cols-9 gap-4">
             {newest.map((b) => (
               <Link key={b.id} to={`/ball/${b.id}`} className="rounded-2xl border-2 border-edge bg-panel p-3 active:bg-panel-2">
                 <div className="aspect-square overflow-hidden rounded-xl bg-white/95">

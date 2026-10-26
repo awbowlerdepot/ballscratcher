@@ -268,3 +268,68 @@ export const MATERIAL_LABEL: Record<string, string> = {
 export function titleCase(s: string | null | undefined) {
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : "";
 }
+
+// --- oil patterns (runbook 6eu) -------------------------------------------------
+
+export interface PatternSummary {
+  id: string;
+  name: string;
+  category: string; // house | sport | challenge | recreational | tournament
+  series: string | null;
+  source: string;
+  status: string;
+  length_feet: number | null;
+  volume_ml: number | null;
+  ratio: number | null;
+  reverse_brush_drop_feet: number | null;
+}
+
+export interface PatternZone {
+  from: string;
+  to: string;
+  against_from: string;
+  against_to: string;
+  label: string | null;
+  ratio: number | null;
+}
+
+export interface PatternDetail extends PatternSummary {
+  short_name: string | null;
+  source_url: string | null;
+  oil_per_board_ul: number | null;
+  forward_ml: number | null;
+  reverse_ml: number | null;
+  description: string | null;
+  track_zones: PatternZone[];
+  machine: Record<string, unknown>;
+  board_totals: { forward_ul: number[]; reverse_ul: number[] } | null;
+  profile: { foot_step: number; units: string; model: string | null; burn_lanes: number | null; rows: number[][] } | null;
+}
+
+export interface SuggestedBall {
+  id: string;
+  name: string;
+  brand_name: string;
+  primary_image_url: string | null;
+  oil: number;
+  motion: number;
+  coverstock_name: string | null;
+  finish_category: string | null;
+  article_slug: string | null;
+}
+
+export interface PatternSuggestions {
+  pattern_id: string;
+  target: { oil: number; motion: number };
+  summary: string;
+  note: string;
+  groups: { key: "best" | "lighter" | "heavier"; title: string; blurb: string; balls: SuggestedBall[] }[];
+}
+
+export const getPatterns = () =>
+  cached("patterns", () => get<{ items: PatternSummary[] }>("/patterns").then((r) => r.items));
+
+export const getPattern = (id: string) => cached(`pattern:${id}`, () => get<PatternDetail>(`/patterns/${id}`));
+
+export const getPatternSuggestions = (id: string) =>
+  cached(`pattern-sugg:${id}`, () => get<PatternSuggestions>(`/patterns/${id}/suggestions`));

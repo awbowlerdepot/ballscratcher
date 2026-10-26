@@ -3020,3 +3020,91 @@ def test_replacements_steps_skip_closest_and_have_every_direction():
 def test_lookup_like_pattern_escapes_wildcards():
     assert service._like_pattern("50%_off") == "%50\\%\\_off%"
     assert service.lookup_plotter_balls(None, "a") == []  # under 2 chars: no query at all
+
+
+# --- Oil patterns + ball suggestions (runbook 6eu) ---------------------------
+
+_POP = [{"volume_ml": v, "length_feet": l, "ratio": r} for v, l, r in
+        [(20, 34, 2.5), (22, 37, 3.0), (24, 40, 5.0), (25, 42, 8.0), (26, 43, 10.0), (28, 45, 2.0), (30, 48, 2.2), (32, 52, 12.0)]]
+
+
+def _ball(i, oil, motion, rec=True, material="reactive"):
+    return {"id": f"b{i}", "name": f"Ball {i}", "brand_name": "X", "oil": oil, "motion": motion, "recommendable": rec,
+            "coverstock_material": material, "primary_image_url": None}
+
+
+def test_pattern_targets_follow_volume_length_and_ratio():
+    """Heavier/longer -> stronger (oil up); Al: "short is early and smooth,
+    long is more aggressive and angular" (motion up with length); high
+    ratio adds angularity."""
+    short_light = service.pattern_targets({"volume_ml": 20, "length_feet": 34, "ratio": 2.5}, _POP)
+    long_heavy = service.pattern_targets({"volume_ml": 32, "length_feet": 52, "ratio": 2.5}, _POP)
+    assert short_light["oil"] < 6 and long_heavy["oil"] > 12
+    assert short_light["motion"] < long_heavy["motion"]  # long = more angular
+    flat = service.pattern_targets({"volume_ml": 25, "length_feet": 42, "ratio": 2.0}, _POP)
+    house = service.pattern_targets({"volume_ml": 25, "length_feet": 42, "ratio": 12.0}, _POP)
+    assert house["motion"] > flat["motion"] and house["oil"] == flat["oil"]
+    lo, hi = service.OIL_TARGET_RANGE
+    assert lo <= short_light["oil"] <= hi and lo <= long_heavy["oil"] <= hi
+
+
+def test_suggestions_rank_by_the_plotter_and_skip_unbuyable_and_plastic():
+    balls = [_ball(1, 8, 9), _ball(2, 8.5, 9.5), _ball(3, 12, 9), _ball(4, 4, 9), _ball(5, 8, 9, rec=False),
+             _ball(6, 1, 1, material="polyester"), _ball(7, 9, 10), _ball(8, 7.5, 8), _ball(9, 13, 10), _ball(10, 5, 8)]
+    pattern = {"id": "p1", "volume_ml": 25, "length_feet": 42, "ratio": 8.0}
+    t = service.pattern_targets(pattern, _POP)
+    out = service.suggest_for_pattern(pattern, _POP, balls)
+    groups = {g["key"]: g for g in out["groups"]}
+    ids = [b["id"] for g in out["groups"] for b in g["balls"]]
+    assert "b5" not in ids and "b6" not in ids  # no BowlerDepot link / polyester
+    assert len(ids) == len(set(ids))  # no ball in two groups
+    best = groups["best"]["balls"]
+    assert len(best) == service.SUGGEST_BEST
+    import math
+    d = [math.hypot(b["oil"] - t["oil"], (b["motion"] - t["motion"]) * 0.8) for b in best]
+    assert d == sorted(d)
+    assert all(b["oil"] <= t["oil"] for b in groups["lighter"]["balls"][:1])
+    assert groups["heavier"]["balls"][0]["oil"] > t["oil"]
+    assert out["summary"].startswith("A medium-length") and "house shot" in out["summary"]
+    assert set(best[0]) == {"id", "name", "brand_name", "primary_image_url", "oil", "motion", "coverstock_name",
+                            "finish_category", "article_slug"}
+
+
+def test_public_pattern_only_returns_published_and_curated_fields():
+    class Cur:
+        def __init__(self):
+            self.sql = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, sql, params=None):
+            self.sql = sql
+
+        def fetchone(self):
+            row = {c: None for c in service.PATTERN_PUBLIC_COLUMNS}
+            row.update(id="11111111-1111-1111-1111-111111111111", name="P", length_feet=40, ratio=3,
+                       track_zones=[{"from": "3L", "to": "7L", "against_from": "18L", "against_to": "18R", "ratio": 2,
+                                     "reported_ratio": 2.1}],
+                       steps=[{"direction": "forward", "order": 1, "loads": 1, "reported_oil_ul": 5}],
+                       profile={"rows": [[0.0]], "burn_lanes": 2, "foot_step": 1, "units": "u", "model": "m", "x": 1})
+            return tuple(row[c] for c in service.PATTERN_PUBLIC_COLUMNS)
+
+    class Conn:
+        def __init__(self):
+            self.c = Cur()
+
+        def cursor(self):
+            return self.c
+
+    conn = Conn()
+    assert service.get_public_pattern(conn, "not-a-uuid") is None
+    p = service.get_public_pattern(conn, "11111111-1111-1111-1111-111111111111")
+    assert "published = true and review_status = 'approved'" in conn.c.sql
+    assert "reported_ratio" not in p["track_zones"][0] and "reported_oil_ul" not in p["steps"][0]
+    assert "x" not in p["profile"] and p["length_feet"] == 40.0
+    for hidden in ("kosi_key", "raw_key", "upload_key", "review_status", "review_note"):
+        assert hidden not in service.PATTERN_PUBLIC_COLUMNS

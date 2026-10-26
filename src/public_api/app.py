@@ -242,4 +242,27 @@ def get_bowlerdepot_article_hero(bigcommerce_product_id: str):
     return service.get_article_hero_by_bigcommerce_product_id(conn, bigcommerce_product_id)
 
 
+# Oil patterns (runbook 6eu): approved oil_patterns rows, read-only, for the
+# kiosk's Oil Patterns section (and anything else public later).
+@app.get("/patterns")
+def get_patterns():
+    return {"items": service.list_public_patterns(service.get_db_connection())}
+
+
+@app.get("/patterns/{pattern_id}/suggestions")
+def get_pattern_suggestions(pattern_id: str):
+    out = service.get_pattern_suggestions(service.get_db_connection(), pattern_id)
+    if out is None:
+        raise HTTPException(status_code=404, detail="No published pattern with that id")
+    return out
+
+
+@app.get("/patterns/{pattern_id}")
+def get_pattern(pattern_id: str):
+    p = service.get_public_pattern(service.get_db_connection(), pattern_id)
+    if p is None:
+        raise HTTPException(status_code=404, detail="No published pattern with that id")
+    return p
+
+
 handler = Mangum(app)

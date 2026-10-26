@@ -20,7 +20,9 @@ import { KioskProvider } from "./lib/kiosk";
 //   /next        "what's next for my arsenal" -> directional steps
 //   /new         new arrivals
 //   /learn, /learn/:slug   Learn articles
+//   /patterns, /pattern/:id   oil patterns + suggested balls (runbook 6eu)
 //   /m/:id       phone hand-off page (opened from the QR; outside the shell)
+//   /m/pattern/:id   phone hand-off for an oil pattern
 //   /config      hidden location/device screen (long-press the logo)
 const Attract = lazy(() => import("./pages/Attract"));
 const Home = lazy(() => import("./pages/Home"));
@@ -34,6 +36,9 @@ const NewArrivals = lazy(() => import("./pages/NewArrivals"));
 const LearnList = lazy(() => import("./pages/LearnList"));
 const LearnArticle = lazy(() => import("./pages/LearnArticle"));
 const Handoff = lazy(() => import("./pages/Handoff"));
+const Patterns = lazy(() => import("./pages/Patterns"));
+const Pattern = lazy(() => import("./pages/Pattern"));
+const PatternHandoff = lazy(() => import("./pages/PatternHandoff"));
 const Config = lazy(() => import("./pages/Config"));
 
 createRoot(document.getElementById("root")!).render(
@@ -43,6 +48,7 @@ createRoot(document.getElementById("root")!).render(
         <Suspense fallback={<div className="min-h-screen bg-night"><Spinner /></div>}>
           <Routes>
             <Route path="/" element={<Attract />} />
+            <Route path="/m/pattern/:id" element={<PatternHandoff />} />
             <Route path="/m/:id" element={<Handoff />} />
             <Route path="/config" element={<Config />} />
             <Route element={<Shell />}>
@@ -56,6 +62,8 @@ createRoot(document.getElementById("root")!).render(
               <Route path="/new" element={<NewArrivals />} />
               <Route path="/learn" element={<LearnList />} />
               <Route path="/learn/:slug" element={<LearnArticle />} />
+              <Route path="/patterns" element={<Patterns />} />
+              <Route path="/pattern/:id" element={<Pattern />} />
               <Route path="*" element={<Home />} />
             </Route>
           </Routes>
