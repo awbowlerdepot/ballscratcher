@@ -21801,6 +21801,25 @@ even after a ball moved to the retired-balls page, and a manual Rescrape
 didn't help. Now every run writes the listing's status, and a change is
 `changed` and re-queued. New `WeeklyFullRefresh` Sunday 11:10 UTC.
 
+**Follow-ups done the same day:**
+- **Manual Motiv discovery run** (Al: "yes trigger the motiv discovery
+  now"): 206 seen, 2 changed. Supra Clutch and Covert VIP EXJ were
+  re-scraped to retired, leaving MOTIV at 32 current / 174 retired.
+- **The 232 stale Motiv URLs** (Al: "look into the 232 motiv urls", then
+  "yes delete them"):
+  - All came from MOTIV's first discovery run on 2026-08-01, when the
+    category pages' relative `./n_<id>` links were joined against the
+    category path, producing `/products/balls/[retired-balls/]n_<id>`.
+    That was fixed straight after (see the netsuite_url_discovery
+    docstring), and every run since stores `motivbowling.com/n_<id>`.
+  - Every one had a live `/n_<id>` twin, none had a products row, and all
+    had sat `scrape_status = pending` since.
+  - Deleted from `discovered_urls` only: the old path, last seen before
+    2026-08-02, no product, a live twin. Exactly 232.
+  - MOTIV now has 206 URLs, all seen today, matching its 206 products. This
+    keeps a future "not seen for 2+ weeks" flag from starting with 232
+    false alarms.
+
 **Deploy:** `sam build && sam deploy`.
 **Verify:**
 - The next daily commercebuild/netsuite discovery logs show a
