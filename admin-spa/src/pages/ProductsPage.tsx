@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { listBrands, listProductsPage, rescrapeProduct } from "../api/client";
+import { listBrands, listProductsPage, rescrapeProduct, setProductPublished } from "../api/client";
 import type { Brand, ListProductsParams, Product, ProductSort, SourcePlatform } from "../api/types";
 import Badge from "../components/Badge";
 import type { BulkAction, Column } from "../components/DataTable";
@@ -129,6 +129,8 @@ export default function ProductsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // Bumped after a bulk publish/unpublish so the list refetches.
+  const [reloadKey, setReloadKey] = useState(0);
 
   // Filters/sort/offset all live in the URL query string rather than
   // component state -- Al: "some state management for the filtering and
@@ -203,7 +205,7 @@ export default function ProductsPage() {
     // updateFilter), so this doesn't need offset in a way that fights
     // that.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, published, brandId, search, sourcePlatform, sort, missingCore, missingCoverstock, missingSkus, offBrandSite, offset]);
+  }, [status, published, brandId, search, sourcePlatform, sort, missingCore, missingCoverstock, missingSkus, offBrandSite, offset, reloadKey]);
 
   // Single writer for every filter control -- deletes a param entirely
   // rather than writing its "empty" value (blank string, "false") so
@@ -240,6 +242,37 @@ export default function ProductsPage() {
       },
       { replace: true },
     );
+  }
+
+  // Bulk publish / unpublish (runbook 6ff). Al: "can you add support for a
+  // bulk publish, using the same check boxes just to publish all" -- after
+  // the SWAG parser (6fe) brought in 27 unpublished current balls. Calls the
+  // existing per-ball PATCH /products/{id}/published, ten at a time, so the
+  // usual publish behavior (and the partner feed's upsert/remove) applies
+  // unchanged. Rows already in the target state are skipped.
+  async function handleBulkPublished(rows: Product[], published: boolean) {
+    const todo = rows.filter((p) => p.published !== published);
+    if (!published && todo.length && !window.confirm(
+      `Unpublish ${todo.length} ball${todo.length === 1 ? "" : "s"}? They'll come off the kiosk, the consumer site and the partner API.`,
+    )) return;
+    let ok = 0;
+    let failed = 0;
+    for (let i = 0; i < todo.length; i += 10) {
+      const results = await Promise.allSettled(todo.slice(i, i + 10).map((p) => setProductPublished(p.id, published)));
+      ok += results.filter((r) => r.status === "fulfilled").length;
+      failed += results.filter((r) => r.status === "rejected").length;
+    }
+    const skipped = rows.length - todo.length;
+    const verb = published ? "Published" : "Unpublished";
+    show(
+      `${verb} ${ok} ball${ok === 1 ? "" : "s"}` +
+        (skipped ? `, ${skipped} already ${published ? "published" : "unpublished"}` : "") +
+        (failed ? `, ${failed} failed` : "") +
+        ".",
+      failed ? "info" : "ok",
+    );
+    setSelectedIds(new Set());
+    setReloadKey((k) => k + 1);
   }
 
   async function handleBulkRescrape(rows: Product[]) {
@@ -377,7 +410,9 @@ export default function ProductsPage() {
   }
 
   const bulkActions: BulkAction<Product>[] = [
-    { label: "Rescrape selected", onClick: handleBulkRescrape, variant: "primary" },
+    { label: "Publish selected", onClick: (rows) => handleBulkPublished(rows, true), variant: "primary" },
+    { label: "Unpublish selected", onClick: (rows) => handleBulkPublished(rows, false), variant: "secondary" },
+    { label: "Rescrape selected", onClick: handleBulkRescrape, variant: "secondary" },
   ];
 
   return (

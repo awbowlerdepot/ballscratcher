@@ -21929,6 +21929,27 @@ from admin Products (Brand SWAG, Published: Not published).
 - SWAG has about 27 current balls with per-weight SKUs.
 - No SWAG `product_images` row matches `%swag-logo%`.
 
+### 6ff. Admin Products: bulk publish / unpublish (2026-10-29)
+
+Al: "can you add support for a bulk publish, using the same check boxes just
+to publish all", after 6fe brought in 27 unpublished SWAG current balls.
+
+The Products table's bulk-action bar (desktop, the existing checkboxes and
+select-all for the page) gains **Publish selected** and **Unpublish
+selected**, next to Rescrape selected:
+- Each calls the existing `PATCH /products/{id}/published`, ten at a time,
+  and skips rows already in the target state.
+- A toast reports published, already published and failed counts, then the
+  list refreshes.
+- Unpublish asks for confirmation first, because it removes balls from the
+  kiosk, the consumer site and the partner API (partners get a `remove`).
+
+Frontend only: `admin-spa/src/pages/ProductsPage.tsx`.
+
+**Deploy:** push.
+**Verify:** Products → Brand SWAG, Published: Not published → select all →
+Publish selected → 27 published, and the filter now shows 0.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
