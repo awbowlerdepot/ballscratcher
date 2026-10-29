@@ -1628,9 +1628,21 @@ def handler(event, context):
     -failure handling as every other scraper here."""
     jobs = _extract_jobs(event)
 
+    # Crawl-delay pacing (runbook 6fc). stormbowling.com asks for
+    # Crawl-delay: 10. The weekly full refresh now queues every Storm / Roto
+    # Grip / 900 Global page (~390), so the scraper finally paces itself:
+    # PAGE_DELAY_SECONDS between pages inside a batch, with the queue
+    # trigger's MaximumConcurrency: 2 (template.yaml) -- two workers at 20s
+    # each is about one request every 10s overall. Batch of 5 x ~(3s fetch
+    # + 20s) stays inside the 150s timeout.
+    import time
+
+    delay = float(os.environ.get("PAGE_DELAY_SECONDS", "20"))
     results = []
     batch_item_failures = []
-    for job, message_id in jobs:
+    for n, (job, message_id) in enumerate(jobs):
+        if n and message_id is not None and delay > 0:
+            time.sleep(delay)
         try:
             results.append(_process_one(job))
         except Exception:

@@ -753,3 +753,60 @@ def test_material_falls_back_to_the_cover_name():
     assert f("Urethane") == "urethane"
     assert f(None) is None
     assert f("Polyester", "reactive_resin") == "reactive_resin"  # never overrides a parsed material
+
+
+# --- move_status_sibling (runbook 6fc) ----------------------------------------
+import app  # noqa: E402  (module import for the helpers below)
+
+class _SiblingConn:
+    """Fake conn holding {url: id} for products."""
+
+    def __init__(self, rows):
+        self.rows, self.updates = dict(rows), []
+
+    def cursor(self):
+        conn = self
+
+        class Cur:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def execute(self, sql, params):
+                if sql.startswith("select"):
+                    self.row = (conn.rows[params[0]],) if params[0] in conn.rows else None
+                else:
+                    new_url, pid = params
+                    conn.updates.append((new_url, pid))
+                    old = next(u for u, i in conn.rows.items() if i == pid)
+                    conn.rows[new_url] = conn.rows.pop(old)
+
+            def fetchone(self):
+                return self.row
+
+        return Cur()
+
+
+CUR = "https://www.brunswickbowling.com/products/balls/current/energize"
+RET = "https://www.brunswickbowling.com/products/balls/retired/energize"
+
+
+def test_retired_url_takes_over_the_current_row():
+    conn = _SiblingConn({CUR: "p1"})
+    assert app.move_status_sibling(conn, RET) == "p1"
+    assert conn.rows == {RET: "p1"}
+
+
+def test_back_to_current_moves_the_other_way():
+    conn = _SiblingConn({RET: "p1"})
+    assert app.move_status_sibling(conn, CUR) == "p1" and conn.rows == {CUR: "p1"}
+
+
+def test_existing_pair_or_no_sibling_is_left_alone():
+    pair = _SiblingConn({CUR: "p1", RET: "p2"})
+    assert app.move_status_sibling(pair, RET) is None and pair.updates == []
+    alone = _SiblingConn({})
+    assert app.move_status_sibling(alone, RET) is None and alone.updates == []
+    assert app.move_status_sibling(alone, "https://x/products/bags/foo") is None

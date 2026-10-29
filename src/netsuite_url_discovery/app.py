@@ -140,11 +140,17 @@ def diff_against_known(conn, brand_id: str, entries: list) -> dict:
     with each URL -- build_scrape_messages needs it, since the product
     page itself has no reliable status signal of its own (see
     netsuite_product_scraper's module docstring point 1)."""
-    new_entries, unchanged_entries = [], []
+    new_entries, changed_entries, unchanged_entries = [], [], []
 
+    # status_path kept current (runbook 6fc). Al, after the retirement
+    # audit: "yes do 1 and 2". A known URL only ever had last_seen_at
+    # touched, so a Motiv ball that moved from /products/balls/ to the
+    # retired-balls page kept status_path 'current' forever -- and the
+    # scraper reads status_path, so even a manual Rescrape kept it current.
+    # Now every run writes the listing's status, and a change re-queues it.
     with conn.cursor() as cur:
         for entry in entries:
-            cur.execute("select id from discovered_urls where url = %s", (entry["url"],))
+            cur.execute("select id, status_path from discovered_urls where url = %s", (entry["url"],))
             row = cur.fetchone()
 
             if row is None:
@@ -158,13 +164,16 @@ def diff_against_known(conn, brand_id: str, entries: list) -> dict:
                 new_entries.append(entry)
             else:
                 cur.execute(
-                    "update discovered_urls set last_seen_at = now() where url = %s",
-                    (entry["url"],),
+                    "update discovered_urls set last_seen_at = now(), status_path = %s where url = %s",
+                    (entry["status"], entry["url"]),
                 )
-                unchanged_entries.append(entry)
+                if row[1] != entry["status"]:
+                    changed_entries.append(entry)
+                else:
+                    unchanged_entries.append(entry)
     conn.commit()
 
-    return {"new": new_entries, "changed": [], "unchanged": unchanged_entries}
+    return {"new": new_entries, "changed": changed_entries, "unchanged": unchanged_entries}
 
 
 def build_scrape_messages(brand_id: str, entries: list) -> list:
@@ -221,11 +230,14 @@ def handler(event, context):
         conn.close()
 
     logger.info(
-        "Discovery complete: %d new, %d unchanged",
-        len(diff["new"]), len(diff["unchanged"]),
+        "Discovery complete: %d new, %d changed status, %d unchanged",
+        len(diff["new"]), len(diff["changed"]), len(diff["unchanged"]),
     )
 
     entries_to_scrape = diff["new"] + diff["changed"]
+    # Weekly safety net (runbook 6fc, same as the other platforms' 6dx).
+    if (event or {}).get("full_refresh"):
+        entries_to_scrape = entries_to_scrape + diff["unchanged"]
     published_count = 0
     queue_url = os.environ.get("PRODUCT_SCRAPE_QUEUE_URL")
     if entries_to_scrape and queue_url:
@@ -240,6 +252,7 @@ def handler(event, context):
         "body": json.dumps({
             "total_seen": len(entries),
             "new_count": len(diff["new"]),
+            "changed_count": len(diff["changed"]),
             "unchanged_count": len(diff["unchanged"]),
             "published_count": published_count,
         }),

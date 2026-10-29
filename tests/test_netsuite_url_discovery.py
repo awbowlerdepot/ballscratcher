@@ -93,9 +93,11 @@ class _FakeCursor:
 
     def execute(self, query, params=None):
         self.executed.append((" ".join(query.split()), params))
-        if query.strip().startswith("select id from discovered_urls"):
+        if query.strip().startswith("select id"):
             url = params[0]
-            self._last_result = (1,) if url in self.existing_urls else None
+            # existing_urls: a set (status unknown) or {url: stored status_path}.
+            status = self.existing_urls.get(url) if isinstance(self.existing_urls, dict) else None
+            self._last_result = (1, status) if url in self.existing_urls else None
         else:
             self._last_result = None
 
@@ -122,7 +124,7 @@ class _FakeConn:
 
 
 def test_diff_against_known_new_vs_unchanged():
-    conn = _FakeConn(existing_urls={RAPTOR_REIGN})
+    conn = _FakeConn(existing_urls={RAPTOR_REIGN: "retired"})
     entries = [
         {"url": JACKAL_ONYX, "status": "current"},
         {"url": RAPTOR_REIGN, "status": "retired"},
@@ -181,3 +183,14 @@ if __name__ == "__main__":
         passed += 1
         print(f"PASS: {t.__name__}")
     print(f"\n{passed}/{len(tests)} tests passed")
+
+
+
+def test_known_url_whose_listing_changed_is_requeued_and_status_updated():
+    """Runbook 6fc: a known MOTIV ball that moved to the retired-balls page
+    gets status_path updated and comes back as "changed"."""
+    conn = _FakeConn(existing_urls={RAPTOR_REIGN: "current"})
+    diff = app.diff_against_known(conn, "brand-123", [{"url": RAPTOR_REIGN, "status": "retired"}])
+    assert [e["url"] for e in diff["changed"]] == [RAPTOR_REIGN] and diff["unchanged"] == []
+    updates = [c for c in conn.cursor().executed if c[0].startswith("update discovered_urls")]
+    assert updates[-1][1] == ("retired", RAPTOR_REIGN)

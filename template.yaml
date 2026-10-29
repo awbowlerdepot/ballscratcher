@@ -2508,6 +2508,16 @@ Resources:
             Name: bowling-scraper-netsuite-url-discovery-daily
             Description: Category-page diff against discovered_urls for MOTIV; emits new/changed product URLs.
             Enabled: true
+        # Weekly full re-scrape (runbook 6fc; same safety net as 6dx's on the
+        # other platforms, which MOTIV and CommerceBuild never got).
+        WeeklyFullRefresh:
+          Type: Schedule
+          Properties:
+            Schedule: cron(10 11 ? * SUN *)
+            Input: '{"full_refresh": true}'
+            Name: bowling-scraper-netsuite-url-discovery-weekly-full
+            Description: Weekly full re-scrape of every MOTIV URL (runbook 6fc).
+            Enabled: true
 
   NetsuiteProductScraperFunction:
     Type: AWS::Serverless::Function
@@ -3300,6 +3310,9 @@ Resources:
   # SQS event-source-mapping concurrency limit (e.g. a queue-level
   # MaximumConcurrency) once real message volume is observed; not added
   # here yet since BatchSize: 5 alone doesn't guarantee safe spacing.
+  # CLOSED (runbook 6fc): the weekly full refresh needed it -- the trigger
+  # now has MaximumConcurrency: 2 and the scraper sleeps
+  # PAGE_DELAY_SECONDS (20) between pages.
 
   CommercebuildUrlDiscoveryFunction:
     Type: AWS::Serverless::Function
@@ -3336,7 +3349,19 @@ Resources:
           Properties:
             Schedule: rate(1 day)
             Name: bowling-scraper-commercebuild-url-discovery-daily
-            Description: Category/sitemap diff against discovered_urls for Storm/Roto Grip/900 Global; emits new/changed product URLs. Already respects stormbowling.com's Crawl-delay:10 via its own 10s inter-brand sleep -- see the KNOWN GAP comment above though, CommercebuildProductScraperFunction consuming the resulting queue has no matching per-message throttle yet, worth watching once daily-scheduled real message volume starts flowing.
+            Description: Category/sitemap diff against discovered_urls for Storm/Roto Grip/900 Global; emits new/changed product URLs. Respects stormbowling.com's Crawl-delay:10 via its own 10s inter-brand sleep; the scraper paces itself too (runbook 6fc).
+            Enabled: true
+        # Weekly full re-scrape (runbook 6fc). ~390 pages; the scraper's
+        # PAGE_DELAY_SECONDS + MaximumConcurrency: 2 keep it near one
+        # request every 10s (stormbowling.com Crawl-delay), so this takes
+        # about an hour.
+        WeeklyFullRefresh:
+          Type: Schedule
+          Properties:
+            Schedule: cron(20 11 ? * SUN *)
+            Input: '{"full_refresh": true}'
+            Name: bowling-scraper-commercebuild-url-discovery-weekly-full
+            Description: Weekly full re-scrape of every Storm / Roto Grip / 900 Global URL (runbook 6fc).
             Enabled: true
 
   CommercebuildProductScraperFunction:
@@ -3394,6 +3419,11 @@ Resources:
           Properties:
             Queue: !GetAtt CommercebuildProductScrapeQueue.Arn
             BatchSize: 5
+            # Runbook 6fc: closes the KNOWN GAP above -- at most two
+            # workers (SQS's minimum), each pausing PAGE_DELAY_SECONDS (20)
+            # between pages, so about one stormbowling.com request per 10s.
+            ScalingConfig:
+              MaximumConcurrency: 2
             FunctionResponseTypes:
               - ReportBatchItemFailures
       # SQS-triggered from CommercebuildProductScrapeQueue (populated by

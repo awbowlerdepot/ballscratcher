@@ -21736,6 +21736,78 @@ Frontend only (`admin-spa/src/pages/ProductsPage.tsx`). **Deploy:** push.
 **Verify:** Products → pick a brand by name, Status → All shows 1,897,
 toggle Missing data → Core, then Clear filters.
 
+### 6fc. Retirement detection: Craft CMS duplicates merged; Storm / Roto Grip / 900 Global and Motiv now catch retirements (2026-10-28)
+
+Al asked for "a quick audit to see what we do for each brand to check if
+balls move from current to discountinued", then "yes do 1 and 2" (1 = the
+Craft CMS duplicates, 2 = the CommerceBuild / NetSuite rescans).
+
+**Audit, in short.** A retirement is caught only when the brand site marks
+it and we re-scrape that page:
+- Brunswick / Radical / DV8: the URL moves to `/products/balls/retired/`.
+- Storm / Roto Grip / 900 Global: the breadcrumb says "Bowling Balls
+  Archive".
+- Motiv: the ball is listed on the retired-balls category page.
+- Swag: the "Production status" attribute.
+- Hammer / Track / Ebonite: a `retired*` collection, or the Retired tag
+  (6ec).
+
+Nothing catches a ball that simply disappears: `discovered_urls.last_seen_at`
+is written but never read. Follow-ups not done here:
+- a "not seen for 2+ weeks" review flag;
+- Motiv's 232-of-438 URLs not seen in 14 days;
+- Swag's status parse failing safe;
+- the bowwwl Discontinued comparison, which is parsed but never compared.
+
+**1. Craft CMS duplicates.** Because the status is in the URL and products
+is keyed on url, a retirement INSERTed a second thin row (images and SKUs
+only). The original row (videos, article, prices, BowlerDepot and bowwwl
+links) stayed current and published. Five pairs existed: Crown Victory,
+Energize, Heckler Hybrid, No Doubt Solid, Torpedo Direct Hit.
+- `product_scraper.move_status_sibling` runs before the upsert. If this
+  URL has no row but its `/current/` ↔ `/retired/` sibling does, it moves
+  that row's url, and the upsert then updates it in place: same id, the
+  status flips, `discontinued_detected_at` is set. If both rows exist it
+  logs and leaves them.
+- `scripts/merge_craft_status_duplicates.py` (dry run by default; `--apply`
+  was run):
+  - It keeps the row with the most attached data (21–29 each), on the
+    live retired URL and status.
+  - The thin copy isn't deleted: it gets `published = false`, so partners'
+    `/v1/changes` gets a `remove`, and its url gets a
+    `#duplicate-of-<keeper>` suffix.
+  - A re-run finds 0 pairs.
+  - The five are now retired, so they're out of the kiosk's pattern
+    suggestions.
+
+**2. Storm / Roto Grip / 900 Global (CommerceBuild):**
+- Discovery never re-queued a known URL, so archiving was missed without a
+  manual Rescrape.
+- `discovered_urls.status_path` now records whether the URL is on the
+  current category listing (`current` / `other`). A known URL that drops
+  off it, or comes back, is `changed` and re-scraped the next day; the
+  product page's breadcrumb still decides the status.
+- New `WeeklyFullRefresh` Sunday 11:20 UTC (`{"full_refresh": true}`)
+  re-queues everything.
+- To keep about one request every 10 s to stormbowling.com (Crawl-delay
+  10) with ~390 pages, the old KNOWN GAP is closed: the scraper sleeps
+  `PAGE_DELAY_SECONDS` (20) between pages, and the queue trigger has
+  `ScalingConfig.MaximumConcurrency: 2`. The full refresh takes about an
+  hour.
+
+**Motiv (NetSuite):** for known URLs, `diff_against_known` only touched
+`last_seen_at`, so `status_path`, which the scraper reads, stayed 'current'
+even after a ball moved to the retired-balls page, and a manual Rescrape
+didn't help. Now every run writes the listing's status, and a change is
+`changed` and re-queued. New `WeeklyFullRefresh` Sunday 11:10 UTC.
+
+**Deploy:** `sam build && sam deploy`.
+**Verify:**
+- The next daily commercebuild/netsuite discovery logs show a
+  `changed_count`.
+- Sunday's runs queue every URL.
+- `scripts/merge_craft_status_duplicates.py` (dry run) still finds 0 pairs.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

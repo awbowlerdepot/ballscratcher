@@ -210,16 +210,19 @@ def test_build_entries_all_lastmod_none_and_sorted():
     urls = {"https://www.stormbowling.com/z-ball-bowling-ball", "https://www.stormbowling.com/a-ball-bowling-ball"}
     entries = app.build_entries(urls)
     assert entries == [
-        {"url": "https://www.stormbowling.com/a-ball-bowling-ball", "lastmod": None},
-        {"url": "https://www.stormbowling.com/z-ball-bowling-ball", "lastmod": None},
+        {"url": "https://www.stormbowling.com/a-ball-bowling-ball", "lastmod": None, "listing": "other"},
+        {"url": "https://www.stormbowling.com/z-ball-bowling-ball", "lastmod": None, "listing": "other"},
     ]
+    # Runbook 6fc: URLs on the current category listing are tagged as such.
+    marked = app.build_entries(urls, {"https://www.stormbowling.com/z-ball-bowling-ball"})
+    assert [e["listing"] for e in marked] == ["other", "current"]
 
 
 # --- diff_against_known (fake DB conn/cursor, matching psycopg2's context-manager cursor interface) ---
 
 class _FakeCursor:
     def __init__(self, store):
-        self.store = store  # dict: url -> lastmod
+        self.store = store  # dict: url -> (lastmod, status_path)
         self._last_result = None
 
     def __enter__(self):
@@ -232,12 +235,15 @@ class _FakeCursor:
         sql_stripped = sql.strip()
         if sql_stripped.startswith("select"):
             url = params[0]
-            self._last_result = (self.store[url],) if url in self.store else None
+            row = self.store.get(url)
+            self._last_result = None if url not in self.store else (row if isinstance(row, tuple) else (row, None))
         elif sql_stripped.startswith("insert"):
-            _, url, lastmod = params
-            self.store[url] = lastmod
+            _, url, lastmod, listing = params
+            self.store[url] = (lastmod, listing)
         elif sql_stripped.startswith("update"):
-            pass  # last_seen_at touch -- nothing to assert on in this fake
+            listing, url = params
+            lastmod, prev = self.store[url] if isinstance(self.store[url], tuple) else (self.store[url], None)
+            self.store[url] = (lastmod, listing or prev)
         else:
             raise AssertionError(f"unexpected SQL: {sql_stripped}")
 
@@ -368,3 +374,18 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"ERROR: {t.__name__}: {type(e).__name__}: {e}")
     print(f"\n{passed}/{len(tests)} tests passed")
+
+
+
+def test_dropping_off_the_current_listing_is_changed():
+    """Runbook 6fc: a known URL that was on the current category listing and
+    now isn't (archived) -- or comes back -- is "changed" and re-scraped; a
+    first sighting of the field (status_path null) just records it."""
+    url = "https://www.stormbowling.com/phaze-ii-bowling-ball"
+    conn = _FakeConn(known_urls={url: (None, "current")})
+    diff = app.diff_against_known(conn, "b", app.build_entries({url}))  # not on the listing now
+    assert diff["changed"] == [url] and conn.store[url] == (None, "other")
+    diff = app.diff_against_known(conn, "b", app.build_entries({url}, {url}))  # back on it
+    assert diff["changed"] == [url]
+    fresh = _FakeConn(known_urls={url: (None, None)})
+    assert app.diff_against_known(fresh, "b", app.build_entries({url}))["unchanged"] == [url]

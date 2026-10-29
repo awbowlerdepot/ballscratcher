@@ -988,6 +988,45 @@ def _reference_differential(skus: list):
     return min(usable, key=lambda s: abs(s["weight_lbs"] - 15))["differential"]
 
 
+def move_status_sibling(conn, url: str):
+    """Carry an existing product over to its new status URL (runbook 6fc).
+
+    Craft CMS puts the status IN the URL: when Brunswick/Radical/DV8 retire
+    a ball its page moves from /products/balls/current/<slug> to
+    /products/balls/retired/<slug>. products is keyed on url, so the upsert
+    below used to INSERT a second, thin row for the retired URL and leave
+    the original -- with its videos, article, prices and BowlerDepot link --
+    sitting at 'current' forever. Al, after the retirement audit: "yes do 1
+    and 2". Five balls had ended up as both (Crown Victory, Energize,
+    Heckler Hybrid, No Doubt Solid, Torpedo Direct Hit).
+
+    So before the upsert: if this URL has no row yet but its sibling (the
+    same slug under the other status) does, move that row's url here. The
+    upsert's ON CONFLICT then updates it in place -- same product id, the
+    status flips, and discontinued_detected_at is set by the usual
+    current->retired CASE. Works both ways (a ball that comes back).
+    Returns the moved product id, or None. If BOTH rows already exist (an
+    old duplicate) it leaves them alone and logs it -- merging needs a
+    person's eye (see scripts/merge_craft_status_duplicates.py)."""
+    m = STATUS_FROM_URL_RE.search(url or "")
+    if not m:
+        return None
+    other = "retired" if m.group(1) == "current" else "current"
+    sibling = url.replace(f"/products/balls/{m.group(1)}/", f"/products/balls/{other}/", 1)
+    with conn.cursor() as cur:
+        cur.execute("select id from products where url = %s", (url,))
+        here = cur.fetchone()
+        cur.execute("select id from products where url = %s", (sibling,))
+        there = cur.fetchone()
+        if there and not here:
+            cur.execute("update products set url = %s where id = %s", (url, there[0]))
+            logger.info("Moved product %s from %s to %s (status change on the brand site)", there[0], sibling, url)
+            return str(there[0])
+        if there and here:
+            logger.warning("Both %s and %s exist as products -- duplicate pair, not merging automatically", url, sibling)
+    return None
+
+
 def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
     """Insert or update the products row and its product_skus/product_images
     rows for one scraped page. Returns
@@ -1032,6 +1071,7 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
         parsed.get("coverstock_material"), parsed.get("coverstock_type"),
     )
     product_type = parsed.get("product_type", "ball")
+    move_status_sibling(conn, parsed["url"])
 
     # discontinued_detected_at logic (see migration 003's comments for the
     # full reasoning): on INSERT, set to now() if the product is already

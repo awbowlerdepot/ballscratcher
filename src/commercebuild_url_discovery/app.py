@@ -243,10 +243,14 @@ def discover_manual_seed_urls(conn, brand_id: str) -> set:
         return {row[0] for row in cur.fetchall()}
 
 
-def build_entries(urls: set) -> list:
+def build_entries(urls: set, current_listing: set = frozenset()) -> list:
     """No sitemap lastmod source yet (see module docstring) -- every
-    entry gets lastmod=None."""
-    return [{"url": url, "lastmod": None} for url in sorted(urls)]
+    entry gets lastmod=None. `listing` (runbook 6fc) records whether the
+    URL is on the brand's CURRENT category listing ("current") or only in
+    the sitemap / manual seeds ("other") -- the one discovery-time hint
+    that a ball has been archived."""
+    return [{"url": url, "lastmod": None, "listing": "current" if url in current_listing else "other"}
+            for url in sorted(urls)]
 
 
 def diff_against_known(conn, brand_id: str, entries: list) -> dict:
@@ -259,10 +263,19 @@ def diff_against_known(conn, brand_id: str, entries: list) -> dict:
     docstring)."""
     new_urls, changed_urls, unchanged_urls = [], [], []
 
+    # "changed" (runbook 6fc). Al, after the retirement audit: "yes do 1 and
+    # 2". The product page's breadcrumb ("Bowling Balls" vs "Bowling Balls
+    # Archive") is the real status signal, but discovery never re-queued a
+    # known URL, so an archived Storm / Roto Grip / 900 Global ball stayed
+    # current until someone hit Rescrape. Now status_path keeps whether the
+    # URL was on the current category listing; a URL that drops off it (or
+    # comes back) is "changed" and gets re-scraped the next day. A first
+    # sighting of the field (status_path null) just records it.
     with conn.cursor() as cur:
         for entry in entries:
+            listing = entry.get("listing")
             cur.execute(
-                "select sitemap_lastmod from discovered_urls where url = %s",
+                "select sitemap_lastmod, status_path from discovered_urls where url = %s",
                 (entry["url"],),
             )
             row = cur.fetchone()
@@ -270,18 +283,22 @@ def diff_against_known(conn, brand_id: str, entries: list) -> dict:
             if row is None:
                 cur.execute(
                     """
-                    insert into discovered_urls (brand_id, url, sitemap_lastmod)
-                    values (%s, %s, %s)
+                    insert into discovered_urls (brand_id, url, sitemap_lastmod, status_path)
+                    values (%s, %s, %s, %s)
                     """,
-                    (brand_id, entry["url"], entry["lastmod"]),
+                    (brand_id, entry["url"], entry["lastmod"], listing),
                 )
                 new_urls.append(entry["url"])
             else:
+                previous = row[1]
                 cur.execute(
-                    "update discovered_urls set last_seen_at = now() where url = %s",
-                    (entry["url"],),
+                    "update discovered_urls set last_seen_at = now(), status_path = coalesce(%s, status_path) where url = %s",
+                    (listing, entry["url"]),
                 )
-                unchanged_urls.append(entry["url"])
+                if listing and previous and previous != listing:
+                    changed_urls.append(entry["url"])
+                else:
+                    unchanged_urls.append(entry["url"])
     conn.commit()
 
     return {"new": new_urls, "changed": changed_urls, "unchanged": unchanged_urls}
@@ -387,11 +404,15 @@ def handler(event, context):
                 "%d combined",
                 brand_key, len(current_urls), len(sitemap_urls), len(manual_urls), len(urls),
             )
-            entries = build_entries(urls)
+            entries = build_entries(urls, current_urls)
             diff = diff_against_known(conn, brand_id, entries)
 
             published = 0
             urls_to_scrape = diff["new"] + diff["changed"]
+            # Weekly safety net (runbook 6fc, same as the other platforms'
+            # 6dx): {"full_refresh": true} re-queues the unchanged URLs too.
+            if (event or {}).get("full_refresh"):
+                urls_to_scrape = urls_to_scrape + diff["unchanged"]
             if urls_to_scrape and sqs:
                 messages = build_scrape_messages(brand_id, urls_to_scrape)
                 published = publish_messages(sqs, queue_url, messages)
@@ -399,6 +420,7 @@ def handler(event, context):
             per_brand_results[brand_key] = {
                 "total_seen": len(entries),
                 "new_count": len(diff["new"]),
+                "changed_count": len(diff["changed"]),
                 "unchanged_count": len(diff["unchanged"]),
                 "published_count": published,
             }
