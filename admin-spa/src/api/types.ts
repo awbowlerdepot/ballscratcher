@@ -169,6 +169,7 @@ export interface ListProductsParams {
   missing_core?: boolean;
   missing_coverstock?: boolean;
   missing_skus?: boolean;
+  off_brand_site?: boolean; // current balls not seen on the brand site for 14+ days (runbook 6fd)
   html_fallback_skus?: boolean;
   missing_video_candidates?: boolean;
   source_platform?: SourcePlatform;

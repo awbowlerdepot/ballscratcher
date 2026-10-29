@@ -435,6 +435,7 @@ def get_products(
     missing_skus: Optional[bool] = Query(None),
     html_fallback_skus: Optional[bool] = Query(None),
     missing_video_candidates: Optional[bool] = Query(None),
+    off_brand_site: Optional[bool] = Query(None, description="Current balls whose brand-site page discovery hasn't seen for 14+ days (runbook 6fd)"),
     source_platform: Optional[str] = Query(None),
     status: Optional[str] = Query(None),
     sort: Optional[str] = Query(None, description="'popularity', 'total_daily_movement', 'demand_score', 'newest', 'oldest', 'name_asc', or 'name_desc' (see service.list_products'/_SORT_ORDER_BY's docstring); omitted/anything else keeps the default recently-updated order"),
@@ -449,7 +450,7 @@ def get_products(
             has_approved_video_summaries=has_approved_video_summaries,
             missing_core=missing_core, missing_coverstock=missing_coverstock,
             missing_skus=missing_skus, html_fallback_skus=html_fallback_skus,
-            missing_video_candidates=missing_video_candidates,
+            missing_video_candidates=missing_video_candidates, off_brand_site=off_brand_site,
             source_platform=source_platform, status=status, sort=sort,
             limit=limit, offset=offset,
         )
@@ -469,7 +470,7 @@ def get_products(
             has_approved_video_summaries=has_approved_video_summaries,
             missing_core=missing_core, missing_coverstock=missing_coverstock,
             missing_skus=missing_skus, html_fallback_skus=html_fallback_skus,
-            missing_video_candidates=missing_video_candidates,
+            missing_video_candidates=missing_video_candidates, off_brand_site=off_brand_site,
             source_platform=source_platform, status=status,
         )
         return {"items": items, "total": total}

@@ -215,3 +215,14 @@ if __name__ == "__main__":
         passed += 1
         print(f"PASS: {t.__name__}")
     print(f"\n{passed}/{len(tests)} tests passed")
+
+
+def test_discontinued_on_bowwwl_but_current_here_is_a_review_item():
+    """Runbook 6fd: bowwwl's Discontinued flag finally compared with ours."""
+    import app as bw
+    parsed = {"skus": [], "release_date": None, "discontinued": True}
+    flags = bw.compare_to_our_data(parsed, None, [], our_status="current")
+    assert flags == [{"field_name": "status", "current_value": "current", "proposed_value": "retired",
+                      "reason": "bowwwl_cross_check: bowwwl marks this ball Discontinued; the brand site still lists it as current"}]
+    assert bw.compare_to_our_data({**parsed, "discontinued": False}, None, [], our_status="current") == []
+    assert bw.compare_to_our_data(parsed, None, [], our_status="retired") == []

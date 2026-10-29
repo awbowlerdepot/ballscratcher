@@ -262,6 +262,18 @@ def parse_status(production_status_value: str) -> str:
     return None
 
 
+def status_for(name: str, production_status_value: str):
+    """The ball's status (runbook 6fd). SWAG titles retired balls
+    "... – DISCONTINUED", and that wins over the attribute: the retirement
+    audit found two balls -- Shield Pearl and Goat -- titled DISCONTINUED
+    but stored as current. Otherwise the Production-status attribute (the
+    keyword match is confirmed on real pages: 67 SWAG balls are retired by
+    it). None means unknown; upsert_product keeps whatever the row had."""
+    if "discontinued" in (name or "").lower():
+        return "retired"
+    return parse_status(production_status_value)
+
+
 def parse_resources(html: str, base_url: str) -> dict:
     """Captures the Info Sheet / Shelf Talker download links. Unlike
     Brunswick, the anchor text itself is generic ("Click HERE"), so this
@@ -376,7 +388,7 @@ def parse_product_page(html: str, url: str) -> dict:
     return {
         "url": url,
         "name": name,
-        "status": parse_status(attrs.get("production-status")),
+        "status": status_for(name, attrs.get("production-status")),
         "color": attrs.get("colors"),
         "core_name": attrs.get("bowling ball core name"),
         "coverstock_name": attrs.get("bowling ball cover name"),
@@ -593,6 +605,17 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
 
     # See product_scraper.upsert_product / migration 003 for the
     # discontinued_detected_at reasoning -- same logic here.
+    # Fail safe (runbook 6fd): an unrecognised Production-status value used
+    # to reach the insert as NULL and fail the NOT NULL constraint. Keep the
+    # row's existing status instead (or 'current' for a brand-new ball), and
+    # say so in the log.
+    if parsed.get("status") is None:
+        with conn.cursor() as cur:
+            cur.execute("select status from products where url = %s", (parsed["url"],))
+            row = cur.fetchone()
+        parsed = {**parsed, "status": row[0] if row else "current"}
+        logger.warning("No recognisable status on %s; keeping %r", parsed["url"], parsed["status"])
+
     with conn.cursor() as cur:
         cur.execute(
             """

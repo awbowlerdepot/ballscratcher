@@ -8606,3 +8606,22 @@ def test_approved_video_listing_is_the_transcript_queue_order():
     assert seen[-1].endswith("order by pv.match_confidence asc, pv.created_at asc, pv.id asc limit %s offset %s")
     service.list_video_candidates(Conn(), status="approved", sort="published_desc")
     assert "order by pv.published_at desc" in seen[-1]
+
+
+def test_off_brand_site_filter():
+    """Runbook 6fd: current balls whose page discovery hasn't seen for 14+
+    days (or never) -- surfaced for review, never auto-retired."""
+    where, params = service._build_products_where(off_brand_site=True)
+    flat = " ".join(where.split())
+    assert "p.status = 'current'" in flat
+    assert "not exists (select 1 from discovered_urls du where du.url = p.url" in flat
+    assert f"interval '{service.OFF_BRAND_SITE_DAYS} days'" in flat and params == []
+    assert "discovered_urls" not in service._build_products_where()[0]
+
+
+def test_review_item_can_retire_a_ball_but_only_with_a_real_status():
+    plan = service.build_update_plan("status", "Retired")
+    assert plan == {"table": "products", "column": "status", "value": "retired", "where": {}}
+    import pytest
+    with pytest.raises(ValueError):
+        service.build_update_plan("status", "discontinued")

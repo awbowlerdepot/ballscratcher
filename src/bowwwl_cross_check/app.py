@@ -296,7 +296,8 @@ def is_plausible_match(bowwwl_parsed: dict, our_ball_name: str) -> bool:
     return bool(their_words & our_words)
 
 
-def compare_to_our_data(bowwwl_parsed: dict, our_release_date, our_skus: list, tolerance: float = DEFAULT_TOLERANCE) -> list:
+def compare_to_our_data(bowwwl_parsed: dict, our_release_date, our_skus: list, tolerance: float = DEFAULT_TOLERANCE,
+                        our_status: str = None) -> list:
     """Returns a list of {field_name, current_value, proposed_value,
     reason} dicts, review_queue-shaped (field_name uses the same
     "rg_16lb"/"differential_16lb"/"mass_bias_16lb" convention
@@ -332,6 +333,21 @@ def compare_to_our_data(bowwwl_parsed: dict, our_release_date, our_skus: list, t
                     "proposed_value": str(their_value),
                     "reason": f"bowwwl_cross_check: {field} at {weight}lb disagrees by {abs(float(our_value) - float(their_value)):.4f} (tolerance {tolerance})",
                 })
+
+    # Discontinued (runbook 6fd). The module docstring always said bowwwl's
+    # flag "feeds a review_queue flag if it disagrees with our own scraped
+    # status", but our status was never passed in, so it never did. Al,
+    # continuing the retirement audit: "lets keep going". bowwwl saying
+    # Discontinued while we still have the ball current is a review item
+    # proposing 'retired' -- a prompt to check, since the brand site is the
+    # source of truth and its next scrape wins either way.
+    if our_status == "current" and bowwwl_parsed.get("discontinued"):
+        mismatches.append({
+            "field_name": "status",
+            "current_value": "current",
+            "proposed_value": "retired",
+            "reason": "bowwwl_cross_check: bowwwl marks this ball Discontinued; the brand site still lists it as current",
+        })
 
     if our_release_date and bowwwl_parsed.get("release_date") and our_release_date != bowwwl_parsed["release_date"]:
         mismatches.append({
@@ -467,7 +483,8 @@ def _process_one(conn, product: dict) -> dict:
     update_usbc_approval_date(conn, product["product_id"], parsed.get("pba_approval_date"))
 
     our_skus = get_product_skus(conn, product["product_id"])
-    mismatches = compare_to_our_data(parsed, product["release_date"], our_skus)
+    # Only current products are checked (find_products_to_check).
+    mismatches = compare_to_our_data(parsed, product["release_date"], our_skus, our_status="current")
     if mismatches:
         write_review_items(conn, product["product_id"], mismatches)
 

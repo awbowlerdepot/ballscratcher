@@ -34,10 +34,17 @@ const SOURCE_OPTIONS: { value: SourcePlatform; label: string }[] = [
   { value: "shopify", label: "Hammer · Track · Ebonite · Columbia 300" },
   { value: "woocommerce", label: "Swag" },
 ];
-const MISSING_CHIPS: { key: "missing_core" | "missing_coverstock" | "missing_skus"; label: string }[] = [
+const MISSING_CHIPS: { key: "missing_core" | "missing_coverstock" | "missing_skus" | "off_brand_site"; label: string; title?: string }[] = [
   { key: "missing_core", label: "Core" },
   { key: "missing_coverstock", label: "Coverstock" },
   { key: "missing_skus", label: "SKUs" },
+  // Runbook 6fd: a current ball that may have been pulled without being
+  // marked retired. For review only -- nothing is retired automatically.
+  {
+    key: "off_brand_site",
+    label: "Not on brand site (14+ days)",
+    title: "Current balls whose page our discovery hasn't seen on the brand's site for 14+ days. Check whether they've been discontinued.",
+  },
 ];
 
 // Article-status icon color/tooltip -- Al: "an article icon with state
@@ -147,6 +154,7 @@ export default function ProductsPage() {
   const missingCore = searchParams.get("missing_core") === "1";
   const missingCoverstock = searchParams.get("missing_coverstock") === "1";
   const missingSkus = searchParams.get("missing_skus") === "1";
+  const offBrandSite = searchParams.get("off_brand_site") === "1";
   const offset = Number(searchParams.get("offset") ?? "0") || 0;
   const [brands, setBrands] = useState<Brand[]>([]);
   useEffect(() => {
@@ -175,6 +183,7 @@ export default function ProductsPage() {
     missing_core: missingCore || undefined,
     missing_coverstock: missingCoverstock || undefined,
     missing_skus: missingSkus || undefined,
+    off_brand_site: offBrandSite || undefined,
     limit: LIMIT,
     offset,
   };
@@ -194,7 +203,7 @@ export default function ProductsPage() {
     // updateFilter), so this doesn't need offset in a way that fights
     // that.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, published, brandId, search, sourcePlatform, sort, missingCore, missingCoverstock, missingSkus, offset]);
+  }, [status, published, brandId, search, sourcePlatform, sort, missingCore, missingCoverstock, missingSkus, offBrandSite, offset]);
 
   // Single writer for every filter control -- deletes a param entirely
   // rather than writing its "empty" value (blank string, "false") so
@@ -352,7 +361,7 @@ export default function ProductsPage() {
 
   // Anything but the defaults (current, any, all, no missing-data chips,
   // no search); sort isn't a filter, so it stays when clearing.
-  const FILTER_KEYS = ["status", "published", "brand_id", "search", "source_platform", "missing_core", "missing_coverstock", "missing_skus"];
+  const FILTER_KEYS = ["status", "published", "brand_id", "search", "source_platform", "missing_core", "missing_coverstock", "missing_skus", "off_brand_site"];
   const filtersActive = FILTER_KEYS.some((k) => searchParams.get(k));
   function clearFilters() {
     setSelectedIds(new Set());
@@ -452,6 +461,7 @@ export default function ProductsPage() {
                 type="button"
                 onClick={() => updateFilter(c.key, !on)}
                 aria-pressed={on}
+                title={c.title}
                 className={`rounded-full border px-3 py-1 text-xs font-medium ${
                   on ? "border-warn bg-warn-light text-warn" : "border-ink-300 text-ink-600 hover:border-ink-400"
                 }`}

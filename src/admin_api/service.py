@@ -40,6 +40,10 @@ PRODUCT_UPDATABLE_FIELDS = {
     "name", "color", "coverstock_material", "coverstock_type",
     "coverstock_name", "factory_finish", "part_number", "published",
     "finish_category",
+    # Runbook 6fd: bowwwl_cross_check proposes 'retired' when bowwwl marks a
+    # ball Discontinued and we still have it current. Values are checked in
+    # _cast_proposed_value (current/retired only).
+    "status",
 }
 # core_name removed (migration 007): it was never actually a products
 # column -- only ball_families (now cores) ever had it, and that table was
@@ -140,6 +144,11 @@ def _cast_proposed_value(column: str, raw_value):
         return float(raw_value)
     if column == "published":
         return str(raw_value).strip().lower() in ("true", "t", "1", "yes")
+    if column == "status":
+        value = str(raw_value).strip().lower()
+        if value not in ("current", "retired"):
+            raise ValueError(f"status must be 'current' or 'retired', not {raw_value!r}")
+        return value
     return raw_value
 
 
@@ -639,11 +648,14 @@ _DEFAULT_ORDER_BY = "p.updated_at desc, p.id asc"
 # products.demand_score column.
 
 
+OFF_BRAND_SITE_DAYS = 14
+
+
 def _build_products_where(published: bool = None, brand_id: str = None, search: str = None,
                            needs_video_summary_refresh: bool = None, has_approved_video_summaries: bool = None,
                            missing_core: bool = None, missing_coverstock: bool = None, missing_skus: bool = None,
                            html_fallback_skus: bool = None,
-                           missing_video_candidates: bool = None,
+                           missing_video_candidates: bool = None, off_brand_site: bool = None,
                            source_platform: str = None, status: str = None):
     """Shared WHERE-clause + params builder for list_products/count_products
     below -- extracted so the two filter sets can't drift apart (unlike
@@ -701,6 +713,19 @@ def _build_products_where(published: bool = None, brand_id: str = None, search: 
         """
     if missing_video_candidates:
         where += " and not exists (select 1 from product_videos pv where pv.product_id = p.id)"
+    # Silent delisting (runbook 6fd). Al, continuing the retirement audit:
+    # nothing noticed a ball that simply disappears from its brand's site --
+    # discovered_urls.last_seen_at was written on every discovery run but
+    # never read. This surfaces CURRENT balls whose page discovery hasn't
+    # seen for OFF_BRAND_SITE_DAYS (or has no discovery row at all), for a
+    # person to check. It never retires anything itself: a site outage or a
+    # broken discovery run looks exactly the same.
+    if off_brand_site:
+        where += f"""
+            and p.status = 'current'
+            and not exists (select 1 from discovered_urls du where du.url = p.url
+                            and du.last_seen_at >= now() - interval '{OFF_BRAND_SITE_DAYS} days')
+        """
     if source_platform:
         where += " and p.source_platform = %s"
         params.append(source_platform)
@@ -714,7 +739,7 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
                    needs_video_summary_refresh: bool = None, has_approved_video_summaries: bool = None,
                    missing_core: bool = None, missing_coverstock: bool = None, missing_skus: bool = None,
                    html_fallback_skus: bool = None,
-                   missing_video_candidates: bool = None,
+                   missing_video_candidates: bool = None, off_brand_site: bool = None,
                    source_platform: str = None,
                    status: str = None, sort: str = None,
                    limit: int = 50, offset: int = 0) -> list:
@@ -984,7 +1009,7 @@ def list_products(conn, published: bool = None, brand_id: str = None, search: st
         needs_video_summary_refresh=needs_video_summary_refresh,
         has_approved_video_summaries=has_approved_video_summaries,
         missing_core=missing_core, missing_coverstock=missing_coverstock, missing_skus=missing_skus,
-        html_fallback_skus=html_fallback_skus, missing_video_candidates=missing_video_candidates,
+        html_fallback_skus=html_fallback_skus, missing_video_candidates=missing_video_candidates, off_brand_site=off_brand_site,
         source_platform=source_platform, status=status,
     )
     query += where_sql
@@ -1008,7 +1033,7 @@ def count_products(conn, published: bool = None, brand_id: str = None, search: s
                     needs_video_summary_refresh: bool = None, has_approved_video_summaries: bool = None,
                     missing_core: bool = None, missing_coverstock: bool = None, missing_skus: bool = None,
                     html_fallback_skus: bool = None,
-                    missing_video_candidates: bool = None,
+                    missing_video_candidates: bool = None, off_brand_site: bool = None,
                     source_platform: str = None, status: str = None) -> int:
     """Total row count for the exact filter set list_products accepts
     (everything except sort/limit/offset, which can't change how many
@@ -1031,7 +1056,7 @@ def count_products(conn, published: bool = None, brand_id: str = None, search: s
         needs_video_summary_refresh=needs_video_summary_refresh,
         has_approved_video_summaries=has_approved_video_summaries,
         missing_core=missing_core, missing_coverstock=missing_coverstock, missing_skus=missing_skus,
-        html_fallback_skus=html_fallback_skus, missing_video_candidates=missing_video_candidates,
+        html_fallback_skus=html_fallback_skus, missing_video_candidates=missing_video_candidates, off_brand_site=off_brand_site,
         source_platform=source_platform, status=status,
     )
     query = "select count(*) from products p where 1=1" + where_sql

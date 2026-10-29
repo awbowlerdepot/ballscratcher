@@ -21827,6 +21827,55 @@ didn't help. Now every run writes the listing's status, and a change is
 - Sunday's runs queue every URL.
 - `scripts/merge_craft_status_duplicates.py` (dry run) still finds 0 pairs.
 
+### 6fd. Retirement audit, the rest: off-brand-site flag, SWAG status, bowwwl Discontinued (2026-10-29)
+
+Al: "lets keep going on the retirement audit" (the follow-ups from 6fc).
+
+**1. "Not on brand site (14+ days)".** `_build_products_where(off_brand_site=True)`
+(`GET /products?off_brand_site=true`, plus a chip in admin Products'
+Missing data row) lists CURRENT balls whose page discovery hasn't seen for
+`OFF_BRAND_SITE_DAYS` (14), or that have no discovery row at all. This is
+where `discovered_urls.last_seen_at` finally gets read. It never retires
+anything: a site outage or a broken discovery run looks the same. It
+matches 0 balls today; the stale URLs left (Storm 7, Radical 2, Roto Grip
+1) all belong to balls already retired. 6fc's cleanup of 232 Motiv URLs
+means this starts clean.
+
+**2. SWAG status:**
+- `status_for(name, attr)`: a "– DISCONTINUED" title wins. Two balls,
+  Shield Pearl and Goat, were titled DISCONTINUED but stored as current.
+  Otherwise the Production-status attribute decides; its keyword match is
+  confirmed on real pages, with 67 SWAG balls retired by it.
+- Fail safe: an unrecognised value used to reach the insert as NULL and
+  fail the NOT NULL. Now the row keeps its existing status ('current' for
+  a new ball), with a warning in the log.
+- **Found while checking:** SWAG redesigned its ball pages around July
+  2026. Current balls are "Available through partner retailers" with a
+  Find a Retailer button, which WooCommerce types as *external*, and the
+  scraper skips every external listing. So all 27 current SWAG balls are
+  missing: Craze, Black Dragon, Fusion, Judge, Unreal, Insanity, Serpent,
+  Apex and others. The specs are on the page in a custom layout ("The
+  Coverstock: Rage Pearl", "RG 2.52 | Diff .030", weights, a core image).
+  Reading it needs a new parser, which isn't built here.
+
+**3. bowwwl Discontinued.** The docstring said the flag fed a review item
+when it disagreed with our status, but our status was never passed in.
+`compare_to_our_data(..., our_status="current")` now adds a review item
+(`field_name = status`, current → retired) when bowwwl marks a ball we
+still have current as Discontinued. `status` is now approvable in the
+Review Queue (`PRODUCT_UPDATABLE_FIELDS`; `_cast_proposed_value` allows
+only current / retired). Approving retires the ball, and the 050 trigger
+publishes it. The brand site is still the source of truth: its next
+scrape wins either way.
+
+**Deploy:** `sam build && sam deploy`, then push (admin chip). Then
+re-scrape SWAG Shield Pearl and Goat so they flip to retired.
+**Verify:**
+- Products → Not on brand site (14+ days) shows 0.
+- SWAG has 0 current balls whose titles say DISCONTINUED.
+- The next weekly bowwwl run raises a `status` review item for any
+  disagreement.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

@@ -241,3 +241,13 @@ def test_material_falls_back_to_the_cover_name():
     assert f("Urethane") == "urethane"
     assert f(None) is None
     assert f("Polyester", "reactive_resin") == "reactive_resin"  # never overrides a parsed material
+
+
+def test_status_for_name_and_attribute():
+    """Runbook 6fd: a DISCONTINUED title wins over the attribute; unknown
+    values come back None (upsert_product then keeps the row's status)."""
+    import app as wc
+    assert wc.status_for("SWAG Goat Bowling Ball – DISCONTINUED", "In Production") == "retired"
+    assert wc.status_for("SWAG Craze Pearl Bowling Ball", "In Production") == "current"
+    assert wc.status_for("SWAG Craze Pearl Bowling Ball", "Discontinued") == "retired"
+    assert wc.status_for("SWAG Craze Pearl Bowling Ball", "Coming soon") is None
