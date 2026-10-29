@@ -8572,3 +8572,37 @@ def test_list_patterns_slider_ranges():
     assert "volume_ml <= %s" not in sql and params[:4] == [40.0, 44.0, 20.5, 4.0]
     assert out["ranges"] == {"length": {"min": 28.0, "max": 58.0}, "oil": {"min": 5.25, "max": 37.89},
                              "ratio": {"min": 1.0, "max": 23.0}}
+
+
+def test_approved_video_listing_is_the_transcript_queue_order():
+    """Runbook 6fa: the Pi walks GET /video-candidates?status=approved 25 a
+    run; new balls' videos go first, confidence ranks high>medium>low
+    (not the text order), and other statuses keep the old default."""
+    seen = []
+
+    class Cur:
+        description = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def execute(self, sql, params=None):
+            seen.append(" ".join(sql.split()))
+
+        def fetchall(self):
+            return []
+
+    class Conn:
+        def cursor(self):
+            return Cur()
+
+    service.list_video_candidates(Conn(), status="approved")
+    assert "p.release_date >= current_date - 90" in seen[-1]
+    assert "when 'high' then 0 when 'medium' then 1 when 'low' then 2" in seen[-1]
+    service.list_video_candidates(Conn(), status="pending")
+    assert seen[-1].endswith("order by pv.match_confidence asc, pv.created_at asc, pv.id asc limit %s offset %s")
+    service.list_video_candidates(Conn(), status="approved", sort="published_desc")
+    assert "order by pv.published_at desc" in seen[-1]

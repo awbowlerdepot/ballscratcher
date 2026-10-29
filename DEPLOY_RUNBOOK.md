@@ -21656,6 +21656,53 @@ fit.
 Pearl, Purple Pearl and Purple Pearl 78D. Big Ben (44 ft) is unchanged:
 Best match / break down / fresher.
 
+### 6fa. Transcript backlog: newest balls first; a second daily Pi run (2026-10-28)
+
+Al: "can you see what is going on with the video transcript raspberry pi.
+the ion pro pearl videos are sitting without transcripts and they are days
+old", then "yes do both and deploy it".
+
+**What was going on.** Nothing was broken: the Pi's browser fetcher ran
+every day (about 13:20 UTC, no errors). But:
+- Each run stops at 25 videos (6k's 2026-09-30 incident: YouTube blocks
+  the browser part-way through long runs), and about a third have no
+  captions, so it gets roughly 15 transcripts a day.
+- The release-cadence search (6dy) approved 54–75 videos a day on
+  Oct 17–21.
+- The backlog reached 89, the oldest from Oct 17. The 11 Ion Pro Pearl
+  videos were at positions 45–89: the queue went `match_confidence` as
+  text ('high' < 'low' < 'medium') and then oldest first, so a brand-new
+  ball waited behind everything.
+
+**1. Queue order** (`admin_api.service`): `GET
+/video-candidates?status=approved` (the listing the Pi walks) now
+defaults to `_TRANSCRIPT_QUEUE_ORDER_BY`:
+- balls released in the last 90 days (or upcoming) first, newest release
+  first;
+- then everything else oldest first, so nothing starves;
+- `high` > `medium` > `low` inside each.
+
+Pending/rejected listings and explicit `sort=` are unchanged, and the Pi
+script needs no update. Checked on the real data: all 11 Ion Pro Pearl
+videos (release 2026-11-06) moved to positions 3–13, inside the next
+run's 25.
+
+**2. Second daily run (on the Pi, by hand).** Two separate 25-video runs
+about 12 hours apart double the capacity to about 50 a day. The blocking
+showed up within one long run, not across separate runs. On the Pi:
+```bash
+(crontab -l; echo '0 19 * * * ~/run_browser_transcript_fetcher.sh >> ~/bowling-transcript-fetcher-browser.log 2>&1') | crontab -
+crontab -l
+```
+The Pi's clock is UTC−6: the existing `0 7` line runs at about 13:00 UTC,
+so 19:00 Pi time is about 01:00 UTC. The Dashboard's fetcher card shows
+both runs once it fires.
+
+**Deploy:** `sam build && sam deploy` (AdminApiFunction).
+**Verify:** the next Pi run's log/heartbeat shows the Ion Pro Pearl
+videos done, and the backlog query in this section falls by about 50 a
+day.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

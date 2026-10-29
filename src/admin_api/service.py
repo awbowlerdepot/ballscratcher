@@ -3280,6 +3280,23 @@ _VIDEO_CANDIDATE_SORT_ORDER_BY = {
 # behavior when sort is None/unrecognized, same fallback pattern as
 # list_products' _SORT_ORDER_BY/_DEFAULT_ORDER_BY above.
 _DEFAULT_VIDEO_CANDIDATE_ORDER_BY = "pv.match_confidence asc, pv.created_at asc, pv.id asc"
+# Transcript queue order (runbook 6fa) -- the default for status=approved,
+# which is the listing the home transcript fetcher (Pi) walks, 25 videos a
+# run. Al: "the ion pro pearl videos are sitting without transcripts and
+# they are days old". The release-cadence search (6dy) approves 50-75
+# videos a day around a launch, the Pi gets ~15 transcripts a day, and the
+# old order (match_confidence as TEXT -- 'high' < 'low' < 'medium' --
+# then oldest first) put a brand-new ball behind the whole backlog. Now:
+# balls released in the last 90 days (or upcoming) first, newest release
+# first; then everything else oldest-first so it can't starve; confidence
+# high > medium > low inside each.
+TRANSCRIPT_QUEUE_RECENT_DAYS = 90
+_TRANSCRIPT_QUEUE_ORDER_BY = (
+    f"(p.release_date >= current_date - {TRANSCRIPT_QUEUE_RECENT_DAYS}) desc nulls last, "
+    f"case when p.release_date >= current_date - {TRANSCRIPT_QUEUE_RECENT_DAYS} then p.release_date end desc nulls last, "
+    "case pv.match_confidence::text when 'high' then 0 when 'medium' then 1 when 'low' then 2 else 3 end, "
+    "pv.created_at asc, pv.id asc"
+)
 
 
 def list_video_candidates(conn, status: str = "pending", product_id: str = None, sort: str = None,
@@ -3371,7 +3388,8 @@ def list_video_candidates(conn, status: str = "pending", product_id: str = None,
         params.append(product_id)
     if conditions:
         query += " where " + " and ".join(conditions)
-    query += " order by " + _VIDEO_CANDIDATE_SORT_ORDER_BY.get(sort, _DEFAULT_VIDEO_CANDIDATE_ORDER_BY) + " limit %s offset %s"
+    default_order = _TRANSCRIPT_QUEUE_ORDER_BY if status == "approved" else _DEFAULT_VIDEO_CANDIDATE_ORDER_BY
+    query += " order by " + _VIDEO_CANDIDATE_SORT_ORDER_BY.get(sort, default_order) + " limit %s offset %s"
     params += [limit, offset]
 
     with conn.cursor() as cur:
