@@ -305,15 +305,43 @@ def parse_resources(html: str, base_url: str) -> dict:
     return resources
 
 
+def parse_gallery_images(soup: BeautifulSoup, base_url: str) -> list:
+    """The WooCommerce product gallery's full-size images (runbook 6fe), in
+    order: the ball photo, then (usually) the core image. SWAG's 2026
+    redesign put the site logo and navigation images ahead of the gallery,
+    so parse_images' "first <img> on the page" picked the SWAG LOGO as every
+    ball's main image -- all 69 SWAG products had it. Returns [] when the
+    page has no gallery, and parse_images falls back to the old rule."""
+    images, seen = [], set()
+    for a in soup.select(".woocommerce-product-gallery__image a[href]"):
+        src = urljoin(base_url, a["href"])
+        if src in seen or not re.search(r"\.(png|jpe?g|webp)(\?|$)", src, re.IGNORECASE):
+            continue
+        seen.add(src)
+        img = a.find("img")
+        alt = _clean(img.get("alt", "")) if img else ""
+        if not images:
+            image_type = "main"
+        elif "core" in (src.rsplit("/", 1)[-1] + " " + alt).lower():
+            image_type = "core_callout"
+        else:
+            image_type = "other"
+        images.append({"image_type": image_type, "source_url": src, "alt": alt})
+    return images
+
+
 def parse_images(soup: BeautifulSoup, base_url: str) -> list:
     """Main product image plus core-callout image, matched by position in
     the product gallery (first two <img> tags in the page, consistent
     with the real Fusion page's gallery order: ball photo, then core
     photo) rather than filename pattern -- SWAG's image filenames don't
     carry a reliable weight-range convention the way Brunswick's do."""
+    gallery = parse_gallery_images(soup, base_url)
+    if gallery:
+        return gallery
     images = []
     seen = set()
-    for idx, img in enumerate(soup.find_all("img", src=True)):
+    for idx, img in enumerate(img for img in soup.find_all("img", src=True) if "logo" not in img["src"].lower()):
         src = urljoin(base_url, img["src"])
         if src in seen:
             continue
@@ -346,6 +374,129 @@ def parse_description(soup: BeautifulSoup) -> str:
     return text or None
 
 
+# --- SWAG's 2026 partner-retailer layout (runbook 6fe) -----------------------
+# Al, after the retirement audit found SWAG with no current balls: "build the
+# swag parser". Around July 2026 SWAG rebuilt its current-ball pages: "Available
+# through partner retailers" with a Find a Retailer button instead of add to
+# cart, which WooCommerce types as an EXTERNAL product -- and parse_product_page
+# skipped every external listing (no attributes table), so all ~27 current
+# balls were missing. The specs are on the page in a custom block: a "Tech
+# Specs" heading followed by label/value pairs (two <span>s per row:
+# Performance, Core, Coverstock, Cover Type, Finish, Weights, Color, Best On,
+# Flare Potential), then a per-weight table (SPECS | 16lb ... ; rows RG, DIFF,
+# and MB on asymmetric balls, "N/A" where a weight has none) and a Downloads
+# list (Shelf Talker / Info Sheet PDFs). Verified on Craze Pearl, Black Dragon
+# (asymmetric), Dragon Cotton Candy Poly and Fusion Hybrid
+# (tests/fixtures/swag_partner_*.html).
+_WEIGHT_HEADER_RE = re.compile(r"^(\d{1,2})\s*lb", re.IGNORECASE)
+
+
+def parse_tech_specs(soup: BeautifulSoup) -> dict:
+    """{label lowercased: value} from the Tech Specs block, {} if absent."""
+    heading = soup.find(lambda t: t.name in ("h2", "h3") and _clean(t.get_text()).lower() == "tech specs")
+    if heading is None:
+        return {}
+    specs = {}
+    # Label/value rows run from the heading to the SPECS table.
+    for node in heading.find_all_next(["div", "table"]):
+        if node.name == "table":
+            break
+        spans = node.find_all("span", recursive=False)
+        if len(spans) == 2 and not node.find("div"):
+            label, value = _clean(spans[0].get_text()), _clean(spans[1].get_text())
+            if label and value:
+                specs.setdefault(label.lower(), value)
+    return specs
+
+
+def parse_spec_table(soup: BeautifulSoup) -> list:
+    """Per-weight SKUs from the SPECS table: [{weight_lbs, rg, differential,
+    mass_bias}] (mass_bias None where the row is missing or "N/A")."""
+    table = None
+    for t in soup.find_all("table"):
+        first = t.find(["th", "td"])
+        if first and _clean(first.get_text()).upper() == "SPECS":
+            table = t
+            break
+    if table is None:
+        return []
+    header = [_clean(c.get_text()) for c in table.find("tr").find_all(["th", "td"])]
+    weights = [int(m.group(1)) if (m := _WEIGHT_HEADER_RE.match(h)) else None for h in header[1:]]
+    rows = {}
+    for tr in table.find_all("tr")[1:]:
+        cells = [_clean(c.get_text()) for c in tr.find_all(["th", "td"])]
+        if cells:
+            rows[cells[0].upper()] = cells[1:]
+    skus = []
+    for i, w in enumerate(weights):
+        if w is None:
+            continue
+        val = lambda key: _to_float(rows.get(key, [None] * len(weights))[i]) if i < len(rows.get(key, [])) else None  # noqa: E731
+        sku = {"weight_lbs": w, "rg": val("RG"), "differential": val("DIFF"), "mass_bias": val("MB")}
+        if sku["rg"] is not None or sku["differential"] is not None:
+            skus.append(sku)
+    return skus
+
+
+def parse_downloads(soup: BeautifulSoup, base_url: str) -> dict:
+    resources = {}
+    for a in soup.find_all("a", href=True):
+        text = _clean(a.get_text()).lower()
+        if a["href"].lower().endswith(".pdf"):
+            if "info sheet" in text:
+                resources.setdefault("info_sheet_url", urljoin(base_url, a["href"]))
+            elif "shelf talker" in text:
+                resources.setdefault("shelf_talker_url", urljoin(base_url, a["href"]))
+    return resources
+
+
+def parse_partner_layout(soup: BeautifulSoup, html: str, url: str, name: str):
+    """The 2026 layout's fields, in parse_product_page's shape, or None if
+    the page doesn't have a Tech Specs block."""
+    specs = parse_tech_specs(soup)
+    if not specs:
+        return None
+    skus = parse_spec_table(soup)
+    cover_type = specs.get("cover type")
+    cover_name = specs.get("coverstock")
+    coverstock = parse_coverstock(cover_type, " ".join(x for x in (cover_type, cover_name) if x))
+    page_text = soup.get_text(" ", strip=True)
+    sym = re.search(r"\((a?symmetric)\)", page_text, re.IGNORECASE)
+    core_name = specs.get("core")
+    if sym:
+        core_type = sym.group(1).lower()
+    elif core_name and "asymmetric" in core_name.lower():
+        core_type = "asymmetric"
+    elif any(s["mass_bias"] is not None for s in skus):
+        core_type = "asymmetric"
+    else:
+        core_type = "symmetric" if skus else None
+    weights = [s["weight_lbs"] for s in skus] or [int(w) for w in re.findall(r"\d{1,2}", specs.get("weights", ""))]
+    return {
+        "url": url,
+        "name": name,
+        # "– DISCONTINUED" titles are retired (status_for); otherwise these
+        # are live "available through partner retailers" balls.
+        "status": status_for(name, None) or "current",
+        "color": specs.get("color"),
+        "core_name": core_name,
+        "core_type": core_type,
+        "coverstock_name": cover_name,
+        "coverstock_material": material_from_cover_name(cover_name, coverstock["coverstock_material"]),
+        "coverstock_type": coverstock["coverstock_type"],
+        "factory_finish": specs.get("finish"),
+        "weights_available": (min(weights), max(weights)) if weights else None,
+        "release_date_raw": None,
+        "release_date": None,
+        "performance_level_raw": specs.get("performance"),
+        "skus": skus,
+        "resources": parse_downloads(soup, url),
+        "images": parse_images(soup, url),
+        "description": parse_description(soup),
+        "layout": "partner_2026",
+    }
+
+
 def parse_product_page(html: str, url: str) -> dict:
     soup = BeautifulSoup(html, "lxml")
 
@@ -370,6 +521,13 @@ def parse_product_page(html: str, url: str) -> dict:
         # NOT NULL constraint (and pointlessly retried 3x into the DLQ,
         # since retrying never helps a permanently-external listing).
         # Returning this sentinel lets the caller skip cleanly instead.
+        #
+        # Runbook 6fe: SWAG's 2026 current-ball pages are also "external"
+        # (sold through partner retailers) but DO carry full specs in a new
+        # layout -- parse those; only a page without them is skipped.
+        partner = parse_partner_layout(soup, html, url, name)
+        if partner is not None:
+            return partner
         return {"url": url, "name": name, "external_product": True}
 
     coverstock = parse_coverstock(
@@ -597,7 +755,7 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
         low, high = parsed["weights_available"]
         weights_range = f"[{low},{high}]"
 
-    core_id = get_or_create_core_id(conn, brand_id, parsed.get("core_name"))
+    core_id = get_or_create_core_id(conn, brand_id, parsed.get("core_name"), parsed.get("core_type"))
     coverstock_id = get_or_create_coverstock_id(
         conn, brand_id, parsed.get("coverstock_name"),
         parsed.get("coverstock_material"), parsed.get("coverstock_type"),
@@ -672,6 +830,15 @@ def upsert_product(conn, brand_id: str, parsed: dict) -> dict:
                     updated_at = now()
                 """,
                 (product_id, sku["weight_lbs"], sku["rg"], sku["differential"], sku["mass_bias"]),
+            )
+
+        # Runbook 6fe: parse_images used to store the SWAG site logo as the
+        # main image; drop any such row for this product now that the real
+        # gallery photo is parsed (only when this scrape found real images).
+        if parsed["images"]:
+            cur.execute(
+                "delete from product_images where product_id = %s and source_url ilike %s",
+                (product_id, "%swag-logo%"),
             )
 
         pending_image_jobs = []

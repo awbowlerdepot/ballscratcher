@@ -21876,6 +21876,59 @@ re-scrape SWAG Shield Pearl and Goat so they flip to retired.
 - The next weekly bowwwl run raises a `status` review item for any
   disagreement.
 
+### 6fe. SWAG: parse the 2026 partner-retailer pages (27 missing current balls); real images instead of the logo (2026-10-29)
+
+Al: "yes deploy it and build the swag parser" (after 6fd found SWAG with no
+current balls).
+
+**Why SWAG had no current balls.** Around July 2026 SWAG rebuilt its
+current-ball pages: "Available through partner retailers" with a Find a
+Retailer button instead of add to cart. WooCommerce types that as an
+*external* product, and `parse_product_page` skipped every external listing
+because there was no attributes table. All 27 current balls were skipped:
+Craze, Black Dragon, Fusion, Judge, Unreal, Insanity, Serpent, Apex,
+Executioner, Assassin, the Dragon polys and the rest.
+
+**`woocommerce_product_scraper`:**
+- `parse_partner_layout` handles a page with no attributes table but a
+  **Tech Specs** block:
+  - `parse_tech_specs`: label/value `<span>` pairs (Performance, Core,
+    Coverstock, Cover Type, Finish, Weights, Color, Best On, Flare
+    Potential).
+  - `parse_spec_table`: the per-weight SPECS table (RG, DIFF, MB, with
+    "N/A" read as none), so every weight becomes a SKU, not just 15 lb.
+  - Symmetric or asymmetric from the "(Symmetric)" text, the core name,
+    or an MB row.
+  - `parse_downloads`: the Shelf Talker and Info Sheet PDFs.
+  - Status is retired when the title says DISCONTINUED (`status_for`),
+    otherwise current.
+  - Only a page with neither an attributes table nor Tech Specs is still
+    skipped.
+  - Verified on Craze Pearl, Black Dragon (asymmetric, MB N/A at 12 lb),
+    Dragon Cotton Candy Poly and Fusion Hybrid
+    (`tests/fixtures/swag_partner_*.html`, scripts and styles stripped).
+- **Images:** `parse_images` took "the first `<img>` on the page", and after
+  the redesign that's the SWAG LOGO, stored as the main image on all 69
+  SWAG products. `parse_gallery_images` reads the WooCommerce product
+  gallery's full-size links instead (ball photo first, core image tagged
+  `core_callout`), with the old rule, minus logos, as a fallback. On
+  rescrape, `upsert_product` deletes the product's `*swag-logo*` image rows.
+  Checked on a retired old-layout page (Shield Hybrid): the real ball photo
+  and core image.
+- `core_type` now reaches `get_or_create_core_id`.
+
+**Deploy:** `sam build && sam deploy`. Then a SWAG full refresh, which
+queues all 96 SWAG URLs: the 27 new current balls, plus re-scraping the 69
+existing ones to replace the logo:
+```bash
+aws lambda invoke --function-name bowling-scraper-woocommerce-url-discovery --payload '{"full_refresh": true}' --cli-binary-format raw-in-base64-out /tmp/swag.json
+```
+New products arrive **unpublished** (the column default), so publish them
+from admin Products (Brand SWAG, Published: Not published).
+**Verify:**
+- SWAG has about 27 current balls with per-weight SKUs.
+- No SWAG `product_images` row matches `%swag-logo%`.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

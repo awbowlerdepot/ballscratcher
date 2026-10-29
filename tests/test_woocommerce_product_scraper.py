@@ -251,3 +251,46 @@ def test_status_for_name_and_attribute():
     assert wc.status_for("SWAG Craze Pearl Bowling Ball", "In Production") == "current"
     assert wc.status_for("SWAG Craze Pearl Bowling Ball", "Discontinued") == "retired"
     assert wc.status_for("SWAG Craze Pearl Bowling Ball", "Coming soon") is None
+
+
+# --- SWAG 2026 partner-retailer layout (runbook 6fe) ---------------------------
+
+_FIX = os.path.join(os.path.dirname(__file__), "fixtures")
+
+
+def _partner(name):
+    return app.parse_product_page(open(os.path.join(_FIX, f"swag_partner_{name}.html")).read(),
+                                  "https://www.swagbowling.com/product/x/")
+
+
+def test_partner_layout_is_parsed_not_skipped():
+    p = _partner("craze_pearl")
+    assert "external_product" not in p and p["layout"] == "partner_2026"
+    assert (p["name"], p["status"]) == ("SWAG Craze Pearl Bowling Ball", "current")
+    assert (p["core_name"], p["core_type"]) == ("Craze Core", "symmetric")
+    assert (p["coverstock_name"], p["coverstock_material"], p["coverstock_type"]) == ("Rage Pearl", "reactive_resin", "pearl")
+    assert p["factory_finish"] == "3000 Grit Polished" and p["weights_available"] == (10, 16)
+    assert len(p["skus"]) == 7 and p["skus"][1] == {"weight_lbs": 15, "rg": 2.52, "differential": 0.03, "mass_bias": None}
+    assert set(p["resources"]) == {"info_sheet_url", "shelf_talker_url"}
+    assert p["images"][0]["image_type"] == "main" and p["images"][0]["source_url"].endswith("CRAZE-PEARL.png")
+    assert p["images"][1]["image_type"] == "core_callout"
+    assert not any("logo" in i["source_url"].lower() for i in p["images"])
+
+
+def test_partner_layout_asymmetric_with_na_mass_bias():
+    p = _partner("black_dragon")
+    assert p["core_type"] == "asymmetric" and p["coverstock_type"] == "solid"
+    by_w = {s["weight_lbs"]: s for s in p["skus"]}
+    assert by_w[15]["mass_bias"] == 0.018 and by_w[12]["mass_bias"] is None  # "N/A"
+
+
+def test_partner_layout_poly_and_hybrid():
+    poly = _partner("dragon_cotton_candy_poly")
+    assert poly["coverstock_material"] == "polyester_plastic" and poly["weights_available"] == (12, 16)
+    hyb = _partner("fusion_hybrid")
+    assert hyb["coverstock_type"] == "hybrid" and [s["weight_lbs"] for s in hyb["skus"]] == [16, 15, 14, 13]
+
+
+def test_page_without_tech_specs_is_still_skipped():
+    p = app.parse_product_page("<html><body><h1>Gift Card</h1></body></html>", "https://www.swagbowling.com/product/gc/")
+    assert p == {"url": "https://www.swagbowling.com/product/gc/", "name": "Gift Card", "external_product": True}
