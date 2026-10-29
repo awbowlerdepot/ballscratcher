@@ -1,7 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { listProductsPage, rescrapeProduct } from "../api/client";
-import type { ListProductsParams, Product, ProductSort, SourcePlatform } from "../api/types";
+import { listBrands, listProductsPage, rescrapeProduct } from "../api/client";
+import type { Brand, ListProductsParams, Product, ProductSort, SourcePlatform } from "../api/types";
 import Badge from "../components/Badge";
 import type { BulkAction, Column } from "../components/DataTable";
 import DataTable from "../components/DataTable";
@@ -22,7 +22,23 @@ const SORT_OPTIONS: { value: ProductSort; label: string }[] = [
   { value: "name_desc", label: "Name Z-A" },
 ];
 
-const SOURCE_OPTIONS: SourcePlatform[] = ["netsuite", "shopify", "woocommerce", "commercebuild", "craft_cms"];
+// Filter bar tidy-up (runbook 6fb). Al: "can we improve the filtering on the
+// products page. the types of filters are good but it just needs tidied up
+// and we haven't revisited it since they were created". Source shows which
+// brands each scraper platform covers instead of the platform's internal
+// name; the value sent to the API is unchanged.
+const SOURCE_OPTIONS: { value: SourcePlatform; label: string }[] = [
+  { value: "craft_cms", label: "Brunswick · Radical · DV8" },
+  { value: "commercebuild", label: "Storm · Roto Grip · 900 Global" },
+  { value: "netsuite", label: "Motiv" },
+  { value: "shopify", label: "Hammer · Track · Ebonite · Columbia 300" },
+  { value: "woocommerce", label: "Swag" },
+];
+const MISSING_CHIPS: { key: "missing_core" | "missing_coverstock" | "missing_skus"; label: string }[] = [
+  { key: "missing_core", label: "Core" },
+  { key: "missing_coverstock", label: "Coverstock" },
+  { key: "missing_skus", label: "SKUs" },
+];
 
 // Article-status icon color/tooltip -- Al: "an article icon with state
 // so green if approved, yellow if pending, and grey if not generated."
@@ -121,7 +137,9 @@ export default function ProductsPage() {
   // survives a manual page refresh.
   const [searchParams, setSearchParams] = useSearchParams();
 
-  const status = (searchParams.get("status") as ListProductsParams["status"] | null) ?? DEFAULT_STATUS;
+  // "all" in the URL = no status filter (the API treats a missing status as any).
+  const statusParam = searchParams.get("status");
+  const status = statusParam === "all" ? undefined : ((statusParam as ListProductsParams["status"] | null) ?? DEFAULT_STATUS);
   const brandId = searchParams.get("brand_id") ?? "";
   const search = searchParams.get("search") ?? "";
   const sourcePlatform = (searchParams.get("source_platform") as SourcePlatform | null) ?? "";
@@ -130,6 +148,17 @@ export default function ProductsPage() {
   const missingCoverstock = searchParams.get("missing_coverstock") === "1";
   const missingSkus = searchParams.get("missing_skus") === "1";
   const offset = Number(searchParams.get("offset") ?? "0") || 0;
+  const [brands, setBrands] = useState<Brand[]>([]);
+  useEffect(() => {
+    listBrands()
+      .then((b) => setBrands([...b].sort((x, y) => x.name.localeCompare(y.name))))
+      .catch(() => undefined);
+  }, []);
+  // Search box: local text, written to the URL after a short pause, so the
+  // list doesn't refetch on every keystroke.
+  const [searchText, setSearchText] = useState(search);
+  const searchTimer = useRef<number | undefined>(undefined);
+  useEffect(() => setSearchText(search), [search]);
   // Al: "can we add something to the products list view that shows if they
   // are published or not". "published" in the URL is "yes" or "no";
   // absent means any. The API's published filter already existed.
@@ -321,6 +350,23 @@ export default function ProductsPage() {
     { key: "updated_at", header: "Updated", render: (p) => new Date(p.updated_at).toLocaleDateString() },
   ];
 
+  // Anything but the defaults (current, any, all, no missing-data chips,
+  // no search); sort isn't a filter, so it stays when clearing.
+  const FILTER_KEYS = ["status", "published", "brand_id", "search", "source_platform", "missing_core", "missing_coverstock", "missing_skus"];
+  const filtersActive = FILTER_KEYS.some((k) => searchParams.get(k));
+  function clearFilters() {
+    setSelectedIds(new Set());
+    setSearchText("");
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams();
+        if (prev.get("sort")) next.set("sort", prev.get("sort")!);
+        return next;
+      },
+      { replace: true },
+    );
+  }
+
   const bulkActions: BulkAction<Product>[] = [
     { label: "Rescrape selected", onClick: handleBulkRescrape, variant: "primary" },
   ];
@@ -329,93 +375,117 @@ export default function ProductsPage() {
     <div className="flex flex-col gap-4">
       <h1 className="text-xl font-semibold text-ink-800">Products</h1>
 
-      <div className="flex flex-wrap items-end gap-3 rounded-lg border border-ink-200 bg-ink-100 p-3">
-        <div>
-          <label className="mb-1 block text-xs font-medium text-ink-600">Status</label>
-          <select
-            value={status}
-            onChange={(e) => updateFilter("status", e.target.value)}
-            className="rounded-md border border-ink-300 px-2 py-1.5 text-sm"
+      <div className="flex flex-col gap-3 rounded-lg border border-ink-200 bg-ink-100 p-3">
+        <div className="flex flex-wrap items-end gap-3">
+          <div className="min-w-[14rem] flex-1">
+            <label className="mb-1 block text-xs font-medium text-ink-600">Search</label>
+            <div className="relative">
+              <input
+                value={searchText}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setSearchText(v);
+                  window.clearTimeout(searchTimer.current);
+                  searchTimer.current = window.setTimeout(() => updateFilter("search", v.trim()), 300);
+                }}
+                placeholder="Ball name…"
+                className="w-full rounded-md border border-ink-300 px-2 py-1.5 pr-7 text-sm"
+              />
+              {searchText && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearchText("");
+                    updateFilter("search", "");
+                  }}
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 px-1 text-ink-400 hover:text-ink-700"
+                  aria-label="Clear search"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+          </div>
+          <FilterSelect label="Brand" value={brandId} onChange={(v) => updateFilter("brand_id", v)}>
+            <option value="">All brands</option>
+            {brands.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.name}
+              </option>
+            ))}
+            {brandId && !brands.some((b) => b.id === brandId) && <option value={brandId}>{brandId}</option>}
+          </FilterSelect>
+          <FilterSelect
+            label="Status"
+            value={statusParam === "all" ? "all" : (status ?? "current")}
+            onChange={(v) => updateFilter("status", v === DEFAULT_STATUS ? "" : v)}
           >
             <option value="current">Current</option>
             <option value="retired">Retired</option>
-          </select>
-        </div>
-        <div>
-          <label className="mb-1 block text-xs font-medium text-ink-600">Published</label>
-          <select
+            <option value="all">All</option>
+          </FilterSelect>
+          <FilterSelect
+            label="Published"
             value={publishedParam === "yes" || publishedParam === "no" ? publishedParam : ""}
-            onChange={(e) => updateFilter("published", e.target.value)}
-            className="rounded-md border border-ink-300 px-2 py-1.5 text-sm"
+            onChange={(v) => updateFilter("published", v)}
           >
             <option value="">Any</option>
             <option value="yes">Published</option>
             <option value="no">Not published</option>
-          </select>
-        </div>
-        <div>
-          <label className="mb-1 block text-xs font-medium text-ink-600">Brand ID</label>
-          <input
-            value={brandId}
-            onChange={(e) => updateFilter("brand_id", e.target.value)}
-            placeholder="uuid"
-            className="w-32 rounded-md border border-ink-300 px-2 py-1.5 text-sm"
-          />
-        </div>
-        <div>
-          <label className="mb-1 block text-xs font-medium text-ink-600">Search</label>
-          <input
-            value={search}
-            onChange={(e) => updateFilter("search", e.target.value)}
-            placeholder="Ball name…"
-            className="w-40 rounded-md border border-ink-300 px-2 py-1.5 text-sm"
-          />
-        </div>
-        <div>
-          <label className="mb-1 block text-xs font-medium text-ink-600">Source</label>
-          <select
-            value={sourcePlatform}
-            onChange={(e) => updateFilter("source_platform", e.target.value)}
-            className="rounded-md border border-ink-300 px-2 py-1.5 text-sm"
-          >
-            <option value="">All</option>
+          </FilterSelect>
+          <FilterSelect label="Source" value={sourcePlatform} onChange={(v) => updateFilter("source_platform", v)}>
+            <option value="">All sources</option>
             {SOURCE_OPTIONS.map((s) => (
-              <option key={s} value={s}>
-                {s}
+              <option key={s.value} value={s.value}>
+                {s.label}
               </option>
             ))}
-          </select>
+          </FilterSelect>
         </div>
-        <div>
-          <label className="mb-1 block text-xs font-medium text-ink-600">Sort</label>
-          <select
-            value={sort}
-            onChange={(e) => updateFilter("sort", e.target.value)}
-            className="rounded-md border border-ink-300 px-2 py-1.5 text-sm"
-          >
-            {SORT_OPTIONS.map((opt) => (
-              <option key={opt.value} value={opt.value}>
-                {opt.label}
-              </option>
-            ))}
-          </select>
+        <div className="flex flex-wrap items-center gap-2 border-t border-ink-200 pt-3">
+          <span className="text-xs font-medium text-ink-600">Missing data</span>
+          {MISSING_CHIPS.map((c) => {
+            const on = searchParams.get(c.key) === "1";
+            return (
+              <button
+                key={c.key}
+                type="button"
+                onClick={() => updateFilter(c.key, !on)}
+                aria-pressed={on}
+                className={`rounded-full border px-3 py-1 text-xs font-medium ${
+                  on ? "border-warn bg-warn-light text-warn" : "border-ink-300 text-ink-600 hover:border-ink-400"
+                }`}
+              >
+                {on ? "✓ " : ""}
+                {c.label}
+              </button>
+            );
+          })}
+          <div className="ml-auto flex flex-wrap items-center gap-3">
+            <span className="text-sm text-ink-500">
+              {total != null ? `${total.toLocaleString()} product${total === 1 ? "" : "s"}` : ""}
+            </span>
+            {filtersActive && (
+              <button type="button" onClick={clearFilters} className="text-sm font-medium text-primary hover:underline">
+                Clear filters
+              </button>
+            )}
+            <label className="flex items-center gap-2 text-xs font-medium text-ink-600">
+              Sort
+              <select
+                value={sort}
+                onChange={(e) => updateFilter("sort", e.target.value === DEFAULT_SORT ? "" : e.target.value)}
+                className="rounded-md border border-ink-300 px-2 py-1.5 text-sm font-normal"
+              >
+                {SORT_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
         </div>
-        <label className="flex items-center gap-1.5 pb-1.5 text-sm text-ink-600">
-          <input type="checkbox" checked={missingCore} onChange={(e) => updateFilter("missing_core", e.target.checked)} />
-          Missing core
-        </label>
-        <label className="flex items-center gap-1.5 pb-1.5 text-sm text-ink-600">
-          <input
-            type="checkbox"
-            checked={missingCoverstock}
-            onChange={(e) => updateFilter("missing_coverstock", e.target.checked)}
-          />
-          Missing coverstock
-        </label>
-        <label className="flex items-center gap-1.5 pb-1.5 text-sm text-ink-600">
-          <input type="checkbox" checked={missingSkus} onChange={(e) => updateFilter("missing_skus", e.target.checked)} />
-          Missing SKUs
-        </label>
       </div>
 
       {error && <div className="rounded-md bg-danger-light px-4 py-3 text-sm text-danger">{error}</div>}
@@ -510,6 +580,31 @@ export default function ProductsPage() {
         onOffsetChange={setOffset}
         total={total ?? undefined}
       />
+    </div>
+  );
+}
+
+function FilterSelect({
+  label,
+  value,
+  onChange,
+  children,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  children: ReactNode;
+}) {
+  return (
+    <div>
+      <label className="mb-1 block text-xs font-medium text-ink-600">{label}</label>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className={`max-w-[16rem] rounded-md border px-2 py-1.5 text-sm ${value ? "border-primary text-ink-800" : "border-ink-300 text-ink-600"}`}
+      >
+        {children}
+      </select>
     </div>
   );
 }

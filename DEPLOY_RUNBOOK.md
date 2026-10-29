@@ -21703,6 +21703,39 @@ both runs once it fires.
 videos done, and the backlog query in this section falls by about 50 a
 day.
 
+### 6fb. Admin Products filter bar tidied (2026-10-28)
+
+Al: "can we improve the filtering on the products page. the types of
+filters are good but it just needs tidied up and we haven't revisited it
+since they were created".
+
+Same filters, same URL parameters (so bookmarks keep working), laid out
+in two rows:
+- **Top row:**
+  - **Search** is wide, with a ✕ to clear, and writes to the URL 300 ms
+    after typing stops. It used to refetch on every keystroke.
+  - **Brand** is a name dropdown from `GET /brands`, replacing the
+    paste-a-UUID box. An unknown `brand_id` in the URL still shows.
+  - **Status** is Current / Retired / **All** (`status=all`, sent as no
+    status).
+  - **Published** is unchanged.
+  - **Source** shows which brands each scraper covers: Brunswick · Radical
+    · DV8 (craft_cms), Storm · Roto Grip · 900 Global (commercebuild),
+    Motiv (netsuite), Hammer · Track · Ebonite · Columbia 300 (shopify),
+    Swag (woocommerce).
+- **Second row:**
+  - "Missing data" toggle chips for Core / Coverstock / SKUs (the old
+    checkboxes);
+  - the total count;
+  - **Clear filters** (it keeps the sort);
+  - Sort.
+
+Filters that are set are outlined in the primary colour.
+
+Frontend only (`admin-spa/src/pages/ProductsPage.tsx`). **Deploy:** push.
+**Verify:** Products → pick a brand by name, Status → All shows 1,897,
+toggle Missing data → Core, then Clear filters.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
