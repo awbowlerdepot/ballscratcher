@@ -26,7 +26,13 @@ FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "partner_api_v1_op
 V1_BASELINE = {
     "Ball": {
         "required": {"id", "name", "brand", "status", "coverstock", "core", "has_particle", "weights", "manufacturer_url", "content_changed_at"},
-        "optional": {"release_date", "color", "factory_finish", "finish_category", "plotter", "image_url", "learn_article_url", "bowlerdepot_url"},
+        "optional": {"release_date", "color", "factory_finish", "finish_category", "plotter", "image_url", "learn_article_url", "bowlerdepot_url",
+                     # Runbook 6fg (Spurline's Merchant-feed demand label).
+                     "bigcommerce_product_id", "demand"},
+    },
+    "Demand": {
+        "required": {"score", "popularity_score", "popularity_videos", "daily_movement", "movement_skus", "computed_at"},
+        "optional": set(),
     },
     "Brand": {"required": {"id", "name"}, "optional": set()},
     "Weight": {"required": {"weight_lbs"}, "optional": {"rg", "differential", "mass_bias"}},

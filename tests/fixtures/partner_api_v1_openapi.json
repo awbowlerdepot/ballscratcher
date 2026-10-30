@@ -5,6 +5,7 @@
         "additionalProperties": false,
         "examples": [
           {
+            "bigcommerce_product_id": 1234,
             "bowlerdepot_url": "https://bowlerdepot.com/storm-phaze-ii/",
             "brand": {
               "id": "6a1f0c1e-2b5d-4c55-9a51-0f4e1b2c3d4e",
@@ -20,6 +21,14 @@
               "material": "reactive_resin",
               "name": "TX-16 Solid",
               "type": "solid"
+            },
+            "demand": {
+              "computed_at": "2026-10-29T06:00:03.512Z",
+              "daily_movement": 0.42,
+              "movement_skus": 4,
+              "popularity_score": 48213.7,
+              "popularity_videos": 6,
+              "score": 0.8125
             },
             "factory_finish": "1500 Grit Polished",
             "finish_category": "polished",
@@ -51,6 +60,18 @@
           }
         ],
         "properties": {
+          "bigcommerce_product_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The ball's product id in BowlerDepot's BigCommerce store, only when BowlerIQ matched it unambiguously and no other ball claims the same BigCommerce product; null otherwise. Not covered by content_changed_at.",
+            "title": "Bigcommerce Product Id"
+          },
           "bowlerdepot_url": {
             "anyOf": [
               {
@@ -89,6 +110,17 @@
           },
           "coverstock": {
             "$ref": "#/components/schemas/Coverstock"
+          },
+          "demand": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Demand"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Demand signals, refreshed daily; null until the ball's first refresh. Not covered by content_changed_at: read it from /v1/balls, it won't appear in /v1/changes on its own."
           },
           "factory_finish": {
             "anyOf": [
@@ -508,6 +540,55 @@
           }
         },
         "title": "Coverstock",
+        "type": "object"
+      },
+      "Demand": {
+        "additionalProperties": false,
+        "description": "BowlerIQ's demand signals for one ball (runbook 6fg). Added to v1 as\nan optional field for Spurline (sourceware-sync), which bands `score`\ninto custom_label_4 of bowlerdepot.com's Google Merchant feed -- and\nuses it only when BOTH counts are above zero, because the underlying\ncolumns (migration 030) store 0 for \"no data\". The counts are what let\na partner tell \"unpopular\" from \"we have no videos for this ball\".",
+        "properties": {
+          "computed_at": {
+            "description": "When the daily refresh that produced these values ran.",
+            "format": "date-time",
+            "title": "Computed At",
+            "type": "string"
+          },
+          "daily_movement": {
+            "description": "Units sold per day at BowlerDepot, summed over the ball's SKUs (stock drops over the trailing 30 days). 0 when movement_skus is 0.",
+            "title": "Daily Movement",
+            "type": "number"
+          },
+          "movement_skus": {
+            "description": "SKUs with qualifying stock history in the trailing 30 days that daily_movement rests on. 0 = no data, NOT 'nothing moved'.",
+            "title": "Movement Skus",
+            "type": "integer"
+          },
+          "popularity_score": {
+            "description": "Video popularity: half-life-weighted average view count of approved review videos x ln(1 + video count). 0 when popularity_videos is 0.",
+            "title": "Popularity Score",
+            "type": "number"
+          },
+          "popularity_videos": {
+            "description": "Approved, view-counted videos popularity_score rests on. 0 = no data, NOT low popularity.",
+            "title": "Popularity Videos",
+            "type": "integer"
+          },
+          "score": {
+            "description": "Demand score, 0 to 1 inclusive: a 50/50 blend of this ball's percentile rank on popularity_score and on daily_movement across the whole BowlerIQ catalog. Use it only when popularity_videos and movement_skus are both above 0.",
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Score",
+            "type": "number"
+          }
+        },
+        "required": [
+          "score",
+          "popularity_score",
+          "popularity_videos",
+          "daily_movement",
+          "movement_skus",
+          "computed_at"
+        ],
+        "title": "Demand",
         "type": "object"
       },
       "ErrorDetail": {
@@ -1647,7 +1728,7 @@
     }
   },
   "info": {
-    "description": "\nRead-only bowling ball data for BowlerIQ partner platforms: specs per weight,\ncover and core, ball motion plotter positions with suggestions, and links to\nBowlerDepot Learn reviews and BowlerDepot product pages.\n\n## Getting started\n\n1. **Get a key.** BowlerIQ issues one key per partner platform. Keep it\n   server-side: never ship it in a browser or mobile app.\n2. **Send it on every request** as `Authorization: Bearer <your key>`.\n   To try calls on this page, click **Authentication** and paste your key;\n   it's sent only to `api.bowleriq.io`.\n3. **Load everything once**, then **keep in sync** with `GET /v1/changes`\n   (see *Syncing* below).\n\n```bash\ncurl -s -H \"Authorization: Bearer $BOWLERIQ_PARTNER_KEY\" \\\n  \"https://api.bowleriq.io/partner/v1/changes?limit=50\"\n```\n\n## Basics\n\n- **Format:** JSON. Every response includes `\"api_version\": \"1\"`.\n- **Rate limit:** about 10 requests/second, bursts of 20. Over that you get\n  `429`; back off and retry.\n- **Paging:** `limit` defaults to 200, maximum 500. Follow `next_cursor`.\n- **Ids** are stable UUIDs; use them as your keys. Each colorway is its own ball.\n\n## The v1 promise\n\nv1 only **grows**: we may add optional fields and new endpoints, so ignore\nfields you don't recognise. Within v1 we will never rename or remove a field\nor endpoint, change a field's type, units or meaning, or make an optional\nfield required. Any of those ships as `/v2`, and `/v1` keeps running while\nyou migrate.\n\n## Syncing\n\n```text\ncursor = load_saved_cursor()                    # None on the very first run\nloop:\n    page = GET /v1/changes?cursor=<cursor>      # omit cursor the first time\n    for change in page.items:\n        if change.change == \"upsert\": save(change.ball)   # create/replace by id\n        if change.change == \"remove\": delete(change.id)\n    cursor = page.next_cursor\n    save_cursor(cursor)                         # after applying the page\n    if not page.has_more: break\n```\n\n- Run it every 15-60 minutes. The **first run** returns every published ball\n  as an `upsert`; to start from a point in time pass `?since=2026-10-01T00:00:00Z`.\n- **Always store `next_cursor`** and send it next time. Don't use the time of\n  your last run as `since`: that can skip changes.\n- Re-running from your last saved cursor is safe; upserts and removes can be\n  applied more than once.\n- A ball appears once per page with its latest state. Changes appear about\n  60 seconds after they happen.\n- A ball counts as changed when its own fields, any weight's specs, its\n  images or its Learn review link change.\n\n## Errors\n\n| Status | Meaning |\n|---|---|\n| `400` | Bad `cursor` or `since`. Restart from your last good cursor. |\n| `401` / `403` | Missing or invalid key |\n| `404` | Ball not found or not published |\n| `429` | Rate limited; retry with backoff |\n| `5xx` | Our problem; retry with backoff |\n",
+    "description": "\nRead-only bowling ball data for BowlerIQ partner platforms: specs per weight,\ncover and core, ball motion plotter positions with suggestions, and links to\nBowlerDepot Learn reviews and BowlerDepot product pages.\n\n## Getting started\n\n1. **Get a key.** BowlerIQ issues one key per partner platform. Keep it\n   server-side: never ship it in a browser or mobile app.\n2. **Send it on every request** as `Authorization: Bearer <your key>`.\n   To try calls on this page, click **Authentication** and paste your key;\n   it's sent only to `api.bowleriq.io`.\n3. **Load everything once**, then **keep in sync** with `GET /v1/changes`\n   (see *Syncing* below).\n\n```bash\ncurl -s -H \"Authorization: Bearer $BOWLERIQ_PARTNER_KEY\" \\\n  \"https://api.bowleriq.io/partner/v1/changes?limit=50\"\n```\n\n## Basics\n\n- **Format:** JSON. Every response includes `\"api_version\": \"1\"`.\n- **Rate limit:** about 10 requests/second, bursts of 20. Over that you get\n  `429`; back off and retry.\n- **Paging:** `limit` defaults to 200, maximum 500. Follow `next_cursor`.\n- **Ids** are stable UUIDs; use them as your keys. Each colorway is its own ball.\n\n## The v1 promise\n\nv1 only **grows**: we may add optional fields and new endpoints, so ignore\nfields you don't recognise. Within v1 we will never rename or remove a field\nor endpoint, change a field's type, units or meaning, or make an optional\nfield required. Any of those ships as `/v2`, and `/v1` keeps running while\nyou migrate.\n\n## Syncing\n\n```text\ncursor = load_saved_cursor()                    # None on the very first run\nloop:\n    page = GET /v1/changes?cursor=<cursor>      # omit cursor the first time\n    for change in page.items:\n        if change.change == \"upsert\": save(change.ball)   # create/replace by id\n        if change.change == \"remove\": delete(change.id)\n    cursor = page.next_cursor\n    save_cursor(cursor)                         # after applying the page\n    if not page.has_more: break\n```\n\n- Run it every 15-60 minutes. The **first run** returns every published ball\n  as an `upsert`; to start from a point in time pass `?since=2026-10-01T00:00:00Z`.\n- **Always store `next_cursor`** and send it next time. Don't use the time of\n  your last run as `since`: that can skip changes.\n- Re-running from your last saved cursor is safe; upserts and removes can be\n  applied more than once.\n- A ball appears once per page with its latest state. Changes appear about\n  60 seconds after they happen.\n- A ball counts as changed when its own fields, any weight's specs, its\n  images or its Learn review link change.\n- `demand` and `bigcommerce_product_id` are refreshed daily and do **not**\n  count as a change (they'd make every ball change every day). Read them\n  from `GET /v1/balls`; `demand.computed_at` says how fresh they are.\n\n## Errors\n\n| Status | Meaning |\n|---|---|\n| `400` | Bad `cursor` or `since`. Restart from your last good cursor. |\n| `401` / `403` | Missing or invalid key |\n| `404` | Ball not found or not published |\n| `429` | Rate limited; retry with backoff |\n| `5xx` | Our problem; retry with backoff |\n",
     "summary": "Read-only bowling ball data for BowlerIQ partner platforms.",
     "title": "BowlerIQ Partner API",
     "version": "1"

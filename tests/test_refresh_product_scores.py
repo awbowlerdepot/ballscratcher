@@ -237,6 +237,34 @@ def test_popularity_formula_dampens_video_count_vs_a_raw_sum():
     assert ratio < old_raw_sum_ratio
 
 
+# --- refresh_score_evidence: UPDATE 4 of 4 (056, runbook 6fg) ---
+
+def test_refresh_score_evidence_sets_both_counts_and_the_timestamp_in_one_update():
+    conn = _FakeConn(rowcount=9)
+    assert app.refresh_score_evidence(conn) == 9
+    queries = conn.cursor().queries
+    assert len(queries) == 1
+    q = queries[0]
+    assert q.startswith("update products p set popularity_video_count = (")
+    assert "movement_sku_count = (" in q
+    assert q.endswith("scores_computed_at = now()")  # unconditional: no trailing WHERE
+
+
+def test_video_count_uses_the_same_filter_as_popularity_score():
+    # popularity_videos must count exactly the rows popularity_score
+    # averaged over, or "count > 0" wouldn't mean "score has data".
+    assert "pv.status = 'approved' and pv.view_count is not null" in app._POPULARITY_SCORE_SQL
+    assert "pv.status = 'approved' and pv.view_count is not null" in app._POPULARITY_VIDEO_COUNT_SQL
+
+
+def test_sku_count_uses_the_same_window_and_qualifying_rule_as_daily_movement():
+    q = " ".join(app._MOVEMENT_SKU_COUNT_SQL.split())
+    assert f"interval '{app.DAILY_MOVEMENT_LOOKBACK_DAYS} days'" in q
+    assert "psh.quantity is not null" in q
+    assert "having count(*) >= 2 and max(psh.checked_at) > min(psh.checked_at)" in q
+    assert "ps_dm.product_id = p.id" in q
+
+
 # --- handler: ordering, commit/rollback, close, return shape ---
 
 def test_handler_runs_the_three_updates_in_required_order(monkeypatch):
@@ -248,11 +276,12 @@ def test_handler_runs_the_three_updates_in_required_order(monkeypatch):
     monkeypatch.setattr(app, "refresh_popularity_scores", lambda conn: call_order.append("popularity") or 1)
     monkeypatch.setattr(app, "refresh_total_daily_movement", lambda conn: call_order.append("movement") or 2)
     monkeypatch.setattr(app, "refresh_demand_scores", lambda conn: call_order.append("demand") or 3)
+    monkeypatch.setattr(app, "refresh_score_evidence", lambda conn: call_order.append("evidence") or 4)
     monkeypatch.setattr(app, "get_db_connection", lambda: _FakeConn())
 
     app.handler({}, None)
 
-    assert call_order == ["popularity", "movement", "demand"]
+    assert call_order == ["popularity", "movement", "demand", "evidence"]
 
 
 def test_handler_commits_and_closes_on_success(monkeypatch):
@@ -297,6 +326,7 @@ def test_handler_returns_rowcounts_for_all_three_updates(monkeypatch):
     monkeypatch.setattr(app, "refresh_popularity_scores", lambda c: 11)
     monkeypatch.setattr(app, "refresh_total_daily_movement", lambda c: 22)
     monkeypatch.setattr(app, "refresh_demand_scores", lambda c: 33)
+    monkeypatch.setattr(app, "refresh_score_evidence", lambda c: 44)
     monkeypatch.setattr(app, "get_db_connection", lambda: _FakeConn())
 
     result = app.handler({}, None)
@@ -307,6 +337,7 @@ def test_handler_returns_rowcounts_for_all_three_updates(monkeypatch):
         "popularity_score_rows": 11,
         "total_daily_movement_rows": 22,
         "demand_score_rows": 33,
+        "score_evidence_rows": 44,
     }
 
 
@@ -320,6 +351,7 @@ def test_handler_treats_scheduled_and_manual_invokes_identically(monkeypatch):
     monkeypatch.setattr(app, "refresh_popularity_scores", lambda c: calls.append("p") or 1)
     monkeypatch.setattr(app, "refresh_total_daily_movement", lambda c: calls.append("m") or 1)
     monkeypatch.setattr(app, "refresh_demand_scores", lambda c: calls.append("d") or 1)
+    monkeypatch.setattr(app, "refresh_score_evidence", lambda c: calls.append("e") or 1)
     monkeypatch.setattr(app, "get_db_connection", lambda: _FakeConn())
 
     app.handler({}, None)
@@ -327,7 +359,7 @@ def test_handler_treats_scheduled_and_manual_invokes_identically(monkeypatch):
     calls.clear()
     app.handler({"source": "manual-invoke"}, None)
 
-    assert calls == scheduled_calls == ["p", "m", "d"]
+    assert calls == scheduled_calls == ["p", "m", "d", "e"]
 
 
 class _MonkeyPatch:

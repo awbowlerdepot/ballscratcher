@@ -96,6 +96,9 @@ loop:
   60 seconds after they happen.
 - A ball counts as changed when its own fields, any weight's specs, its
   images or its Learn review link change.
+- `demand` and `bigcommerce_product_id` are refreshed daily and do **not**
+  count as a change (they'd make every ball change every day). Read them
+  from `GET /v1/balls`; `demand.computed_at` says how fresh they are.
 
 ## Errors
 

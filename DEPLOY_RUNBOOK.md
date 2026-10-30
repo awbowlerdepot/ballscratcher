@@ -21950,6 +21950,117 @@ Frontend only: `admin-spa/src/pages/ProductsPage.tsx`.
 **Verify:** Products → Brand SWAG, Published: Not published → select all →
 Publish selected → 27 published, and the filter now shows 0.
 
+### 6fg. Partner API: `bigcommerce_product_id` and `demand` on the Ball, for Spurline's Merchant-feed demand label (migration 056) (2026-10-29)
+
+Spurline (repo `sourceware-sync`) publishes the Google Merchant Center feed
+for bowlerdepot.com's BigCommerce store. Its operator decided
+`custom_label_4` is a demand band: BowlerIQ's demand score for bowling
+balls, Spurline's own distributor-depletion rate for everything else.
+Spurline is already deployed and reads these exact field names: each daily
+run pages `GET /v1/balls` (limit 200, 90-second deadline), joins on
+`bigcommerce_product_id`, and bands `demand.score` into p90+/p75-90/p50-75/
+under-p50, but only when `popularity_videos` and `movement_skus` are both
+above 0. Otherwise the ball keeps its depletion band. Until this deploys
+(and a key is in Spurline's `sourceware-sync-prod/bowleriq` secret), every
+ball uses depletion; BowlerIQ being unreachable never stops the feed.
+
+**Contract (additive, v1):** two new optional fields on `Ball`, so they're
+also on `/v1/balls/{id}` and the `ball` inside `/v1/changes`:
+- `bigcommerce_product_id` (integer or null). From
+  `bowlerdepot_products.bigcommerce_product_id`, and only when the match
+  is unambiguous on both sides:
+  - this ball's row is `matched`. An `ambiguous` row still stores the
+    best candidate's id, which is exactly the guess we mustn't hand out;
+  - no other product has a `matched` or `ambiguous` row on the same
+    BigCommerce product. That covers one listing for two colorways, or
+    a near-name ball. A wrong id would put one ball's demand on another's
+    listing, and Spurline drops ids two balls both claim anyway. The cost
+    of null is only that the ball keeps its depletion band.
+  - A non-numeric stored id is null too.
+- `demand` (object or null): `score` (0–1, `products.demand_score`,
+  clamped, and the model enforces `minimum`/`maximum`), `popularity_score`,
+  `popularity_videos`, `daily_movement` (`total_daily_movement`),
+  `movement_skus`, `computed_at`. It's null until the ball's first
+  `refresh_product_scores` run.
+- Neither field bumps `content_changed_at`. Demand changes for every ball
+  every day, so including it would make `/v1/changes` resend the catalog
+  daily, which 044 exists to avoid. The field descriptions, the docs page
+  and `docs/partner-api-v1.md` say to read them from `/v1/balls`.
+- Existing partners (drilld, Virtue_Bowling_Supply) see two extra keys,
+  which the v1 promise tells them to ignore. Nothing else changes.
+
+**Why the counts (migration 056).** 030 stores 0 for "no data": a ball
+with no approved, view-counted videos reads `popularity_score = 0`, the
+same as a ball with unpopular ones, and no stock history reads the same as
+no sales. `products` gains:
+- `popularity_video_count`, counting exactly the rows the popularity
+  formula averages;
+- `movement_sku_count`, counting SKUs with ≥ 2 non-null readings spanning
+  more than 0 days in the 30-day window, exactly the SKUs that contribute
+  to daily movement;
+- `scores_computed_at`, null until refreshed.
+
+`refresh_product_scores` gets a fourth unconditional UPDATE,
+`refresh_score_evidence`, in the same transaction after the demand rank.
+It's separate so UPDATEs 1 and 2 stay identical to the formulas the
+admin/public API comments cite. 056 also indexes
+`bowlerdepot_products(bigcommerce_product_id)` for the "claimed by another
+product" check, because 018 dropped the only index on it.
+
+Note: `demand_score` ranks across all of `products` (bags, unpublished),
+the same as since 030. Spurline uses it only for bands, so that's fine.
+
+**Files:** `db/migrations/056_products_score_evidence.sql`,
+`src/refresh_product_scores/app.py`, `src/partner_api/{models,service,app}.py`,
+`tests/fixtures/partner_api_v1_openapi.json` (regenerated on purpose),
+`tests/test_partner_api_contract.py` (`Demand` and the two Ball fields
+added to the locked baseline), `tests/test_partner_api_service.py`,
+`tests/test_refresh_product_scores.py`, `docs/partner-api-v1.md`.
+
+**Tested.**
+- Unit tests: `test_partner_api_service` 23, `test_partner_api_contract`
+  3, `test_refresh_product_scores` 24, `test_plotter_neighbors_sync` 1,
+  `test_partner_api_authorizer` 6. They pin no match, ambiguous match,
+  never refreshed, zero videos, zero movement SKUs, non-numeric ids and
+  the 0–1 clamp.
+- Migrations 001–056 on a scratch postgres:16, then the real
+  `refresh_product_scores.handler` and `partner_api.service` against
+  seeded balls:
+  - matched + unique → id;
+  - ambiguous → null;
+  - two balls matched to one listing → both null;
+  - matched but another ball ambiguous on it → null;
+  - no row → null;
+  - an approved video with no view count → `popularity_videos: 0`;
+  - a single-reading SKU not counted;
+  - a ball created after the refresh → `demand: null`;
+  - `content_changed_at` untouched by the refresh.
+
+**Deploy** (order matters: the migration first, or the new
+`BALL_SELECT` columns 500 the partner API):
+```bash
+psql "$DATABASE_URL" -f db/migrations/056_products_score_evidence.sql
+sam build && sam deploy
+aws lambda invoke --function-name bowling-scraper-refresh-product-scores --payload '{}' --cli-binary-format raw-in-base64-out /tmp/scores.json && cat /tmp/scores.json
+```
+The invoke fills `scores_computed_at` now rather than at the next daily
+run. Until then every ball's `demand` is null and Spurline uses depletion,
+which is safe but pointless.
+
+**Spurline's key:** admin.bowleriq.com → Partners → name `spurline` → Issue key (6eg),
+or `.venv/bin/python scripts/create_partner_api_key.py spurline`. Copy the
+key, which is shown once, into Spurline's `sourceware-sync-prod/bowleriq`
+secret. It sends `Authorization: Bearer <key>` to
+`https://api.bowleriq.io/partner`.
+
+**Verify:**
+```bash
+psql "$DATABASE_URL" -c "select count(*) filter (where scores_computed_at is not null) refreshed, count(*) filter (where popularity_video_count > 0 and movement_sku_count > 0) usable from products where product_type = 'ball' and published"
+curl -s -H "Authorization: Bearer $KEY" "https://api.bowleriq.io/partner/v1/balls?limit=200" | jq '[.items[] | select(.bigcommerce_product_id != null and .demand.popularity_videos > 0 and .demand.movement_skus > 0)] | length'
+curl -s -H "Authorization: Bearer $KEY" "https://api.bowleriq.io/partner/v1/balls?limit=5" | jq '.items[] | {name, bigcommerce_product_id, demand}'
+aws logs tail /aws/lambda/bowling-scraper-partner-api --since 10m   # partner=spurline GET /v1/balls -> 200
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
