@@ -65,7 +65,16 @@ Values below are illustrative.
   "manufacturer_url": "https://www.stormbowling.com/…",
   "learn_article_url": "https://learn.bowlerdepot.com/articles/storm-phaze-ii",
   "bowlerdepot_url": "https://bowlerdepot.com/…",
-  "content_changed_at": "2026-10-05T15:42:10.123Z"
+  "content_changed_at": "2026-10-05T15:42:10.123Z",
+  "bigcommerce_product_id": 1234,
+  "demand": {
+    "score": 0.8125,
+    "popularity_score": 48213.7,
+    "popularity_videos": 6,
+    "daily_movement": 0.42,
+    "movement_skus": 4,
+    "computed_at": "2026-10-29T06:00:03.512Z"
+  }
 }
 ```
 
@@ -78,6 +87,12 @@ Values below are illustrative.
   - `chart`: read off a manufacturer's published ball motion chart
   - `estimated`: BowlerIQ's model
   - `manual`: a staff correction
+- **`bigcommerce_product_id`:** the ball's product id in BowlerDepot's BigCommerce store. Only set when BowlerIQ matched it unambiguously and no other ball claims the same BigCommerce product; otherwise `null`.
+- **`demand`:** refreshed once a day; `null` until the ball's first refresh.
+  - `score`: 0 to 1, a 50/50 blend of the ball's percentile rank on video popularity and on daily movement across the BowlerIQ catalog.
+  - `popularity_videos` and `movement_skus` count the data under `popularity_score` and `daily_movement`. **0 means no data**, not "unpopular" or "didn't sell". Use `score` only when both are above 0.
+  - `computed_at`: when the refresh ran.
+- **`demand` and `bigcommerce_product_id` don't count as a change** for `/v1/changes` (they'd change every ball every day). Read them from `GET /v1/balls`.
 - **Nullable fields:** any field whose type includes null can be `null`, e.g. a ball with no specs published yet.
 
 ## Syncing (recommended)

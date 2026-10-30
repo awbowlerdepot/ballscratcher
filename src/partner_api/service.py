@@ -164,6 +164,37 @@ def map_plotter(row: dict):
     }
 
 
+def map_bigcommerce_product_id(value):
+    """bowlerdepot_products.bigcommerce_product_id is text (001's "store
+    the platform's id as text" convention). BigCommerce product ids are
+    integers; anything else (blank, a SKU-looking string) is null rather
+    than a guess. BALL_SELECT already nulls non-matched / contested ones."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return int(text) if text.isdigit() else None
+
+
+def map_demand(row: dict):
+    """Runbook 6fg. Null when refresh_product_scores has never run for this
+    row (scores_computed_at, migration 056) -- 030's columns read 0 then,
+    and a fabricated 0 would look like real data. score is clamped to 0-1:
+    a 0.5/0.5 blend of two percent_ranks can't leave that range, but the
+    contract promises it (Spurline rejects anything outside), so a weight
+    edit in refresh_product_scores can't silently break a partner."""
+    if row.get("scores_computed_at") is None:
+        return None
+    score = float(row.get("demand_score") or 0)
+    return {
+        "score": min(1.0, max(0.0, score)),
+        "popularity_score": float(row.get("popularity_score") or 0),
+        "popularity_videos": int(row.get("popularity_video_count") or 0),
+        "daily_movement": float(row.get("total_daily_movement") or 0),
+        "movement_skus": int(row.get("movement_sku_count") or 0),
+        "computed_at": row["scores_computed_at"],
+    }
+
+
 def map_ball(row: dict, weights: list) -> dict:
     """One products row (BALL_SELECT columns) + its SKU rows -> v1 Ball."""
     return {
@@ -189,6 +220,8 @@ def map_ball(row: dict, weights: list) -> dict:
         "learn_article_url": f"{LEARN_SITE_URL}/articles/{row['article_slug']}" if row.get("article_slug") else None,
         "bowlerdepot_url": row.get("bowlerdepot_url"),
         "content_changed_at": row["content_changed_at"],
+        "bigcommerce_product_id": map_bigcommerce_product_id(row.get("bigcommerce_product_id")),
+        "demand": map_demand(row),
     }
 
 
@@ -202,6 +235,22 @@ def map_ball(row: dict, weights: list) -> dict:
 # else the scraped primary_image_url). bowlerdepot_url: the approved,
 # active BigCommerce price source (same rule as public_api's
 # ecommerce_url). article_slug: the approved Learn article.
+#
+# bigcommerce_product_id + the score columns (runbook 6fg, for Spurline's
+# Merchant-feed demand label). The BigCommerce id comes from
+# bowlerdepot_reconciliation's match row (one per product since 018), and
+# only when it is unambiguous on BOTH sides:
+#   * this ball's own row is 'matched' -- an 'ambiguous' row still stores
+#     the best candidate's id (bowlerdepot_reconciliation.handler),
+#     which is exactly the guess we must not hand out; and
+#   * no OTHER product has a 'matched' or 'ambiguous' row on the same
+#     BigCommerce product (one listing covering two colorways, or a near-
+#     name ball the matcher wasn't sure about). Spurline drops an id two
+#     balls both claim, and a wrong one would put one ball's demand on
+#     another ball's listing, so contested = null, even when only one of
+#     the claimants is published. Null only costs the ball its demand band
+#     (Spurline falls back to its own depletion band).
+# The not-exists uses idx_bowlerdepot_products_bigcommerce_product_id (056).
 BALL_SELECT = """
     select p.id, p.name, p.brand_id, b.name as brand_name, p.status, p.release_date, p.color,
            coalesce(cv.name, p.coverstock_name) as coverstock_name,
@@ -224,7 +273,17 @@ BALL_SELECT = """
              where pps.product_id = p.id and ps.api_provider = 'bigcommerce'
                and pps.status = 'approved' and pps.is_active = true
              order by pps.last_checked_at desc nulls last, pps.id limit 1) as bowlerdepot_url,
-           p.content_changed_at, p.published, p.core_id, p.coverstock_id
+           p.content_changed_at, p.published, p.core_id, p.coverstock_id,
+           (select bdp.bigcommerce_product_id from bowlerdepot_products bdp
+             where bdp.product_id = p.id and bdp.match_status = 'matched'
+               and not exists (
+                   select 1 from bowlerdepot_products other
+                    where other.bigcommerce_product_id = bdp.bigcommerce_product_id
+                      and other.product_id is distinct from p.id
+                      and other.match_status in ('matched', 'ambiguous'))
+             limit 1) as bigcommerce_product_id,
+           p.demand_score, p.popularity_score, p.popularity_video_count,
+           p.total_daily_movement, p.movement_sku_count, p.scores_computed_at
     from products p
     join brands b on b.id = p.brand_id
     left join cores c on c.id = p.core_id

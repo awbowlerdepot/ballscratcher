@@ -26,6 +26,10 @@ def _row(pid, *, published=True, changed=T0, **kw):
         "image_url": "https://img/x.png", "url": "https://storm/x", "article_slug": None,
         "bowlerdepot_url": None, "content_changed_at": changed, "published": published,
         "core_id": None, "coverstock_id": None,
+        # Runbook 6fg columns: default = no BigCommerce match, never refreshed.
+        "bigcommerce_product_id": None,
+        "demand_score": 0, "popularity_score": 0, "popularity_video_count": 0,
+        "total_daily_movement": 0, "movement_sku_count": 0, "scores_computed_at": None,
     }
     row.update(kw)
     return row
@@ -121,6 +125,94 @@ def test_models_reject_unknown_fields():
     ball["internal_note"] = "should never leak"
     with pytest.raises(Exception):
         models.Ball.model_validate(ball)
+
+
+# --- bigcommerce_product_id + demand (runbook 6fg) ---------------------------
+# Spurline bands `demand.score` into bowlerdepot.com's Merchant feed and only
+# trusts it when both counts are above 0; these pin every null case it relies
+# on. The SQL side (matched vs ambiguous vs contested ids) is verified against
+# a scratch Postgres -- see the runbook section.
+
+def _scored(**kw):
+    from decimal import Decimal
+
+    base = {
+        "demand_score": Decimal("0.8125"), "popularity_score": Decimal("48213.7"), "popularity_video_count": 6,
+        "total_daily_movement": Decimal("0.42"), "movement_sku_count": 4,
+        "scores_computed_at": datetime(2026, 10, 29, 6, 0, 3, tzinfo=timezone.utc),
+    }
+    base.update(kw)
+    return _row(_id(10), **base)
+
+
+def test_demand_maps_numbers_and_counts_and_validates():
+    ball = service.map_ball(_scored(bigcommerce_product_id="1234"), [])
+    models.Ball.model_validate(ball)
+    assert ball["bigcommerce_product_id"] == 1234
+    assert ball["demand"] == {
+        "score": 0.8125, "popularity_score": 48213.7, "popularity_videos": 6,
+        "daily_movement": 0.42, "movement_skus": 4,
+        "computed_at": datetime(2026, 10, 29, 6, 0, 3, tzinfo=timezone.utc),
+    }
+
+
+def test_demand_is_null_when_never_refreshed_even_if_columns_hold_values():
+    # 030's columns default to 0, and a row created since the last refresh
+    # still reads 0 -- scores_computed_at is the only honest signal.
+    ball = service.map_ball(_scored(scores_computed_at=None), [])
+    models.Ball.model_validate(ball)
+    assert ball["demand"] is None
+
+
+def test_zero_videos_and_zero_movement_skus_are_reported_not_hidden():
+    # 0 = no data. The object is still returned (it HAS been refreshed);
+    # the counts are what tell a partner not to trust score.
+    ball = service.map_ball(_scored(popularity_video_count=0, popularity_score=0), [])
+    models.Ball.model_validate(ball)
+    assert ball["demand"]["popularity_videos"] == 0 and ball["demand"]["movement_skus"] == 4
+    ball = service.map_ball(_scored(movement_sku_count=0, total_daily_movement=0), [])
+    models.Ball.model_validate(ball)
+    assert ball["demand"]["movement_skus"] == 0 and ball["demand"]["popularity_videos"] == 6
+
+
+def test_demand_score_is_always_within_0_and_1():
+    for raw, expected in ((-0.25, 0.0), (0, 0.0), (0.5, 0.5), (1, 1.0), (1.0000001, 1.0), (3, 1.0)):
+        ball = service.map_ball(_scored(demand_score=raw), [])
+        models.Ball.model_validate(ball)
+        assert ball["demand"]["score"] == expected
+    # And the model itself refuses an out-of-range score, so a mapping
+    # regression fails loudly instead of reaching a partner.
+    ball = service.map_ball(_scored(), [])
+    ball["demand"]["score"] = 1.5
+    with pytest.raises(Exception):
+        models.Ball.model_validate(ball)
+
+
+def test_bigcommerce_product_id_null_for_no_match_and_non_numeric_ids():
+    # No match / ambiguous / contested all arrive from BALL_SELECT as NULL.
+    assert service.map_ball(_row(_id(11)), [])["bigcommerce_product_id"] is None
+    for bad in ("", "  ", "SKU-123", "12a", "-5"):
+        assert service.map_bigcommerce_product_id(bad) is None
+    assert service.map_bigcommerce_product_id(" 4321 ") == 4321
+    assert service.map_bigcommerce_product_id(77) == 77
+
+
+def test_ball_select_only_hands_out_unambiguous_bigcommerce_ids():
+    q = " ".join(service.BALL_SELECT.split())
+    assert "bdp.product_id = p.id and bdp.match_status = 'matched'" in q
+    # Any OTHER product claiming the same BigCommerce product (matched or
+    # ambiguous) nulls it for both.
+    assert "other.bigcommerce_product_id = bdp.bigcommerce_product_id" in q
+    assert "other.product_id is distinct from p.id" in q
+    assert "other.match_status in ('matched', 'ambiguous')" in q
+
+
+def test_new_fields_ride_along_on_list_get_and_changes():
+    db = _db([_scored()])
+    assert service.list_balls(FakeConn(db))["items"][0]["demand"]["popularity_videos"] == 6
+    page = service.list_changes(FakeConn(db))
+    models.ChangePage.model_validate(page)
+    assert page["items"][0]["ball"]["demand"]["movement_skus"] == 4
 
 
 # --- cursors -------------------------------------------------------------

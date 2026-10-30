@@ -72,6 +72,37 @@ class PlotterPosition(_Model):
     )
 
 
+class Demand(_Model):
+    """BowlerIQ's demand signals for one ball (runbook 6fg). Added to v1 as
+    an optional field for Spurline (sourceware-sync), which bands `score`
+    into custom_label_4 of bowlerdepot.com's Google Merchant feed -- and
+    uses it only when BOTH counts are above zero, because the underlying
+    columns (migration 030) store 0 for "no data". The counts are what let
+    a partner tell "unpopular" from "we have no videos for this ball"."""
+    score: float = Field(
+        ge=0, le=1,
+        description="Demand score, 0 to 1 inclusive: a 50/50 blend of this ball's percentile rank on "
+        "popularity_score and on daily_movement across the whole BowlerIQ catalog. Use it only when "
+        "popularity_videos and movement_skus are both above 0.",
+    )
+    popularity_score: float = Field(
+        description="Video popularity: half-life-weighted average view count of approved review videos x "
+        "ln(1 + video count). 0 when popularity_videos is 0."
+    )
+    popularity_videos: int = Field(
+        description="Approved, view-counted videos popularity_score rests on. 0 = no data, NOT low popularity."
+    )
+    daily_movement: float = Field(
+        description="Units sold per day at BowlerDepot, summed over the ball's SKUs (stock drops over the "
+        "trailing 30 days). 0 when movement_skus is 0."
+    )
+    movement_skus: int = Field(
+        description="SKUs with qualifying stock history in the trailing 30 days that daily_movement rests "
+        "on. 0 = no data, NOT 'nothing moved'."
+    )
+    computed_at: datetime = Field(description="When the daily refresh that produced these values ran.")
+
+
 class Ball(_Model):
     id: str = Field(description="Stable ball id (UUID). Colorways are separate balls.")
     name: str
@@ -91,6 +122,20 @@ class Ball(_Model):
     learn_article_url: Optional[str] = Field(None, description="BowlerDepot Learn review, when one is published.")
     bowlerdepot_url: Optional[str] = Field(None, description="BowlerDepot product page, when BowlerDepot carries the ball.")
     content_changed_at: datetime = Field(description="When anything in this object last changed.")
+    # Runbook 6fg -- both optional and additive. Neither bumps
+    # content_changed_at (demand changes for every ball every day; see
+    # migration 056), so they're documented as excluded from it.
+    bigcommerce_product_id: Optional[int] = Field(
+        None,
+        description="The ball's product id in BowlerDepot's BigCommerce store, only when BowlerIQ matched it "
+        "unambiguously and no other ball claims the same BigCommerce product; null otherwise. Not covered by "
+        "content_changed_at.",
+    )
+    demand: Optional[Demand] = Field(
+        None,
+        description="Demand signals, refreshed daily; null until the ball's first refresh. Not covered by "
+        "content_changed_at: read it from /v1/balls, it won't appear in /v1/changes on its own.",
+    )
 
     model_config = ConfigDict(
         extra="forbid",
@@ -117,6 +162,15 @@ class Ball(_Model):
                 "learn_article_url": "https://learn.bowlerdepot.com/articles/storm-phaze-ii/",
                 "bowlerdepot_url": "https://bowlerdepot.com/storm-phaze-ii/",
                 "content_changed_at": "2026-10-05T15:42:10.123Z",
+                "bigcommerce_product_id": 1234,
+                "demand": {
+                    "score": 0.8125,
+                    "popularity_score": 48213.7,
+                    "popularity_videos": 6,
+                    "daily_movement": 0.42,
+                    "movement_skus": 4,
+                    "computed_at": "2026-10-29T06:00:03.512Z",
+                },
             }]
         },
     )

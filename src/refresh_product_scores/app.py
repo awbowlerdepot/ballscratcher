@@ -9,7 +9,7 @@ not something any index could fix. This Lambda does that same work ONCE
 a day instead, as a plain set-based UPDATE, and every caller now just
 reads the stored column.
 
-Three UPDATEs, run in order, each a full unconditional pass over
+Four UPDATEs, run in order, each a full unconditional pass over
 `products` (no WHERE -- every row gets a fresh value every run, including
 one with nothing to compute, which correctly resets it back to 0 rather
 than leaving a stale nonzero score behind from before, e.g. a product
@@ -33,6 +33,19 @@ whose only qualifying video got rejected/deleted since the last run):
      re-evaluations of the underlying subqueries. Must run AFTER steps 1
      and 2 in the same invocation so it ranks against fresh values, not
      yesterday's.
+  4. score evidence + timestamp (056_products_score_evidence.sql, runbook
+     6fg) -- popularity_video_count (the approved, view-counted videos
+     step 1 averaged over), movement_sku_count (the SKUs that contributed
+     a depletion rate to step 2) and scores_computed_at = now(). Added for
+     the Partner API's `demand` object, which Spurline uses to band
+     bowlerdepot.com's Google Merchant feed: 030 stores 0 for "no data",
+     so a 0 popularity or movement can't be told apart from a real low
+     one without these counts, and a NULL scores_computed_at is how the
+     API knows a ball has never been through this Lambda at all. A
+     separate UPDATE rather than folded into 1/2, so those two stay
+     textually identical to the formulas the admin/public API comments
+     still cite; the cost is one extra (much simpler) pass over the
+     stock-history window, fine for a once-a-day job.
 
 Not scoped to any product_id -- unlike product_article_generator's
 per-invocation cap (a real, separate concern: that function's cost is
@@ -140,6 +153,50 @@ def refresh_demand_scores(conn) -> int:
         return cur.rowcount
 
 
+# Step 4's counts. Each mirrors exactly what steps 1/2 aggregate over, so
+# "count > 0" means "the score has real data under it":
+#   * videos: the same `where` as _POPULARITY_SCORE_SQL.
+#   * SKUs: the same window/null filter and `having count(*) >= 2` as
+#     _TOTAL_DAILY_MOVEMENT_SQL, plus its `elapsed_days > 0` guard (a SKU
+#     whose readings all share one timestamp contributes 0 there, so it
+#     isn't evidence here either). Drops-only vs restocks doesn't matter
+#     for the count: a SKU with readings that never dropped is real data
+#     ("didn't move"), not missing data.
+_POPULARITY_VIDEO_COUNT_SQL = """(
+                   select count(*)
+                   from product_videos pv
+                   where pv.product_id = p.id and pv.status = 'approved' and pv.view_count is not null
+               )"""
+
+_MOVEMENT_SKU_COUNT_SQL = f"""(
+                   select count(*)
+                   from (
+                       select psh.product_sku_id
+                       from product_sku_stock_history psh
+                       join product_skus ps_dm on ps_dm.id = psh.product_sku_id
+                       where ps_dm.product_id = p.id
+                         and psh.quantity is not null
+                         and psh.checked_at >= now() - interval '{DAILY_MOVEMENT_LOOKBACK_DAYS} days'
+                       group by psh.product_sku_id
+                       having count(*) >= 2 and max(psh.checked_at) > min(psh.checked_at)
+                   ) sku
+               )"""
+
+
+def refresh_score_evidence(conn) -> int:
+    """UPDATE 4 of 4 -- see this module's own docstring, point 4. Same
+    unconditional, every-row shape as the other three (a product whose
+    last video was rejected resets to 0). scores_computed_at is now(),
+    i.e. this invocation's transaction time -- one value for every row,
+    which is the honest answer to "when were these scores computed"."""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"update products p set popularity_video_count = {_POPULARITY_VIDEO_COUNT_SQL}, "
+            f"movement_sku_count = {_MOVEMENT_SKU_COUNT_SQL}, scores_computed_at = now()"
+        )
+        return cur.rowcount
+
+
 def get_db_connection():
     import boto3
     import psycopg2
@@ -169,6 +226,7 @@ def handler(event, context):
         popularity_rows = refresh_popularity_scores(conn)
         movement_rows = refresh_total_daily_movement(conn)
         demand_rows = refresh_demand_scores(conn)
+        evidence_rows = refresh_score_evidence(conn)
         conn.commit()
     except Exception:
         conn.rollback()
@@ -180,6 +238,7 @@ def handler(event, context):
         "popularity_score_rows": popularity_rows,
         "total_daily_movement_rows": movement_rows,
         "demand_score_rows": demand_rows,
+        "score_evidence_rows": evidence_rows,
     }
     logger.info("Refreshed product scores: %s", result)
     return {"statusCode": 200, "body": json.dumps(result)}
