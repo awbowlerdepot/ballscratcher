@@ -22053,6 +22053,23 @@ key, which is shown once, into Spurline's `sourceware-sync-prod/bowleriq`
 secret. It sends `Authorization: Bearer <key>` to
 `https://api.bowleriq.io/partner`.
 
+**Deployed 2026-10-30 00:55 UTC.** 056 applied, stack updated, refresh run
+(1,924 rows). In prod:
+- 165 balls have a `bigcommerce_product_id`, with no duplicates (165
+  matched rows; the 27 ambiguous rows give null);
+- 153 balls have both counts above 0, and 138 of them also have an id,
+  so those get Spurline's demand band;
+- scores run from 0 to 0.999.
+
+The `spurline` key was issued 01:33 UTC with admin_api's `create_partner`
+(the Partners record, last 4 `vDxY`) and written straight into
+`sourceware-sync-prod/bowleriq` as `{"api_key": ...}`, so it was never
+displayed. A live `GET /v1/balls` with it returned 200.
+
+The first `sam build` failed on a Docker `docker-credential-gcloud`
+credential-helper error (the signage image). Building with a
+`DOCKER_CONFIG` that has no `credHelpers` works; the base image is public.
+
 **Verify:**
 ```bash
 psql "$DATABASE_URL" -c "select count(*) filter (where scores_computed_at is not null) refreshed, count(*) filter (where popularity_video_count > 0 and movement_sku_count > 0) usable from products where product_type = 'ball' and published"
