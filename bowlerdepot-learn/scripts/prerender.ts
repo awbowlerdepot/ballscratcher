@@ -973,7 +973,70 @@ function buildPlotterLd(description: string, canonicalUrl: string, ballCount: nu
 // otherwise each article would carry the home page's tags as well as its own.
 // WebSite + Organization JSON-LD is what Google reads for the site name
 // shown above search results.
-function renderHomePage(baseHtml: string): string {
+// Crawlable home + 404 + app shell (runbook 6fi). Al: "in google search
+// console we are not getting pages indexed as fast as i would expect for
+// the learn site" -> "yes start on the three fixes". The home page used to
+// ship 75 characters of text and NO links (the list only existed after
+// React ran), so Google's first pass over the site's main entry point found
+// nothing to follow. It now carries a real, static list of every article:
+// ball reviews grouped by brand, then Bowling Tips. React replaces it with
+// the interactive page as usual.
+function renderHomeContent(cards: ArticleCard[]): string {
+  const balls = cards.filter((c) => c.article_kind !== "video" && c.brand_name);
+  const tips = cards.filter((c) => c.article_kind === "video" || !c.brand_name);
+  const byBrand = new Map<string, ArticleCard[]>();
+  for (const c of balls) {
+    const list = byBrand.get(c.brand_name!) ?? [];
+    list.push(c);
+    byBrand.set(c.brand_name!, list);
+  }
+  const link = (c: ArticleCard) => `<li><a href="${articleHref(c)}">${escapeHtml(c.title)}</a></li>`;
+  const brandSections = [...byBrand.entries()]
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(
+      ([brand, list]) =>
+        `<section><h3>${escapeHtml(brand)} bowling ball reviews</h3><ul>${list
+          .sort((a, b) => a.title.localeCompare(b.title))
+          .map(link)
+          .join("")}</ul></section>`,
+    )
+    .join("");
+  return `
+    <div>
+      <h1 class="font-display text-3xl font-semibold text-ink">Bowling ball reviews, guides and the ball motion plotter</h1>
+      <p>In-depth bowling ball reviews and buying guides from The Bowler Depot, plus a free <a href="/plotter/">ball motion plotter</a> to compare every current ball across brands.</p>
+      <h2>Bowling ball reviews</h2>
+      ${brandSections}
+      ${tips.length ? `<h2>Bowling tips</h2><ul>${tips.map(link).join("")}</ul>` : ""}
+    </div>`;
+}
+
+// Real 404 page (runbook 6fi): CloudFront used to answer every unknown URL
+// with the home page and a 200 (Search Console "soft 404s", each pointing
+// its canonical at the home page). Now 403/404 from S3 serve this with a
+// real 404 status; noindex, and the app still boots so a mistyped link
+// shows a friendly page with a way back.
+function render404Page(baseHtml: string): string {
+  let html = baseHtml;
+  html = html.replace(/<title>.*?<\/title>/, "<title>Page not found | Learn | The Bowler Depot</title>");
+  html = html.replace("</head>", `    <meta name="robots" content="noindex" />\n  </head>`);
+  html = html.replace(
+    '<div id="root"></div>',
+    `<div id="root"><div><h1>Page not found</h1><p>That page isn't here. Try the <a href="/">bowling ball reviews</a> or the <a href="/plotter/">ball motion plotter</a>.</p></div></div>`,
+  );
+  return html;
+}
+
+// The untouched app shell (noindex) for client-only routes that have no
+// prerendered page -- in-store signage (/signage/ball/<slug>) and old
+// /articles/<uuid>/ links the edge function couldn't map. The edge
+// function serves this directly with a 200, so those keep working now that
+// a miss is a real 404.
+function renderAppShell(baseHtml: string): string {
+  return baseHtml.replace("</head>", `    <meta name="robots" content="noindex" />\n  </head>`);
+}
+
+function renderHomePage(baseHtml: string, cards: ArticleCard[] = []): string {
   const title = "BowlerDepot Learn: bowling ball reviews, guides & the ball motion plotter";
   const description =
     "In-depth bowling ball reviews, buying guides and specs from The Bowler Depot, plus a free ball motion plotter to compare every current ball across brands.";
@@ -1018,6 +1081,7 @@ function renderHomePage(baseHtml: string): string {
     <script type="application/ld+json">${JSON.stringify(ld)}</script>
   </head>`,
   );
+  if (cards.length) html = html.replace('<div id="root"></div>', `<div id="root">${renderHomeContent(cards)}</div>`);
   return html;
 }
 
@@ -1143,7 +1207,9 @@ ${sitemapUrls
 
   // Last, so every page above was built from the untouched base (see
   // renderHomePage's comment).
-  await writeFile(join(DIST_DIR, "index.html"), renderHomePage(baseHtml), "utf-8");
+  await writeFile(join(DIST_DIR, "404.html"), render404Page(baseHtml), "utf-8");
+  await writeFile(join(DIST_DIR, "app.html"), renderAppShell(baseHtml), "utf-8");
+  await writeFile(join(DIST_DIR, "index.html"), renderHomePage(baseHtml, cards), "utf-8");
 
   // eslint-disable-next-line no-console
   console.log(

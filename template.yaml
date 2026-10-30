@@ -4173,7 +4173,7 @@ Resources:
     Properties:
       Name: !Sub bowling-scraper-learn-pretty-url-${AWS::AccountId}
       FunctionConfig:
-        Comment: Append /index.html to directory paths; 301-redirect old bare-uuid article URLs to their new slug (036)
+        Comment: Append /index.html to directory paths; 301 no-slash paths and old bare-uuid article URLs (036, 6fi); signage -> /app.html
         Runtime: cloudfront-js-2.0
         KeyValueStoreAssociations:
           - KeyValueStoreARN: !GetAtt LearnArticleSlugRedirectsStore.Arn
@@ -4213,6 +4213,19 @@ Resources:
                     // error -- fall through to normal handling, same as
                     // a genuine cache miss.
                 }
+                // Runbook 6fi: no mapping -> the app shell (200); the
+                // app resolves the uuid itself. (A miss is a real 404 now.)
+                request.uri = '/app.html';
+                return request;
+            }
+
+            // Runbook 6fi: in-store signage (/signage/ball/<slug>?...) is
+            // client-only -- no prerendered page -- and is loaded by the
+            // signage renderer and kiosks without a trailing slash. Serve
+            // the app shell directly (200) rather than via the 404 path.
+            if (uri.indexOf('/signage/') === 0) {
+                request.uri = '/app.html';
+                return request;
             }
 
             // Already a real asset request (hashed JS/CSS, images,
@@ -4221,7 +4234,28 @@ Resources:
                 return request;
             }
 
-            request.uri = uri.endsWith('/') ? uri + 'index.html' : uri + '/index.html';
+            // Runbook 6fi: one URL per page. /articles/x used to serve the
+            // same page as /articles/x/ (canonical pointed at the slash
+            // form, but Google crawled both); now it 301s there, keeping
+            // the query string.
+            if (!uri.endsWith('/')) {
+                var qs = [];
+                var q = request.querystring || {};
+                for (var k in q) {
+                    var v = q[k];
+                    var vals = v.multiValue ? v.multiValue : [v];
+                    for (var i = 0; i < vals.length; i++) {
+                        qs.push(vals[i].value === '' ? k : k + '=' + vals[i].value);
+                    }
+                }
+                return {
+                    statusCode: 301,
+                    statusDescription: 'Moved Permanently',
+                    headers: { location: { value: uri + '/' + (qs.length ? '?' + qs.join('&') : '') } }
+                };
+            }
+
+            request.uri = uri + 'index.html';
             return request;
         }
 
@@ -4257,17 +4291,19 @@ Resources:
           FunctionAssociations:
             - EventType: viewer-request
               FunctionARN: !GetAtt LearnSitePrettyUrlFunction.FunctionARN
-        # SPA client-side routing fallback for any route with no
-        # prerendered page at that path (see LearnSitePrettyUrlFunction's
-        # own comment) -- same rewrite-to-200 shape as
-        # ConsumerSiteDistribution above.
+        # Runbook 6fi: a missing page is a REAL 404 now. This used to rewrite
+        # every 403/404 to the home page with a 200, so Search Console saw
+        # unknown URLs as soft 404s with the home page's canonical. The
+        # client-only routes that relied on that fallback (signage, old
+        # uuid article links) are served /app.html directly by
+        # LearnSitePrettyUrlFunction instead.
         CustomErrorResponses:
           - ErrorCode: 403
-            ResponseCode: 200
-            ResponsePagePath: /index.html
+            ResponseCode: 404
+            ResponsePagePath: /404.html
           - ErrorCode: 404
-            ResponseCode: 200
-            ResponsePagePath: /index.html
+            ResponseCode: 404
+            ResponsePagePath: /404.html
 
   LearnSiteBucketPolicy:
     Type: AWS::S3::BucketPolicy

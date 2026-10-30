@@ -1,6 +1,6 @@
 import { StrictMode, Suspense, lazy } from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Link, Route, Routes } from "react-router-dom";
 import App from "./App";
 import LearnIndexPage from "./pages/LearnIndexPage";
 import ArticleDetailPage from "./pages/ArticleDetailPage";
@@ -43,6 +43,20 @@ createRoot(document.getElementById("root")!).render(
           <Route path="articles/:slug" element={<ArticleDetailPage />} />
           {/* Ball motion plotter (runbook 6cc) */}
           <Route path="plotter" element={<PlotterPage />} />
+          {/* Runbook 6fi: unknown URLs get a real 404 from CloudFront
+              (dist/404.html); this is what the app shows on it. */}
+          <Route
+            path="*"
+            element={
+              <div className="py-16 text-center">
+                <h1 className="font-display text-3xl font-semibold text-ink">Page not found</h1>
+                <p className="mt-3 text-muted">
+                  That page isn't here. Try the <Link to="/" className="underline">bowling ball reviews</Link> or the{" "}
+                  <Link to="/plotter" className="underline">ball motion plotter</Link>.
+                </p>
+              </div>
+            }
+          />
         </Route>
       </Routes>
     </BrowserRouter>

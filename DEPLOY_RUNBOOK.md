@@ -22110,6 +22110,68 @@ Checked against live data on Storm Phaze II:
 
 **Deploy:** push (Learn site GitHub Action).
 
+### 6fi. Learn SEO: crawlable home page, real 404s, one URL per page (2026-10-30)
+
+Al: "in google search console we are not getting pages indexed as fast as i
+would expect for the learn site. can you look into that", then "yes start
+on the three fixes".
+
+**Findings.** robots.txt, the sitemap (163 URLs) and the article pages were
+fine: each is prerendered with full text, canonical, JSON-LD and about 24
+internal links. Working against us:
+- **The home page shipped 75 characters and no links.** The article list
+  only existed after React ran, so Google's first pass found nothing to
+  follow from the main entry point.
+- **Every unknown URL answered 200 with the home page.** CloudFront rewrote
+  403/404 to `/index.html`, and since that file is the prerendered home
+  page, each one also carried the home page's canonical. Search Console
+  calls these soft 404s.
+- **`/articles/x` served the same page as `/articles/x/`.** The canonical
+  covered it, but both got crawled.
+- Not changed here: bowlerdepot.com's "Review" tab link to Learn is
+  injected by JavaScript, and the site is young with few backlinks.
+  Search Console's "Why pages aren't indexed" reasons would show whether
+  the rest is quality and trust.
+
+**Changes:**
+- `bowlerdepot-learn/scripts/prerender.ts`:
+  - `renderHomeContent` puts a static list of every article in the home
+    page: ball reviews under one heading per brand, then Bowling Tips.
+    That's 161 article links and about 13k characters of text.
+  - `render404Page` writes `dist/404.html` (noindex; "Page not found" with
+    links home).
+  - `renderAppShell` writes `dist/app.html`, the untouched shell with
+    noindex.
+- `src/main.tsx`: a `*` route shows "Page not found", so the 404 page
+  doesn't go blank once React mounts.
+- `template.yaml` `LearnSitePrettyUrlFunction`:
+  - `/signage/...` (client-only, loaded by the signage renderer without a
+    trailing slash) is served `/app.html` with a 200;
+  - an old uuid article URL with no slug mapping is served `/app.html`
+    (the app resolves it);
+  - any other path without a trailing slash or a file extension gets a
+    **301** to the slash form, keeping the query string;
+  - directories get `index.html` as before.
+- `LearnSiteDistribution.CustomErrorResponses`: 403/404 → `/404.html` with
+  **ResponseCode 404**, replacing `/index.html` with 200.
+
+The function logic was exercised in node across `/`, an article with and
+without a slash, `/plotter?utm_source=x`, assets, the sitemap, signage, a
+mapped uuid and an unmapped uuid.
+
+**Deploy order:** push first, so the Learn workflow uploads `404.html` and
+`app.html`; then `sam build && sam deploy` for the function and error
+responses. Doing it the other way round would briefly 404 the signage
+pages.
+**Verify:**
+- `curl -sI https://learn.bowlerdepot.com/nope/` → 404.
+- `curl -sI https://learn.bowlerdepot.com/articles/storm-ion-pro-pearl` →
+  301 to the slash URL.
+- `/signage/ball/<slug>` → 200.
+- The home page HTML contains `/articles/` links.
+- In Search Console, URL-inspect the home page and request indexing, then
+  resubmit the sitemap.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
