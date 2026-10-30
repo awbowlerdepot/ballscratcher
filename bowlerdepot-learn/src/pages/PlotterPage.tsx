@@ -5,7 +5,7 @@ import type { LearnPlotterPoint, PlotterLookupItem } from "../api/types";
 import PlotterChart from "../components/plotter/PlotterChart";
 import PlotterNeighborPanel, { PlotterNeighborCard } from "../components/plotter/PlotterNeighborPanel";
 import { useIsDesktop } from "../components/plotter/useIsDesktop";
-import { FULL_VIEW, ROLES, fitView, offsetForCard, xSpanFactor, type PlotterView } from "../components/plotter/plotterModel";
+import { FULL_VIEW, ROLES, fitView, neighborsWithin, offsetForCard, xSpanFactor, type PlotterView } from "../components/plotter/plotterModel";
 import DisplayAd from "../components/DisplayAd";
 
 // /plotter -- the Learn site's ball motion plotter (runbook 6cc). Al: "the
@@ -144,6 +144,22 @@ export default function PlotterPage() {
   const selected = selectedId ? (byId.get(selectedId) ?? null) : null;
   const brands = useMemo(() => [...new Set(points.map((p) => p.brand_name))].sort(), [points]);
   const visible = useMemo(() => points.filter((p) => !hiddenBrands.has(p.brand_name)), [points, hiddenBrands]);
+  // Suggestions honor the brand filter (runbook 6fh). With every brand
+  // showing, the server's precomputed neighbors are used as-is; once any
+  // brand is hidden they're recomputed from the visible balls only (same
+  // rules, plotterModel.neighborsWithin), and with a single brand showing
+  // "Similar from other brands" goes away.
+  const visibleBrandCount = useMemo(() => brands.filter((b) => !hiddenBrands.has(b)).length, [brands, hiddenBrands]);
+  const shown = useMemo(() => {
+    if (!selected || hiddenBrands.size === 0) return selected;
+    return { ...selected, neighbors: neighborsWithin(selected, visible, visibleBrandCount) };
+  }, [selected, visible, hiddenBrands, visibleBrandCount]);
+  const shownById = useMemo(() => {
+    if (!shown || shown === selected) return byId;
+    const m = new Map(byId);
+    m.set(shown.id, shown);
+    return m;
+  }, [byId, shown, selected]);
 
   useEffect(() => {
     document.title = "Ball Motion Plotter | BowlerDepot Learn";
@@ -192,7 +208,7 @@ export default function PlotterPage() {
 
   // Zoom to a ball + its suggestions whenever the selection changes.
   function focusOn(p: LearnPlotterPoint) {
-    const related = ROLES.flatMap((r) => p.neighbors[r.key] ?? []).map((n) => byId.get(n.id)).filter(Boolean) as LearnPlotterPoint[];
+    const related = ROLES.flatMap((r) => p.neighbors[r.key] ?? []).map((n) => shownById.get(n.id)).filter(Boolean) as LearnPlotterPoint[];
     // xf > 1 only on a wide full-screen chart (runbook 6ds).
     const xf = xSpanFactor(chart.width, chart.height);
     const fitted = fitView([p, ...related], undefined, undefined, xf);
@@ -200,9 +216,9 @@ export default function PlotterPage() {
   }
 
   useEffect(() => {
-    if (selected) focusOn(selected);
+    if (shown) focusOn(shown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selected?.id, isDesktop]);
+  }, [selected?.id, isDesktop, hiddenBrands]);
 
   function select(id: string) {
     const next = new URLSearchParams(searchParams);
@@ -326,7 +342,7 @@ export default function PlotterPage() {
           <div className="relative">
             <PlotterChart
               points={visible}
-              byId={byId}
+              byId={shownById}
               selectedId={selected?.id ?? null}
               onSelect={select}
               view={view}
@@ -337,11 +353,11 @@ export default function PlotterPage() {
             />
             {isDesktop ? (
               <div className="pointer-events-none absolute bottom-12 left-12 top-3 flex w-[20rem] flex-col items-start">
-                {selected && !cardCollapsed ? (
+                {shown && !cardCollapsed ? (
                   <div className="pointer-events-auto flex max-h-full w-full flex-col">
                     <PlotterNeighborCard
-                      selected={selected}
-                      byId={byId}
+                      selected={shown}
+                      byId={shownById}
                       onSelect={select}
                       onCollapse={() => setCardCollapsed(true)}
                       onClear={clearSelection}
@@ -387,14 +403,14 @@ export default function PlotterPage() {
 
           {!isDesktop ? (
             <div className="mt-6">
-              {selected ? (
+              {shown ? (
                 <div className="rounded-xl border border-paper-border bg-white p-5">
                   <div className="mb-3 flex justify-end">
                     <button type="button" onClick={clearSelection} className="text-xs font-semibold text-muted hover:text-ink">
                       Clear &times;
                     </button>
                   </div>
-                  <PlotterNeighborPanel selected={selected} byId={byId} onSelect={select} />
+                  <PlotterNeighborPanel selected={shown} byId={shownById} onSelect={select} />
                 </div>
               ) : (
                 <div className="rounded-xl border border-dashed border-paper-border p-5 text-sm text-muted">

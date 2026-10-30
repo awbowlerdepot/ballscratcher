@@ -216,3 +216,88 @@ export function rolesFor(selected: LearnPlotterPoint | null | undefined): Map<st
 export function sourceLabel(source: LearnPlotterPoint["oil_motion_source"]) {
   return source === "chart" ? "From the manufacturer's chart" : source === "manual" ? "Checked by our staff" : "Our estimate";
 }
+
+// --- Suggestions within the brand filter (runbook 6fh) ------------------------
+// Al: "can you make the filter for on the motion plotter for learn honor the
+// brand filters for the suggested balls. and if only one brand is selected
+// remove the similar from other brands". The server precomputes each ball's
+// suggestions across EVERY brand (public_api compute_plotter_neighbors /
+// compute_replacements), so hiding brands only hid dots. When a filter is on,
+// the page recomputes them here from the visible balls with the same rules:
+//   * twins ("Similar from other brands"): other-brand recommendable balls
+//     within 1.5 units, best of each ball line, up to 3 -- dropped entirely
+//     when only one brand is showing;
+//   * closest (retired balls): recommendable balls within 2.5, up to 3;
+//   * steps: along the axis 0.5-4.0, inside a 45-degree cone, scored
+//     along + 1.5 x off-axis, best of each line, 2 per direction, skipping
+//     lines already used as twins/closest.
+// Keep in step with the Python originals.
+const TWIN_RADIUS = 1.5;
+const TWIN_MAX = 3;
+const CLOSEST_RADIUS = 2.5;
+const CLOSEST_MAX = 3;
+const STEP_MIN = 0.5;
+const STEP_MAX = 4.0;
+const STEP_PER_DIRECTION = 2;
+const OFF_AXIS_WEIGHT = 1.5;
+const DIRECTIONS: [keyof PlotterNeighbors, number, number][] = [
+  ["more_oil", 1, 0],
+  ["less_oil", -1, 0],
+  ["more_angular", 0, 1],
+  ["smoother", 0, -1],
+];
+
+// The server groups colorways by core+coverstock; the Learn points don't
+// carry those ids, so the name before " - " stands in (its fallback rule).
+const ballLine = (p: LearnPlotterPoint) => `${p.brand_name}|${p.name.split(" - ")[0].trim().toLowerCase()}`;
+
+function bestPerLine(cands: [number, LearnPlotterPoint][], max: number): [number, LearnPlotterPoint][] {
+  const seen = new Set<string>();
+  const out: [number, LearnPlotterPoint][] = [];
+  for (const c of [...cands].sort((a, b) => a[0] - b[0] || a[1].name.localeCompare(b[1].name) || a[1].id.localeCompare(b[1].id))) {
+    const key = ballLine(c[1]);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(c);
+    if (out.length === max) break;
+  }
+  return out;
+}
+
+export function neighborsWithin(target: LearnPlotterPoint, pool: LearnPlotterPoint[], brandCount: number): PlotterNeighbors {
+  const dist = (p: LearnPlotterPoint) => Math.hypot(p.oil - target.oil, p.motion - target.motion);
+  const entry = (p: LearnPlotterPoint) => ({ id: p.id, distance: Math.round(dist(p) * 100) / 100 });
+  const ownLine = ballLine(target);
+  const others = pool.filter((p) => p.recommendable && p.id !== target.id && ballLine(p) !== ownLine);
+  const out = {} as PlotterNeighbors;
+  const taken = new Set<string>();
+
+  if (target.status === "retired") {
+    const closest = bestPerLine(others.filter((p) => dist(p) <= CLOSEST_RADIUS).map((p) => [dist(p), p]), CLOSEST_MAX);
+    out.closest = closest.map(([, p]) => entry(p));
+    closest.forEach(([, p]) => taken.add(ballLine(p)));
+  } else if (brandCount > 1) {
+    const twins = bestPerLine(
+      others.filter((p) => p.brand_name !== target.brand_name && dist(p) <= TWIN_RADIUS).map((p) => [dist(p), p]),
+      TWIN_MAX,
+    );
+    out.twins = twins.map(([, p]) => entry(p));
+    twins.forEach(([, p]) => taken.add(ballLine(p)));
+  }
+  // brandCount === 1 on a current ball: no twins key at all, so the
+  // "Similar from other brands" role disappears (rolesPresent).
+
+  for (const [key, ux, uy] of DIRECTIONS) {
+    const cands: [number, LearnPlotterPoint][] = [];
+    for (const p of others) {
+      if (taken.has(ballLine(p))) continue;
+      const dx = p.oil - target.oil;
+      const dy = p.motion - target.motion;
+      const along = dx * ux + dy * uy;
+      const off = Math.abs(dx * uy - dy * ux);
+      if (along >= STEP_MIN && along <= STEP_MAX && off <= along) cands.push([along + OFF_AXIS_WEIGHT * off, p]);
+    }
+    out[key] = bestPerLine(cands, STEP_PER_DIRECTION).map(([, p]) => entry(p)) as never;
+  }
+  return out;
+}

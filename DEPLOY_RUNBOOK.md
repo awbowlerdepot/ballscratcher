@@ -22078,6 +22078,38 @@ curl -s -H "Authorization: Bearer $KEY" "https://api.bowleriq.io/partner/v1/ball
 aws logs tail /aws/lambda/bowling-scraper-partner-api --since 10m   # partner=spurline GET /v1/balls -> 200
 ```
 
+### 6fh. Learn plotter: suggestions honor the brand filter (2026-10-29)
+
+Al: "can you make the filter for on the motion plotter for learn honor the
+brand filters for the suggested balls. and if only one brand is selected
+remove the similar from other brands".
+
+Each ball's suggestions are precomputed on the server across every brand
+(public_api `compute_plotter_neighbors` / `compute_replacements`), so the
+brand chips only hid dots on the chart: the card still suggested hidden
+brands. `bowlerdepot-learn/src/components/plotter/plotterModel.ts` gains
+`neighborsWithin(target, pool, brandCount)`, a TypeScript port of those
+rules:
+- twins: other-brand balls within 1.5, up to 3;
+- closest, for retired balls: within 2.5, up to 3;
+- steps: 0.5–4.0 along the axis, inside a 45° cone, scored along + 1.5 ×
+  off-axis, 2 per direction, best of each ball line.
+
+`PlotterPage` uses it only when a brand is hidden. It recomputes the
+selected ball's suggestions from the visible balls and feeds them to the
+chart's highlight rings, the card and the auto-zoom. With one brand
+showing, a current ball gets no twins key at all, so "Similar from other
+brands" disappears. With every brand showing, the server's neighbors are
+used unchanged.
+
+Checked against live data on Storm Phaze II:
+- **All brands:** the same as before (3 MOTIV twins, mixed-brand steps).
+- **Storm only:** no Similar group; every direction has two Storm balls.
+- **Storm + Hammer:** Similar says "None this close" (no Hammer ball within
+  1.5), and Hammer Fallout appears under Smoother.
+
+**Deploy:** push (Learn site GitHub Action).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
