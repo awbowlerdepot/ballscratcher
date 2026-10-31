@@ -46,7 +46,7 @@ The GitHub repo is `awbowlerdepot/ballscratcher`, and everything deploys to the 
 ```bash
 # Backend deploy: always a full, unscoped build. A scoped `sam build AdminApiFunction`
 # has shipped a zip missing fastapi (runbook 6a.5). samconfig already sets
-# use_container, cached and parallel. If a dependency mysteriously goes missing: sam build --clear-cache
+# use_container, cached and parallel. If a dependency mysteriously goes missing: sam build --no-cached
 sam build && sam deploy
 
 # Frontends deploy through GitHub Actions on push to main (paths admin-spa/**,
