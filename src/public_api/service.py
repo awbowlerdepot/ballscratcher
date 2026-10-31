@@ -864,7 +864,7 @@ def get_article_hero_by_bigcommerce_product_id(conn, bigcommerce_product_id: str
             "title": title,
             "hook": hook,
             "hero_image_url": action_shot_image_url or product_shot_image_url,
-            "learn_url": f"https://learn.bowlerdepot.com/articles/{slug or product_id}",
+            "learn_url": f"https://learn.bowlerdepot.com/articles/{slug or product_id}/",
         }
 
 

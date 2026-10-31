@@ -1862,7 +1862,7 @@ def test_get_article_hero_by_bigcommerce_product_id_matched_and_approved():
         "title": "The Fury: A Heavy-Oil Workhorse",
         "hook": "Picture this...",
         "hero_image_url": "https://img/action.png",
-        "learn_url": f"https://learn.bowlerdepot.com/articles/{pid}",
+        "learn_url": f"https://learn.bowlerdepot.com/articles/{pid}/",
     }
 
 
@@ -1880,7 +1880,7 @@ def test_get_article_hero_by_bigcommerce_product_id_uses_slug_when_present():
 
     result = service.get_article_hero_by_bigcommerce_product_id(_FakeConnection(db), "4390")
 
-    assert result["learn_url"] == "https://learn.bowlerdepot.com/articles/storm-fury-solid"
+    assert result["learn_url"] == "https://learn.bowlerdepot.com/articles/storm-fury-solid/"
 
 
 def test_get_article_hero_by_bigcommerce_product_id_falls_back_to_product_shot():

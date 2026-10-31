@@ -22172,6 +22172,75 @@ pages.
 - In Search Console, URL-inspect the home page and request indexing, then
   resubmit the sitemap.
 
+### 6fj. Static links from bowlerdepot.com product pages to Learn (2026-10-30)
+
+Al: "add static links from bowlerdepot.com to learn". This follows on from
+6fi.
+
+**Why:**
+- Checked live, fetching as Googlebot. The only link from a bowlerdepot.com
+  product page to Learn is the "Learn" tab that
+  `bowlerdepot-article-hero.js` adds in the browser (6ar). The HTML
+  BigCommerce serves contains only that script's `<script src>`.
+- The bowlerdepot.com home page doesn't link to Learn at all.
+- The Description tab is rendered on the server from the product's
+  BigCommerce `description`, so a link written there is a real `<a href>`
+  on a domain Google already crawls often.
+
+**Changes:**
+- **New `src/bowlerdepot_learn_links/` (`BowlerdepotLearnLinksFunction`,
+  daily).**
+  - It appends one paragraph to each matched product's description:
+    `<p class="bowleriq-learn-link"><a href="https://learn.bowlerdepot.com/articles/<slug>/">Read our full <Brand> <Ball> review on BowlerDepot Learn</a></p>`.
+  - It uses the hero embed's gate: matched, published, approved article.
+  - The class marks the paragraph as ours. Each run strips that paragraph
+    and re-decides, so:
+    - re-runs are no-ops;
+    - a renamed slug updates the link;
+    - an unapproved or unpublished ball loses its link.
+  - The rest of the description is never touched.
+  - It does one bulk GET per 250 products and one PUT per changed product.
+  - `{"dry_run": true}` plans the changes without writing.
+- **`public_api.get_article_hero_by_bigcommerce_product_id`:** `learn_url`
+  now ends in `/`. Since 6fi the slash-less form is a 301, so this saves a
+  redirect.
+
+**Blocker, Al's to do in BigCommerce:** the token behind
+`BIGCOMMERCE_SECRET_ARN` is read-only.
+- Every `bowlerdepot_video_sync` push has been getting a 403 (the
+  2026-10-31 02:46 UTC run: 0 pushed, 1,607 failed), and this job's PUTs
+  will too.
+- To fix it, open **Settings → Store-level API accounts**, then on that
+  token (or a new one) set **Products: modify**.
+- A new token changes the secret's `auth_token`.
+- **Side effect:** the hourly video sync starts working too and pushes the
+  ~1,600 queued approved videos onto product pages at its next run.
+  Decide whether that's wanted before upgrading. To hold it, set
+  `HourlySync` `Enabled: false` first.
+
+**Dry run before deploy (2026-10-30, read-only token):** 165 matched
+products, all 165 found in BigCommerce, 136 with an article, so 136 adds,
+0 updates, 0 removes. No description mentions Learn today.
+
+**Site-wide link (manual):** add a Learn link to the storefront navigation
+or footer. The quickest way is **Storefront → Web Pages → Create a Web
+Page → "Link to another website or document"**, with URL
+`https://learn.bowlerdepot.com/`. That puts a server-rendered link on
+every page, pointing at the Learn home page, which now lists every
+article (6fi).
+
+**Deploy:** `sam build && sam deploy`. No migration.
+
+**Verify:**
+```bash
+aws lambda invoke --function-name bowling-scraper-bowlerdepot-learn-links --payload '{"dry_run": true}' --cli-binary-format raw-in-base64-out /dev/stdout
+```
+After the token is upgraded:
+- Invoke the function with `{}`. The result should show `written` 136 and
+  `failed` 0.
+- Then `curl -s https://bowlerdepot.com/storm-ion-pro-pearl/ | grep bowleriq-learn-link`
+  should show the link.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

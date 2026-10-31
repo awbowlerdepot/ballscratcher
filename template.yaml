@@ -3943,6 +3943,50 @@ Resources:
             Description: Pushes newly-approved, summarized videos for matched BowlerDepot products into BigCommerce's native Product Videos feature.
             Enabled: true
 
+  # Runbook 6fj -- Al: "add static links from bowlerdepot.com to learn".
+  # Appends a marked "Read our full <ball> review on BowlerDepot Learn"
+  # paragraph to each matched product's BigCommerce description, so the
+  # link is in the HTML BigCommerce serves (the hero embed's Learn tab is
+  # injected by JavaScript). See app.py's module docstring.
+  BowlerdepotLearnLinksFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: bowling-scraper-bowlerdepot-learn-links
+      CodeUri: src/bowlerdepot_learn_links/
+      Runtime: python3.13
+      Handler: app.handler
+      # One bulk GET per 250 products plus one PUT per changed product.
+      # The first real run writes ~136 descriptions; at BigCommerce's
+      # usual sub-second PUTs that's well inside 300s.
+      Timeout: 300
+      # Same secret as BowlerdepotVideoSyncFunction, with the same
+      # Products "modify" scope requirement for the PUT. As of 2026-10-30
+      # the token is read-only, so writes 403 until Al upgrades it;
+      # {"dry_run": true} works today.
+      Environment:
+        Variables:
+          BIGCOMMERCE_SECRET_ARN: !Ref BigCommerceSecretArn
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !If
+                - HasBigCommerceSecret
+                - - !Ref DbSecretArn
+                  - !Ref BigCommerceSecretArn
+                - - !Ref DbSecretArn
+      # Daily: a new article gets its link within a day of approval, and
+      # a run with nothing to change is one GET.
+      Events:
+        DailySync:
+          Type: Schedule
+          Properties:
+            Schedule: rate(1 day)
+            Name: bowling-scraper-bowlerdepot-learn-links-daily
+            Description: Keeps a static Learn review link in each matched BowlerDepot product description (runbook 6fj).
+            Enabled: true
+
   BowlerdepotArticleSyncFunction:
     Type: AWS::Serverless::Function
     Properties:
