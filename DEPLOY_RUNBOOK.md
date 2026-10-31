@@ -22235,6 +22235,17 @@ article (6fi).
   Brad & Kyle, Locations and Blog), as plain HTML on every page.
 - It was live about 20 seconds after saving.
 
+**Token, done 2026-10-30:**
+- The old API account only had Products: read-only, and its scopes couldn't
+  be edited.
+- Al created a new store-level API account with **Products: Modify** and
+  nothing else. He put its token into `bowling-scraper-bigcommerce`'s
+  `auth_token` himself; `store_hash` and the WebDAV keys are unchanged.
+- First real run: 136 written, 0 failed. A follow-up dry run plans
+  0 changes.
+- The links are live on the product pages. The old read-only account can
+  be deleted once the price checks run clean on the new token.
+
 **Deploy:** `sam build && sam deploy`. No migration.
 
 **Verify:**
