@@ -22246,6 +22246,17 @@ article (6fi).
 - The links are live on the product pages. The old read-only account can
   be deleted once the price checks run clean on the new token.
 
+**Hidden once the Learn tab loads (2026-10-30):**
+- Al didn't like seeing the description line next to the Learn tab: "hide
+  it when the tab loads".
+- `bowlerdepot-article-hero.js` now adds `.bowleriq-learn-link{display:none}`
+  right after it inserts the tab.
+- The link stays in the served HTML for Google; shoppers see only the tab.
+- If the tab can't load (API down, theme markup changed, or a dev or
+  preview storefront without Script Manager scripts), the line stays
+  visible.
+- It deploys with the Learn site, through the GitHub Action on push.
+
 **Deploy:** `sam build && sam deploy`. No migration.
 
 **Verify:**

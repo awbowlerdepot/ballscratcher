@@ -253,6 +253,18 @@
     } else {
       tabsContainer.appendChild(content);
     }
+
+    // Runbook 6fj: bowlerdepot_learn_links writes a plain
+    // <p class="bowleriq-learn-link"> review link into the product
+    // description, so the link is in the HTML BigCommerce serves (this tab
+    // is built in the browser). Al: "hide it when the tab loads" -- once
+    // the tab is on the page it carries the same link to the same review,
+    // so the description line would just be a duplicate. Hidden only
+    // here, after the tab is inserted: if the API call fails or the theme
+    // markup doesn't match, the description link stays visible.
+    var hideLink = document.createElement("style");
+    hideLink.textContent = ".bowleriq-learn-link{display:none !important;}";
+    document.head.appendChild(hideLink);
   }
 
   function run() {
