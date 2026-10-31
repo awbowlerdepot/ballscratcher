@@ -22229,6 +22229,11 @@ Page → "Link to another website or document"**, with URL
 `https://learn.bowlerdepot.com/`. That puts a server-rendered link on
 every page, pointing at the Learn home page, which now lists every
 article (6fi).
+- **Done 2026-10-30:** a Web Site Link page named "Learn" with URL
+  `https://learn.bowlerdepot.com/`, shown in the navigation menu.
+- The theme renders it in the footer's "Navigate" list (next to
+  Brad & Kyle, Locations and Blog), as plain HTML on every page.
+- It was live about 20 seconds after saving.
 
 **Deploy:** `sam build && sam deploy`. No migration.
 
