@@ -22215,8 +22215,9 @@ Al: "add static links from bowlerdepot.com to learn". This follows on from
 - A new token changes the secret's `auth_token`.
 - **Side effect:** the hourly video sync starts working too and pushes the
   ~1,600 queued approved videos onto product pages at its next run.
-  Decide whether that's wanted before upgrading. To hold it, set
-  `HourlySync` `Enabled: false` first.
+  Al: "disable the video sync too". So `BowlerdepotVideoSyncFunction`'s
+  `HourlySync` is now `Enabled: false`. Re-enable it deliberately when the
+  backlog should go out.
 
 **Dry run before deploy (2026-10-30, read-only token):** 165 matched
 products, all 165 found in BigCommerce, 136 with an article, so 136 adds,

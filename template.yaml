@@ -3934,6 +3934,11 @@ Resources:
       # own query is cheap (only ever-outstanding rows), so an hourly
       # cadence costs nothing extra when there's nothing due, same
       # reasoning as this project's other frequent-poll schedules.
+      # Disabled 2026-10-30 (runbook 6fj) -- Al: "disable the video sync
+      # too". The token was read-only, so every run 403'd (1,607 failed a
+      # run). Once it's upgraded for the Learn links job, an enabled
+      # schedule would push the whole ~1,600-video backlog onto product
+      # pages at once. Re-enable deliberately when that's wanted.
       Events:
         HourlySync:
           Type: Schedule
@@ -3941,7 +3946,7 @@ Resources:
             Schedule: rate(1 hour)
             Name: bowling-scraper-bowlerdepot-video-sync-hourly
             Description: Pushes newly-approved, summarized videos for matched BowlerDepot products into BigCommerce's native Product Videos feature.
-            Enabled: true
+            Enabled: false
 
   # Runbook 6fj -- Al: "add static links from bowlerdepot.com to learn".
   # Appends a marked "Read our full <ball> review on BowlerDepot Learn"
