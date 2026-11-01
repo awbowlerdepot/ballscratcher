@@ -247,9 +247,24 @@ def build_entries(urls: set, current_listing: set = frozenset()) -> list:
     """No sitemap lastmod source yet (see module docstring) -- every
     entry gets lastmod=None. `listing` (runbook 6fc) records whether the
     URL is on the brand's CURRENT category listing ("current") or only in
-    the sitemap / manual seeds ("other") -- the one discovery-time hint
-    that a ball has been archived."""
-    return [{"url": url, "lastmod": None, "listing": "current" if url in current_listing else "other"}
+    the sitemap / manual seeds ("retired") -- the one discovery-time hint
+    that a ball has been archived.
+
+    Runbook 6fl: this used to say "other", which 6fc wrote straight into
+    discovered_urls.status_path -- a product_status enum column that only
+    takes 'current'/'retired'. Every run since the 6fc deploy (2026-10-28)
+    died on the first known URL with InvalidTextRepresentation, so neither
+    the daily run nor the Sunday full re-scrape queued anything (found
+    2026-11-01 while starting the fragrance backfill, 6fk). The unit tests
+    used a fake cursor, which has no enum to reject the value.
+
+    "retired" is a hint, not a verdict: it only makes a URL that drops off
+    (or comes back onto) the listing count as "changed" and get
+    re-scraped. commercebuild_product_scraper sets products.status from
+    the page's own breadcrumb, and nothing copies status_path onto
+    commercebuild products (admin_api.backfill_netsuite_status is scoped
+    to source_platform = 'netsuite')."""
+    return [{"url": url, "lastmod": None, "listing": "current" if url in current_listing else "retired"}
             for url in sorted(urls)]
 
 

@@ -210,12 +210,12 @@ def test_build_entries_all_lastmod_none_and_sorted():
     urls = {"https://www.stormbowling.com/z-ball-bowling-ball", "https://www.stormbowling.com/a-ball-bowling-ball"}
     entries = app.build_entries(urls)
     assert entries == [
-        {"url": "https://www.stormbowling.com/a-ball-bowling-ball", "lastmod": None, "listing": "other"},
-        {"url": "https://www.stormbowling.com/z-ball-bowling-ball", "lastmod": None, "listing": "other"},
+        {"url": "https://www.stormbowling.com/a-ball-bowling-ball", "lastmod": None, "listing": "retired"},
+        {"url": "https://www.stormbowling.com/z-ball-bowling-ball", "lastmod": None, "listing": "retired"},
     ]
     # Runbook 6fc: URLs on the current category listing are tagged as such.
     marked = app.build_entries(urls, {"https://www.stormbowling.com/z-ball-bowling-ball"})
-    assert [e["listing"] for e in marked] == ["other", "current"]
+    assert [e["listing"] for e in marked] == ["retired", "current"]
 
 
 # --- diff_against_known (fake DB conn/cursor, matching psycopg2's context-manager cursor interface) ---
@@ -384,8 +384,17 @@ def test_dropping_off_the_current_listing_is_changed():
     url = "https://www.stormbowling.com/phaze-ii-bowling-ball"
     conn = _FakeConn(known_urls={url: (None, "current")})
     diff = app.diff_against_known(conn, "b", app.build_entries({url}))  # not on the listing now
-    assert diff["changed"] == [url] and conn.store[url] == (None, "other")
+    assert diff["changed"] == [url] and conn.store[url] == (None, "retired")
     diff = app.diff_against_known(conn, "b", app.build_entries({url}, {url}))  # back on it
     assert diff["changed"] == [url]
     fresh = _FakeConn(known_urls={url: (None, None)})
     assert app.diff_against_known(fresh, "b", app.build_entries({url}))["unchanged"] == [url]
+
+
+def test_build_entries_listing_values_fit_the_product_status_enum():
+    """Runbook 6fl: listing is written into discovered_urls.status_path, a
+    product_status enum ('current'/'retired'). "other" crashed every run
+    for four days; the fake cursor above can't catch that, this can."""
+    entries = app.build_entries({"https://www.stormbowling.com/a", "https://www.stormbowling.com/b"},
+                                {"https://www.stormbowling.com/a"})
+    assert {e["listing"] for e in entries} <= {"current", "retired"}

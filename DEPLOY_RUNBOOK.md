@@ -22329,6 +22329,49 @@ where p.source_platform = 'commercebuild' group by 1;
 - The kiosk Ball page for a Storm ball shows Fragrance; a Hammer ball
   doesn't.
 
+**Backfill, as run (2026-11-01 ~08:00 UTC):** the full-refresh invoke failed
+because of the 6fl bug below. Instead, all 393 known Storm / Roto Grip /
+900 Global `discovered_urls` were sent straight to
+`bowling-scraper-commercebuild-product-scrape` as `{url, brand_id}`, which
+is exactly what the full refresh would have queued.
+
+### 6fl. Storm / Roto Grip / 900 Global discovery crashed on every run since 6fc (2026-11-01)
+
+**What happened:**
+- 6fc's `build_entries` marked a URL that isn't on the current category
+  listing as `listing: "other"`, and `diff_against_known` wrote it to
+  `discovered_urls.status_path`.
+- That column is a `product_status` enum, which only takes `current` and
+  `retired`.
+- So every run since the 6fc deploy (2026-10-28) died on its first known
+  URL with `InvalidTextRepresentation`. That was the daily runs at
+  01:12–01:16 UTC and the Sunday full re-scrape.
+- Nothing got queued: no new balls, no retirement detection, no weekly
+  refresh.
+- The unit tests used a fake cursor, which has no enum to reject the
+  value.
+- It was found while starting the 6fk fragrance backfill.
+
+**Fix:**
+- The value is now `"retired"`. It's a hint, not a verdict: it only makes
+  a URL that drops off or comes back onto the listing count as changed,
+  so it gets re-scraped.
+- `commercebuild_product_scraper` still sets `products.status` from the
+  page breadcrumb.
+- Nothing copies `status_path` onto commercebuild products
+  (`backfill_netsuite_status` is netsuite-only).
+- A new test checks that the listing values fit the enum.
+- Motiv's discovery (also changed in 6fc) writes real enum values and has
+  logged no errors.
+
+**Deploy:** `sam build --no-cached && sam deploy`.
+
+**Verify:**
+```bash
+aws lambda invoke --function-name bowling-scraper-commercebuild-url-discovery --payload '{}' --cli-binary-format raw-in-base64-out /dev/stdout
+```
+It should return 200 with per-brand counts and no `errorMessage`.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
