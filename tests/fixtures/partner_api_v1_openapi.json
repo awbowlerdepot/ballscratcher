@@ -161,7 +161,7 @@
                 "type": "null"
               }
             ],
-            "description": "The ball's scent as the manufacturer names it, e.g. 'Root Beer'; null when none is listed. Currently published by Storm and Roto Grip only.",
+            "description": "The ball's scent as the manufacturer names it, e.g. 'Root Beer'; null when none is listed. Currently published by Storm only.",
             "title": "Fragrance"
           },
           "has_particle": {
