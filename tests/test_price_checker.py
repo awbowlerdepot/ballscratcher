@@ -143,6 +143,7 @@ class _FakeCursor:
         # with no such rows) keeps hitting the plain INSERT path unchanged.
         self.existing_bigcommerce_rows = existing_bigcommerce_rows or []
         self.bigcommerce_url_updates = []  # list of (product_url, external_product_id, id)
+        self.bigcommerce_reopens = []  # list of (id, match_confidence), runbook 6fn
         # list of dicts: product_id, external_product_id, match_status --
         # bowlerdepot_products rows list_bowlerdepot_matches reads
         # (016_price_tracking_bigcommerce.sql).
@@ -235,7 +236,7 @@ class _FakeCursor:
                 self.known_candidate_keys.add(key)
                 self.rowcount = 1
 
-        elif q.startswith("select id, product_url from product_price_sources"):
+        elif q.startswith("select id, product_url, external_product_id, status from product_price_sources"):
             product_id, price_site_id = params
             matches = [
                 r for r in self.existing_bigcommerce_rows
@@ -243,8 +244,16 @@ class _FakeCursor:
             ]
             matches.sort(key=lambda r: (0 if (r.get("status") == "approved" and r.get("is_active", True)) else 1,
                                          r.get("created_at", "")))
-            self._rows = [(matches[0]["id"], matches[0]["product_url"])] if matches else []
-            self.description = [("id",), ("product_url",)]
+            self._rows = [(matches[0]["id"], matches[0]["product_url"], matches[0].get("external_product_id"),
+                           matches[0].get("status", "pending"))] if matches else []
+            self.description = [("id",), ("product_url",), ("external_product_id",), ("status",)]
+
+        elif q.startswith("update product_price_sources set status = 'pending', resolved_at = null"):
+            match_confidence, source_id = params
+            self.bigcommerce_reopens.append((source_id, match_confidence))
+            for r in self.existing_bigcommerce_rows:
+                if r["id"] == source_id and r.get("status") == "rejected":
+                    r.update(status="pending", resolved_at=None, resolved_by=None, match_confidence=match_confidence)
 
         elif q.startswith("update product_price_sources set product_url"):
             product_url, external_product_id, source_id = params
@@ -850,6 +859,84 @@ def test_upsert_bigcommerce_candidate_prefers_approved_active_row_among_pre_exis
     assert conn.cursor().bigcommerce_url_updates == [
         ("https://www.bowlerdepot.com/storm-alpha-crux/", "100", "src-approved"),
     ]
+
+
+# --- Runbook 6fn: a rejected source repointed to a DIFFERENT BigCommerce
+# listing goes back to pending -- the rejection was for the old listing
+# (6fm's Hustle SOS -> "Hustle HSB" 676 / Hustle VP -> "Hustle 3TP" 674). ---
+
+def _hustle_row(**overrides):
+    row = {"id": "src-hustle", "product_id": "prod-sos", "price_site_id": "site-bd",
+           "product_url": "https://www.bowlerdepot.com/roto-grip-hustle-hsb/", "external_product_id": "676",
+           "status": "rejected", "is_active": True, "created_at": "2026-08-01",
+           "resolved_at": "2026-08-02", "resolved_by": "Al Wolfe", "match_confidence": "low"}
+    row.update(overrides)
+    return row
+
+
+def test_upsert_bigcommerce_candidate_reopens_rejected_row_repointed_to_new_listing():
+    row = _hustle_row()
+    conn = _FakeConn(existing_bigcommerce_rows=[row])
+    changed = app.upsert_bigcommerce_price_source_candidate(
+        conn, "prod-sos", "site-bd", "https://www.bowlerdepot.com/roto-grip-hustle-sos/", "4507",
+        "bowlerdepot_products match", "high",
+    )
+    assert changed == 1
+    assert conn.cursor().bigcommerce_url_updates == [
+        ("https://www.bowlerdepot.com/roto-grip-hustle-sos/", "4507", "src-hustle"),
+    ]
+    assert conn.cursor().bigcommerce_reopens == [("src-hustle", "high")]
+    assert row["status"] == "pending" and row["resolved_at"] is None and row["resolved_by"] is None
+    assert row["match_confidence"] == "high"
+
+
+def test_upsert_bigcommerce_candidate_keeps_rejection_when_only_the_url_changes():
+    # Same listing (676), just a base_url fix: Al's rejection still stands.
+    row = _hustle_row(product_url="/roto-grip-hustle-hsb/")
+    conn = _FakeConn(existing_bigcommerce_rows=[row])
+    changed = app.upsert_bigcommerce_price_source_candidate(
+        conn, "prod-sos", "site-bd", "https://www.bowlerdepot.com/roto-grip-hustle-hsb/", "676",
+        "bowlerdepot_products match", "high",
+    )
+    assert changed == 1
+    assert conn.cursor().bigcommerce_reopens == []
+    assert row["status"] == "rejected"
+
+
+def test_upsert_bigcommerce_candidate_rejected_same_listing_is_a_noop():
+    row = _hustle_row()
+    conn = _FakeConn(existing_bigcommerce_rows=[row])
+    changed = app.upsert_bigcommerce_price_source_candidate(
+        conn, "prod-sos", "site-bd", "https://www.bowlerdepot.com/roto-grip-hustle-hsb/", "676",
+        "bowlerdepot_products match", "high",
+    )
+    assert changed == 0
+    assert conn.cursor().bigcommerce_url_updates == [] and conn.cursor().bigcommerce_reopens == []
+    assert row["status"] == "rejected"
+
+
+def test_upsert_bigcommerce_candidate_null_external_id_never_unrejects():
+    # Can't prove the listing changed without the old id.
+    row = _hustle_row(external_product_id=None)
+    conn = _FakeConn(existing_bigcommerce_rows=[row])
+    app.upsert_bigcommerce_price_source_candidate(
+        conn, "prod-sos", "site-bd", "https://www.bowlerdepot.com/roto-grip-hustle-sos/", "4507",
+        "bowlerdepot_products match", "high",
+    )
+    assert conn.cursor().bigcommerce_reopens == []
+    assert row["status"] == "rejected"
+
+
+def test_upsert_bigcommerce_candidate_repoint_keeps_approved_and_pending_status():
+    for status in ("approved", "pending"):
+        row = _hustle_row(status=status)
+        conn = _FakeConn(existing_bigcommerce_rows=[row])
+        app.upsert_bigcommerce_price_source_candidate(
+            conn, "prod-sos", "site-bd", "https://www.bowlerdepot.com/roto-grip-hustle-sos/", "4507",
+            "bowlerdepot_products match", "high",
+        )
+        assert conn.cursor().bigcommerce_reopens == []
+        assert row["status"] == status
 
 
 # --- discover_price_sources: orchestration, tolerates per-site failures ---

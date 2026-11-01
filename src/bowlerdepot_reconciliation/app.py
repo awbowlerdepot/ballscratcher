@@ -6,7 +6,10 @@ directly rather than scraping HTML. Two checks, per the doc:
 1. Coverage: for every current, published ball in our normalized DB, does a
    matching product exist on BowlerDepot? Missing -> "not yet listed" queue
    item, so a real ball can get added to the store in a timely manner
-   rather than sitting unnoticed.
+   rather than sitting unnoticed. (The MATCH itself now covers more than
+   that: every current ball, published or not (6dj), plus every published
+   RETIRED ball whose BowlerDepot listing is still live (6fn) -- see
+   list_products_to_match. Only the review items keep this narrower scope.)
 2. Accuracy: for balls that DO match, do BigCommerce's stored specs agree
    with our manufacturer-sourced values? Disagreement -> the same
    review_queue mismatch mechanism bowwwl_cross_check and pdf_parser use
@@ -310,18 +313,72 @@ def fuzzy_match_product(our_name: str, bigcommerce_products: list, threshold: fl
     return None, 0.0
 
 
-def check_coverage(our_products: list, bigcommerce_products: list) -> list:
-    """our_products: list of {product_id, brand_name, name} dicts (current,
-    published balls from our own DB). Returns a list of
+def is_purchasable(bc_product: dict) -> bool:
+    """Visible on the storefront and not availability 'disabled' -- the same
+    rule as scripts/link_bowlerdepot_products.py's is_purchasable (6fm). A
+    hidden listing's storefront page 404s, so a match to it would hand
+    price discovery (and the APIs' bowlerdepot_url) a dead link. Both
+    fields come back on the default v3 /catalog/products response this
+    module already fetches."""
+    return bool(bc_product.get("is_visible")) and bc_product.get("availability") != "disabled"
+
+
+def pick_retired_listing(full_name: str, bigcommerce_products: list, existing_id=None):
+    """Runbook 6fn: the match for a RETIRED ball, as (product, ratio) or
+    (None, 0.0). Same fuzzy_match_product decision as a current ball (so
+    the 6h.1 token gate and the exact-vs-ambiguous split are unchanged),
+    then narrowed to a listing BowlerDepot still sells:
+
+    - The listing must be purchasable. 285 of the published retired balls
+      have a listing that exists but is hidden/disabled (6fm's table); the
+      store often keeps a retired ball's product around after pulling it.
+    - fuzzy_match_product returns the FIRST exact match in catalog order,
+      which may be a hidden duplicate while a visible listing of the exact
+      same (normalized) name exists -- so this looks across every listing
+      with the winning name and keeps the purchasable one(s).
+    - More than one purchasable listing with that name means we can't tell
+      them apart: no match, rather than a coin flip. If our existing row
+      already points at one of them, that one wins, so a re-run can never
+      move a ball between identical-looking listings.
+
+    Not applied to current balls: their behavior (match whatever the store
+    has, hidden or not) predates this and price_checker already counts a
+    match with no live product as an error."""
+    match, ratio = fuzzy_match_product(full_name, bigcommerce_products)
+    if match is None:
+        return None, 0.0
+    target = _normalize_name(match.get("name", ""))
+    twins = [p for p in bigcommerce_products
+             if is_purchasable(p) and _normalize_name(p.get("name", "")) == target]
+    if existing_id is not None:
+        for p in twins:
+            if str(p["id"]) == str(existing_id):
+                return p, ratio
+    if len(twins) != 1:
+        return None, 0.0
+    return twins[0], ratio
+
+
+def check_coverage(our_products: list, bigcommerce_products: list, existing_matches: dict = None) -> list:
+    """our_products: list of {product_id, brand_name, name[, status]} dicts
+    (see list_products_to_match). A product with status 'retired' is
+    matched through pick_retired_listing (live listings only, 6fn), using
+    existing_matches ({product_id: {"bigcommerce_product_id", ...}}) to
+    keep its current listing among identical-name ones. Returns a list of
     {product_id, name, match} dicts where match is None (not found -- a
     "not yet listed" item), or {"bigcommerce_product_id", "match_ratio",
     "ambiguous"} (ambiguous = True when the best match scored above
     threshold but not a clean 1.0, i.e. worth a human glance rather than
     auto-trusting)."""
+    existing_matches = existing_matches or {}
     results = []
     for product in our_products:
         full_name = f"{product['brand_name']} {product['name']}"
-        match, ratio = fuzzy_match_product(full_name, bigcommerce_products)
+        if product.get("status") == "retired":
+            existing_id = (existing_matches.get(product["product_id"]) or {}).get("bigcommerce_product_id")
+            match, ratio = pick_retired_listing(full_name, bigcommerce_products, existing_id)
+        else:
+            match, ratio = fuzzy_match_product(full_name, bigcommerce_products)
         if match is None:
             results.append({"product_id": product["product_id"], "name": full_name, "match": None})
         else:
@@ -455,6 +512,7 @@ def check_accuracy(matched_pairs: list, tolerance: float = 0.001) -> list:
 
 import json
 import os
+from collections import Counter, defaultdict
 
 
 def get_db_connection():
@@ -486,8 +544,24 @@ def get_bigcommerce_credentials():
     return secret["store_hash"], secret["auth_token"]
 
 
-def list_our_current_products(conn) -> list:
-    """Every CURRENT product, published or not (runbook 6dj). Al: "why is
+def list_products_to_match(conn) -> list:
+    """Every CURRENT product, published or not (runbook 6dj), plus every
+    PUBLISHED RETIRED one (runbook 6fn).
+
+    6fn: on 2026-11-01, 1,732 of the 1,747 published balls with no
+    bowlerdepot_url in the APIs had no bowlerdepot_products row at all --
+    1,679 of the 1,924 published balls are retired (published since 050),
+    this used to select `status = 'current'` only, and bowlerdepot.com
+    still sells many retired balls. scripts/link_bowlerdepot_products.py
+    backfilled 228 exact matches once; this keeps it going, so a ball that
+    retires (or a retired ball BowlerDepot lists later) gets matched by the
+    daily run instead of waiting for someone to re-run the script.
+    Retired + UNPUBLISHED stays out: nothing shows it, and 6dj's reason for
+    matching unpublished current balls (the store sells them now) doesn't
+    apply. Retired matches only count when the listing is live
+    (pick_retired_listing) and never create review items (handler).
+
+    6dj: Al: "why is
     it not finding the Brunswick TZone - Ocean Reef price source on
     bowlerdepot.com" -- BowlerDepot lists "Brunswick TZone Ocean Reef"
     (an exact match once normalized), but this used to select only
@@ -499,14 +573,34 @@ def list_our_current_products(conn) -> list:
     with conn.cursor() as cur:
         cur.execute(
             """
-            select p.id, b.name, p.name, p.published
+            select p.id, b.name, p.name, p.published, p.status::text
             from products p
             join brands b on b.id = p.brand_id
-            where p.status = 'current'
+            where p.status = 'current' or (p.status = 'retired' and p.published)
             """
         )
-        return [{"product_id": row[0], "brand_name": row[1], "name": row[2], "published": bool(row[3])}
+        return [{"product_id": row[0], "brand_name": row[1], "name": row[2], "published": bool(row[3]),
+                 "status": row[4]}
                 for row in cur.fetchall()]
+
+
+def list_existing_matches(conn) -> dict:
+    """{product_id: {"bigcommerce_product_id", "match_status"}} for every
+    bowlerdepot_products row with a product. The retired-ball path (6fn)
+    needs it to keep a listing two of our balls share from being linked
+    twice (6fg: a listing claimed by two balls drops bigcommerce_product_id
+    from BOTH in the partner API), and to never downgrade a 'matched' row."""
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            select product_id, bigcommerce_product_id, match_status::text
+            from bowlerdepot_products
+            where product_id is not null
+            """
+        )
+        return {str(row[0]): {"bigcommerce_product_id": str(row[1]) if row[1] is not None else None,
+                              "match_status": row[2]}
+                for row in cur.fetchall()}
 
 
 def get_product_skus(conn, product_id) -> list:
@@ -521,7 +615,8 @@ def get_product_skus(conn, product_id) -> list:
         ]
 
 
-def upsert_bowlerdepot_match(conn, product_id, bigcommerce_product_id, bigcommerce_sku, match_status: str):
+def upsert_bowlerdepot_match(conn, product_id, bigcommerce_product_id, bigcommerce_sku, match_status: str,
+                             keep_matched: bool = False):
     """018_bowlerdepot_products_dedupe_by_product.sql -- real incident, Al:
     "it still finds the ai version." The OLD conflict target here was
     (bigcommerce_product_id, bigcommerce_sku) -- keyed on the BigCommerce
@@ -540,7 +635,18 @@ def upsert_bowlerdepot_match(conn, product_id, bigcommerce_product_id, bigcommer
     overwrites it in place rather than accumulating a duplicate. See the
     migration's own header comment for how existing duplicate rows (one
     per already-double-matched product) get collapsed to one before the
-    new unique constraint is added."""
+    new unique constraint is added.
+
+    keep_matched (runbook 6fn, the retired-ball path): never let an
+    'ambiguous' result overwrite a 'matched' row. The handler already
+    skips that case before calling; this repeats it in the statement so a
+    row written between the handler's read and this write (the link
+    script, an admin fix) is safe too. Current balls keep 018's plain
+    overwrite -- that's how a corrected re-match replaces a wrong one."""
+    guard = (
+        "\n            where bowlerdepot_products.match_status <> 'matched' or excluded.match_status = 'matched'"
+        if keep_matched else ""
+    )
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -550,8 +656,8 @@ def upsert_bowlerdepot_match(conn, product_id, bigcommerce_product_id, bigcommer
                 bigcommerce_product_id = excluded.bigcommerce_product_id,
                 bigcommerce_sku = excluded.bigcommerce_sku,
                 match_status = excluded.match_status,
-                last_synced_at = now()
-            """,
+                last_synced_at = now()"""
+            + guard,
             (product_id, bigcommerce_product_id, bigcommerce_sku, match_status),
         )
     conn.commit()
@@ -585,45 +691,108 @@ def write_review_items(conn, mismatches: list):
 def handler(event, context):
     """Scheduled invocation: pulls the full BowlerDepot catalog once, then
     MATCHES every current product in our own DB against it (published or
-    not -- the match is what price discovery builds on, 6dj) and checks
-    coverage + accuracy for the published ones. Coverage misses become 'not yet listed' review
-    items; accuracy mismatches on matched products become the usual
-    mismatch review items."""
+    not -- the match is what price discovery builds on, 6dj), plus every
+    published retired one with a live listing (6fn), and checks coverage +
+    accuracy for the published CURRENT ones. Coverage misses become 'not
+    yet listed' review items; accuracy mismatches on matched products
+    become the usual mismatch review items.
+
+    Retired balls (6fn) get the match only -- no review items of either
+    kind. BowlerDepot not carrying a retired ball isn't news (1,072 of
+    them aren't on the store at all, 6fm), and spec-checking 1,679 retired
+    balls would flood the queue 6dj kept quiet. Their match is also more
+    careful than a current ball's, mirroring the link script's high-tier
+    rules so the 228 rows it wrote on 2026-11-01 come out the same:
+      - live listing only (pick_retired_listing);
+      - skipped when another of our products already holds that listing,
+        or two retired balls want it -- 6fg drops bigcommerce_product_id
+        from every ball sharing a listing, so a retired namesake must
+        never take it from the current ball (or vice versa);
+      - an 'ambiguous' result never replaces an existing 'matched' row
+        (keep_matched), and a miss writes nothing, so an existing row
+        stays as it was."""
     store_hash, auth_token = get_bigcommerce_credentials()
     bigcommerce_products = fetch_all_products(store_hash, auth_token)
     logger.info("Fetched %d products from BowlerDepot's BigCommerce catalog", len(bigcommerce_products))
 
     conn = get_db_connection()
     try:
-        our_products = list_our_current_products(conn)
-        coverage = check_coverage(our_products, bigcommerce_products)
+        our_products = list_products_to_match(conn)
+        existing = list_existing_matches(conn)
+        coverage = check_coverage(our_products, bigcommerce_products, existing)
 
         published = {p["product_id"]: p.get("published", True) for p in our_products}
+        retired = {p["product_id"] for p in our_products if p.get("status") == "retired"}
+
+        # Who holds which listing once this run's current-ball matches land:
+        # existing rows, overlaid with every current ball's fresh result (a
+        # miss writes nothing, so that ball's old row still holds its claim).
+        claims = {pid: row["bigcommerce_product_id"] for pid, row in existing.items()
+                  if row.get("match_status") in ("matched", "ambiguous")}
+        for entry in coverage:
+            if entry["product_id"] not in retired and entry["match"] is not None:
+                claims[str(entry["product_id"])] = entry["match"]["bigcommerce_product_id"]
+        # The one case this run doesn't fix by itself: a retired ball already
+        # linked to a listing a CURRENT ball now matches too (e.g. a re-release
+        # under the same name). The current ball's match is written as always;
+        # the retired row is left for a human, since unlinking it would also
+        # strand its approved price source. Logged so it shows in CloudWatch.
+        holders = defaultdict(set)
+        for holder, bid in claims.items():
+            holders[bid].add(holder)
+        retired_ids = {str(r) for r in retired}
+        current_ids = {str(p["product_id"]) for p in our_products} - retired_ids
+        shared_with_retired = sorted(
+            bid for bid, pids in holders.items()
+            if pids & retired_ids and pids & current_ids
+        )
+        if shared_with_retired:
+            logger.warning("BigCommerce listings held by both a current and a retired ball (6fn): %s",
+                           shared_with_retired)
+        retired_wants = Counter(entry["match"]["bigcommerce_product_id"] for entry in coverage
+                                if entry["product_id"] in retired and entry["match"] is not None)
+
         not_yet_listed = 0
+        retired_counts = Counter()
         matched_pairs = []
         for entry in coverage:
+            pid = entry["product_id"]
             if entry["match"] is None:
-                # Review items stay scoped to PUBLISHED balls (runbook 6dj):
-                # an unpublished ball BowlerDepot doesn't sell isn't news.
-                if published.get(entry["product_id"], True):
-                    write_not_yet_listed_item(conn, entry["product_id"], entry["name"])
+                # Review items stay scoped to PUBLISHED CURRENT balls (6dj,
+                # 6fn): an unpublished or retired ball BowlerDepot doesn't
+                # sell isn't news.
+                if pid not in retired and published.get(pid, True):
+                    write_not_yet_listed_item(conn, pid, entry["name"])
                     not_yet_listed += 1
                 continue
 
             bc_product_id = entry["match"]["bigcommerce_product_id"]
             bc_sku = entry["match"]["bigcommerce_sku"]
             match_status = "ambiguous" if entry["match"]["ambiguous"] else "matched"
-            upsert_bowlerdepot_match(conn, entry["product_id"], bc_product_id, bc_sku, match_status)
+
+            if pid in retired:
+                others = {other for other, bid in claims.items() if bid == bc_product_id and other != str(pid)}
+                if others or retired_wants[bc_product_id] > 1:
+                    retired_counts["contested"] += 1
+                    continue
+                if match_status == "ambiguous" and (existing.get(str(pid)) or {}).get("match_status") == "matched":
+                    retired_counts["kept_matched"] += 1
+                    continue
+                upsert_bowlerdepot_match(conn, pid, bc_product_id, bc_sku, match_status, keep_matched=True)
+                retired_counts[match_status] += 1
+                continue  # match only: no spec-mismatch items for retired balls (6fn)
+
+            upsert_bowlerdepot_match(conn, pid, bc_product_id, bc_sku, match_status)
 
             bc_product = next((p for p in bigcommerce_products if str(p["id"]) == bc_product_id), None)
             if bc_product is None or match_status == "ambiguous":
                 continue  # don't run an accuracy check against a match we're not confident in
-            if not published.get(entry["product_id"], True):
+            if not published.get(pid, True):
                 continue  # matched (so price sources can be found), but no spec-mismatch items (6dj)
 
-            for sku in get_product_skus(conn, entry["product_id"]):
+            for sku in get_product_skus(conn, pid):
                 matched_pairs.append({
-                    "product_id": entry["product_id"],
+                    "product_id": pid,
                     "our_sku": sku,
                     "bigcommerce_product": bc_product,
                 })
@@ -634,12 +803,19 @@ def handler(event, context):
     finally:
         conn.close()
 
+    logger.info("Retired-ball matches (6fn): %s", dict(retired_counts))
     return {
         "statusCode": 200,
         "body": json.dumps({
             "our_product_count": len(our_products),
+            "retired_product_count": len(retired),
             "bigcommerce_product_count": len(bigcommerce_products),
             "not_yet_listed_count": not_yet_listed,
             "mismatch_count": len(mismatches),
+            "retired_matched_count": retired_counts["matched"],
+            "retired_ambiguous_count": retired_counts["ambiguous"],
+            "retired_contested_count": retired_counts["contested"],
+            "retired_kept_matched_count": retired_counts["kept_matched"],
+            "shared_with_retired_count": len(shared_with_retired),
         }),
     }

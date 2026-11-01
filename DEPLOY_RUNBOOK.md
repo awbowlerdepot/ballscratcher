@@ -22510,6 +22510,105 @@ psql -c "select count(*) filter (where bdp.match_status = 'matched') matched, co
 - `discover_bigcommerce_candidates` still repoints a rejected source without
   un-rejecting it.
 
+Both fixed in 6fn.
+
+### 6fn. Daily reconciliation also matches published retired balls; a repointed rejected price source goes back to pending (2026-11-01)
+
+The permanent fix for 6fm. `scripts/link_bowlerdepot_products.py` linked 228
+retired balls once; without this, a ball that retires (or a retired ball
+BowlerDepot lists later) would wait for someone to re-run the script.
+
+**`bowlerdepot_reconciliation`** (`list_our_current_products` is now
+`list_products_to_match`):
+- Matches `status = 'current'` (published or not, as in 6dj) **or `status =
+  'retired' and published`**. Retired and unpublished stays out.
+- Retired balls get the match only. No "not yet listed" item (BowlerDepot not
+  carrying a retired ball isn't news) and no spec-mismatch items (6dj kept
+  the review queue to published current balls).
+- A retired ball's match goes through `pick_retired_listing`: the same
+  `fuzzy_match_product` decision (6h.1 token gate, exact = `matched`, anything
+  else = `ambiguous`), then only a **purchasable** listing (`is_visible` and
+  `availability != 'disabled'`, the script's `is_purchasable`). If the first
+  exact hit is a hidden duplicate, a visible listing with the same normalized
+  name is used. Two visible listings with that name means no match, unless our
+  existing row already points at one of them.
+- Skipped (`retired_contested_count`) when another product's
+  `matched`/`ambiguous` row (or this run's current-ball match) holds that
+  listing, or two retired balls want it. 6fg drops `bigcommerce_product_id`
+  from every ball sharing a listing, so a retired namesake must never take it
+  from a current ball.
+- Never downgrades: an `ambiguous` result for a retired ball with a `matched`
+  row is skipped (`retired_kept_matched_count`), and `upsert_bowlerdepot_match(...,
+  keep_matched=True)` repeats that as a `where` on the `on conflict` update. A
+  miss or a hidden listing writes nothing, so the existing row stays.
+- Current balls are unchanged, including 018's plain overwrite.
+- New in the response: `retired_product_count`, `retired_matched_count`,
+  `retired_ambiguous_count`, `retired_contested_count`,
+  `retired_kept_matched_count`, `shared_with_retired_count`. The last is a
+  warning, logged with the ids: a retired ball already linked to a listing a
+  current ball now matches too (a re-release under the same name). The current
+  ball's match is written as usual. The retired row is left for a human,
+  because unlinking it would strand its approved price source.
+
+**`price_checker.upsert_bigcommerce_price_source_candidate`**: when an existing
+row is repointed to a **different** `external_product_id` and it was
+`rejected`, it goes back to `pending` (`resolved_at`/`resolved_by` cleared,
+`match_confidence` from the new match). The rejection was for the old listing:
+6fm's Hustle SOS (676 "Hustle HSB" → 4507) and Hustle VP (674 "Hustle 3TP" →
+4506). A URL-only fix on the same id keeps its status, rejected or not.
+Approved and pending rows keep theirs, and nothing is ever approved. A row
+with a null `external_product_id` can't prove the listing changed, so it never
+un-rejects.
+
+Not changed: an *approved* source repointed to a different id stays approved
+(as before). That only happens after a match is corrected, which is a
+manual step.
+
+**Dry run against live data (2026-11-01, read-only)**. The handler was run
+locally with every writer replaced by a recorder and the DB session read-only.
+- 1,924 balls in scope (1,680 published retired), 2,221 BigCommerce products.
+- The 229 retired `matched` rows synced today (the script's 228 plus one)
+  come back with **the same id and status, 229/229**. Zero `matched` →
+  `ambiguous` writes for any ball.
+- 241 retired upserts: 234 matched, 7 ambiguous, all existing rows except
+  **6 new `ambiguous` rows**, the slash-color near names from 6fm's
+  `review_link` tier: Brunswick Twist Blue/Silver (509), Black/Gold/Silver
+  (508) and Red/Purple (511), Hammer Effect (3908), Storm Mix
+  Red/White/Navy (4021), Columbia 300 White Dot Scarlet/Gold/Black (3299, the
+  store lists the colors in another order). As `ambiguous`, discovery makes
+  them `low` pending candidates only.
+- 10 contested (skipped), 0 shared with a current ball.
+- 72 "not yet listed" items, all current balls, the same as before 6fn.
+  None for retired balls.
+
+**Tests:** `test_bowlerdepot_reconciliation.py` 48 (16 new: the selection SQL,
+`is_purchasable`, hidden/disabled skipped for retired but not for current, the
+visible twin, two visible twins, the iQ Tour gate, a re-run reproducing the
+script's rows, no downgrade, new ambiguous, contested by a current
+ball, by an existing row and by two retired balls, the shared warning, the
+`keep_matched` SQL). `test_price_checker.py` 133 (5 new: Hustle reopened,
+URL-only fix keeps the rejection, same listing is a no-op, null id never
+un-rejects, approved/pending keep their status).
+`test_link_bowlerdepot_products.py` 31, unchanged.
+
+**Deploy:**
+```bash
+sam build && sam deploy
+aws lambda invoke --region us-west-1 --function-name bowling-scraper-bowlerdepot-reconciliation --cli-read-timeout 900 /tmp/recon.json && cat /tmp/recon.json
+```
+Expect `retired_matched_count` ≈ 234, `retired_ambiguous_count` ≈ 7 and
+`retired_kept_matched_count` 0. The daily schedule runs it anyway; the invoke
+is optional.
+
+**Verify:**
+```bash
+psql -c "select p.status, bdp.match_status, count(*), count(*) filter (where bdp.last_synced_at > now() - interval '1 day') synced_today from bowlerdepot_products bdp join products p on p.id = bdp.product_id where p.published group by 1, 2 order by 1, 2"
+psql -c "select count(*) from review_queue where source = 'bowlerdepot_reconciliation' and created_at > now() - interval '1 day' and product_id in (select id from products where status = 'retired')"   # expect 0
+```
+The new ambiguous retired rows' price sources show up as `low`, pending in admin
+after the next price discovery (Batch Jobs → Discover price sources). They are
+never auto-approved.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

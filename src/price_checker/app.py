@@ -1239,11 +1239,26 @@ def upsert_bigcommerce_price_source_candidate(conn, product_id: str, price_site_
     Returns 1 if a row was inserted OR corrected, 0 if an existing row's
     product_url already matched (nothing to do) -- discover_bigcommerce_
     candidates sums this the same way it summed insert_price_source_
-    candidates' return value before."""
+    candidates' return value before.
+
+    Runbook 6fn: a 'rejected' row that gets REPOINTED to a different
+    BigCommerce id goes back to 'pending' (resolved_at/resolved_by
+    cleared, match_confidence taken from the new match). The rejection was
+    a verdict on the OLD listing, not on the new one -- the real case is
+    6fm's Roto Grip Hustle SOS / Hustle VP: their sources were rejected
+    while they still pointed at "Hustle HSB" (676) and "Hustle 3TP" (674),
+    the wrong balls, from before the match was fixed. Once the match was
+    corrected, discovery fixed the URL but left the row rejected, so the
+    right listing could never be approved without someone noticing that a
+    rejected row had quietly changed underneath them. A plain URL fix for
+    the SAME id (the base_url case above) keeps its status, rejected or
+    not: the listing Al looked at hasn't changed. Approved/pending rows
+    keep their status either way -- this never approves anything (the
+    module's "never auto-approved" design)."""
     with conn.cursor() as cur:
         cur.execute(
             """
-            select id, product_url from product_price_sources
+            select id, product_url, external_product_id, status from product_price_sources
             where product_id = %s and price_site_id = %s and source = 'bigcommerce_api'
             order by (status = 'approved' and is_active) desc, created_at asc
             limit 1
@@ -1253,13 +1268,26 @@ def upsert_bigcommerce_price_source_candidate(conn, product_id: str, price_site_
         existing = cur.fetchone()
 
         if existing is not None:
-            existing_id, existing_url = existing
-            if existing_url == product_url:
+            existing_id, existing_url, existing_external_id, existing_status = existing
+            # A null external_product_id can't prove the listing changed, so
+            # it never un-rejects (and, as before 6fn, a same-URL row is left alone).
+            new_listing = (existing_external_id is not None
+                           and str(existing_external_id) != str(external_product_id))
+            if existing_url == product_url and not new_listing:
                 return 0
             cur.execute(
                 "update product_price_sources set product_url = %s, external_product_id = %s where id = %s",
                 (product_url, external_product_id, existing_id),
             )
+            if new_listing and existing_status == "rejected":
+                cur.execute(
+                    """
+                    update product_price_sources set status = 'pending', resolved_at = null,
+                        resolved_by = null, match_confidence = %s
+                    where id = %s and status = 'rejected'
+                    """,
+                    (match_confidence, existing_id),
+                )
             conn.commit()
             return 1
 
