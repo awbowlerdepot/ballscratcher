@@ -191,6 +191,20 @@ def parse_spec_fields(html: str) -> dict:
     return fields
 
 
+# Values that mean "no scent listed" rather than a scent. Not seen on a
+# live page yet (a page with no scent just omits the line), but the CMS
+# custom-field system would happily render one.
+_NO_FRAGRANCE_VALUES = {"", "-", "--", "n/a", "na", "none", "no", "no fragrance", "unscented"}
+
+
+def parse_fragrance(value):
+    """The ball's scent as the manufacturer names it, or None."""
+    if value is None:
+        return None
+    value = value.strip()
+    return None if value.lower() in _NO_FRAGRANCE_VALUES else value
+
+
 def _to_float(value):
     """Real bug found via this deploy's first live smoke test: the old
     pattern (`-?\\d+\\.?\\d*`) requires a digit before the decimal point,
@@ -493,6 +507,12 @@ def parse_product_page(html: str, url: str) -> dict:
         "core_type": parse_core_type(spec.get("symmetry")),
         "factory_finish": spec.get("finish"),
         "color": spec.get("color"),
+        # Runbook 6fk -- Al: "do we pull in the scent/fragrance for the
+        # storm balls?" Storm and Roto Grip pages carry a "Fragrance:" spec
+        # line ("Root Beer", "Apple Crisp", "Melon Mint"); some pages leave
+        # it out. Stored as-is after the usual prefix cleanup, null when
+        # missing or a placeholder (parse_fragrance).
+        "fragrance": parse_fragrance(spec.get("fragrance")),
         "release_date_raw": spec.get("release date"),
         "release_date": parse_release_date(spec.get("release date")),
         # The single weight/RG/Diff/PSA this page's raw HTML actually
@@ -1414,9 +1434,9 @@ def upsert_product(conn, brand_id: str, parsed: dict, skus: list, mismatches: li
             insert into products (
                 brand_id, name, url, color, coverstock_material, coverstock_type,
                 coverstock_name, factory_finish, part_number, status, source_platform,
-                release_date, description, core_id, coverstock_id
+                release_date, description, core_id, coverstock_id, fragrance
             )
-            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'commercebuild', %s, %s, %s, %s)
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'commercebuild', %s, %s, %s, %s, %s)
             on conflict (url) do update set
                 name = excluded.name,
                 color = excluded.color,
@@ -1430,6 +1450,9 @@ def upsert_product(conn, brand_id: str, parsed: dict, skus: list, mismatches: li
                 description = coalesce(excluded.description, products.description),
                 core_id = coalesce(excluded.core_id, products.core_id),
                 coverstock_id = coalesce(excluded.coverstock_id, products.coverstock_id),
+                -- Not coalesced: the manufacturer page is the only source,
+                -- so a scent taken off the page should clear here too.
+                fragrance = excluded.fragrance,
                 updated_at = now()
             returning id
             """,
@@ -1438,6 +1461,7 @@ def upsert_product(conn, brand_id: str, parsed: dict, skus: list, mismatches: li
                 parsed["coverstock_material"], parsed["coverstock_type"],
                 parsed["coverstock_name"], parsed["factory_finish"], parsed["sku_code"],
                 parsed["status"], parsed["release_date"], parsed["description"], core_id, coverstock_id,
+                parsed.get("fragrance"),
             ),
         )
         product_id = cur.fetchone()[0]

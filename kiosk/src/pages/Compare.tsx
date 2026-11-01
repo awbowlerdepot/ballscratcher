@@ -40,6 +40,11 @@ export default function Compare() {
     ["Cover type", (p) => titleCase(p.coverstock_type) || "--"],
     ["Material", (p) => (p.coverstock_material ? MATERIAL_LABEL[p.coverstock_material] ?? p.coverstock_material : "--")],
     ["Finish", (p) => p.factory_finish || "--"],
+    // Runbook 6fk. Al: "if a ball doesn't have it set just hide the entire
+    // key value pair" -- the row only appears when a compared ball has one.
+    ...(list.some((p) => p.fragrance)
+      ? ([["Fragrance", (p) => p.fragrance || "--"]] as [string, (p: ProductDetail) => string][])
+      : []),
     ["Core", (p) => [p.core_name, p.core_type && titleCase(p.core_type)].filter(Boolean).join(" · ") || "--"],
     ["RG (heaviest)", (p) => (heaviest(p)?.rg != null ? `${heaviest(p)!.rg!.toFixed(2)} @ ${heaviest(p)!.weight_lbs} lb` : "--")],
     ["Differential", (p) => (heaviest(p)?.differential != null ? heaviest(p)!.differential!.toFixed(3) : "--")],

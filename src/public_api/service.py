@@ -622,6 +622,9 @@ def get_product(conn, product_id: str):
             select p.id, p.name, p.url, p.color,
                    p.coverstock_material, p.coverstock_type, p.coverstock_name,
                    p.has_particle, p.has_custom_graphic, p.factory_finish,
+                   -- Runbook 6fk: null when the manufacturer lists no scent;
+                   -- every spec list hides the row then.
+                   p.fragrance,
                    p.part_number,
                    lower(p.weights_available) as weights_min,
                    upper(p.weights_available) as weights_max,
@@ -1232,7 +1235,7 @@ def get_product_article(conn, product_id: str):
         cur.execute(
             """
             select p.name, p.url, p.status, c.name as core_name, c.core_type,
-                   p.coverstock_name, p.coverstock_type, b.id as brand_id, b.name as brand_name,
+                   p.coverstock_name, p.coverstock_type, p.fragrance, b.id as brand_id, b.name as brand_name,
                    coalesce(
                        (
                            select pi.stored_url from product_images pi

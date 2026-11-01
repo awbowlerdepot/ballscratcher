@@ -396,6 +396,25 @@ def test_parse_product_page_archived_still_gets_coverstock_and_color():
     assert parsed["color"] == "Copperhead/Jade/Phantom Black"
 
 
+# --- fragrance (runbook 6fk) ---
+
+def test_parse_product_page_reads_fragrance_current_and_archived():
+    assert app.parse_product_page(ALPHA_CRUX_HTML, URL)["fragrance"] == "Apple Fritter"
+    archived = app.parse_product_page(ARCHIVED_ABSOLUTE_HTML, "https://www.stormbowling.com/storm-absolute-bowling-ball")
+    assert archived["fragrance"] == "Orange Cream Soda"
+
+
+def test_parse_product_page_fragrance_none_when_page_has_no_line():
+    html = ALPHA_CRUX_HTML.replace("<strong>Fragrance:</strong> Apple Fritter", "")
+    assert app.parse_product_page(html, URL)["fragrance"] is None
+
+
+def test_parse_fragrance_treats_placeholders_as_missing():
+    for v in (None, "", "  ", "N/A", "None", "unscented"):
+        assert app.parse_fragrance(v) is None
+    assert app.parse_fragrance(" Root Beer Float ") == "Root Beer Float"
+
+
 def test_parse_product_page_current_status_is_current():
     parsed = app.parse_product_page(ALPHA_CRUX_HTML, URL)
     assert parsed["status"] == "current"

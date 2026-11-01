@@ -297,6 +297,8 @@ export interface ProductDetail {
   core_type: string | null;
   coverstock_id: string | null;
   coverstock_name: string | null;
+  // Runbook 6fk: the manufacturer's scent; null when none listed.
+  fragrance?: string | null;
   release_date: string | null;
   created_at: string;
   updated_at: string;

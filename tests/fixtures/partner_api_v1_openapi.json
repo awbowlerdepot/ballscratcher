@@ -32,6 +32,7 @@
             },
             "factory_finish": "1500 Grit Polished",
             "finish_category": "polished",
+            "fragrance": "Root Beer",
             "has_particle": false,
             "id": "ff32beb3-57fc-4c61-abb4-c4cab2b46240",
             "image_url": "https://img.bowleriq.io/product-images/ff32beb3/detail.png?w=800",
@@ -150,6 +151,18 @@
             ],
             "description": "The factory finish, grouped as polished, satin or dull.",
             "title": "Finish Category"
+          },
+          "fragrance": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The ball's scent as the manufacturer names it, e.g. 'Root Beer'; null when none is listed. Currently published by Storm and Roto Grip only.",
+            "title": "Fragrance"
           },
           "has_particle": {
             "description": "True when the cover contains particle (additive) material.",

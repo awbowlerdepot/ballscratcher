@@ -177,6 +177,8 @@ interface ArticleDetail {
     core_type?: string | null;
     coverstock_name?: string | null;
     coverstock_type?: string | null;
+    // Runbook 6fk: the manufacturer's scent; null when none listed.
+    fragrance?: string | null;
     brand_name?: string | null;
     primary_image_url?: string | null;
     // Real BowlerDepot storefront data (014/016 price-tracking, reused
@@ -416,19 +418,25 @@ function renderList(items: string[] | null | undefined): string {
 }
 
 function renderSpecTable(product: ArticleDetail["product"]): string {
-  if (!product?.skus?.length) return "";
-  const rows = product.skus
+  // Runbook 6fk: Fragrance shows only when the manufacturer lists one,
+  // matching ArticleDetailPage.tsx's Specs section.
+  const fragrance = product?.fragrance ? `<p><strong>Fragrance:</strong> ${escapeHtml(product.fragrance)}</p>` : "";
+  if (!product?.skus?.length && !fragrance) return "";
+  const rows = (product?.skus ?? [])
     .map(
       (s) =>
         `<tr><td>${s.weight_lbs} lb</td><td>${s.rg ?? "--"}</td><td>${s.differential ?? "--"}</td><td>${s.mass_bias ?? "--"}</td></tr>`,
     )
     .join("");
-  return `
-    <h2>Specs</h2>
+  const table = rows
+    ? `
     <table class="comparison-table">
       <thead><tr><th>Weight</th><th>RG</th><th>Differential</th><th>Mass Bias</th></tr></thead>
       <tbody>${rows}</tbody>
-    </table>`;
+    </table>`
+    : "";
+  return `
+    <h2>Specs</h2>${fragrance}${table}`;
 }
 
 // Real <a href="/articles/<id>/"> links to sibling review pages -- see

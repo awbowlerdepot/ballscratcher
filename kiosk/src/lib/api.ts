@@ -101,6 +101,8 @@ export interface ProductDetail {
   core_name: string | null;
   core_type: string | null;
   factory_finish: string | null;
+  // Runbook 6fk: the manufacturer's scent ("Root Beer"); null when none listed.
+  fragrance?: string | null;
   has_particle: boolean | null;
   skus: Sku[];
   video_reviews_summary: string | null;

@@ -62,6 +62,8 @@ export interface ProductDetail {
   has_particle?: boolean | null;
   has_custom_graphic?: boolean | null;
   factory_finish?: string | null;
+  // Runbook 6fk: the manufacturer's scent; null when none listed.
+  fragrance?: string | null;
   part_number?: string | null;
   weights_available?: string | null;
   usbc_approval_date?: string | null;

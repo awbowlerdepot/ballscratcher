@@ -545,9 +545,18 @@ export default function ArticleDetailPage() {
       {/* Retired balls get it too, as "Current replacements" (6cl). */}
       {!isVideo && data?.product_id ? <PlotterArticlePanel productId={data.product_id} /> : null}
 
-      {product?.skus?.length ? (
+      {product?.skus?.length || product?.fragrance ? (
         <div className="mb-10">
           <h2 className="mb-3 font-display text-xl font-semibold text-ink">Specs</h2>
+          {/* Runbook 6fk: the manufacturer's scent. Al: "if a ball doesn't
+              have it set just hide the entire key value pair". */}
+          {product.fragrance ? (
+            <p className="mb-3 text-sm">
+              <span className="text-xs font-medium uppercase tracking-wide text-muted">Fragrance</span>{" "}
+              <span className="ml-2 text-ink">{product.fragrance}</span>
+            </p>
+          ) : null}
+          {product.skus?.length ? (
           <div className="overflow-x-auto">
             <table className="w-full border-collapse text-sm">
               <thead>
@@ -578,6 +587,7 @@ export default function ArticleDetailPage() {
               </tbody>
             </table>
           </div>
+          ) : null}
         </div>
       ) : null}
 

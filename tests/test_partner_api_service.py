@@ -21,7 +21,7 @@ def _row(pid, *, published=True, changed=T0, **kw):
         "brand_name": "Storm", "status": "current", "release_date": None, "color": "Red / Black",
         "coverstock_name": "R2S Pearl", "coverstock_material": "reactive_resin", "coverstock_type": "pearl",
         "core_name": "Velocity", "core_type": "symmetric", "has_particle": False,
-        "factory_finish": "1500 Polished", "finish_category": "polished",
+        "factory_finish": "1500 Polished", "finish_category": "polished", "fragrance": None,
         "oil_rating": 9.1, "motion_rating": 14.4, "oil_motion_source": "estimated",
         "image_url": "https://img/x.png", "url": "https://storm/x", "article_slug": None,
         "bowlerdepot_url": None, "content_changed_at": changed, "published": published,
@@ -108,6 +108,14 @@ def test_map_ball_matches_the_v1_model_and_orders_weights_heaviest_first():
     assert [w["weight_lbs"] for w in ball["weights"]] == [16, 14]
     assert ball["learn_article_url"] == "https://learn.bowlerdepot.com/articles/storm-phaze-ii"
     assert ball["plotter"] == {"oil": 9.1, "motion": 14.4, "source": "estimated"}
+
+
+def test_map_ball_fragrance_passes_through_and_is_null_when_unset():
+    """Runbook 6fk: always present on the Ball, null when not listed."""
+    assert service.map_ball(_row(_id(1), fragrance="Root Beer"), [])["fragrance"] == "Root Beer"
+    ball = service.map_ball(_row(_id(1)), [])
+    assert "fragrance" in ball and ball["fragrance"] is None
+    models.Ball.model_validate(ball)
 
 
 def test_map_ball_handles_no_position_no_specs_and_decimals():

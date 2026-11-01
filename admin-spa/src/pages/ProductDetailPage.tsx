@@ -1029,6 +1029,13 @@ export default function ProductDetailPage() {
               <p className="text-sm font-semibold text-ink-800">Coverstock</p>
               <p className="text-sm text-ink-600">{product.coverstock_name ?? <span className="text-warn">not identified yet</span>}</p>
             </div>
+            {/* Runbook 6fk: hidden when the manufacturer lists no scent. */}
+            {product.fragrance ? (
+              <div>
+                <p className="text-sm font-semibold text-ink-800">Fragrance</p>
+                <p className="text-sm text-ink-600">{product.fragrance}</p>
+              </div>
+            ) : null}
             <div>
               <p className="text-sm font-semibold text-ink-800">Source platform</p>
               <p className="text-sm text-ink-600">{product.source_platform ?? "—"}</p>

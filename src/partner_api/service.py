@@ -213,6 +213,7 @@ def map_ball(row: dict, weights: list) -> dict:
         "has_particle": bool(row.get("has_particle")),
         "factory_finish": row.get("factory_finish"),
         "finish_category": row.get("finish_category"),
+        "fragrance": row.get("fragrance"),
         "weights": [map_weight(w) for w in sorted(weights, key=lambda w: -int(w["weight_lbs"]))],
         "plotter": map_plotter(row),
         "image_url": row.get("image_url"),
@@ -256,7 +257,7 @@ BALL_SELECT = """
            coalesce(cv.name, p.coverstock_name) as coverstock_name,
            p.coverstock_material, p.coverstock_type,
            c.name as core_name, c.core_type,
-           p.has_particle, p.factory_finish, p.finish_category,
+           p.has_particle, p.factory_finish, p.finish_category, p.fragrance,
            p.oil_rating, p.motion_rating, p.oil_motion_source,
            coalesce(
                (select coalesce(pi.stored_url, pi.source_url) from product_images pi

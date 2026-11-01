@@ -157,6 +157,7 @@ export default function ProductDetailPage() {
           {product.coverstock_material && <SpecRow label="Coverstock material" value={product.coverstock_material} />}
           {product.color && <SpecRow label="Color" value={product.color} />}
           {product.factory_finish && <SpecRow label="Factory finish" value={product.factory_finish} />}
+          {product.fragrance && <SpecRow label="Fragrance" value={product.fragrance} />}
           {product.weights_available && <SpecRow label="Weights available" value={product.weights_available} />}
           {product.release_date && <SpecRow label="Release date" value={product.release_date} />}
           {product.has_particle && <SpecRow label="Particle coverstock" value="Yes" />}

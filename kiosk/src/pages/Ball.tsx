@@ -55,6 +55,8 @@ export default function Ball() {
     ["Cover type", product.coverstock_type ? titleCase(product.coverstock_type) : null],
     ["Material", product.coverstock_material ? MATERIAL_LABEL[product.coverstock_material] ?? product.coverstock_material : null],
     ["Finish", product.factory_finish],
+    // Runbook 6fk; a null value drops the row like every other fact.
+    ["Fragrance", product.fragrance ?? null],
     ["Core", [product.core_name, product.core_type && titleCase(product.core_type)].filter(Boolean).join(" · ") || null],
     ["Color", product.color],
     ["Released", product.release_date ? new Date(product.release_date + "T00:00:00").toLocaleDateString(undefined, { month: "long", year: "numeric" }) : null],

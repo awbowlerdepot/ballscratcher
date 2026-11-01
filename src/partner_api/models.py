@@ -115,6 +115,15 @@ class Ball(_Model):
     has_particle: bool = Field(description="True when the cover contains particle (additive) material.")
     factory_finish: Optional[str] = Field(None, description="Manufacturer's finish text, e.g. '500, 1000, 1500 Siaair / Factory Compound'.")
     finish_category: Optional[FinishCategory] = Field(None, description="The factory finish, grouped as polished, satin or dull.")
+    # Runbook 6fk -- optional and additive (Al: "the partner API is the
+    # one i was targeting to have it"). Always present, null when the
+    # manufacturer doesn't list a scent ("for the API just return an empty
+    # field"). Today only Storm and Roto Grip publish one.
+    fragrance: Optional[str] = Field(
+        None,
+        description="The ball's scent as the manufacturer names it, e.g. 'Root Beer'; null when none is listed. "
+        "Currently published by Storm and Roto Grip only.",
+    )
     weights: list[Weight] = Field(description="Specs per weight, heaviest first. May be empty.")
     plotter: Optional[PlotterPosition] = Field(None, description="Position on the ball motion plotter; null if the ball isn't plotted.")
     image_url: Optional[str] = Field(None, description="Product photo (resized, CDN-hosted).")
@@ -152,6 +161,7 @@ class Ball(_Model):
                 "has_particle": False,
                 "factory_finish": "1500 Grit Polished",
                 "finish_category": "polished",
+                "fragrance": "Root Beer",
                 "weights": [
                     {"weight_lbs": 16, "rg": 2.48, "differential": 0.051, "mass_bias": None},
                     {"weight_lbs": 15, "rg": 2.49, "differential": 0.050, "mass_bias": None},

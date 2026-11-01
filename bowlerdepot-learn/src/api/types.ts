@@ -107,6 +107,8 @@ export interface ArticleProductSpec {
   core_type?: string | null;
   coverstock_name?: string | null;
   coverstock_type?: string | null;
+  // Runbook 6fk: the manufacturer's scent; null when none listed.
+  fragrance?: string | null;
   brand_name?: string | null;
   primary_image_url?: string | null;
   // Real BowlerDepot storefront product-page URL, resolved from

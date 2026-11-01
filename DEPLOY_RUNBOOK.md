@@ -22269,6 +22269,66 @@ After the token is upgraded:
 - Then `curl -s https://bowlerdepot.com/storm-ion-pro-pearl/ | grep bowleriq-learn-link`
   should show the link.
 
+### 6fk. Ball fragrance, in the Partner API and every spec list (2026-11-01)
+
+Al:
+- "do we pull in the scent/fragrance for the storm balls?" We didn't.
+  `commercebuild_product_scraper` parsed Storm's and Roto Grip's
+  "Fragrance:" spec line but never stored it.
+- "it should show everywhere that we list specs. the partner API is the
+  one i was targeting to have it"
+- "if a ball doesn't have it set just hide the entire key value pair in
+  any UI. for the API just return an empty field"
+
+Live values checked: "Root Beer", "Apple Crisp", "Melon Mint", "Root Beer
+Float". Some pages (Roto Grip Idol Helios, Storm Mix) have no line.
+
+**Changes:**
+- **Migration 057:** adds the nullable text column `products.fragrance`.
+  It also redefines 044's `products_bump_content_changed_at` with
+  `fragrance` among the watched columns, so a newly filled-in scent shows
+  up in `/v1/changes`.
+- **`commercebuild_product_scraper`:** `parse_fragrance` turns
+  placeholders (`N/A`, `None`, `unscented`…) into null. The upsert writes
+  `fragrance = excluded.fragrance` with no coalesce, because the
+  manufacturer's page is the only source.
+- **Partner API v1:** new optional `Ball.fragrance`. It's always present
+  and `null` when no scent is listed. The snapshot is regenerated,
+  `V1_BASELINE` gains `fragrance`, and it's documented in
+  `docs/partner-api-v1.md` and on the Developers page.
+- **Public API:** `fragrance` on `GET /products/{id}` and on the article's
+  `product` spec block.
+- **UIs:** each shows a Fragrance row only when the ball has a value:
+  - the consumer site's product Details;
+  - the kiosk Ball Specs;
+  - kiosk Compare, where the row appears only when one of the compared
+    balls has a scent;
+  - Learn article Specs, both the SPA and the prerendered HTML;
+  - the admin product page.
+  - Signage callouts are unchanged; there are only three slots.
+
+**Deploy order matters.** The scraper and both APIs select or insert
+`fragrance`, so the column has to exist first:
+1. Run `psql -f db/migrations/057_products_fragrance.sql`.
+2. Run `sam build --no-cached && sam deploy`.
+3. Push, which deploys the frontends.
+
+**Backfill:** the Sunday full commercebuild re-scrape (`cron(20 11 ? * SUN *)`)
+re-reads every Storm and Roto Grip page. If 057 and the deploy land
+before it runs, it fills in existing balls by itself. Otherwise, invoke
+`bowling-scraper-commercebuild-url-discovery` with `{"full_refresh": true}`.
+Pages are 20s apart with concurrency 2, so it takes a while.
+
+**Verify:**
+```sql
+select b.name, count(*) filter (where p.fragrance is not null) with_scent, count(*)
+from products p join brands b on b.id = p.brand_id
+where p.source_platform = 'commercebuild' group by 1;
+```
+- `GET /partner/v1/balls` has `fragrance` on every ball.
+- The kiosk Ball page for a Storm ball shows Fragrance; a Hammer ball
+  doesn't.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
