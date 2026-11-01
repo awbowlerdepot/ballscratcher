@@ -22470,6 +22470,24 @@ aws lambda invoke --function-name bowling-scraper-price-checker --payload file:/
 ```
 No migration, no deploy.
 
+**Applied 2026-11-01** (Al: "Yes, apply and approve"), `--apply
+--approve-price-sources`:
+- 228 links written as `matched`, all retired balls;
+- 235 price sources approved: 230 created (the 228 plus Vengeance Returns
+  and Viking Conquest), 3 pending ones approved (Blacklist, Reckoning, Intel
+  Recon Hybrid), 2 repointed (Hustle SOS → 4507, Hustle VP → 4506);
+- the price-checker invoke for those 235 balls checked 239 sources, 239
+  succeeded, and all 235 new sources have a price.
+
+After the run, of the 1,924 published balls:
+- `bowlerdepot_url` 177 → **412**, `bigcommerce_product_id` 165 → **393**, a
+  hero with an article 136 → 147;
+- what's left: 8 ambiguous rows with a pending or rejected source, and 15
+  `review_link` rows not accepted;
+- live: `GET /articles/motiv-subzero-forge` (retired) returns
+  `ecommerce_url` `https://bowlerdepot.com/motiv-subzero-forge/` at $199.95,
+  and `/bowlerdepot/products/4017/article-hero` returns `has_article: true`.
+
 **Verify:**
 ```bash
 psql -c "select count(*) filter (where bdp.match_status = 'matched') matched, count(*) filter (where exists (select 1 from product_price_sources s join price_sites ps on ps.id = s.price_site_id where s.product_id = p.id and ps.api_provider = 'bigcommerce' and s.status = 'approved' and s.is_active)) with_url from products p left join bowlerdepot_products bdp on bdp.product_id = p.id where p.product_type = 'ball' and p.published"
