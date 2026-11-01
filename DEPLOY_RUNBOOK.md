@@ -22372,6 +22372,126 @@ aws lambda invoke --function-name bowling-scraper-commercebuild-url-discovery --
 ```
 It should return 200 with per-brand counts and no `errorMessage`.
 
+### 6fm. Why balls don't show BowlerDepot data in the APIs; `scripts/link_bowlerdepot_products.py` (2026-11-01)
+
+Al: "can we look at which balls are linked to bowlerdepot.com and why they
+wouldn't be showing their data in the API. and create a script to get them
+linked. i think it is the price source but i could be wrong."
+
+**The gates.** Two tables link a ball to bowlerdepot.com, and every API
+field reads one of them:
+
+| Field | Reads | Gate |
+|---|---|---|
+| partner `Ball.bowlerdepot_url`, public `ecommerce_url/_price/_in_stock`, plotter `recommendable` | `product_price_sources` on the bowlerdepot.com site | `status = 'approved'` and `is_active` |
+| partner `Ball.bigcommerce_product_id` | `bowlerdepot_products` | `matched`, and no other product's `matched`/`ambiguous` row on that id (6fg) |
+| public `/bowlerdepot/products/{id}/article-hero`, `/video-summary`, Learn links (6fj) | `bowlerdepot_products` | `matched`, published (+ approved article for the hero) |
+
+The price source is downstream of the match: price discovery
+(`discover_bigcommerce_candidates`) only turns an existing
+`bowlerdepot_products` row into a pending candidate. It never searches
+BigCommerce by name.
+
+**Measured 2026-11-01, 1,924 published balls (245 current, 1,679 retired):**
+- 177 have a `bowlerdepot_url`, 165 a `bigcommerce_product_id`, 136 a hero
+  with an article.
+- Of the 1,747 without a `bowlerdepot_url`, **1,732 have no
+  `bowlerdepot_products` row at all**, so no price source can exist (64
+  current, 1,668 retired). Only 15 fail on the price source itself:
+  - 2 matched, never discovered (900 Global Vengeance Returns, Viking Conquest);
+  - 3 matched, pending in admin (Hammer Blacklist, Reckoning, Radical Intel Recon Hybrid);
+  - 2 matched, rejected, still pointing at the wrong listing from before the
+    match was fixed (Roto Grip Hustle SOS → "Hustle HSB" 676, Hustle VP →
+    "Hustle 3TP" 674);
+  - 8 ambiguous with a pending or rejected source.
+- 27 rows are `ambiguous` (26 current). 19 of those have an approved source
+  (Al approved them in August), so they show a `bowlerdepot_url` but no
+  `bigcommerce_product_id`. 9 haven't been re-synced since August: today's
+  matcher no longer produces them (e.g. "Tropical Surge Black-Cherry" →
+  "Tropical Surge Hybrid Black / Cherry"), and it writes nothing on a miss,
+  so the old row stays.
+
+So Al's hypothesis is **only partly right**: the missing price source is
+what the API shows, but for 1,732 of 1,747 balls the cause is a missing
+match.
+
+**Why the matches are missing.** `bowlerdepot_reconciliation` only matches
+`status = 'current'` (`list_our_current_products`). Retired balls have been
+published since 050, and bowlerdepot.com still sells many of them as
+visible listings. The BigCommerce catalog (2,221 products, 949 in the Balls
+tree, 525 visible), compared with every published ball by the script below:
+
+| Reason | current | retired | total |
+|---|---|---|---|
+| linked, every field shows | 147 | 11 | 158 |
+| linked, price source missing/pending/rejected | 7 | 0 | 7 |
+| linked `ambiguous` (admin decision) | 26 | 1 | 27 |
+| **exact name, visible listing, unclaimed → link** | 0 | 228 | 228 |
+| near name, needs review (Viz-a-Ball suffix, slash colors) | 7 | 8 | 15 |
+| contested (another ball has or wants the listing) | 0 | 6 | 6 |
+| listing exists but hidden/disabled on bowlerdepot.com | 0 | 285 | 285 |
+| brand not carried (SWAG; the store has no SWAG brand) | 27 | 69 | 96 |
+| not on bowlerdepot.com | 30 | 1,072 | 1,102 |
+
+**`scripts/link_bowlerdepot_products.py`.** Read-only against BigCommerce
+(GET only, waits out a 429). Dry run by default: a summary plus a CSV, one
+row per published ball with its reason, the listing, and the price-source
+action.
+- `--apply` writes only the high tier: an exact normalized-name match
+  (reconciliation's own `_normalize_name`), to a visible listing nobody else
+  claims, as `matched`. It inserts new rows only (`on conflict (product_id)
+  do nothing`, and re-checks the claim inside the insert). It never touches
+  an existing matched or ambiguous row, a hidden listing, or a listing two
+  balls want.
+- Near names (`review_link`) are never applied automatically (6h.1). Put
+  `y` in the CSV's `accept` column for the ones you've checked, then pass
+  `--accept-file`.
+- Price sources for every clean link: create the missing one (pending,
+  `high`, `bigcommerce_api`, the same row discovery writes). Repoint a
+  pending/rejected source that points at a different listing and set it back
+  to pending (the Hustle case: discovery would fix the URL but leave it
+  rejected). Report a source Al rejected on the same listing, an inactive
+  one, and an approved one on a different id, without changing them.
+- `--approve-price-sources` (with `--apply`) approves those high-tier
+  sources as `resolved_by = 'link_bowlerdepot_products.py'` and bumps
+  `content_changed_at`: no 044 trigger watches `product_price_sources`, so
+  `/v1/changes` would never resend the ball with its new URL. It writes
+  `bowlerdepot_price_check_payload.json` for the price-check invoke below.
+- New links don't write anything to BigCommerce by themselves:
+  `bowlerdepot_video_sync`, `bowlerdepot_article_sync` and
+  `bowlerdepot_learn_links` have no schedule. Of the 228, 11 have an approved
+  article and 192 approved videos are eligible if those jobs are run.
+
+**Run** (PG* from the `bowling-scraper-db` secret):
+```bash
+.venv/bin/python scripts/link_bowlerdepot_products.py --csv bowlerdepot_links.csv
+.venv/bin/python scripts/link_bowlerdepot_products.py --apply --approve-price-sources
+aws lambda invoke --function-name bowling-scraper-price-checker --payload file://bowlerdepot_price_check_payload.json --cli-binary-format raw-in-base64-out /tmp/price-check.json && cat /tmp/price-check.json
+```
+No migration, no deploy.
+
+**Verify:**
+```bash
+psql -c "select count(*) filter (where bdp.match_status = 'matched') matched, count(*) filter (where exists (select 1 from product_price_sources s join price_sites ps on ps.id = s.price_site_id where s.product_id = p.id and ps.api_provider = 'bigcommerce' and s.status = 'approved' and s.is_active)) with_url from products p left join bowlerdepot_products bdp on bdp.product_id = p.id where p.product_type = 'ball' and p.published"
+.venv/bin/python scripts/link_bowlerdepot_products.py --csv /tmp/after.csv   # propose_link should be 0
+```
+
+**Tests:** `tests/test_link_bowlerdepot_products.py` (31). They cover:
+- tiers, including iQ Tour / iQ Tour AI and a brand-only overlap;
+- hidden and contested listings, and two of our balls wanting one listing;
+- every price-source action;
+- the CSV accept round trip, the 429 retry;
+- that `--apply` only inserts `bowlerdepot_products` rows, and writes pending
+  unless asked to approve.
+
+`test_bowlerdepot_reconciliation` is unchanged (32 pass).
+
+**Not done (follow-ups):**
+- Reconciliation still matches current balls only, so a ball BowlerDepot
+  lists after it retires won't be linked until this script runs again.
+- `discover_bigcommerce_candidates` still repoints a rejected source without
+  un-rejecting it.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
