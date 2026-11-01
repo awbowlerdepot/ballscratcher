@@ -22609,6 +22609,35 @@ The new ambiguous retired rows' price sources show up as `low`, pending in admin
 after the next price discovery (Batch Jobs → Discover price sources). They are
 never auto-approved.
 
+**Deployed 2026-11-01** (Al: "Push and deploy"). The changeset held code changes
+for `BowlerDepotReconciliationFunction` and `PriceCheckerFunction` only. The
+other rows listed as Modify had no property changes; for the signage renderer
+it was just its `DockerContext` build path. The invoke returned exactly the dry
+run's numbers: 1,924 balls (1,680 retired), 234 retired matched, 7 ambiguous,
+10 contested, 0 kept, 0 shared, 72 not yet listed, 0 mismatches. Afterwards:
+- published retired rows: 239 `matched` (234 re-synced by this run, 5 older
+  rows left alone because their listing is hidden or contested) and 7
+  `ambiguous` (6 new + 1 older);
+- 0 review items for retired balls.
+
+**Two snags on that deploy, both local:**
+- `samconfig.toml` is gitignored, so a Claude Code worktree doesn't have it.
+  Without it, `use_container` is off and the build fails looking for a local
+  python3.13. Copy it in from the main checkout first.
+- `sam build` failed on `SignageRendererFunction` with `Credentials store
+  error: StoreError('Credentials store docker-credential-gcloud exited with
+  "")`. The Docker SDK sam uses asks every configured credential helper during
+  an image build, and the gcloud helper fails there, even though gcloud is
+  logged in and `docker pull` works. No image in this build needs gcloud
+  (they're all public: mcr.microsoft.com, public.ecr.aws), so build with an
+  empty Docker config:
+  ```bash
+  mkdir -p /tmp/dockercfg && echo '{}' > /tmp/dockercfg/config.json
+  DOCKER_CONFIG=/tmp/dockercfg DOCKER_HOST=unix://$HOME/.docker/run/docker.sock sam build && DOCKER_CONFIG=/tmp/dockercfg DOCKER_HOST=unix://$HOME/.docker/run/docker.sock sam deploy
+  ```
+  (`DOCKER_HOST` is needed because the Docker Desktop context lives in the
+  real config.)
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
