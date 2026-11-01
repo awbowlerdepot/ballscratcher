@@ -118,11 +118,13 @@ class Ball(_Model):
     # Runbook 6fk -- optional and additive (Al: "the partner API is the
     # one i was targeting to have it"). Always present, null when the
     # manufacturer doesn't list a scent ("for the API just return an empty
-    # field"). Today only Storm and Roto Grip publish one.
+    # field"). Only Storm publishes one: Roto Grip and 900 Global share the
+    # same commercebuild platform but none of their pages list a scent
+    # (checked 2026-11-01 after the 6fk re-scrape).
     fragrance: Optional[str] = Field(
         None,
         description="The ball's scent as the manufacturer names it, e.g. 'Root Beer'; null when none is listed. "
-        "Currently published by Storm and Roto Grip only.",
+        "Currently published by Storm only.",
     )
     weights: list[Weight] = Field(description="Specs per weight, heaviest first. May be empty.")
     plotter: Optional[PlotterPosition] = Field(None, description="Position on the ball motion plotter; null if the ball isn't plotted.")

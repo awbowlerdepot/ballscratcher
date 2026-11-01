@@ -22335,6 +22335,13 @@ because of the 6fl bug below. Instead, all 393 known Storm / Roto Grip /
 `bowling-scraper-commercebuild-product-scrape` as `{url, brand_id}`, which
 is exactly what the full refresh would have queued.
 
+**Only Storm lists a scent.** After the re-scrape, all 29 Roto Grip and 16
+900 Global balls came back without a fragrance line. Al: "update the docs
+to say only storm". The Partner API field description, the OpenAPI
+snapshot, `docs/partner-api-v1.md` and the Developers page now say "Storm
+only". The scraper is unchanged: it still reads the line on all three
+brands, in case they start listing one.
+
 ### 6fl. Storm / Roto Grip / 900 Global discovery crashed on every run since 6fc (2026-11-01)
 
 **What happened:**

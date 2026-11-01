@@ -88,7 +88,7 @@ Values below are illustrative.
   - `chart`: read off a manufacturer's published ball motion chart
   - `estimated`: BowlerIQ's model
   - `manual`: a staff correction
-- **`fragrance`:** the ball's scent as the manufacturer names it (e.g. `"Root Beer"`); `null` when none is listed. Only Storm and Roto Grip publish one today.
+- **`fragrance`:** the ball's scent as the manufacturer names it (e.g. `"Root Beer"`); `null` when none is listed. Only Storm publishes one today.
 - **`bigcommerce_product_id`:** the ball's product id in BowlerDepot's BigCommerce store. Only set when BowlerIQ matched it unambiguously and no other ball claims the same BigCommerce product; otherwise `null`.
 - **`demand`:** refreshed once a day; `null` until the ball's first refresh.
   - `score`: 0 to 1, a 50/50 blend of the ball's percentile rank on video popularity and on daily movement across the BowlerIQ catalog.
