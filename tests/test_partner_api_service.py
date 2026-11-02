@@ -423,3 +423,89 @@ def test_pattern_pages_cap_at_200_so_a_page_fits_a_lambda_response():
     assert seen[-1][-1] == 201
     service.list_patterns(Conn(), limit=50)
     assert seen[-1][-1] == 51
+
+
+# --- Runbook 6fq: GET /v1/brands/{id}/lineups --------------------------------
+
+class _LineupCursor:
+    """Answers get_brand_lineups' three queries from canned rows."""
+
+    def __init__(self, answers):
+        self.answers = answers
+        self.description = None
+        self._rows = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, query, params=()):
+        q = " ".join(query.split())
+        key = "brand" if q.startswith("select id, name from brands") else \
+              "lines" if "from brand_groupings g" in q else "art"
+        cols, rows = self.answers[key]
+        self.description = [(c,) for c in cols]
+        self._rows = rows
+
+    def fetchall(self):
+        return self._rows
+
+
+class _LineupConn:
+    def __init__(self, answers):
+        self.answers = answers
+
+    def cursor(self):
+        return _LineupCursor(self.answers)
+
+
+def test_get_brand_lineups_shapes_groupings_lines_and_art():
+    from datetime import datetime as _dt
+    bid = "aadc2a74-fbef-47a6-8417-c40f3644a28a"
+    line_cols = ["g_key", "g_label", "source", "line_id", "key", "label", "text", "ball_id", "note"]
+    art_cols = ["task_id", "slot_key", "kind", "line_id", "hero_type", "featured", "image_key", "image_key_16x9",
+                "width", "height", "alt", "method", "input_hash", "generated_at", "error", "owner"]
+    when = _dt(2026, 11, 2, 12, 30)
+    answers = {
+        "brand": (["id", "name"], [(bid, "Storm")]),
+        "lines": (line_cols, [
+            ("reaction-profile", "Reaction profile", "stormbowling.com", "L1", "strong-symmetrical",
+             "Strong Symmetrical", None, "B1", "Medium oil."),
+            ("reaction-profile", "Reaction profile", "stormbowling.com", "L1", "strong-symmetrical",
+             "Strong Symmetrical", None, "B2", None),
+            ("reaction-profile", "Reaction profile", "stormbowling.com", "L2", "controlled-asymmetrical",
+             "Controlled Asymmetrical", None, None, None),
+        ]),
+        "art": (art_cols, [
+            ("T", "line-strong-symmetrical", "line", "L1", None,
+             [{"product_id": "B1", "bigcommerce_product_id": 598, "name": "Phaze II", "kind": "ball"}],
+             "brand-art/storm/line-strong-symmetrical.webp", None, 1200, 900, "Storm Phaze II bowling ball",
+             "composite", "h", when, None, "bowlerdepot"),
+            ("T", "hero-1", "hero", None, "product",
+             [{"product_id": None, "bigcommerce_product_id": 900, "name": "Storm Roller", "kind": "bag"}],
+             "brand-art/storm/hero-1.webp", "brand-art/storm/hero-1-16x9.webp", 1600, 1200, "Storm Roller",
+             "composite", "h", when, None, "bowlerdepot"),
+        ]),
+    }
+    out = service.get_brand_lineups(_LineupConn(answers), bid)
+    assert out["brand"] == {"id": bid, "name": "Storm"}
+    g = out["groupings"][0]
+    assert [l["key"] for l in g["lines"]] == ["strong-symmetrical", "controlled-asymmetrical"]
+    assert g["lines"][0]["balls"] == [{"ball_id": "B1", "note": "Medium oil."}, {"ball_id": "B2", "note": None}]
+    assert g["lines"][1]["balls"] == [] and g["lines"][1]["art"] == []
+    art = g["lines"][0]["art"][0]
+    assert art["url"] == "https://img.bowleriq.io/brand-art/storm/line-strong-symmetrical.webp"
+    assert art["featured"][0] == {"ball_id": "B1", "bigcommerce_product_id": 598, "name": "Phaze II", "kind": "ball"}
+    hero = out["heroes"][0]
+    assert hero["url_16x9"].endswith("hero-1-16x9.webp") and hero["featured"][0]["ball_id"] is None
+    # And it fits the locked response model.
+    import models
+    models.BrandLineups(**out)
+
+
+def test_get_brand_lineups_bad_or_unknown_id_is_none():
+    assert service.get_brand_lineups(_LineupConn({}), "not-a-uuid") is None
+    assert service.get_brand_lineups(_LineupConn({"brand": (["id", "name"], [])}),
+                                     "aadc2a74-fbef-47a6-8417-c40f3644a28a") is None

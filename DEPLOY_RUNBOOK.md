@@ -22943,7 +22943,7 @@ psql -c "select status, trigger, started_at, detail -> 'slots' from task_runs or
   companions, slot planning and hero picks, which trigger fired, and the
   Gemini fallback;
 - 3 new in `test_image_resizer.py` (26);
-- the partner contract snapshot;
+- 2 new in `test_partner_api_service.py` (26) and the partner contract snapshot;
 - `test_admin_api_service.py` (461) and `test_product_article_generator.py`
   (186) unchanged and passing.
 
