@@ -22738,6 +22738,44 @@ Price sources unchanged. Two Al rejected stay rejected (Raw Smoke/Blue/Gold
 4069, Tropical Surge Pink/Purple 622). Pending ones are still waiting in
 admin (the TZones, Ice Storms, Mix Lime/Royal/Custard, Ebonite Viz-A-Ball).
 
+**30 more links, applied 2026-11-02** (Al: "yes apply all 30 and approve
+the price sources"). Each was checked against the store-sync audit: it
+resolves to exactly one ball, has no row yet, and no other row holds that
+listing.
+- 21 written by hand with the link script's own insert (`matched`, `on
+  conflict do nothing`, re-checks the claim), `content_changed_at` bumped:
+  - 4 "Glow Viz-a-Ball" listings the script's medium tier doesn't reach
+    (Butterflies 523, Hearts 525, Lizard Eye 527, Shark 530) and Snake 533;
+  - Rhino Cobalt/Aqua/Teal 504;
+  - store variants of retired balls: Hammer Special Effect 4064 (listed
+    as "Speical"), Top Thrill Blue/Green 3209, Melee Jab Carbon 3322, Teal
+    Rhino Pro 3728, Envy 3332, Envy Tour 3421, NU Blue 3872, Crypto 3320,
+    Sneak Attack 3301 ("Hybrid" on the store), Archetype 3423, Paragon
+    3275, and the four retired Raw colorways 3149–3152.
+- 9 Viz-a-Ball `review_link` rows accepted through `--accept-file`.
+- Then `--apply --approve-price-sources`: 45 sources created, 5 pending
+  approved (both TZones, both Ice Storms, Mix Lime/Royal/Custard), 1
+  repointed (Tropical Surge Pink/Purple: Al's rejected source pointed at
+  the wrong listing, 3195, and now points at 622), all approved. The 45
+  include nine balls that were already linked but had no source (Eternity
+  Pi, Origin EX, Sublime, Sublime Focus, Zen 25, TNT Infused, X-Cell,
+  Lightning Blackout, The Road). The price-checker invoke for those 51
+  balls: 51 checked, 51 succeeded.
+- Raw Smoke/Blue/Gold (4069) keeps its rejected source.
+
+Published balls with a `bigcommerce_product_id` went from 393 to **465**,
+and with a `bowlerdepot_url` from 412 to **463**.
+
+Still not linked:
+- **needs Al's call:** Attitude Pearl 3306, Conspiracy Solid 3910,
+  Hellcat Solid 3318, Wolverine Dark Moss 3316, Storm EquinoX 4052;
+- **no BowlerIQ ball:** Harsh Reality Pearl, XPonent Pearl, Attention Star
+  S2, Optimum Idol Pearl, Super Nova, Hy-Road 40, Hy-Road Pearl, 900
+  Global Cove and Ember, Roto Grip Rockstar, Rockstar Amped, Ultimate
+  Wrecker and RST Hyperdrive, Columbia 300 Ricochet, Twist
+  Blue/Pink/Snow, Mix Black/White, Tropical Surge Red/White/Purple. These
+  should come in through the scrapers, not hand inserts.
+
 **Deploy:** `sam build && sam deploy` (full build). It has to land before
 the next daily reconciliation run (`rate(1 day)`, last at 00:25 UTC), or
 that run rewrites most of the 33 back to `ambiguous`. If that happens,
