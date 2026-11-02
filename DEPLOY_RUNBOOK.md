@@ -22645,7 +22645,7 @@ run's numbers: 1,924 balls (1,680 retired), 234 retired matched, 7 ambiguous,
   (`DOCKER_HOST` is needed because the Docker Desktop context lives in the
   real config.)
 
-### 6fo. Learn restyled to the new Bowler Depot store design (2026-11-01, branch `learn-restyle`, not deployed)
+### 6fo. Learn restyled to the new Bowler Depot store design (2026-11-01, deployed 2026-11-02)
 
 **What and why.** Bowler Depot is replacing its store theme (Kansha) with a new BigCommerce Stencil theme (repo `awbowlerdepot/bowlerdepot-theme`). Al approved its design direction on 2026-11-01 (https://claude.ai/artifact/9pDXa8M2M4MXLsirP3k4vu). That brief settles that Learn moves to the new look too, "as a restyle of its tokens". Nothing from the old site carries over except the logo. The request came from the Bowlerdepot Theme Development session on Al's behalf: "you can send that off to bolwerIQ business intelligence. it has the learn site".
 
@@ -22683,6 +22683,8 @@ run's numbers: 1,924 balls (1,680 retired), 234 retired matched, 7 ambiguous,
   - The bowlerdepot.com product-page embed (`public/embeds/bowlerdepot-article-hero.js`, runbook 6fj).
 
 **Deploy (only with Al's OK).** Merge `learn-restyle` into `main` and push. The Deploy Learn Site workflow builds, prerenders and invalidates CloudFront.
+
+**Deployed 2026-11-02.** Al: "merge it and deploy". Merged as 9f1e505 and pushed; Deploy Learn Site run 41476880813 succeeded. The live `/` and `/plotter` serve the new bundles (Big Shoulders, the pin red, lane arrows, "Shop Bowler Depot") and render the standalone header in the new design. This deploy also re-prerendered every page, so the fragrance spec (6fk) is now in the prerendered HTML too.
 
 **Verify.**
 - learn.bowlerdepot.com at desktop width and at 375px:
