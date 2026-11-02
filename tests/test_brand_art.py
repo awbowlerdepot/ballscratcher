@@ -267,12 +267,32 @@ def test_backdrop_prompt_bans_text_and_names_the_palette():
     assert "no text" in brand_art.HERO_NO_TEXT
 
 
-def test_pick_companion_prefers_roller_bags_then_bags_then_shoes_and_honors_a_pin():
-    c = [{"bigcommerce_product_id": 1, "name": "Storm Glove", "kind": "accessory"},
-         {"bigcommerce_product_id": 2, "name": "Storm 1 Ball Spare Kit", "kind": "bag"},
-         {"bigcommerce_product_id": 3, "name": "Storm Shoe", "kind": "shoes"},
-         {"bigcommerce_product_id": 4, "name": "Storm Tournament 3 Ball Roller", "kind": "bag"}]
-    assert brand_art.pick_companion(c, {})["bigcommerce_product_id"] == 4
-    assert brand_art.pick_companion(c[:3], {})["bigcommerce_product_id"] == 2
-    assert brand_art.pick_companion(c, {"bigcommerce_product_id": 3})["bigcommerce_product_id"] == 3
-    assert brand_art.pick_companion(c, {"bigcommerce_product_id": 99})["bigcommerce_product_id"] == 4  # sold out pin
+def test_pick_companion_prefers_3_ball_rollers_then_totes_by_price_and_honors_a_pin():
+    # Al: "can you use higher priced bags, 3 ball roller or triple totes?
+    # that is an entry level bag and isn't idea[l]" (about a 1-ball roller).
+    def bag(i, name, price, cat):
+        return {"bigcommerce_product_id": i, "name": name, "kind": "bag", "price": price, "categories": [cat]}
+    c = [{"bigcommerce_product_id": 1, "name": "Storm Glove", "kind": "accessory", "price": 300, "categories": []},
+         bag(2, "Storm Rascal 1 Ball Roller", 79.95, "bags > roller bags > 1 ball rollers"),
+         bag(3, "Storm 3 Ball Travel Tote Pro", 104.95, "bags > tote bags > 3 ball totes"),
+         bag(4, "Storm Streamline 3 Ball Roller", 179.95, "bags > roller bags > 3 ball rollers"),
+         bag(5, "Storm Rolling Thunder 3 Ball Roller", 269.95, "bags > roller bags > 3 ball rollers"),
+         {"bigcommerce_product_id": 6, "name": "Storm Shoe", "kind": "shoes", "price": 150, "categories": []}]
+    assert brand_art.pick_companion(c, {})["bigcommerce_product_id"] == 5          # priciest 3-ball roller
+    assert brand_art.pick_companion([c[1], c[2]], {})["bigcommerce_product_id"] == 3  # triple tote over 1-ball roller
+    assert brand_art.pick_companion([c[0], c[5]], {})["bigcommerce_product_id"] == 6  # shoes before accessories
+    assert brand_art.pick_companion(c, {"bigcommerce_product_id": 2})["bigcommerce_product_id"] == 2
+    assert brand_art.pick_companion(c, {"bigcommerce_product_id": 99})["bigcommerce_product_id"] == 5  # sold-out pin
+
+
+def test_cutout_uses_remove_bg_for_flat_photos_and_falls_back_on_failure():
+    def matte(raw):
+        return _png_cutout((200, 30, 30))
+    cut = compose.cutout(_jpeg_on_white(), matte)
+    assert cut.size == (161, 161)                       # the model's matte, trimmed
+    def boom(raw):
+        raise RuntimeError("throttled")
+    assert compose.cutout(_jpeg_on_white(), boom).mode == "RGBA"   # flood-fill fallback
+    calls = []
+    compose.cutout(_png_cutout(), lambda raw: calls.append(1))
+    assert calls == []                                  # already a cut-out: no model call

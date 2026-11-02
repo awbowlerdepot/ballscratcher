@@ -30,7 +30,9 @@ CUT-OUTS. Two kinds of source photo:
     brands' PNGs. Used as they are.
   * flattened onto white -- BigCommerce product photos (500x500 JPEGs)
     and our own stored_url copies (image_processor flattens on purpose,
-    see its docstring). key_out_background() flood-fills the near-white
+    see its docstring). These go through Bedrock's Remove Background
+    model when the caller passes remove_bg (see cutout()); otherwise
+    key_out_background() flood-fills the near-white
     region connected to the border, so white INSIDE a product (a bag's
     white panel, a logo) stays, as long as it isn't connected to the
     outside by a white path. The edge gets a 1px feather so it doesn't
@@ -117,11 +119,32 @@ def key_out_background(im: Image.Image, tolerance: int = KEY_TOLERANCE) -> Image
     return out
 
 
-def cutout(image_bytes: bytes) -> Image.Image:
-    """RGBA cut-out of one product photo, trimmed to its visible pixels."""
+def cutout(image_bytes: bytes, remove_bg=None) -> Image.Image:
+    """RGBA cut-out of one product photo, trimmed to its visible pixels.
+
+    remove_bg(bytes) -> PNG bytes with alpha is the Bedrock (Stability)
+    Remove Background model, used for any photo that isn't already a
+    cut-out. Al, on the first bag hero: "it missed on removing the
+    background by the handles" -- the flood fill only reaches white that
+    touches the photo's edge, so the white seen THROUGH a handle stayed.
+    The model takes those out and keeps a white bag's own panels. The
+    flood fill is still the fallback when the call fails or returns no
+    transparency."""
     im = Image.open(io.BytesIO(image_bytes))
     im.load()
-    cut = im.convert("RGBA") if has_real_alpha(im) else key_out_background(im)
+    cut = None
+    if has_real_alpha(im):
+        cut = im.convert("RGBA")
+    elif remove_bg is not None:
+        try:
+            matted = Image.open(io.BytesIO(remove_bg(image_bytes)))
+            matted.load()
+            if has_real_alpha(matted):
+                cut = matted.convert("RGBA")
+        except Exception:
+            cut = None
+    if cut is None:
+        cut = key_out_background(im)
     box = cut.getchannel("A").point(lambda a: 255 if a > 8 else 0).getbbox()
     return cut.crop(box) if box else cut
 

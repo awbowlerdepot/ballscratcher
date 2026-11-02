@@ -3931,7 +3931,7 @@ def run_announcement_job(conn, event, *, s3_client, bedrock_client, model_id, ge
 
 
 def run_brand_art_job(conn, event, *, s3_client, bedrock_client, gemini_auth, gemini_model_id, image_bucket,
-                      lambda_client=None, function_name=None):
+                      lambda_client=None, function_name=None, bedrock_removebg_client=None):
     """{"brand_art": "dispatch"} (daily schedule) or {"brand_art": "run",
     "task_id", "slots"?, "trigger"?} (admin "Rerun now", or dispatch's own
     async invoke) -- see brand_art.py's docstring (runbook 6fq). This
@@ -4005,8 +4005,18 @@ def run_brand_art_job(conn, event, *, s3_client, bedrock_client, gemini_auth, ge
             logger.info("brand-art hero for %s (%s): logo ok=%s (%s)", product_id, aspect, same, note)
             return png if same else None
 
+    remove_bg = None
+    if bedrock_removebg_client is not None:
+        removebg_model_id = os.environ.get("BEDROCK_REMOVEBG_MODEL_ID", DEFAULT_BEDROCK_REMOVE_BG_MODEL_ID)
+
+        def remove_bg(image_bytes):
+            # The same Stability Remove Background call the article
+            # pipeline's cut-outs use (runbook 6fq: bag handles).
+            return call_bedrock_remove_background(bedrock_removebg_client, removebg_model_id,
+                                                  _reference_image_to_base64_png(image_bytes))
+
     deps = {"fetch_bytes": fetch_bytes, "fetch_html": fetch_html, "put_object": put_object, "bc_get": bc_get,
-            "gemini": gemini}
+            "gemini": gemini, "remove_bg": remove_bg}
 
     if event["brand_art"] == "dispatch":
         def invoke_run(task_id, slots, trigger, triggers_by_slot):
@@ -4140,7 +4150,7 @@ def handler(event, context):
             result = run_brand_art_job(
                 conn, event, s3_client=s3_client, bedrock_client=bedrock_client, gemini_auth=gemini_auth,
                 gemini_model_id=gemini_model_id, image_bucket=image_bucket, lambda_client=boto3.client("lambda"),
-                function_name=getattr(context, "function_name", None),
+                function_name=getattr(context, "function_name", None), bedrock_removebg_client=bedrock_removebg_client,
             )
             return {"statusCode": 200, "body": json.dumps(result, default=str)}
         if event.get("signage"):

@@ -22856,13 +22856,21 @@ scrapers.
   - hero-1 and hero-2 are the newest released balls (release date today or
     earlier), with balls Bowler Depot has in stock first;
   - hero-3 is the newest stocked non-ball product (bag, shoes, accessory),
-    with the newest ball beside it. The product is ranked bags first
-    (roller bags ahead of other bags, after Al's "a new Storm ball with a
-    Storm roller bag"), then shoes, then accessories, newest within each.
-    A `bigcommerce_product_id` on the hero pins one while it's stocked.
-    The first render picked "Storm 1 Ball Spare Kit" by date alone. If
-    Bowler Depot stocks nothing else from the brand, the slot is the 3rd
-    newest ball.
+    with the newest ball beside it. The product is ranked bags first,
+    then shoes, then accessories.
+    - Al, on a $79.95 1-ball roller: "can you use higher priced bags, 3
+      ball roller or triple totes? that is an entry level bag and isn't
+      idea[l]". So bags go 3+ ball rollers, then 3+ ball totes, then other
+      rollers, then the rest, read from the store's category path ("Bags >
+      Roller Bags > 3 Ball Rollers") or the name, with the highest price
+      first within a tier.
+    - For Storm that's the Rolling Thunder 3 Ball Roller Signature at
+      $269.95. The first render had picked "Storm 1 Ball Spare Kit" by
+      date alone.
+    - A `bigcommerce_product_id` on the hero pins a product while it's
+      stocked.
+    - If Bowler Depot stocks nothing else from the brand, the slot is the
+      3rd newest ball.
 - Hero types, per Al:
   - **product**: one product in focus. A ball product hero uses the
     existing Gemini product-shot pipeline (`build_gemini_scene_prompt`, the
@@ -22879,8 +22887,12 @@ scrapers.
     ("real product photos only").
 - Cut-outs:
   - Storm/Roto Grip/900 Global ball PNGs are already transparent.
-  - BigCommerce JPEGs on white are keyed out with a border flood fill, so
-    white inside a product (a bag's panel) stays.
+  - Any photo that isn't already a cut-out (BigCommerce JPEGs on white)
+    goes through Bedrock's Stability Remove Background, the same call the
+    article pipeline uses. Al: "it missed on removing the background by
+    the handles". A border flood fill can't reach the white seen through a
+    handle. The model clears it and keeps a white bag's own panels. The
+    flood fill is the fallback if the call fails.
 - "Stocked" means visible, purchasable, and with stock on the product or
   any variant (untracked counts as stocked), read from the brand's
   Catalog v3 products.
@@ -22947,7 +22959,7 @@ psql -c "select status, trigger, started_at, detail -> 'slots' from task_runs or
 ```
 
 **Tests:**
-- `tests/test_brand_art.py` (20): compositing, cut-outs, assign-rule
+- `tests/test_brand_art.py` (21): compositing, cut-outs, assign-rule
   listing match (colorway pages, other brands on the same site), stock,
   companions, slot planning and hero picks, which trigger fired, and the
   Gemini fallback;

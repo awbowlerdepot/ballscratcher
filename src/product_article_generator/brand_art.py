@@ -336,7 +336,8 @@ def fetch_brand_catalog(bc_get, bigcommerce_brand_id: int) -> list:
 
 
 def fetch_category_roots(bc_get) -> dict:
-    """{category_id: root category name, lowercased}."""
+    """{category_id: full category path, lowercased, " > "-joined, e.g.
+    "bags > roller bags > 3 ball rollers"}. The first part is the root."""
     cats, page = [], 1
     while True:
         d = bc_get("/v3/catalog/trees/categories", {"limit": 250, "page": page})
@@ -347,14 +348,19 @@ def fetch_category_roots(bc_get) -> dict:
         page += 1
     parent = {c["category_id"]: c.get("parent_id") or 0 for c in cats}
     name = {c["category_id"]: c["name"] for c in cats}
-    roots = {}
+    paths = {}
     for cid in parent:
-        x, seen = cid, set()
-        while parent.get(x) and x not in seen:
+        x, seen, parts = cid, set(), []
+        while x and x not in seen:
             seen.add(x)
-            x = parent[x]
-        roots[cid] = (name.get(x) or "").strip().lower()
-    return roots
+            parts.append((name.get(x) or "").strip().lower())
+            x = parent.get(x)
+        paths[cid] = " > ".join(reversed(parts))
+    return paths
+
+
+def _root(path: str) -> str:
+    return (path or "").split(" > ")[0]
 
 
 def in_stock(p: dict) -> bool:
@@ -372,13 +378,15 @@ def in_stock(p: dict) -> bool:
     return (p.get("inventory_level") or 0) > 0
 
 
-def stocked_companions(catalog: list, roots: dict) -> list:
+def stocked_companions(catalog: list, paths: dict) -> list:
     """The brand's stocked non-ball products with a photo, newest listing
-    first: [{"bigcommerce_product_id", "name", "kind", "photo", "date"}]."""
+    first: [{"bigcommerce_product_id", "name", "kind", "photo", "date",
+    "price", "categories"}]. paths is fetch_category_roots()."""
     out = []
     for p in catalog:
-        kinds = {COMPANION_ROOTS[roots[c]] for c in p.get("categories") or [] if roots.get(c) in COMPANION_ROOTS}
-        if not kinds or "balls" in {roots.get(c) for c in p.get("categories") or []}:
+        cats = [paths.get(c, "") for c in p.get("categories") or []]
+        kinds = {COMPANION_ROOTS[_root(c)] for c in cats if _root(c) in COMPANION_ROOTS}
+        if not kinds or "balls" in {_root(c) for c in cats}:
             continue
         if not in_stock(p):
             continue
@@ -388,7 +396,9 @@ def stocked_companions(catalog: list, roots: dict) -> list:
         kind = next(k for k in ("bag", "shoes", "accessory", "apparel") if k in kinds)
         out.append({"bigcommerce_product_id": p["id"], "name": p["name"].strip(), "kind": kind,
                     "photo": imgs[0].get("url_zoom") or imgs[0].get("url_standard"),
-                    "date": p.get("date_created") or ""})
+                    "date": p.get("date_created") or "",
+                    "price": float(p.get("calculated_price") or p.get("price") or 0),
+                    "categories": cats})
     # BigCommerce dates are RFC 2822 strings; parse for a real newest-first order.
     def key(c):
         try:
@@ -400,21 +410,38 @@ def stocked_companions(catalog: list, roots: dict) -> list:
 
 COMPANION_KIND_ORDER = ("bag", "shoes", "accessory", "apparel")
 
+# Al, on the first companion hero (a $79.95 1-ball roller): "can you use
+# higher priced bags, 3 ball roller or triple totes? that is an entry
+# level bag and isn't idea[l]". So the showcase bags are Bowler Depot's
+# 3-ball (and bigger) rollers and totes -- read from the store's own
+# category tree ("Bags > Roller Bags > 3 Ball Rollers", "Bags > Tote Bags
+# > 3 Ball Totes"), with the name as a fallback -- and within a tier the
+# most expensive first.
+_SHOWCASE_BAG = re.compile(r"\b([3-6] ball|triple|three ball)\b")
+
+
+def _bag_tier(c: dict) -> int:
+    """0: 3+ ball roller, 1: 3+ ball tote, 2: other roller, 3: other bag."""
+    text = " ".join(c.get("categories") or []) + " " + c["name"].lower()
+    big = bool(_SHOWCASE_BAG.search(text))
+    roller = "roller" in text
+    return 0 if big and roller else 1 if big else 2 if roller else 3
+
 
 def pick_companion(companions: list, hero: dict) -> dict:
     """The non-ball product a companion hero features. A pinned
     bigcommerce_product_id (hero["bigcommerce_product_id"]) wins while it's
     stocked. Otherwise bags first, then shoes, then accessories and
-    apparel ("bag first, then shoes, then accessories", as scoped), roller
-    bags ahead of other bags (Al's example: "a new Storm ball with a Storm
-    roller bag"), newest listing first within each. companions is already
-    newest-first, and sorted() is stable."""
+    apparel; bags by _bag_tier (3-ball rollers, then 3-ball totes, then
+    other rollers, then the rest); highest price first within a tier, then
+    newest listing (companions is newest-first and sorted() is stable)."""
     pinned = hero.get("bigcommerce_product_id")
     for c in companions:
         if pinned and c["bigcommerce_product_id"] == pinned:
             return c
     return sorted(companions, key=lambda c: (COMPANION_KIND_ORDER.index(c["kind"]),
-                                             0 if c["kind"] == "bag" and "roller" in c["name"].lower() else 1))[0]
+                                             _bag_tier(c) if c["kind"] == "bag" else 0,
+                                             -(c.get("price") or 0)))[0]
 
 
 def stocked_bc_ids(catalog: list) -> set:
@@ -591,18 +618,18 @@ def render_ball_product_hero(item: dict, size: tuple, palette: dict, deps: dict)
         # Don't spend the other size's attempts once one size has failed:
         # the slot falls back to the composite for both (render_slot).
         deps["_gemini_failed"] = item["product_id"]
-    return compose.product_hero(size, palette, compose.cutout(raw)), "composite"
+    return compose.product_hero(size, palette, compose.cutout(raw, deps.get("remove_bg"))), "composite"
 
 
 def render_slot(slot: dict, palette: dict, deps: dict) -> tuple:
     """[(size, PIL image)], method."""
     fetch = deps["fetch_bytes"]
     if slot["kind"] == "line":
-        cuts = [compose.cutout(first_photo(i, fetch)[0]) for i in slot["items"]]
+        cuts = [compose.cutout(first_photo(i, fetch)[0], deps.get("remove_bg")) for i in slot["items"]]
         return [(LINE_SIZE, compose.line(LINE_SIZE, palette, cuts))], "composite"
     out, method = [], "composite"
     if slot["hero_type"] == "lineup":
-        cuts = [compose.cutout(first_photo(i, fetch)[0]) for i in slot["items"]]
+        cuts = [compose.cutout(first_photo(i, fetch)[0], deps.get("remove_bg")) for i in slot["items"]]
         for size in slot["sizes"]:
             out.append((size, compose.lineup_hero(size, palette, cuts)))
         return out, method
@@ -614,10 +641,10 @@ def render_slot(slot: dict, palette: dict, deps: dict) -> tuple:
         drawn = [render_ball_product_hero(focus, size, palette, deps) for size in slot["sizes"]]
         if all(m == "gemini" for _, m in drawn):
             return [(size, im) for size, (im, _) in zip(slot["sizes"], drawn)], "gemini"
-        cut = compose.cutout(first_photo(focus, fetch)[0])
+        cut = compose.cutout(first_photo(focus, fetch)[0], deps.get("remove_bg"))
         return [(size, compose.product_hero(size, palette, cut)) for size in slot["sizes"]], "composite"
-    cut = compose.cutout(first_photo(focus, fetch)[0])
-    beside = compose.cutout(first_photo(slot["items"][1], fetch)[0]) if len(slot["items"]) > 1 else None
+    cut = compose.cutout(first_photo(focus, fetch)[0], deps.get("remove_bg"))
+    beside = compose.cutout(first_photo(slot["items"][1], fetch)[0], deps.get("remove_bg")) if len(slot["items"]) > 1 else None
     for size in slot["sizes"]:
         out.append((size, compose.product_hero(size, palette, cut, beside)))
     return out, method
