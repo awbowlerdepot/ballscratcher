@@ -110,6 +110,41 @@
           }
         }
       ]
+    },
+    {
+      "key": "ball-type",
+      "label": "Ball type",
+      "source": "Al, 2026-11-02: \"mix, ice, clear, and norm duke are spare balls. tropical is entry level.\" Storm's site puts these in no reaction profile.",
+      "lines": [
+        {
+          "key": "spare",
+          "label": "Spare",
+          "assign_rule": {
+            "type": "fields",
+            "exclusive": true,
+            "all": [
+              {
+                "field": "name",
+                "matches": "(?i)^(storm )?(mix|ice storm|clear storm|lightning storm)\\b|norm duke clear"
+              }
+            ]
+          }
+        },
+        {
+          "key": "entry-level",
+          "label": "Entry level",
+          "assign_rule": {
+            "type": "fields",
+            "exclusive": true,
+            "all": [
+              {
+                "field": "name",
+                "matches": "(?i)^(storm )?tropical surge\\b"
+              }
+            ]
+          }
+        }
+      ]
     }
   ]
 }

@@ -321,3 +321,54 @@ def test_bag_hero_draws_the_ball_to_scale():
     ys = [y for y in range(1200) for x in range(0, 1600, 4)
           if px[x, y][2] > 120 and px[x, y][0] < 80 and px[x, y][1] < 80]
     assert abs((max(ys) - min(ys)) - 912 * 8.5 / 45) < 8
+
+
+def test_exclusive_lines_exempt_their_balls_and_settle_old_flags():
+    # Al: "mix, ice, clear, and norm duke are spare balls. tropical is entry
+    # level." -- balls in an exclusive line aren't flagged as unplaced in
+    # the brand's other groupings, and pending flags for them are settled.
+    import re as _re
+    state = {"lines": [
+        {"grouping_key": "reaction-profile", "grouping_label": "Reaction profile", "line_id": "L1", "key": "strong",
+         "text": None, "label": "Strong", "assign_rule": {"type": "brand_listing"}, "ball_ids": ["a"]},
+        {"grouping_key": "ball-type", "grouping_label": "Ball type", "line_id": "L2", "key": "spare",
+         "text": None, "label": "Spare", "assign_rule": {"type": "fields", "exclusive": True}, "ball_ids": ["mix"]},
+    ]}
+    executed = []
+
+    class Cur:
+        rowcount = 0
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def execute(self, q, params=()): executed.append((" ".join(q.split()), params))
+
+    class Conn:
+        def cursor(self): return Cur()
+        def commit(self): pass
+
+    orig = brand_art.list_lines, brand_art.listing_members, brand_art.fields_members
+    brand_art.list_lines = lambda conn, bid: state["lines"]
+    brand_art.listing_members = lambda rule, balls, fetch: {"a"}
+    brand_art.fields_members = lambda rule, conn, bid: {"mix"}
+    try:
+        balls = [_ball("a", "Phaze II", TODAY), _ball("mix", "MIX PLATINUM", TODAY), _ball("x", "Identity", TODAY)]
+        out = brand_art.apply_assign_rules(Conn(), "storm", balls, lambda u: "", sleep=lambda s: None)
+    finally:
+        brand_art.list_lines, brand_art.listing_members, brand_art.fields_members = orig
+    assert out["unplaced"] == [{"grouping": "reaction-profile", "product_id": "x"}]   # not "mix"
+    settles = [p for q, p in executed if q.startswith("update review_queue set status = 'approved'")]
+    assert ("reaction-profile", ["a", "mix"]) in settles
+
+
+def test_storm_ball_type_rules_match_the_names_al_listed():
+    import json as _json, re as _re
+    cfg = _json.load(open(os.path.join(os.path.dirname(__file__), "..", "scripts", "brand_lineups", "storm.json")))
+    lines = {l["key"]: l for g in cfg["groupings"] if g["key"] == "ball-type" for l in g["lines"]}
+    spare = _re.compile(lines["spare"]["assign_rule"]["all"][0]["matches"])
+    entry = _re.compile(lines["entry-level"]["assign_rule"]["all"][0]["matches"])
+    for n in ["MIX PLATINUM", "ICE STORM OCEAN BLUE-WHITE", "Ice Storm Teal-Silver-Graphite", "CLEAR STORM TEAL",
+              "LIGHTNING STORM CLEAR", "Storm Norm Duke Clear"]:
+        assert spare.search(n), n
+    assert entry.search("TROPICAL SURGE TEAL-BLUE") and entry.search("Tropical Surge Kiwi-Apple-Avocado")
+    for n in ["Phaze II", "Identity", "Equinox Hybrid", "IQ Tour"]:
+        assert not spare.search(n) and not entry.search(n), n

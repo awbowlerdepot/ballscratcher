@@ -23003,6 +23003,61 @@ psql -c "select status, trigger, started_at, detail -> 'slots' from task_runs or
 - `test_admin_api_service.py` (461) and `test_product_article_generator.py`
   (186) unchanged and passing.
 
+### 6fr. Brand lineups: "exclusive" lines for balls a brand doesn't profile; Storm's spare and entry-level balls (2026-11-02, not deployed)
+
+Storm's first brand-art run (6fq) flagged 22 current Storm balls that
+stormbowling.com puts in no reaction profile or lane read. Each was
+flagged once per grouping, so the review queue got 44 `brand_line` items.
+Al: "mix, ice, clear, and norm duke are spare balls. tropical is entry
+level. identity are discontinued limited releases".
+
+**`brand_art.apply_assign_rules`:**
+- A line whose rule has `"exclusive": true` holds balls that sit outside
+  the brand's other groupings. Its balls are never flagged as unplaced
+  elsewhere.
+- Its own grouping doesn't flag the balls that aren't in it, because a
+  "Ball type" grouping only names the exceptions.
+- Every run now settles pending `brand_line` items whose ball has since
+  been placed or exempted (`approved`, `resolved_by = 'brand_art'`), so the
+  queue doesn't keep stale flags.
+
+**Storm data** (`scripts/brand_lineups/storm.json`): a new grouping,
+`ball-type`, with two `fields` rules on the name, both exclusive:
+- `spare`: Mix, Ice Storm, Clear Storm, Lightning Storm and Norm Duke
+  Clear;
+- `entry-level`: Tropical Surge.
+
+There are no line images for these, since the task's `line_groupings` is
+still reaction-profile only.
+
+**Identity / Identity B/C/P: not changed.** Al says they're discontinued
+limited releases, but stormbowling.com still files both pages under
+"Bowling Balls", not "Bowling Balls Archive". `classify_product_status`
+reads that breadcrumb, so a hand-set `retired` would be undone by
+Sunday's full re-scrape. There's no manual status override anywhere in
+the codebase. Until one is chosen they stay current and stay flagged,
+which is correct: they really are in no line.
+
+**Order matters, so deploy first, then load.** The deployed 6fq code
+treats any grouping with a rule as one every ball must be in. Loading
+`ball-type` before this deploys would make the next daily dispatch flag
+every profiled Storm ball as missing a ball type.
+```bash
+sam build && sam deploy
+.venv/bin/python scripts/load_brand_lineups.py scripts/brand_lineups/storm.json --apply
+aws lambda invoke --function-name bowling-scraper-product-article-generator --invocation-type Event --payload '{"brand_art": "run", "task_id": "179ee0e1-3fc0-48ad-be67-63e64a220af9", "trigger": "manual"}' --cli-binary-format raw-in-base64-out /dev/null
+```
+
+**Verify:** pending `brand_line` items for Storm drop from 44 to 4 (the two
+Identity balls, once per grouping):
+```bash
+psql -c "select p.name, r.proposed_value from review_queue r join products p on p.id = r.product_id where r.field_name = 'brand_line' and r.status = 'pending' order by 2, 1"
+```
+
+**Tests:** 2 new in `tests/test_brand_art.py` (25): exclusive lines and
+flag settling, and the Storm ball-type name patterns against the names
+Al listed.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

@@ -294,19 +294,36 @@ def apply_assign_rules(conn, brand_id: str, balls: list, fetch_html, sleep=time.
                     removed.append({"line": line["key"], "product_id": pid})
         conn.commit()
 
-    ruled = {}
+    # EXCLUSIVE lines (rule "exclusive": true) hold balls that sit outside
+    # the brand's other groupings. Al, on the 22 Storm balls in no reaction
+    # profile: "mix, ice, clear, and norm duke are spare balls. tropical
+    # is entry level." Storm doesn't profile spare and entry balls, so a
+    # ball in an exclusive line isn't "unplaced" anywhere, and an exclusive
+    # line's own grouping never flags the balls that aren't in it.
+    ruled, exempt = {}, set()
     for line in list_lines(conn, brand_id):
+        rule = line["assign_rule"] or {}
         ruled.setdefault(line["grouping_key"], {"label": line["grouping_label"], "ruled": False, "members": set()})
         g = ruled[line["grouping_key"]]
-        g["ruled"] = g["ruled"] or (line["assign_rule"] or {}).get("type", "manual") != "manual"
+        if rule.get("exclusive"):
+            exempt |= set(line["ball_ids"])
+        else:
+            g["ruled"] = g["ruled"] or rule.get("type", "manual") != "manual"
         g["members"] |= set(line["ball_ids"])
     unplaced = []
     names = {b["product_id"]: b["name"] for b in balls}
     with conn.cursor() as cur:
         for gkey, g in ruled.items():
+            # A pending item whose ball has since been placed (or is now
+            # exempt) is settled by this run, not left for a person.
+            cur.execute("""
+                update review_queue set status = 'approved', resolved_at = now(), resolved_by = 'brand_art'
+                where field_name = 'brand_line' and proposed_value = %s and status = 'pending'
+                  and product_id = any(%s::uuid[])
+            """, (gkey, sorted(g["members"] | exempt)))
             if not g["ruled"]:
                 continue
-            for pid in sorted(current - g["members"]):
+            for pid in sorted(current - g["members"] - exempt):
                 unplaced.append({"grouping": gkey, "product_id": pid})
                 cur.execute("""
                     insert into review_queue (product_id, field_name, current_value, proposed_value, source, reason)
