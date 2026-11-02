@@ -1,0 +1,267 @@
+"""
+Tests for src/product_article_generator/brand_art.py and
+brand_art_compose.py (runbook 6fq): brand lineups, the brand_art task's
+planning and trigger rules, and the real-photo compositing.
+
+Pure functions only (no DB): plan_slots / due_slots / listing_members /
+in_stock / stocked_companions / the compositor, plus run_task's slot loop
+through a fake connection-free path (render_slot + slot_keys_for).
+Images are synthetic Pillow images, as in test_image_resizer.py.
+"""
+import datetime
+import io
+import os
+import sys
+
+from PIL import Image, ImageDraw
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src", "product_article_generator"))
+
+import brand_art  # noqa: E402
+import brand_art_compose as compose  # noqa: E402
+
+PALETTE = {"background": "#191c1b", "accent": "#009d90"}
+TODAY = datetime.date(2026, 11, 2)
+
+
+def _png_cutout(color=(40, 40, 160)):
+    im = Image.new("RGBA", (200, 200), (0, 0, 0, 0))
+    ImageDraw.Draw(im).ellipse((20, 20, 180, 180), fill=color + (255,))
+    buf = io.BytesIO()
+    im.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def _jpeg_on_white(color=(200, 30, 30)):
+    im = Image.new("RGB", (200, 200), (255, 255, 255))
+    d = ImageDraw.Draw(im)
+    d.rectangle((40, 40, 160, 170), fill=color)
+    d.rectangle((80, 80, 120, 120), fill=(255, 255, 255))  # white panel inside the product
+    buf = io.BytesIO()
+    im.save(buf, "JPEG", quality=95)
+    return buf.getvalue()
+
+
+def _ball(pid, name, released, bc=None, url=None):
+    return {"product_id": pid, "name": name, "url": url or f"https://www.stormbowling.com/storm-{pid}-bowling-ball",
+            "release_date": released, "bigcommerce_product_id": bc, "photos": [f"https://x/{pid}.png"]}
+
+
+def _task(**params):
+    base = {"palette": PALETTE, "slug": "storm", "line_groupings": ["reaction-profile"]}
+    base.update(params)
+    return {"id": "t1", "brand_name": "Storm", "params": base, "triggers": [], "last_full_run_at": None}
+
+
+def _line(key, ids, grouping="reaction-profile"):
+    return {"grouping_key": grouping, "grouping_label": "Reaction profile", "line_id": f"l-{key}", "key": key,
+            "label": key.title(), "text": None, "assign_rule": {"type": "manual"}, "ball_ids": ids}
+
+
+# --- compositing --------------------------------------------------------
+
+def test_cutout_keeps_real_alpha_and_trims():
+    cut = compose.cutout(_png_cutout())
+    assert cut.mode == "RGBA" and cut.size == (161, 161)
+
+
+def test_cutout_keys_out_white_background_but_keeps_interior_white():
+    cut = compose.cutout(_jpeg_on_white())
+    a = cut.getchannel("A")
+    w, h = cut.size
+    assert a.getpixel((w // 2, h // 2)) == 255          # the white panel inside the product stays
+    assert a.getpixel((0, 0)) < 255 or cut.size[0] < 200  # the backdrop is gone (trimmed or transparent)
+
+
+def test_layouts_render_at_slot_sizes_under_250kb():
+    ball, bag = compose.cutout(_png_cutout()), compose.cutout(_jpeg_on_white())
+    for size, im in [((1200, 900), compose.line((1200, 900), PALETTE, [ball, ball, ball])),
+                     ((1600, 1200), compose.product_hero((1600, 1200), PALETTE, bag, ball)),
+                     ((1600, 900), compose.product_hero((1600, 900), PALETTE, ball)),
+                     ((1600, 1200), compose.lineup_hero((1600, 1200), PALETTE, [ball, ball]))]:
+        assert im.size == size
+        assert len(compose.encode_webp(im)) <= 250_000
+
+
+def test_background_is_the_brand_color_in_the_corners():
+    im = compose.background((400, 300), PALETTE)
+    # The accent glow fades out before the corners (within a couple of levels).
+    assert all(abs(a - b) <= 3 for a, b in zip(im.getpixel((0, 0)), (0x19, 0x1C, 0x1B)))
+
+
+# --- assign rules -------------------------------------------------------
+
+def test_listing_members_matches_brand_urls_and_colorway_pages_only():
+    html = ('<a href="/storm-phaze-ii-bowling-ball">x</a><a href="/roto-grip-gremlin-bowling-ball">y</a>'
+            '<a href="/storm-mix-bowling-ball">z</a>')
+    balls = [_ball("a", "Phaze II", TODAY, url="https://www.stormbowling.com/storm-phaze-ii-bowling-ball"),
+             _ball("b", "Mix Platinum", TODAY, url="https://www.stormbowling.com/storm-mix-bowling-ball-platinum"),
+             _ball("c", "Phaze 5", TODAY, url="https://www.stormbowling.com/storm-phaze-5-bowling-ball")]
+    rule = {"type": "brand_listing", "platform": "commercebuild", "url": "https://www.stormbowling.com/products/x/?f=1"}
+    assert brand_art.listing_members(rule, balls, lambda url: html) == {"a", "b"}
+
+
+def test_listing_members_unreadable_or_unknown_platform_changes_nothing():
+    rule = {"type": "brand_listing", "platform": "commercebuild", "url": "https://x/"}
+    def boom(url):
+        raise IOError("down")
+    assert brand_art.listing_members(rule, [], boom) is None
+    assert brand_art.listing_members({"platform": "shopify", "url": "u"}, [], lambda u: "") is None
+
+
+# --- stock --------------------------------------------------------------
+
+def test_in_stock_rules():
+    base = {"is_visible": True, "availability": "available"}
+    assert brand_art.in_stock({**base, "inventory_tracking": "product", "inventory_level": 3})
+    assert not brand_art.in_stock({**base, "inventory_tracking": "product", "inventory_level": 0})
+    assert brand_art.in_stock({**base, "inventory_tracking": "none"})
+    assert brand_art.in_stock({**base, "inventory_tracking": "variant",
+                               "variants": [{"inventory_level": 0}, {"inventory_level": 2}]})
+    assert not brand_art.in_stock({**base, "is_visible": False, "inventory_tracking": "none"})
+    assert not brand_art.in_stock({**base, "availability": "disabled", "inventory_tracking": "none"})
+
+
+def test_stocked_companions_newest_first_and_skips_balls_and_sold_out():
+    roots = {26: "bags", 25: "balls", 28: "accessories", 190: "on sale"}
+    img = [{"url_zoom": "https://cdn/x.jpg", "is_thumbnail": True}]
+    live = {"is_visible": True, "availability": "available", "inventory_tracking": "none", "images": img}
+    catalog = [
+        {**live, "id": 1, "name": "Old Bag", "categories": [26], "date_created": "Mon, 01 Jan 2024 00:00:00 +0000"},
+        {**live, "id": 2, "name": "New Roller", "categories": [26, 190], "date_created": "Sun, 01 Nov 2026 00:00:00 +0000"},
+        {**live, "id": 3, "name": "A Ball", "categories": [25], "date_created": "Sun, 01 Nov 2026 00:00:00 +0000"},
+        {**live, "id": 4, "name": "Sold Out Bag", "categories": [26], "inventory_tracking": "product",
+         "inventory_level": 0, "date_created": "Sun, 01 Nov 2026 00:00:00 +0000"},
+        {**live, "id": 5, "name": "No Photo", "categories": [28], "images": [], "date_created": ""},
+    ]
+    got = brand_art.stocked_companions(catalog, roots)
+    assert [c["bigcommerce_product_id"] for c in got] == [2, 1]
+    assert got[0]["kind"] == "bag"
+
+
+# --- planning -----------------------------------------------------------
+
+def _plan(companions=(), stocked=frozenset(), heroes=None):
+    balls = [_ball("new", "Ion Pro Pearl", datetime.date(2026, 11, 6), bc=10),   # not released yet
+             _ball("b1", "Equinox Hybrid", datetime.date(2026, 9, 4), bc=11),
+             _ball("b2", "IQ Tour Sapphire", datetime.date(2026, 8, 7), bc=12),
+             _ball("b3", "Alpha Crux", datetime.date(2026, 5, 29), bc=13),
+             _ball("b4", "Monsoon", datetime.date(2026, 5, 1), bc=None)]
+    lines = [_line("strong-symmetrical", ["b3", "b1"]), _line("empty", []),
+             _line("early-read", ["b1"], grouping="lane-read")]
+    task = _task(**({"heroes": heroes} if heroes else {}))
+    return brand_art.plan_slots(task, balls, lines, list(companions), set(stocked), TODAY)
+
+
+def test_plan_lines_only_for_chosen_groupings_newest_first_and_skips_empty():
+    slots = {s["slot_key"]: s for s in _plan()}
+    assert [k for k in slots if k.startswith("line-")] == ["line-strong-symmetrical"]
+    assert [i["name"] for i in slots["line-strong-symmetrical"]["items"]] == ["Equinox Hybrid", "Alpha Crux"]
+    assert slots["line-strong-symmetrical"]["alt"] == "Storm Equinox Hybrid and Alpha Crux bowling balls"
+
+
+def test_plan_heroes_are_newest_released_balls_stocked_first():
+    slots = {s["slot_key"]: s for s in _plan(stocked={11, 13})}
+    names = [slots[f"hero-{i}"]["items"][0]["name"] for i in (1, 2, 3)]
+    assert names == ["Equinox Hybrid", "Alpha Crux", "IQ Tour Sapphire"]   # Ion Pro Pearl isn't released
+    assert slots["hero-1"]["alt"] == "Storm Equinox Hybrid bowling ball"
+    assert slots["hero-1"]["sizes"] == [(1600, 1200), (1600, 900)]
+
+
+def test_plan_third_hero_is_newest_companion_with_newest_ball_beside():
+    bag = {"bigcommerce_product_id": 900, "name": "Storm Rolling Thunder", "kind": "bag", "photo": "https://cdn/b.jpg"}
+    slots = {s["slot_key"]: s for s in _plan(companions=[bag], stocked={11, 12, 13})}
+    h3 = slots["hero-3"]
+    assert [i["name"] for i in h3["items"]] == ["Storm Rolling Thunder", "Equinox Hybrid"]
+    assert h3["items"][0]["product_id"] is None and h3["items"][0]["bigcommerce_product_id"] == 900
+    assert h3["alt"] == "Storm Rolling Thunder with the Storm Equinox Hybrid bowling ball"
+
+
+def test_plan_lineup_hero_from_a_line():
+    slots = {s["slot_key"]: s for s in _plan(heroes=[{"type": "lineup", "line": "strong-symmetrical"}])}
+    assert slots["hero-1"]["hero_type"] == "lineup"
+    assert [i["name"] for i in slots["hero-1"]["items"]] == ["Alpha Crux", "Equinox Hybrid"]
+
+
+# --- triggers -----------------------------------------------------------
+
+def _stored(slot, **over):
+    d = {"input_hash": slot["input_hash"], "featured": [
+        {k: i[k] for k in ("product_id", "bigcommerce_product_id", "name", "kind")} for i in slot["items"]]}
+    d.update(over)
+    return d
+
+
+def test_due_slots_nothing_changed_and_not_a_week():
+    slots = _plan()
+    stored = {s["slot_key"]: _stored(s) for s in slots}
+    task = _task()
+    task["last_full_run_at"] = datetime.datetime(2026, 11, 1, tzinfo=datetime.timezone.utc)
+    assert brand_art.due_slots(task, slots, stored, datetime.datetime(2026, 11, 2, tzinfo=datetime.timezone.utc)) == {}
+
+
+def test_due_slots_weekly_sweep_redraws_everything():
+    slots = _plan()
+    stored = {s["slot_key"]: _stored(s) for s in slots}
+    task = _task()
+    task["last_full_run_at"] = datetime.datetime(2026, 10, 20, tzinfo=datetime.timezone.utc)
+    due = brand_art.due_slots(task, slots, stored, datetime.datetime(2026, 11, 2, tzinfo=datetime.timezone.utc))
+    assert set(due) == {s["slot_key"] for s in slots} and set(due.values()) == {"weekly_sweep"}
+
+
+def test_due_slots_names_the_rule_that_fired():
+    slots = {s["slot_key"]: s for s in _plan()}
+    task = _task()
+    task["last_full_run_at"] = datetime.datetime(2026, 11, 1, tzinfo=datetime.timezone.utc)
+    now = datetime.datetime(2026, 11, 2, tzinfo=datetime.timezone.utc)
+    stored = {k: _stored(s) for k, s in slots.items()}
+    stored["hero-1"] = _stored(slots["hero-1"], input_hash="old",
+                               featured=[{"product_id": "older", "bigcommerce_product_id": 1}])
+    stored["line-strong-symmetrical"] = _stored(slots["line-strong-symmetrical"], input_hash="old",
+                                                featured=[{"product_id": "b3", "bigcommerce_product_id": 13}])
+    stored["hero-2"] = _stored(slots["hero-2"], input_hash="old")  # same products, new photo
+    stored["hero-3"] = _stored(slots["hero-3"], input_hash="old",
+                               featured=[{"product_id": None, "bigcommerce_product_id": 900}])
+    due = brand_art.due_slots(task, list(slots.values()), stored, now)
+    assert due == {"hero-1": "ball_released", "line-strong-symmetrical": "line_changed",
+                   "hero-2": "photo_changed", "hero-3": "companion_stock"}
+
+
+def test_slot_keys_are_stable_paths():
+    assert brand_art.slot_keys_for("storm", "hero-1") == ("brand-art/storm/hero-1.webp", "brand-art/storm/hero-1-16x9.webp")
+
+
+# --- rendering -----------------------------------------------------------
+
+def test_render_line_and_bag_hero_are_composites():
+    deps = {"fetch_bytes": lambda url: _jpeg_on_white() if url.endswith(".jpg") else _png_cutout()}
+    bag = {"bigcommerce_product_id": 900, "name": "Bag", "kind": "bag", "photo": "https://cdn/b.jpg"}
+    slots = {s["slot_key"]: s for s in _plan(companions=[bag], stocked={11})}
+    images, method = brand_art.render_slot(slots["line-strong-symmetrical"], PALETTE, deps)
+    assert method == "composite" and images[0][1].size == (1200, 900)
+    images, method = brand_art.render_slot(slots["hero-3"], PALETTE, deps)
+    assert method == "composite" and [im.size for _, im in images] == [(1600, 1200), (1600, 900)]
+
+
+def test_ball_hero_uses_gemini_and_falls_back_to_composite_when_checks_fail():
+    calls = []
+    def gemini_ok(pid, raw, theme, no_text, aspect):
+        calls.append(aspect)
+        im = Image.new("RGB", (2048, 1536) if aspect == "4:3" else (2048, 1152), (10, 10, 10))
+        buf = io.BytesIO()
+        im.save(buf, "PNG")
+        return buf.getvalue()
+    slot = {s["slot_key"]: s for s in _plan(stocked={11})}["hero-1"]
+    deps = {"fetch_bytes": lambda url: _png_cutout(), "gemini": gemini_ok}
+    images, method = brand_art.render_slot(slot, PALETTE, deps)
+    assert method == "gemini" and calls == ["4:3", "16:9"]
+    assert [im.size for _, im in images] == [(1600, 1200), (1600, 900)]
+    deps["gemini"] = lambda *a: None   # every attempt fails the logo checks
+    images, method = brand_art.render_slot(slot, PALETTE, deps)
+    assert method == "composite"
+
+
+def test_backdrop_prompt_bans_text_and_names_the_palette():
+    theme = brand_art.HERO_BACKDROP_THEME.format(**PALETTE)
+    assert "#191c1b" in theme and "#009d90" in theme
+    assert "no text" in brand_art.HERO_NO_TEXT

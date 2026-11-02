@@ -22802,6 +22802,151 @@ aws logs tail /aws/lambda/bowling-scraper-bowlerdepot-reconciliation --since 1d 
 psql -c "select count(*) from bowlerdepot_products bdp join products p on p.id = bdp.product_id where p.published and bdp.match_status = 'ambiguous'"   # 0 (or only new ones)
 ```
 
+### 6fq. Brand lineups, partner tasks and brand-store art (2026-11-02, branch `brand-art`)
+
+Requested by the Bowler Depot brand-stores session, for Al. His direction:
+BowlerIQ owns each brand's lineups, and Bowler Depot's brand-store art is a
+standing **task** that BowlerIQ reruns by itself when a trigger rule fires.
+Each image sits at a stable URL. "This is one per brand, not a one-off for
+Storm... adding the next brand should only mean loading its lineups and
+creating its task." Then: "go ahead, include the weekly sweep, newest
+releases for heroes."
+
+**Migration 058** (`058_brand_lineups_and_tasks.sql`, applied 2026-11-02;
+it only adds tables):
+- `brand_groupings`: a brand's own ways of grouping its balls, such as
+  Storm's "Reaction profile" and "Lane read".
+- `brand_lines`: the lines in a grouping. Each has an `assign_rule` (data,
+  not code) that files a new release into it:
+  - `brand_listing`: the brand site's own filtered listing (commercebuild
+    is the only platform read so far);
+  - `fields`: a match on our own columns;
+  - `manual`.
+- `brand_line_balls`: a ball can sit in several lines. `added_by` is
+  `load`, `rule` or `admin`, and a rule only ever removes what a rule added.
+- `tasks` and `task_runs`: the standing request and its run log.
+- `brand_art_slots`: one row per image, with `featured` (product name,
+  BowlerIQ id and BigCommerce id), alt text, how it was drawn, and
+  `input_hash`.
+
+**The runner** (`product_article_generator/brand_art.py`, plus
+`brand_art_compose.py` for compositing). Events:
+- `{"brand_art": "dispatch"}`: daily at 12:30 UTC (`BrandArtSchedule`).
+  - It runs the assign rules for each enabled task. A ball no rule places
+    goes to `review_queue` (`brand_line`), never into a guessed line.
+  - It works out each slot's inputs and redraws only the slots whose
+    inputs changed, or every slot once a week.
+  - Each task runs through an async self-invoke.
+- `{"brand_art": "run", "task_id", "slots"?}`: draws now. This is what
+  admin's "Rerun now" sends.
+
+**Triggers as fingerprints.** Each slot hashes its products, their photo
+URLs, the palette and the companion's stock. A changed hash is a rule
+firing, and the run log names which one: `ball_released`,
+`line_changed`, `photo_changed`, `companion_stock`, `weekly_sweep` or
+`manual`. That covers every trigger in the request without hooking the
+scrapers.
+
+**Slots** (images are WebP, under 250 KB):
+- One image per line in `params.line_groupings` (Storm: reaction profile),
+  1200×900. Ball-only, up to four balls, newest front and center,
+  composited from the real photos.
+- Up to 3 heroes, each 1600×1200 plus a 1600×900 phone version. The
+  default picks follow "newest releases for heroes":
+  - hero-1 and hero-2 are the newest released balls (release date today or
+    earlier), with balls Bowler Depot has in stock first;
+  - hero-3 is the newest stocked non-ball product (bag, shoes, accessory),
+    with the newest ball beside it. If Bowler Depot stocks nothing else
+    from the brand, it's the 3rd newest ball.
+- Hero types, per Al:
+  - **product**: one product in focus. A ball product hero uses the
+    existing Gemini product-shot pipeline (`build_gemini_scene_prompt`, the
+    logo-match and logo-size checks from the announcement job), with the
+    brand palette as the backdrop and a no-text rule. If any attempt fails
+    the checks, both sizes are the composite, so a slide's two sizes always
+    match.
+  - **lineup**: several products together, composited.
+  - Non-ball products are always composited from their BigCommerce photos
+    ("real product photos only").
+- Cut-outs:
+  - Storm/Roto Grip/900 Global ball PNGs are already transparent.
+  - BigCommerce JPEGs on white are keyed out with a border flood fill, so
+    white inside a product (a bag's panel) stays.
+- "Stocked" means visible, purchasable, and with stock on the product or
+  any variant (untracked counts as stocked), read from the brand's
+  Catalog v3 products.
+
+**Stable URLs.** Each slot's image is written to
+`brand-art/<slug>/<slot>.webp` (plus `-16x9`), and a rerun overwrites it.
+`image_resizer` now serves the `brand-art/` prefix:
+- with no size params, as stored;
+- always with `Cache-Control: public, max-age=3600` instead of the
+  year-long immutable header ("Keep the CDN cache short (around an hour)").
+
+Example: `https://img.bowleriq.io/brand-art/storm/hero-1.webp`.
+
+**Partner API:** `GET /v1/brands/{id}/lineups` is a new, optional v1
+endpoint:
+- groupings, then lines, then current published balls, newest first, with
+  the brand's note;
+- each line's art, and the heroes (`url`, `url_16x9`, `alt`, `featured`,
+  `generated_at`, `owner`).
+
+The snapshot was regenerated, and the diff is additions only.
+
+**Admin:**
+- A **Brand Stores** page (`/brand-stores`) shows the hero and line
+  images, each lineup with who placed each ball, balls no rule placed,
+  add/remove a ball, the task settings (palette, line_groupings, heroes),
+  Pause/Enable, Rerun now, and recent runs.
+- API: `GET/PATCH /brand-stores[/{task_id}]`, `POST .../rerun`,
+  `POST/DELETE /brand-lines/{line_id}/balls`.
+
+**Storm, loaded 2026-11-02** with `scripts/load_brand_lineups.py
+scripts/brand_lineups/storm.json --theme-nav
+../bicommerce-site/bowlerdepot-theme-brands/templates/components/brand-store/navigation.html
+--apply`:
+- 2 groupings and 9 lines, all `brand_listing` rules on stormbowling.com's
+  facets. The brand-stores session supplied them:
+  - reaction profile is `filter[custom20]`;
+  - lane read is `filter[brand]`, the site's own odd name for it.
+- 20 balls seeded from the theme, with their notes; none unmapped.
+- Task `179ee0e1-3fc0-48ad-be67-63e64a220af9` (owner `bowlerdepot`,
+  palette #191c1b / #009d90, BigCommerce brand 42).
+
+**Adding a brand:** write `scripts/brand_lineups/<brand>.json` (groupings,
+lines, rules, palette, BigCommerce brand id), then run the loader as
+above. A brand whose lines need its own site's listing also needs a
+`listing_members` reader for that platform; today only commercebuild has
+one. Lines matched on our own columns (`fields` rules) need nothing more.
+
+**Deploy:**
+```bash
+sam build && sam deploy
+cd admin-spa && npm run build && cd .. && git push   # admin SPA deploys from main
+```
+After the deploy, draw Storm once without waiting for the schedule:
+```bash
+aws lambda invoke --function-name bowling-scraper-product-article-generator --invocation-type Event --payload '{"brand_art": "run", "task_id": "179ee0e1-3fc0-48ad-be67-63e64a220af9", "trigger": "manual"}' --cli-binary-format raw-in-base64-out /dev/null
+```
+
+**Verify:**
+```bash
+curl -sI https://img.bowleriq.io/brand-art/storm/hero-1.webp | grep -i 'cache-control\|content-type'   # max-age=3600, image/webp
+curl -s -H "Authorization: Bearer $KEY" "https://api.bowleriq.io/partner/v1/brands/aadc2a74-fbef-47a6-8417-c40f3644a28a/lineups" | jq '{lines: [.groupings[].lines[] | {key, balls: (.balls | length), art: (.art | length)}], heroes: [.heroes[] | {slot, featured: [.featured[].name]}]}'
+psql -c "select status, trigger, started_at, detail -> 'slots' from task_runs order by started_at desc limit 3"
+```
+
+**Tests:**
+- `tests/test_brand_art.py` (19): compositing, cut-outs, assign-rule
+  listing match (colorway pages, other brands on the same site), stock,
+  companions, slot planning and hero picks, which trigger fired, and the
+  Gemini fallback;
+- 3 new in `test_image_resizer.py` (26);
+- the partner contract snapshot;
+- `test_admin_api_service.py` (461) and `test_product_article_generator.py`
+  (186) unchanged and passing.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

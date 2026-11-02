@@ -235,6 +235,26 @@ def get_brands():
 
 
 @app.get(
+    "/v1/brands/{brand_id}/lineups",
+    response_model=models.BrandLineups,
+    summary="A brand's lineups and brand-store art",
+    description=(
+        "How the brand's own site groups its balls (e.g. Storm's reaction profiles and lane reads), with each "
+        "line's current published balls, and the brand-art images partner tasks draw for the brand: one per "
+        "line and up to three heroes, each at a stable URL that a rerun replaces in place. Every image lists "
+        "the products it features, so a headline and link can follow it when it changes."
+    ),
+    tags=["Brands"],
+    responses={**_AUTH_ERRORS, 404: {"model": models.ErrorDetail, "description": "No brand with that id."}},
+)
+def get_brand_lineups(brand_id: str):
+    lineups = service.get_brand_lineups(service.get_db_connection(), brand_id)
+    if lineups is None:
+        raise HTTPException(status_code=404, detail="No brand with that id")
+    return lineups
+
+
+@app.get(
     "/v1/balls",
     response_model=models.BallPage,
     summary="All published balls (full load), paged by id",

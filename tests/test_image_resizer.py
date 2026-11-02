@@ -252,3 +252,28 @@ if __name__ == "__main__":
         passed += 1
         print(f"PASS: {t.__name__}")
     print(f"\n{passed}/{len(tests)} tests passed")
+
+
+# --- Runbook 6fq: brand-art/ keys are stable URLs a task rerun overwrites ---
+
+def test_brand_art_without_params_is_served_as_stored_with_a_one_hour_cache(monkeypatch):
+    body = b"RIFF....WEBPVP8 fake"
+    monkeypatch.setattr(app, "fetch_source_bytes", lambda key: body if key == "brand-art/storm/hero-1.webp" else None)
+    resp = app.handler({"rawPath": "/brand-art/storm/hero-1.webp"}, None)
+    assert resp["statusCode"] == 200
+    assert resp["headers"]["Content-Type"] == "image/webp"
+    assert resp["headers"]["Cache-Control"] == "public, max-age=3600"
+    import base64
+    assert base64.b64decode(resp["body"]) == body
+
+
+def test_brand_art_resized_still_gets_the_short_cache(monkeypatch):
+    monkeypatch.setattr(app, "fetch_source_bytes", lambda key: _synthetic_source())
+    resp = app.handler({"rawPath": "/brand-art/storm/line-x.webp", "queryStringParameters": {"w": "300"}}, None)
+    assert resp["statusCode"] == 200 and resp["headers"]["Cache-Control"] == "public, max-age=3600"
+
+
+def test_other_prefixes_keep_the_immutable_cache(monkeypatch):
+    monkeypatch.setattr(app, "fetch_source_bytes", lambda key: _synthetic_source())
+    resp = app.handler({"rawPath": "/product-images/a/detail.png", "queryStringParameters": {"w": "300"}}, None)
+    assert resp["headers"]["Cache-Control"] == "public, max-age=31536000, immutable"
