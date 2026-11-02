@@ -603,6 +603,13 @@ def list_existing_matches(conn) -> dict:
                 for row in cur.fetchall()}
 
 
+def _is_matched(existing: dict, product_id) -> bool:
+    """True when product_id's existing bowlerdepot_products row is 'matched'
+    (6fn retired path, 6fp current path: an 'ambiguous' result never
+    replaces it)."""
+    return (existing.get(str(product_id)) or {}).get("match_status") == "matched"
+
+
 def get_product_skus(conn, product_id) -> list:
     with conn.cursor() as cur:
         cur.execute(
@@ -641,8 +648,9 @@ def upsert_bowlerdepot_match(conn, product_id, bigcommerce_product_id, bigcommer
     'ambiguous' result overwrite a 'matched' row. The handler already
     skips that case before calling; this repeats it in the statement so a
     row written between the handler's read and this write (the link
-    script, an admin fix) is safe too. Current balls keep 018's plain
-    overwrite -- that's how a corrected re-match replaces a wrong one."""
+    script, an admin fix) is safe too. Since 6fp current balls pass it as
+    well: a 'matched' result still overwrites (018's corrected re-match),
+    only an 'ambiguous' one can't replace a 'matched' row."""
     guard = (
         "\n            where bowlerdepot_products.match_status <> 'matched' or excluded.match_status = 'matched'"
         if keep_matched else ""
@@ -731,6 +739,8 @@ def handler(event, context):
                   if row.get("match_status") in ("matched", "ambiguous")}
         for entry in coverage:
             if entry["product_id"] not in retired and entry["match"] is not None:
+                if entry["match"]["ambiguous"] and _is_matched(existing, entry["product_id"]):
+                    continue  # kept below (6fp), so its existing claim stands
                 claims[str(entry["product_id"])] = entry["match"]["bigcommerce_product_id"]
         # The one case this run doesn't fix by itself: a retired ball already
         # linked to a listing a CURRENT ball now matches too (e.g. a re-release
@@ -753,6 +763,7 @@ def handler(event, context):
                                 if entry["product_id"] in retired and entry["match"] is not None)
 
         not_yet_listed = 0
+        current_kept_matched = 0
         retired_counts = Counter()
         matched_pairs = []
         for entry in coverage:
@@ -775,14 +786,29 @@ def handler(event, context):
                 if others or retired_wants[bc_product_id] > 1:
                     retired_counts["contested"] += 1
                     continue
-                if match_status == "ambiguous" and (existing.get(str(pid)) or {}).get("match_status") == "matched":
+                if match_status == "ambiguous" and _is_matched(existing, pid):
                     retired_counts["kept_matched"] += 1
                     continue
                 upsert_bowlerdepot_match(conn, pid, bc_product_id, bc_sku, match_status, keep_matched=True)
                 retired_counts[match_status] += 1
                 continue  # match only: no spec-mismatch items for retired balls (6fn)
 
-            upsert_bowlerdepot_match(conn, pid, bc_product_id, bc_sku, match_status)
+            # Runbook 6fp: a current ball's 'matched' row is never downgraded
+            # by an 'ambiguous' result either. Al: "yes go ahead with 1-3"
+            # (2026-11-02) -- 33 rows (Hammer Raw, Tropical Surge, TZone...)
+            # were each confirmed by hand to their own listing, and before
+            # this the next morning's run would have rewritten every one back
+            # to 'ambiguous' (018's plain overwrite: most of them had been
+            # rewritten that very day). The kept row is a match like any
+            # other, so it still gets the spec check, against the listing it
+            # holds. A fresh EXACT match still replaces it -- that's 018's
+            # "corrected re-match" path, unchanged.
+            if match_status == "ambiguous" and _is_matched(existing, pid):
+                bc_product_id = existing[str(pid)]["bigcommerce_product_id"]
+                match_status = "matched"
+                current_kept_matched += 1
+            else:
+                upsert_bowlerdepot_match(conn, pid, bc_product_id, bc_sku, match_status, keep_matched=True)
 
             bc_product = next((p for p in bigcommerce_products if str(p["id"]) == bc_product_id), None)
             if bc_product is None or match_status == "ambiguous":
@@ -816,6 +842,7 @@ def handler(event, context):
             "retired_ambiguous_count": retired_counts["ambiguous"],
             "retired_contested_count": retired_counts["contested"],
             "retired_kept_matched_count": retired_counts["kept_matched"],
+            "current_kept_matched_count": current_kept_matched,
             "shared_with_retired_count": len(shared_with_retired),
         }),
     }

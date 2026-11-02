@@ -624,7 +624,7 @@ def test_handler_skips_retired_ball_whose_listing_is_hidden_or_disabled(monkeypa
 def test_handler_still_matches_current_ball_to_hidden_listing(monkeypatch):
     # Current balls keep their pre-6fn behavior; only retired ones are gated.
     calls = _run_handler(monkeypatch, [_bc(1, "Storm Phaze II", visible=False)], [_current("c1", "Storm", "Phaze II")])
-    assert calls["upserts"] == [("c1", "1", "matched", False)]
+    assert calls["upserts"] == [("c1", "1", "matched", True)]   # keep_matched for current balls too since 6fp
 
 
 def test_retired_match_prefers_visible_twin_over_earlier_hidden_duplicate():
@@ -679,7 +679,7 @@ def test_handler_retired_ball_never_takes_a_listing_another_ball_holds(monkeypat
     # drop bigcommerce_product_id from both, so the retired one stays out.
     bc = [_bc(5, "Motiv Ascend")]
     calls = _run_handler(monkeypatch, bc, [_current("c1", "Motiv", "Ascend"), _retired("r1", "Motiv", "Ascend")])
-    assert calls["upserts"] == [("c1", "5", "matched", False)]
+    assert calls["upserts"] == [("c1", "5", "matched", True)]
     assert calls["body"]["retired_contested_count"] == 1
 
 
@@ -701,7 +701,7 @@ def test_handler_warns_when_current_ball_matches_listing_a_retired_ball_holds(mo
     existing = {"r1": {"bigcommerce_product_id": "5", "match_status": "matched"}}
     calls = _run_handler(monkeypatch, [_bc(5, "Motiv Ascend")],
                          [_current("c1", "Motiv", "Ascend"), _retired("r1", "Motiv", "Ascend")], existing)
-    assert ("c1", "5", "matched", False) in calls["upserts"]
+    assert ("c1", "5", "matched", True) in calls["upserts"]
     assert all(u[0] != "r1" for u in calls["upserts"])   # the retired row is left alone
     assert calls["body"]["shared_with_retired_count"] == 1
 
@@ -715,3 +715,32 @@ def test_upsert_bowlerdepot_match_keep_matched_guard_in_sql():
     conn = _FakeConn()
     app.upsert_bowlerdepot_match(conn, "c1", "1", None, "ambiguous")
     assert "excluded.match_status = 'matched'" not in conn.store["sql"]
+
+
+# --- Runbook 6fp: a CURRENT ball's 'matched' row is never downgraded either ---
+# 33 ambiguous rows (Hammer Raw, Tropical Surge, TZone...) were confirmed by
+# hand on 2026-11-02; before this, the next daily run rewrote them back to
+# 'ambiguous' and they dropped out of the partner API again.
+
+def test_handler_never_downgrades_current_matched_row_to_ambiguous(monkeypatch):
+    bc = [_bc(4367, "Hammer Raw Black / Grey", sku="")]
+    existing = {"c1": {"bigcommerce_product_id": "4367", "match_status": "matched"}}
+    calls = _run_handler(monkeypatch, bc, [_current("c1", "Hammer", "Raw Hammer - Black / Grey")], existing)
+    assert calls["upserts"] == []
+    assert calls["body"]["current_kept_matched_count"] == 1
+    assert calls["sku_lookups"] == ["c1"]          # still spec-checked, against the listing it holds
+
+
+def test_handler_current_exact_match_still_replaces_matched_row(monkeypatch):
+    # 018's corrected re-match: an exact result overwrites a matched row.
+    existing = {"c1": {"bigcommerce_product_id": "9", "match_status": "matched"}}
+    calls = _run_handler(monkeypatch, [_bc(5, "Motiv Ascend")], [_current("c1", "Motiv", "Ascend")], existing)
+    assert calls["upserts"] == [("c1", "5", "matched", True)]
+
+
+def test_handler_current_ambiguous_still_overwrites_ambiguous_row(monkeypatch):
+    existing = {"c1": {"bigcommerce_product_id": "9", "match_status": "ambiguous"}}
+    calls = _run_handler(monkeypatch, [_bc(7, "Motiv Subzero Forge Bowling Ball")],
+                         [_current("c1", "Motiv", "Subzero Forge")], existing)
+    assert calls["upserts"] == [("c1", "7", "ambiguous", True)]
+    assert calls["body"]["current_kept_matched_count"] == 0

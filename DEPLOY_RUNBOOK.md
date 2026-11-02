@@ -22695,6 +22695,67 @@ run's numbers: 1,924 balls (1,680 retired), 234 retired matched, 7 ambiguous,
   - an article's "Shop this ball" button is pin red.
 - Spot-check a prerendered article with JavaScript off.
 
+### 6fp. Confirmed BowlerDepot matches stay matched for current balls too; 33 ambiguous rows confirmed (2026-11-02)
+
+The store-sync session (bowlerdepot-theme) audited the 525 live ball
+listings on bowlerdepot.com: 123 showed no BowlerIQ data, because the
+partner API hands out `bigcommerce_product_id` only for a `matched` row
+(6fg). Al: "yes go ahead with 1-3".
+
+**Why most of them didn't show.** 31 of the 37 "current ball, likely
+match" listings already had a `bowlerdepot_products` row on exactly the
+right listing, as `ambiguous` (names that differ slightly: "Raw Hammer -
+Black / Grey" vs "Hammer Raw Black / Grey", "TROPICAL SURGE TEAL-BLUE" vs
+"Tropical Surge Pearl Teal / Blue"). Confirming them by hand wouldn't
+have lasted: for current balls `bowlerdepot_reconciliation` overwrites
+the row every day (018's plain upsert), and most had been rewritten as
+`ambiguous` that morning. 6fn's `keep_matched` guard covered retired balls
+only.
+
+**`bowlerdepot_reconciliation`:** current balls now get the same rule.
+- An `ambiguous` result never replaces a `matched` row. The kept row
+  still gets the spec check, against the listing it holds, and the run's
+  body reports `current_kept_matched_count`.
+- A fresh exact (`matched`) result still overwrites, which is 018's
+  corrected re-match path.
+- `upsert_bowlerdepot_match` is called with `keep_matched=True` for every
+  ball, so the SQL guard covers a row written between the read and the
+  write too.
+- Tests: 3 new in `tests/test_bowlerdepot_reconciliation.py`, 2 updated
+  for `keep_matched=True` on current balls (51 pass).
+
+**Data, applied 2026-11-02:** every published `ambiguous` row whose listing
+no other row holds (33) set to `matched`, with `content_changed_at` bumped
+so `/v1/changes` resends the ball with its `bigcommerce_product_id`:
+- 26 current: Onyx Clear, Rhino Red/Black/Gold, TZone Black/Purple/Silver
+  and Scarlet/Gold/Black, Ebonite Viz-A-Ball, 6 Hammer Raw colorways,
+  Raptor Reign, Shadow Tank, 2 Ice Storm, 2 Mix, !Q Tour Sapphire, 7
+  Tropical Surge;
+- 7 retired: 3 Twist, White Dot Scarlet/Gold/Black, Hammer Effect, Hammer
+  Effect Tour, Mix Red/White/Navy.
+
+Price sources unchanged. Two Al rejected stay rejected (Raw Smoke/Blue/Gold
+4069, Tropical Surge Pink/Purple 622). Pending ones are still waiting in
+admin (the TZones, Ice Storms, Mix Lime/Royal/Custard, Ebonite Viz-A-Ball).
+
+**Deploy:** `sam build && sam deploy` (full build). It has to land before
+the next daily reconciliation run (`rate(1 day)`, last at 00:25 UTC), or
+that run rewrites most of the 33 back to `ambiguous`. If that happens,
+rerun the update below after the deploy. This deploy also ships 6fk's
+"only Storm publishes fragrance" partner-schema wording.
+
+```sql
+update bowlerdepot_products bdp set match_status = 'matched', last_synced_at = now()
+from products p where p.id = bdp.product_id and bdp.match_status = 'ambiguous' and p.published
+  and not exists (select 1 from bowlerdepot_products o where o.bigcommerce_product_id = bdp.bigcommerce_product_id and o.product_id <> bdp.product_id);
+```
+
+**Verify:**
+```bash
+aws logs tail /aws/lambda/bowling-scraper-bowlerdepot-reconciliation --since 1d | grep current_kept_matched
+psql -c "select count(*) from bowlerdepot_products bdp join products p on p.id = bdp.product_id where p.published and bdp.match_status = 'ambiguous'"   # 0 (or only new ones)
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
