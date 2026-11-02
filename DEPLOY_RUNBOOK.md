@@ -22653,17 +22653,18 @@ run's numbers: 1,924 balls (1,680 retired), 234 retired matched, 7 ambiguous,
 - **Tokens.** `tailwind.config.js` now uses the theme's palette: ink `#141C2E`, pin `#D21F3C` / pin-dark `#A8172F`, maple `#DDAE6E` / `#F4E6D0`, oil `#2B76A3`, go `#17804A`, paper `#F5F6F8`, slate `#586276`, line `#DCE1EA`. The fonts are Big Shoulders Display (headings, uppercase), Instrument Sans (body) and Spline Sans Mono (numbers). Corners are 4px for fields and buttons and 6px for boxes; rounded-lg/xl/2xl are capped at 6px.
   - The old token names (`paper`, `paper-border`, `muted`, `accent`, `secondary`, `alert`) are kept but now point at the new values, so existing classes restyle themselves.
   - `index.css` swaps the Cabin/Space Grotesk import for the three new fonts and sets white pages. Underlined links now use a 2px maple underline that turns ink on hover, the same as the store's `bd-prose`. Links that weren't underlined before stay plain.
-- **Header (`components/Nav.tsx`).** Copied from the theme's `common/header.html` and `components/header/*`:
-  - an ink store bar ("Find your pro shop", shipping promise, store locations, gift certificates);
-  - a white sticky bar with the logo, a search box that submits to the store's `search.php`, and Account and Cart links;
-  - the store's category and page menu, with "Learn" in pin red as the current page;
-  - a slide-in `<dialog>` menu on phones.
-  - Learn's own tabs (its categories plus Ball Motion Plotter) are a fourth row, on paper, with "LEARN" in display type. On phones the row scrolls sideways and keeps the current tab in view.
-  - The store menu's links are copied by hand into `components/storeLinks.ts`, because the theme builds them from BigCommerce at render time. **Update that file when a store category or web page changes.**
-- **Footer (new `components/Footer.tsx`).** Copied from the theme's `common/footer.html` and `components/footer/*`: ink background, lane-arrow top edge, "Your pro shop" pointing to the store locations, the pro shop services tiles, and Shop / Learn & tools / Help & info columns.
-  - The wording comes from the theme's `lang/en.json`.
-  - Left out: the saved-store card, which needs the store picker on bowlerdepot.com; the newsletter form, because the BigCommerce endpoint is same-site; and the payment and social icons.
-  - The "not affiliated with any manufacturer" line stays.
+- **Standalone, same design.** A first pass copied the store's header, menu and footer. Al reviewed it: "it was a stand alone site", and chose "Standalone, same design". So Learn keeps its own header and footer in the store's design language, with one link back to the store. No store menu is copied, so nothing has to be kept in sync with the theme.
+- **Header (`components/Nav.tsx`).**
+  - The Bowler Depot logo, a maple rule and "LEARN" in display type, linking to Learn's home.
+  - Learn's tabs: its top-level categories plus Ball Motion Plotter, in uppercase display type, with a pin-red underline on the current tab.
+  - "Shop Bowler Depot →", an outlined ink button to https://bowlerdepot.com ("Shop →" on phones).
+  - On phones the tabs are a second row that scrolls sideways and keeps the current tab in view.
+- **Footer (new `components/Footer.tsx`).**
+  - Ink background with the lane-arrow top edge.
+  - The logo and "LEARN", a one-line description, and links to Ball reviews and the Ball motion plotter.
+  - "Shop Bowler Depot →".
+  - The copyright and the "not affiliated with any manufacturer" line.
+- `components/storeLinks.ts` holds only the store URL and the logo. Links to buy a specific ball still come from each product's `ecommerce_url`, as before ("Shop this ball", "Shop" in the plotter panels).
 - **Pages.**
   - Page h1s and section h2s use uppercase Big Shoulders. Card and list titles use Instrument Sans bold.
   - Dark article and video heroes use ink instead of neutral-900.
@@ -22685,8 +22686,8 @@ run's numbers: 1,924 balls (1,680 retired), 234 retired matched, 7 ambiguous,
 
 **Verify.**
 - learn.bowlerdepot.com at desktop width and at 375px:
-  - the header matches the store's, with Learn lit in the menu;
-  - the Learn tabs work;
+  - the header shows the logo with LEARN, Learn's tabs and "Shop Bowler Depot →";
+  - the tabs work and the current one is underlined in pin red;
   - the footer has the lane-arrow edge;
   - the plotter has a white grid, mono axis numbers and a maple halo on the selected ball;
   - an article's "Shop this ball" button is pin red.
