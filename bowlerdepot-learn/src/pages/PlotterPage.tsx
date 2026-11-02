@@ -255,7 +255,7 @@ export default function PlotterPage() {
     <div>
       <header className="mb-6 max-w-3xl">
         <p className="text-xs font-semibold uppercase tracking-wide text-muted">Tools</p>
-        <h1 className="font-display text-3xl font-semibold text-ink">Ball Motion Plotter</h1>
+        <h1 className="font-display text-4xl font-black uppercase leading-[.92] md:text-5xl text-ink">Ball Motion Plotter</h1>
         <p className="mt-2 text-muted">
           Every current ball on one chart: how much oil it handles (across) and how sharply it moves on the backend (up).
           Pick a ball to see similar balls from other brands and what to try if you want a bit more or less in any
@@ -414,7 +414,7 @@ export default function PlotterPage() {
                 </div>
               ) : (
                 <div className="rounded-xl border border-dashed border-paper-border p-5 text-sm text-muted">
-                  <p className="font-display text-base font-semibold text-ink">Pick a ball</p>
+                  <p className="text-base font-bold text-ink">Pick a ball</p>
                   <p className="mt-1">
                     Tap any ball on the chart, or search above, to see similar balls from other brands and the nearest
                     step toward more oil, less oil, a sharper move, or a smoother one.

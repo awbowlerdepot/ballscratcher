@@ -1,22 +1,21 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useLocation, useSearchParams } from "react-router-dom";
 import { categoryAncestors, getCategories, topLevelCategories } from "../api/client";
 import type { Category } from "../api/types";
+import { LOGO_URL, STORE_URL } from "./storeLinks";
 
-// Real BowlerDepot logo/wordmark asset, pulled live off bowlerdepot.com
-// (2026-09-05). Editorial Magazine theme's header is warm-white/paper,
-// not black -- the asset is dark-on-transparent, so unlike the site's
-// old black header it needs NO invert filter here to stay legible.
-const LOGO_URL =
-  "https://cdn11.bigcommerce.com/s-83dch55a9c/images/stencil/201x75/bowlerdepot_logo_website_logo_website_logo_1566417769__86141.original.png";
-
-// Al: "two-tier masthead is probably best" (picked over a minimal
-// single-row header and an editorial-tabs single row, after being shown
-// all three as a static HTML mockup). Thin utility bar up top (just the
-// storefront link -- "how do we best create a user experience that is
-// not disjointed" is still the core reasoning, just moved off the main
-// row) plus a bigger, centered logo lockup below, with an optional
-// category-tab row underneath that.
+// Learn's header in the new Bowler Depot design (2026-11-01). Learn is a
+// standalone site with the store's design language, not a copy of the
+// store's header: Al, reviewing a first pass that mirrored bowlerdepot.com's
+// header and menu, "it was a stand alone site", then chose "Standalone,
+// same design". So: the Bowler Depot logo with "Learn" in display type,
+// Learn's own sections (its top-level categories as tabs, plus the Ball
+// Motion Plotter), and one link back to the store. It replaces the
+// 2026-09 "two-tier masthead" (utility bar plus a logo with "| LEARN"),
+// which was styled after the old storefront.
+//
+// Phone first: logo, wordmark and the store link share one row; the tabs
+// are a second row that scrolls sideways and keeps the current tab in view.
 export default function Nav() {
   const [searchParams] = useSearchParams();
 
@@ -62,62 +61,77 @@ export default function Nav() {
       ? undefined
       : tabs[0]?.id;
 
+  // On a phone the tab row scrolls sideways; bring the current tab into
+  // view (sideways only -- scrollIntoView would also move the page).
+  const tabRow = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const row = tabRow.current;
+    const current = row?.querySelector<HTMLElement>('[aria-current="page"]');
+    if (!row || !current) return;
+    if (current.offsetLeft + current.offsetWidth > row.scrollLeft + row.clientWidth || current.offsetLeft < row.scrollLeft) {
+      row.scrollLeft = current.offsetLeft - 16;
+    }
+  }, [pathname, activeCategoryId, tabs.length]);
+
+  const learnTabs = [
+    ...tabs.map((category) => ({
+      key: category.id,
+      to: `/?category_id=${category.id}`,
+      label: category.name,
+      active: category.id === activeCategoryId,
+    })),
+    { key: "plotter", to: "/plotter", label: "Ball Motion Plotter", active: onPlotterPage },
+  ];
+
   return (
-    <header className="sticky top-0 z-10 border-b border-paper-border bg-paper/95 backdrop-blur-sm">
-      <div className="bg-secondary">
-        {/* Al: "the arrow is missing from the cta in the top bar. the font
-            in the top bar is also a bit thin" -- restored the trailing
-            arrow from the original mockup (dropped when the label
-            changed to "Shop bowlerdepot.com") and bumped font-semibold
-            to font-bold at a hair larger size. */}
-        <div className="mx-auto max-w-[75rem] px-6 py-1.5 text-right md:px-8">
+    <>
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-2 focus:top-2 focus:z-50 focus:rounded focus:bg-white focus:px-3 focus:py-2"
+      >
+        Skip to main content
+      </a>
+      <header className="sticky top-0 z-40 border-b border-line bg-white">
+        <div className="mx-auto flex max-w-[75rem] flex-wrap items-center gap-x-6 px-4 md:flex-nowrap md:px-6">
+          <Link to="/" className="flex shrink-0 items-center gap-2.5 py-3 no-underline" aria-label="Bowler Depot Learn, home">
+            <img src={LOGO_URL} alt="" className="block h-9 w-auto md:h-11" />
+            <span className="border-l-2 border-maple pl-2.5 font-display text-[28px] font-black uppercase leading-none text-ink md:text-[32px]">
+              Learn
+            </span>
+          </Link>
+
           <a
-            href="https://bowlerdepot.com"
-            className="text-sm font-bold tracking-wide text-white/85 hover:text-white hover:no-underline"
+            href={STORE_URL}
+            className="ml-auto inline-flex h-10 shrink-0 items-center gap-1 rounded border-[1.5px] border-ink px-3 text-sm font-bold text-ink no-underline hover:bg-ink hover:text-white md:order-last md:ml-0"
           >
-            Shop bowlerdepot.com &rarr;
+            <span className="hidden sm:inline">Shop Bowler Depot</span>
+            <span className="sm:hidden">Shop</span>
+            <span aria-hidden="true">&rarr;</span>
           </a>
+
+          <nav
+            ref={tabRow}
+            aria-label="Learn"
+            className="relative -mx-4 w-[calc(100%+2rem)] overflow-x-auto border-t border-line [scrollbar-width:none] md:mx-0 md:w-auto md:flex-1 md:self-stretch md:border-t-0"
+          >
+            <ul className="m-0 flex h-full list-none gap-1 space-y-0 p-0 px-2 md:px-0">
+              {learnTabs.map((tab) => (
+                <li key={tab.key} className="flex">
+                  <Link
+                    to={tab.to}
+                    aria-current={tab.active ? "page" : undefined}
+                    className={`flex items-center whitespace-nowrap border-b-2 px-3 py-3 font-display text-[17px] font-extrabold uppercase leading-none tracking-wide no-underline ${
+                      tab.active ? "border-pin text-ink" : "border-transparent text-slate hover:border-ink hover:text-ink"
+                    }`}
+                  >
+                    {tab.label}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          </nav>
         </div>
-      </div>
-
-      {/* Al: "can we left justify the logo" -- was justify-center. */}
-      <div className="mx-auto flex max-w-[75rem] justify-start px-6 py-5 md:px-8">
-        {/* Al: "logo is a bit small. learn should be the same height as
-            the logo" -- bumped the logo from h-8 (32px) to h-11 (44px)
-            and scaled "| LEARN" up from text-lg to text-2xl to match. */}
-        <a href="https://bowlerdepot.com" className="flex items-center gap-2 hover:no-underline">
-          <img src={LOGO_URL} alt="The Bowler Depot" className="h-11 w-auto" />
-          <span className="font-display text-2xl font-semibold tracking-wide text-ink">
-            | LEARN
-          </span>
-        </a>
-      </div>
-
-      {tabs.length > 0 ? (
-        <nav className="border-t border-paper-border">
-          <div className="mx-auto flex max-w-[75rem] justify-center gap-8 px-6 py-3 text-xs font-semibold uppercase tracking-wide md:px-8">
-            {tabs.map((category) => (
-              <Link
-                key={category.id}
-                to={`/?category_id=${category.id}`}
-                className={
-                  category.id === activeCategoryId
-                    ? "text-ink hover:no-underline"
-                    : "text-muted hover:text-ink hover:no-underline"
-                }
-              >
-                {category.name}
-              </Link>
-            ))}
-            <Link
-              to="/plotter"
-              className={onPlotterPage ? "text-ink hover:no-underline" : "text-muted hover:text-ink hover:no-underline"}
-            >
-              Ball Motion Plotter
-            </Link>
-          </div>
-        </nav>
-      ) : null}
-    </header>
+      </header>
+    </>
   );
 }

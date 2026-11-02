@@ -94,7 +94,7 @@ export default function PlotterArticlePanel({ productId }: { productId: string }
     <section className="mb-10 rounded-xl border border-paper-border bg-white p-5">
       <div className="mb-4 flex flex-wrap items-end justify-between gap-2">
         <div>
-          <h2 className="font-display text-xl font-semibold text-ink">
+          <h2 className="font-display text-3xl font-extrabold uppercase leading-[.95] text-ink">
             {retired ? "Current replacements" : "Where this ball sits"}
           </h2>
           <p className="text-sm text-muted">

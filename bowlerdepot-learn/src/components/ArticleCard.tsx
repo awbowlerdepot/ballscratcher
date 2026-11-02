@@ -37,7 +37,7 @@ export default function ArticleCard({ article }: { article: ArticleCardType }) {
           />
         ) : (
           <div
-            className="aspect-[4/3] w-full bg-gradient-to-br from-secondary to-accent"
+            className="aspect-[4/3] w-full bg-gradient-to-br from-ink to-[#2a3550]"
             aria-hidden="true"
           />
         )}
@@ -62,7 +62,7 @@ export default function ArticleCard({ article }: { article: ArticleCardType }) {
         </div>
         <Link
           to={href}
-          className="font-display text-lg font-semibold leading-snug text-ink no-underline group-hover:text-accent"
+          className="text-lg font-bold leading-snug text-ink no-underline group-hover:text-pin-dark"
         >
           {article.title}
         </Link>

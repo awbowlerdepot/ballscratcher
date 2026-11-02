@@ -167,7 +167,7 @@ export default function LearnIndexPage() {
       {eyebrow ? (
         <p className="mb-1 text-[11px] font-semibold uppercase tracking-widest text-muted">{eyebrow}</p>
       ) : null}
-      <h1 className="mb-6 font-display text-3xl font-semibold text-ink">{category?.name ?? "Articles"}</h1>
+      <h1 className="mb-6 font-display text-4xl font-black uppercase leading-[.92] md:text-5xl text-ink">{category?.name ?? "Articles"}</h1>
 
       {chipParent && chips.length > 0 ? (
         <div className="mb-6 flex flex-wrap gap-2">
