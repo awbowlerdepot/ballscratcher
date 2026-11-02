@@ -434,11 +434,17 @@ def _bag_tier(c: dict) -> int:
 # x 10 on every Storm bag, 2026-11-02), so these are typical sizes by type,
 # matched on the store category path plus the name, first match wins.
 # Rollers are photographed with the handle up, so they include it.
+# Calibrated on Al's rule for the Rolling Thunder 3 Ball Roller: "the ball
+# should [be] around 1/3 the height of the white part of the bag" -- the
+# body is ~70% of the photographed height with the handle up, so 36"
+# overall puts an 8.5" ball at ~1/3 of the body (45" made it "two small").
+# The other rollers and the 3-ball tote are scaled the same way (a ball is
+# ~1/N of an N-ball bag's long side).
 COMPANION_INCHES = [
-    (re.compile(r"\b([3-6] ball|triple|three ball)\b.*roller|roller.*\b([3-6] ball|triple)\b"), 45),
-    (re.compile(r"\b(2 ball|double)\b.*roller|roller.*\b(2 ball|double)\b"), 40),
-    (re.compile(r"roller"), 30),
-    (re.compile(r"\b([3-6] ball|triple|three ball)\b"), 30),       # 3-ball totes lie flat: ~30" long
+    (re.compile(r"\b([3-6] ball|triple|three ball)\b.*roller|roller.*\b([3-6] ball|triple)\b"), 36),
+    (re.compile(r"\b(2 ball|double)\b.*roller|roller.*\b(2 ball|double)\b"), 30),
+    (re.compile(r"roller"), 24),
+    (re.compile(r"\b([3-6] ball|triple|three ball)\b"), 27),       # 3-ball totes lie flat: three balls long
     (re.compile(r"\b(2 ball|double)\b"), 18),
     (re.compile(r"backpack"), 20),
     (re.compile(r"shoe bag"), 14),

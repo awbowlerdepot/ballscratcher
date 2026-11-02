@@ -301,10 +301,10 @@ def test_cutout_uses_remove_bg_for_flat_photos_and_falls_back_on_failure():
 def test_companion_inches_by_type():
     def c(name, cat="", kind="bag"):
         return {"name": name, "kind": kind, "categories": [cat]}
-    assert brand_art.companion_inches(c("Storm Rolling Thunder 3 Ball Roller", "bags > roller bags > 3 ball rollers")) == 45
-    assert brand_art.companion_inches(c("Storm Streamline 2 Ball Roller", "bags > roller bags > 2 ball rollers")) == 40
-    assert brand_art.companion_inches(c("Storm Rascal 1 Ball Roller", "bags > roller bags > 1 ball rollers")) == 30
-    assert brand_art.companion_inches(c("Storm 3 Ball Travel Tote Pro", "bags > tote bags > 3 ball totes")) == 30
+    assert brand_art.companion_inches(c("Storm Rolling Thunder 3 Ball Roller", "bags > roller bags > 3 ball rollers")) == 36
+    assert brand_art.companion_inches(c("Storm Streamline 2 Ball Roller", "bags > roller bags > 2 ball rollers")) == 30
+    assert brand_art.companion_inches(c("Storm Rascal 1 Ball Roller", "bags > roller bags > 1 ball rollers")) == 24
+    assert brand_art.companion_inches(c("Storm 3 Ball Travel Tote Pro", "bags > tote bags > 3 ball totes")) == 27
     assert brand_art.companion_inches(c("Storm Solo Single Tote", "bags > tote bags > 1 ball totes")) == 13
     assert brand_art.companion_inches(c("Dexter SST 8", "shoes > mens", "shoes")) == 12
     assert brand_art.companion_inches(c("Storm Wrist Support", "accessories > gloves", "accessory")) == 9

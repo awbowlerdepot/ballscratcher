@@ -22872,11 +22872,17 @@ scrapers.
     - **True scale.** Al: "size ratios are way off". The ball beside a
       companion is drawn at 8.5" against the product's real size. That
       size comes from `companion_inches` (typical sizes by type: 3-ball
-      roller 45" with its handle up, 2-ball roller 40", 1-ball roller 30",
-      3-ball tote 30", 1-ball tote 13", shoes 12", gloves 9"), because
+      roller 36" with its handle up, 2-ball roller 30", 1-ball roller 24",
+      3-ball tote 27", 1-ball tote 13", shoes 12", gloves 9"), because
       BigCommerce's own dimensions are placeholders (10×10×10 on every
       Storm bag). Balls in a line or lineup image are all drawn the same
       size.
+    - Calibration: the first try (a 45" roller) was "two small". Al: "that
+      is a 3 ball bag... the ball should [be] around 1/3 the height of the
+      white part of the bag". The body is about 70% of the photographed
+      height with the handle up, so 36" overall gives a ball about 0.31 of
+      the body (measured on the render). The other bags are scaled the same
+      way.
     - If Bowler Depot stocks nothing else from the brand, the slot is the
       3rd newest ball.
 - Hero types, per Al:
