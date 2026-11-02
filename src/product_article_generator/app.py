@@ -3992,7 +3992,16 @@ def run_brand_art_job(conn, event, *, s3_client, bedrock_client, gemini_auth, ge
                                         aspect, session=session, image_size="2K")
             same, note = check_logo_matches(raw, png, bedrock_client)
             if same:
-                same, note = logo_size_ok(logo_width_ratio(raw, detect), png, detect, *PRODUCT_SHOT_BALL_RANGE)
+                # PRODUCT_SHOT_BALL_RANGE is the ball's share of the frame
+                # WIDTH for a square shot. A hero is wider than it is tall,
+                # so the same framing is a smaller share of the width (a
+                # ball filling most of a 16:9 frame's height is ~46% of its
+                # width -- every 16:9 attempt failed on this on 2026-11-02).
+                # Scale the range by height/width; the logo-to-ball
+                # proportion check inside logo_size_ok is unchanged.
+                w, h = (int(x) for x in aspect.split(":"))
+                lo, hi = (r * h / w for r in PRODUCT_SHOT_BALL_RANGE)
+                same, note = logo_size_ok(logo_width_ratio(raw, detect), png, detect, lo, hi)
             logger.info("brand-art hero for %s (%s): logo ok=%s (%s)", product_id, aspect, same, note)
             return png if same else None
 

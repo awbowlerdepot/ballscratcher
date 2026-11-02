@@ -265,3 +265,14 @@ def test_backdrop_prompt_bans_text_and_names_the_palette():
     theme = brand_art.HERO_BACKDROP_THEME.format(**PALETTE)
     assert "#191c1b" in theme and "#009d90" in theme
     assert "no text" in brand_art.HERO_NO_TEXT
+
+
+def test_pick_companion_prefers_roller_bags_then_bags_then_shoes_and_honors_a_pin():
+    c = [{"bigcommerce_product_id": 1, "name": "Storm Glove", "kind": "accessory"},
+         {"bigcommerce_product_id": 2, "name": "Storm 1 Ball Spare Kit", "kind": "bag"},
+         {"bigcommerce_product_id": 3, "name": "Storm Shoe", "kind": "shoes"},
+         {"bigcommerce_product_id": 4, "name": "Storm Tournament 3 Ball Roller", "kind": "bag"}]
+    assert brand_art.pick_companion(c, {})["bigcommerce_product_id"] == 4
+    assert brand_art.pick_companion(c[:3], {})["bigcommerce_product_id"] == 2
+    assert brand_art.pick_companion(c, {"bigcommerce_product_id": 3})["bigcommerce_product_id"] == 3
+    assert brand_art.pick_companion(c, {"bigcommerce_product_id": 99})["bigcommerce_product_id"] == 4  # sold out pin

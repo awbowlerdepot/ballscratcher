@@ -22856,8 +22856,13 @@ scrapers.
   - hero-1 and hero-2 are the newest released balls (release date today or
     earlier), with balls Bowler Depot has in stock first;
   - hero-3 is the newest stocked non-ball product (bag, shoes, accessory),
-    with the newest ball beside it. If Bowler Depot stocks nothing else
-    from the brand, it's the 3rd newest ball.
+    with the newest ball beside it. The product is ranked bags first
+    (roller bags ahead of other bags, after Al's "a new Storm ball with a
+    Storm roller bag"), then shoes, then accessories, newest within each.
+    A `bigcommerce_product_id` on the hero pins one while it's stocked.
+    The first render picked "Storm 1 Ball Spare Kit" by date alone. If
+    Bowler Depot stocks nothing else from the brand, the slot is the 3rd
+    newest ball.
 - Hero types, per Al:
   - **product**: one product in focus. A ball product hero uses the
     existing Gemini product-shot pipeline (`build_gemini_scene_prompt`, the
@@ -22865,6 +22870,10 @@ scrapers.
     brand palette as the backdrop and a no-text rule. If any attempt fails
     the checks, both sizes are the composite, so a slide's two sizes always
     match.
+    The ball-size part of the logo-size check is scaled by the frame's
+    height/width, because `PRODUCT_SHOT_BALL_RANGE` is a share of a
+    square's width. On 2026-11-02 every 16:9 attempt failed with "ball only
+    46% of the frame width" while its logo matched.
   - **lineup**: several products together, composited.
   - Non-ball products are always composited from their BigCommerce photos
     ("real product photos only").
@@ -22938,7 +22947,7 @@ psql -c "select status, trigger, started_at, detail -> 'slots' from task_runs or
 ```
 
 **Tests:**
-- `tests/test_brand_art.py` (19): compositing, cut-outs, assign-rule
+- `tests/test_brand_art.py` (20): compositing, cut-outs, assign-rule
   listing match (colorway pages, other brands on the same site), stock,
   companions, slot planning and hero picks, which trigger fired, and the
   Gemini fallback;

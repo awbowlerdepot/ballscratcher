@@ -398,6 +398,25 @@ def stocked_companions(catalog: list, roots: dict) -> list:
     return sorted(out, key=key, reverse=True)
 
 
+COMPANION_KIND_ORDER = ("bag", "shoes", "accessory", "apparel")
+
+
+def pick_companion(companions: list, hero: dict) -> dict:
+    """The non-ball product a companion hero features. A pinned
+    bigcommerce_product_id (hero["bigcommerce_product_id"]) wins while it's
+    stocked. Otherwise bags first, then shoes, then accessories and
+    apparel ("bag first, then shoes, then accessories", as scoped), roller
+    bags ahead of other bags (Al's example: "a new Storm ball with a Storm
+    roller bag"), newest listing first within each. companions is already
+    newest-first, and sorted() is stable."""
+    pinned = hero.get("bigcommerce_product_id")
+    for c in companions:
+        if pinned and c["bigcommerce_product_id"] == pinned:
+            return c
+    return sorted(companions, key=lambda c: (COMPANION_KIND_ORDER.index(c["kind"]),
+                                             0 if c["kind"] == "bag" and "roller" in c["name"].lower() else 1))[0]
+
+
 def stocked_bc_ids(catalog: list) -> set:
     return {p["id"] for p in catalog if in_stock(p)}
 
@@ -473,7 +492,7 @@ def plan_slots(task: dict, balls: list, lines: list, companions: list, stocked: 
         elif h.get("pick") == "newest_companion" and companions and preferred:
             # "a new Storm ball with a Storm roller bag": the ball beside the
             # companion is the brand's newest, even if hero-1 features it too.
-            c = companions[0]
+            c = pick_companion(companions, h)
             items = [{"product_id": None, "bigcommerce_product_id": c["bigcommerce_product_id"], "name": c["name"],
                       "kind": c["kind"], "photos": [c["photo"]]}, _ball_item(preferred[0])]
         else:
