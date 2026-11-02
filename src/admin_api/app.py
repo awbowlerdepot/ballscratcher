@@ -595,6 +595,26 @@ def update_product_image(product_id: str, image_id: str, body: ImageUpdateReques
         conn.close()
 
 
+class StatusOverrideRequest(BaseModel):
+    status: Optional[Literal["current", "retired"]] = None
+    note: Optional[str] = None
+
+
+@app.patch("/products/{product_id}/status-override")
+def set_status_override(product_id: str, body: StatusOverrideRequest):
+    # Runbook 6fs (migration 059): a status that re-scrapes can't flip.
+    # status null clears the override.
+    conn = service.get_db_connection()
+    try:
+        return service.set_status_override(conn, product_id, body.status, body.note)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
+
+
 @app.patch("/products/{product_id}/plotter-position")
 def set_plotter_position(product_id: str, body: PlotterPositionRequest):
     # Writes the AUTHORITATIVE oil/motion chart position (migration 011,

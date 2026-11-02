@@ -186,6 +186,15 @@ def execute_update_plan(cur, product_id: str, plan: dict) -> None:
             f"where product_id = %s and weight_lbs = %s",
             (plan["value"], product_id, plan["where"]["weight_lbs"]),
         )
+    elif plan["column"] == "status":
+        # Runbook 6fs: a status a person approves (bowwwl_cross_check's
+        # 'retired' proposals, 6fd) is an override, or the next re-scrape
+        # would flip it straight back.
+        cur.execute(
+            "update products set status = %s, status_override = %s, status_override_at = now(), "
+            "status_override_note = 'approved in the review queue', updated_at = now() where id = %s",
+            (plan["value"], plan["value"], product_id),
+        )
     else:
         cur.execute(
             f"update products set {plan['column']} = %s, updated_at = now() where id = %s",
@@ -7523,3 +7532,35 @@ def remove_ball_from_line(conn, line_id: str, product_id: str) -> dict:
             raise LookupError("That ball isn't in that line")
     conn.commit()
     return {"ok": True}
+
+
+# --- Status override (migration 059, runbook 6fs) ---------------------------
+# Al, on Storm's Identity balls: "identity are discontinued limited
+# releases" -- but Storm's site still lists them as current, so a re-scrape
+# would undo a hand-set 'retired'. status_override makes a person's call
+# stick (059's trigger keeps status equal to it).
+
+def set_status_override(conn, product_id: str, status, note: str = None) -> dict:
+    """PATCH /products/{id}/status-override: status 'current'/'retired' sets
+    the override (and status); None clears it, so the scrapers decide again
+    from the next scrape (status itself is left as it is until then)."""
+    if status is not None and status not in ("current", "retired"):
+        raise ValueError("status must be 'current', 'retired' or null")
+    with conn.cursor() as cur:
+        if status is None:
+            cur.execute("""
+                update products set status_override = null, status_override_note = null, status_override_at = null,
+                       updated_at = now()
+                where id::text = %s returning status::text, status_override::text
+            """, (product_id,))
+        else:
+            cur.execute("""
+                update products set status = %s, status_override = %s, status_override_note = %s,
+                       status_override_at = now(), updated_at = now()
+                where id::text = %s returning status::text, status_override::text
+            """, (status, status, (note or "").strip()[:300] or None, product_id))
+        row = cur.fetchone()
+        if not row:
+            raise LookupError("No product with that id")
+    conn.commit()
+    return {"product_id": product_id, "status": row[0], "status_override": row[1]}

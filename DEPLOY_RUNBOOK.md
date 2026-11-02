@@ -23058,6 +23058,66 @@ psql -c "select p.name, r.proposed_value from review_queue r join products p on 
 flag settling, and the Storm ball-type name patterns against the names
 Al listed.
 
+### 6fs. Manual status override: a person's current/retired sticks through re-scrapes (2026-11-02)
+
+Al, on Storm's Identity and Identity B/C/P: "identity are discontinued
+limited releases". Then, choosing between an override and leaving them
+current until Storm archives the pages: "yes do option 1".
+
+**Why it was needed.** Status comes from the brand's own site.
+`commercebuild_product_scraper.classify_product_status` reads the
+breadcrumb ("Bowling Balls" means current, "Bowling Balls Archive" means
+retired), and stormbowling.com still files both Identity pages as current.
+A hand-set `retired` would have lasted until Sunday's full re-scrape (6dx).
+The same was true of every scraper family, and of a bowwwl_cross_check
+'retired' proposal approved in the review queue (6fd).
+
+**Migration 059** (`059_products_status_override.sql`):
+- `products.status_override` (`product_status`, null by default),
+  `status_override_note` and `status_override_at`.
+- Trigger `products_a0_status_override`, BEFORE INSERT OR UPDATE: when the
+  override is set, `status` is forced to it on every write, so no scraper
+  can change it.
+- The trigger runs first of the BEFORE triggers on `products` (they run
+  alphabetically):
+  - 050's publish-retired trigger sees the final status;
+  - 044's change-feed bump doesn't count a scrape's attempted flip as a
+    change.
+- One trigger rather than five scraper changes, the same reasoning as 050.
+
+**Admin:**
+- `PATCH /products/{id}/status-override` with `{"status": "current" |
+  "retired" | null, "note"}`. Null clears the override, and the scrapers
+  decide again from the next scrape.
+- The product page has a "Status: scrapers decide / Always current / Always
+  retired" select next to the status badge.
+- Approving a `status` review item now sets the override too
+  (`execute_update_plan`), so an approved bowwwl "Discontinued" can't be
+  scraped back.
+
+**Applied:** Identity and Identity B/C/P set to `retired` with the note
+"Al: discontinued limited releases". See the 6fr follow-up below for what
+that does to their brand-line flags. Being retired drops them out of
+brand_art's current balls and out of the review queue's scope.
+
+**Deploy order:** run the migration first. The new admin code writes
+`status_override`, so deploying it before the column exists would break
+status approvals.
+```bash
+psql -v ON_ERROR_STOP=1 -1 -f db/migrations/059_products_status_override.sql
+sam build && sam deploy
+```
+
+**Verify:**
+```bash
+psql -c "select name, status, status_override, status_override_note from products where status_override is not null"
+psql -c "begin; update products set status = 'current' where name = 'Identity' and status_override = 'retired' returning status; rollback;"   # returns retired
+```
+
+**Tests:** 4 new in `tests/test_admin_api_service.py` (465): an approval
+sets the override, other fields still use single-column updates, set and
+clear, and bad status / unknown product.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

@@ -219,6 +219,15 @@ export function getProduct(id: string): Promise<ProductDetail> {
   return apiGet<ProductDetail>(`/products/${encodeURIComponent(id)}`);
 }
 
+// Runbook 6fs: status that re-scrapes can't flip; null clears it.
+export function setProductStatusOverride(
+  id: string,
+  status: "current" | "retired" | null,
+  note?: string,
+): Promise<{ product_id: string; status: string; status_override: string | null }> {
+  return apiPatch(`/products/${encodeURIComponent(id)}/status-override`, { status, note });
+}
+
 export function setProductPublished(id: string, published: boolean): Promise<SetPublishedResult> {
   return apiPatch(`/products/${encodeURIComponent(id)}/published`, { published });
 }

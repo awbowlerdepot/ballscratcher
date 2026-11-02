@@ -8625,3 +8625,67 @@ def test_review_item_can_retire_a_ball_but_only_with_a_real_status():
     import pytest
     with pytest.raises(ValueError):
         service.build_update_plan("status", "discontinued")
+
+
+# --- Runbook 6fs: status override (migration 059) -----------------------------
+
+class _RecordingCursor:
+    def __init__(self, row=("retired", "retired")):
+        self.sql, self.row = [], row
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def execute(self, q, params=()):
+        self.sql.append((" ".join(q.split()), params))
+
+    def fetchone(self):
+        return self.row
+
+
+class _RecordingConn:
+    def __init__(self, cur):
+        self.cur, self.committed = cur, False
+
+    def cursor(self):
+        return self.cur
+
+    def commit(self):
+        self.committed = True
+
+
+def test_approving_a_status_review_item_sets_the_override_too():
+    # Al: "identity are discontinued limited releases" -- a person's
+    # 'retired' must survive the next re-scrape, which reads the brand site.
+    cur = _RecordingCursor()
+    service.execute_update_plan(cur, "p1", service.build_update_plan("status", "retired"))
+    q, params = cur.sql[0]
+    assert "status_override = %s" in q and params == ("retired", "retired", "p1")
+
+
+def test_other_product_fields_are_unchanged_single_column_updates():
+    cur = _RecordingCursor()
+    service.execute_update_plan(cur, "p1", service.build_update_plan("color", "Teal"))
+    assert cur.sql[0] == ("update products set color = %s, updated_at = now() where id = %s", ("Teal", "p1"))
+
+
+def test_set_status_override_sets_and_clears():
+    cur = _RecordingCursor()
+    conn = _RecordingConn(cur)
+    out = service.set_status_override(conn, "p1", "retired", "discontinued limited release")
+    assert out == {"product_id": "p1", "status": "retired", "status_override": "retired"} and conn.committed
+    assert cur.sql[0][1] == ("retired", "retired", "discontinued limited release", "p1")
+    cur = _RecordingCursor(row=("retired", None))
+    service.set_status_override(_RecordingConn(cur), "p1", None)
+    assert "status_override = null" in cur.sql[0][0]
+
+
+def test_set_status_override_rejects_bad_status_and_unknown_product():
+    import pytest
+    with pytest.raises(ValueError):
+        service.set_status_override(_RecordingConn(_RecordingCursor()), "p1", "archived")
+    with pytest.raises(LookupError):
+        service.set_status_override(_RecordingConn(_RecordingCursor(row=None)), "p1", "retired")

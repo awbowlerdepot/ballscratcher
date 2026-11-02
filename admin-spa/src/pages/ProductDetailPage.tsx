@@ -38,6 +38,7 @@ import {
   selectArticleImageCandidate,
   setArticleBigcommerceSync,
   setProductPublished,
+  setProductStatusOverride,
   syncArticleNow,
   updateProductImage,
 } from "../api/client";
@@ -405,6 +406,22 @@ export default function ProductDetailPage() {
     { name: "skus", label: `SKUs & Stock (${product.skus.length})` },
     { name: "raw", label: "Raw Data" },
   ];
+
+  // Runbook 6fs: "Scrapers decide" / "Always current" / "Always retired".
+  // Al, on Storm's Identity balls: "identity are discontinued limited
+  // releases" -- the brand's site still lists them, so only an override
+  // keeps them retired through the Sunday re-scrape.
+  async function handleStatusOverride(value: string) {
+    if (!product) return;
+    const status = value === "current" || value === "retired" ? value : null;
+    try {
+      await setProductStatusOverride(product.id, status);
+      show(status ? `Status locked as ${status}.` : "The scrapers decide the status again.", "ok");
+      load();
+    } catch (err) {
+      show(err instanceof Error ? err.message : "Failed to change the status override.", "danger");
+    }
+  }
 
   async function handleTogglePublished() {
     if (!product) return;
@@ -944,6 +961,16 @@ export default function ProductDetailPage() {
             {product.brand_name} {product.name}
           </h1>
           <Badge tone={product.status === "current" ? "ok" : "muted"}>{product.status}</Badge>
+          <select
+            className="rounded border border-ink-200 px-1.5 py-0.5 text-xs"
+            title={product.status_override_note ?? "Whether a re-scrape may change current/retired"}
+            value={product.status_override ?? ""}
+            onChange={(e) => handleStatusOverride(e.target.value)}
+          >
+            <option value="">Status: scrapers decide</option>
+            <option value="current">Always current</option>
+            <option value="retired">Always retired</option>
+          </select>
           <Badge tone={product.published ? "ok" : "muted"}>{product.published ? "published" : "unpublished"}</Badge>
           <Button size="sm" variant="secondary" onClick={handleTogglePublished}>
             {product.published ? "Unpublish" : "Publish"}

@@ -289,6 +289,10 @@ export interface ProductDetail {
   name: string;
   url: string;
   status: ProductStatus;
+  // Runbook 6fs (migration 059): a person's status call; when set, status
+  // always equals it and re-scrapes can't flip it. null = scrapers decide.
+  status_override?: ProductStatus | null;
+  status_override_note?: string | null;
   published: boolean;
   source_platform: SourcePlatform | null;
   description: string | null;
