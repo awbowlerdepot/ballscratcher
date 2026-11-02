@@ -22788,6 +22788,14 @@ from products p where p.id = bdp.product_id and bdp.match_status = 'ambiguous' a
   and not exists (select 1 from bowlerdepot_products o where o.bigcommerce_product_id = bdp.bigcommerce_product_id and o.product_id <> bdp.product_id);
 ```
 
+**Deployed 2026-11-02 16:53 UTC.** Al's first two `sam deploy` attempts
+never reached CloudFormation (the stack stayed at 2026-11-01 08:37), so
+check the stack's `LastUpdatedTime` after deploying. A hand invoke of the
+reconciliation right after the deploy returned `current_kept_matched_count`
+18 and `retired_kept_matched_count` 7, with 397 rows rewritten. Afterwards
+there were still 0 published `ambiguous` rows and 465 `matched`, all 465
+showing a `bigcommerce_product_id`, so the matches stuck.
+
 **Verify:**
 ```bash
 aws logs tail /aws/lambda/bowling-scraper-bowlerdepot-reconciliation --since 1d | grep current_kept_matched
