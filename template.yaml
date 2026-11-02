@@ -3038,6 +3038,9 @@ Resources:
           # Signage animate (runbook 6cn) hands the Veo clip to the renderer
           # container to make the seamless loop.
           SIGNAGE_RENDERER_FUNCTION_NAME: !Ref SignageRendererFunction
+          # Brand-art task (runbook 6fq): the brand's stocked bags, shoes and
+          # accessories for hero companions, read from Bowler Depot's catalog.
+          BIGCOMMERCE_SECRET_ARN: !Ref BigCommerceSecretArn
       Policies:
         - VPCAccessPolicy: {}
         - Statement:
@@ -3045,6 +3048,23 @@ Resources:
               Action:
                 - lambda:InvokeFunction
               Resource: !GetAtt SignageRendererFunction.Arn
+        # Brand-art dispatch (runbook 6fq) runs each brand's task with an
+        # async invoke of this same function, so one slow brand (three
+        # Gemini heroes) can't hold up the rest or the 15-minute timeout.
+        # A name-built ARN, not !GetAtt, which would be a circular reference.
+        - Statement:
+            - Effect: Allow
+              Action:
+                - lambda:InvokeFunction
+              Resource: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:bowling-scraper-product-article-generator
+        - Statement:
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !If
+                - HasBigCommerceSecret
+                - !Ref BigCommerceSecretArn
+                - !Sub "arn:aws:secretsmanager:${AWS::Region}:${AWS::AccountId}:secret:unused-*"
         - Statement:
             - Effect: Allow
               Action:
@@ -3237,6 +3257,12 @@ Resources:
               Action:
                 - s3:PutObject
               Resource: !Sub arn:aws:s3:::${ImageBucket}/article-images/*
+            # Brand-art images (runbook 6fq): fixed keys a rerun overwrites,
+            # brand-art/<brand>/<slot>.webp.
+            - Effect: Allow
+              Action:
+                - s3:PutObject
+              Resource: !Sub arn:aws:s3:::${ImageBucket}/brand-art/*
       Events:
         DailySchedule:
           Type: Schedule
@@ -3269,6 +3295,19 @@ Resources:
             Input: '{"image_sweep": true}'
             Name: bowling-scraper-article-image-sweep
             Description: Regenerates missing action/product shots on articles written in the last 48h (second pass after Gemini rate limits).
+            Enabled: true
+        # Brand-art dispatch (runbook 6fq): files new releases into their
+        # lines, then redraws the brand-art slots whose inputs changed (a
+        # release, a line change, a new photo, a companion selling out),
+        # and every slot once a week. 12:30 UTC: after the 00:25 store
+        # reconciliation and the nightly scrapes, before US store hours.
+        BrandArtSchedule:
+          Type: Schedule
+          Properties:
+            Schedule: cron(30 12 * * ? *)
+            Input: '{"brand_art": "dispatch"}'
+            Name: bowling-scraper-brand-art-dispatch
+            Description: Files new releases into brand lineups and redraws brand-art slots whose inputs changed (weekly full redraw).
             Enabled: true
       # Also accepts direct/manual invocation with {"product_id": "..."}
       # for an admin-triggered on-demand (re)generate -- see
@@ -4999,6 +5038,7 @@ Resources:
               Resource:
                 - !Sub arn:aws:s3:::${ImageBucket}/product-images/*
                 - !Sub arn:aws:s3:::${ImageBucket}/article-images/*
+                - !Sub arn:aws:s3:::${ImageBucket}/brand-art/*
       # Real incident, Al: img.bowleriq.io returning a persistent 403
       # AccessDeniedException from Lambda's own IAM-authorizer layer on
       # every single request, unchanged across retries, a real time gap,

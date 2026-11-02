@@ -1074,6 +1074,53 @@ def list_new_balls_for_social(days: int = 60):
     return _announcement_call(lambda conn: service.list_new_balls_for_social(conn, days))
 
 
+# --- Brand stores: lineups + brand_art tasks (migration 058, runbook 6fq) ---
+# Same error mapping as the announcement routes: 404 not found, 409 a run
+# is already going or the edit is invalid.
+
+class BrandStoreUpdateRequest(BaseModel):
+    params: Optional[dict] = None
+    enabled: Optional[bool] = None
+
+
+class BrandStoreRerunRequest(BaseModel):
+    slots: Optional[list[str]] = None
+
+
+class BrandLineBallRequest(BaseModel):
+    product_id: str
+
+
+@app.get("/brand-stores")
+def list_brand_stores():
+    return _announcement_call(lambda conn: service.list_brand_stores(conn))
+
+
+@app.get("/brand-stores/{task_id}")
+def get_brand_store(task_id: str):
+    return _announcement_call(lambda conn: service.get_brand_store(conn, task_id))
+
+
+@app.patch("/brand-stores/{task_id}")
+def update_brand_store(task_id: str, body: BrandStoreUpdateRequest):
+    return _announcement_call(lambda conn: service.update_brand_store(conn, task_id, body.params, body.enabled))
+
+
+@app.post("/brand-stores/{task_id}/rerun")
+def rerun_brand_store(task_id: str, body: Optional[BrandStoreRerunRequest] = None):
+    return _announcement_call(lambda conn: service.queue_brand_art_rerun(conn, task_id, body.slots if body else None))
+
+
+@app.post("/brand-lines/{line_id}/balls")
+def add_ball_to_brand_line(line_id: str, body: BrandLineBallRequest):
+    return _announcement_call(lambda conn: service.add_ball_to_line(conn, line_id, body.product_id))
+
+
+@app.delete("/brand-lines/{line_id}/balls/{product_id}")
+def remove_ball_from_brand_line(line_id: str, product_id: str):
+    return _announcement_call(lambda conn: service.remove_ball_from_line(conn, line_id, product_id))
+
+
 # --- In-store signage (migration 045, runbook 6cn) ---------------------
 # Generate / Animate / Render are fire-and-forget (the jobs take 1-5 min);
 # poll GET .../signage for status. 409 = a job is running or a step is out

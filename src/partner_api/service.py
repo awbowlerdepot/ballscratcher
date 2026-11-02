@@ -328,6 +328,82 @@ def list_brands(conn) -> list:
         return [{"id": str(r["id"]), "name": r["name"]} for r in _rows(cur)]
 
 
+# Brand-art images are served by the image CDN at their stored key
+# (runbook 6fq): img.bowleriq.io/brand-art/<brand>/<slot>.webp.
+ART_BASE_URL = os.environ.get("ART_BASE_URL", "https://img.bowleriq.io")
+
+
+def _art_image(r) -> dict:
+    featured = [{"ball_id": f.get("product_id"), "bigcommerce_product_id": f.get("bigcommerce_product_id"),
+                 "name": f.get("name") or "", "kind": f.get("kind") or "ball"} for f in (r["featured"] or [])]
+    return {"slot": r["slot_key"], "kind": r["kind"], "hero_type": r["hero_type"], "owner": r["owner"],
+            "url": f"{ART_BASE_URL}/{r['image_key']}",
+            "url_16x9": f"{ART_BASE_URL}/{r['image_key_16x9']}" if r["image_key_16x9"] else None,
+            "width": r["width"], "height": r["height"], "alt": r["alt"] or "", "featured": featured,
+            "generated_at": r["generated_at"]}
+
+
+def get_brand_lineups(conn, brand_id: str):
+    """A brand's groupings and lines (balls: current published, newest
+    release first) and every enabled brand_art task's current images.
+    None when the brand doesn't exist."""
+    try:
+        brand_id = str(uuid.UUID(brand_id))
+    except (ValueError, TypeError, AttributeError):
+        return None
+    with conn.cursor() as cur:
+        cur.execute("select id, name from brands where id = %s", (brand_id,))
+        brand = _rows(cur)
+        if not brand:
+            return None
+        cur.execute(
+            f"""
+            select g.key as g_key, g.label as g_label, g.source, l.id as line_id, l.key, l.label, l.text,
+                   p.id as ball_id, lb.note
+            from brand_groupings g
+            join brand_lines l on l.grouping_id = g.id
+            left join brand_line_balls lb on lb.line_id = l.id
+            left join products p on p.id = lb.product_id and {_PUBLISHED_BALL} and p.status = 'current'
+            where g.brand_id = %s
+            order by g.display_order, g.key, l.display_order, l.key, p.release_date desc nulls last, p.name
+            """,
+            (brand_id,),
+        )
+        rows = _rows(cur)
+        cur.execute(
+            """
+            select s.*, t.owner from brand_art_slots s join tasks t on t.id = s.task_id
+            where t.brand_id = %s and t.enabled and s.image_key is not null
+            order by t.owner, s.slot_key
+            """,
+            (brand_id,),
+        )
+        art = _rows(cur)
+    line_art = {}
+    heroes = []
+    for r in art:
+        if r["kind"] == "line" and r["line_id"]:
+            line_art.setdefault(str(r["line_id"]), []).append(_art_image(r))
+        elif r["kind"] == "hero":
+            heroes.append(_art_image(r))
+    groupings, by_key, lines = [], {}, {}
+    for r in rows:
+        g = by_key.get(r["g_key"])
+        if g is None:
+            g = by_key[r["g_key"]] = {"key": r["g_key"], "label": r["g_label"], "source": r["source"], "lines": []}
+            groupings.append(g)
+        lid = str(r["line_id"])
+        line = lines.get(lid)
+        if line is None:
+            line = lines[lid] = {"key": r["key"], "label": r["label"], "text": r["text"], "balls": [],
+                                 "art": line_art.get(lid, [])}
+            g["lines"].append(line)
+        if r["ball_id"]:
+            line["balls"].append({"ball_id": str(r["ball_id"]), "note": r["note"]})
+    return {"brand": {"id": str(brand[0]["id"]), "name": brand[0]["name"]}, "groupings": groupings,
+            "heroes": heroes}
+
+
 def list_balls(conn, cursor: str = None, limit: int = None) -> dict:
     """Every published ball, current and retired, in id order (stable
     pages for a full load). next_cursor is null on the last page."""

@@ -1,0 +1,818 @@
+"""
+Brand lineups and the brand_art task (runbook 6fq, migration 058).
+
+Al (2026-11-02, through the Bowler Depot brand-stores session): BowlerIQ
+owns each brand's lineups, and Bowler Depot's brand-store art is a
+standing TASK that BowlerIQ reruns whenever one of its trigger rules
+fires, with every image at a stable URL. "This is one per brand, not a
+one-off for Storm... adding the next brand should only mean loading its
+lineups and creating its task." Then: "go ahead, include the weekly
+sweep, newest releases for heroes."
+
+Two event shapes on product_article_generator (handler routes them here):
+
+  {"brand_art": "dispatch"}     -- the daily schedule. For every enabled
+      task: file new releases into their lines (assign rules), work out
+      every slot's inputs, and rerun only the slots whose inputs changed
+      since they were drawn (or all of them once a week). Each task with
+      work is run by an async self-invoke, so one slow brand can't hold up
+      the others or the 15-minute timeout.
+  {"brand_art": "run", "task_id", "slots"?, "trigger"?}
+      -- draw those slots (all when absent). Admin's "Rerun now" sends
+      this with trigger 'manual'.
+
+TRIGGER RULES AS INPUT FINGERPRINTS. The request lists the rules: a ball
+released or added to/removed from a line, a ball's photo changing, the
+line or palette parameters changing, a featured product selling out or
+being removed, a weekly sweep, and a manual rerun. Rather than hooking
+every scraper, each slot's inputs (its products, their photo URLs, the
+palette, the companion's stock) are hashed, and a slot whose hash differs
+from the one stored with its image is rerun. So a new release that
+becomes a hero pick, a ball filed into a line, a re-scraped photo or a bag
+selling out all show up as a changed hash the next morning, and the run
+log names which rule it was (_trigger_for).
+
+HEROES. Al's types: a "product hero" is one product in focus -- a single
+ball, or a non-ball product (bag, shoes) with at most one ball beside it;
+a "lineup hero" is several products together. Each hero slot is a pick
+rule in the task's params; the default ("newest releases for heroes") is
+the brand's two newest released balls, then its newest stocked non-ball
+product with the newest ball beside it (falling back to the third newest
+ball when Bowler Depot stocks nothing else from the brand). A ball
+product hero is drawn by the existing Gemini product-shot pipeline (Al:
+"Build the product hero on that existing pipeline rather than a new
+one"), with the same logo-match and logo-size checks the announcement
+images use; non-ball and lineup heroes, and line images, are composited
+from the real photos (brand_art_compose), since the request says "real
+product photos only" for anything that isn't a ball and line images "stay
+ball-only".
+
+STOCK. "What counts as stocked: the product is in Bowler Depot's
+BigCommerce catalog for that brand, visible, and has stock available to
+sell." Read with the same Catalog v3 GET the reconciliation uses, per
+task, by the task's bigcommerce_brand_id.
+"""
+
+from __future__ import annotations
+
+import datetime
+import hashlib
+import io
+import json
+import logging
+import re
+import time
+from urllib.parse import urljoin, urlparse
+
+import brand_art_compose as compose
+
+logger = logging.getLogger()
+
+ART_PREFIX = "brand-art"
+CACHE_CONTROL = "public, max-age=3600"   # "Keep the CDN cache short (around an hour)"
+WEEKLY_SWEEP = datetime.timedelta(days=7)
+LINE_SIZE = (1200, 900)
+HERO_SIZE = (1600, 1200)
+HERO_WIDE_SIZE = (1600, 900)
+GEMINI_HERO_ATTEMPTS = 3
+LISTING_CRAWL_DELAY_SECONDS = 10         # stormbowling.com robots.txt Crawl-delay (commercebuild_url_discovery)
+LISTING_LINK_RE = re.compile(r'href="(/[a-z0-9-]+-bowling-ball)"')
+
+DEFAULT_HEROES = [
+    {"type": "product", "pick": "newest_ball", "rank": 1},
+    {"type": "product", "pick": "newest_ball", "rank": 2},
+    {"type": "product", "pick": "newest_companion", "fallback_rank": 3},
+]
+
+# BigCommerce category roots that count as a non-ball "companion" for a
+# hero ("bags, shoes, gloves and wrist supports, apparel and accessories").
+# The rest of the roots (Balls, On Sale, Drilling, discontinued, Route) are
+# not product kinds. On Sale is a second home for products already in one
+# of these, so it's simply ignored.
+COMPANION_ROOTS = {"bags": "bag", "shoes": "shoes", "accessories": "accessory", "apparel": "apparel"}
+
+
+# ---------------------------------------------------------------- loading
+
+def list_enabled_tasks(conn) -> list:
+    with conn.cursor() as cur:
+        cur.execute("""
+            select t.id, t.owner, t.brand_id, b.name, t.kind, t.params, t.triggers, t.last_full_run_at
+            from tasks t join brands b on b.id = t.brand_id
+            where t.enabled and t.kind = 'brand_art'
+            order by b.name
+        """)
+        return [_task_row(r) for r in cur.fetchall()]
+
+
+def load_task(conn, task_id: str) -> dict | None:
+    with conn.cursor() as cur:
+        cur.execute("""
+            select t.id, t.owner, t.brand_id, b.name, t.kind, t.params, t.triggers, t.last_full_run_at
+            from tasks t join brands b on b.id = t.brand_id where t.id = %s
+        """, (task_id,))
+        row = cur.fetchone()
+        return _task_row(row) if row else None
+
+
+def _task_row(r) -> dict:
+    return {"id": str(r[0]), "owner": r[1], "brand_id": str(r[2]), "brand_name": r[3], "kind": r[4],
+            "params": r[5] or {}, "triggers": r[6] or [], "last_full_run_at": r[7]}
+
+
+def list_brand_balls(conn, brand_id: str) -> list:
+    """The brand's current, published balls, newest release first, with
+    their photo candidates and Bowler Depot listing. Photos: source_url
+    before stored_url, because the manufacturer's own PNG is often a real
+    cut-out and our stored copy is flattened on white (image_processor);
+    thumbnail first, then display_order, as everywhere else."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            select p.id, p.name, p.url, p.release_date,
+                   (select bdp.bigcommerce_product_id from bowlerdepot_products bdp
+                     where bdp.product_id = p.id and bdp.match_status = 'matched') as bc_id,
+                   (select array_agg(u order by o) from (
+                        select coalesce(i.source_url, i.stored_url) as u,
+                               (case when i.is_thumbnail then 0 else 1 end) * 1000 + coalesce(i.display_order, 999) as o
+                        from product_images i
+                        where i.product_id = p.id and coalesce(i.is_visible, true)
+                          and coalesce(i.source_url, i.stored_url) is not null
+                        union all
+                        select i.stored_url, 5000 + coalesce(i.display_order, 999)
+                        from product_images i
+                        where i.product_id = p.id and coalesce(i.is_visible, true)
+                          and i.stored_url is not null and i.source_url is not null
+                    ) x) as photos
+            from products p
+            where p.brand_id = %s and p.product_type = 'ball' and p.status = 'current' and p.published
+            order by p.release_date desc nulls last, p.name
+        """, (brand_id,))
+        return [{"product_id": str(r[0]), "name": r[1], "url": r[2], "release_date": r[3],
+                 "bigcommerce_product_id": int(r[4]) if r[4] and str(r[4]).isdigit() else None,
+                 "photos": [u for u in (r[5] or []) if u]}
+                for r in cur.fetchall()]
+
+
+def list_lines(conn, brand_id: str) -> list:
+    """Every line of the brand with its grouping and balls (in position
+    order)."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            select g.key, g.label, l.id, l.key, l.label, l.text, l.assign_rule,
+                   coalesce(array_agg(lb.product_id::text order by lb.position, lb.added_at)
+                            filter (where lb.product_id is not null), '{}')
+            from brand_groupings g
+            join brand_lines l on l.grouping_id = g.id
+            left join brand_line_balls lb on lb.line_id = l.id
+            where g.brand_id = %s
+            group by g.key, g.label, g.display_order, l.id, l.key, l.label, l.text, l.assign_rule, l.display_order
+            order by g.display_order, g.key, l.display_order, l.key
+        """, (brand_id,))
+        return [{"grouping_key": r[0], "grouping_label": r[1], "line_id": str(r[2]), "key": r[3], "label": r[4],
+                 "text": r[5], "assign_rule": r[6] or {"type": "manual"}, "ball_ids": list(r[7])}
+                for r in cur.fetchall()]
+
+
+def load_slots(conn, task_id: str) -> dict:
+    with conn.cursor() as cur:
+        cur.execute("""
+            select slot_key, input_hash, featured, generated_at from brand_art_slots where task_id = %s
+        """, (task_id,))
+        return {r[0]: {"input_hash": r[1], "featured": r[2] or [], "generated_at": r[3]} for r in cur.fetchall()}
+
+
+# ---------------------------------------------------------- assign rules
+
+def _norm_path(url: str) -> str:
+    return urlparse(url or "").path.rstrip("/").lower()
+
+
+def listing_members(rule: dict, balls: list, fetch_html) -> set | None:
+    """Product ids (from `balls`) that the brand's own filtered listing
+    shows, or None when the listing couldn't be read (then nothing is
+    added or removed). commercebuild only for now: stormbowling.com lists
+    Storm, Roto Grip and 900 Global together, so a link only counts for
+    the brand whose product URL it is. A colorway page
+    (".../storm-mix-bowling-ball-platinum") belongs to its listing link
+    (".../storm-mix-bowling-ball")."""
+    if rule.get("platform") != "commercebuild":
+        logger.warning("brand_listing rule for platform %r has no reader yet", rule.get("platform"))
+        return None
+    try:
+        html = fetch_html(rule["url"])
+    except Exception:
+        logger.exception("couldn't read brand listing %s", rule.get("url"))
+        return None
+    paths = {_norm_path(urljoin(rule["url"], m)) for m in LISTING_LINK_RE.findall(html)}
+    out = set()
+    for b in balls:
+        p = _norm_path(b["url"])
+        if p in paths or any(p.startswith(x + "-") for x in paths):
+            out.add(b["product_id"])
+    return out
+
+
+FIELD_COLUMNS = {"name", "color", "coverstock_type", "coverstock_material", "finish_category", "has_particle"}
+
+
+def fields_members(rule: dict, conn, brand_id: str) -> set:
+    """Product ids of the brand's current published balls matching every
+    clause of a {"type": "fields", "all": [...]} rule. Clauses:
+    {"field", "matches": regex} or {"field", "in": [values]}, on a small
+    whitelist of products columns."""
+    clauses = rule.get("all") or []
+    with conn.cursor() as cur:
+        cur.execute("""
+            select id, name, color, coverstock_type::text, coverstock_material, finish_category::text,
+                   has_particle::text
+            from products
+            where brand_id = %s and product_type = 'ball' and status = 'current' and published
+        """, (brand_id,))
+        cols = [d[0] for d in cur.description]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+    out = set()
+    for r in rows:
+        ok = True
+        for c in clauses:
+            f = c.get("field")
+            if f not in FIELD_COLUMNS:
+                ok = False
+                break
+            v = r.get(f) or ""
+            if "matches" in c and not re.search(c["matches"], str(v)):
+                ok = False
+            if "in" in c and str(v) not in [str(x) for x in c["in"]]:
+                ok = False
+        if ok:
+            out.add(str(r["id"]))
+    return out
+
+
+def apply_assign_rules(conn, brand_id: str, balls: list, fetch_html, sleep=time.sleep) -> dict:
+    """File the brand's current balls into lines by each line's
+    assign_rule. Adds members the rule finds (added_by 'rule'); removes a
+    member only if a rule added it and the rule no longer finds it (a
+    'load' or 'admin' placement is a person's call and stays). A current
+    ball that sits in no line of a grouping with at least one rule gets a
+    review_queue item (deduped on the pending one), never a guess.
+    Returns {"added": [...], "removed": [...], "unplaced": [...]}."""
+    lines = list_lines(conn, brand_id)
+    current = {b["product_id"] for b in balls}
+    added, removed = [], []
+    fetched = 0
+    for line in lines:
+        rule = line["assign_rule"] or {}
+        kind = rule.get("type", "manual")
+        if kind == "manual":
+            continue
+        if kind == "brand_listing":
+            if fetched:
+                sleep(LISTING_CRAWL_DELAY_SECONDS)
+            fetched += 1
+            want = listing_members(rule, balls, fetch_html)
+        elif kind == "fields":
+            want = fields_members(rule, conn, brand_id)
+        else:
+            logger.warning("unknown assign_rule type %r on line %s", kind, line["key"])
+            continue
+        if want is None:
+            continue
+        have = set(line["ball_ids"])
+        with conn.cursor() as cur:
+            for pid in sorted(want - have):
+                cur.execute("""
+                    insert into brand_line_balls (line_id, product_id, position, added_by)
+                    values (%s, %s, (select coalesce(max(position), 0) + 1 from brand_line_balls where line_id = %s), 'rule')
+                    on conflict do nothing
+                """, (line["line_id"], pid, line["line_id"]))
+                added.append({"line": line["key"], "product_id": pid})
+            for pid in sorted((have & current) - want):
+                cur.execute("""
+                    delete from brand_line_balls where line_id = %s and product_id = %s and added_by = 'rule'
+                """, (line["line_id"], pid))
+                if cur.rowcount:
+                    removed.append({"line": line["key"], "product_id": pid})
+        conn.commit()
+
+    ruled = {}
+    for line in list_lines(conn, brand_id):
+        ruled.setdefault(line["grouping_key"], {"label": line["grouping_label"], "ruled": False, "members": set()})
+        g = ruled[line["grouping_key"]]
+        g["ruled"] = g["ruled"] or (line["assign_rule"] or {}).get("type", "manual") != "manual"
+        g["members"] |= set(line["ball_ids"])
+    unplaced = []
+    names = {b["product_id"]: b["name"] for b in balls}
+    with conn.cursor() as cur:
+        for gkey, g in ruled.items():
+            if not g["ruled"]:
+                continue
+            for pid in sorted(current - g["members"]):
+                unplaced.append({"grouping": gkey, "product_id": pid})
+                cur.execute("""
+                    insert into review_queue (product_id, field_name, current_value, proposed_value, source, reason)
+                    select %s, 'brand_line', null, %s, 'brand_art', %s
+                    where not exists (select 1 from review_queue where product_id = %s and field_name = 'brand_line'
+                                      and proposed_value = %s and status = 'pending')
+                """, (pid, gkey, f"'{names.get(pid, pid)}' is in no {g['label']} line, and no line's rule placed it",
+                      pid, gkey))
+    conn.commit()
+    return {"added": added, "removed": removed, "unplaced": unplaced}
+
+
+# ------------------------------------------------------------ BigCommerce
+
+def fetch_brand_catalog(bc_get, bigcommerce_brand_id: int) -> list:
+    """Every BigCommerce product of the brand, with images and variants
+    (for stock). bc_get(path, params) -> parsed JSON."""
+    products, page = [], 1
+    while True:
+        d = bc_get("/v3/catalog/products", {"brand_id": bigcommerce_brand_id, "limit": 250, "page": page,
+                                             "include": "images,variants"})
+        products += d.get("data") or []
+        pages = ((d.get("meta") or {}).get("pagination") or {}).get("total_pages") or 1
+        if page >= pages:
+            return products
+        page += 1
+
+
+def fetch_category_roots(bc_get) -> dict:
+    """{category_id: full category path, lowercased, " > "-joined, e.g.
+    "bags > roller bags > 3 ball rollers"}. The first part is the root."""
+    cats, page = [], 1
+    while True:
+        d = bc_get("/v3/catalog/trees/categories", {"limit": 250, "page": page})
+        cats += d.get("data") or []
+        pages = ((d.get("meta") or {}).get("pagination") or {}).get("total_pages") or 1
+        if page >= pages:
+            break
+        page += 1
+    parent = {c["category_id"]: c.get("parent_id") or 0 for c in cats}
+    name = {c["category_id"]: c["name"] for c in cats}
+    paths = {}
+    for cid in parent:
+        x, seen, parts = cid, set(), []
+        while x and x not in seen:
+            seen.add(x)
+            parts.append((name.get(x) or "").strip().lower())
+            x = parent.get(x)
+        paths[cid] = " > ".join(reversed(parts))
+    return paths
+
+
+def _root(path: str) -> str:
+    return (path or "").split(" > ")[0]
+
+
+def in_stock(p: dict) -> bool:
+    """Visible, purchasable, and stock available to sell: product-level
+    inventory, or any variant's when tracked by variant; untracked counts
+    as available (BigCommerce sells it without a count)."""
+    if not p.get("is_visible") or p.get("availability") == "disabled":
+        return False
+    tracking = p.get("inventory_tracking")
+    if tracking == "none":
+        return True
+    if tracking == "variant":
+        return any((v.get("inventory_level") or 0) > 0 and not v.get("purchasing_disabled")
+                   for v in p.get("variants") or [])
+    return (p.get("inventory_level") or 0) > 0
+
+
+def stocked_companions(catalog: list, paths: dict) -> list:
+    """The brand's stocked non-ball products with a photo, newest listing
+    first: [{"bigcommerce_product_id", "name", "kind", "photo", "date",
+    "price", "categories"}]. paths is fetch_category_roots()."""
+    out = []
+    for p in catalog:
+        cats = [paths.get(c, "") for c in p.get("categories") or []]
+        kinds = {COMPANION_ROOTS[_root(c)] for c in cats if _root(c) in COMPANION_ROOTS}
+        if not kinds or "balls" in {_root(c) for c in cats}:
+            continue
+        if not in_stock(p):
+            continue
+        imgs = sorted(p.get("images") or [], key=lambda i: (not i.get("is_thumbnail"), i.get("sort_order") or 0))
+        if not imgs:
+            continue
+        kind = next(k for k in ("bag", "shoes", "accessory", "apparel") if k in kinds)
+        out.append({"bigcommerce_product_id": p["id"], "name": p["name"].strip(), "kind": kind,
+                    "photo": imgs[0].get("url_zoom") or imgs[0].get("url_standard"),
+                    "date": p.get("date_created") or "",
+                    "price": float(p.get("calculated_price") or p.get("price") or 0),
+                    "categories": cats})
+    # BigCommerce dates are RFC 2822 strings; parse for a real newest-first order.
+    def key(c):
+        try:
+            return datetime.datetime.strptime(c["date"], "%a, %d %b %Y %H:%M:%S %z").timestamp()
+        except Exception:
+            return 0
+    return sorted(out, key=key, reverse=True)
+
+
+COMPANION_KIND_ORDER = ("bag", "shoes", "accessory", "apparel")
+
+# Al, on the first companion hero (a $79.95 1-ball roller): "can you use
+# higher priced bags, 3 ball roller or triple totes? that is an entry
+# level bag and isn't idea[l]". So the showcase bags are Bowler Depot's
+# 3-ball (and bigger) rollers and totes -- read from the store's own
+# category tree ("Bags > Roller Bags > 3 Ball Rollers", "Bags > Tote Bags
+# > 3 Ball Totes"), with the name as a fallback -- and within a tier the
+# most expensive first.
+_SHOWCASE_BAG = re.compile(r"\b([3-6] ball|triple|three ball)\b")
+
+
+def _bag_tier(c: dict) -> int:
+    """0: 3+ ball roller, 1: 3+ ball tote, 2: other roller, 3: other bag."""
+    text = " ".join(c.get("categories") or []) + " " + c["name"].lower()
+    big = bool(_SHOWCASE_BAG.search(text))
+    roller = "roller" in text
+    return 0 if big and roller else 1 if big else 2 if roller else 3
+
+
+# A companion's longest real dimension as photographed, in inches, so the
+# ball beside it is drawn to scale (Al: "size ratios are way off").
+# BigCommerce's own dimensions are placeholders on these listings (10 x 10
+# x 10 on every Storm bag, 2026-11-02), so these are typical sizes by type,
+# matched on the store category path plus the name, first match wins.
+# Rollers are photographed with the handle up, so they include it.
+# Calibrated on Al's rule for the Rolling Thunder 3 Ball Roller: "the ball
+# should [be] around 1/3 the height of the white part of the bag" -- the
+# body is ~70% of the photographed height with the handle up, so 36"
+# overall puts an 8.5" ball at ~1/3 of the body (45" made it "two small").
+# The other rollers and the 3-ball tote are scaled the same way (a ball is
+# ~1/N of an N-ball bag's long side).
+COMPANION_INCHES = [
+    (re.compile(r"\b([3-6] ball|triple|three ball)\b.*roller|roller.*\b([3-6] ball|triple)\b"), 36),
+    (re.compile(r"\b(2 ball|double)\b.*roller|roller.*\b(2 ball|double)\b"), 30),
+    (re.compile(r"roller"), 24),
+    (re.compile(r"\b([3-6] ball|triple|three ball)\b"), 27),       # 3-ball totes lie flat: three balls long
+    (re.compile(r"\b(2 ball|double)\b"), 18),
+    (re.compile(r"backpack"), 20),
+    (re.compile(r"shoe bag"), 14),
+    (re.compile(r"\b(1 ball|single|solo|spare kit)\b|tote"), 13),
+    (re.compile(r"accessory bag"), 12),
+    (re.compile(r"shoe"), 12),
+    (re.compile(r"glove|wrist|support|positioner"), 9),
+    (re.compile(r"shirt|jersey|hoodie|jacket|polo|apparel"), 30),
+]
+COMPANION_INCHES_DEFAULT = {"bag": 20, "shoes": 12, "accessory": 9, "apparel": 30}
+
+
+def companion_inches(c: dict) -> float:
+    text = " ".join(c.get("categories") or []) + " " + c["name"].lower()
+    for pattern, inches in COMPANION_INCHES:
+        if pattern.search(text):
+            return inches
+    return COMPANION_INCHES_DEFAULT.get(c["kind"], 20)
+
+
+def pick_companion(companions: list, hero: dict) -> dict:
+    """The non-ball product a companion hero features. A pinned
+    bigcommerce_product_id (hero["bigcommerce_product_id"]) wins while it's
+    stocked. Otherwise bags first, then shoes, then accessories and
+    apparel; bags by _bag_tier (3-ball rollers, then 3-ball totes, then
+    other rollers, then the rest); highest price first within a tier, then
+    newest listing (companions is newest-first and sorted() is stable)."""
+    pinned = hero.get("bigcommerce_product_id")
+    for c in companions:
+        if pinned and c["bigcommerce_product_id"] == pinned:
+            return c
+    return sorted(companions, key=lambda c: (COMPANION_KIND_ORDER.index(c["kind"]),
+                                             _bag_tier(c) if c["kind"] == "bag" else 0,
+                                             -(c.get("price") or 0)))[0]
+
+
+def stocked_bc_ids(catalog: list) -> set:
+    return {p["id"] for p in catalog if in_stock(p)}
+
+
+# --------------------------------------------------------------- planning
+
+def _hash(obj) -> str:
+    return hashlib.sha256(json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
+def _ball_item(b: dict) -> dict:
+    return {"product_id": b["product_id"], "bigcommerce_product_id": b["bigcommerce_product_id"],
+            "name": b["name"], "kind": "ball", "photos": b["photos"][:3]}
+
+
+def _join(names: list) -> str:
+    return names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1]
+
+
+def plan_slots(task: dict, balls: list, lines: list, companions: list, stocked: set,
+               today: datetime.date) -> list:
+    """Every slot the task draws, with its inputs and their fingerprint.
+    Slots: one per line of the groupings in params.line_groupings (all
+    groupings when unset), then the hero slots from params.heroes
+    (DEFAULT_HEROES). A slot with nothing to draw (a line with no current
+    ball that has a photo) is left out, and its old image stays."""
+    params = task["params"]
+    palette = params["palette"]
+    brand = task["brand_name"]
+    groupings = params.get("line_groupings")
+    by_id = {b["product_id"]: b for b in balls if b["photos"]}
+    newest_first = list(by_id.values())  # list_brand_balls order
+    slots = []
+
+    for line in lines:
+        if groupings and line["grouping_key"] not in groupings:
+            continue
+        members = [by_id[p] for p in line["ball_ids"] if p in by_id]
+        members.sort(key=lambda b: (b["release_date"] or datetime.date.min), reverse=True)
+        members = members[:4]
+        if not members:
+            continue
+        items = [_ball_item(b) for b in members]
+        alt = f"{brand} {_join([b['name'] for b in members])} bowling ball{'s' if len(members) > 1 else ''}"
+        slots.append({"slot_key": f"line-{line['key']}", "kind": "line", "line_id": line["line_id"],
+                      "hero_type": None, "items": items, "alt": alt, "sizes": [LINE_SIZE],
+                      "input_hash": _hash({"palette": palette, "items": items})})
+
+    # Heroes: newest RELEASED balls (release_date today or earlier), and
+    # among those the ones Bowler Depot has in stock first, so the slide's
+    # "shop" link lands on something buyable. Then any released ball.
+    released = [b for b in newest_first if b["release_date"] is None or b["release_date"] <= today]
+    preferred = [b for b in released if b["bigcommerce_product_id"] in stocked] + \
+                [b for b in released if b["bigcommerce_product_id"] not in stocked]
+    used = set()
+
+    def next_ball():
+        """The newest preferred ball no earlier hero slot has taken, so
+        rank 1, 2, 3 come out as the 1st, 2nd and 3rd newest."""
+        pool = [b for b in preferred if b["product_id"] not in used]
+        return pool[0] if pool else None
+
+    for i, h in enumerate(params.get("heroes") or DEFAULT_HEROES, start=1):
+        slot_key = f"hero-{i}"
+        items, hero_type = [], h.get("type", "product")
+        if hero_type == "lineup":
+            ids = h.get("ball_ids") or []
+            if h.get("line"):
+                line = next((l for l in lines if l["key"] == h["line"]), None)
+                ids = line["ball_ids"] if line else []
+            members = [by_id[p] for p in ids if p in by_id][:4] or preferred[:4]
+            items = [_ball_item(b) for b in members]
+        elif h.get("pick") == "newest_companion" and companions and preferred:
+            # "a new Storm ball with a Storm roller bag": the ball beside the
+            # companion is the brand's newest, even if hero-1 features it too.
+            c = pick_companion(companions, h)
+            items = [{"product_id": None, "bigcommerce_product_id": c["bigcommerce_product_id"], "name": c["name"],
+                      "kind": c["kind"], "photos": [c["photo"]], "inches": companion_inches(c)},
+                     _ball_item(preferred[0])]
+        else:
+            ball = next_ball()
+            if ball:
+                used.add(ball["product_id"])
+                items = [_ball_item(ball)]
+        if not items:
+            continue
+        if hero_type == "lineup":
+            alt = f"{brand} {_join([x['name'] for x in items])} bowling balls"
+        elif items[0]["kind"] == "ball":
+            alt = f"{brand} {items[0]['name']} bowling ball"
+        else:
+            alt = items[0]["name"] + (f" with the {brand} {items[1]['name']} bowling ball" if len(items) > 1 else "")
+        slots.append({"slot_key": slot_key, "kind": "hero", "line_id": None, "hero_type": hero_type,
+                      "items": items, "alt": alt, "sizes": [HERO_SIZE, HERO_WIDE_SIZE],
+                      "input_hash": _hash({"palette": palette, "type": hero_type, "items": items})})
+    return slots
+
+
+def _trigger_for(slot: dict, stored: dict | None, task: dict, weekly: bool) -> str:
+    """Which of the request's trigger rules this slot's change is."""
+    if stored is None or not stored.get("input_hash"):
+        return "ball_released" if slot["kind"] == "hero" else "line_changed"
+    old = {(f.get("product_id"), f.get("bigcommerce_product_id")) for f in stored.get("featured") or []}
+    new = {(f.get("product_id"), f.get("bigcommerce_product_id")) for f in slot["items"]}
+    if stored["input_hash"] == slot["input_hash"]:
+        return "weekly_sweep" if weekly else "none"
+    if old != new:
+        if slot["kind"] == "line":
+            return "line_changed"
+        gone = old - new
+        if any(o[0] is None for o in gone):
+            return "companion_stock"
+        return "ball_released"
+    return "photo_changed"  # same products: a photo or the palette changed
+
+
+def due_slots(task: dict, slots: list, stored: dict, now: datetime.datetime) -> dict:
+    """{slot_key: trigger} for the slots this dispatch should redraw."""
+    last_full = task.get("last_full_run_at")
+    weekly = last_full is None or now - last_full >= WEEKLY_SWEEP
+    out = {}
+    for s in slots:
+        trig = _trigger_for(s, stored.get(s["slot_key"]), task, weekly)
+        if trig != "none":
+            out[s["slot_key"]] = trig
+    return out
+
+
+# -------------------------------------------------------------- rendering
+
+def first_photo(item: dict, fetch_bytes) -> tuple:
+    """(bytes, url) of the first of the item's photo URLs that loads."""
+    for url in item["photos"]:
+        try:
+            return fetch_bytes(url), url
+        except Exception:
+            logger.warning("photo %s didn't load", url)
+    raise RuntimeError(f"no photo of {item['name']} could be loaded")
+
+
+HERO_BACKDROP_THEME = (
+    "a clean, premium studio backdrop in the brand's deep {background} with soft {accent} rim light and a gentle "
+    "{accent} glow behind the ball; the ball sits in the right half of the frame and the left third is calm, empty "
+    "backdrop (a headline is laid over it later in HTML)"
+)
+HERO_NO_TEXT = (
+    " There must be no text, words, letters, numbers, logos or brand marks anywhere in the image other than what "
+    "is printed on the ball itself in the reference photo; no props, no lane, no pins, no people."
+)
+
+
+def render_ball_product_hero(item: dict, size: tuple, palette: dict, deps: dict) -> tuple:
+    """A single-ball product hero from the existing Gemini product-shot
+    pipeline (app.build_gemini_scene_prompt, call_gemini_for_image,
+    check_logo_matches, logo_size_ok -- the announcement job's loop), with
+    the brand's palette as the scene. Falls back to the composite when no
+    attempt passes the logo checks. Returns (PIL image, method)."""
+    gen = deps.get("gemini")
+    raw, _ = first_photo(item, deps["fetch_bytes"])
+    if gen and deps.get("_gemini_failed") != item["product_id"]:
+        aspect = "16:9" if size[0] / size[1] > 1.5 else "4:3"
+        theme = HERO_BACKDROP_THEME.format(**palette)
+        for attempt in range(GEMINI_HERO_ATTEMPTS):
+            try:
+                png = gen(item["product_id"], raw, theme, HERO_NO_TEXT, aspect)
+            except Exception:
+                logger.exception("brand-art hero attempt %d failed for %s", attempt + 1, item["name"])
+                continue
+            if png:
+                from PIL import Image, ImageOps
+                im = Image.open(io.BytesIO(png)).convert("RGB")
+                return ImageOps.fit(im, size, Image.LANCZOS), "gemini"
+        # Don't spend the other size's attempts once one size has failed:
+        # the slot falls back to the composite for both (render_slot).
+        deps["_gemini_failed"] = item["product_id"]
+    return compose.product_hero(size, palette, compose.cutout(raw, deps.get("remove_bg"))), "composite"
+
+
+def render_slot(slot: dict, palette: dict, deps: dict) -> tuple:
+    """[(size, PIL image)], method."""
+    fetch = deps["fetch_bytes"]
+    if slot["kind"] == "line":
+        cuts = [compose.cutout(first_photo(i, fetch)[0], deps.get("remove_bg")) for i in slot["items"]]
+        return [(LINE_SIZE, compose.line(LINE_SIZE, palette, cuts))], "composite"
+    out, method = [], "composite"
+    if slot["hero_type"] == "lineup":
+        cuts = [compose.cutout(first_photo(i, fetch)[0], deps.get("remove_bg")) for i in slot["items"]]
+        for size in slot["sizes"]:
+            out.append((size, compose.lineup_hero(size, palette, cuts)))
+        return out, method
+    focus = slot["items"][0]
+    if focus["kind"] == "ball":
+        # Both sizes of one hero are the same slide (4:3 desktop, 16:9
+        # phone), so they come from the same method: if Gemini can't make
+        # one of them pass the logo checks, both are the composite.
+        drawn = [render_ball_product_hero(focus, size, palette, deps) for size in slot["sizes"]]
+        if all(m == "gemini" for _, m in drawn):
+            return [(size, im) for size, (im, _) in zip(slot["sizes"], drawn)], "gemini"
+        cut = compose.cutout(first_photo(focus, fetch)[0], deps.get("remove_bg"))
+        return [(size, compose.product_hero(size, palette, cut)) for size in slot["sizes"]], "composite"
+    cut = compose.cutout(first_photo(focus, fetch)[0], deps.get("remove_bg"))
+    beside = compose.cutout(first_photo(slot["items"][1], fetch)[0], deps.get("remove_bg")) if len(slot["items"]) > 1 else None
+    for size in slot["sizes"]:
+        out.append((size, compose.product_hero(size, palette, cut, beside, focus.get("inches"))))
+    return out, method
+
+
+def slot_keys_for(slug: str, slot_key: str) -> tuple:
+    return f"{ART_PREFIX}/{slug}/{slot_key}.webp", f"{ART_PREFIX}/{slug}/{slot_key}-16x9.webp"
+
+
+def save_slot(conn, task_id: str, slot: dict, keys: tuple, method: str, error: str = None) -> None:
+    featured = [{k: i[k] for k in ("product_id", "bigcommerce_product_id", "name", "kind")} for i in slot["items"]]
+    w, h = slot["sizes"][0]
+    with conn.cursor() as cur:
+        if error:
+            cur.execute("""
+                insert into brand_art_slots (task_id, slot_key, kind, line_id, hero_type, error)
+                values (%s, %s, %s, %s, %s, %s)
+                on conflict (task_id, slot_key) do update set error = excluded.error
+            """, (task_id, slot["slot_key"], slot["kind"], slot["line_id"], slot["hero_type"], error[:500]))
+        else:
+            cur.execute("""
+                insert into brand_art_slots (task_id, slot_key, kind, line_id, hero_type, featured, image_key,
+                                             image_key_16x9, width, height, alt, method, input_hash, generated_at, error)
+                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), null)
+                on conflict (task_id, slot_key) do update set
+                    kind = excluded.kind, line_id = excluded.line_id, hero_type = excluded.hero_type,
+                    featured = excluded.featured, image_key = excluded.image_key,
+                    image_key_16x9 = excluded.image_key_16x9, width = excluded.width, height = excluded.height,
+                    alt = excluded.alt, method = excluded.method, input_hash = excluded.input_hash,
+                    generated_at = now(), error = null
+            """, (task_id, slot["slot_key"], slot["kind"], slot["line_id"], slot["hero_type"],
+                  json.dumps(featured), keys[0], keys[1] if len(slot["sizes"]) > 1 else None, w, h, slot["alt"],
+                  method, slot["input_hash"]))
+    conn.commit()
+
+
+# ---------------------------------------------------------------- running
+
+def gather(conn, task: dict, deps: dict, assign: bool) -> tuple:
+    """(slots, assign_result) for a task, reading BigCommerce once."""
+    balls = list_brand_balls(conn, task["brand_id"])
+    assigned = apply_assign_rules(conn, task["brand_id"], balls, deps["fetch_html"]) if assign else None
+    lines = list_lines(conn, task["brand_id"])
+    companions, stocked = [], set()
+    bc_brand = task["params"].get("bigcommerce_brand_id")
+    if bc_brand and deps.get("bc_get"):
+        catalog = fetch_brand_catalog(deps["bc_get"], bc_brand)
+        companions = stocked_companions(catalog, fetch_category_roots(deps["bc_get"]))
+        stocked = stocked_bc_ids(catalog)
+    slots = plan_slots(task, balls, lines, companions, stocked, deps.get("today") or datetime.date.today())
+    return slots, assigned
+
+
+def run_task(conn, task_id: str, deps: dict, slot_keys: list | None = None, trigger: str = "manual",
+             triggers_by_slot: dict | None = None) -> dict:
+    """Draw the given slots (all when None) and store them at their fixed
+    keys. Logs a task_runs row. One slot failing doesn't stop the rest."""
+    task = load_task(conn, task_id)
+    if task is None:
+        raise ValueError(f"no task {task_id}")
+    with conn.cursor() as cur:
+        cur.execute("update tasks set status = 'running', updated_at = now() where id = %s", (task_id,))
+        cur.execute("insert into task_runs (task_id, trigger, slots) values (%s, %s, %s) returning id",
+                    (task_id, trigger, slot_keys or []))
+        run_id = cur.fetchone()[0]
+    conn.commit()
+
+    detail = {"slots": {}, "assigned": None}
+    try:
+        slots, assigned = gather(conn, task, deps, assign=trigger == "manual")
+        detail["assigned"] = assigned
+        slug = task["params"].get("slug") or re.sub(r"[^a-z0-9]+", "-", task["brand_name"].lower()).strip("-")
+        palette = task["params"]["palette"]
+        for slot in slots:
+            if slot_keys and slot["slot_key"] not in slot_keys:
+                continue
+            keys = slot_keys_for(slug, slot["slot_key"])
+            try:
+                images, method = render_slot(slot, palette, deps)
+                for (size, im), key in zip(images, keys):
+                    deps["put_object"](key, compose.encode_webp(im), "image/webp", CACHE_CONTROL)
+                save_slot(conn, task_id, slot, keys, method)
+                detail["slots"][slot["slot_key"]] = {"ok": True, "method": method,
+                                                     "trigger": (triggers_by_slot or {}).get(slot["slot_key"], trigger),
+                                                     "featured": [i["name"] for i in slot["items"]]}
+            except Exception as e:
+                logger.exception("brand-art slot %s failed", slot["slot_key"])
+                save_slot(conn, task_id, slot, keys, None, error=str(e) or type(e).__name__)
+                detail["slots"][slot["slot_key"]] = {"ok": False, "error": str(e)[:200]}
+        ok = [s for s in detail["slots"].values() if s["ok"]]
+        status = "succeeded" if len(ok) == len(detail["slots"]) else ("partial" if ok else "failed")
+    except Exception as e:
+        logger.exception("brand-art task %s failed", task_id)
+        detail["error"] = str(e)[:500]
+        status = "failed"
+    full = slot_keys is None or trigger == "weekly_sweep"
+    with conn.cursor() as cur:
+        cur.execute("update task_runs set status = %s, detail = %s, finished_at = now() where id = %s",
+                    (status, json.dumps(detail, default=str), run_id))
+        cur.execute(f"""
+            update tasks set status = %s, last_run_at = now(), last_result = %s, updated_at = now()
+                {", last_full_run_at = now()" if full and status != "failed" else ""}
+            where id = %s
+        """, ("failed" if status == "failed" else "idle", json.dumps({"run_id": str(run_id), "status": status,
+                                                                    **detail}, default=str), task_id))
+    conn.commit()
+    return {"task_id": task_id, "run_id": str(run_id), "status": status, **detail}
+
+
+def dispatch(conn, deps: dict, invoke_run) -> dict:
+    """The daily schedule. For each enabled task: apply the assign rules,
+    plan, and hand the slots whose inputs changed (or every slot, once a
+    week) to invoke_run(task_id, slot_keys, trigger, triggers_by_slot)."""
+    now = deps.get("now") or datetime.datetime.now(datetime.timezone.utc)
+    out = {}
+    for task in list_enabled_tasks(conn):
+        try:
+            slots, assigned = gather(conn, task, deps, assign=True)
+            due = due_slots(task, slots, load_slots(conn, task["id"]), now)
+            enabled_rules = set(task["triggers"] or [])
+            due = {k: v for k, v in due.items() if v in enabled_rules}
+            weekly = any(v == "weekly_sweep" for v in due.values())
+            if due:
+                trigger = "weekly_sweep" if weekly else sorted(set(due.values()))[0]
+                with conn.cursor() as cur:
+                    cur.execute("update tasks set status = 'queued', updated_at = now() where id = %s", (task["id"],))
+                conn.commit()
+                invoke_run(task["id"], sorted(due), trigger, due)
+            out[task["brand_name"]] = {"due": due, "assigned": assigned}
+        except Exception as e:
+            logger.exception("brand-art dispatch failed for %s", task["brand_name"])
+            out[task["brand_name"]] = {"error": str(e)[:200]}
+    return out

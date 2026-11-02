@@ -2175,7 +2175,8 @@ def get_gemini_requests_session():
 
 
 def call_gemini_for_image(gemini_auth: dict, model_id: str, prompt: str,
-                           reference_image_b64: str, aspect_ratio: str, session=None) -> bytes:
+                           reference_image_b64: str, aspect_ratio: str, session=None,
+                           image_size: str = None) -> bytes:
     """Google's Gemini 3 Pro Image, called via Vertex AI's own
     generateContent REST endpoint (NOT Bedrock, and NOT the Gemini
     Developer API v4 originally called -- see this module's own docstring
@@ -2268,7 +2269,10 @@ def call_gemini_for_image(gemini_auth: dict, model_id: str, prompt: str,
         }],
         "generationConfig": {
             "responseModalities": ["IMAGE"],
-            "imageConfig": {"aspectRatio": aspect_ratio},
+            # image_size (runbook 6fq): "2K" for brand-art heroes, which are
+            # 1600 px wide -- the default 1K output would be upscaled.
+            # Omitted (the default) for every existing caller.
+            "imageConfig": {"aspectRatio": aspect_ratio, **({"imageSize": image_size} if image_size else {})},
         },
     }
     response = session.post(
@@ -3926,6 +3930,108 @@ def run_announcement_job(conn, event, *, s3_client, bedrock_client, model_id, ge
         return {"product_id": product_id, "failed": True, "error": str(e)[:500]}
 
 
+def run_brand_art_job(conn, event, *, s3_client, bedrock_client, gemini_auth, gemini_model_id, image_bucket,
+                      lambda_client=None, function_name=None, bedrock_removebg_client=None):
+    """{"brand_art": "dispatch"} (daily schedule) or {"brand_art": "run",
+    "task_id", "slots"?, "trigger"?} (admin "Rerun now", or dispatch's own
+    async invoke) -- see brand_art.py's docstring (runbook 6fq). This
+    function only builds brand_art's dependencies from what the handler
+    already has: S3 at the fixed brand-art/ keys, the BigCommerce catalog
+    GET, the brand-site listing fetch, and the ball product hero on the
+    existing Gemini product-shot pipeline (build_gemini_scene_prompt +
+    call_gemini_for_image + check_logo_matches + logo_size_ok, as
+    run_announcement_job uses them)."""
+    import boto3
+    import requests
+
+    import brand_art
+
+    session = get_gemini_requests_session()
+
+    def fetch_bytes(url):
+        r = requests.get(url, headers={"User-Agent": "bowling-scraper/1.0"}, timeout=30)
+        r.raise_for_status()
+        return r.content
+
+    def fetch_html(url):
+        r = requests.get(url, headers={"User-Agent": "bowling-scraper/1.0"}, timeout=30)
+        r.raise_for_status()
+        return r.text
+
+    def put_object(key, body, content_type, cache_control):
+        s3_client.put_object(Bucket=image_bucket, Key=key, Body=body, ContentType=content_type,
+                             CacheControl=cache_control)
+
+    bc_get = None
+    bc_secret = os.environ.get("BIGCOMMERCE_SECRET_ARN")
+    if bc_secret:
+        creds = json.loads(boto3.client("secretsmanager").get_secret_value(SecretId=bc_secret)["SecretString"])
+        bc_session = requests.Session()
+        bc_session.headers.update({"X-Auth-Token": creds["auth_token"], "Accept": "application/json"})
+
+        def bc_get(path, params):
+            url = f"https://api.bigcommerce.com/stores/{creds['store_hash']}{path}"
+            for _ in range(5):
+                r = bc_session.get(url, params=params, timeout=60)
+                if r.status_code == 429:  # same wait-out as the link script
+                    time.sleep(float(r.headers.get("X-Rate-Limit-Time-Reset-Ms", 2000)) / 1000)
+                    continue
+                r.raise_for_status()
+                return r.json()
+            r.raise_for_status()
+
+    gemini = None
+    if gemini_auth:
+        detect = gemini_detect_call(gemini_auth, session)
+
+        def gemini(product_id, raw, theme, no_text, aspect):
+            product = fetch_product_content(conn, product_id) or {}
+            prompt = build_gemini_scene_prompt(product, {"visual_theme": theme}, "product_shot",
+                                               estimate_ball_frame_fill_ratio(raw)) + no_text
+            png = call_gemini_for_image(gemini_auth, gemini_model_id, prompt, _reference_image_to_base64_png(raw),
+                                        aspect, session=session, image_size="2K")
+            same, note = check_logo_matches(raw, png, bedrock_client)
+            if same:
+                # PRODUCT_SHOT_BALL_RANGE is the ball's share of the frame
+                # WIDTH for a square shot. A hero is wider than it is tall,
+                # so the same framing is a smaller share of the width (a
+                # ball filling most of a 16:9 frame's height is ~46% of its
+                # width -- every 16:9 attempt failed on this on 2026-11-02).
+                # Scale the range by height/width; the logo-to-ball
+                # proportion check inside logo_size_ok is unchanged.
+                w, h = (int(x) for x in aspect.split(":"))
+                lo, hi = (r * h / w for r in PRODUCT_SHOT_BALL_RANGE)
+                same, note = logo_size_ok(logo_width_ratio(raw, detect), png, detect, lo, hi)
+            logger.info("brand-art hero for %s (%s): logo ok=%s (%s)", product_id, aspect, same, note)
+            return png if same else None
+
+    remove_bg = None
+    if bedrock_removebg_client is not None:
+        removebg_model_id = os.environ.get("BEDROCK_REMOVEBG_MODEL_ID", DEFAULT_BEDROCK_REMOVE_BG_MODEL_ID)
+
+        def remove_bg(image_bytes):
+            # The same Stability Remove Background call the article
+            # pipeline's cut-outs use (runbook 6fq: bag handles).
+            return call_bedrock_remove_background(bedrock_removebg_client, removebg_model_id,
+                                                  _reference_image_to_base64_png(image_bytes))
+
+    deps = {"fetch_bytes": fetch_bytes, "fetch_html": fetch_html, "put_object": put_object, "bc_get": bc_get,
+            "gemini": gemini, "remove_bg": remove_bg}
+
+    if event["brand_art"] == "dispatch":
+        def invoke_run(task_id, slots, trigger, triggers_by_slot):
+            payload = {"brand_art": "run", "task_id": task_id, "slots": slots, "trigger": trigger,
+                       "triggers_by_slot": triggers_by_slot}
+            if lambda_client and function_name:
+                lambda_client.invoke(FunctionName=function_name, InvocationType="Event",
+                                     Payload=json.dumps(payload).encode())
+            else:  # local runs: draw inline
+                brand_art.run_task(conn, task_id, deps, slots, trigger, triggers_by_slot)
+        return brand_art.dispatch(conn, deps, invoke_run)
+    return brand_art.run_task(conn, event["task_id"], deps, event.get("slots"), event.get("trigger") or "manual",
+                              event.get("triggers_by_slot"))
+
+
 def handler(event, context):
     """Two shapes: {} / {"batch": true} runs the scheduled catalog-wide
     sweep (see list_products_needing_article -- only products with no
@@ -4040,6 +4146,13 @@ def handler(event, context):
             return {"statusCode": 200, "body": json.dumps(result, default=str)}
 
         # In-store signage jobs (runbook 6cn) -- see signage.py.
+        if event.get("brand_art"):
+            result = run_brand_art_job(
+                conn, event, s3_client=s3_client, bedrock_client=bedrock_client, gemini_auth=gemini_auth,
+                gemini_model_id=gemini_model_id, image_bucket=image_bucket, lambda_client=boto3.client("lambda"),
+                function_name=getattr(context, "function_name", None), bedrock_removebg_client=bedrock_removebg_client,
+            )
+            return {"statusCode": 200, "body": json.dumps(result, default=str)}
         if event.get("signage"):
             result = run_signage_job(
                 conn, event, s3_client=s3_client, bedrock_client=bedrock_client, model_id=model_id,

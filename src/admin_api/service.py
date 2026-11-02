@@ -7326,3 +7326,200 @@ def reject_pattern(conn, pattern_id: str, resolved_by: str, note: str = None) ->
         )
     conn.commit()
     return get_pattern(conn, pattern_id)
+
+
+# --- Brand stores: lineups and brand_art tasks (migration 058, runbook 6fq) ---
+# Al: BowlerIQ owns each brand's lineups and reruns each partner's brand-art
+# task by itself; admin shows the lineup, the current images and the run
+# log, files a ball into a line by hand (a 'manual' placement no rule ever
+# removes), edits the task's palette/heroes, and has "Rerun now".
+
+ART_BASE_URL = os.environ.get("ART_BASE_URL", "https://img.bowleriq.io")
+_HEX = re.compile(r"^#[0-9a-fA-F]{6}$")
+
+
+def _art_url(key):
+    return f"{ART_BASE_URL}/{key}" if key else None
+
+
+def list_brand_stores(conn) -> list:
+    """GET /brand-stores: every brand_art task with its slot count and last run."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            select t.id::text, t.owner, b.id::text, b.name, t.enabled, t.status, t.last_run_at, t.last_full_run_at,
+                   t.last_result ->> 'status',
+                   (select count(*) from brand_art_slots s where s.task_id = t.id and s.image_key is not null),
+                   (select count(*) from brand_art_slots s where s.task_id = t.id and s.error is not null),
+                   (select count(*) from review_queue r where r.field_name = 'brand_line' and r.status = 'pending'
+                      and r.product_id in (select id from products where brand_id = b.id))
+            from tasks t join brands b on b.id = t.brand_id
+            where t.kind = 'brand_art'
+            order by b.name, t.owner
+        """)
+        return [{"task_id": r[0], "owner": r[1], "brand_id": r[2], "brand": r[3], "enabled": r[4], "status": r[5],
+                 "last_run_at": r[6], "last_full_run_at": r[7], "last_run_status": r[8], "images": r[9],
+                 "failed_slots": r[10], "unplaced": r[11]} for r in cur.fetchall()]
+
+
+def get_brand_store(conn, task_id: str) -> dict:
+    """GET /brand-stores/{task_id}: the task, its brand's lineups (with
+    every ball's name, photo and who placed it), its images and the last
+    10 runs, and the balls no line rule placed."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            select t.id::text, t.owner, b.id::text, b.name, t.enabled, t.status, t.params, t.triggers,
+                   t.last_run_at, t.last_full_run_at, t.last_result
+            from tasks t join brands b on b.id = t.brand_id where t.id::text = %s
+        """, (task_id,))
+        r = cur.fetchone()
+        if not r:
+            raise LookupError("No brand-store task with that id")
+        task = {"task_id": r[0], "owner": r[1], "brand_id": r[2], "brand": r[3], "enabled": r[4], "status": r[5],
+                "params": r[6], "triggers": r[7], "last_run_at": r[8], "last_full_run_at": r[9], "last_result": r[10]}
+        cur.execute("""
+            select g.key, g.label, g.source, l.id::text, l.key, l.label, l.assign_rule,
+                   p.id::text, p.name, p.status::text, p.release_date, lb.added_by, lb.note,
+                   (select coalesce(i.stored_url, i.source_url) from product_images i where i.product_id = p.id
+                     order by i.is_thumbnail desc nulls last, i.display_order limit 1)
+            from brand_groupings g
+            join brand_lines l on l.grouping_id = g.id
+            left join brand_line_balls lb on lb.line_id = l.id
+            left join products p on p.id = lb.product_id
+            where g.brand_id = %s
+            order by g.display_order, l.display_order, p.release_date desc nulls last, p.name
+        """, (task["brand_id"],))
+        groupings, gmap, lmap = [], {}, {}
+        for g_key, g_label, source, lid, l_key, l_label, rule, pid, pname, pstatus, rel, added_by, note, img in cur.fetchall():
+            g = gmap.get(g_key)
+            if g is None:
+                g = gmap[g_key] = {"key": g_key, "label": g_label, "source": source, "lines": []}
+                groupings.append(g)
+            line = lmap.get(lid)
+            if line is None:
+                line = lmap[lid] = {"line_id": lid, "key": l_key, "label": l_label,
+                                    "rule": (rule or {}).get("type", "manual"), "balls": []}
+                g["lines"].append(line)
+            if pid:
+                line["balls"].append({"product_id": pid, "name": pname, "status": pstatus, "release_date": rel,
+                                      "added_by": added_by, "note": note, "image_url": img})
+        cur.execute("""
+            select slot_key, kind, hero_type, featured, image_key, image_key_16x9, width, height, alt, method,
+                   generated_at, error
+            from brand_art_slots where task_id::text = %s order by kind desc, slot_key
+        """, (task_id,))
+        slots = [{"slot_key": s[0], "kind": s[1], "hero_type": s[2], "featured": s[3], "url": _art_url(s[4]),
+                  "url_16x9": _art_url(s[5]), "width": s[6], "height": s[7], "alt": s[8], "method": s[9],
+                  "generated_at": s[10], "error": s[11]} for s in cur.fetchall()]
+        cur.execute("""
+            select id::text, trigger, slots, status, detail, started_at, finished_at from task_runs
+            where task_id::text = %s order by started_at desc limit 10
+        """, (task_id,))
+        runs = [{"run_id": x[0], "trigger": x[1], "slots": x[2], "status": x[3], "detail": x[4],
+                 "started_at": x[5], "finished_at": x[6]} for x in cur.fetchall()]
+        cur.execute("""
+            select r.id::text, p.id::text, p.name, r.proposed_value, r.reason, r.created_at
+            from review_queue r join products p on p.id = r.product_id
+            where r.field_name = 'brand_line' and r.status = 'pending' and p.brand_id = %s
+            order by r.created_at desc
+        """, (task["brand_id"],))
+        unplaced = [{"review_id": x[0], "product_id": x[1], "name": x[2], "grouping": x[3], "reason": x[4],
+                     "created_at": x[5]} for x in cur.fetchall()]
+    return {**task, "groupings": groupings, "slots": slots, "runs": runs, "unplaced": unplaced}
+
+
+def update_brand_store(conn, task_id: str, params: dict = None, enabled: bool = None) -> dict:
+    """PATCH /brand-stores/{task_id}: replace params (palette must be two
+    #rrggbb colors) and/or enable/disable. A params change is picked up by
+    the next dispatch as changed slot inputs."""
+    if params is not None:
+        pal = params.get("palette") or {}
+        if not (_HEX.match(str(pal.get("background", ""))) and _HEX.match(str(pal.get("accent", "")))):
+            raise ValueError("palette needs a background and an accent color, each as #rrggbb")
+        heroes = params.get("heroes")
+        if heroes is not None and (not isinstance(heroes, list) or len(heroes) > 3):
+            raise ValueError("heroes is a list of at most 3 slots")
+    with conn.cursor() as cur:
+        cur.execute("""
+            update tasks set params = coalesce(%s::jsonb, params), enabled = coalesce(%s, enabled), updated_at = now()
+            where id::text = %s
+        """, (json.dumps(params) if params is not None else None, enabled, task_id))
+        if not cur.rowcount:
+            raise LookupError("No brand-store task with that id")
+    conn.commit()
+    return get_brand_store(conn, task_id)
+
+
+def queue_brand_art_rerun(conn, task_id: str, slots: list = None) -> dict:
+    """POST /brand-stores/{task_id}/rerun -- "Rerun now" (trigger 'manual'):
+    fire-and-forget to the article generator ({"brand_art": "run"}). A
+    ball product hero is a few Gemini calls, so a full run takes minutes;
+    poll GET /brand-stores/{task_id}."""
+    with conn.cursor() as cur:
+        cur.execute("select status from tasks where id::text = %s", (task_id,))
+        r = cur.fetchone()
+    if not r:
+        raise LookupError("No brand-store task with that id")
+    if r[0] in ("queued", "running"):
+        raise ValueError("This task is already running")
+    function_name = os.environ.get("PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME")
+    if not function_name:
+        return {"queued": False, "reason": "PRODUCT_ARTICLE_GENERATOR_FUNCTION_NAME is not configured"}
+    with conn.cursor() as cur:
+        cur.execute("update tasks set status = 'queued', updated_at = now() where id::text = %s", (task_id,))
+    conn.commit()
+    import boto3
+
+    payload = {"brand_art": "run", "task_id": task_id, "trigger": "manual", **({"slots": slots} if slots else {})}
+    try:
+        boto3.client("lambda").invoke(FunctionName=function_name, InvocationType="Event",
+                                      Payload=json.dumps(payload))
+    except Exception:
+        with conn.cursor() as cur:
+            cur.execute("update tasks set status = 'failed', updated_at = now() where id::text = %s", (task_id,))
+        conn.commit()
+        raise
+    return {"queued": True}
+
+
+def add_ball_to_line(conn, line_id: str, product_id: str) -> dict:
+    """POST /brand-lines/{line_id}/balls: file a ball by hand (added_by
+    'admin', which no rule removes), and resolve its pending 'brand_line'
+    review item for that grouping."""
+    with conn.cursor() as cur:
+        cur.execute("""
+            select g.key, g.brand_id from brand_lines l join brand_groupings g on g.id = l.grouping_id
+            where l.id::text = %s
+        """, (line_id,))
+        line = cur.fetchone()
+        if not line:
+            raise LookupError("No brand line with that id")
+        cur.execute("select brand_id from products where id::text = %s and product_type = 'ball'", (product_id,))
+        prod = cur.fetchone()
+        if not prod:
+            raise LookupError("No ball with that id")
+        if prod[0] != line[1]:
+            raise ValueError("That ball is a different brand's")
+        cur.execute("""
+            insert into brand_line_balls (line_id, product_id, position, added_by)
+            values (%s, %s, (select coalesce(max(position), 0) + 1 from brand_line_balls where line_id::text = %s), 'admin')
+            on conflict (line_id, product_id) do update set added_by = 'admin'
+        """, (line_id, product_id, line_id))
+        cur.execute("""
+            update review_queue set status = 'approved', resolved_at = now(), resolved_by = 'admin'
+            where product_id::text = %s and field_name = 'brand_line' and proposed_value = %s and status = 'pending'
+        """, (product_id, line[0]))
+    conn.commit()
+    return {"ok": True}
+
+
+def remove_ball_from_line(conn, line_id: str, product_id: str) -> dict:
+    """DELETE /brand-lines/{line_id}/balls/{product_id}. A rule-filed ball
+    comes back on the next dispatch if the brand still lists it there --
+    change the rule (or the brand's site) for that."""
+    with conn.cursor() as cur:
+        cur.execute("delete from brand_line_balls where line_id::text = %s and product_id::text = %s",
+                    (line_id, product_id))
+        if not cur.rowcount:
+            raise LookupError("That ball isn't in that line")
+    conn.commit()
+    return {"ok": True}
