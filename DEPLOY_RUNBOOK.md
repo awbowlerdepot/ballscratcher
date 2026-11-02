@@ -22802,7 +22802,7 @@ aws logs tail /aws/lambda/bowling-scraper-bowlerdepot-reconciliation --since 1d 
 psql -c "select count(*) from bowlerdepot_products bdp join products p on p.id = bdp.product_id where p.published and bdp.match_status = 'ambiguous'"   # 0 (or only new ones)
 ```
 
-### 6fq. Brand lineups, partner tasks and brand-store art (2026-11-02, branch `brand-art`)
+### 6fq. Brand lineups, partner tasks and brand-store art (2026-11-02, deployed 22:23 UTC)
 
 Requested by the Bowler Depot brand-stores session, for Al. His direction:
 BowlerIQ owns each brand's lineups, and Bowler Depot's brand-store art is a
@@ -22964,6 +22964,27 @@ After the deploy, draw Storm once without waiting for the schedule:
 ```bash
 aws lambda invoke --function-name bowling-scraper-product-article-generator --invocation-type Event --payload '{"brand_art": "run", "task_id": "179ee0e1-3fc0-48ad-be67-63e64a220af9", "trigger": "manual"}' --cli-binary-format raw-in-base64-out /dev/null
 ```
+
+**Deployed 2026-11-02.** Al's first `sam deploy` was run from the
+`brand-art` worktree. That never reached AWS: the worktree has no
+`samconfig.toml` (it's gitignored, see 6fn) and no build. So the branch
+was merged to `main` (8c0a0de) and deployed from the main checkout. The
+stack updated at 22:23 UTC, and the generator, resizer, partner and admin
+functions all have the new code. The `bowling-scraper-brand-art-dispatch`
+rule is enabled, and the admin site deployed from the `main` push.
+
+Storm's first real run went 22:25 to 22:30 UTC and succeeded:
+- all 8 slots drawn: hero-1 (Equinox Hybrid) and hero-2 (!Q Tour
+  Sapphire) by Gemini; hero-3 (Rolling Thunder 3 Ball Roller Signature
+  White / Blue with the Equinox Hybrid) and the five reaction-profile
+  lines composited;
+- every URL returns 200 `image/webp` with `public, max-age=3600`,
+  38–61 KB each;
+- `GET /v1/brands/{storm}/lineups`, invoked directly on the function,
+  returns 200 with art on all 5 non-empty reaction-profile lines and 3
+  heroes with their featured names and ids;
+- the lane-read lines (5/7/8 balls) have no images by design
+  (`line_groupings` is reaction-profile only).
 
 **Verify:**
 ```bash
