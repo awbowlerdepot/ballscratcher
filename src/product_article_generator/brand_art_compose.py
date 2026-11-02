@@ -187,20 +187,48 @@ def place(canvas: Image.Image, item: Image.Image, center_x: float, bottom: float
     return box
 
 
-def product_hero(size: tuple, palette: dict, focus: Image.Image, beside: Image.Image | None = None) -> Image.Image:
+BALL_INCHES = 8.5  # a bowling ball's diameter (USBC max 8.595")
+
+
+def _scaled(item: Image.Image, height: float) -> Image.Image:
+    scale = height / item.height
+    return item.resize((max(1, int(item.width * scale)), max(1, int(height))), Image.LANCZOS)
+
+
+def product_hero(size: tuple, palette: dict, focus: Image.Image, beside: Image.Image | None = None,
+                 focus_inches: float | None = None) -> Image.Image:
     """Al's "product hero": one product in focus. Either a single ball, or
     a non-ball product (a bag, shoes) with at most one ball beside it. The
     product sits right of center, leaving the left for the HTML headline
-    the theme lays over hero slides."""
+    the theme lays over hero slides.
+
+    TRUE SCALE. Al, on the first bag hero: "size ratios are way off" -- the
+    ball was drawn at a fixed share of the frame, so a 3-ball roller looked
+    barely twice the ball's height. With focus_inches (the product's
+    longest real dimension, as photographed -- brand_art.companion_inches)
+    the ball beside it is drawn at 8.5" on the same pixels-per-inch: the
+    product is fitted to the frame first, and the ball follows."""
     w, h = size
     wide = w / h > 1.5
     canvas = background(size, palette, glow_at=(0.64, 0.55))
     floor = h * 0.9
     if beside is None:
         place(canvas, focus, w * 0.64, floor, h * (0.74 if wide else 0.66))
+        return canvas
+    # Fit the product in its box (most of the height, about half the width).
+    box_h, box_w = h * (0.82 if wide else 0.76), w * (0.42 if wide else 0.5)
+    focus_h = min(box_h, box_w * focus.height / focus.width)
+    if focus_inches:
+        longest_px = focus_h * max(focus.width, focus.height) / focus.height
+        ball_h = longest_px / focus_inches * BALL_INCHES
     else:
-        place(canvas, focus, w * 0.66, floor, h * (0.8 if wide else 0.74))
-        place(canvas, beside, w * (0.44 if wide else 0.42), floor + h * 0.01, h * (0.46 if wide else 0.42))
+        ball_h = h * (0.46 if wide else 0.42)
+    focus_w = focus_h * focus.width / focus.height
+    cx = w * 0.68
+    place(canvas, focus, cx, floor, focus_h)
+    # The ball stands just in front of the product's lower left corner.
+    bx = cx - focus_w / 2 - ball_h * 0.15
+    place(canvas, beside, bx, floor + h * 0.01, ball_h)
     return canvas
 
 
@@ -213,10 +241,11 @@ def _row(canvas: Image.Image, items: list, left: float, right: float, floor: flo
     xs = [(left + right) / 2] if n == 1 else [left + i * (right - left) / (n - 1) for i in range(n)]
     central = sorted(range(n), key=lambda i: (abs(i - (n - 1) / 2), i))
     slot_of = {k: central[k] for k in range(n)}          # item k -> position
+    # Every ball is the same real size, so all are drawn the same size
+    # (Al: "size ratios are way off"); only the overlap order says which
+    # is in front.
     for k in reversed(range(n)):                          # back (last) to front (first)
-        front = k == 0
-        lift = 0 if front else canvas.height * 0.03
-        place(canvas, items[k], xs[slot_of[k]], floor - lift, item_h * (1.0 if front else 0.9))
+        place(canvas, items[k], xs[slot_of[k]], floor, item_h)
 
 
 def lineup_hero(size: tuple, palette: dict, items: list) -> Image.Image:
@@ -240,8 +269,10 @@ def line(size: tuple, palette: dict, balls: list) -> Image.Image:
     canvas = background(size, palette)
     n = len(balls)
     if n:
-        ball_h = h * (0.66 if n == 1 else 0.54 if n == 2 else 0.46 if n == 3 else 0.4)
-        half = {1: 0.0, 2: 0.2, 3: 0.3, 4: 0.36}[n] * w
+        # Equal-size balls need a margin at the frame's edge: with four,
+        # the outer ones touched it (2026-11-02 render).
+        ball_h = h * (0.62 if n == 1 else 0.5 if n == 2 else 0.42 if n == 3 else 0.35)
+        half = {1: 0.0, 2: 0.2, 3: 0.29, 4: 0.32}[n] * w
         _row(canvas, balls, w / 2 - half, w / 2 + half, h * 0.84, ball_h)
     return canvas
 

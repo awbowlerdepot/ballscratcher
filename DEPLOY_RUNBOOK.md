@@ -22869,6 +22869,14 @@ scrapers.
       date alone.
     - A `bigcommerce_product_id` on the hero pins a product while it's
       stocked.
+    - **True scale.** Al: "size ratios are way off". The ball beside a
+      companion is drawn at 8.5" against the product's real size. That
+      size comes from `companion_inches` (typical sizes by type: 3-ball
+      roller 45" with its handle up, 2-ball roller 40", 1-ball roller 30",
+      3-ball tote 30", 1-ball tote 13", shoes 12", gloves 9"), because
+      BigCommerce's own dimensions are placeholders (10×10×10 on every
+      Storm bag). Balls in a line or lineup image are all drawn the same
+      size.
     - If Bowler Depot stocks nothing else from the brand, the slot is the
       3rd newest ball.
 - Hero types, per Al:
@@ -22959,7 +22967,7 @@ psql -c "select status, trigger, started_at, detail -> 'slots' from task_runs or
 ```
 
 **Tests:**
-- `tests/test_brand_art.py` (21): compositing, cut-outs, assign-rule
+- `tests/test_brand_art.py` (23): compositing, cut-outs, assign-rule
   listing match (colorway pages, other brands on the same site), stock,
   companions, slot planning and hero picks, which trigger fired, and the
   Gemini fallback;

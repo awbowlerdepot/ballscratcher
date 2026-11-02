@@ -428,6 +428,37 @@ def _bag_tier(c: dict) -> int:
     return 0 if big and roller else 1 if big else 2 if roller else 3
 
 
+# A companion's longest real dimension as photographed, in inches, so the
+# ball beside it is drawn to scale (Al: "size ratios are way off").
+# BigCommerce's own dimensions are placeholders on these listings (10 x 10
+# x 10 on every Storm bag, 2026-11-02), so these are typical sizes by type,
+# matched on the store category path plus the name, first match wins.
+# Rollers are photographed with the handle up, so they include it.
+COMPANION_INCHES = [
+    (re.compile(r"\b([3-6] ball|triple|three ball)\b.*roller|roller.*\b([3-6] ball|triple)\b"), 45),
+    (re.compile(r"\b(2 ball|double)\b.*roller|roller.*\b(2 ball|double)\b"), 40),
+    (re.compile(r"roller"), 30),
+    (re.compile(r"\b([3-6] ball|triple|three ball)\b"), 30),       # 3-ball totes lie flat: ~30" long
+    (re.compile(r"\b(2 ball|double)\b"), 18),
+    (re.compile(r"backpack"), 20),
+    (re.compile(r"shoe bag"), 14),
+    (re.compile(r"\b(1 ball|single|solo|spare kit)\b|tote"), 13),
+    (re.compile(r"accessory bag"), 12),
+    (re.compile(r"shoe"), 12),
+    (re.compile(r"glove|wrist|support|positioner"), 9),
+    (re.compile(r"shirt|jersey|hoodie|jacket|polo|apparel"), 30),
+]
+COMPANION_INCHES_DEFAULT = {"bag": 20, "shoes": 12, "accessory": 9, "apparel": 30}
+
+
+def companion_inches(c: dict) -> float:
+    text = " ".join(c.get("categories") or []) + " " + c["name"].lower()
+    for pattern, inches in COMPANION_INCHES:
+        if pattern.search(text):
+            return inches
+    return COMPANION_INCHES_DEFAULT.get(c["kind"], 20)
+
+
 def pick_companion(companions: list, hero: dict) -> dict:
     """The non-ball product a companion hero features. A pinned
     bigcommerce_product_id (hero["bigcommerce_product_id"]) wins while it's
@@ -521,7 +552,8 @@ def plan_slots(task: dict, balls: list, lines: list, companions: list, stocked: 
             # companion is the brand's newest, even if hero-1 features it too.
             c = pick_companion(companions, h)
             items = [{"product_id": None, "bigcommerce_product_id": c["bigcommerce_product_id"], "name": c["name"],
-                      "kind": c["kind"], "photos": [c["photo"]]}, _ball_item(preferred[0])]
+                      "kind": c["kind"], "photos": [c["photo"]], "inches": companion_inches(c)},
+                     _ball_item(preferred[0])]
         else:
             ball = next_ball()
             if ball:
@@ -646,7 +678,7 @@ def render_slot(slot: dict, palette: dict, deps: dict) -> tuple:
     cut = compose.cutout(first_photo(focus, fetch)[0], deps.get("remove_bg"))
     beside = compose.cutout(first_photo(slot["items"][1], fetch)[0], deps.get("remove_bg")) if len(slot["items"]) > 1 else None
     for size in slot["sizes"]:
-        out.append((size, compose.product_hero(size, palette, cut, beside)))
+        out.append((size, compose.product_hero(size, palette, cut, beside, focus.get("inches"))))
     return out, method
 
 

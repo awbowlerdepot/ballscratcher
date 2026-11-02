@@ -296,3 +296,28 @@ def test_cutout_uses_remove_bg_for_flat_photos_and_falls_back_on_failure():
     calls = []
     compose.cutout(_png_cutout(), lambda raw: calls.append(1))
     assert calls == []                                  # already a cut-out: no model call
+
+
+def test_companion_inches_by_type():
+    def c(name, cat="", kind="bag"):
+        return {"name": name, "kind": kind, "categories": [cat]}
+    assert brand_art.companion_inches(c("Storm Rolling Thunder 3 Ball Roller", "bags > roller bags > 3 ball rollers")) == 45
+    assert brand_art.companion_inches(c("Storm Streamline 2 Ball Roller", "bags > roller bags > 2 ball rollers")) == 40
+    assert brand_art.companion_inches(c("Storm Rascal 1 Ball Roller", "bags > roller bags > 1 ball rollers")) == 30
+    assert brand_art.companion_inches(c("Storm 3 Ball Travel Tote Pro", "bags > tote bags > 3 ball totes")) == 30
+    assert brand_art.companion_inches(c("Storm Solo Single Tote", "bags > tote bags > 1 ball totes")) == 13
+    assert brand_art.companion_inches(c("Dexter SST 8", "shoes > mens", "shoes")) == 12
+    assert brand_art.companion_inches(c("Storm Wrist Support", "accessories > gloves", "accessory")) == 9
+
+
+def test_bag_hero_draws_the_ball_to_scale():
+    # A tall, narrow "roller" (1:3) at 45": the ball should be 8.5/45 of the
+    # roller's height, not a fixed share of the frame.
+    roller = Image.new("RGBA", (100, 300), (30, 30, 30, 255))
+    canvas = compose.product_hero((1600, 1200), PALETTE, roller, compose.cutout(_png_cutout()), focus_inches=45)
+    # The roller is fitted to 76% of 1200 = 912 px tall, so the ball is
+    # 912 * 8.5 / 45 = ~172 px. Measure the drawn ball by its blue.
+    px = canvas.load()
+    ys = [y for y in range(1200) for x in range(0, 1600, 4)
+          if px[x, y][2] > 120 and px[x, y][0] < 80 and px[x, y][1] < 80]
+    assert abs((max(ys) - min(ys)) - 912 * 8.5 / 45) < 8
