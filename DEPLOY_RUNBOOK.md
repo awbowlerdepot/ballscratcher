@@ -22645,6 +22645,53 @@ run's numbers: 1,924 balls (1,680 retired), 234 retired matched, 7 ambiguous,
   (`DOCKER_HOST` is needed because the Docker Desktop context lives in the
   real config.)
 
+### 6fo. Learn restyled to the new Bowler Depot store design (2026-11-01, branch `learn-restyle`, not deployed)
+
+**What and why.** Bowler Depot is replacing its store theme (Kansha) with a new BigCommerce Stencil theme (repo `awbowlerdepot/bowlerdepot-theme`). Al approved its design direction on 2026-11-01 (https://claude.ai/artifact/9pDXa8M2M4MXLsirP3k4vu). That brief settles that Learn moves to the new look too, "as a restyle of its tokens". Nothing from the old site carries over except the logo. The request came from the Bowlerdepot Theme Development session on Al's behalf: "you can send that off to bolwerIQ business intelligence. it has the learn site".
+
+**Changes (all in `bowlerdepot-learn/`):**
+- **Tokens.** `tailwind.config.js` now uses the theme's palette: ink `#141C2E`, pin `#D21F3C` / pin-dark `#A8172F`, maple `#DDAE6E` / `#F4E6D0`, oil `#2B76A3`, go `#17804A`, paper `#F5F6F8`, slate `#586276`, line `#DCE1EA`. The fonts are Big Shoulders Display (headings, uppercase), Instrument Sans (body) and Spline Sans Mono (numbers). Corners are 4px for fields and buttons and 6px for boxes; rounded-lg/xl/2xl are capped at 6px.
+  - The old token names (`paper`, `paper-border`, `muted`, `accent`, `secondary`, `alert`) are kept but now point at the new values, so existing classes restyle themselves.
+  - `index.css` swaps the Cabin/Space Grotesk import for the three new fonts and sets white pages. Underlined links now use a 2px maple underline that turns ink on hover, the same as the store's `bd-prose`. Links that weren't underlined before stay plain.
+- **Header (`components/Nav.tsx`).** Copied from the theme's `common/header.html` and `components/header/*`:
+  - an ink store bar ("Find your pro shop", shipping promise, store locations, gift certificates);
+  - a white sticky bar with the logo, a search box that submits to the store's `search.php`, and Account and Cart links;
+  - the store's category and page menu, with "Learn" in pin red as the current page;
+  - a slide-in `<dialog>` menu on phones.
+  - Learn's own tabs (its categories plus Ball Motion Plotter) are a fourth row, on paper, with "LEARN" in display type. On phones the row scrolls sideways and keeps the current tab in view.
+  - The store menu's links are copied by hand into `components/storeLinks.ts`, because the theme builds them from BigCommerce at render time. **Update that file when a store category or web page changes.**
+- **Footer (new `components/Footer.tsx`).** Copied from the theme's `common/footer.html` and `components/footer/*`: ink background, lane-arrow top edge, "Your pro shop" pointing to the store locations, the pro shop services tiles, and Shop / Learn & tools / Help & info columns.
+  - The wording comes from the theme's `lang/en.json`.
+  - Left out: the saved-store card, which needs the store picker on bowlerdepot.com; the newsletter form, because the BigCommerce endpoint is same-site; and the payment and social icons.
+  - The "not affiliated with any manufacturer" line stays.
+- **Pages.**
+  - Page h1s and section h2s use uppercase Big Shoulders. Card and list titles use Instrument Sans bold.
+  - Dark article and video heroes use ink instead of neutral-900.
+  - The "Shop this ball" box is an ink panel whose pin-red button is the page's one main action.
+  - `scripts/prerender.ts` gets the same heading and hero classes, so crawlers and no-JS readers see the new look.
+- **Plotter (`components/plotter/PlotterChart.tsx`, `plotterModel.ts`).** Learn's plotter now looks like the store's product-page plotter (theme `assets/js/theme/product/ball-data.js`):
+  - grid lines `#E4E8EF`, axis numbers in Spline Sans Mono and slate;
+  - the store's axis titles ("← Light oil · Heavy oil →", "Smooth ← Motion → Angular");
+  - a maple halo behind the selected ball;
+  - square-ish tags; grey retired balls with ink text.
+  - Suggestion colors come from the palette: more oil in oil blue, less oil in dark maple `#8F5D1C`, more angular in pin-dark, smoother in slate, and similar/closest in ink.
+  - How it works is unchanged: ball images, zoom, suggestions, panels.
+- **Not changed:**
+  - URLs: `/`, `/?category_id=…`, `/articles/<slug>`, `/plotter/`. The theme's `learn_reviews_url`, `learn_plotter_url` and `learn_tips_url` settings stay valid.
+  - The in-store signage page (`/signage/ball/…`), which has its own themes.
+  - The bowlerdepot.com product-page embed (`public/embeds/bowlerdepot-article-hero.js`, runbook 6fj).
+
+**Deploy (only with Al's OK).** Merge `learn-restyle` into `main` and push. The Deploy Learn Site workflow builds, prerenders and invalidates CloudFront.
+
+**Verify.**
+- learn.bowlerdepot.com at desktop width and at 375px:
+  - the header matches the store's, with Learn lit in the menu;
+  - the Learn tabs work;
+  - the footer has the lane-arrow edge;
+  - the plotter has a white grid, mono axis numbers and a maple halo on the selected ball;
+  - an article's "Shop this ball" button is pin red.
+- Spot-check a prerendered article with JavaScript off.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
