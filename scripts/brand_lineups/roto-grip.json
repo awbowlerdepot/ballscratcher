@@ -1,0 +1,60 @@
+{
+  "brand": "Roto Grip",
+  "owner": "bowlerdepot",
+  "theme_key": "rotogrip",
+  "task": {
+    "slug": "roto-grip",
+    "bigcommerce_brand_id": 43,
+    "palette": {
+      "background": "#191c1b",
+      "accent": "#e31937"
+    },
+    "palette_source": "near-black and Roto Grip red (its star logo), from the Roto Grip brand-store session (2026-11-03)"
+  },
+  "groupings": [
+    {
+      "key": "flare",
+      "label": "Shop by strength",
+      "theme_group": "Shop by strength",
+      "source": "Roto Grip flare tiers, mapped by Bowler Depot product id in the Roto Grip theme (bowlerdepot-theme-rotogrip, branch rotogrip-store, uncommitted 2026-11-03); filed by hand. Low Flare (the RG Jester Clear Polyester spare) is exclusive, so it's never in the hero mix",
+      "lines": [
+        {
+          "key": "high-flare",
+          "label": "High Flare",
+          "assign_rule": {
+            "type": "manual"
+          }
+        },
+        {
+          "key": "medium-high-flare",
+          "label": "Medium-High Flare",
+          "assign_rule": {
+            "type": "manual"
+          }
+        },
+        {
+          "key": "medium-flare",
+          "label": "Medium Flare",
+          "assign_rule": {
+            "type": "manual"
+          }
+        },
+        {
+          "key": "medium-low-flare",
+          "label": "Medium-Low Flare",
+          "assign_rule": {
+            "type": "manual"
+          }
+        },
+        {
+          "key": "low-flare",
+          "label": "Low Flare",
+          "assign_rule": {
+            "type": "manual",
+            "exclusive": true
+          }
+        }
+      ]
+    }
+  ]
+}

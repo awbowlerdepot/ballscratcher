@@ -23596,7 +23596,7 @@ url writes nothing).
 - The applied run's report is `hidden-balls-import-applied-2026-11-03.csv` in
   the 6fn/6fz session notes folder.
 
-### 6gb. Brand art for Radical, Motiv and Brunswick (2026-11-03, data only)
+### 6gb. Brand art for Radical, Motiv, Brunswick and Roto Grip (2026-11-03, data only)
 
 Each brand-store session (Radical, Motiv, Brunswick) asked for its brand's
 art, the same as Storm's and Hammer's. No code changed: each is a data
@@ -23608,6 +23608,7 @@ only mean loading its lineups and creating its task").
 | Radical | `radical.json` | 46 | #000000 / #fff200 | performance level, plus Polyester as exclusive (spare); Retired left out; 13 balls |
 | MOTIV | `motiv.json` | 56 | #3a3a3a / #f86615 | lane condition, 5 lines; 21 balls |
 | Brunswick | `brunswick.json` | 45 | #061b2b / #4a5bff | performance level, 4 lines (the theme's reaction-shape and Polyester lines are empty); 22 balls |
+| Roto Grip | `roto-grip.json` (slug `roto-grip`) | 43 | #191c1b / #e31937 | flare tiers ("Shop by strength"), plus Low Flare (the Jester polyester spare) as exclusive; 15 balls. Seeded from the uncommitted `rotogrip-store` worktree |
 
 **All three are filed by hand** (`manual` lines) from the product ids in
 each theme's `navigation.html`. None of these sites has a filter BowlerIQ
@@ -23624,6 +23625,10 @@ placed in a line until the theme lists it and the lineup is reloaded with
 - **Brunswick.** hero-1: Purple Rhino Pro (tied with Strategy Logic on
   2026-10-22; the first by name wins). hero-2: Purple Rhino Pro, Fury -
   Purple / Blue, Strategy Logic, Crown Victory Pearl.
+
+- **Roto Grip.** hero-1: Perfect Gem. hero-2: Perfect Gem, Hustle SOS
+  (tied with VP on date; higher demand wins), Gremlin Tour-X, hyped UP!.
+  Cosmos (4379) is current but in no tier in the theme yet.
 
 **Run:**
 ```bash
