@@ -84,6 +84,7 @@ import json
 import logging
 import os
 import re
+from collections import Counter
 from datetime import datetime, timezone
 from urllib.parse import quote_plus, urljoin
 
@@ -386,16 +387,24 @@ def list_price_sources_due(conn, limit: int) -> list:
     check path without a second query -- an 'api' row's css_selector is
     simply unused (still selected for shape-consistency with the 'scrape'
     rows, harmless since it's null on an api-fetch_method price_sites
-    row's default_css_selector)."""
+    row's default_css_selector).
+
+    Runbook 6fo / 058: also picks up a source price_checker itself switched
+    off because its BigCommerce listing went hidden (inactive_reason =
+    'listing_unavailable') -- it keeps being checked so sync_listing_
+    availability can switch it back on once the listing is live again. A
+    source an ADMIN paused (is_active false, inactive_reason null) stays
+    out, as before."""
     with conn.cursor() as cur:
         cur.execute(
             """
             select pps.id, pps.product_id, pps.product_url,
                    coalesce(pps.css_selector, ps.default_css_selector) as css_selector,
-                   ps.fetch_method, pps.external_product_id
+                   ps.fetch_method, pps.external_product_id, pps.is_active, pps.inactive_reason
             from product_price_sources pps
             join price_sites ps on ps.id = pps.price_site_id
-            where pps.status = 'approved' and pps.is_active = true and ps.is_active = true
+            where pps.status = 'approved' and ps.is_active = true
+              and (pps.is_active = true or pps.inactive_reason = 'listing_unavailable')
             order by pps.last_checked_at asc nulls first, pps.id asc
             limit %s
             """,
@@ -406,6 +415,7 @@ def list_price_sources_due(conn, limit: int) -> list:
         {
             "id": r[0], "product_id": r[1], "product_url": r[2], "css_selector": r[3],
             "fetch_method": r[4], "external_product_id": r[5],
+            "is_active": r[6] if len(r) > 6 else True, "inactive_reason": r[7] if len(r) > 7 else None,
         }
         for r in rows
     ]
@@ -438,10 +448,11 @@ def list_price_sources_for_products(conn, product_ids: list) -> list:
             """
             select pps.id, pps.product_id, pps.product_url,
                    coalesce(pps.css_selector, ps.default_css_selector) as css_selector,
-                   ps.fetch_method, pps.external_product_id
+                   ps.fetch_method, pps.external_product_id, pps.is_active, pps.inactive_reason
             from product_price_sources pps
             join price_sites ps on ps.id = pps.price_site_id
-            where pps.status = 'approved' and pps.is_active = true and ps.is_active = true
+            where pps.status = 'approved' and ps.is_active = true
+              and (pps.is_active = true or pps.inactive_reason = 'listing_unavailable')
               and pps.product_id = any(%s::uuid[])
             order by pps.product_id asc, pps.id asc
             """,
@@ -452,6 +463,7 @@ def list_price_sources_for_products(conn, product_ids: list) -> list:
         {
             "id": r[0], "product_id": r[1], "product_url": r[2], "css_selector": r[3],
             "fetch_method": r[4], "external_product_id": r[5],
+            "is_active": r[6] if len(r) > 6 else True, "inactive_reason": r[7] if len(r) > 7 else None,
         }
         for r in rows
     ]
@@ -511,6 +523,7 @@ def check_sources(conn, sources: list, session=None) -> dict:
     checked = 0
     succeeded = 0
     failed = 0
+    listing_flips = Counter()  # 6fo, see sync_listing_availability
 
     for source in scrape_sources:
         result = check_price_source(source, session=session)
@@ -528,13 +541,20 @@ def check_sources(conn, sources: list, session=None) -> dict:
                 source["id"], {"price": None, "raw_price_text": None, "error": "no result returned for this source"}
             )
             record_price_check(conn, source["id"], result)
+            flipped = sync_listing_availability(conn, source, result)
+            if flipped:
+                listing_flips[flipped] += 1
             checked += 1
             if result.get("error"):
                 failed += 1
             else:
                 succeeded += 1
 
-    return {"sources_checked": checked, "succeeded": succeeded, "failed": failed}
+    summary = {"sources_checked": checked, "succeeded": succeeded, "failed": failed}
+    if listing_flips:
+        summary["listing_unavailable_deactivated"] = listing_flips["deactivated"]
+        summary["listing_live_reactivated"] = listing_flips["reactivated"]
+    return summary
 
 
 def get_bigcommerce_credentials():
@@ -932,6 +952,70 @@ def record_sku_stock_and_get_in_stock(conn, product_id: str, price_source_id: st
     return determine_in_stock_from_sku_quantities([m["quantity"] for m in match["matched"]])
 
 
+def bigcommerce_listing_live(product: dict):
+    """True when the storefront page works (is_visible, and availability
+    isn't 'disabled' -- the same rule as bowlerdepot_reconciliation.
+    is_purchasable), False when it 404s. None when the response doesn't
+    carry is_visible at all, so a trimmed response can never switch a
+    source off by accident; the real v3 /catalog/products response always
+    includes it."""
+    if "is_visible" not in product:
+        return None
+    return bool(product.get("is_visible")) and product.get("availability") != "disabled"
+
+
+def sync_listing_availability(conn, source: dict, result: dict) -> str:
+    """Runbook 6fo: keeps a BigCommerce source's is_active in step with its
+    listing. On 2026-11-02 Spurline hid 258 zero-stock balls on
+    bowlerdepot.com, 214 of them linked to BowlerIQ balls with approved
+    sources, and every API (partner bowlerdepot_url, public ecommerce_url/
+    price, plotter recommendable) kept advertising those 404ing pages,
+    because they all gate on approved + is_active and nothing here looked
+    at visibility.
+
+    - Listing not live (hidden, disabled, deleted) and source active ->
+      is_active false, inactive_reason 'listing_unavailable'.
+    - Listing live again and WE switched it off -> back on, reason cleared.
+      Spurline may re-show a ball once it's restocked, and the link should
+      come back with it without anyone re-approving anything.
+    - An admin's pause (is_active false, reason null) is never undone, and
+      an unknown listing_live (fetch failure, None) changes nothing.
+
+    Either flip bumps products.content_changed_at: no 044 trigger watches
+    product_price_sources, so /v1/changes would never resend the ball with
+    its bowlerdepot_url gone (or back) -- same reason as 6fm's script.
+    Returns 'deactivated', 'reactivated' or ''."""
+    live = result.get("listing_live")
+    if live is None:
+        return ""
+    with conn.cursor() as cur:
+        if live is False and source.get("is_active", True):
+            cur.execute(
+                """
+                update product_price_sources set is_active = false, inactive_reason = 'listing_unavailable'
+                where id = %s and is_active = true
+                """,
+                (source["id"],),
+            )
+            action = "deactivated"
+        elif live is True and source.get("inactive_reason") == "listing_unavailable":
+            cur.execute(
+                """
+                update product_price_sources set is_active = true, inactive_reason = null
+                where id = %s and inactive_reason = 'listing_unavailable'
+                """,
+                (source["id"],),
+            )
+            action = "reactivated"
+        else:
+            return ""
+        if not cur.rowcount:
+            return ""
+        cur.execute("update products set content_changed_at = now() where id = %s", (source["product_id"],))
+    conn.commit()
+    return action
+
+
 def check_bigcommerce_sources(conn, sources: list, session=None) -> dict:
     """The 'api' fetch_method sibling of check_price_source, batched over
     the WHOLE list of sources at once (one get_bigcommerce_credentials()
@@ -987,9 +1071,12 @@ def check_bigcommerce_sources(conn, sources: list, session=None) -> dict:
             continue
         product = products_by_id.get(str(external_id))
         if product is None:
+            # A successful fetch that doesn't return this id: the listing was
+            # deleted, so its URL is as dead as a hidden one (6fo).
             results[source["id"]] = {
                 "price": None, "raw_price_text": None,
                 "error": f"BigCommerce no longer has product id {external_id}",
+                "listing_live": False,
             }
             continue
         # base_url isn't part of the source row itself (it's a price_sites-
@@ -1012,6 +1099,7 @@ def check_bigcommerce_sources(conn, sources: list, session=None) -> dict:
             "error": fields["error"],
             "cost_price": fields["cost_price"],
             "in_stock": in_stock,
+            "listing_live": bigcommerce_listing_live(product),
         }
 
     return results

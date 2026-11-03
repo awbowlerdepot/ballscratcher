@@ -1,0 +1,22 @@
+-- 058_price_source_inactive_reason.sql -- why a price source is switched
+-- off, when it wasn't an admin (DEPLOY_RUNBOOK.md 6fo).
+--
+-- On 2026-11-02 Spurline hid 258 balls on bowlerdepot.com (every weight at
+-- zero stock, none ever in its feed). 214 of them were BowlerIQ balls whose
+-- BowlerDepot listing had been linked the day before (6fm), each with an
+-- approved product_price_sources row -- so the partner/public APIs kept
+-- handing out a bowlerdepot_url (and price) for a page that now 404s.
+-- Every API read gates on status = 'approved' and is_active, and
+-- price_checker never looked at whether the listing was visible.
+--
+-- price_checker now switches a BigCommerce source off when its listing is
+-- hidden, disabled or deleted, and back on when the listing is live again
+-- (Spurline may re-show a ball once it's restocked). To do that it has to
+-- tell its own switch-off apart from an admin's pause, which it must never
+-- undo -- hence this column:
+--   null                  = active, or paused by an admin (admin_api clears
+--                           it whenever an admin sets is_active);
+--   'listing_unavailable' = is_active was set false by price_checker; the
+--                           source is still checked so it can come back.
+
+alter table product_price_sources add column if not exists inactive_reason text;

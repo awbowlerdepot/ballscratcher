@@ -144,6 +144,8 @@ class _FakeCursor:
         self.existing_bigcommerce_rows = existing_bigcommerce_rows or []
         self.bigcommerce_url_updates = []  # list of (product_url, external_product_id, id)
         self.bigcommerce_reopens = []  # list of (id, match_confidence), runbook 6fn
+        self.listing_flips = []  # list of (action, source_id), runbook 6fo
+        self.content_bumps = []  # product ids whose content_changed_at was bumped
         # list of dicts: product_id, external_product_id, match_status --
         # bowlerdepot_products rows list_bowlerdepot_matches reads
         # (016_price_tracking_bigcommerce.sql).
@@ -174,14 +176,17 @@ class _FakeCursor:
         self.executed.append((q, params))
 
         if q.startswith("select pps.id, pps.product_id, pps.product_url"):
-            active = [s for s in self.sources if s.get("is_active", True) and s.get("is_site_active", True)]
+            active = [s for s in self.sources
+                      if (s.get("is_active", True) or s.get("inactive_reason") == "listing_unavailable")
+                      and s.get("is_site_active", True)]
             if "pps.product_id = any(%s::uuid[])" in q:
                 (product_ids,) = params
                 matched = [s for s in active if s["product_id"] in product_ids]
                 matched.sort(key=lambda s: (s["product_id"], s["id"]))
                 self._rows = [
                     (s["id"], s["product_id"], s["product_url"], s["css_selector"],
-                     s.get("fetch_method", "scrape"), s.get("external_product_id"))
+                     s.get("fetch_method", "scrape"), s.get("external_product_id"),
+                     s.get("is_active", True), s.get("inactive_reason"))
                     for s in matched
                 ]
             else:
@@ -189,12 +194,13 @@ class _FakeCursor:
                 ordered = sorted(active, key=lambda s: (s.get("last_checked_at") is not None, s.get("last_checked_at"), s["id"]))
                 self._rows = [
                     (s["id"], s["product_id"], s["product_url"], s["css_selector"],
-                     s.get("fetch_method", "scrape"), s.get("external_product_id"))
+                     s.get("fetch_method", "scrape"), s.get("external_product_id"),
+                     s.get("is_active", True), s.get("inactive_reason"))
                     for s in ordered[:limit]
                 ]
             self.description = [
                 ("id",), ("product_id",), ("product_url",), ("css_selector",),
-                ("fetch_method",), ("external_product_id",),
+                ("fetch_method",), ("external_product_id",), ("is_active",), ("inactive_reason",),
             ]
 
         elif q.startswith("insert into product_price_history"):
@@ -303,6 +309,25 @@ class _FakeCursor:
                 "source": "price_checker", "status": "pending",
             })
             self._next_review_queue_id += 1
+
+        elif q.startswith("update product_price_sources set is_active = false, inactive_reason = 'listing_unavailable'"):
+            (source_id,) = params
+            hits = [r for r in self.sources if r["id"] == source_id and r.get("is_active", True)]
+            for r in hits:
+                r.update(is_active=False, inactive_reason="listing_unavailable")
+            self.listing_flips.append(("deactivated", source_id))
+            self.rowcount = len(hits)
+
+        elif q.startswith("update product_price_sources set is_active = true, inactive_reason = null"):
+            (source_id,) = params
+            hits = [r for r in self.sources if r["id"] == source_id and r.get("inactive_reason") == "listing_unavailable"]
+            for r in hits:
+                r.update(is_active=True, inactive_reason=None)
+            self.listing_flips.append(("reactivated", source_id))
+            self.rowcount = len(hits)
+
+        elif q.startswith("update products set content_changed_at = now() where id = %s"):
+            self.content_bumps.append(params[0])
 
         else:
             raise NotImplementedError(f"FakeCursor doesn't support: {q}")
@@ -1891,3 +1916,107 @@ if __name__ == "__main__":
         finally:
             mp.undo()
     print(f"\n{passed}/{len(tests)} tests passed")
+
+
+# --- Runbook 6fo / 058: a BigCommerce source follows its listing. On
+# 2026-11-02 Spurline hid 258 zero-stock balls on bowlerdepot.com; 214 were
+# linked BowlerIQ balls with approved sources, and the APIs kept handing out
+# their 404ing bowlerdepot_url. ---
+
+def test_bigcommerce_listing_live():
+    assert app.bigcommerce_listing_live({"is_visible": True, "availability": "available"}) is True
+    assert app.bigcommerce_listing_live({"is_visible": True, "availability": "preorder"}) is True
+    assert app.bigcommerce_listing_live({"is_visible": False, "availability": "available"}) is False
+    assert app.bigcommerce_listing_live({"is_visible": True, "availability": "disabled"}) is False
+    assert app.bigcommerce_listing_live({"price": 1.0}) is None  # field missing: never a reason to switch off
+
+
+def test_check_bigcommerce_sources_flags_hidden_and_deleted_listings(monkeypatch):
+    monkeypatch.setattr(app, "get_bigcommerce_credentials", lambda: ("store123", "tok"))
+    session = _FakeBigCommerceSession([
+        {"id": 100, "price": 149.99, "is_visible": False, "availability": "available", "variants": []},
+        {"id": 200, "price": 99.99, "is_visible": True, "availability": "available", "variants": []},
+    ])
+    sources = [{"id": "hidden", "product_id": "p1", "external_product_id": "100"},
+               {"id": "live", "product_id": "p2", "external_product_id": "200"},
+               {"id": "gone", "product_id": "p3", "external_product_id": "300"}]
+    results = app.check_bigcommerce_sources(_FakeConn(), sources, session=session)
+    assert results["hidden"]["listing_live"] is False
+    assert results["hidden"]["price"] == 149.99   # the check itself is still recorded
+    assert results["live"]["listing_live"] is True
+    assert results["gone"]["listing_live"] is False
+
+
+def test_check_bigcommerce_sources_fetch_failure_never_flags(monkeypatch):
+    monkeypatch.setattr(app, "get_bigcommerce_credentials", lambda: ("store123", "tok"))
+
+    def _boom(*a, **k):
+        raise RuntimeError("503")
+
+    monkeypatch.setattr(app, "fetch_bigcommerce_products_by_ids", _boom)
+    results = app.check_bigcommerce_sources(_FakeConn(), [{"id": "s", "product_id": "p", "external_product_id": "1"}])
+    assert "listing_live" not in results["s"]
+
+
+def _api_check(monkeypatch, sources, live_by_id):
+    monkeypatch.setattr(app, "check_bigcommerce_sources", lambda conn, srcs, session=None: {
+        s["id"]: {"price": 1.0, "raw_price_text": None, "error": None, "listing_live": live_by_id[s["id"]]}
+        for s in srcs
+    })
+    conn = _FakeConn(sources=sources)
+    return conn, app.check_sources(conn, sources)
+
+
+def test_check_sources_switches_off_source_whose_listing_is_hidden(monkeypatch):
+    sources = [{"id": "s1", "product_id": "p1", "fetch_method": "api", "external_product_id": "100",
+                "is_active": True, "inactive_reason": None}]
+    conn, result = _api_check(monkeypatch, sources, {"s1": False})
+    assert sources[0]["is_active"] is False and sources[0]["inactive_reason"] == "listing_unavailable"
+    assert conn.cursor().content_bumps == ["p1"]   # /v1/changes resends the ball
+    assert result["listing_unavailable_deactivated"] == 1
+
+
+def test_check_sources_switches_back_on_when_listing_returns(monkeypatch):
+    sources = [{"id": "s1", "product_id": "p1", "fetch_method": "api", "external_product_id": "100",
+                "is_active": False, "inactive_reason": "listing_unavailable"}]
+    conn, result = _api_check(monkeypatch, sources, {"s1": True})
+    assert sources[0]["is_active"] is True and sources[0]["inactive_reason"] is None
+    assert conn.cursor().content_bumps == ["p1"]
+    assert result["listing_live_reactivated"] == 1
+
+
+def test_check_sources_never_undoes_an_admin_pause(monkeypatch):
+    # is_active false with no reason = an admin paused it; a live listing
+    # doesn't change that (list_price_sources_due wouldn't even pick it).
+    sources = [{"id": "s1", "product_id": "p1", "fetch_method": "api", "external_product_id": "100",
+                "is_active": False, "inactive_reason": None}]
+    conn, result = _api_check(monkeypatch, sources, {"s1": True})
+    assert sources[0]["is_active"] is False
+    assert conn.cursor().listing_flips == [] and conn.cursor().content_bumps == []
+    assert "listing_live_reactivated" not in result
+
+
+def test_check_sources_no_flip_when_state_already_matches_or_unknown(monkeypatch):
+    sources = [
+        {"id": "live", "product_id": "p1", "fetch_method": "api", "external_product_id": "1", "is_active": True},
+        {"id": "off", "product_id": "p2", "fetch_method": "api", "external_product_id": "2",
+         "is_active": False, "inactive_reason": "listing_unavailable"},
+        {"id": "unknown", "product_id": "p3", "fetch_method": "api", "external_product_id": "3", "is_active": True},
+    ]
+    conn, result = _api_check(monkeypatch, sources, {"live": True, "off": False, "unknown": None})
+    assert conn.cursor().listing_flips == [] and conn.cursor().content_bumps == []
+    assert result == {"sources_checked": 3, "succeeded": 3, "failed": 0}
+
+
+def test_list_price_sources_due_includes_listing_unavailable_but_not_admin_paused():
+    conn = _FakeConn(sources=[
+        {"id": "auto-off", "product_id": "p1", "product_url": "u", "css_selector": None, "fetch_method": "api",
+         "is_active": False, "inactive_reason": "listing_unavailable", "last_checked_at": None},
+        {"id": "admin-off", "product_id": "p2", "product_url": "u", "css_selector": None, "fetch_method": "api",
+         "is_active": False, "inactive_reason": None, "last_checked_at": None},
+    ])
+    due = app.list_price_sources_due(conn, limit=10)
+    assert [s["id"] for s in due] == ["auto-off"]
+    assert due[0]["is_active"] is False and due[0]["inactive_reason"] == "listing_unavailable"
+    q = conn.cursor().executed[0][0]
+    assert "(pps.is_active = true or pps.inactive_reason = 'listing_unavailable')" in q

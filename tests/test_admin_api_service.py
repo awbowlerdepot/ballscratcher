@@ -835,11 +835,13 @@ class FakeCursor:
         elif q.startswith("update product_price_sources set") and "returning id" in q:
             source_id = params[-1]
             set_clause_text = q.split("set ", 1)[1].split(" where", 1)[0]
-            columns = [c.split(" =", 1)[0].strip() for c in set_clause_text.split(",")]
+            clauses = [c.split(" =", 1) for c in set_clause_text.split(",")]
             row = self.db.get("product_price_sources", {}).get(source_id)
             if row is not None:
-                for column, value in zip(columns, params[:-1]):
-                    row[column] = value
+                values = iter(params[:-1])
+                for column, rhs in clauses:
+                    # "inactive_reason = null" (6fo) is a literal, not a %s param.
+                    row[column.strip()] = None if rhs.strip() == "null" else next(values)
                 self._last_result = (source_id,)
             else:
                 self._last_result = None
@@ -6171,6 +6173,26 @@ def test_update_product_price_source_can_deactivate():
     service.update_product_price_source(conn, "src-1", is_active=False)
 
     assert db["product_price_sources"]["src-1"]["is_active"] is False
+
+
+def test_update_product_price_source_is_active_clears_inactive_reason():
+    # 6fo: price_checker only switches a source back on while inactive_reason
+    # is 'listing_unavailable' -- an admin's is_active choice clears it, so
+    # an admin pause is never undone by the listing coming back.
+    for is_active in (False, True):
+        db = _fake_db_with_price_source()
+        db["product_price_sources"]["src-1"].update(is_active=False, inactive_reason="listing_unavailable")
+        conn = FakeConnection(db)
+        service.update_product_price_source(conn, "src-1", is_active=is_active)
+        assert db["product_price_sources"]["src-1"]["is_active"] is is_active
+        assert db["product_price_sources"]["src-1"]["inactive_reason"] is None
+
+
+def test_update_product_price_source_url_only_keeps_inactive_reason():
+    db = _fake_db_with_price_source()
+    db["product_price_sources"]["src-1"].update(is_active=False, inactive_reason="listing_unavailable")
+    service.update_product_price_source(FakeConnection(db), "src-1", product_url="https://x.example/p")
+    assert db["product_price_sources"]["src-1"]["inactive_reason"] == "listing_unavailable"
 
 
 def test_update_product_price_source_missing_raises():

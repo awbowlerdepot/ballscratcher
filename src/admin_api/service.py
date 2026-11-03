@@ -4556,7 +4556,15 @@ def update_product_price_source(conn, source_id: str, product_url: str = None,
                                  css_selector: str = None, is_active: bool = None) -> dict:
     """Partial update, same convention as update_price_site. is_active is
     how an admin pauses checking a source (e.g. a retailer stopped
-    carrying this ball) without losing its price_price_history."""
+    carrying this ball) without losing its price_price_history.
+
+    Setting is_active (either way) also clears inactive_reason (058,
+    runbook 6fo): price_checker switches a BigCommerce source off with
+    reason 'listing_unavailable' when its listing is hidden, and back on
+    when it's live again -- but only while that reason is set. Clearing it
+    here makes an admin's choice final: an admin pause stays paused even
+    if the listing comes back, and an admin re-enable of a still-hidden
+    listing is simply switched off again on its next check."""
     with conn.cursor() as cur:
         set_clauses = []
         params = []
@@ -4569,6 +4577,7 @@ def update_product_price_source(conn, source_id: str, product_url: str = None,
         if is_active is not None:
             set_clauses.append("is_active = %s")
             params.append(is_active)
+            set_clauses.append("inactive_reason = null")
 
         if not set_clauses:
             cur.execute("select id from product_price_sources where id = %s", (source_id,))

@@ -22645,6 +22645,79 @@ run's numbers: 1,924 balls (1,680 retired), 234 retired matched, 7 ambiguous,
   (`DOCKER_HOST` is needed because the Docker Desktop context lives in the
   real config.)
 
+### 6fo. A BowlerDepot price source follows its listing: off when hidden, back on when live (migration 058) (2026-11-02)
+
+**What happened.** On 2026-11-02 Spurline hid 258 balls on bowlerdepot.com
+(`is_visible` false). Every weight was at zero, and none was ever in Classic's
+feed. Matched against BowlerIQ (read-only, by BigCommerce id, then part number,
+then name):
+- 214 are balls linked on 2026-11-01 (6fm), matched by BigCommerce id. Every
+  one had an **approved, active** price source.
+- 1 matched by exact name (Brunswick Method Solid).
+- 43 had no match: about 4 are spelling variants of balls we have (Pay Back,
+  Zig Zag, Hell Cat XLR8, Rhino Black/Blue/Silver) and about 35 are genuinely
+  missing (mostly Storm and Roto Grip). The import is a separate task.
+
+So for 214 balls the partner API's `bowlerdepot_url`, the public API's
+`ecommerce_url`/price and the plotter's `recommendable` pointed at a page that
+404s. Every one of those reads gates on `status = 'approved' and is_active`.
+price_checker never looked at visibility, and 6fn's reconciliation only stops
+*new* links to hidden listings.
+
+**Fix.**
+- **Migration 058**: `product_price_sources.inactive_reason text`. Null means
+  active, or paused by an admin. `'listing_unavailable'` means price_checker
+  switched it off.
+- **price_checker**: `check_bigcommerce_sources` sets `listing_live` on each
+  result. It is false when the listing is hidden or `availability =
+  'disabled'` (`bigcommerce_listing_live`, the same rule as reconciliation's
+  `is_purchasable`), or when a successful fetch no longer returns the id
+  (deleted). It is unset on a fetch or credentials failure, and None when the
+  response has no `is_visible` field.
+- `sync_listing_availability` runs after every BigCommerce check:
+  - not live and active: `is_active = false, inactive_reason =
+    'listing_unavailable'`;
+  - live again and switched off by us: back on, reason cleared, so a restocked
+    ball Spurline re-shows gets its link back with no re-approval;
+  - an admin pause (reason null) is never undone;
+  - either flip bumps `products.content_changed_at`, so `/v1/changes` resends
+    the ball.
+- `list_price_sources_due` and `list_price_sources_for_products` also pick up
+  `listing_unavailable` sources, so they keep being checked. The check summary
+  gains `listing_unavailable_deactivated` / `listing_live_reactivated` when
+  anything flipped.
+- **admin_api** `update_product_price_source`: setting `is_active` either way
+  clears `inactive_reason`, so the admin's choice is final. An admin re-enable
+  of a still-hidden listing is switched off again on its next check.
+
+**Tests:** `test_price_checker.py` 141 (8 new): `bigcommerce_listing_live`;
+hidden and deleted listings flagged, fetch failure never flagged; switch off,
+switch back on, admin pause never undone, no flip when nothing changed; the
+due query includes `listing_unavailable` but not an admin pause.
+`test_admin_api_service.py` 465 (2 new): `is_active` clears the reason, a
+URL-only edit keeps it.
+
+**Deploy, in this order** (the new code reads `inactive_reason`, so the
+migration goes first):
+```bash
+psql -f db/migrations/058_price_source_inactive_reason.sql
+sam build && sam deploy
+```
+Then check every product with an approved BowlerDepot source now (463 on
+2026-11-02, in two invokes of ~232 to stay inside the 280 s timeout), instead of
+waiting for the daily rotation:
+```bash
+aws lambda invoke --region us-west-1 --function-name bowling-scraper-price-checker --cli-read-timeout 300 --payload file://price_check_1.json --cli-binary-format raw-in-base64-out /tmp/pc1.json && cat /tmp/pc1.json
+aws lambda invoke --region us-west-1 --function-name bowling-scraper-price-checker --cli-read-timeout 300 --payload file://price_check_2.json --cli-binary-format raw-in-base64-out /tmp/pc2.json && cat /tmp/pc2.json
+```
+The two `listing_unavailable_deactivated` counts should add up to at least 214.
+
+**Verify:**
+```bash
+psql -c "select s.is_active, s.inactive_reason, count(*) from product_price_sources s join price_sites ps on ps.id = s.price_site_id where ps.api_provider = 'bigcommerce' and s.status = 'approved' group by 1, 2 order by 1, 2"
+curl -s https://api.bowleriq.io/articles/motiv-subzero-forge | python3 -c "import json,sys; print(json.load(sys.stdin).get('product', {}).get('ecommerce_url'))"   # None once its listing is off
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
