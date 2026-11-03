@@ -23353,6 +23353,14 @@ Hammer lineup, task or palette.
 
 **Data (`scripts/brand_lineups/hammer.json`):**
 - BigCommerce brand 38.
+- Seeded from the Hammer worktree's theme navigation
+  (`bowlerdepot-theme-hammer`, branch `hammer-store`), which maps the
+  families by BigCommerce product id: 20 balls. The Hammer session noted
+  that the `bowlerdepot-theme-brands` copy still has search URLs there.
+  That copy lists Black Widow Spare+ and the Black Widow Viz-A-Ball under
+  Black Widow, so the line mix now skips any ball in an exclusive (spare)
+  line. Otherwise hero-2 would have featured the Spare+, the family's
+  newest.
 - Grouping `family`: Black Widow (excluding spares), Zero Mercy, Purple
   Pearl Urethane, Effect and Vibe. These are partial `fields` rules on the
   name, taken from the theme's Hammer navigation.
@@ -23371,11 +23379,11 @@ Hammer lineup, task or palette.
 would treat the partial family lines as complete and flag about 20 balls):
 ```bash
 sam build && sam deploy
-.venv/bin/python scripts/load_brand_lineups.py scripts/brand_lineups/hammer.json --apply
+.venv/bin/python scripts/load_brand_lineups.py scripts/brand_lineups/hammer.json --theme-nav ../bicommerce-site/bowlerdepot-theme-hammer/templates/components/brand-store/navigation.html --apply
 aws lambda invoke --function-name bowling-scraper-product-article-generator --invocation-type Event --payload '{"brand_art": "run", "task_id": "<hammer task id from the load>", "trigger": "manual"}' --cli-binary-format raw-in-base64-out /dev/null
 ```
 
-**Tests:** `tests/test_brand_art.py` (38): partial groupings never flag,
+**Tests:** `tests/test_brand_art.py` (39): partial groupings never flag, a spare is never in the line mix,
 and the Hammer family rules match its ball names and keep the spares out.
 
 ### 6fz. A BowlerDepot price source follows its listing: off when hidden, back on when live (migration 060) (2026-11-02)

@@ -14,7 +14,7 @@
     {
       "key": "family",
       "label": "Family",
-      "source": "hammerbowling.com families, as the Bowler Depot theme lists them (templates/components/brand-store/navigation.html, 2026-11-02); matched on our ball names",
+      "source": "Bowler Depot theme (bowlerdepot-theme-hammer, branch hammer-store) navigation.html: the families mapped by BigCommerce product id, seeded from it; new releases filed by name",
       "lines": [
         {
           "key": "black-widow",
@@ -86,7 +86,8 @@
             ]
           }
         }
-      ]
+      ],
+      "theme_group": "Family"
     },
     {
       "key": "ball-type",
@@ -109,5 +110,6 @@
         }
       ]
     }
-  ]
+  ],
+  "theme_key": "hammer"
 }
