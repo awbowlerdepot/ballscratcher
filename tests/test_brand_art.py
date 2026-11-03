@@ -619,3 +619,46 @@ def test_dispatch_hands_every_due_run_to_one_queue():
         brand_art.list_enabled_tasks, brand_art.gather, brand_art.load_slots = orig
     assert len(calls) == 1 and [r["task_id"] for r in calls[0]] == ["t1", "t2"]
     assert calls[0][0]["trigger"] == "weekly_sweep"
+
+
+# --- Runbook 6gd: pale brand backgrounds (Radical #fff200) ----------------
+
+YELLOW = {"background": "#fff200", "accent": "#000000"}
+
+
+def _png(size, color):
+    buf = io.BytesIO()
+    Image.new("RGB", size, color).save(buf, "PNG")
+    return buf.getvalue()
+
+
+def test_light_backgrounds_are_flat_with_no_accent_halo():
+    assert compose.is_light("#fff200") and not compose.is_light("#191c1b") and not compose.is_light("#000000")
+    im = compose.background((400, 300), YELLOW)
+    assert im.getpixel((200, 160)) == (255, 242, 0) and im.getpixel((0, 0)) == (255, 242, 0)
+
+
+def test_light_hero_asks_for_a_flat_backdrop_and_rejects_an_amber_one():
+    prompts = []
+    def amber(pid, raw, theme, no_text, aspect):
+        prompts.append(theme)
+        return _png((2048, 1536) if aspect == "4:3" else (2048, 1152), (226, 170, 20))   # golden, not #fff200
+    slot = _plan_default()["hero-1"]
+    images, method = brand_art.render_slot(slot, YELLOW, {"fetch_bytes": lambda u: _png_cutout(), "gemini": amber,
+                                                          "sleep": lambda s: None})
+    assert method == "composite"
+    assert "exactly #fff200" in prompts[0] and "no vignette" in prompts[0] and "glow" not in prompts[0].split("no colored glow")[0]
+    def flat(pid, raw, theme, no_text, aspect):
+        return _png((2048, 1536) if aspect == "4:3" else (2048, 1152), (252, 240, 6))
+    images, method = brand_art.render_slot(slot, YELLOW, {"fetch_bytes": lambda u: _png_cutout(), "gemini": flat,
+                                                          "sleep": lambda s: None})
+    assert method == "gemini"
+
+
+def test_dark_backgrounds_keep_the_glow_backdrop():
+    prompts = []
+    def ok(pid, raw, theme, no_text, aspect):
+        prompts.append(theme)
+        return _png((2048, 1536) if aspect == "4:3" else (2048, 1152), (25, 28, 27))
+    brand_art.render_slot(_plan_default()["hero-1"], PALETTE, {"fetch_bytes": lambda u: _png_cutout(), "gemini": ok})
+    assert "deep #191c1b" in prompts[0]

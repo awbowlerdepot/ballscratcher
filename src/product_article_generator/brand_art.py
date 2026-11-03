@@ -722,6 +722,39 @@ HERO_BACKDROP_THEME = (
     "{accent} glow behind the ball; the ball sits in the right half of the frame and the left third is calm, empty "
     "backdrop (a headline is laid over it later in HTML)"
 )
+# Runbook 6gd. Al, via the Radical brand-store session, on Radical's
+# hero-1 (palette #fff200 / #000000): "a dark black glow around the Intel
+# Recon Hybrid ... please redraw both hero-1 files on a clean flat #fff200
+# ... with no black vignette", and the 4:3 "reads amber/golden rather than
+# #fff200". HERO_BACKDROP_THEME's "deep {background}" and "{accent} glow"
+# are right for a dark band (Storm, Hammer) and wrong for a pale one, so a
+# light background gets its own backdrop, and the result's backdrop is
+# checked against the band's color (backdrop_matches).
+HERO_BACKDROP_LIGHT = (
+    "a seamless, flat studio backdrop of exactly {background} -- that exact color, not darker, warmer or more "
+    "golden -- evenly lit from edge to edge: no vignette, no darkening toward the edges or corners, no colored glow, "
+    "rim light or halo around the ball, only a soft natural contact shadow directly under the ball; the ball sits in "
+    "the right half of the frame and the left third is calm, empty backdrop (a headline is laid over it later in "
+    "HTML)"
+)
+BACKDROP_TOLERANCE = 36   # max channel difference from the band's color, at the frame's edges
+
+
+def backdrop_matches(im, value: str, tolerance: int = BACKDROP_TOLERANCE) -> bool:
+    """True when the frame's edges (top corners, left middle, top middle --
+    away from the ball and its shadow) are within `tolerance` of the band's
+    color, so the art blends into it."""
+    want = compose.hex_rgb(value)
+    w, h = im.size
+    small = im.convert("RGB").resize((64, 48))
+    spots = [(2, 2), (61, 2), (2, 24), (32, 2), (8, 12)]
+    for x, y in spots:
+        px = small.getpixel((x, y))
+        if max(abs(a - b) for a, b in zip(px, want)) > tolerance:
+            return False
+    return True
+
+
 HERO_NO_TEXT = (
     " There must be no text, words, letters, numbers, logos or brand marks anywhere in the image other than what "
     "is printed on the ball itself in the reference photo; no props, no lane, no pins, no people."
@@ -838,7 +871,8 @@ def render_ball_product_hero(item: dict, size: tuple, palette: dict, deps: dict)
     raw, _ = first_photo(item, deps["fetch_bytes"])
     if gen and deps.get("_gemini_failed") != item["product_id"]:
         aspect = "16:9" if size[0] / size[1] > 1.5 else "4:3"
-        theme = HERO_BACKDROP_THEME.format(**palette)
+        light = compose.is_light(palette["background"])
+        theme = (HERO_BACKDROP_LIGHT if light else HERO_BACKDROP_THEME).format(**palette)
         for attempt in range(GEMINI_HERO_ATTEMPTS):
             try:
                 png = gen(item["product_id"], raw, theme, HERO_NO_TEXT, aspect)
@@ -848,8 +882,12 @@ def render_ball_product_hero(item: dict, size: tuple, palette: dict, deps: dict)
                 continue
             if png:
                 from PIL import Image, ImageOps
-                im = Image.open(io.BytesIO(png)).convert("RGB")
-                return ImageOps.fit(im, size, Image.LANCZOS), "gemini"
+                im = ImageOps.fit(Image.open(io.BytesIO(png)).convert("RGB"), size, Image.LANCZOS)
+                if light and not backdrop_matches(im, palette["background"]):
+                    logger.info("brand-art hero attempt %d for %s: backdrop isn't %s", attempt + 1, item["name"],
+                                palette["background"])
+                    continue
+                return im, "gemini"
         # Don't spend the other size's attempts once one size has failed:
         # the slot falls back to the composite for both (render_slot).
         deps["_gemini_failed"] = item["product_id"]

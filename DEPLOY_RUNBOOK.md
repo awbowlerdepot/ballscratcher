@@ -23682,6 +23682,38 @@ psql -c "select b.name, r.trigger, r.status, r.started_at, r.finished_at from ta
 **Tests:** `tests/test_brand_art.py` (41): Gemini errors back off 20s/40s;
 dispatch hands every due run to a single queue.
 
+### 6gd. Brand art on a pale brand color: flat backdrop, no accent halo (2026-11-03, not deployed)
+
+Al flagged Radical's hero-1, through the Radical brand-store session. On
+Radical's new palette (#fff200 band, #000000 accent), the 16:9 had "a
+dark black glow around the Intel Recon Hybrid", and the 4:3 backdrop
+"reads amber/golden rather than #fff200". The cause is the product-hero
+backdrop prompt, which asks for a "deep {background}" with a "{accent}
+glow" behind the ball. That's right for a dark band (Storm, Hammer,
+Motiv) and wrong for a pale one. The composite fallback painted the same
+accent glow.
+
+**Changes:**
+- `brand_art_compose.is_light` uses relative luminance above 0.6. A pale
+  background is drawn as a flat fill, with no accent glow.
+- `brand_art.HERO_BACKDROP_LIGHT` is used for a pale background. It asks
+  for a seamless flat backdrop of exactly the band's color, evenly lit,
+  with no vignette, glow or halo, and only a contact shadow.
+- `brand_art.backdrop_matches` samples the frame's edges, away from the
+  ball. A light-palette Gemini image whose backdrop is more than 36 per
+  channel off the band's color is rejected and retried. After the
+  attempts run out, it falls back to the flat composite.
+- Dark palettes are unchanged.
+
+**Deploy:** `sam build && sam deploy`. Then redraw Radical's hero-1:
+```bash
+aws lambda invoke --function-name bowling-scraper-product-article-generator --invocation-type Event --payload '{"brand_art": "run", "task_id": "dc232272-50e6-48fe-8387-585c39af187e", "slots": ["hero-1"], "trigger": "manual"}' --cli-binary-format raw-in-base64-out /dev/null
+```
+
+**Tests:** 3 new in `tests/test_brand_art.py` (44): a light palette is a
+flat fill; the light prompt is used and an amber backdrop is rejected
+while a matching one passes; dark palettes keep the glow prompt.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

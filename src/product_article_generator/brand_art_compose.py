@@ -149,11 +149,21 @@ def cutout(image_bytes: bytes, remove_bg=None) -> Image.Image:
     return cut.crop(box) if box else cut
 
 
+def is_light(value: str) -> bool:
+    """A pale brand background (Radical's #fff200), by relative luminance."""
+    r, g, b = (c / 255 for c in hex_rgb(value))
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.6
+
+
 def background(size: tuple, palette: dict, glow_at: tuple = (0.5, 0.55)) -> Image.Image:
     """The brand's background color with a soft glow of its accent color
     behind the products. Drawn, not generated: no texture, no marks."""
     w, h = size
     canvas = Image.new("RGB", size, hex_rgb(palette["background"]))
+    if is_light(palette["background"]):
+        # Runbook 6gd: on a pale background the accent "glow" (Radical's
+        # black) reads as a dark halo, so a light palette is a flat fill.
+        return canvas
     glow = Image.new("L", size, 0)
     gx, gy = int(glow_at[0] * w), int(glow_at[1] * h)
     r = int(0.42 * max(w, h))
