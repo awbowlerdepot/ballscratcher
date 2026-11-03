@@ -23605,7 +23605,7 @@ only mean loading its lineups and creating its task").
 
 | Brand | File | BigCommerce brand | Palette | Lines (seeded from the store's theme worktree) |
 |---|---|---|---|---|
-| Radical | `radical.json` | 46 | #000000 / #fff200 | performance level, plus Polyester as exclusive (spare); Retired left out; 13 balls |
+| Radical | `radical.json` | 46 | #fff200 / #000000 (was #000000 / #fff200; the Radical session moved its hero band to yellow with black type) | performance level, plus Polyester as exclusive (spare); Retired left out; 13 balls |
 | MOTIV | `motiv.json` | 56 | #3a3a3a / #f86615 | lane condition, 5 lines; 21 balls |
 | Brunswick | `brunswick.json` | 45 | #061b2b / #4a5bff | performance level, 4 lines (the theme's reaction-shape and Polyester lines are empty); 22 balls |
 | Roto Grip | `roto-grip.json` (slug `roto-grip`) | 43 | #191c1b / #e31937 | flare tiers ("Shop by strength"), plus Low Flare (the Jester polyester spare) as exclusive; 15 balls. Seeded from the uncommitted `rotogrip-store` worktree |
@@ -23629,6 +23629,16 @@ placed in a line until the theme lists it and the lineup is reloaded with
 - **Roto Grip.** hero-1: Perfect Gem. hero-2: Perfect Gem, Hustle SOS
   (tied with VP on date; higher demand wins), Gremlin Tour-X, hyped UP!.
   Cosmos (4379) is current but in no tier in the theme yet.
+
+**First runs, 2026-11-03.** Three brands were started at once, and
+Vertex AI returned 429 "Resource has been exhausted". The slides that
+couldn't get a Gemini image fell back to the composite: Motiv hero-2,
+Brunswick hero-1, and both Roto Grip heroes. Radical didn't run at all,
+because it was started with the dry run's task id, which doesn't survive
+the rollback (the real id is `dc232272-50e6-48fe-8387-585c39af187e`).
+All of them were redrawn one brand at a time. **The daily dispatch has the
+same problem**: it starts every brand's run at once, so a weekly sweep
+across six brands can hit the quota. See the follow-up below.
 
 **Run:**
 ```bash

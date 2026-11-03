@@ -6,10 +6,10 @@
     "slug": "radical",
     "bigcommerce_brand_id": 46,
     "palette": {
-      "background": "#000000",
-      "accent": "#fff200"
+      "background": "#fff200",
+      "accent": "#000000"
     },
-    "palette_source": "Radical yellow, from the Radical brand-store session (2026-11-03)"
+    "palette_source": "Radical yellow hero band (#fff200) with black type, from the Radical brand-store session (2026-11-03; was black / yellow)"
   },
   "groupings": [
     {
