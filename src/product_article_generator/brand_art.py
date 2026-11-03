@@ -520,20 +520,25 @@ def _join(names: list) -> str:
 def plan_slots(task: dict, balls: list, lines: list, companions: list, stocked: set,
                today: datetime.date) -> list:
     """Every slot the task draws, with its inputs and their fingerprint.
-    Slots: one per line of the groupings in params.line_groupings (all
-    groupings when unset), then the hero slots from params.heroes
-    (DEFAULT_HEROES). A slot with nothing to draw (a line with no current
-    ball that has a photo) is left out, and its old image stays."""
+    Slots: the hero slots from params.heroes (DEFAULT_HEROES), plus one
+    line image per line of the groupings named in params.line_groupings.
+
+    Line images are OFF unless a task names groupings (runbook 6ft). Al,
+    through the Bowler Depot brand-stores session: Bowler Depot "doesn't
+    need line images after all. Each one only showed the balls listed right
+    below it" -- so "drop line slots from the brand-art task for every
+    brand". Heroes and lineups are still wanted. A slot with nothing to
+    draw (a line with no current ball that has a photo) is left out."""
     params = task["params"]
     palette = params["palette"]
     brand = task["brand_name"]
-    groupings = params.get("line_groupings")
+    groupings = params.get("line_groupings") or []
     by_id = {b["product_id"]: b for b in balls if b["photos"]}
     newest_first = list(by_id.values())  # list_brand_balls order
     slots = []
 
     for line in lines:
-        if groupings and line["grouping_key"] not in groupings:
+        if line["grouping_key"] not in groupings:
             continue
         members = [by_id[p] for p in line["ball_ids"] if p in by_id]
         members.sort(key=lambda b: (b["release_date"] or datetime.date.min), reverse=True)

@@ -372,3 +372,12 @@ def test_storm_ball_type_rules_match_the_names_al_listed():
     assert entry.search("TROPICAL SURGE TEAL-BLUE") and entry.search("Tropical Surge Kiwi-Apple-Avocado")
     for n in ["Phaze II", "Identity", "Equinox Hybrid", "IQ Tour"]:
         assert not spare.search(n) and not entry.search(n), n
+
+
+def test_no_line_images_unless_a_task_names_groupings():
+    # Runbook 6ft: "drop line slots from the brand-art task for every brand".
+    balls = [_ball("b1", "Equinox Hybrid", datetime.date(2026, 9, 4), bc=11)]
+    task = _task()
+    task["params"].pop("line_groupings")
+    slots = brand_art.plan_slots(task, balls, [_line("strong-symmetrical", ["b1"])], [], {11}, TODAY)
+    assert [s["slot_key"] for s in slots] == ["hero-1"]

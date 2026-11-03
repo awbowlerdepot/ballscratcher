@@ -210,11 +210,16 @@ function BrandStoreDetailView({ taskId }: { taskId: string }) {
         </div>
       </Card>
 
-      <Card title="Line images">
-        <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
-          {lines.length ? lines.map((s) => <SlotCard key={s.slot_key} slot={s} />) : <p className="text-sm text-ink-500">None drawn yet.</p>}
-        </div>
-      </Card>
+      {/* Line images are off unless the task names line_groupings (runbook 6ft). */}
+      {lines.length ? (
+        <Card title="Line images">
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
+            {lines.map((s) => (
+              <SlotCard key={s.slot_key} slot={s} />
+            ))}
+          </div>
+        </Card>
+      ) : null}
 
       {data.unplaced.length ? (
         <Card title="Balls no line rule placed">
@@ -292,7 +297,7 @@ function BrandStoreDetailView({ taskId }: { taskId: string }) {
 
       <Card title="Task settings">
         <p className="mb-2 text-xs text-ink-500">
-          palette (background, accent), line_groupings (which groupings get line images), heroes (up to 3: product
+          palette (background, accent), heroes (up to 3: product
           heroes pick newest_ball or newest_companion; lineup heroes take a line or ball_ids). Saving a change redraws
           the affected images at the next daily run, or now with Rerun.
         </p>

@@ -23118,6 +23118,35 @@ psql -c "begin; update products set status = 'current' where name = 'Identity' a
 sets the override, other fields still use single-column updates, set and
 clear, and bad status / unknown product.
 
+### 6ft. Brand art: no line images unless a task asks for them (2026-11-02)
+
+Al, through the Bowler Depot brand-stores session: Bowler Depot "doesn't
+need line images after all. Each one only showed the balls listed right
+below it", so "drop line slots from the brand-art task for every brand".
+Heroes and lineups are still wanted.
+
+**Changes:**
+- `brand_art.plan_slots` draws line images only for the groupings a task
+  names in `params.line_groupings`. Absent or empty means none. It used to
+  mean all groupings.
+- Storm's data file and task no longer name any.
+- The admin Brand Stores page hides the Line images card when there are
+  none.
+
+**Data, after the deploy** (not before: the 6fq code reads a missing
+`line_groupings` as "every grouping" and would draw lane-read and
+ball-type lines too):
+```sql
+update tasks set params = params - 'line_groupings', updated_at = now() where kind = 'brand_art';
+delete from brand_art_slots where kind = 'line';
+```
+Deleting the rows takes the line art out of `GET /v1/brands/{id}/lineups`
+(`art: []`) and admin. The five Storm `brand-art/storm/line-*.webp`
+objects (about 230 KB in all) are left in the bucket: they cost a
+fraction of a cent a month, and nothing links to them any more.
+
+**Tests:** 1 new in `tests/test_brand_art.py` (26).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

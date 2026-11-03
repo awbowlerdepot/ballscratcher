@@ -8,10 +8,7 @@
     "palette": {
       "background": "#191c1b",
       "accent": "#009d90"
-    },
-    "line_groupings": [
-      "reaction-profile"
-    ]
+    }
   },
   "groupings": [
     {
