@@ -365,6 +365,10 @@ def test_exclusive_lines_exempt_their_balls_and_settle_old_flags():
     assert out["unplaced"] == [{"grouping": "reaction-profile", "product_id": "x"}]   # not "mix"
     settles = [p for q, p in executed if q.startswith("update review_queue set status = 'approved'")]
     assert ("reaction-profile", ["a", "mix"]) in settles
+    # 6fw: flags on balls that are no longer current published balls close.
+    closes = [(q, p) for q, p in executed if q.startswith("update review_queue r set status = 'rejected'")]
+    assert len(closes) == 1 and closes[0][1] == ("storm",)
+    assert "not (p.status = 'current' and p.published and p.product_type = 'ball')" in closes[0][0]
 
 
 def test_storm_ball_type_rules_match_the_names_al_listed():

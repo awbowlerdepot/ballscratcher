@@ -23283,6 +23283,30 @@ redraw only happens when its balls change or on the weekly sweep.
 and the background check ("All four shelf bags match references; no extra
 items visible").
 
+### 6fw. Brand lineups: flags on balls that retire are closed (2026-11-03)
+
+After 6fs retired Storm's Identity and Identity B/C/P, their four pending
+`brand_line` review items stayed open. `apply_assign_rules` only settled
+flags for balls it had placed or exempted, and a retired ball is never
+either. They were closed by hand on 2026-11-03 (`rejected`, `resolved_by =
+'brand_art'`). Al: "fix the retired flag clearing and deploy it".
+
+**Change:** every `apply_assign_rules` run (daily dispatch, Rerun now)
+first closes the brand's pending `brand_line` items whose ball is no longer
+a current published ball: retired by the brand, retired by a status
+override, or unpublished. They're closed as `rejected`, `resolved_by =
+'brand_art'`.
+
+**Deploy:** `sam build && sam deploy` (product_article_generator only).
+
+**Verify:**
+```bash
+psql -c "select count(*) from review_queue r join products p on p.id = r.product_id where r.field_name = 'brand_line' and r.status = 'pending' and p.status <> 'current'"   # 0
+```
+
+**Tests:** `tests/test_brand_art.py` (36) asserts the close runs, scoped
+to the brand.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

@@ -322,6 +322,17 @@ def apply_assign_rules(conn, brand_id: str, balls: list, fetch_html, sleep=time.
     unplaced = []
     names = {b["product_id"]: b["name"] for b in balls}
     with conn.cursor() as cur:
+        # A ball that's no longer a current published ball (retired, by
+        # the brand or by a status override -- 6fs) can't be "unplaced":
+        # its pending flags are closed. Runbook 6fw: Storm's Identity balls
+        # kept four flags after Al retired them ("identity are discontinued
+        # limited releases").
+        cur.execute("""
+            update review_queue r set status = 'rejected', resolved_at = now(), resolved_by = 'brand_art'
+            from products p
+            where p.id = r.product_id and r.field_name = 'brand_line' and r.status = 'pending'
+              and p.brand_id = %s and not (p.status = 'current' and p.published and p.product_type = 'ball')
+        """, (brand_id,))
         for gkey, g in ruled.items():
             # A pending item whose ball has since been placed (or is now
             # exempt) is settled by this run, not left for a person.
