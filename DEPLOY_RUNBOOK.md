@@ -23307,7 +23307,7 @@ psql -c "select count(*) from review_queue r join products p on p.id = r.product
 **Tests:** `tests/test_brand_art.py` (36) asserts the close runs, scoped
 to the brand.
 
-### 6fx. Learn plotter: `?brand=` opens it with one brand showing (2026-11-03)
+### 6fx. Learn plotter: `?brand=` opens it with one brand showing (2026-11-03, deployed)
 
 Requested by the Bowler Depot brand-stores session for Al. The Storm
 brand store links to `https://learn.bowlerdepot.com/plotter/?brand=Storm`
@@ -23330,8 +23330,9 @@ filter lived in local state only.
 - turning Hammer on then showed Hammer and Roto Grip;
 - `?brand=Nope` showed all 11 brands.
 
-**Deploy (only with Al's OK):** push to `main`. The Deploy Learn Site
-workflow builds and prerenders.
+**Deployed 2026-11-03.** Al: "yes push it". Pushed 7134bc4, and Deploy
+Learn Site run 41564666225 succeeded. Live,
+`learn.bowlerdepot.com/plotter/?brand=Storm` opens with only Storm on.
 
 ## 7. Ongoing operations
 
