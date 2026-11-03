@@ -23003,7 +23003,7 @@ psql -c "select status, trigger, started_at, detail -> 'slots' from task_runs or
 - `test_admin_api_service.py` (461) and `test_product_article_generator.py`
   (186) unchanged and passing.
 
-### 6fr. Brand lineups: "exclusive" lines for balls a brand doesn't profile; Storm's spare and entry-level balls (2026-11-02, not deployed)
+### 6fr. Brand lineups: "exclusive" lines for balls a brand doesn't profile; Storm's spare and entry-level balls (2026-11-02, deployed 2026-11-03)
 
 Storm's first brand-art run (6fq) flagged 22 current Storm balls that
 stormbowling.com puts in no reaction profile or lane read. Each was
@@ -23375,8 +23375,13 @@ Hammer lineup, task or palette.
 - hero-2: Zero Mercy Hybrid, Black Widow 3.0 Dynasty, Deep Ocean Vibe,
   Purple Pearl Urethane 78D, Full Effect, by demand.
 
-**Deploy, then load, then run** (the same order as 6fr: the deployed code
-would treat the partial family lines as complete and flag about 20 balls):
+**Already partly live.** The 6fz deploy (2026-11-03 05:46 UTC, from
+another session) was built from a `main` that already had the partial
+flag and the tie fix, so both are deployed. The spare skip (f697952)
+isn't. It has to be deployed before Hammer is drawn, or hero-2 features
+the Black Widow Spare+.
+
+**Deploy, then load, then run:**
 ```bash
 sam build && sam deploy
 .venv/bin/python scripts/load_brand_lineups.py scripts/brand_lineups/hammer.json --theme-nav ../bicommerce-site/bowlerdepot-theme-hammer/templates/components/brand-store/navigation.html --apply
