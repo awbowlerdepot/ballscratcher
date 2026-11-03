@@ -17,6 +17,14 @@ import DisplayAd from "../components/DisplayAd";
 //
 // ?ball=<product id> selects a ball and zooms to it and its suggestions --
 // the article panel's "Open in the plotter" link and shared links use it.
+//
+// ?brand=<brand name> opens with only that brand showing (runbook 6fx). Al,
+// via the Bowler Depot brand-stores session: the Storm brand store links
+// here with ?brand=Storm ("Open the full plotter", "Compare balls on the
+// plotter"), using the store's brand name, so it's matched
+// case-insensitively (the store's "Motiv" is our "MOTIV"). An unknown name
+// shows every brand. It only sets the starting filter: the shopper can turn
+// other brands back on, and ?ball= works alongside it.
 
 // Desktop (lg+): full-width landscape chart with the details as a card
 // floating in its top-left corner (runbook 6ce). Smaller screens keep the
@@ -143,6 +151,16 @@ export default function PlotterPage() {
   }, [points, extraBall]);
   const selected = selectedId ? (byId.get(selectedId) ?? null) : null;
   const brands = useMemo(() => [...new Set(points.map((p) => p.brand_name))].sort(), [points]);
+  // ?brand= (6fx): applied once, when the balls first load.
+  const brandParamApplied = useRef(false);
+  useEffect(() => {
+    if (brandParamApplied.current || !brands.length) return;
+    brandParamApplied.current = true;
+    const wanted = (searchParams.get("brand") || "").trim().toLowerCase();
+    if (!wanted) return;
+    const match = brands.find((b) => b.toLowerCase() === wanted);
+    if (match) setHiddenBrands(new Set(brands.filter((b) => b !== match)));
+  }, [brands, searchParams]);
   const visible = useMemo(() => points.filter((p) => !hiddenBrands.has(p.brand_name)), [points, hiddenBrands]);
   // Suggestions honor the brand filter (runbook 6fh). With every brand
   // showing, the server's precomputed neighbors are used as-is; once any
@@ -255,7 +273,7 @@ export default function PlotterPage() {
     <div>
       <header className="mb-6 max-w-3xl">
         <p className="text-xs font-semibold uppercase tracking-wide text-muted">Tools</p>
-        <h1 className="font-display text-3xl font-semibold text-ink">Ball Motion Plotter</h1>
+        <h1 className="font-display text-4xl font-black uppercase leading-[.92] md:text-5xl text-ink">Ball Motion Plotter</h1>
         <p className="mt-2 text-muted">
           Every current ball on one chart: how much oil it handles (across) and how sharply it moves on the backend (up).
           Pick a ball to see similar balls from other brands and what to try if you want a bit more or less in any
@@ -414,7 +432,7 @@ export default function PlotterPage() {
                 </div>
               ) : (
                 <div className="rounded-xl border border-dashed border-paper-border p-5 text-sm text-muted">
-                  <p className="font-display text-base font-semibold text-ink">Pick a ball</p>
+                  <p className="text-base font-bold text-ink">Pick a ball</p>
                   <p className="mt-1">
                     Tap any ball on the chart, or search above, to see similar balls from other brands and the nearest
                     step toward more oil, less oil, a sharper move, or a smoother one.

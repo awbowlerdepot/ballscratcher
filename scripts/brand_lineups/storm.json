@@ -1,0 +1,147 @@
+{
+  "brand": "Storm",
+  "theme_key": "storm",
+  "owner": "bowlerdepot",
+  "task": {
+    "slug": "storm",
+    "bigcommerce_brand_id": 42,
+    "palette": {
+      "background": "#191c1b",
+      "accent": "#009d90"
+    }
+  },
+  "groupings": [
+    {
+      "key": "reaction-profile",
+      "label": "Reaction profile",
+      "theme_group": "Reaction profile",
+      "source": "stormbowling.com bowling-balls listing, filter[custom20] (read 2026-11-02)",
+      "lines": [
+        {
+          "key": "strong-symmetrical",
+          "label": "Strong Symmetrical",
+          "assign_rule": {
+            "type": "brand_listing",
+            "platform": "commercebuild",
+            "url": "https://www.stormbowling.com/products/equipment/bowling-balls/?per_page=100&sort_by=1&filter%5Bcustom20%5D%5B0%5D=strong-symmetrical"
+          }
+        },
+        {
+          "key": "smooth-symmetrical",
+          "label": "Smooth Symmetrical",
+          "assign_rule": {
+            "type": "brand_listing",
+            "platform": "commercebuild",
+            "url": "https://www.stormbowling.com/products/equipment/bowling-balls/?per_page=100&sort_by=1&filter%5Bcustom20%5D%5B0%5D=smooth-symmetrical"
+          }
+        },
+        {
+          "key": "clean-symmetrical",
+          "label": "Clean Symmetrical",
+          "assign_rule": {
+            "type": "brand_listing",
+            "platform": "commercebuild",
+            "url": "https://www.stormbowling.com/products/equipment/bowling-balls/?per_page=100&sort_by=1&filter%5Bcustom20%5D%5B0%5D=clean-symmetrical"
+          }
+        },
+        {
+          "key": "powerful-asymmetrical",
+          "label": "Powerful Asymmetrical",
+          "assign_rule": {
+            "type": "brand_listing",
+            "platform": "commercebuild",
+            "url": "https://www.stormbowling.com/products/equipment/bowling-balls/?per_page=100&sort_by=1&filter%5Bcustom20%5D%5B0%5D=powerful-asymmetrical"
+          }
+        },
+        {
+          "key": "responsive-asymmetrical",
+          "label": "Responsive Asymmetrical",
+          "assign_rule": {
+            "type": "brand_listing",
+            "platform": "commercebuild",
+            "url": "https://www.stormbowling.com/products/equipment/bowling-balls/?per_page=100&sort_by=1&filter%5Bcustom20%5D%5B0%5D=responsive-asymmetrical"
+          }
+        },
+        {
+          "key": "controlled-asymmetrical",
+          "label": "Controlled Asymmetrical",
+          "assign_rule": {
+            "type": "brand_listing",
+            "platform": "commercebuild",
+            "url": "https://www.stormbowling.com/products/equipment/bowling-balls/?per_page=100&sort_by=1&filter%5Bcustom20%5D%5B0%5D=controlled-asymmetrical"
+          }
+        }
+      ]
+    },
+    {
+      "key": "lane-read",
+      "label": "Lane read",
+      "theme_group": "Lane read",
+      "source": "stormbowling.com bowling-balls listing, filter[brand] (the site's own name for its lane-read facet; read 2026-11-02)",
+      "lines": [
+        {
+          "key": "early-read",
+          "label": "Earlier read and more control",
+          "assign_rule": {
+            "type": "brand_listing",
+            "platform": "commercebuild",
+            "url": "https://www.stormbowling.com/products/equipment/bowling-balls/?per_page=100&sort_by=1&filter%5Bbrand%5D%5B0%5D=earlier-read-and-more-control"
+          }
+        },
+        {
+          "key": "midlane-read",
+          "label": "Balanced midlane read",
+          "assign_rule": {
+            "type": "brand_listing",
+            "platform": "commercebuild",
+            "url": "https://www.stormbowling.com/products/equipment/bowling-balls/?per_page=100&sort_by=1&filter%5Bbrand%5D%5B0%5D=balanced-mid-lane-read"
+          }
+        },
+        {
+          "key": "late-read",
+          "label": "More length and downlane motion",
+          "assign_rule": {
+            "type": "brand_listing",
+            "platform": "commercebuild",
+            "url": "https://www.stormbowling.com/products/equipment/bowling-balls/?per_page=100&sort_by=1&filter%5Bbrand%5D%5B0%5D=more-length-and-down-lane-motion"
+          }
+        }
+      ]
+    },
+    {
+      "key": "ball-type",
+      "label": "Ball type",
+      "source": "Al, 2026-11-02: \"mix, ice, clear, and norm duke are spare balls. tropical is entry level.\" Storm's site puts these in no reaction profile.",
+      "lines": [
+        {
+          "key": "spare",
+          "label": "Spare",
+          "assign_rule": {
+            "type": "fields",
+            "exclusive": true,
+            "all": [
+              {
+                "field": "name",
+                "matches": "(?i)^(storm )?(mix|ice storm|clear storm|lightning storm)\\b|norm duke clear"
+              }
+            ]
+          }
+        },
+        {
+          "key": "entry-level",
+          "label": "Entry level",
+          "assign_rule": {
+            "type": "fields",
+            "exclusive": true,
+            "all": [
+              {
+                "field": "name",
+                "matches": "(?i)^(storm )?tropical surge\\b"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

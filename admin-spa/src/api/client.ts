@@ -1,6 +1,8 @@
 import { getValidIdToken } from "../auth/cognito";
 import type {
   AdminUser,
+  BrandStoreDetail,
+  BrandStoreSummary,
   PatternDetail,
   PatternEdit,
   PatternSummary,
@@ -215,6 +217,15 @@ export function rescrapeProduct(id: string): Promise<RescrapeResult> {
 // ProductDetail's own comment in types.ts.
 export function getProduct(id: string): Promise<ProductDetail> {
   return apiGet<ProductDetail>(`/products/${encodeURIComponent(id)}`);
+}
+
+// Runbook 6fs: status that re-scrapes can't flip; null clears it.
+export function setProductStatusOverride(
+  id: string,
+  status: "current" | "retired" | null,
+  note?: string,
+): Promise<{ product_id: string; status: string; status_override: string | null }> {
+  return apiPatch(`/products/${encodeURIComponent(id)}/status-override`, { status, note });
 }
 
 export function setProductPublished(id: string, published: boolean): Promise<SetPublishedResult> {
@@ -890,4 +901,30 @@ export function generateAnnouncementImages(productId: string): Promise<{ queued:
 
 export function listNewBallsForSocial(days = 60): Promise<NewBallForSocial[]> {
   return apiGet<NewBallForSocial[]>("/social/new-balls", { days });
+}
+
+// --- Brand stores (runbook 6fq) ---
+
+export function listBrandStores(): Promise<BrandStoreSummary[]> {
+  return apiGet<BrandStoreSummary[]>("/brand-stores");
+}
+
+export function getBrandStore(taskId: string): Promise<BrandStoreDetail> {
+  return apiGet<BrandStoreDetail>(`/brand-stores/${taskId}`);
+}
+
+export function updateBrandStore(taskId: string, body: { params?: Record<string, unknown>; enabled?: boolean }): Promise<BrandStoreDetail> {
+  return apiPatch<BrandStoreDetail>(`/brand-stores/${taskId}`, body);
+}
+
+export function rerunBrandStore(taskId: string, slots?: string[]): Promise<{ queued: boolean; reason?: string }> {
+  return apiPost(`/brand-stores/${taskId}/rerun`, slots ? { slots } : {});
+}
+
+export function addBallToBrandLine(lineId: string, productId: string): Promise<{ ok: boolean }> {
+  return apiPost(`/brand-lines/${lineId}/balls`, { product_id: productId });
+}
+
+export function removeBallFromBrandLine(lineId: string, productId: string): Promise<{ ok: boolean }> {
+  return apiDelete(`/brand-lines/${lineId}/balls/${productId}`);
 }

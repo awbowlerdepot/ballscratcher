@@ -22,6 +22,9 @@ import {
   type PlotterView,
 } from "./plotterModel";
 
+// Spline Sans Mono for the axis numbers, as on the store's plotter.
+const MONO = "Spline Sans Mono, ui-monospace, monospace";
+
 // Zoomable SVG ball motion plotter (runbook 6cc). Al wanted zoom so the
 // 0.1-precision positions (migration 043) mean something: at default zoom
 // balls snap to the whole-number grid like Brunswick's printed chart and
@@ -333,7 +336,7 @@ export default function PlotterChart({
       <svg
         ref={svgRef}
         viewBox={`0 0 ${width} ${height}`}
-        className="block h-auto w-full touch-none rounded-lg border border-paper-border bg-white"
+        className="block h-auto w-full touch-none rounded-lg border border-line bg-white font-sans"
         role="img"
         aria-label={ariaLabel}
         onPointerDown={onPointerDown}
@@ -364,7 +367,7 @@ export default function PlotterChart({
               x2={px(l.v)}
               y1={M.top}
               y2={M.top + plotH}
-              stroke={l.level === 0 ? "#d9d3c7" : l.level === 1 ? "#ebe6dc" : "#f3f0ea"}
+              stroke={l.level === 0 ? "#dce1ea" : l.level === 1 ? "#e4e8ef" : "#eef1f5"}
               strokeWidth={l.level === 0 ? 1 : 0.75}
             />
           ))}
@@ -375,7 +378,7 @@ export default function PlotterChart({
               x2={M.left + plotW}
               y1={py(l.v)}
               y2={py(l.v)}
-              stroke={l.level === 0 ? "#d9d3c7" : l.level === 1 ? "#ebe6dc" : "#f3f0ea"}
+              stroke={l.level === 0 ? "#dce1ea" : l.level === 1 ? "#e4e8ef" : "#eef1f5"}
               strokeWidth={l.level === 0 ? 1 : 0.75}
             />
           ))}
@@ -390,8 +393,8 @@ export default function PlotterChart({
             const dim = selected && it.ball.id !== selectedId && !roles.has(it.ball.id);
             return (
               <g key={`lead-${it.ball.id}`} opacity={dim ? 0.25 : 0.7} pointerEvents="none">
-                <line x1={ax} y1={ay} x2={c.x} y2={c.y} stroke="#9ca3af" strokeWidth={1} />
-                <circle cx={ax} cy={ay} r={2.5} fill="#6b6b63" />
+                <line x1={ax} y1={ay} x2={c.x} y2={c.y} stroke="#9aa8ba" strokeWidth={1} />
+                <circle cx={ax} cy={ay} r={2.5} fill="#586276" />
               </g>
             );
           })}
@@ -429,7 +432,7 @@ export default function PlotterChart({
             // A retired ball (runbook 6cl) is drawn as a ghost: dotted grey
             // ring, pale fill, "Retired" tag -- it's where the ball WAS.
             const retired = p.status === "retired";
-            const ring = retired ? "#6b6b63" : isSel ? "#0f0f2d" : role ? ROLE_BY_KEY[role].color : "#9ca3af";
+            const ring = retired ? "#8a94a6" : isSel ? "#141c2e" : role ? ROLE_BY_KEY[role].color : "#9aa8ba";
             // Request a sharper image as balls get bigger (2x for retina).
             const imgPx = r > 40 ? 192 : r > 22 ? 128 : 96;
             const img = p.primary_image_url
@@ -456,7 +459,10 @@ export default function PlotterChart({
                   {p.oil_motion_source === "estimated" ? ", estimated" : ""})
                   {it.stacked ? ` + ${it.group.length - 1} more here -- click to zoom in` : ""}
                 </title>
-                <circle cx={cx} cy={cy} r={r} fill={retired ? "#f3f0ea" : "#eef0f6"} />
+                {/* The selected ball gets the store plotter's maple halo
+                    (theme: product/ball-data.js). */}
+                {isSel ? <circle cx={cx} cy={cy} r={r + 6} fill="#ddae6e" fillOpacity={0.45} /> : null}
+                <circle cx={cx} cy={cy} r={r} fill="#f5f6f8" />
                 {img ? (
                   <image
                     href={img}
@@ -482,8 +488,8 @@ export default function PlotterChart({
                 />
                 {retired ? (
                   <g pointerEvents="none">
-                    <rect x={cx - 26} y={cy + r + 3} width={52} height={15} rx={7.5} fill="#6b6b63" />
-                    <text x={cx} y={cy + r + 10.5} textAnchor="middle" dominantBaseline="central" fontSize={10} fontWeight={700} fill="#fff">
+                    <rect x={cx - 26} y={cy + r + 3} width={52} height={15} rx={3} fill="#e4e8ef" />
+                    <text x={cx} y={cy + r + 10.5} textAnchor="middle" dominantBaseline="central" fontSize={10} fontWeight={700} fill="#141c2e">
                       Retired
                     </text>
                   </g>
@@ -497,7 +503,7 @@ export default function PlotterChart({
                       y={cy + r + 3}
                       width={roleTagWidth(role)}
                       height={15}
-                      rx={7.5}
+                      rx={3}
                       fill={ROLE_BY_KEY[role].color}
                     />
                     <text x={cx} y={cy + r + 10.5} textAnchor="middle" dominantBaseline="central" fontSize={10} fontWeight={700} fill="#fff">
@@ -507,7 +513,7 @@ export default function PlotterChart({
                 ) : null}
                 {it.stacked ? (
                   <g>
-                    <circle cx={cx + r * 0.8} cy={cy - r * 0.8} r={Math.max(8, r * 0.45)} fill="#0f0f2d" />
+                    <circle cx={cx + r * 0.8} cy={cy - r * 0.8} r={Math.max(8, r * 0.45)} fill="#141c2e" stroke="#fff" strokeWidth={1.5} />
                     <text
                       x={cx + r * 0.8}
                       y={cy - r * 0.8}
@@ -527,26 +533,25 @@ export default function PlotterChart({
         </g>
 
         {/* Axes */}
-        <rect x={M.left} y={M.top} width={plotW} height={plotH} fill="none" stroke="#d9d3c7" />
+        <rect x={M.left} y={M.top} width={plotW} height={plotH} fill="none" stroke="#dce1ea" />
         {xLines
           .filter((l) => labelEvery(l.level))
           .map((l) => (
-            <text key={`xl${l.v}`} x={px(l.v)} y={M.top + plotH + 14} textAnchor="middle" fontSize={11} fill="#6b6b63">
+            <text key={`xl${l.v}`} x={px(l.v)} y={M.top + plotH + 14} textAnchor="middle" fontSize={11} fill="#586276" fontFamily={MONO}>
               {l.level === 0 ? l.v : l.v.toFixed(1)}
             </text>
           ))}
         {yLines
           .filter((l) => labelEvery(l.level))
           .map((l) => (
-            <text key={`yl${l.v}`} x={M.left - 6} y={py(l.v)} textAnchor="end" dominantBaseline="central" fontSize={11} fill="#6b6b63">
+            <text key={`yl${l.v}`} x={M.left - 6} y={py(l.v)} textAnchor="end" dominantBaseline="central" fontSize={11} fill="#586276" fontFamily={MONO}>
               {l.level === 0 ? l.v : l.v.toFixed(1)}
             </text>
           ))}
-        <text x={M.left} y={height - 6} fontSize={11} fontWeight={700} fill="#0f0f2d">
-          ← Light oil
-        </text>
-        <text x={M.left + plotW} y={height - 6} textAnchor="end" fontSize={11} fontWeight={700} fill="#0f0f2d">
-          Heavy oil →
+        {/* Axis titles worded and placed as on the store's plotter
+            (theme lang/en.json product_page.plotter_x / plotter_y). */}
+        <text x={M.left + plotW / 2} y={height - 6} textAnchor="middle" fontSize={11} fill="#141c2e">
+          ← Light oil · Heavy oil →
         </text>
         <text
           x={12}
@@ -554,8 +559,7 @@ export default function PlotterChart({
           transform={`rotate(-90 12 ${M.top + plotH / 2})`}
           textAnchor="middle"
           fontSize={11}
-          fontWeight={700}
-          fill="#0f0f2d"
+          fill="#141c2e"
         >
           Smooth ← Motion → Angular
         </text>

@@ -81,7 +81,7 @@ export function PlotterNeighborCard({
         <BallThumb p={selected} size={44} />
         <div className="min-w-0 flex-1">
           <p className="text-[11px] font-semibold uppercase tracking-wide text-muted">{selected.brand_name}</p>
-          <p className="truncate font-display text-base font-semibold leading-tight text-ink">{selected.name}</p>
+          <p className="truncate text-base font-bold leading-tight text-ink">{selected.name}</p>
           <p className="text-[11px] text-muted">
             {formatPosition(selected, TENTHS_ZOOM)} · {sourceLabel(selected.oil_motion_source)}
           </p>
@@ -108,7 +108,7 @@ export function PlotterNeighborCard({
                       <button
                         type="button"
                         onClick={() => onSelect(p.id)}
-                        className="min-w-0 flex-1 truncate text-left text-xs font-semibold text-ink hover:text-accent"
+                        className="min-w-0 flex-1 truncate text-left text-xs font-semibold text-ink hover:text-pin-dark"
                         title={`${p.brand_name} ${p.name} · ${formatPosition(p, TENTHS_ZOOM)}${
                           p.oil_motion_source === "estimated" ? " (estimated)" : ""
                         }`}
@@ -202,7 +202,7 @@ export default function PlotterNeighborPanel({ selected, byId, onSelect, compact
           <BallThumb p={selected} size={64} />
           <div className="min-w-0">
             <p className="text-xs font-semibold uppercase tracking-wide text-muted">{selected.brand_name}</p>
-            <p className="font-display text-lg font-semibold leading-tight text-ink">{selected.name}</p>
+            <p className="text-lg font-bold leading-tight text-ink">{selected.name}</p>
             <p className="mt-1 text-xs text-muted">
               {formatPosition(selected, TENTHS_ZOOM)} · {sourceLabel(selected.oil_motion_source)}
             </p>
@@ -221,7 +221,7 @@ export default function PlotterNeighborPanel({ selected, byId, onSelect, compact
         const items = (selected.neighbors[role.key] ?? []).map((n) => byId.get(n.id)).filter(Boolean) as LearnPlotterPoint[];
         return (
           <section key={role.key}>
-            <h3 className="flex items-center gap-2 font-display text-sm font-semibold text-ink">
+            <h3 className="flex items-center gap-2 text-sm font-bold text-ink">
               <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ background: role.color }} />
               {role.label}
             </h3>
@@ -235,7 +235,7 @@ export default function PlotterNeighborPanel({ selected, byId, onSelect, compact
                       <button
                         type="button"
                         onClick={() => onSelect(p.id)}
-                        className="block max-w-full truncate text-left text-sm font-semibold text-ink hover:text-accent"
+                        className="block max-w-full truncate text-left text-sm font-semibold text-ink hover:text-pin-dark"
                         title={`Show ${p.brand_name} ${p.name} on the plotter`}
                       >
                         {p.brand_name} {p.name}

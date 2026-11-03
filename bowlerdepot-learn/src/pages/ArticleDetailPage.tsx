@@ -182,7 +182,7 @@ export default function ArticleDetailPage() {
     if (!article?.related_reviews?.length) return null;
     return (
       <div className="mb-10">
-        <h2 className="mb-3 font-display text-xl font-semibold text-ink">
+        <h2 className="mb-3 font-display text-3xl font-extrabold uppercase leading-[.95] text-ink">
           {isVideo ? `More ${rootCategory?.name ?? "Articles"}` : "Related Reviews"}
         </h2>
         <div className="grid grid-cols-1 gap-x-8 gap-y-10 sm:grid-cols-2 lg:grid-cols-3">
@@ -199,7 +199,7 @@ export default function ArticleDetailPage() {
                 ) : null}
               </div>
               <div className="mt-3">
-                <div className="font-display font-semibold text-ink group-hover:text-accent">{r.title}</div>
+                <div className="font-bold text-ink group-hover:text-pin-dark">{r.title}</div>
                 {r.product_name ? <div className="text-xs text-muted">{r.product_name}</div> : null}
               </div>
             </Link>
@@ -224,9 +224,9 @@ export default function ArticleDetailPage() {
   // title; ball reviews keep the 50/50 split next to their summary.
   function renderVideoPanel(video: FeaturedVideo, heading: string, videoFirst = false) {
     return (
-      <div className="relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-neutral-900 pb-10 pt-6">
+      <div className="relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-ink pb-10 pt-6">
         <div className="mx-auto max-w-[75rem] px-6 md:px-8">
-          <h2 className="mb-4 font-display text-xl font-semibold text-white">{heading}</h2>
+          <h2 className="mb-4 font-display text-3xl font-extrabold uppercase leading-[.95] text-white">{heading}</h2>
           {/* md:grid-cols-2 (was a fixed 1fr_480px split) -- a 50/50
               proportional split scales with the container instead of
               needing a new hardcoded pixel value every time the page's
@@ -243,7 +243,7 @@ export default function ArticleDetailPage() {
               videoFirst ? "md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]" : "md:grid-cols-2"
             }`}
           >
-            <div className="order-2 flex h-full flex-col justify-center bg-neutral-800 p-6 md:order-none">
+            <div className="order-2 flex h-full flex-col justify-center bg-[#1d2740] p-6 md:order-none">
               <p className="italic text-white/80">
                 {stripLeadingMarkdownHeading(
                   video.summary || video.title || "",
@@ -280,7 +280,7 @@ export default function ArticleDetailPage() {
         &larr; {isVideo && rootCategory ? `All ${rootCategory.name}` : "All reviews"}
       </Link>
 
-      <div className="relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-neutral-900 py-10">
+      <div className="relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-ink py-10">
         <div className="mx-auto grid max-w-[75rem] grid-cols-1 gap-8 px-6 md:grid-cols-[320px_1fr] md:px-8">
           <div className="flex items-center justify-center overflow-visible px-2 md:relative md:px-4">
             <div className="mt-14 mb-0 aspect-[4/3] w-full rotate-0 md:-rotate-[8deg] rounded-sm bg-white p-2 shadow-[0_12px_24px_-6px_rgba(0,0,0,0.55)] md:absolute md:left-0 md:top-1/2 md:my-0 md:w-[325px] md:-translate-y-1/2">
@@ -297,7 +297,7 @@ export default function ArticleDetailPage() {
             <p className="mb-1 text-[11px] font-semibold uppercase tracking-widest text-white/60">
               {taxonomyLabel || product?.core_type || product?.coverstock_type}
             </p>
-            <h1 className="font-display text-xl font-semibold text-white">{article.title}</h1>
+            <h1 className="font-display text-3xl font-black uppercase leading-[.92] text-white md:text-4xl">{article.title}</h1>
             <p className="mt-2 text-base text-white/80">{article.hook}</p>
             {/* Byline -- Al: "add published dates and last updated dates
                 to the articles." Author is an Organization, not a named
@@ -345,7 +345,7 @@ export default function ArticleDetailPage() {
         ? (article.sections ?? []).map((section, i) => (
             <div key={i}>
               <div className="mb-10">
-                <h2 className="mb-3 font-display text-xl font-semibold text-ink">{section.heading}</h2>
+                <h2 className="mb-3 font-display text-3xl font-extrabold uppercase leading-[.95] text-ink">{section.heading}</h2>
                 {section.body
                   .split(/\n\s*\n/)
                   .filter((para) => para.trim())
@@ -364,7 +364,7 @@ export default function ArticleDetailPage() {
 
       {isVideo && article.key_takeaways?.length ? (
         <div className="mb-10 rounded-md border border-paper-border bg-white/60 p-6">
-          <h2 className="mb-3 font-display text-xl font-semibold text-ink">Key Takeaways</h2>
+          <h2 className="mb-3 font-display text-3xl font-extrabold uppercase leading-[.95] text-ink">Key Takeaways</h2>
           <ul className="list-disc space-y-1 pl-5 text-ink/90">
             {article.key_takeaways.map((t, i) => (
               <li key={i}>{t}</li>
@@ -375,7 +375,7 @@ export default function ArticleDetailPage() {
 
       {article.performance_summary ? (
         <div className="mb-10">
-          <h2 className="mb-3 font-display text-xl font-semibold text-ink">Performance</h2>
+          <h2 className="mb-3 font-display text-3xl font-extrabold uppercase leading-[.95] text-ink">Performance</h2>
           <p className="text-ink/90">{article.performance_summary}</p>
         </div>
       ) : null}
@@ -392,7 +392,7 @@ export default function ArticleDetailPage() {
 
       {article.pros?.length || article.cons?.length ? (
         <div className="mb-10">
-          <h2 className="mb-3 font-display text-xl font-semibold text-ink">Pros &amp; Cons</h2>
+          <h2 className="mb-3 font-display text-3xl font-extrabold uppercase leading-[.95] text-ink">Pros &amp; Cons</h2>
           <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
             <div>
               <div className="mb-2 text-sm font-semibold text-green-700">Pros</div>
@@ -416,7 +416,7 @@ export default function ArticleDetailPage() {
 
       {article.who_should_buy?.length ? (
         <div className="mb-10">
-          <h2 className="mb-3 font-display text-xl font-semibold text-ink">Who Should Buy This</h2>
+          <h2 className="mb-3 font-display text-3xl font-extrabold uppercase leading-[.95] text-ink">Who Should Buy This</h2>
           <ul className="list-disc space-y-1 pl-5 text-sm text-ink/90">
             {article.who_should_buy.map((w, i) => (
               <li key={i}>{w}</li>
@@ -427,7 +427,7 @@ export default function ArticleDetailPage() {
 
       {article.who_should_skip?.length ? (
         <div className="mb-10">
-          <h2 className="mb-3 font-display text-xl font-semibold text-ink">Who Should Skip This</h2>
+          <h2 className="mb-3 font-display text-3xl font-extrabold uppercase leading-[.95] text-ink">Who Should Skip This</h2>
           <ul className="list-disc space-y-1 pl-5 text-sm text-ink/90">
             {article.who_should_skip.map((w, i) => (
               <li key={i}>{w}</li>
@@ -438,7 +438,7 @@ export default function ArticleDetailPage() {
 
       {article.buying_tips ? (
         <div className="mb-10">
-          <h2 className="mb-3 font-display text-xl font-semibold text-ink">Buying Tips</h2>
+          <h2 className="mb-3 font-display text-3xl font-extrabold uppercase leading-[.95] text-ink">Buying Tips</h2>
           <p className="text-ink/90">{article.buying_tips}</p>
         </div>
       ) : null}
@@ -451,7 +451,7 @@ export default function ArticleDetailPage() {
           'Watch what Brad & Kyle have to say!' and some of the AI
           summary of the video" / "Watch this review from Brad & Kyle."
           Mirrors the page's own top hero banner's full-bleed treatment
-          (bg-neutral-900 breaking out of the article's max-width
+          (bg-ink breaking out of the article's max-width
           column via the same relative/-mx-[50vw]/w-screen trick, same
           max-w-5xl inner column, font-display heading) but adds a
           distinct lighter panel (bg-white/5) behind the AI summary
@@ -472,7 +472,7 @@ export default function ArticleDetailPage() {
 
       {article.verdict ? (
         <div className="mb-10">
-          <h2 className="mb-3 font-display text-xl font-semibold text-ink">
+          <h2 className="mb-3 font-display text-3xl font-extrabold uppercase leading-[.95] text-ink">
             {isVideo ? "The Bottom Line" : "Verdict"}
           </h2>
           <p className="text-ink/90">{article.verdict}</p>
@@ -505,9 +505,12 @@ export default function ArticleDetailPage() {
           claiming "currently available at BowlerDepot.com." Al chose to
           hide the CTA entirely until a real product link exists. */}
       {product && product.status === "current" && product.ecommerce_url ? (
-        <div className="mb-10 flex flex-wrap items-center justify-between gap-4 rounded-xl bg-accent px-6 py-6">
+        // New store look (2026-11-01): an ink panel with the page's one
+        // pin-red button -- buying the ball IS the main action on a review
+        // -- in place of the old blue band with a white button.
+        <div className="mb-10 flex flex-wrap items-center justify-between gap-4 rounded-lg bg-ink px-6 py-6">
           <div>
-            <p className="font-display text-lg font-semibold text-white">
+            <p className="font-display text-2xl font-extrabold uppercase leading-none text-white">
               Like what you read? Shop the {product.name}.
             </p>
             <p className="mt-1 text-sm text-white/80">This ball is currently available at BowlerDepot.com.</p>
@@ -516,7 +519,7 @@ export default function ArticleDetailPage() {
             href={product.ecommerce_url}
             target="_blank"
             rel="noreferrer"
-            className="shrink-0 whitespace-nowrap rounded-lg bg-white px-5 py-3 font-display text-sm font-semibold text-accent hover:bg-white/90"
+            className="inline-flex h-12 shrink-0 items-center whitespace-nowrap rounded bg-pin px-6 text-base font-bold text-white no-underline hover:bg-pin-dark hover:text-white"
           >
             Shop this ball &rarr;
           </a>
@@ -547,7 +550,7 @@ export default function ArticleDetailPage() {
 
       {product?.skus?.length || product?.fragrance ? (
         <div className="mb-10">
-          <h2 className="mb-3 font-display text-xl font-semibold text-ink">Specs</h2>
+          <h2 className="mb-3 font-display text-3xl font-extrabold uppercase leading-[.95] text-ink">Specs</h2>
           {/* Runbook 6fk: the manufacturer's scent. Al: "if a ball doesn't
               have it set just hide the entire key value pair". */}
           {product.fragrance ? (
@@ -595,7 +598,7 @@ export default function ArticleDetailPage() {
         <>
           <InArticleAd key={`${article.id}-2`} />
           <div className="mb-10">
-            <h2 className="mb-3 font-display text-xl font-semibold text-ink">FAQ</h2>
+            <h2 className="mb-3 font-display text-3xl font-extrabold uppercase leading-[.95] text-ink">FAQ</h2>
             {article.faq.map((item, i) => (
               <div className="border-t border-paper-border py-4" key={i}>
                 <p className="mb-1 font-medium text-ink">{item.question}</p>
@@ -620,7 +623,7 @@ export default function ArticleDetailPage() {
       {article.brand_lineup?.length ? (
         <div className="mb-10">
           <div className="mb-3 flex items-center justify-between">
-            <h2 className="font-display text-xl font-semibold text-ink">
+            <h2 className="font-display text-3xl font-extrabold uppercase leading-[.95] text-ink">
               More from {product?.brand_name || "this brand"}
             </h2>
             <div className="flex shrink-0 gap-2">
@@ -663,7 +666,7 @@ export default function ArticleDetailPage() {
                   ) : null}
                 </div>
                 <div className="mt-3">
-                  <div className="font-display font-semibold text-ink group-hover:text-accent">{b.title}</div>
+                  <div className="font-bold text-ink group-hover:text-pin-dark">{b.title}</div>
                   <div className="text-xs text-muted">{b.product_name}</div>
                 </div>
               </Link>

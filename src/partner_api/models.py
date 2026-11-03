@@ -193,6 +193,67 @@ class BrandList(_Model):
     items: list[Brand]
 
 
+# --- Brand lineups and brand art (runbook 6fq, migration 058) ---------------
+# Al: BowlerIQ owns each brand's lineups -- "the way the brand's own site
+# groups its balls" -- and the brand-store art a partner's brand_art task
+# draws, at stable URLs a rerun replaces in place.
+
+ArtKind = Literal["line", "hero"]
+HeroType = Literal["product", "lineup"]
+FeaturedKind = Literal["ball", "bag", "shoes", "accessory", "apparel"]
+
+
+class FeaturedProduct(_Model):
+    ball_id: Optional[str] = Field(None, description="BowlerIQ ball id, for a ball; null for a non-ball product.")
+    bigcommerce_product_id: Optional[int] = Field(
+        None, description="Bowler Depot BigCommerce product id, when the product is listed there.")
+    name: str = Field(description="Product name, e.g. 'Phaze II' or 'Storm Rolling Thunder 3 Ball Roller'.")
+    kind: FeaturedKind = Field(description="What the product is.")
+
+
+class ArtImage(_Model):
+    slot: str = Field(description="Stable slot key, e.g. 'line-strong-symmetrical' or 'hero-1'.")
+    kind: ArtKind
+    hero_type: Optional[HeroType] = Field(
+        None, description="Heroes only: 'product' (one product in focus, at most one ball beside it) or 'lineup'.")
+    owner: str = Field(description="The partner the art is drawn for, e.g. 'bowlerdepot'.")
+    url: str = Field(description="Stable image URL (WebP). A rerun replaces the image behind it; cached about an hour.")
+    url_16x9: Optional[str] = Field(None, description="Heroes only: the 16:9 phone version, also stable.")
+    width: int
+    height: int
+    alt: str = Field(description="Alt text for the image.")
+    featured: list[FeaturedProduct] = Field(
+        description="What the image shows, so a headline and link can follow it when it changes.")
+    generated_at: datetime
+
+
+class LineupLineBall(_Model):
+    ball_id: str
+    note: Optional[str] = Field(None, description="The brand's own note for the ball in this line, when it has one.")
+
+
+class LineupLine(_Model):
+    key: str = Field(description="Stable line key, e.g. 'strong-symmetrical'.")
+    label: str = Field(description="The brand's name for the line, e.g. 'Strong Symmetrical'.")
+    text: Optional[str] = None
+    balls: list[LineupLineBall] = Field(description="Current published balls in the line, newest release first.")
+    art: list[ArtImage] = Field(description="This line's current image, one per partner task that draws it.")
+
+
+class LineupGrouping(_Model):
+    key: str = Field(description="Stable grouping key, e.g. 'reaction-profile'.")
+    label: str = Field(description="e.g. 'Reaction profile', 'Lane read'.")
+    source: Optional[str] = Field(None, description="Where the grouping was read, e.g. the brand site's filter.")
+    lines: list[LineupLine]
+
+
+class BrandLineups(_Model):
+    api_version: Literal["1"] = API_VERSION
+    brand: Brand
+    groupings: list[LineupGrouping]
+    heroes: list[ArtImage] = Field(description="Hero images (up to 3 per partner task), in slot order.")
+
+
 class BallPage(_Model):
     api_version: Literal["1"] = API_VERSION
     items: list[Ball]

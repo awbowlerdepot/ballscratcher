@@ -289,6 +289,10 @@ export interface ProductDetail {
   name: string;
   url: string;
   status: ProductStatus;
+  // Runbook 6fs (migration 059): a person's status call; when set, status
+  // always equals it and re-scrapes can't flip it. null = scrapers decide.
+  status_override?: ProductStatus | null;
+  status_override_note?: string | null;
   published: boolean;
   source_platform: SourcePlatform | null;
   description: string | null;
@@ -1379,3 +1383,96 @@ export type PatternEdit = Partial<
     | "reverse_brush_drop_feet" | "forward_brush_drop_feet" | "oil_per_board_ul" | "forward_ml" | "reverse_ml" | "volume_ml" | "track_zones" | "machine" | "steps"
   >
 >;
+
+// --- Brand stores: lineups + brand_art tasks (runbook 6fq) ---------------
+
+export interface BrandStoreSummary {
+  task_id: string;
+  owner: string;
+  brand_id: string;
+  brand: string;
+  enabled: boolean;
+  status: "idle" | "queued" | "running" | "failed";
+  last_run_at: string | null;
+  last_full_run_at: string | null;
+  last_run_status: string | null;
+  images: number;
+  failed_slots: number;
+  unplaced: number;
+}
+
+export interface BrandArtFeatured {
+  product_id: string | null;
+  bigcommerce_product_id: number | null;
+  name: string;
+  kind: string;
+}
+
+export interface BrandArtSlot {
+  slot_key: string;
+  kind: "line" | "hero";
+  hero_type: "product" | "lineup" | null;
+  featured: BrandArtFeatured[];
+  url: string | null;
+  url_16x9: string | null;
+  width: number | null;
+  height: number | null;
+  alt: string | null;
+  method: "gemini" | "composite" | null;
+  generated_at: string | null;
+  error: string | null;
+}
+
+export interface BrandLineBall {
+  product_id: string;
+  name: string;
+  status: string;
+  release_date: string | null;
+  added_by: "load" | "rule" | "admin";
+  note: string | null;
+  image_url: string | null;
+}
+
+export interface BrandLine {
+  line_id: string;
+  key: string;
+  label: string;
+  rule: string;
+  balls: BrandLineBall[];
+}
+
+export interface BrandGrouping {
+  key: string;
+  label: string;
+  source: string | null;
+  lines: BrandLine[];
+}
+
+export interface BrandStoreRun {
+  run_id: string;
+  trigger: string;
+  slots: string[];
+  status: string;
+  detail: { slots?: Record<string, { ok: boolean; method?: string; trigger?: string; error?: string }>; error?: string } | null;
+  started_at: string;
+  finished_at: string | null;
+}
+
+export interface BrandStoreUnplaced {
+  review_id: string;
+  product_id: string;
+  name: string;
+  grouping: string;
+  reason: string;
+  created_at: string;
+}
+
+export interface BrandStoreDetail extends Omit<BrandStoreSummary, "images" | "failed_slots" | "unplaced" | "last_run_status"> {
+  params: Record<string, unknown>;
+  triggers: string[];
+  last_result: Record<string, unknown> | null;
+  groupings: BrandGrouping[];
+  slots: BrandArtSlot[];
+  runs: BrandStoreRun[];
+  unplaced: BrandStoreUnplaced[];
+}

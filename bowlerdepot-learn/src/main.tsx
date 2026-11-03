@@ -49,7 +49,7 @@ createRoot(document.getElementById("root")!).render(
             path="*"
             element={
               <div className="py-16 text-center">
-                <h1 className="font-display text-3xl font-semibold text-ink">Page not found</h1>
+                <h1 className="font-display text-4xl font-black uppercase leading-[.92] md:text-5xl text-ink">Page not found</h1>
                 <p className="mt-3 text-muted">
                   That page isn't here. Try the <Link to="/" className="underline">bowling ball reviews</Link> or the{" "}
                   <Link to="/plotter" className="underline">ball motion plotter</Link>.

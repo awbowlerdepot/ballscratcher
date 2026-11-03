@@ -1,0 +1,113 @@
+{
+  "brand": "Hammer",
+  "owner": "bowlerdepot",
+  "task": {
+    "slug": "hammer",
+    "bigcommerce_brand_id": 38,
+    "palette": {
+      "background": "#000000",
+      "accent": "#fe5000"
+    },
+    "palette_source": "hammerbowling.com CSS: --colorBody #000000, --colorBtnPrimary #fe5000 (via the Hammer brand-store session, 2026-11-03)"
+  },
+  "groupings": [
+    {
+      "key": "family",
+      "label": "Family",
+      "source": "hammerbowling.com families, as the Bowler Depot theme lists them (templates/components/brand-store/navigation.html, 2026-11-02); matched on our ball names",
+      "lines": [
+        {
+          "key": "black-widow",
+          "label": "Black Widow",
+          "assign_rule": {
+            "type": "fields",
+            "partial": true,
+            "all": [
+              {
+                "field": "name",
+                "matches": "(?i)^black widow\\b(?!.*(spare|viz))"
+              }
+            ]
+          }
+        },
+        {
+          "key": "zero-mercy",
+          "label": "Zero Mercy",
+          "assign_rule": {
+            "type": "fields",
+            "partial": true,
+            "all": [
+              {
+                "field": "name",
+                "matches": "(?i)^zero mercy\\b"
+              }
+            ]
+          }
+        },
+        {
+          "key": "purple",
+          "label": "Purple Pearl Urethane",
+          "assign_rule": {
+            "type": "fields",
+            "partial": true,
+            "all": [
+              {
+                "field": "name",
+                "matches": "(?i)^purple pearl urethane\\b"
+              }
+            ]
+          }
+        },
+        {
+          "key": "effect",
+          "label": "Effect",
+          "assign_rule": {
+            "type": "fields",
+            "partial": true,
+            "all": [
+              {
+                "field": "name",
+                "matches": "(?i)\\beffect\\b"
+              }
+            ]
+          }
+        },
+        {
+          "key": "vibe",
+          "label": "Vibe",
+          "assign_rule": {
+            "type": "fields",
+            "partial": true,
+            "all": [
+              {
+                "field": "name",
+                "matches": "(?i)\\bvibe\\b"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "key": "ball-type",
+      "label": "Ball type",
+      "source": "Spare balls by name (Spare+, Viz-A-Ball), as Storm's (6fr)",
+      "lines": [
+        {
+          "key": "spare",
+          "label": "Spare",
+          "assign_rule": {
+            "type": "fields",
+            "exclusive": true,
+            "all": [
+              {
+                "field": "name",
+                "matches": "(?i)spare|viz-a-ball"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

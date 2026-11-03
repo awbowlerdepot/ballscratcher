@@ -58,7 +58,17 @@ from PIL import Image, ImageOps
 # are meant to enforce the same boundary. Checking it here first, before
 # ever calling S3, also means an out-of-scope key gets a clean 404 instead
 # of surfacing an AccessDenied.
-ALLOWED_PREFIXES = ("product-images/", "article-images/")
+ALLOWED_PREFIXES = ("product-images/", "article-images/", "brand-art/")
+
+# Runbook 6fq: brand-art/<brand>/<slot>.webp is a STABLE URL whose image a
+# brand_art task rerun replaces in place ("A rerun replaces the image
+# behind the same URL. Keep the CDN cache short (around an hour) so a new
+# image shows without anyone touching the theme"). So it can't carry the
+# year-long immutable header every other key gets, and with no size params
+# it's served as stored (already WebP, sized for its slot) instead of
+# being a 400.
+MUTABLE_PREFIXES = ("brand-art/",)
+MUTABLE_CACHE_CONTROL = "public, max-age=3600"
 
 MIN_DIMENSION = 16
 MAX_DIMENSION = 2000
@@ -216,9 +226,10 @@ def resize_image(source_bytes, params):
     return out.getvalue(), FORMAT_CONTENT_TYPES[fmt]
 
 
-def _response(status, body_bytes=b"", content_type="text/plain", cacheable=False):
+def _response(status, body_bytes=b"", content_type="text/plain", cacheable=False, mutable=False):
     headers = {"Content-Type": content_type}
-    headers["Cache-Control"] = "public, max-age=31536000, immutable" if cacheable else "no-store"
+    headers["Cache-Control"] = (MUTABLE_CACHE_CONTROL if mutable else "public, max-age=31536000, immutable") \
+        if cacheable else "no-store"
     return {
         "statusCode": status,
         "headers": headers,
@@ -245,8 +256,16 @@ def handler(event, context):
     if not key or not key.startswith(ALLOWED_PREFIXES):
         return _response(404, b"image not found", "text/plain")
 
+    mutable = key.startswith(MUTABLE_PREFIXES)
+    query = event.get("queryStringParameters")
+    if mutable and not query:
+        source_bytes = fetch_source_bytes(key)
+        if source_bytes is None:
+            return _response(404, b"image not found", "text/plain")
+        return _response(200, source_bytes, "image/webp", cacheable=True, mutable=True)
+
     try:
-        params = parse_params(event.get("queryStringParameters"))
+        params = parse_params(query)
     except BadRequest as exc:
         return _response(400, str(exc).encode(), "text/plain")
 
@@ -259,4 +278,4 @@ def handler(event, context):
     except Exception:
         return _response(500, b"failed to process image", "text/plain")
 
-    return _response(200, image_bytes, content_type, cacheable=True)
+    return _response(200, image_bytes, content_type, cacheable=True, mutable=mutable)

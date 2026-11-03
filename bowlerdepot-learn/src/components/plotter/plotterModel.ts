@@ -143,6 +143,14 @@ export function formatPosition(p: { oil: number; motion: number }, k: number) {
 
 export type PlotterRole = keyof PlotterNeighbors;
 
+// Role colors from the Bowler Depot palette (2026-11-01 restyle, replacing
+// six off-brand hues): oil blue for "more oil" and a dark lane maple for
+// "less oil" (dry boards), so the two oil steps read the way a lane graph
+// does; pin-dark for "more angular", slate for "smoother", ink for the
+// same-spot suggestions ("similar" on a current ball, "closest" on a
+// retired one -- a ball never has both). Each is dark enough for the white
+// tag text the chart puts on it.
+
 export const ROLES: { key: PlotterRole; label: string; short: string; blurb: string; color: string }[] = [
   {
     // Retired balls only (runbook 6cl).
@@ -150,42 +158,42 @@ export const ROLES: { key: PlotterRole; label: string; short: string; blurb: str
     label: "Closest current balls",
     short: "Closest",
     blurb: "Current balls BowlerDepot sells that sit closest to where this retired ball was.",
-    color: "#9d174d",
+    color: "#141c2e",
   },
   {
     key: "twins",
     label: "Similar from other brands",
     short: "Similar",
     blurb: "Close to the same spot on the chart from a different manufacturer.",
-    color: "#1f439e",
+    color: "#141c2e",
   },
   {
     key: "more_oil",
     label: "Handles more oil",
     short: "More oil",
     blurb: "A step stronger: reads the lane earlier for heavier or longer patterns.",
-    color: "#b45309",
+    color: "#2b76a3",
   },
   {
     key: "less_oil",
     label: "For less oil",
     short: "Less oil",
     blurb: "A step weaker: more length and less hook for drier lanes.",
-    color: "#0f766e",
+    color: "#8f5d1c",
   },
   {
     key: "more_angular",
     label: "More angular",
     short: "Angular",
     blurb: "Similar oil range with a sharper move off the dry backends.",
-    color: "#7e22ce",
+    color: "#a8172f",
   },
   {
     key: "smoother",
     label: "Smoother",
     short: "Smoother",
     blurb: "Similar oil range with a more controllable, arcing motion.",
-    color: "#0369a1",
+    color: "#586276",
   },
 ];
 

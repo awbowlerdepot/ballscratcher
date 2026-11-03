@@ -505,11 +505,11 @@ function renderFeaturedVideo(
   if (!video) return "";
   const blurb = escapeHtml(stripLeadingMarkdownHeading(video.summary || video.title || ""));
   return `
-    <div class="relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-neutral-900 pb-10 pt-6">
+    <div class="relative left-1/2 right-1/2 mb-10 -mx-[50vw] w-screen bg-ink pb-10 pt-6">
       <div class="mx-auto max-w-[75rem] px-6 md:px-8">
-        <h2 class="mb-4 font-display text-xl font-semibold text-white">${escapeHtml(heading)}</h2>
+        <h2 class="mb-4 font-display text-3xl font-extrabold uppercase leading-[.95] text-white">${escapeHtml(heading)}</h2>
         <div class="grid grid-cols-1 items-center overflow-hidden rounded-sm bg-black ${videoFirst ? "md:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]" : "md:grid-cols-2"}">
-          <div class="order-2 flex h-full flex-col justify-center bg-neutral-800 p-6 md:order-none">
+          <div class="order-2 flex h-full flex-col justify-center bg-[#1d2740] p-6 md:order-none">
             <p class="italic text-white/80">${blurb}</p>
           </div>
           <div class="order-1 aspect-video w-full bg-black md:order-none">
@@ -926,7 +926,7 @@ function renderPlotterPage(baseHtml: string, rows: PlotterRow[]): string {
     : "";
   const content = `
     <div>
-      <h1 class="font-display text-3xl font-semibold text-ink">Ball Motion Plotter</h1>
+      <h1 class="font-display text-4xl font-black uppercase leading-[.92] md:text-5xl text-ink">Ball Motion Plotter</h1>
       <p>${escapeHtml(description)}</p>
       ${table}
     </div>`;
@@ -1011,7 +1011,7 @@ function renderHomeContent(cards: ArticleCard[]): string {
     .join("");
   return `
     <div>
-      <h1 class="font-display text-3xl font-semibold text-ink">Bowling ball reviews, guides and the ball motion plotter</h1>
+      <h1 class="font-display text-4xl font-black uppercase leading-[.92] md:text-5xl text-ink">Bowling ball reviews, guides and the ball motion plotter</h1>
       <p>In-depth bowling ball reviews and buying guides from The Bowler Depot, plus a free <a href="/plotter/">ball motion plotter</a> to compare every current ball across brands.</p>
       <h2>Bowling ball reviews</h2>
       ${brandSections}

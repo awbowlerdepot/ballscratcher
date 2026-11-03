@@ -144,7 +144,7 @@ class _FakeCursor:
         self.existing_bigcommerce_rows = existing_bigcommerce_rows or []
         self.bigcommerce_url_updates = []  # list of (product_url, external_product_id, id)
         self.bigcommerce_reopens = []  # list of (id, match_confidence), runbook 6fn
-        self.listing_flips = []  # list of (action, source_id), runbook 6fo
+        self.listing_flips = []  # list of (action, source_id), runbook 6fz
         self.content_bumps = []  # product ids whose content_changed_at was bumped
         # list of dicts: product_id, external_product_id, match_status --
         # bowlerdepot_products rows list_bowlerdepot_matches reads
@@ -1918,7 +1918,7 @@ if __name__ == "__main__":
     print(f"\n{passed}/{len(tests)} tests passed")
 
 
-# --- Runbook 6fo / 058: a BigCommerce source follows its listing. On
+# --- Runbook 6fz / 060: a BigCommerce source follows its listing. On
 # 2026-11-02 Spurline hid 258 zero-stock balls on bowlerdepot.com; 214 were
 # linked BowlerIQ balls with approved sources, and the APIs kept handing out
 # their 404ing bowlerdepot_url. ---

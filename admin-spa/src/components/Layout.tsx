@@ -14,6 +14,7 @@ import {
   IconCoverstock,
   IconDashboard,
   IconMegaphone,
+  IconStore,
   IconMenu,
   IconOilDrop,
   IconPanelLeft,
@@ -41,6 +42,8 @@ const NAV_ITEMS = [
   { to: "/video-candidates", label: "Video Candidates", end: false, icon: IconVideo },
   { to: "/articles", label: "Articles", end: false, icon: IconArticles },
   { to: "/new-balls", label: "New Balls", end: false, icon: IconMegaphone },
+  // Brand lineups + brand-store art tasks (runbook 6fq).
+  { to: "/brand-stores", label: "Brand Stores", end: false, icon: IconStore },
   { to: "/categories", label: "Categories", end: false, icon: IconCategories },
   { to: "/learn-videos", label: "Learn Videos", end: false, icon: IconPlaylist },
   { to: "/price-sites", label: "Price Sites", end: false, icon: IconPriceTag },

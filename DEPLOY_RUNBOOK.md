@@ -22645,7 +22645,740 @@ run's numbers: 1,924 balls (1,680 retired), 234 retired matched, 7 ambiguous,
   (`DOCKER_HOST` is needed because the Docker Desktop context lives in the
   real config.)
 
-### 6fo. A BowlerDepot price source follows its listing: off when hidden, back on when live (migration 058) (2026-11-02)
+### 6fo. Learn restyled to the new Bowler Depot store design (2026-11-01, deployed 2026-11-02)
+
+**What and why.** Bowler Depot is replacing its store theme (Kansha) with a new BigCommerce Stencil theme (repo `awbowlerdepot/bowlerdepot-theme`). Al approved its design direction on 2026-11-01 (https://claude.ai/artifact/9pDXa8M2M4MXLsirP3k4vu). That brief settles that Learn moves to the new look too, "as a restyle of its tokens". Nothing from the old site carries over except the logo. The request came from the Bowlerdepot Theme Development session on Al's behalf: "you can send that off to bolwerIQ business intelligence. it has the learn site".
+
+**Changes (all in `bowlerdepot-learn/`):**
+- **Tokens.** `tailwind.config.js` now uses the theme's palette: ink `#141C2E`, pin `#D21F3C` / pin-dark `#A8172F`, maple `#DDAE6E` / `#F4E6D0`, oil `#2B76A3`, go `#17804A`, paper `#F5F6F8`, slate `#586276`, line `#DCE1EA`. The fonts are Big Shoulders Display (headings, uppercase), Instrument Sans (body) and Spline Sans Mono (numbers). Corners are 4px for fields and buttons and 6px for boxes; rounded-lg/xl/2xl are capped at 6px.
+  - The old token names (`paper`, `paper-border`, `muted`, `accent`, `secondary`, `alert`) are kept but now point at the new values, so existing classes restyle themselves.
+  - `index.css` swaps the Cabin/Space Grotesk import for the three new fonts and sets white pages. Underlined links now use a 2px maple underline that turns ink on hover, the same as the store's `bd-prose`. Links that weren't underlined before stay plain.
+- **Standalone, same design.** A first pass copied the store's header, menu and footer. Al reviewed it: "it was a stand alone site", and chose "Standalone, same design". So Learn keeps its own header and footer in the store's design language, with one link back to the store. No store menu is copied, so nothing has to be kept in sync with the theme.
+- **Header (`components/Nav.tsx`).**
+  - The Bowler Depot logo, a maple rule and "LEARN" in display type, linking to Learn's home.
+  - Learn's tabs: its top-level categories plus Ball Motion Plotter, in uppercase display type, with a pin-red underline on the current tab.
+  - "Shop Bowler Depot →", an outlined ink button to https://bowlerdepot.com ("Shop →" on phones).
+  - On phones the tabs are a second row that scrolls sideways and keeps the current tab in view.
+- **Footer (new `components/Footer.tsx`).**
+  - Ink background with the lane-arrow top edge.
+  - The logo and "LEARN", a one-line description, and links to Ball reviews and the Ball motion plotter.
+  - "Shop Bowler Depot →".
+  - The copyright and the "not affiliated with any manufacturer" line.
+- `components/storeLinks.ts` holds only the store URL and the logo. Links to buy a specific ball still come from each product's `ecommerce_url`, as before ("Shop this ball", "Shop" in the plotter panels).
+- **Pages.**
+  - Page h1s and section h2s use uppercase Big Shoulders. Card and list titles use Instrument Sans bold.
+  - Dark article and video heroes use ink instead of neutral-900.
+  - The "Shop this ball" box is an ink panel whose pin-red button is the page's one main action.
+  - `scripts/prerender.ts` gets the same heading and hero classes, so crawlers and no-JS readers see the new look.
+- **Plotter (`components/plotter/PlotterChart.tsx`, `plotterModel.ts`).** Learn's plotter now looks like the store's product-page plotter (theme `assets/js/theme/product/ball-data.js`):
+  - grid lines `#E4E8EF`, axis numbers in Spline Sans Mono and slate;
+  - the store's axis titles ("← Light oil · Heavy oil →", "Smooth ← Motion → Angular");
+  - a maple halo behind the selected ball;
+  - square-ish tags; grey retired balls with ink text.
+  - Suggestion colors come from the palette: more oil in oil blue, less oil in dark maple `#8F5D1C`, more angular in pin-dark, smoother in slate, and similar/closest in ink.
+  - How it works is unchanged: ball images, zoom, suggestions, panels.
+- **Not changed:**
+  - URLs: `/`, `/?category_id=…`, `/articles/<slug>`, `/plotter/`. The theme's `learn_reviews_url`, `learn_plotter_url` and `learn_tips_url` settings stay valid.
+  - The in-store signage page (`/signage/ball/…`), which has its own themes.
+  - The bowlerdepot.com product-page embed (`public/embeds/bowlerdepot-article-hero.js`, runbook 6fj).
+
+**Deploy (only with Al's OK).** Merge `learn-restyle` into `main` and push. The Deploy Learn Site workflow builds, prerenders and invalidates CloudFront.
+
+**Deployed 2026-11-02.** Al: "merge it and deploy". Merged as 9f1e505 and pushed; Deploy Learn Site run 41476880813 succeeded. The live `/` and `/plotter` serve the new bundles (Big Shoulders, the pin red, lane arrows, "Shop Bowler Depot") and render the standalone header in the new design. This deploy also re-prerendered every page, so the fragrance spec (6fk) is now in the prerendered HTML too.
+
+**Verify.**
+- learn.bowlerdepot.com at desktop width and at 375px:
+  - the header shows the logo with LEARN, Learn's tabs and "Shop Bowler Depot →";
+  - the tabs work and the current one is underlined in pin red;
+  - the footer has the lane-arrow edge;
+  - the plotter has a white grid, mono axis numbers and a maple halo on the selected ball;
+  - an article's "Shop this ball" button is pin red.
+- Spot-check a prerendered article with JavaScript off.
+
+### 6fp. Confirmed BowlerDepot matches stay matched for current balls too; 33 ambiguous rows confirmed (2026-11-02)
+
+The store-sync session (bowlerdepot-theme) audited the 525 live ball
+listings on bowlerdepot.com: 123 showed no BowlerIQ data, because the
+partner API hands out `bigcommerce_product_id` only for a `matched` row
+(6fg). Al: "yes go ahead with 1-3".
+
+**Why most of them didn't show.** 31 of the 37 "current ball, likely
+match" listings already had a `bowlerdepot_products` row on exactly the
+right listing, as `ambiguous` (names that differ slightly: "Raw Hammer -
+Black / Grey" vs "Hammer Raw Black / Grey", "TROPICAL SURGE TEAL-BLUE" vs
+"Tropical Surge Pearl Teal / Blue"). Confirming them by hand wouldn't
+have lasted: for current balls `bowlerdepot_reconciliation` overwrites
+the row every day (018's plain upsert), and most had been rewritten as
+`ambiguous` that morning. 6fn's `keep_matched` guard covered retired balls
+only.
+
+**`bowlerdepot_reconciliation`:** current balls now get the same rule.
+- An `ambiguous` result never replaces a `matched` row. The kept row
+  still gets the spec check, against the listing it holds, and the run's
+  body reports `current_kept_matched_count`.
+- A fresh exact (`matched`) result still overwrites, which is 018's
+  corrected re-match path.
+- `upsert_bowlerdepot_match` is called with `keep_matched=True` for every
+  ball, so the SQL guard covers a row written between the read and the
+  write too.
+- Tests: 3 new in `tests/test_bowlerdepot_reconciliation.py`, 2 updated
+  for `keep_matched=True` on current balls (51 pass).
+
+**Data, applied 2026-11-02:** every published `ambiguous` row whose listing
+no other row holds (33) set to `matched`, with `content_changed_at` bumped
+so `/v1/changes` resends the ball with its `bigcommerce_product_id`:
+- 26 current: Onyx Clear, Rhino Red/Black/Gold, TZone Black/Purple/Silver
+  and Scarlet/Gold/Black, Ebonite Viz-A-Ball, 6 Hammer Raw colorways,
+  Raptor Reign, Shadow Tank, 2 Ice Storm, 2 Mix, !Q Tour Sapphire, 7
+  Tropical Surge;
+- 7 retired: 3 Twist, White Dot Scarlet/Gold/Black, Hammer Effect, Hammer
+  Effect Tour, Mix Red/White/Navy.
+
+Price sources unchanged. Two Al rejected stay rejected (Raw Smoke/Blue/Gold
+4069, Tropical Surge Pink/Purple 622). Pending ones are still waiting in
+admin (the TZones, Ice Storms, Mix Lime/Royal/Custard, Ebonite Viz-A-Ball).
+
+**30 more links, applied 2026-11-02** (Al: "yes apply all 30 and approve
+the price sources"). Each was checked against the store-sync audit: it
+resolves to exactly one ball, has no row yet, and no other row holds that
+listing.
+- 21 written by hand with the link script's own insert (`matched`, `on
+  conflict do nothing`, re-checks the claim), `content_changed_at` bumped:
+  - 4 "Glow Viz-a-Ball" listings the script's medium tier doesn't reach
+    (Butterflies 523, Hearts 525, Lizard Eye 527, Shark 530) and Snake 533;
+  - Rhino Cobalt/Aqua/Teal 504;
+  - store variants of retired balls: Hammer Special Effect 4064 (listed
+    as "Speical"), Top Thrill Blue/Green 3209, Melee Jab Carbon 3322, Teal
+    Rhino Pro 3728, Envy 3332, Envy Tour 3421, NU Blue 3872, Crypto 3320,
+    Sneak Attack 3301 ("Hybrid" on the store), Archetype 3423, Paragon
+    3275, and the four retired Raw colorways 3149–3152.
+- 9 Viz-a-Ball `review_link` rows accepted through `--accept-file`.
+- Then `--apply --approve-price-sources`: 45 sources created, 5 pending
+  approved (both TZones, both Ice Storms, Mix Lime/Royal/Custard), 1
+  repointed (Tropical Surge Pink/Purple: Al's rejected source pointed at
+  the wrong listing, 3195, and now points at 622), all approved. The 45
+  include nine balls that were already linked but had no source (Eternity
+  Pi, Origin EX, Sublime, Sublime Focus, Zen 25, TNT Infused, X-Cell,
+  Lightning Blackout, The Road). The price-checker invoke for those 51
+  balls: 51 checked, 51 succeeded.
+- Raw Smoke/Blue/Gold (4069) keeps its rejected source.
+
+Published balls with a `bigcommerce_product_id` went from 393 to **465**,
+and with a `bowlerdepot_url` from 412 to **463**.
+
+Still not linked:
+- **needs Al's call:** Attitude Pearl 3306, Conspiracy Solid 3910,
+  Hellcat Solid 3318, Wolverine Dark Moss 3316, Storm EquinoX 4052;
+- **no BowlerIQ ball:** Harsh Reality Pearl, XPonent Pearl, Attention Star
+  S2, Optimum Idol Pearl, Super Nova, Hy-Road 40, Hy-Road Pearl, 900
+  Global Cove and Ember, Roto Grip Rockstar, Rockstar Amped, Ultimate
+  Wrecker and RST Hyperdrive, Columbia 300 Ricochet, Twist
+  Blue/Pink/Snow, Mix Black/White, Tropical Surge Red/White/Purple. These
+  should come in through the scrapers, not hand inserts.
+
+**Deploy:** `sam build && sam deploy` (full build). It has to land before
+the next daily reconciliation run (`rate(1 day)`, last at 00:25 UTC), or
+that run rewrites most of the 33 back to `ambiguous`. If that happens,
+rerun the update below after the deploy. This deploy also ships 6fk's
+"only Storm publishes fragrance" partner-schema wording.
+
+```sql
+update bowlerdepot_products bdp set match_status = 'matched', last_synced_at = now()
+from products p where p.id = bdp.product_id and bdp.match_status = 'ambiguous' and p.published
+  and not exists (select 1 from bowlerdepot_products o where o.bigcommerce_product_id = bdp.bigcommerce_product_id and o.product_id <> bdp.product_id);
+```
+
+**Deployed 2026-11-02 16:53 UTC.** Al's first two `sam deploy` attempts
+never reached CloudFormation (the stack stayed at 2026-11-01 08:37), so
+check the stack's `LastUpdatedTime` after deploying. A hand invoke of the
+reconciliation right after the deploy returned `current_kept_matched_count`
+18 and `retired_kept_matched_count` 7, with 397 rows rewritten. Afterwards
+there were still 0 published `ambiguous` rows and 465 `matched`, all 465
+showing a `bigcommerce_product_id`, so the matches stuck.
+
+**Verify:**
+```bash
+aws logs tail /aws/lambda/bowling-scraper-bowlerdepot-reconciliation --since 1d | grep current_kept_matched
+psql -c "select count(*) from bowlerdepot_products bdp join products p on p.id = bdp.product_id where p.published and bdp.match_status = 'ambiguous'"   # 0 (or only new ones)
+```
+
+### 6fq. Brand lineups, partner tasks and brand-store art (2026-11-02, deployed 22:23 UTC)
+
+Requested by the Bowler Depot brand-stores session, for Al. His direction:
+BowlerIQ owns each brand's lineups, and Bowler Depot's brand-store art is a
+standing **task** that BowlerIQ reruns by itself when a trigger rule fires.
+Each image sits at a stable URL. "This is one per brand, not a one-off for
+Storm... adding the next brand should only mean loading its lineups and
+creating its task." Then: "go ahead, include the weekly sweep, newest
+releases for heroes."
+
+**Migration 058** (`058_brand_lineups_and_tasks.sql`, applied 2026-11-02;
+it only adds tables):
+- `brand_groupings`: a brand's own ways of grouping its balls, such as
+  Storm's "Reaction profile" and "Lane read".
+- `brand_lines`: the lines in a grouping. Each has an `assign_rule` (data,
+  not code) that files a new release into it:
+  - `brand_listing`: the brand site's own filtered listing (commercebuild
+    is the only platform read so far);
+  - `fields`: a match on our own columns;
+  - `manual`.
+- `brand_line_balls`: a ball can sit in several lines. `added_by` is
+  `load`, `rule` or `admin`, and a rule only ever removes what a rule added.
+- `tasks` and `task_runs`: the standing request and its run log.
+- `brand_art_slots`: one row per image, with `featured` (product name,
+  BowlerIQ id and BigCommerce id), alt text, how it was drawn, and
+  `input_hash`.
+
+**The runner** (`product_article_generator/brand_art.py`, plus
+`brand_art_compose.py` for compositing). Events:
+- `{"brand_art": "dispatch"}`: daily at 12:30 UTC (`BrandArtSchedule`).
+  - It runs the assign rules for each enabled task. A ball no rule places
+    goes to `review_queue` (`brand_line`), never into a guessed line.
+  - It works out each slot's inputs and redraws only the slots whose
+    inputs changed, or every slot once a week.
+  - Each task runs through an async self-invoke.
+- `{"brand_art": "run", "task_id", "slots"?}`: draws now. This is what
+  admin's "Rerun now" sends.
+
+**Triggers as fingerprints.** Each slot hashes its products, their photo
+URLs, the palette and the companion's stock. A changed hash is a rule
+firing, and the run log names which one: `ball_released`,
+`line_changed`, `photo_changed`, `companion_stock`, `weekly_sweep` or
+`manual`. That covers every trigger in the request without hooking the
+scrapers.
+
+**Slots** (images are WebP, under 250 KB):
+- One image per line in `params.line_groupings` (Storm: reaction profile),
+  1200×900. Ball-only, up to four balls, newest front and center,
+  composited from the real photos.
+- Up to 3 heroes, each 1600×1200 plus a 1600×900 phone version. The
+  default picks follow "newest releases for heroes":
+  - hero-1 and hero-2 are the newest released balls (release date today or
+    earlier), with balls Bowler Depot has in stock first;
+  - hero-3 is the newest stocked non-ball product (bag, shoes, accessory),
+    with the newest ball beside it. The product is ranked bags first,
+    then shoes, then accessories.
+    - Al, on a $79.95 1-ball roller: "can you use higher priced bags, 3
+      ball roller or triple totes? that is an entry level bag and isn't
+      idea[l]". So bags go 3+ ball rollers, then 3+ ball totes, then other
+      rollers, then the rest, read from the store's category path ("Bags >
+      Roller Bags > 3 Ball Rollers") or the name, with the highest price
+      first within a tier.
+    - For Storm that's the Rolling Thunder 3 Ball Roller Signature at
+      $269.95. The first render had picked "Storm 1 Ball Spare Kit" by
+      date alone.
+    - A `bigcommerce_product_id` on the hero pins a product while it's
+      stocked.
+    - **True scale.** Al: "size ratios are way off". The ball beside a
+      companion is drawn at 8.5" against the product's real size. That
+      size comes from `companion_inches` (typical sizes by type: 3-ball
+      roller 36" with its handle up, 2-ball roller 30", 1-ball roller 24",
+      3-ball tote 27", 1-ball tote 13", shoes 12", gloves 9"), because
+      BigCommerce's own dimensions are placeholders (10×10×10 on every
+      Storm bag). Balls in a line or lineup image are all drawn the same
+      size.
+    - Calibration: the first try (a 45" roller) was "two small". Al: "that
+      is a 3 ball bag... the ball should [be] around 1/3 the height of the
+      white part of the bag". The body is about 70% of the photographed
+      height with the handle up, so 36" overall gives a ball about 0.31 of
+      the body (measured on the render). The other bags are scaled the same
+      way.
+    - If Bowler Depot stocks nothing else from the brand, the slot is the
+      3rd newest ball.
+- Hero types, per Al:
+  - **product**: one product in focus. A ball product hero uses the
+    existing Gemini product-shot pipeline (`build_gemini_scene_prompt`, the
+    logo-match and logo-size checks from the announcement job), with the
+    brand palette as the backdrop and a no-text rule. If any attempt fails
+    the checks, both sizes are the composite, so a slide's two sizes always
+    match.
+    The ball-size part of the logo-size check is scaled by the frame's
+    height/width, because `PRODUCT_SHOT_BALL_RANGE` is a share of a
+    square's width. On 2026-11-02 every 16:9 attempt failed with "ball only
+    46% of the frame width" while its logo matched.
+  - **lineup**: several products together, composited.
+  - Non-ball products are always composited from their BigCommerce photos
+    ("real product photos only").
+- Cut-outs:
+  - Storm/Roto Grip/900 Global ball PNGs are already transparent.
+  - Any photo that isn't already a cut-out (BigCommerce JPEGs on white)
+    goes through Bedrock's Stability Remove Background, the same call the
+    article pipeline uses. Al: "it missed on removing the background by
+    the handles". A border flood fill can't reach the white seen through a
+    handle. The model clears it and keeps a white bag's own panels. The
+    flood fill is the fallback if the call fails.
+- "Stocked" means visible, purchasable, and with stock on the product or
+  any variant (untracked counts as stocked), read from the brand's
+  Catalog v3 products.
+
+**Stable URLs.** Each slot's image is written to
+`brand-art/<slug>/<slot>.webp` (plus `-16x9`), and a rerun overwrites it.
+`image_resizer` now serves the `brand-art/` prefix:
+- with no size params, as stored;
+- always with `Cache-Control: public, max-age=3600` instead of the
+  year-long immutable header ("Keep the CDN cache short (around an hour)").
+
+Example: `https://img.bowleriq.io/brand-art/storm/hero-1.webp`.
+
+**Partner API:** `GET /v1/brands/{id}/lineups` is a new, optional v1
+endpoint:
+- groupings, then lines, then current published balls, newest first, with
+  the brand's note;
+- each line's art, and the heroes (`url`, `url_16x9`, `alt`, `featured`,
+  `generated_at`, `owner`).
+
+The snapshot was regenerated, and the diff is additions only.
+
+**Admin:**
+- A **Brand Stores** page (`/brand-stores`) shows the hero and line
+  images, each lineup with who placed each ball, balls no rule placed,
+  add/remove a ball, the task settings (palette, line_groupings, heroes),
+  Pause/Enable, Rerun now, and recent runs.
+- API: `GET/PATCH /brand-stores[/{task_id}]`, `POST .../rerun`,
+  `POST/DELETE /brand-lines/{line_id}/balls`.
+
+**Storm, loaded 2026-11-02** with `scripts/load_brand_lineups.py
+scripts/brand_lineups/storm.json --theme-nav
+../bicommerce-site/bowlerdepot-theme-brands/templates/components/brand-store/navigation.html
+--apply`:
+- 2 groupings and 9 lines, all `brand_listing` rules on stormbowling.com's
+  facets. The brand-stores session supplied them:
+  - reaction profile is `filter[custom20]`;
+  - lane read is `filter[brand]`, the site's own odd name for it.
+- 20 balls seeded from the theme, with their notes; none unmapped.
+- Task `179ee0e1-3fc0-48ad-be67-63e64a220af9` (owner `bowlerdepot`,
+  palette #191c1b / #009d90, BigCommerce brand 42).
+
+**Adding a brand:** write `scripts/brand_lineups/<brand>.json` (groupings,
+lines, rules, palette, BigCommerce brand id), then run the loader as
+above. A brand whose lines need its own site's listing also needs a
+`listing_members` reader for that platform; today only commercebuild has
+one. Lines matched on our own columns (`fields` rules) need nothing more.
+
+**Deploy:**
+```bash
+sam build && sam deploy
+cd admin-spa && npm run build && cd .. && git push   # admin SPA deploys from main
+```
+After the deploy, draw Storm once without waiting for the schedule:
+```bash
+aws lambda invoke --function-name bowling-scraper-product-article-generator --invocation-type Event --payload '{"brand_art": "run", "task_id": "179ee0e1-3fc0-48ad-be67-63e64a220af9", "trigger": "manual"}' --cli-binary-format raw-in-base64-out /dev/null
+```
+
+**Deployed 2026-11-02.** Al's first `sam deploy` was run from the
+`brand-art` worktree. That never reached AWS: the worktree has no
+`samconfig.toml` (it's gitignored, see 6fn) and no build. So the branch
+was merged to `main` (8c0a0de) and deployed from the main checkout. The
+stack updated at 22:23 UTC, and the generator, resizer, partner and admin
+functions all have the new code. The `bowling-scraper-brand-art-dispatch`
+rule is enabled, and the admin site deployed from the `main` push.
+
+Storm's first real run went 22:25 to 22:30 UTC and succeeded:
+- all 8 slots drawn: hero-1 (Equinox Hybrid) and hero-2 (!Q Tour
+  Sapphire) by Gemini; hero-3 (Rolling Thunder 3 Ball Roller Signature
+  White / Blue with the Equinox Hybrid) and the five reaction-profile
+  lines composited;
+- every URL returns 200 `image/webp` with `public, max-age=3600`,
+  38–61 KB each;
+- `GET /v1/brands/{storm}/lineups`, invoked directly on the function,
+  returns 200 with art on all 5 non-empty reaction-profile lines and 3
+  heroes with their featured names and ids;
+- the lane-read lines (5/7/8 balls) have no images by design
+  (`line_groupings` is reaction-profile only).
+
+**Verify:**
+```bash
+curl -sI https://img.bowleriq.io/brand-art/storm/hero-1.webp | grep -i 'cache-control\|content-type'   # max-age=3600, image/webp
+curl -s -H "Authorization: Bearer $KEY" "https://api.bowleriq.io/partner/v1/brands/aadc2a74-fbef-47a6-8417-c40f3644a28a/lineups" | jq '{lines: [.groupings[].lines[] | {key, balls: (.balls | length), art: (.art | length)}], heroes: [.heroes[] | {slot, featured: [.featured[].name]}]}'
+psql -c "select status, trigger, started_at, detail -> 'slots' from task_runs order by started_at desc limit 3"
+```
+
+**Tests:**
+- `tests/test_brand_art.py` (23): compositing, cut-outs, assign-rule
+  listing match (colorway pages, other brands on the same site), stock,
+  companions, slot planning and hero picks, which trigger fired, and the
+  Gemini fallback;
+- 3 new in `test_image_resizer.py` (26);
+- 2 new in `test_partner_api_service.py` (26) and the partner contract snapshot;
+- `test_admin_api_service.py` (461) and `test_product_article_generator.py`
+  (186) unchanged and passing.
+
+### 6fr. Brand lineups: "exclusive" lines for balls a brand doesn't profile; Storm's spare and entry-level balls (2026-11-02, not deployed)
+
+Storm's first brand-art run (6fq) flagged 22 current Storm balls that
+stormbowling.com puts in no reaction profile or lane read. Each was
+flagged once per grouping, so the review queue got 44 `brand_line` items.
+Al: "mix, ice, clear, and norm duke are spare balls. tropical is entry
+level. identity are discontinued limited releases".
+
+**`brand_art.apply_assign_rules`:**
+- A line whose rule has `"exclusive": true` holds balls that sit outside
+  the brand's other groupings. Its balls are never flagged as unplaced
+  elsewhere.
+- Its own grouping doesn't flag the balls that aren't in it, because a
+  "Ball type" grouping only names the exceptions.
+- Every run now settles pending `brand_line` items whose ball has since
+  been placed or exempted (`approved`, `resolved_by = 'brand_art'`), so the
+  queue doesn't keep stale flags.
+
+**Storm data** (`scripts/brand_lineups/storm.json`): a new grouping,
+`ball-type`, with two `fields` rules on the name, both exclusive:
+- `spare`: Mix, Ice Storm, Clear Storm, Lightning Storm and Norm Duke
+  Clear;
+- `entry-level`: Tropical Surge.
+
+There are no line images for these, since the task's `line_groupings` is
+still reaction-profile only.
+
+**Identity / Identity B/C/P: not changed.** Al says they're discontinued
+limited releases, but stormbowling.com still files both pages under
+"Bowling Balls", not "Bowling Balls Archive". `classify_product_status`
+reads that breadcrumb, so a hand-set `retired` would be undone by
+Sunday's full re-scrape. There's no manual status override anywhere in
+the codebase. Until one is chosen they stay current and stay flagged,
+which is correct: they really are in no line.
+
+**Order matters, so deploy first, then load.** The deployed 6fq code
+treats any grouping with a rule as one every ball must be in. Loading
+`ball-type` before this deploys would make the next daily dispatch flag
+every profiled Storm ball as missing a ball type.
+```bash
+sam build && sam deploy
+.venv/bin/python scripts/load_brand_lineups.py scripts/brand_lineups/storm.json --apply
+aws lambda invoke --function-name bowling-scraper-product-article-generator --invocation-type Event --payload '{"brand_art": "run", "task_id": "179ee0e1-3fc0-48ad-be67-63e64a220af9", "trigger": "manual"}' --cli-binary-format raw-in-base64-out /dev/null
+```
+
+**Verify:** pending `brand_line` items for Storm drop from 44 to 4 (the two
+Identity balls, once per grouping):
+```bash
+psql -c "select p.name, r.proposed_value from review_queue r join products p on p.id = r.product_id where r.field_name = 'brand_line' and r.status = 'pending' order by 2, 1"
+```
+
+**Tests:** 2 new in `tests/test_brand_art.py` (25): exclusive lines and
+flag settling, and the Storm ball-type name patterns against the names
+Al listed.
+
+### 6fs. Manual status override: a person's current/retired sticks through re-scrapes (2026-11-02)
+
+Al, on Storm's Identity and Identity B/C/P: "identity are discontinued
+limited releases". Then, choosing between an override and leaving them
+current until Storm archives the pages: "yes do option 1".
+
+**Why it was needed.** Status comes from the brand's own site.
+`commercebuild_product_scraper.classify_product_status` reads the
+breadcrumb ("Bowling Balls" means current, "Bowling Balls Archive" means
+retired), and stormbowling.com still files both Identity pages as current.
+A hand-set `retired` would have lasted until Sunday's full re-scrape (6dx).
+The same was true of every scraper family, and of a bowwwl_cross_check
+'retired' proposal approved in the review queue (6fd).
+
+**Migration 059** (`059_products_status_override.sql`):
+- `products.status_override` (`product_status`, null by default),
+  `status_override_note` and `status_override_at`.
+- Trigger `products_a0_status_override`, BEFORE INSERT OR UPDATE: when the
+  override is set, `status` is forced to it on every write, so no scraper
+  can change it.
+- The trigger runs first of the BEFORE triggers on `products` (they run
+  alphabetically):
+  - 050's publish-retired trigger sees the final status;
+  - 044's change-feed bump doesn't count a scrape's attempted flip as a
+    change.
+- One trigger rather than five scraper changes, the same reasoning as 050.
+
+**Admin:**
+- `PATCH /products/{id}/status-override` with `{"status": "current" |
+  "retired" | null, "note"}`. Null clears the override, and the scrapers
+  decide again from the next scrape.
+- The product page has a "Status: scrapers decide / Always current / Always
+  retired" select next to the status badge.
+- Approving a `status` review item now sets the override too
+  (`execute_update_plan`), so an approved bowwwl "Discontinued" can't be
+  scraped back.
+
+**Applied:** Identity and Identity B/C/P set to `retired` with the note
+"Al: discontinued limited releases". See the 6fr follow-up below for what
+that does to their brand-line flags. Being retired drops them out of
+brand_art's current balls and out of the review queue's scope.
+
+**Deploy order:** run the migration first. The new admin code writes
+`status_override`, so deploying it before the column exists would break
+status approvals.
+```bash
+psql -v ON_ERROR_STOP=1 -1 -f db/migrations/059_products_status_override.sql
+sam build && sam deploy
+```
+
+**Verify:**
+```bash
+psql -c "select name, status, status_override, status_override_note from products where status_override is not null"
+psql -c "begin; update products set status = 'current' where name = 'Identity' and status_override = 'retired' returning status; rollback;"   # returns retired
+```
+
+**Tests:** 4 new in `tests/test_admin_api_service.py` (465): an approval
+sets the override, other fields still use single-column updates, set and
+clear, and bad status / unknown product.
+
+### 6ft. Brand art: no line images unless a task asks for them (2026-11-02)
+
+Al, through the Bowler Depot brand-stores session: Bowler Depot "doesn't
+need line images after all. Each one only showed the balls listed right
+below it", so "drop line slots from the brand-art task for every brand".
+Heroes and lineups are still wanted.
+
+**Changes:**
+- `brand_art.plan_slots` draws line images only for the groupings a task
+  names in `params.line_groupings`. Absent or empty means none. It used to
+  mean all groupings.
+- Storm's data file and task no longer name any.
+- The admin Brand Stores page hides the Line images card when there are
+  none.
+
+**Data, after the deploy** (not before: the 6fq code reads a missing
+`line_groupings` as "every grouping" and would draw lane-read and
+ball-type lines too):
+```sql
+update tasks set params = params - 'line_groupings', updated_at = now() where kind = 'brand_art';
+delete from brand_art_slots where kind = 'line';
+```
+Deleting the rows takes the line art out of `GET /v1/brands/{id}/lineups`
+(`art: []`) and admin. The five Storm `brand-art/storm/line-*.webp`
+objects (about 230 KB in all) are left in the bucket: they cost a
+fraction of a cent a month, and nothing links to them any more.
+
+**Tests:** 1 new in `tests/test_brand_art.py` (26).
+
+### 6fu. Brand art heroes: newest ball (pre-orders too), "Find your reaction" line mix, no image for the plotter slide (2026-11-02)
+
+Al, through the Bowler Depot brand-stores session: the brand page's three
+slides are "fixed in purpose":
+1. "the newest ball", Storm's Ion Pro Pearl (on pre-order). The 6fq pick
+   showed the Equinox Hybrid, because it took released, in-stock balls
+   first.
+2. "Find your reaction": "a mix of balls from different reaction lines",
+   one from each populated profile.
+3. "See them on the plotter": the theme draws BowlerIQ's live plotter
+   there, so it "needs no image".
+
+"Other brands should get the same three by default."
+
+**`brand_art.DEFAULT_HEROES`** is now two image slots:
+- `hero-1`: `{"type": "product", "pick": "newest_ball",
+  "include_preorder": true}`. The newest current published ball, whatever
+  its release date or stock. It's drawn by the Gemini product-shot
+  pipeline, as before.
+- `hero-2`: `{"type": "line_mix"}`. The newest ball from each populated
+  line of one grouping, in the brand's line order, with no ball twice.
+  - The grouping is `h["grouping"]`, or else the brand's first grouping
+    with two or more populated lines. For Storm that's reaction profile:
+    five balls.
+  - Exclusive lines (6fr) are never mixed in.
+  - It's stored and served as hero_type `lineup`, composited from the real
+    photos at 4:3 and 16:9. `lineup_hero` now fits up to six balls.
+- There is no third slot. The plotter slide is the theme's.
+
+The older pick types (ranked `newest_ball`, `newest_companion` with its
+3-ball-roller ranking and true scale, `lineup` by line or ball ids) still
+work when a task lists them in `params.heroes`.
+
+Not built: the optional per-profile graphic (each profile's ball path down
+the lane). It would be drawn data rather than a photo, so it waits on Al's
+call.
+
+**Data, after the deploy** (together with 6ft's):
+```sql
+update tasks set params = params - 'line_groupings', updated_at = now() where kind = 'brand_art';
+delete from brand_art_slots where kind = 'line' or (slot_key = 'hero-3' and task_id in
+  (select id from tasks where kind = 'brand_art' and not (params ? 'heroes')));
+```
+Then rerun Storm. `hero-1.webp` and `hero-2.webp` are redrawn in place.
+`hero-3.webp` (the roller-bag composite) stays in the bucket, unlinked.
+
+**Tests:** `tests/test_brand_art.py` (31). The 6fq hero tests now name
+their legacy picks. New ones cover: the default hero-1 is the pre-order
+Ion Pro Pearl; the line mix takes one per line of the first grouping and
+skips lane-read and exclusive lines; there's no hero-3 and no line
+images; no ball repeats in a mix; and five or six balls fit both sizes.
+
+### 6fv. Brand art: lineup heroes ("Find your reaction") as a pro shop counter scene (2026-11-02)
+
+Al, on the 6fu line-mix hero (five cut-outs in a row): "the balls just
+sitting there aren't doing it. can we set a pro shop scene and put them on
+the counter or something like that". Then, on the prototype: "that looks
+fine".
+
+**Changes:**
+- **Lineup heroes are a Gemini scene.** `brand_art.render_lineup_scene`
+  covers every lineup hero, including line_mix. Gemini gets every ball's
+  real photo as a reference: `call_gemini_for_image` gained
+  `extra_reference_images_b64`, which is None for every existing caller.
+- **The prompt:** `SCENE_PROMPT` asks for a pro shop counter in the
+  brand's palette with the balls on it, spaced so no ball hides another's
+  logo, and carried over exactly. It bans text, signs, screens, people,
+  pins and price tags.
+- **The prompt is the prototype's wording**, which Al approved ("that
+  looks fine"), with only the two changes he asked for:
+  - "we have wood counter tops, butcher block stained darker in most of
+    our shops";
+  - "if you are going to put products on the shelves behind them pull it
+    from the poducts on the site. don't make things up". The prototype's
+    shelves were full of invented balls. Now they hold only the brand's
+    best stocked Bowler Depot products (up to 4, ranked by
+    `pick_companion`, the BigCommerce photos passed as references), or
+    nothing if the brand stocks nothing.
+  - A rewrite in between that also moved the camera back and spread the
+    balls out was rejected: "the original image was way better than this
+    one". So nothing else in the prompt changes.
+- Then: "now it doesn't look like a proshop. the rest of the products were
+  fine" -- only the made-up BALLS were the problem. So the prototype's
+  background is back (wall shelving and a ball display), and the display
+  holds only the brand's six newest current balls not on the counter, as
+  reference photos. `check_scene_background` now rejects only a background
+  ball that isn't one of them; other merchandise is allowed.
+- Then: "also a closer up view with the balls in order of demand with
+  highest infront and the focal depth short so they start to blur after
+  the first or second ball".
+  - The line mix is sorted by `products.demand_score`, highest first.
+  - The prompt asks for a close, low angle along the counter, with the row
+    receding from the camera in that order and a shallow depth of field.
+  - Only the first `SCENE_SHARP_BALLS` (2) balls are logo-checked. A
+    blurred logo can't be verified, so the soft ones are carried over from
+    their references unchecked.
+- **No ball display behind the counter.** Even with the brand's real
+  balls as references (6, then 12), Gemini filled the display with
+  invented balls in nearly every attempt, and the check rejected them all,
+  so the slide fell back to the composite. Al's objection was to made-up
+  balls ("the rest of the products were fine"), so the shop keeps its
+  bags, accessories and shoe wall, and the only balls are the counter's.
+  The background check now rejects any ball behind the counter. A task can
+  still list display balls explicitly (`display_ball_ids` on the hero).
+  The 2026-11-02 render passed at both sizes: the front two logos matched,
+  and the check reported "No bowling balls visible in background, only
+  bags and shoes".
+- **Any display balls are in `featured`** after the counter's, by kind and
+  BigCommerce id. They're part of the slot's fingerprint, so one selling
+  out redraws the slide.
+- **A background check:** `app.check_scene_background` has Claude compare
+  the background with the shelf references, and rejects any other product,
+  extra ball or readable sign.
+- **Checks:** each attempt checks every ball's logo against its own photo
+  (`check_logo_matches`), and one miss discards the attempt. There are
+  up to `GEMINI_HERO_ATTEMPTS` (3) tries per size.
+  - The prototype's one miss was the Monsoon, half hidden behind the !Q.
+    That's why the prompt now asks for space between the balls.
+- **Fallback:** if either size can't pass, both sizes are the 6fu
+  composite, so a slide's two images always match.
+
+**Cost:** one Gemini image plus one Claude check per ball for each
+attempt. That's about 2 to 6 Gemini calls per redraw of the slot, and a
+redraw only happens when its balls change or on the weekly sweep.
+
+**Tests:** 3 new in `tests/test_brand_art.py` (34):
+- every ball is a reference, and the prompt keeps the rules (butcher
+  block, empty shelves with no stock);
+- the shelves are the brand's best stocked products, passed as
+  references;
+- a failed size falls back to the composite for both.
+
+**Render, 2026-11-02, local:** both sizes passed every ball's logo check
+and the background check ("All four shelf bags match references; no extra
+items visible").
+
+### 6fw. Brand lineups: flags on balls that retire are closed (2026-11-03)
+
+After 6fs retired Storm's Identity and Identity B/C/P, their four pending
+`brand_line` review items stayed open. `apply_assign_rules` only settled
+flags for balls it had placed or exempted, and a retired ball is never
+either. They were closed by hand on 2026-11-03 (`rejected`, `resolved_by =
+'brand_art'`). Al: "fix the retired flag clearing and deploy it".
+
+**Change:** every `apply_assign_rules` run (daily dispatch, Rerun now)
+first closes the brand's pending `brand_line` items whose ball is no longer
+a current published ball: retired by the brand, retired by a status
+override, or unpublished. They're closed as `rejected`, `resolved_by =
+'brand_art'`.
+
+**Deploy:** `sam build && sam deploy` (product_article_generator only).
+
+**Verify:**
+```bash
+psql -c "select count(*) from review_queue r join products p on p.id = r.product_id where r.field_name = 'brand_line' and r.status = 'pending' and p.status <> 'current'"   # 0
+```
+
+**Tests:** `tests/test_brand_art.py` (36) asserts the close runs, scoped
+to the brand.
+
+### 6fx. Learn plotter: `?brand=` opens it with one brand showing (2026-11-03, deployed)
+
+Requested by the Bowler Depot brand-stores session for Al. The Storm
+brand store links to `https://learn.bowlerdepot.com/plotter/?brand=Storm`
+("Open the full plotter", "Compare balls on the plotter"), using the
+BigCommerce brand name, URL-encoded. Before this, the plotter's brand
+filter lived in local state only.
+
+**`bowlerdepot-learn/src/pages/PlotterPage.tsx`:**
+- Once the balls load, `?brand=` sets the starting filter to that brand
+  alone. The match is case-insensitive: the store's "Motiv" is our
+  "MOTIV".
+- An unknown name shows every brand.
+- It's applied once, so the shopper can turn other brands back on.
+- `?ball=` works alongside it.
+
+**Verified locally** (dev server on :5191 against the public API):
+- `?brand=storm` showed only Storm;
+- `?brand=Roto%20Grip&ball=<Perfect Gem>` showed only Roto Grip, with
+  the Perfect Gem selected;
+- turning Hammer on then showed Hammer and Roto Grip;
+- `?brand=Nope` showed all 11 brands.
+
+**Deployed 2026-11-03.** Al: "yes push it". Pushed 7134bc4, and Deploy
+Learn Site run 41564666225 succeeded. Live,
+`learn.bowlerdepot.com/plotter/?brand=Storm` opens with only Storm on.
+
+### 6fy. Brand art for Hammer: partial lineups, its families, and same-day ties (2026-11-03, not deployed)
+
+The Hammer brand-store session asked for Hammer's brand art (`hammer`
+hero-1 and hero-2, both sizes), modeled on Storm's store. BowlerIQ had no
+Hammer lineup, task or palette.
+
+**Code (`brand_art.py`):**
+- **Partial lines.** A line whose rule has `"partial": true` names only
+  some of the brand's balls, so balls in none of its grouping's lines are
+  not flagged as unplaced. Hammer's families leave out Raw Hammer, Axe,
+  Spawn, Fallout, NU and others, and without this the dispatcher would put
+  every one of them in the review queue each day. Partial lines still feed
+  the line mix (exclusive lines don't).
+- **Line-mix tie.** When two balls in a line share a release date (Zero
+  Mercy Hybrid and Tour, 2026-09-17), the newest-in-line pick goes to the
+  higher demand, so it's stable.
+
+**Data (`scripts/brand_lineups/hammer.json`):**
+- BigCommerce brand 38.
+- Grouping `family`: Black Widow (excluding spares), Zero Mercy, Purple
+  Pearl Urethane, Effect and Vibe. These are partial `fields` rules on the
+  name, taken from the theme's Hammer navigation.
+- Grouping `ball-type`: an exclusive Spare line (Spare+, Viz-A-Ball).
+- The theme's Performance tiers aren't in our data, so they aren't loaded.
+- Palette #000000 / #fe5000, from hammerbowling.com's own CSS variables
+  (`--colorBody`, `--colorBtnPrimary`), sent by the Hammer brand-store
+  session.
+
+**Expected art:**
+- hero-1: the Blacklist (pre-order, 2026-11-19).
+- hero-2: Zero Mercy Hybrid, Black Widow 3.0 Dynasty, Deep Ocean Vibe,
+  Purple Pearl Urethane 78D, Full Effect, by demand.
+
+**Deploy, then load, then run** (the same order as 6fr: the deployed code
+would treat the partial family lines as complete and flag about 20 balls):
+```bash
+sam build && sam deploy
+.venv/bin/python scripts/load_brand_lineups.py scripts/brand_lineups/hammer.json --apply
+aws lambda invoke --function-name bowling-scraper-product-article-generator --invocation-type Event --payload '{"brand_art": "run", "task_id": "<hammer task id from the load>", "trigger": "manual"}' --cli-binary-format raw-in-base64-out /dev/null
+```
+
+**Tests:** `tests/test_brand_art.py` (38): partial groupings never flag,
+and the Hammer family rules match its ball names and keep the spares out.
+
+### 6fz. A BowlerDepot price source follows its listing: off when hidden, back on when live (migration 060) (2026-11-02)
 
 **What happened.** On 2026-11-02 Spurline hid 258 balls on bowlerdepot.com
 (`is_visible` false). Every weight was at zero, and none was ever in Classic's
@@ -22665,7 +23398,7 @@ price_checker never looked at visibility, and 6fn's reconciliation only stops
 *new* links to hidden listings.
 
 **Fix.**
-- **Migration 058**: `product_price_sources.inactive_reason text`. Null means
+- **Migration 060**: `product_price_sources.inactive_reason text`. Null means
   active, or paused by an admin. `'listing_unavailable'` means price_checker
   switched it off.
 - **price_checker**: `check_bigcommerce_sources` sets `listing_live` on each
@@ -22700,7 +23433,7 @@ URL-only edit keeps it.
 **Deploy, in this order** (the new code reads `inactive_reason`, so the
 migration goes first):
 ```bash
-psql -f db/migrations/058_price_source_inactive_reason.sql
+psql -f db/migrations/060_price_source_inactive_reason.sql
 sam build && sam deploy
 ```
 Then check every product with an approved BowlerDepot source now (463 on

@@ -595,6 +595,26 @@ def update_product_image(product_id: str, image_id: str, body: ImageUpdateReques
         conn.close()
 
 
+class StatusOverrideRequest(BaseModel):
+    status: Optional[Literal["current", "retired"]] = None
+    note: Optional[str] = None
+
+
+@app.patch("/products/{product_id}/status-override")
+def set_status_override(product_id: str, body: StatusOverrideRequest):
+    # Runbook 6fs (migration 059): a status that re-scrapes can't flip.
+    # status null clears the override.
+    conn = service.get_db_connection()
+    try:
+        return service.set_status_override(conn, product_id, body.status, body.note)
+    except LookupError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    finally:
+        conn.close()
+
+
 @app.patch("/products/{product_id}/plotter-position")
 def set_plotter_position(product_id: str, body: PlotterPositionRequest):
     # Writes the AUTHORITATIVE oil/motion chart position (migration 011,
@@ -1072,6 +1092,53 @@ def generate_product_announcement_images(product_id: str):
 @app.get("/social/new-balls")
 def list_new_balls_for_social(days: int = 60):
     return _announcement_call(lambda conn: service.list_new_balls_for_social(conn, days))
+
+
+# --- Brand stores: lineups + brand_art tasks (migration 058, runbook 6fq) ---
+# Same error mapping as the announcement routes: 404 not found, 409 a run
+# is already going or the edit is invalid.
+
+class BrandStoreUpdateRequest(BaseModel):
+    params: Optional[dict] = None
+    enabled: Optional[bool] = None
+
+
+class BrandStoreRerunRequest(BaseModel):
+    slots: Optional[list[str]] = None
+
+
+class BrandLineBallRequest(BaseModel):
+    product_id: str
+
+
+@app.get("/brand-stores")
+def list_brand_stores():
+    return _announcement_call(lambda conn: service.list_brand_stores(conn))
+
+
+@app.get("/brand-stores/{task_id}")
+def get_brand_store(task_id: str):
+    return _announcement_call(lambda conn: service.get_brand_store(conn, task_id))
+
+
+@app.patch("/brand-stores/{task_id}")
+def update_brand_store(task_id: str, body: BrandStoreUpdateRequest):
+    return _announcement_call(lambda conn: service.update_brand_store(conn, task_id, body.params, body.enabled))
+
+
+@app.post("/brand-stores/{task_id}/rerun")
+def rerun_brand_store(task_id: str, body: Optional[BrandStoreRerunRequest] = None):
+    return _announcement_call(lambda conn: service.queue_brand_art_rerun(conn, task_id, body.slots if body else None))
+
+
+@app.post("/brand-lines/{line_id}/balls")
+def add_ball_to_brand_line(line_id: str, body: BrandLineBallRequest):
+    return _announcement_call(lambda conn: service.add_ball_to_line(conn, line_id, body.product_id))
+
+
+@app.delete("/brand-lines/{line_id}/balls/{product_id}")
+def remove_ball_from_brand_line(line_id: str, product_id: str):
+    return _announcement_call(lambda conn: service.remove_ball_from_line(conn, line_id, product_id))
 
 
 # --- In-store signage (migration 045, runbook 6cn) ---------------------

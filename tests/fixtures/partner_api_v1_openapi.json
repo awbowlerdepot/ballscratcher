@@ -1,6 +1,101 @@
 {
   "components": {
     "schemas": {
+      "ArtImage": {
+        "additionalProperties": false,
+        "properties": {
+          "alt": {
+            "description": "Alt text for the image.",
+            "title": "Alt",
+            "type": "string"
+          },
+          "featured": {
+            "description": "What the image shows, so a headline and link can follow it when it changes.",
+            "items": {
+              "$ref": "#/components/schemas/FeaturedProduct"
+            },
+            "title": "Featured",
+            "type": "array"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "height": {
+            "title": "Height",
+            "type": "integer"
+          },
+          "hero_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "product",
+                  "lineup"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Heroes only: 'product' (one product in focus, at most one ball beside it) or 'lineup'.",
+            "title": "Hero Type"
+          },
+          "kind": {
+            "enum": [
+              "line",
+              "hero"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "owner": {
+            "description": "The partner the art is drawn for, e.g. 'bowlerdepot'.",
+            "title": "Owner",
+            "type": "string"
+          },
+          "slot": {
+            "description": "Stable slot key, e.g. 'line-strong-symmetrical' or 'hero-1'.",
+            "title": "Slot",
+            "type": "string"
+          },
+          "url": {
+            "description": "Stable image URL (WebP). A rerun replaces the image behind it; cached about an hour.",
+            "title": "Url",
+            "type": "string"
+          },
+          "url_16x9": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Heroes only: the 16:9 phone version, also stable.",
+            "title": "Url 16X9"
+          },
+          "width": {
+            "title": "Width",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "slot",
+          "kind",
+          "owner",
+          "url",
+          "width",
+          "height",
+          "alt",
+          "featured",
+          "generated_at"
+        ],
+        "title": "ArtImage",
+        "type": "object"
+      },
       "Ball": {
         "additionalProperties": false,
         "examples": [
@@ -366,6 +461,42 @@
         "title": "Brand",
         "type": "object"
       },
+      "BrandLineups": {
+        "additionalProperties": false,
+        "properties": {
+          "api_version": {
+            "const": "1",
+            "default": "1",
+            "title": "Api Version",
+            "type": "string"
+          },
+          "brand": {
+            "$ref": "#/components/schemas/Brand"
+          },
+          "groupings": {
+            "items": {
+              "$ref": "#/components/schemas/LineupGrouping"
+            },
+            "title": "Groupings",
+            "type": "array"
+          },
+          "heroes": {
+            "description": "Hero images (up to 3 per partner task), in slot order.",
+            "items": {
+              "$ref": "#/components/schemas/ArtImage"
+            },
+            "title": "Heroes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "brand",
+          "groupings",
+          "heroes"
+        ],
+        "title": "BrandLineups",
+        "type": "object"
+      },
       "BrandList": {
         "additionalProperties": false,
         "properties": {
@@ -619,6 +750,58 @@
         "title": "ErrorDetail",
         "type": "object"
       },
+      "FeaturedProduct": {
+        "additionalProperties": false,
+        "properties": {
+          "ball_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "BowlerIQ ball id, for a ball; null for a non-ball product.",
+            "title": "Ball Id"
+          },
+          "bigcommerce_product_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Bowler Depot BigCommerce product id, when the product is listed there.",
+            "title": "Bigcommerce Product Id"
+          },
+          "kind": {
+            "description": "What the product is.",
+            "enum": [
+              "ball",
+              "bag",
+              "shoes",
+              "accessory",
+              "apparel"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "description": "Product name, e.g. 'Phaze II' or 'Storm Rolling Thunder 3 Ball Roller'.",
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "kind"
+        ],
+        "title": "FeaturedProduct",
+        "type": "object"
+      },
       "GatewayError": {
         "additionalProperties": false,
         "properties": {
@@ -645,6 +828,123 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "LineupGrouping": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "description": "Stable grouping key, e.g. 'reaction-profile'.",
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "description": "e.g. 'Reaction profile', 'Lane read'.",
+            "title": "Label",
+            "type": "string"
+          },
+          "lines": {
+            "items": {
+              "$ref": "#/components/schemas/LineupLine"
+            },
+            "title": "Lines",
+            "type": "array"
+          },
+          "source": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the grouping was read, e.g. the brand site's filter.",
+            "title": "Source"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "lines"
+        ],
+        "title": "LineupGrouping",
+        "type": "object"
+      },
+      "LineupLine": {
+        "additionalProperties": false,
+        "properties": {
+          "art": {
+            "description": "This line's current image, one per partner task that draws it.",
+            "items": {
+              "$ref": "#/components/schemas/ArtImage"
+            },
+            "title": "Art",
+            "type": "array"
+          },
+          "balls": {
+            "description": "Current published balls in the line, newest release first.",
+            "items": {
+              "$ref": "#/components/schemas/LineupLineBall"
+            },
+            "title": "Balls",
+            "type": "array"
+          },
+          "key": {
+            "description": "Stable line key, e.g. 'strong-symmetrical'.",
+            "title": "Key",
+            "type": "string"
+          },
+          "label": {
+            "description": "The brand's name for the line, e.g. 'Strong Symmetrical'.",
+            "title": "Label",
+            "type": "string"
+          },
+          "text": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Text"
+          }
+        },
+        "required": [
+          "key",
+          "label",
+          "balls",
+          "art"
+        ],
+        "title": "LineupLine",
+        "type": "object"
+      },
+      "LineupLineBall": {
+        "additionalProperties": false,
+        "properties": {
+          "ball_id": {
+            "title": "Ball Id",
+            "type": "string"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The brand's own note for the ball in this line, when it has one.",
+            "title": "Note"
+          }
+        },
+        "required": [
+          "ball_id"
+        ],
+        "title": "LineupLineBall",
         "type": "object"
       },
       "Pattern": {
@@ -1980,6 +2280,89 @@
           }
         },
         "summary": "Brands with at least one published ball",
+        "tags": [
+          "Brands"
+        ]
+      }
+    },
+    "/v1/brands/{brand_id}/lineups": {
+      "get": {
+        "description": "How the brand's own site groups its balls (e.g. Storm's reaction profiles and lane reads), with each line's current published balls, and the brand-art images partner tasks draw for the brand: one per line and up to three heroes, each at a stable URL that a rerun replaces in place. Every image lists the products it features, so a headline and link can follow it when it changes.",
+        "operationId": "get_brand_lineups_v1_brands__brand_id__lineups_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "brand_id",
+            "required": true,
+            "schema": {
+              "title": "Brand Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BrandLineups"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "description": "Missing key."
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "description": "Invalid key."
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDetail"
+                }
+              }
+            },
+            "description": "No brand with that id."
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GatewayError"
+                }
+              }
+            },
+            "description": "Rate limited; retry with backoff."
+          }
+        },
+        "summary": "A brand's lineups and brand-store art",
         "tags": [
           "Brands"
         ]

@@ -81,6 +81,17 @@ export function IconMegaphone(props: IconProps) {
   );
 }
 
+// Runbook 6fq: "Brand Stores" (brand lineups and brand-store art).
+export function IconStore(props: IconProps) {
+  return (
+    <svg {...base} {...props}>
+      <path d="M3.5 7.5l1.5-4h10l1.5 4" />
+      <path d="M3.5 7.5h13v1.5a2.2 2.2 0 01-4.3 0 2.2 2.2 0 01-4.4 0 2.2 2.2 0 01-4.3 0z" />
+      <path d="M4.5 10v6.5h11V10M8.5 16.5v-4h3v4" />
+    </svg>
+  );
+}
+
 export function IconCategories(props: IconProps) {
   return (
     <svg {...base} {...props}>

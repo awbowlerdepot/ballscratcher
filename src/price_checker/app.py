@@ -389,7 +389,7 @@ def list_price_sources_due(conn, limit: int) -> list:
     rows, harmless since it's null on an api-fetch_method price_sites
     row's default_css_selector).
 
-    Runbook 6fo / 058: also picks up a source price_checker itself switched
+    Runbook 6fz / 060: also picks up a source price_checker itself switched
     off because its BigCommerce listing went hidden (inactive_reason =
     'listing_unavailable') -- it keeps being checked so sync_listing_
     availability can switch it back on once the listing is live again. A
@@ -523,7 +523,7 @@ def check_sources(conn, sources: list, session=None) -> dict:
     checked = 0
     succeeded = 0
     failed = 0
-    listing_flips = Counter()  # 6fo, see sync_listing_availability
+    listing_flips = Counter()  # 6fz, see sync_listing_availability
 
     for source in scrape_sources:
         result = check_price_source(source, session=session)
@@ -965,7 +965,7 @@ def bigcommerce_listing_live(product: dict):
 
 
 def sync_listing_availability(conn, source: dict, result: dict) -> str:
-    """Runbook 6fo: keeps a BigCommerce source's is_active in step with its
+    """Runbook 6fz: keeps a BigCommerce source's is_active in step with its
     listing. On 2026-11-02 Spurline hid 258 zero-stock balls on
     bowlerdepot.com, 214 of them linked to BowlerIQ balls with approved
     sources, and every API (partner bowlerdepot_url, public ecommerce_url/
@@ -1072,7 +1072,7 @@ def check_bigcommerce_sources(conn, sources: list, session=None) -> dict:
         product = products_by_id.get(str(external_id))
         if product is None:
             # A successful fetch that doesn't return this id: the listing was
-            # deleted, so its URL is as dead as a hidden one (6fo).
+            # deleted, so its URL is as dead as a hidden one (6fz).
             results[source["id"]] = {
                 "price": None, "raw_price_text": None,
                 "error": f"BigCommerce no longer has product id {external_id}",

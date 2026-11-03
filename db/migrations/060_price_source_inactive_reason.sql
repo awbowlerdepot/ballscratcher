@@ -1,5 +1,5 @@
--- 058_price_source_inactive_reason.sql -- why a price source is switched
--- off, when it wasn't an admin (DEPLOY_RUNBOOK.md 6fo).
+-- 060_price_source_inactive_reason.sql -- why a price source is switched
+-- off, when it wasn't an admin (DEPLOY_RUNBOOK.md 6fz).
 --
 -- On 2026-11-02 Spurline hid 258 balls on bowlerdepot.com (every weight at
 -- zero stock, none ever in its feed). 214 of them were BowlerIQ balls whose
