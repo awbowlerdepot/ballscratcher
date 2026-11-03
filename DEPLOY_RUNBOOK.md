@@ -22694,7 +22694,7 @@ price_checker never looked at visibility, and 6fn's reconciliation only stops
 hidden and deleted listings flagged, fetch failure never flagged; switch off,
 switch back on, admin pause never undone, no flip when nothing changed; the
 due query includes `listing_unavailable` but not an admin pause.
-`test_admin_api_service.py` 465 (2 new): `is_active` clears the reason, a
+`test_admin_api_service.py` 463 (2 new): `is_active` clears the reason, a
 URL-only edit keeps it.
 
 **Deploy, in this order** (the new code reads `inactive_reason`, so the
