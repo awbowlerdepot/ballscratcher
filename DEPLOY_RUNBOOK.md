@@ -23451,6 +23451,24 @@ psql -c "select s.is_active, s.inactive_reason, count(*) from product_price_sour
 curl -s https://api.bowleriq.io/articles/motiv-subzero-forge | python3 -c "import json,sys; print(json.load(sys.stdin).get('product', {}).get('ecommerce_url'))"   # None once its listing is off
 ```
 
+
+**Deployed 2026-11-03** (Al: "Yes, run it all"):
+- Migration 060 applied first. It was written as 058, but main had taken 058
+  (brand lineups) and 059 (status override) in the meantime, so it was renumbered
+  along with this section (written as 6fo).
+- Merged main, then `sam build && sam deploy` (stack `UPDATE_COMPLETE` 05:46
+  UTC). The only source changes were price_checker and admin_api. The other ~18
+  functions in the changeset had no source changes since 6fn: their zips were
+  repackaged because 6fq's deploy built them from another worktree's dependency
+  cache. No brand_art function was in the changeset.
+- The two check-now invokes: 246 + 250 sources checked, 0 failed, **121 + 108
+  = 229 switched off**, 0 back on.
+- All 214 of the listings hidden on 2026-11-02 are off. The other 15 are
+  listings BigCommerce already reported hidden or disabled: 14 retired balls,
+  plus one current ball, Storm Tropical Surge Emerald-Charcoal (3291).
+- After: 229 approved BowlerDepot sources off as `listing_unavailable`, 234 on.
+  The live `GET /articles/motiv-subzero-forge` returns `ecommerce_url: null`.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
