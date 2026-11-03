@@ -480,7 +480,8 @@ def test_lineup_scene_falls_back_to_the_composite_for_both_sizes():
         sizes.append(aspect)
         return None if aspect == "16:9" else _scene_png((2048, 1536))
     slot = _plan_default()["hero-2"]
-    images, method = brand_art.render_slot(slot, PALETTE, {"fetch_bytes": lambda u: _png_cutout(), "gemini_scene": scene})
+    images, method = brand_art.render_slot(slot, PALETTE, {"fetch_bytes": lambda u: _png_cutout(), "gemini_scene": scene,
+                                                           "sleep": lambda s: None})
     assert method == "composite" and [im.size for _, im in images] == [(1600, 1200), (1600, 900)]
     assert sizes.count("16:9") == brand_art.GEMINI_HERO_ATTEMPTS
 
@@ -575,3 +576,46 @@ def test_line_mix_never_features_a_spare_even_if_a_family_lists_it():
     slot = next(s for s in brand_art.plan_slots(_task(heroes=[{"type": "line_mix"}]), balls, lines, [], set(), TODAY)
                 if s["slot_key"] == "hero-1")
     assert sorted(i["name"] for i in slot["items"]) == ["Black Widow 3.0 Dynasty", "Zero Mercy Hybrid"]
+
+
+# --- Runbook 6gc: one brand at a time, back off on Gemini errors ------------
+
+def test_gemini_errors_back_off_before_retrying():
+    waits, tries = [], []
+    def boom(*a):
+        tries.append(1)
+        raise RuntimeError("429 Resource has been exhausted")
+    slot = _plan_default()["hero-1"]
+    deps = {"fetch_bytes": lambda u: _png_cutout(), "gemini": boom, "sleep": waits.append}
+    images, method = brand_art.render_slot(slot, PALETTE, deps)
+    assert method == "composite" and len(tries) == brand_art.GEMINI_HERO_ATTEMPTS
+    assert waits == [20, 40]                     # no wait after the last attempt
+
+
+def test_dispatch_hands_every_due_run_to_one_queue():
+    calls = []
+    tasks = [{"id": "t1", "brand_name": "A", "params": {"palette": PALETTE}, "triggers": ["weekly_sweep"],
+              "last_full_run_at": None},
+             {"id": "t2", "brand_name": "B", "params": {"palette": PALETTE}, "triggers": ["weekly_sweep"],
+              "last_full_run_at": None}]
+    slots = [{"slot_key": "hero-1", "kind": "hero", "items": [], "input_hash": "h"}]
+
+    class Cur:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def execute(self, *a): pass
+
+    class Conn:
+        def cursor(self): return Cur()
+        def commit(self): pass
+
+    orig = brand_art.list_enabled_tasks, brand_art.gather, brand_art.load_slots
+    brand_art.list_enabled_tasks = lambda conn: tasks
+    brand_art.gather = lambda conn, task, deps, assign: (slots, None)
+    brand_art.load_slots = lambda conn, tid: {"hero-1": {"input_hash": "h", "featured": []}}
+    try:
+        brand_art.dispatch(Conn(), {"now": datetime.datetime(2026, 11, 3, tzinfo=datetime.timezone.utc)}, calls.append)
+    finally:
+        brand_art.list_enabled_tasks, brand_art.gather, brand_art.load_slots = orig
+    assert len(calls) == 1 and [r["task_id"] for r in calls[0]] == ["t1", "t2"]
+    assert calls[0][0]["trigger"] == "weekly_sweep"

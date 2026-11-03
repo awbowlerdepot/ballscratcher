@@ -807,12 +807,25 @@ def render_lineup_scene(items: list, size: tuple, palette: dict, deps: dict, she
             png = scene(raws, shelf_raws, prompt, aspect)
         except Exception:
             logger.exception("brand-art scene attempt %d failed", attempt + 1)
+            _backoff(deps, attempt)
             continue
         if png:
             from PIL import Image, ImageOps
             return ImageOps.fit(Image.open(io.BytesIO(png)).convert("RGB"), size, Image.LANCZOS)
     deps["_scene_failed"] = True
     return None
+
+
+GEMINI_BACKOFF_SECONDS = 20
+
+
+def _backoff(deps: dict, attempt: int) -> None:
+    """Runbook 6gc: wait before the next Gemini attempt after an error
+    (20s, then 40s). Four brands drawn at once on 2026-11-03 drew Vertex
+    AI's 429 "Resource has been exhausted" and fell back to composites; an
+    immediate retry just hits the same limit."""
+    if attempt < GEMINI_HERO_ATTEMPTS - 1:
+        deps.get("sleep", time.sleep)(GEMINI_BACKOFF_SECONDS * (attempt + 1))
 
 
 def render_ball_product_hero(item: dict, size: tuple, palette: dict, deps: dict) -> tuple:
@@ -831,6 +844,7 @@ def render_ball_product_hero(item: dict, size: tuple, palette: dict, deps: dict)
                 png = gen(item["product_id"], raw, theme, HERO_NO_TEXT, aspect)
             except Exception:
                 logger.exception("brand-art hero attempt %d failed for %s", attempt + 1, item["name"])
+                _backoff(deps, attempt)
                 continue
             if png:
                 from PIL import Image, ImageOps
@@ -987,10 +1001,13 @@ def run_task(conn, task_id: str, deps: dict, slot_keys: list | None = None, trig
 
 def dispatch(conn, deps: dict, invoke_run) -> dict:
     """The daily schedule. For each enabled task: apply the assign rules,
-    plan, and hand the slots whose inputs changed (or every slot, once a
-    week) to invoke_run(task_id, slot_keys, trigger, triggers_by_slot)."""
+    plan, and collect the slots whose inputs changed (or every slot, once a
+    week). Then invoke_run(queue) with the whole list of runs, in brand
+    order: the caller starts the FIRST run and passes the rest along, and
+    each run starts the next when it finishes (runbook 6gc). Started all at
+    once, six brands' Gemini heroes exhaust Vertex AI's quota."""
     now = deps.get("now") or datetime.datetime.now(datetime.timezone.utc)
-    out = {}
+    out, queue = {}, []
     for task in list_enabled_tasks(conn):
         try:
             slots, assigned = gather(conn, task, deps, assign=True)
@@ -1003,9 +1020,12 @@ def dispatch(conn, deps: dict, invoke_run) -> dict:
                 with conn.cursor() as cur:
                     cur.execute("update tasks set status = 'queued', updated_at = now() where id = %s", (task["id"],))
                 conn.commit()
-                invoke_run(task["id"], sorted(due), trigger, due)
+                queue.append({"task_id": task["id"], "slots": sorted(due), "trigger": trigger,
+                              "triggers_by_slot": due})
             out[task["brand_name"]] = {"due": due, "assigned": assigned}
         except Exception as e:
             logger.exception("brand-art dispatch failed for %s", task["brand_name"])
             out[task["brand_name"]] = {"error": str(e)[:200]}
+    if queue:
+        invoke_run(queue)
     return out

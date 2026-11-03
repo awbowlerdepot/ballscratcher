@@ -4087,18 +4087,30 @@ def run_brand_art_job(conn, event, *, s3_client, bedrock_client, gemini_auth, ge
     deps = {"fetch_bytes": fetch_bytes, "fetch_html": fetch_html, "put_object": put_object, "bc_get": bc_get,
             "gemini": gemini, "remove_bg": remove_bg, "gemini_scene": gemini_scene}
 
+    def invoke_run(queue):
+        """Start the first queued run; it carries the rest (runbook 6gc:
+        one brand at a time, so Gemini isn't asked for every brand's heroes
+        at once)."""
+        if not queue:
+            return
+        first, rest = queue[0], queue[1:]
+        payload = {"brand_art": "run", **first, "queue": rest}
+        if lambda_client and function_name:
+            lambda_client.invoke(FunctionName=function_name, InvocationType="Event",
+                                 Payload=json.dumps(payload).encode())
+        else:  # local runs: draw inline, one after another
+            for r in queue:
+                brand_art.run_task(conn, r["task_id"], deps, r.get("slots"), r.get("trigger") or "manual",
+                                   r.get("triggers_by_slot"))
+
     if event["brand_art"] == "dispatch":
-        def invoke_run(task_id, slots, trigger, triggers_by_slot):
-            payload = {"brand_art": "run", "task_id": task_id, "slots": slots, "trigger": trigger,
-                       "triggers_by_slot": triggers_by_slot}
-            if lambda_client and function_name:
-                lambda_client.invoke(FunctionName=function_name, InvocationType="Event",
-                                     Payload=json.dumps(payload).encode())
-            else:  # local runs: draw inline
-                brand_art.run_task(conn, task_id, deps, slots, trigger, triggers_by_slot)
         return brand_art.dispatch(conn, deps, invoke_run)
-    return brand_art.run_task(conn, event["task_id"], deps, event.get("slots"), event.get("trigger") or "manual",
-                              event.get("triggers_by_slot"))
+    try:
+        return brand_art.run_task(conn, event["task_id"], deps, event.get("slots"), event.get("trigger") or "manual",
+                                  event.get("triggers_by_slot"))
+    finally:
+        # The next brand in the queue starts whether this one succeeded or not.
+        invoke_run(event.get("queue") or [])
 
 
 def handler(event, context):

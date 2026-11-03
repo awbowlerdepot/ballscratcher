@@ -23638,13 +23638,49 @@ because it was started with the dry run's task id, which doesn't survive
 the rollback (the real id is `dc232272-50e6-48fe-8387-585c39af187e`).
 All of them were redrawn one brand at a time. **The daily dispatch has the
 same problem**: it starts every brand's run at once, so a weekly sweep
-across six brands can hit the quota. See the follow-up below.
+across six brands can hit the quota. Fixed in 6gc.
 
 **Run:**
 ```bash
 .venv/bin/python scripts/load_brand_lineups.py scripts/brand_lineups/<brand>.json --theme-nav ../bicommerce-site/bowlerdepot-theme-<brand>/templates/components/brand-store/navigation.html --apply
 aws lambda invoke --function-name bowling-scraper-product-article-generator --invocation-type Event --payload '{"brand_art": "run", "task_id": "<task id>", "trigger": "manual"}' --cli-binary-format raw-in-base64-out /dev/null
 ```
+
+### 6gc. Brand art runs one brand at a time, and Gemini errors back off (2026-11-03, not deployed)
+
+**Why.** On 2026-11-03 four brands' first runs (Radical, Motiv,
+Brunswick, Roto Grip) were started within two minutes of each other.
+Vertex AI answered 429 "Resource has been exhausted", every retry went
+straight back, and the slides that never got an image fell back to the
+plain composite: Motiv hero-2, Brunswick hero-1, and both Roto Grip
+heroes. They had to be redrawn by hand, one brand after another. The daily
+dispatch (6fq) would do the same at scale: it started every due brand's
+run at once with async self-invokes, so a weekly sweep across six brands
+would all land on Gemini together.
+
+**Changes:**
+- `brand_art.dispatch` collects every due run into one queue (in brand
+  order) and hands it to `invoke_run(queue)`.
+- `app.run_brand_art_job` starts only the first run, carrying the rest as
+  `"queue"`. When a run finishes, whether it succeeded or not, it starts
+  the next. Each run is still its own Lambda invocation, so no brand's
+  draw counts against another's 15 minutes.
+- After a Gemini error the next attempt waits `GEMINI_BACKOFF_SECONDS`
+  (20s, then 40s, with no wait after the last attempt). This applies to
+  both product heroes and pro-shop scenes. The worst case is about a
+  minute per hero.
+
+**Deploy:** `sam build && sam deploy` (product_article_generator only).
+
+**Verify** (the next 12:30 UTC dispatch): `task_runs.started_at` for the
+brands that had work should follow one another rather than share a
+minute:
+```bash
+psql -c "select b.name, r.trigger, r.status, r.started_at, r.finished_at from task_runs r join tasks t on t.id = r.task_id join brands b on b.id = t.brand_id where r.started_at > now() - interval '1 day' order by r.started_at"
+```
+
+**Tests:** `tests/test_brand_art.py` (41): Gemini errors back off 20s/40s;
+dispatch hands every due run to a single queue.
 
 ## 7. Ongoing operations
 
