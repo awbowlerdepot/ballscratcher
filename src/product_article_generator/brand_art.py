@@ -687,6 +687,52 @@ HERO_NO_TEXT = (
 )
 
 
+# Lineup heroes ("Find your reaction") as a pro shop scene (runbook 6fv).
+# Al, on the plain row: "the balls just sitting there aren't doing it. can
+# we set a pro shop scene and put them on the counter or something like
+# that", then on the prototype: "that looks fine". Gemini gets every
+# ball's real photo and places them on a counter. The prototype also
+# filled the shelves with made-up balls, which breaks the request's "don't
+# invent ball designs", so the shop behind holds no other balls.
+SCENE_PROMPT = (
+    "Create a photorealistic, premium photograph of a modern bowling pro shop. In the foreground is a clean pro shop "
+    "counter with a dark, polished top running across the frame. Behind it, softly out of focus, the shop: wall "
+    "shelving with bowling bags and accessories (no bowling balls on the shelves or anywhere else), lit in deep "
+    "{background} with {accent} accent lighting. Place exactly the {n} bowling balls from the {n} reference photos "
+    "on the counter top, side by side in a gentle row with a little space between them so no ball hides another's "
+    "logo, mostly in the right two-thirds of the frame; the left third stays calmer, out-of-focus shop (a headline "
+    "is laid over it later in HTML). Each ball must be carried over EXACTLY as it appears in its own reference photo: "
+    "same colors, swirl pattern and pearl/solid surface, and the same printed logo and graphics at the same size "
+    "relative to the ball -- do not redraw, enlarge, simplify or swap logos between balls, and do not add any ball "
+    "that isn't in the references. All balls are the same real size. There must be no text, words, letters, numbers, "
+    "signs, posters, screens, logos or brand marks anywhere in the image other than what is printed on the balls "
+    "themselves. No people, hands, bowling pins, shoes or price tags."
+)
+
+
+def render_lineup_scene(items: list, size: tuple, palette: dict, deps: dict):
+    """A lineup hero as a pro shop scene from Gemini, or None when no
+    attempt passes every ball's logo check (deps["gemini_scene"] returns
+    None for a failed check). The real photos are the references."""
+    scene = deps.get("gemini_scene")
+    if not scene or deps.get("_scene_failed"):
+        return None
+    raws = [first_photo(i, deps["fetch_bytes"])[0] for i in items]
+    aspect = "16:9" if size[0] / size[1] > 1.5 else "4:3"
+    prompt = SCENE_PROMPT.format(n=len(raws), **palette)
+    for attempt in range(GEMINI_HERO_ATTEMPTS):
+        try:
+            png = scene(raws, prompt, aspect)
+        except Exception:
+            logger.exception("brand-art scene attempt %d failed", attempt + 1)
+            continue
+        if png:
+            from PIL import Image, ImageOps
+            return ImageOps.fit(Image.open(io.BytesIO(png)).convert("RGB"), size, Image.LANCZOS)
+    deps["_scene_failed"] = True
+    return None
+
+
 def render_ball_product_hero(item: dict, size: tuple, palette: dict, deps: dict) -> tuple:
     """A single-ball product hero from the existing Gemini product-shot
     pipeline (app.build_gemini_scene_prompt, call_gemini_for_image,
@@ -722,6 +768,12 @@ def render_slot(slot: dict, palette: dict, deps: dict) -> tuple:
         return [(LINE_SIZE, compose.line(LINE_SIZE, palette, cuts))], "composite"
     out, method = [], "composite"
     if slot["hero_type"] == "lineup":
+        # Pro shop scene for both sizes, or the composite for both (a
+        # slide's two sizes always match, as for product heroes).
+        deps.pop("_scene_failed", None)
+        scenes = [render_lineup_scene(slot["items"], size, palette, deps) for size in slot["sizes"]]
+        if all(im is not None for im in scenes):
+            return list(zip(slot["sizes"], scenes)), "gemini"
         cuts = [compose.cutout(first_photo(i, fetch)[0], deps.get("remove_bg")) for i in slot["items"]]
         for size in slot["sizes"]:
             out.append((size, compose.lineup_hero(size, palette, cuts)))

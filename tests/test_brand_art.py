@@ -445,3 +445,36 @@ def test_line_mix_never_repeats_a_ball():
     task = _task(heroes=[{"type": "line_mix"}])
     slot = next(s for s in brand_art.plan_slots(task, balls, lines, [], set(), TODAY) if s["slot_key"] == "hero-1")
     assert [i["name"] for i in slot["items"]] == ["A", "B"]
+
+
+# --- Runbook 6fv: lineup heroes as a pro shop scene --------------------------
+
+def _scene_png(size):
+    im = Image.new("RGB", size, (40, 40, 40))
+    buf = io.BytesIO()
+    im.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def test_lineup_hero_is_a_gemini_scene_with_every_ball_as_a_reference():
+    calls = []
+    def scene(raws, prompt, aspect):
+        calls.append((len(raws), aspect, prompt))
+        return _scene_png((2048, 1536) if aspect == "4:3" else (2048, 1152))
+    slot = _plan_default()["hero-2"]
+    images, method = brand_art.render_slot(slot, PALETTE, {"fetch_bytes": lambda u: _png_cutout(), "gemini_scene": scene})
+    assert method == "gemini" and [im.size for _, im in images] == [(1600, 1200), (1600, 900)]
+    assert [(n, a) for n, a, _ in calls] == [(4, "4:3"), (4, "16:9")]
+    prompt = calls[0][2]
+    assert "no bowling balls on the shelves" in prompt and "#191c1b" in prompt and "exactly the 4 bowling balls" in prompt
+
+
+def test_lineup_scene_falls_back_to_the_composite_for_both_sizes():
+    sizes = []
+    def scene(raws, prompt, aspect):
+        sizes.append(aspect)
+        return None if aspect == "16:9" else _scene_png((2048, 1536))
+    slot = _plan_default()["hero-2"]
+    images, method = brand_art.render_slot(slot, PALETTE, {"fetch_bytes": lambda u: _png_cutout(), "gemini_scene": scene})
+    assert method == "composite" and [im.size for _, im in images] == [(1600, 1200), (1600, 900)]
+    assert sizes.count("16:9") == brand_art.GEMINI_HERO_ATTEMPTS

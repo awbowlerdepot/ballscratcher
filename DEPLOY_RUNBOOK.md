@@ -23199,6 +23199,41 @@ Ion Pro Pearl; the line mix takes one per line of the first grouping and
 skips lane-read and exclusive lines; there's no hero-3 and no line
 images; no ball repeats in a mix; and five or six balls fit both sizes.
 
+### 6fv. Brand art: lineup heroes ("Find your reaction") as a pro shop counter scene (2026-11-02)
+
+Al, on the 6fu line-mix hero (five cut-outs in a row): "the balls just
+sitting there aren't doing it. can we set a pro shop scene and put them on
+the counter or something like that". Then, on the prototype: "that looks
+fine".
+
+**Changes:**
+- **Lineup heroes are a Gemini scene.** `brand_art.render_lineup_scene`
+  covers every lineup hero, including line_mix. Gemini gets every ball's
+  real photo as a reference: `call_gemini_for_image` gained
+  `extra_reference_images_b64`, which is None for every existing caller.
+- **The prompt:** `SCENE_PROMPT` asks for a pro shop counter in the
+  brand's palette with the balls on it, spaced so no ball hides another's
+  logo, and carried over exactly. It bans text, signs, screens, people,
+  pins and price tags.
+- **No other balls in the shop.** The prototype's shelves were full of
+  made-up balls, which breaks "don't invent ball designs", so the prompt
+  says the shelves hold bags and accessories only.
+- **Checks:** each attempt checks every ball's logo against its own photo
+  (`check_logo_matches`), and one miss discards the attempt. There are
+  up to `GEMINI_HERO_ATTEMPTS` (3) tries per size.
+  - The prototype's one miss was the Monsoon, half hidden behind the !Q.
+    That's why the prompt now asks for space between the balls.
+- **Fallback:** if either size can't pass, both sizes are the 6fu
+  composite, so a slide's two images always match.
+
+**Cost:** one Gemini image plus one Claude check per ball for each
+attempt. That's about 2 to 6 Gemini calls per redraw of the slot, and a
+redraw only happens when its balls change or on the weekly sweep.
+
+**Tests:** 2 new in `tests/test_brand_art.py` (33): every ball is a
+reference and the prompt keeps the rules; a failed size falls back to the
+composite for both.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

@@ -2176,7 +2176,7 @@ def get_gemini_requests_session():
 
 def call_gemini_for_image(gemini_auth: dict, model_id: str, prompt: str,
                            reference_image_b64: str, aspect_ratio: str, session=None,
-                           image_size: str = None) -> bytes:
+                           image_size: str = None, extra_reference_images_b64: list = None) -> bytes:
     """Google's Gemini 3 Pro Image, called via Vertex AI's own
     generateContent REST endpoint (NOT Bedrock, and NOT the Gemini
     Developer API v4 originally called -- see this module's own docstring
@@ -2265,7 +2265,12 @@ def call_gemini_for_image(gemini_auth: dict, model_id: str, prompt: str,
             "parts": [{"text": prompt}] + (
                 [{"inlineData": {"mimeType": "image/png", "data": reference_image_b64}}]
                 if reference_image_b64 else []
-            ),
+            ) + [
+                # Runbook 6fv: a brand-art scene with several real balls
+                # ("set a pro shop scene and put them on the counter")
+                # passes every ball's photo. None for every existing caller.
+                {"inlineData": {"mimeType": "image/png", "data": b}} for b in (extra_reference_images_b64 or [])
+            ],
         }],
         "generationConfig": {
             "responseModalities": ["IMAGE"],
@@ -4005,6 +4010,22 @@ def run_brand_art_job(conn, event, *, s3_client, bedrock_client, gemini_auth, ge
             logger.info("brand-art hero for %s (%s): logo ok=%s (%s)", product_id, aspect, same, note)
             return png if same else None
 
+    gemini_scene = None
+    if gemini_auth:
+        def gemini_scene(raws, prompt, aspect):
+            # Runbook 6fv: every ball's real photo as a reference, and every
+            # ball's logo checked against its own photo -- one miss and the
+            # attempt is discarded.
+            refs = [_reference_image_to_base64_png(r) for r in raws]
+            png = call_gemini_for_image(gemini_auth, gemini_model_id, prompt, refs[0], aspect, session=session,
+                                        image_size="2K", extra_reference_images_b64=refs[1:])
+            for i, raw in enumerate(raws):
+                same, note = check_logo_matches(raw, png, bedrock_client)
+                logger.info("brand-art scene (%s) ball %d: logo ok=%s (%s)", aspect, i + 1, same, note)
+                if not same:
+                    return None
+            return png
+
     remove_bg = None
     if bedrock_removebg_client is not None:
         removebg_model_id = os.environ.get("BEDROCK_REMOVEBG_MODEL_ID", DEFAULT_BEDROCK_REMOVE_BG_MODEL_ID)
@@ -4016,7 +4037,7 @@ def run_brand_art_job(conn, event, *, s3_client, bedrock_client, gemini_auth, ge
                                                   _reference_image_to_base64_png(image_bytes))
 
     deps = {"fetch_bytes": fetch_bytes, "fetch_html": fetch_html, "put_object": put_object, "bc_get": bc_get,
-            "gemini": gemini, "remove_bg": remove_bg}
+            "gemini": gemini, "remove_bg": remove_bg, "gemini_scene": gemini_scene}
 
     if event["brand_art"] == "dispatch":
         def invoke_run(task_id, slots, trigger, triggers_by_slot):
