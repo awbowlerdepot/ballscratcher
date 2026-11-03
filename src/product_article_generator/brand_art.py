@@ -136,7 +136,7 @@ def list_brand_balls(conn, brand_id: str) -> list:
     thumbnail first, then display_order, as everywhere else."""
     with conn.cursor() as cur:
         cur.execute("""
-            select p.id, p.name, p.url, p.release_date,
+            select p.id, p.name, p.url, p.release_date, p.demand_score,
                    (select bdp.bigcommerce_product_id from bowlerdepot_products bdp
                      where bdp.product_id = p.id and bdp.match_status = 'matched') as bc_id,
                    (select array_agg(u order by o) from (
@@ -156,8 +156,9 @@ def list_brand_balls(conn, brand_id: str) -> list:
             order by p.release_date desc nulls last, p.name
         """, (brand_id,))
         return [{"product_id": str(r[0]), "name": r[1], "url": r[2], "release_date": r[3],
-                 "bigcommerce_product_id": int(r[4]) if r[4] and str(r[4]).isdigit() else None,
-                 "photos": [u for u in (r[5] or []) if u]}
+                 "demand_score": float(r[4]) if r[4] is not None else None,
+                 "bigcommerce_product_id": int(r[5]) if r[5] and str(r[5]).isdigit() else None,
+                 "photos": [u for u in (r[6] or []) if u]}
                 for r in cur.fetchall()]
 
 
@@ -595,8 +596,14 @@ def plan_slots(task: dict, balls: list, lines: list, companions: list, stocked: 
                                  key=lambda b: (b["release_date"] or datetime.date.min), reverse=True)
                 if members:
                     seen.add(members[0]["product_id"])
-                    items.append(_ball_item(members[0]))
-            items = items[:6]
+                    items.append(members[0])
+            # Al: "the balls in order of demand with highest infront"
+            # (products.demand_score, the one the partner API's demand
+            # block reports). The first item is the front ball in the scene
+            # and the front-center ball in the composite.
+            items.sort(key=lambda b: b.get("demand_score") if b.get("demand_score") is not None else -1,
+                       reverse=True)
+            items = [_ball_item(b) for b in items[:6]]
         elif hero_type == "lineup":
             ids = h.get("ball_ids") or []
             if h.get("line"):
@@ -624,15 +631,12 @@ def plan_slots(task: dict, balls: list, lines: list, companions: list, stocked: 
             continue
         shelf = []
         if hero_type == "lineup":
-            # The scene's shelves: the brand's best stocked non-ball
-            # products, as pick_companion ranks them (6fv: "pull it from
-            # the poducts on the site. don't make things up").
-            pool = list(companions)
-            while pool and len(shelf) < SHELF_PRODUCTS:
-                c = pick_companion(pool, {})
-                pool.remove(c)
-                shelf.append({"product_id": None, "bigcommerce_product_id": c["bigcommerce_product_id"],
-                              "name": c["name"], "kind": c["kind"], "photos": [c["photo"]]})
+            # The scene's ball display: the brand's next newest current
+            # balls that aren't on the counter (6fv: real balls, never
+            # made-up ones). They're in the picture, so they're featured
+            # too, after the counter's balls.
+            on_counter = {x["product_id"] for x in items}
+            shelf = [_ball_item(b) for b in newest_first if b["product_id"] not in on_counter][:DISPLAY_BALLS]
         if hero_type == "lineup":
             alt = f"{brand} {_join([x['name'] for x in items])} bowling balls"
         elif items[0]["kind"] == "ball":
@@ -700,6 +704,7 @@ HERO_NO_TEXT = (
 
 
 # Lineup heroes ("Find your reaction") as a pro shop scene (runbook 6fv).
+# (The notes below are the history; DISPLAY_* after the prompt is current.)
 # Al, on the plain row: "the balls just sitting there aren't doing it. can
 # we set a pro shop scene and put them on the counter or something like
 # that"; on the first prototype: "that looks fine". That prototype is the
@@ -713,34 +718,47 @@ HERO_NO_TEXT = (
 #     or nothing. scene_check rejects a scene that shows anything else.
 # (A rewrite that also moved the camera back and spread the balls out was
 # "way better" in the original -- so nothing else here changes.)
+# Then: "also a closer up view with the balls in order of demand with
+# highest infront and the focal depth short so they start to blur after
+# the first or second ball" -- so the row recedes from the camera in
+# demand order with a shallow depth of field, and only the balls in focus
+# can be logo-checked (SCENE_SHARP_BALLS).
 SCENE_PROMPT = (
     "Create a photorealistic, premium photograph of a modern bowling pro shop. In the foreground is a clean pro shop "
     "counter with a butcher block wood top, stained dark, running across the frame. Behind it, softly out of focus, "
-    "the shop: wall shelving lit in deep {background} with {accent} accent lighting. {shelf} "
-    "Place exactly the {n} bowling balls from the first {n} reference photos on the counter top, side by side in a "
-    "gentle row, mostly in the right two-thirds of the frame; the left third stays calmer, out-of-focus shop (a "
-    "headline is laid over it later in HTML). Each ball must be carried over EXACTLY as it appears in its own "
+    "the shop: wall shelving and a ball display, lit in deep {background} with {accent} accent lighting. {display} "
+    "A close-up, low camera angle along the counter top: exactly the {n} bowling balls from the first {n} "
+    "reference photos stand in a row that recedes away from the camera along the counter, in the order of the "
+    "references -- the first reference ball nearest the camera and largest in frame, at the right, then each next "
+    "one further back toward the left. Very shallow depth of field: the first ball is tack sharp, the second is "
+    "only just starting to soften, and from the third on the balls blur progressively into the background (the "
+    "blurred left side is where a headline is laid over later in HTML). Each ball must be carried over EXACTLY as "
+    "it appears in its own "
     "reference photo: same colors, swirl pattern and pearl/solid surface, and the same printed logo and graphics at "
     "the same size relative to the ball -- do not redraw, enlarge, simplify or swap logos between balls, and do not "
     "add any ball that isn't in the references. All balls are the same real size. "
     "There must be no text, words, letters, numbers, signs, posters, logos or brand marks anywhere in the image other "
-    "than what is printed on the balls and on the shelf products themselves. No people, hands, bowling pins, shoes or "
-    "price tags."
+    "than what is printed on the balls themselves. No people, hands, bowling pins, shoes or price tags."
 )
-SHELF_WITH_PRODUCTS = (
-    "The shelves hold ONLY the {m} products shown in the last {m} reference photos (bags and accessories), each "
-    "exactly as photographed, and nothing else -- no other products, no other bowling balls, no made-up items; "
-    "leave the rest of the shelving empty."
+# Al, on the version with only bags on the shelves: "now it doesn't look
+# like a proshop. the rest of the products were fine" -- it was only the
+# made-up BALLS in the prototype's ball display that were the problem. So
+# the display holds real balls: the brand's other current balls, passed as
+# reference photos after the counter's.
+DISPLAY_WITH_BALLS = (
+    "Every bowling ball in the ball display is one of the {m} balls in the last {m} reference photos, exactly as "
+    "photographed -- no made-up ball designs; leave a spot empty rather than invent a ball."
 )
-SHELF_EMPTY = "The shelves are empty: no products, no bowling balls, no made-up items."
-SHELF_PRODUCTS = 4
+DISPLAY_EMPTY = "The ball display holds no bowling balls."
+DISPLAY_BALLS = 6
+SCENE_SHARP_BALLS = 2   # the front balls in focus, the only ones whose logo can be checked
 
 
 def render_lineup_scene(items: list, size: tuple, palette: dict, deps: dict, shelf: list = ()):
     """A lineup hero as a pro shop scene from Gemini, or None when no
     attempt passes the checks (deps["gemini_scene"] returns None when a
-    ball's logo or the shelves fail). The real photos are the references:
-    the balls, then the shelf products."""
+    ball's logo or the background balls fail). The real photos are the
+    references: the counter's balls, then the display's (`shelf`)."""
     scene = deps.get("gemini_scene")
     if not scene or deps.get("_scene_failed"):
         return None
@@ -752,8 +770,8 @@ def render_lineup_scene(items: list, size: tuple, palette: dict, deps: dict, she
         except RuntimeError:
             pass
     aspect = "16:9" if size[0] / size[1] > 1.5 else "4:3"
-    shelf_text = SHELF_WITH_PRODUCTS.format(m=len(shelf_raws)) if shelf_raws else SHELF_EMPTY
-    prompt = SCENE_PROMPT.format(n=len(raws), shelf=shelf_text, **palette)
+    display = DISPLAY_WITH_BALLS.format(m=len(shelf_raws)) if shelf_raws else DISPLAY_EMPTY
+    prompt = SCENE_PROMPT.format(n=len(raws), display=display, **palette)
     for attempt in range(GEMINI_HERO_ATTEMPTS):
         try:
             png = scene(raws, shelf_raws, prompt, aspect)

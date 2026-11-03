@@ -23228,7 +23228,22 @@ fine".
   - A rewrite in between that also moved the camera back and spread the
     balls out was rejected: "the original image was way better than this
     one". So nothing else in the prompt changes.
-- **The shelf products are in `featured`** after the balls, by kind and
+- Then: "now it doesn't look like a proshop. the rest of the products were
+  fine" -- only the made-up BALLS were the problem. So the prototype's
+  background is back (wall shelving and a ball display), and the display
+  holds only the brand's six newest current balls not on the counter, as
+  reference photos. `check_scene_background` now rejects only a background
+  ball that isn't one of them; other merchandise is allowed.
+- Then: "also a closer up view with the balls in order of demand with
+  highest infront and the focal depth short so they start to blur after
+  the first or second ball".
+  - The line mix is sorted by `products.demand_score`, highest first.
+  - The prompt asks for a close, low angle along the counter, with the row
+    receding from the camera in that order and a shallow depth of field.
+  - Only the first `SCENE_SHARP_BALLS` (2) balls are logo-checked. A
+    blurred logo can't be verified, so the soft ones are carried over from
+    their references unchecked.
+- **The display balls are in `featured`** after the counter's, by kind and
   BigCommerce id. They're part of the slot's fingerprint, so one selling
   out redraws the slide.
 - **A background check:** `app.check_scene_background` has Claude compare

@@ -3705,10 +3705,10 @@ LOGO_CHECK_MODEL_ID = "global.anthropic.claude-sonnet-4-6"
 ANNOUNCEMENT_IMAGE_ATTEMPTS = 3
 SCENE_BACKGROUND_PROMPT = (
     "The LAST image is a generated pro shop scene with {n} bowling balls on the counter in front. {refs}"
-    "Look ONLY at the background behind the counter (the shelves and walls). Does it show any product that is not "
-    "one of the reference products -- any other bowling ball, bag, shoe, box or accessory that doesn't match a "
-    "reference, or a made-up item -- or any readable sign or text? Blurred is fine if it plainly IS one of the "
-    "reference products; empty shelving is fine. Respond with ONLY this JSON: "
+    "Look ONLY at the BOWLING BALLS behind the counter (on shelves or a ball display); other merchandise such as "
+    "bags and accessories is fine. Is any background bowling ball NOT one of the reference balls -- a made-up "
+    "design, colorway or logo? Blurred is fine if it plainly IS one of the reference balls. Respond with ONLY this "
+    "JSON: "
     '{{"only_reference_products": true|false, "note": "<15 words max>"}}'
 )
 
@@ -3716,16 +3716,17 @@ SCENE_BACKGROUND_PROMPT = (
 def check_scene_background(shelf_raws: list, scene_png: bytes, n_balls: int, bedrock_client) -> tuple:
     """Runbook 6fv (Al: "if you are going to put products on the shelves
     behind them pull it from the poducts on the site. don't make things
-    up"): (ok, note) -- ok when the scene's background shows only the shelf
-    reference products (or nothing). Like check_logo_matches, an
+    up", then "the rest of the products were fine" -- it was the invented
+    balls): (ok, note) -- ok when every bowling ball in the background is
+    one of the display references. Like check_logo_matches, an
     unavailable check counts as a pass rather than blocking the run."""
     try:
         content = []
         for i, raw in enumerate(shelf_raws, start=1):
             content += [{"type": "text", "text": f"Reference product {i}:"},
                         {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": _jpeg_b64(raw, 384)}}]
-        refs = (f"The {len(shelf_raws)} images before it are the only products allowed on the shelves. "
-                if shelf_raws else "No products are allowed on the shelves; they must be empty. ")
+        refs = (f"The {len(shelf_raws)} images before it are the only bowling balls allowed in the background. "
+                if shelf_raws else "No bowling balls are allowed in the background. ")
         content += [{"type": "text", "text": "Scene:"},
                     {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": _jpeg_b64(scene_png)}},
                     {"type": "text", "text": SCENE_BACKGROUND_PROMPT.format(n=n_balls, refs=refs)}]
@@ -4058,7 +4059,12 @@ def run_brand_art_job(conn, event, *, s3_client, bedrock_client, gemini_auth, ge
             refs = [_reference_image_to_base64_png(r) for r in list(raws) + list(shelf_raws)]
             png = call_gemini_for_image(gemini_auth, gemini_model_id, prompt, refs[0], aspect, session=session,
                                         image_size="2K", extra_reference_images_b64=refs[1:])
-            for i, raw in enumerate(raws):
+            # Only the front balls are in focus (Al: "the focal depth short
+            # so they start to blur after the first or second ball"), so
+            # only their logos can be checked; the blurred ones are still
+            # carried over from their own reference photos.
+            import brand_art
+            for i, raw in enumerate(raws[:brand_art.SCENE_SHARP_BALLS]):
                 same, note = check_logo_matches(raw, png, bedrock_client)
                 logger.info("brand-art scene (%s) ball %d: logo ok=%s (%s)", aspect, i + 1, same, note)
                 if not same:
