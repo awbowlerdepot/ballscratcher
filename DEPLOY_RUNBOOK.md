@@ -23307,6 +23307,32 @@ psql -c "select count(*) from review_queue r join products p on p.id = r.product
 **Tests:** `tests/test_brand_art.py` (36) asserts the close runs, scoped
 to the brand.
 
+### 6fx. Learn plotter: `?brand=` opens it with one brand showing (2026-11-03)
+
+Requested by the Bowler Depot brand-stores session for Al. The Storm
+brand store links to `https://learn.bowlerdepot.com/plotter/?brand=Storm`
+("Open the full plotter", "Compare balls on the plotter"), using the
+BigCommerce brand name, URL-encoded. Before this, the plotter's brand
+filter lived in local state only.
+
+**`bowlerdepot-learn/src/pages/PlotterPage.tsx`:**
+- Once the balls load, `?brand=` sets the starting filter to that brand
+  alone. The match is case-insensitive: the store's "Motiv" is our
+  "MOTIV".
+- An unknown name shows every brand.
+- It's applied once, so the shopper can turn other brands back on.
+- `?ball=` works alongside it.
+
+**Verified locally** (dev server on :5191 against the public API):
+- `?brand=storm` showed only Storm;
+- `?brand=Roto%20Grip&ball=<Perfect Gem>` showed only Roto Grip, with
+  the Perfect Gem selected;
+- turning Hammer on then showed Hammer and Roto Grip;
+- `?brand=Nope` showed all 11 brands.
+
+**Deploy (only with Al's OK):** push to `main`. The Deploy Learn Site
+workflow builds and prerenders.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

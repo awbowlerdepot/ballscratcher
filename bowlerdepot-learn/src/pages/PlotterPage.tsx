@@ -17,6 +17,14 @@ import DisplayAd from "../components/DisplayAd";
 //
 // ?ball=<product id> selects a ball and zooms to it and its suggestions --
 // the article panel's "Open in the plotter" link and shared links use it.
+//
+// ?brand=<brand name> opens with only that brand showing (runbook 6fx). Al,
+// via the Bowler Depot brand-stores session: the Storm brand store links
+// here with ?brand=Storm ("Open the full plotter", "Compare balls on the
+// plotter"), using the store's brand name, so it's matched
+// case-insensitively (the store's "Motiv" is our "MOTIV"). An unknown name
+// shows every brand. It only sets the starting filter: the shopper can turn
+// other brands back on, and ?ball= works alongside it.
 
 // Desktop (lg+): full-width landscape chart with the details as a card
 // floating in its top-left corner (runbook 6ce). Smaller screens keep the
@@ -143,6 +151,16 @@ export default function PlotterPage() {
   }, [points, extraBall]);
   const selected = selectedId ? (byId.get(selectedId) ?? null) : null;
   const brands = useMemo(() => [...new Set(points.map((p) => p.brand_name))].sort(), [points]);
+  // ?brand= (6fx): applied once, when the balls first load.
+  const brandParamApplied = useRef(false);
+  useEffect(() => {
+    if (brandParamApplied.current || !brands.length) return;
+    brandParamApplied.current = true;
+    const wanted = (searchParams.get("brand") || "").trim().toLowerCase();
+    if (!wanted) return;
+    const match = brands.find((b) => b.toLowerCase() === wanted);
+    if (match) setHiddenBrands(new Set(brands.filter((b) => b !== match)));
+  }, [brands, searchParams]);
   const visible = useMemo(() => points.filter((p) => !hiddenBrands.has(p.brand_name)), [points, hiddenBrands]);
   // Suggestions honor the brand filter (runbook 6fh). With every brand
   // showing, the server's precomputed neighbors are used as-is; once any
