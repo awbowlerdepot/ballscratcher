@@ -23334,7 +23334,7 @@ filter lived in local state only.
 Learn Site run 41564666225 succeeded. Live,
 `learn.bowlerdepot.com/plotter/?brand=Storm` opens with only Storm on.
 
-### 6fy. Brand art for Hammer: partial lineups, its families, and same-day ties (2026-11-03, not deployed)
+### 6fy. Brand art for Hammer: partial lineups, its families, and same-day ties (2026-11-03, deployed)
 
 The Hammer brand-store session asked for Hammer's brand art (`hammer`
 hero-1 and hero-2, both sizes), modeled on Storm's store. BowlerIQ had no
@@ -23381,7 +23381,19 @@ flag and the tie fix, so both are deployed. The spare skip (f697952)
 isn't. It has to be deployed before Hammer is drawn, or hero-2 features
 the Black Widow Spare+.
 
-**Deploy, then load, then run:**
+**Deployed and drawn 2026-11-03.** Al: "yes run it in my terminal".
+- The stack updated at 06:11 UTC, with the spare skip live.
+- Hammer loaded: 20 balls seeded from the Hammer theme, 0 unmapped. Task
+  `91918826-daf5-4255-9422-a2e224d30fb9`.
+- The first run succeeded:
+  - hero-1, the Blacklist, drawn by Gemini;
+  - hero-2, Zero Mercy Hybrid, Black Widow 3.0 Dynasty, Deep Ocean Vibe,
+    Purple Pearl Urethane 78D and Full Effect, drawn by Gemini;
+  - 0 Hammer `brand_line` flags.
+- All four files return 200 at `brand-art/hammer/`. Al saw them and said
+  to tell the Hammer session.
+
+The original steps:
 ```bash
 sam build && sam deploy
 .venv/bin/python scripts/load_brand_lineups.py scripts/brand_lineups/hammer.json --theme-nav ../bicommerce-site/bowlerdepot-theme-hammer/templates/components/brand-store/navigation.html --apply
