@@ -458,7 +458,7 @@ def _scene_png(size):
 
 def test_lineup_hero_is_a_gemini_scene_with_every_ball_as_a_reference():
     calls = []
-    def scene(raws, prompt, aspect):
+    def scene(raws, shelf_raws, prompt, aspect):
         calls.append((len(raws), aspect, prompt))
         return _scene_png((2048, 1536) if aspect == "4:3" else (2048, 1152))
     slot = _plan_default()["hero-2"]
@@ -466,15 +466,39 @@ def test_lineup_hero_is_a_gemini_scene_with_every_ball_as_a_reference():
     assert method == "gemini" and [im.size for _, im in images] == [(1600, 1200), (1600, 900)]
     assert [(n, a) for n, a, _ in calls] == [(4, "4:3"), (4, "16:9")]
     prompt = calls[0][2]
-    assert "no bowling balls on the shelves" in prompt and "#191c1b" in prompt and "exactly the 4 bowling balls" in prompt
+    assert "butcher block" in prompt and "#191c1b" in prompt and "exactly the 4 bowling balls" in prompt
+    assert "shelves are empty" in prompt          # no stocked companions in this plan -> empty shelves
 
 
 def test_lineup_scene_falls_back_to_the_composite_for_both_sizes():
     sizes = []
-    def scene(raws, prompt, aspect):
+    def scene(raws, shelf_raws, prompt, aspect):
         sizes.append(aspect)
         return None if aspect == "16:9" else _scene_png((2048, 1536))
     slot = _plan_default()["hero-2"]
     images, method = brand_art.render_slot(slot, PALETTE, {"fetch_bytes": lambda u: _png_cutout(), "gemini_scene": scene})
     assert method == "composite" and [im.size for _, im in images] == [(1600, 1200), (1600, 900)]
     assert sizes.count("16:9") == brand_art.GEMINI_HERO_ATTEMPTS
+
+
+def test_scene_shelves_are_the_brands_best_stocked_products():
+    # "pull it from the poducts on the site. don't make things up"
+    def bag(i, name, price, cat):
+        return {"bigcommerce_product_id": i, "name": name, "kind": "bag", "price": price, "categories": [cat],
+                "photo": f"https://cdn/{i}.jpg"}
+    companions = [bag(1, "Solo Tote", 34.95, "bags > tote bags > 1 ball totes"),
+                  bag(2, "Rolling Thunder 3 Ball Roller", 269.95, "bags > roller bags > 3 ball rollers"),
+                  bag(3, "3 Ball Travel Tote Pro", 104.95, "bags > tote bags > 3 ball totes")]
+    balls = [_ball("a", "A", datetime.date(2026, 5, 1)), _ball("b", "B", datetime.date(2026, 4, 1))]
+    task = _task(heroes=[{"type": "line_mix"}])
+    slot = next(s for s in brand_art.plan_slots(task, balls, [_line("one", ["a"]), _line("two", ["b"])],
+                                                companions, set(), TODAY) if s["slot_key"] == "hero-1")
+    assert [p["bigcommerce_product_id"] for p in slot["shelf"]] == [2, 3, 1]
+    calls = []
+    def scene(raws, shelf_raws, prompt, aspect):
+        calls.append((len(raws), len(shelf_raws), prompt))
+        return _scene_png((2048, 1536) if aspect == "4:3" else (2048, 1152))
+    deps = {"fetch_bytes": lambda u: _jpeg_on_white() if u.endswith(".jpg") else _png_cutout(), "gemini_scene": scene}
+    images, method = brand_art.render_slot(slot, PALETTE, deps)
+    assert method == "gemini" and calls[0][:2] == (2, 3)
+    assert "ONLY the 3 products shown in the last 3 reference photos" in calls[0][2]

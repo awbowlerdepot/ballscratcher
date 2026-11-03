@@ -622,6 +622,17 @@ def plan_slots(task: dict, balls: list, lines: list, companions: list, stocked: 
                 items = [_ball_item(ball)]
         if not items:
             continue
+        shelf = []
+        if hero_type == "lineup":
+            # The scene's shelves: the brand's best stocked non-ball
+            # products, as pick_companion ranks them (6fv: "pull it from
+            # the poducts on the site. don't make things up").
+            pool = list(companions)
+            while pool and len(shelf) < SHELF_PRODUCTS:
+                c = pick_companion(pool, {})
+                pool.remove(c)
+                shelf.append({"product_id": None, "bigcommerce_product_id": c["bigcommerce_product_id"],
+                              "name": c["name"], "kind": c["kind"], "photos": [c["photo"]]})
         if hero_type == "lineup":
             alt = f"{brand} {_join([x['name'] for x in items])} bowling balls"
         elif items[0]["kind"] == "ball":
@@ -629,8 +640,9 @@ def plan_slots(task: dict, balls: list, lines: list, companions: list, stocked: 
         else:
             alt = items[0]["name"] + (f" with the {brand} {items[1]['name']} bowling ball" if len(items) > 1 else "")
         slots.append({"slot_key": slot_key, "kind": "hero", "line_id": None, "hero_type": hero_type,
-                      "items": items, "alt": alt, "sizes": [HERO_SIZE, HERO_WIDE_SIZE],
-                      "input_hash": _hash({"palette": palette, "type": hero_type, "items": items})})
+                      "items": items, "shelf": shelf, "alt": alt, "sizes": [HERO_SIZE, HERO_WIDE_SIZE],
+                      "input_hash": _hash({"palette": palette, "type": hero_type, "items": items,
+                                           **({"shelf": shelf} if shelf else {})})})
     return slots
 
 
@@ -690,39 +702,61 @@ HERO_NO_TEXT = (
 # Lineup heroes ("Find your reaction") as a pro shop scene (runbook 6fv).
 # Al, on the plain row: "the balls just sitting there aren't doing it. can
 # we set a pro shop scene and put them on the counter or something like
-# that", then on the prototype: "that looks fine". Gemini gets every
-# ball's real photo and places them on a counter. The prototype also
-# filled the shelves with made-up balls, which breaks the request's "don't
-# invent ball designs", so the shop behind holds no other balls.
+# that"; on the first prototype: "that looks fine". That prototype is the
+# look -- this prompt is its wording, with two changes Al asked for:
+#   * "we have wood counter tops, butcher block stained darker in most of
+#     our shops" (the prototype had a dark polished top);
+#   * "if you are going to put products on the shelves behind them pull it
+#     from the poducts on the site. don't make things up" (the prototype's
+#     shelves were full of invented balls): the shelves hold only the
+#     brand's stocked Bowler Depot products, passed as reference photos,
+#     or nothing. scene_check rejects a scene that shows anything else.
+# (A rewrite that also moved the camera back and spread the balls out was
+# "way better" in the original -- so nothing else here changes.)
 SCENE_PROMPT = (
     "Create a photorealistic, premium photograph of a modern bowling pro shop. In the foreground is a clean pro shop "
-    "counter with a dark, polished top running across the frame. Behind it, softly out of focus, the shop: wall "
-    "shelving with bowling bags and accessories (no bowling balls on the shelves or anywhere else), lit in deep "
-    "{background} with {accent} accent lighting. Place exactly the {n} bowling balls from the {n} reference photos "
-    "on the counter top, side by side in a gentle row with a little space between them so no ball hides another's "
-    "logo, mostly in the right two-thirds of the frame; the left third stays calmer, out-of-focus shop (a headline "
-    "is laid over it later in HTML). Each ball must be carried over EXACTLY as it appears in its own reference photo: "
-    "same colors, swirl pattern and pearl/solid surface, and the same printed logo and graphics at the same size "
-    "relative to the ball -- do not redraw, enlarge, simplify or swap logos between balls, and do not add any ball "
-    "that isn't in the references. All balls are the same real size. There must be no text, words, letters, numbers, "
-    "signs, posters, screens, logos or brand marks anywhere in the image other than what is printed on the balls "
-    "themselves. No people, hands, bowling pins, shoes or price tags."
+    "counter with a butcher block wood top, stained dark, running across the frame. Behind it, softly out of focus, "
+    "the shop: wall shelving lit in deep {background} with {accent} accent lighting. {shelf} "
+    "Place exactly the {n} bowling balls from the first {n} reference photos on the counter top, side by side in a "
+    "gentle row, mostly in the right two-thirds of the frame; the left third stays calmer, out-of-focus shop (a "
+    "headline is laid over it later in HTML). Each ball must be carried over EXACTLY as it appears in its own "
+    "reference photo: same colors, swirl pattern and pearl/solid surface, and the same printed logo and graphics at "
+    "the same size relative to the ball -- do not redraw, enlarge, simplify or swap logos between balls, and do not "
+    "add any ball that isn't in the references. All balls are the same real size. "
+    "There must be no text, words, letters, numbers, signs, posters, logos or brand marks anywhere in the image other "
+    "than what is printed on the balls and on the shelf products themselves. No people, hands, bowling pins, shoes or "
+    "price tags."
 )
+SHELF_WITH_PRODUCTS = (
+    "The shelves hold ONLY the {m} products shown in the last {m} reference photos (bags and accessories), each "
+    "exactly as photographed, and nothing else -- no other products, no other bowling balls, no made-up items; "
+    "leave the rest of the shelving empty."
+)
+SHELF_EMPTY = "The shelves are empty: no products, no bowling balls, no made-up items."
+SHELF_PRODUCTS = 4
 
 
-def render_lineup_scene(items: list, size: tuple, palette: dict, deps: dict):
+def render_lineup_scene(items: list, size: tuple, palette: dict, deps: dict, shelf: list = ()):
     """A lineup hero as a pro shop scene from Gemini, or None when no
-    attempt passes every ball's logo check (deps["gemini_scene"] returns
-    None for a failed check). The real photos are the references."""
+    attempt passes the checks (deps["gemini_scene"] returns None when a
+    ball's logo or the shelves fail). The real photos are the references:
+    the balls, then the shelf products."""
     scene = deps.get("gemini_scene")
     if not scene or deps.get("_scene_failed"):
         return None
     raws = [first_photo(i, deps["fetch_bytes"])[0] for i in items]
+    shelf_raws = []
+    for p in shelf:
+        try:
+            shelf_raws.append(first_photo(p, deps["fetch_bytes"])[0])
+        except RuntimeError:
+            pass
     aspect = "16:9" if size[0] / size[1] > 1.5 else "4:3"
-    prompt = SCENE_PROMPT.format(n=len(raws), **palette)
+    shelf_text = SHELF_WITH_PRODUCTS.format(m=len(shelf_raws)) if shelf_raws else SHELF_EMPTY
+    prompt = SCENE_PROMPT.format(n=len(raws), shelf=shelf_text, **palette)
     for attempt in range(GEMINI_HERO_ATTEMPTS):
         try:
-            png = scene(raws, prompt, aspect)
+            png = scene(raws, shelf_raws, prompt, aspect)
         except Exception:
             logger.exception("brand-art scene attempt %d failed", attempt + 1)
             continue
@@ -771,7 +805,8 @@ def render_slot(slot: dict, palette: dict, deps: dict) -> tuple:
         # Pro shop scene for both sizes, or the composite for both (a
         # slide's two sizes always match, as for product heroes).
         deps.pop("_scene_failed", None)
-        scenes = [render_lineup_scene(slot["items"], size, palette, deps) for size in slot["sizes"]]
+        scenes = [render_lineup_scene(slot["items"], size, palette, deps, slot.get("shelf") or [])
+                  for size in slot["sizes"]]
         if all(im is not None for im in scenes):
             return list(zip(slot["sizes"], scenes)), "gemini"
         cuts = [compose.cutout(first_photo(i, fetch)[0], deps.get("remove_bg")) for i in slot["items"]]
@@ -800,7 +835,10 @@ def slot_keys_for(slug: str, slot_key: str) -> tuple:
 
 
 def save_slot(conn, task_id: str, slot: dict, keys: tuple, method: str, error: str = None) -> None:
-    featured = [{k: i[k] for k in ("product_id", "bigcommerce_product_id", "name", "kind")} for i in slot["items"]]
+    # Shelf products are in the picture too, so they're listed (after the
+    # balls), and the partner can tell them apart by kind.
+    featured = [{k: i[k] for k in ("product_id", "bigcommerce_product_id", "name", "kind")}
+                for i in slot["items"] + list(slot.get("shelf") or [])]
     w, h = slot["sizes"][0]
     with conn.cursor() as cur:
         if error:

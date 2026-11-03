@@ -23215,9 +23215,25 @@ fine".
   brand's palette with the balls on it, spaced so no ball hides another's
   logo, and carried over exactly. It bans text, signs, screens, people,
   pins and price tags.
-- **No other balls in the shop.** The prototype's shelves were full of
-  made-up balls, which breaks "don't invent ball designs", so the prompt
-  says the shelves hold bags and accessories only.
+- **The prompt is the prototype's wording**, which Al approved ("that
+  looks fine"), with only the two changes he asked for:
+  - "we have wood counter tops, butcher block stained darker in most of
+    our shops";
+  - "if you are going to put products on the shelves behind them pull it
+    from the poducts on the site. don't make things up". The prototype's
+    shelves were full of invented balls. Now they hold only the brand's
+    best stocked Bowler Depot products (up to 4, ranked by
+    `pick_companion`, the BigCommerce photos passed as references), or
+    nothing if the brand stocks nothing.
+  - A rewrite in between that also moved the camera back and spread the
+    balls out was rejected: "the original image was way better than this
+    one". So nothing else in the prompt changes.
+- **The shelf products are in `featured`** after the balls, by kind and
+  BigCommerce id. They're part of the slot's fingerprint, so one selling
+  out redraws the slide.
+- **A background check:** `app.check_scene_background` has Claude compare
+  the background with the shelf references, and rejects any other product,
+  extra ball or readable sign.
 - **Checks:** each attempt checks every ball's logo against its own photo
   (`check_logo_matches`), and one miss discards the attempt. There are
   up to `GEMINI_HERO_ATTEMPTS` (3) tries per size.
@@ -23230,9 +23246,16 @@ fine".
 attempt. That's about 2 to 6 Gemini calls per redraw of the slot, and a
 redraw only happens when its balls change or on the weekly sweep.
 
-**Tests:** 2 new in `tests/test_brand_art.py` (33): every ball is a
-reference and the prompt keeps the rules; a failed size falls back to the
-composite for both.
+**Tests:** 3 new in `tests/test_brand_art.py` (34):
+- every ball is a reference, and the prompt keeps the rules (butcher
+  block, empty shelves with no stock);
+- the shelves are the brand's best stocked products, passed as
+  references;
+- a failed size falls back to the composite for both.
+
+**Render, 2026-11-02, local:** both sizes passed every ball's logo check
+and the background check ("All four shelf bags match references; no extra
+items visible").
 
 ## 7. Ongoing operations
 

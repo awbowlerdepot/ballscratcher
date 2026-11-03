@@ -3703,6 +3703,44 @@ Reply with ONLY the scene description."""
 # shot. A rejected image is re-made, up to ANNOUNCEMENT_IMAGE_ATTEMPTS.
 LOGO_CHECK_MODEL_ID = "global.anthropic.claude-sonnet-4-6"
 ANNOUNCEMENT_IMAGE_ATTEMPTS = 3
+SCENE_BACKGROUND_PROMPT = (
+    "The LAST image is a generated pro shop scene with {n} bowling balls on the counter in front. {refs}"
+    "Look ONLY at the background behind the counter (the shelves and walls). Does it show any product that is not "
+    "one of the reference products -- any other bowling ball, bag, shoe, box or accessory that doesn't match a "
+    "reference, or a made-up item -- or any readable sign or text? Blurred is fine if it plainly IS one of the "
+    "reference products; empty shelving is fine. Respond with ONLY this JSON: "
+    '{{"only_reference_products": true|false, "note": "<15 words max>"}}'
+)
+
+
+def check_scene_background(shelf_raws: list, scene_png: bytes, n_balls: int, bedrock_client) -> tuple:
+    """Runbook 6fv (Al: "if you are going to put products on the shelves
+    behind them pull it from the poducts on the site. don't make things
+    up"): (ok, note) -- ok when the scene's background shows only the shelf
+    reference products (or nothing). Like check_logo_matches, an
+    unavailable check counts as a pass rather than blocking the run."""
+    try:
+        content = []
+        for i, raw in enumerate(shelf_raws, start=1):
+            content += [{"type": "text", "text": f"Reference product {i}:"},
+                        {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": _jpeg_b64(raw, 384)}}]
+        refs = (f"The {len(shelf_raws)} images before it are the only products allowed on the shelves. "
+                if shelf_raws else "No products are allowed on the shelves; they must be empty. ")
+        content += [{"type": "text", "text": "Scene:"},
+                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": _jpeg_b64(scene_png)}},
+                    {"type": "text", "text": SCENE_BACKGROUND_PROMPT.format(n=n_balls, refs=refs)}]
+        body = json.dumps({"anthropic_version": "bedrock-2023-05-31", "max_tokens": 300,
+                           "messages": [{"role": "user", "content": content}]})
+        resp = bedrock_client.invoke_model(modelId=LOGO_CHECK_MODEL_ID, contentType="application/json",
+                                           accept="application/json", body=body)
+        text = json.loads(resp["body"].read())["content"][0]["text"]
+        d = json.loads(re.findall(r"\{[^{}]*\}", text)[-1])
+        return bool(d.get("only_reference_products")), str(d.get("note") or "")[:120]
+    except Exception:
+        logger.exception("SCENE BACKGROUND CHECK FAILED -- treating the scene as a pass")
+        return True, "check unavailable"
+
+
 LOGO_CHECK_PROMPT = (
     "Image 1 is the OFFICIAL product photo of a bowling ball. Image 2 is a generated marketing image that must show "
     "this exact same ball. Compare ONLY the ball's printed logo/graphics (the brand name, the ball name, any icon or "
@@ -4012,11 +4050,12 @@ def run_brand_art_job(conn, event, *, s3_client, bedrock_client, gemini_auth, ge
 
     gemini_scene = None
     if gemini_auth:
-        def gemini_scene(raws, prompt, aspect):
-            # Runbook 6fv: every ball's real photo as a reference, and every
-            # ball's logo checked against its own photo -- one miss and the
-            # attempt is discarded.
-            refs = [_reference_image_to_base64_png(r) for r in raws]
+        def gemini_scene(raws, shelf_raws, prompt, aspect):
+            # Runbook 6fv: every ball's and shelf product's real photo as a
+            # reference; every ball's logo checked against its own photo, and
+            # the shelves checked for anything that isn't one of the shelf
+            # products ("don't make things up"). One miss discards it.
+            refs = [_reference_image_to_base64_png(r) for r in list(raws) + list(shelf_raws)]
             png = call_gemini_for_image(gemini_auth, gemini_model_id, prompt, refs[0], aspect, session=session,
                                         image_size="2K", extra_reference_images_b64=refs[1:])
             for i, raw in enumerate(raws):
@@ -4024,7 +4063,9 @@ def run_brand_art_job(conn, event, *, s3_client, bedrock_client, gemini_auth, ge
                 logger.info("brand-art scene (%s) ball %d: logo ok=%s (%s)", aspect, i + 1, same, note)
                 if not same:
                     return None
-            return png
+            ok, note = check_scene_background(shelf_raws, png, len(raws), bedrock_client)
+            logger.info("brand-art scene (%s) shelves: ok=%s (%s)", aspect, ok, note)
+            return png if ok else None
 
     remove_bg = None
     if bedrock_removebg_client is not None:
