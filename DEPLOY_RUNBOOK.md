@@ -23003,7 +23003,7 @@ psql -c "select status, trigger, started_at, detail -> 'slots' from task_runs or
 - `test_admin_api_service.py` (461) and `test_product_article_generator.py`
   (186) unchanged and passing.
 
-### 6fr. Brand lineups: "exclusive" lines for balls a brand doesn't profile; Storm's spare and entry-level balls (2026-11-02, not deployed)
+### 6fr. Brand lineups: "exclusive" lines for balls a brand doesn't profile; Storm's spare and entry-level balls (2026-11-02, deployed 2026-11-03)
 
 Storm's first brand-art run (6fq) flagged 22 current Storm balls that
 stormbowling.com puts in no reaction profile or lane read. Each was
@@ -23353,6 +23353,14 @@ Hammer lineup, task or palette.
 
 **Data (`scripts/brand_lineups/hammer.json`):**
 - BigCommerce brand 38.
+- Seeded from the Hammer worktree's theme navigation
+  (`bowlerdepot-theme-hammer`, branch `hammer-store`), which maps the
+  families by BigCommerce product id: 20 balls. The Hammer session noted
+  that the `bowlerdepot-theme-brands` copy still has search URLs there.
+  That copy lists Black Widow Spare+ and the Black Widow Viz-A-Ball under
+  Black Widow, so the line mix now skips any ball in an exclusive (spare)
+  line. Otherwise hero-2 would have featured the Spare+, the family's
+  newest.
 - Grouping `family`: Black Widow (excluding spares), Zero Mercy, Purple
   Pearl Urethane, Effect and Vibe. These are partial `fields` rules on the
   name, taken from the theme's Hammer navigation.
@@ -23367,15 +23375,20 @@ Hammer lineup, task or palette.
 - hero-2: Zero Mercy Hybrid, Black Widow 3.0 Dynasty, Deep Ocean Vibe,
   Purple Pearl Urethane 78D, Full Effect, by demand.
 
-**Deploy, then load, then run** (the same order as 6fr: the deployed code
-would treat the partial family lines as complete and flag about 20 balls):
+**Already partly live.** The 6fz deploy (2026-11-03 05:46 UTC, from
+another session) was built from a `main` that already had the partial
+flag and the tie fix, so both are deployed. The spare skip (f697952)
+isn't. It has to be deployed before Hammer is drawn, or hero-2 features
+the Black Widow Spare+.
+
+**Deploy, then load, then run:**
 ```bash
 sam build && sam deploy
-.venv/bin/python scripts/load_brand_lineups.py scripts/brand_lineups/hammer.json --apply
+.venv/bin/python scripts/load_brand_lineups.py scripts/brand_lineups/hammer.json --theme-nav ../bicommerce-site/bowlerdepot-theme-hammer/templates/components/brand-store/navigation.html --apply
 aws lambda invoke --function-name bowling-scraper-product-article-generator --invocation-type Event --payload '{"brand_art": "run", "task_id": "<hammer task id from the load>", "trigger": "manual"}' --cli-binary-format raw-in-base64-out /dev/null
 ```
 
-**Tests:** `tests/test_brand_art.py` (38): partial groupings never flag,
+**Tests:** `tests/test_brand_art.py` (39): partial groupings never flag, a spare is never in the line mix,
 and the Hammer family rules match its ball names and keep the spares out.
 
 ### 6fz. A BowlerDepot price source follows its listing: off when hidden, back on when live (migration 060) (2026-11-02)

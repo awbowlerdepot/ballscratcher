@@ -598,7 +598,11 @@ def plan_slots(task: dict, balls: list, lines: list, companions: list, stocked: 
             # with two or more populated lines), in the brand's line order,
             # no ball twice. Drawn like a lineup hero.
             hero_type = "lineup"
-            populated = [l for l in lines if any(p in by_id for p in l["ball_ids"])
+            # A ball in an exclusive line (a spare) is never featured, even
+            # when a family also lists it: the Hammer theme maps Black
+            # Widow Spare+ under Black Widow, and it's that family's newest.
+            exclusive = {p for l in lines if (l["assign_rule"] or {}).get("exclusive") for p in l["ball_ids"]}
+            populated = [l for l in lines if any(p in by_id and p not in exclusive for p in l["ball_ids"])
                          and not (l["assign_rule"] or {}).get("exclusive")]
             gkey = h.get("grouping") or next(
                 (g for g in dict.fromkeys(l["grouping_key"] for l in populated)
@@ -609,7 +613,7 @@ def plan_slots(task: dict, balls: list, lines: list, companions: list, stocked: 
                     continue
                 # Newest; a same-day tie (Hammer's Zero Mercy Hybrid and
                 # Tour) goes to the higher demand, so the pick is stable.
-                members = sorted((by_id[p] for p in l["ball_ids"] if p in by_id and p not in seen),
+                members = sorted((by_id[p] for p in l["ball_ids"] if p in by_id and p not in seen and p not in exclusive),
                                  key=lambda b: (b["release_date"] or datetime.date.min,
                                                 b.get("demand_score") if b.get("demand_score") is not None else -1),
                                  reverse=True)

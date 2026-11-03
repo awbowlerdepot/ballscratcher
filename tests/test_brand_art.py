@@ -564,3 +564,14 @@ def test_hammer_family_rules_match_its_names():
         assert not rules["black-widow"].search(n), n
     for n in ["Raw Hammer - Black / Grey", "Axe - Purple / Pink", "Spawn", "Blacklist"]:
         assert not any(r.search(n) for r in rules.values()), n
+
+
+def test_line_mix_never_features_a_spare_even_if_a_family_lists_it():
+    balls = [_ball("spare", "Black Widow Spare+", datetime.date(2026, 9, 17)),
+             _ball("bw", "Black Widow 3.0 Dynasty", datetime.date(2026, 1, 15)),
+             _ball("zm", "Zero Mercy Hybrid", datetime.date(2026, 9, 17))]
+    lines = [_line("black-widow", ["spare", "bw"], grouping="family"), _line("zero-mercy", ["zm"], grouping="family"),
+             {**_line("spare", ["spare"], grouping="ball-type"), "assign_rule": {"type": "fields", "exclusive": True}}]
+    slot = next(s for s in brand_art.plan_slots(_task(heroes=[{"type": "line_mix"}]), balls, lines, [], set(), TODAY)
+                if s["slot_key"] == "hero-1")
+    assert sorted(i["name"] for i in slot["items"]) == ["Black Widow 3.0 Dynasty", "Zero Mercy Hybrid"]
