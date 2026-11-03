@@ -185,9 +185,10 @@ def list_lines(conn, brand_id: str) -> list:
 def load_slots(conn, task_id: str) -> dict:
     with conn.cursor() as cur:
         cur.execute("""
-            select slot_key, input_hash, featured, generated_at from brand_art_slots where task_id = %s
+            select slot_key, input_hash, featured, generated_at, method from brand_art_slots where task_id = %s
         """, (task_id,))
-        return {r[0]: {"input_hash": r[1], "featured": r[2] or [], "generated_at": r[3]} for r in cur.fetchall()}
+        return {r[0]: {"input_hash": r[1], "featured": r[2] or [], "generated_at": r[3], "method": r[4]}
+                for r in cur.fetchall()}
 
 
 # ---------------------------------------------------------- assign rules
@@ -997,6 +998,7 @@ def run_task(conn, task_id: str, deps: dict, slot_keys: list | None = None, trig
 
     detail = {"slots": {}, "assigned": None}
     try:
+        stored = load_slots(conn, task_id)
         slots, assigned = gather(conn, task, deps, assign=trigger == "manual")
         detail["assigned"] = assigned
         slug = task["params"].get("slug") or re.sub(r"[^a-z0-9]+", "-", task["brand_name"].lower()).strip("-")
@@ -1007,6 +1009,22 @@ def run_task(conn, task_id: str, deps: dict, slot_keys: list | None = None, trig
             keys = slot_keys_for(slug, slot["slot_key"])
             try:
                 images, method = render_slot(slot, palette, deps)
+                # Runbook 6gf: never replace a Gemini hero with the plain
+                # composite. Al approved hero-2 only once it had the shop
+                # ("please keep the shop setting for every brand's hero-2",
+                # via the Roto Grip session); its composite was the 429
+                # fallback. The old image, and the featured list that
+                # describes it, stay; the error is recorded and the slot
+                # is retried when its inputs next change or on the weekly
+                # sweep. A slot that never had a Gemini image still gets
+                # the composite rather than nothing.
+                if (method == "composite" and slot["kind"] == "hero"
+                        and (stored.get(slot["slot_key"]) or {}).get("method") == "gemini"):
+                    save_slot(conn, task_id, slot, keys, None,
+                              error="Gemini couldn't draw this slot; kept the previous image")
+                    detail["slots"][slot["slot_key"]] = {"ok": False, "kept_previous": True,
+                                                         "error": "kept the previous Gemini image"}
+                    continue
                 for (size, im), key in zip(images, keys):
                     deps["put_object"](key, compose.encode_webp(im), "image/webp", CACHE_CONTROL)
                 save_slot(conn, task_id, slot, keys, method)

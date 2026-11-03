@@ -680,13 +680,48 @@ def test_a_run_that_draws_something_clears_the_brands_cdn_cache():
             "last_full_run_at": None}
     slot = {"slot_key": "hero-1", "kind": "hero", "line_id": None, "hero_type": "product", "items": [],
             "sizes": [(1600, 1200)], "alt": "a", "input_hash": "h"}
-    orig = brand_art.load_task, brand_art.gather, brand_art.render_slot, brand_art.save_slot
+    orig = brand_art.load_task, brand_art.gather, brand_art.render_slot, brand_art.save_slot, brand_art.load_slots
     brand_art.load_task = lambda conn, tid: task
     brand_art.gather = lambda conn, t, deps, assign: ([slot], None)
     brand_art.render_slot = lambda s, p, d: ([((1600, 1200), Image.new("RGB", (1600, 1200)))], "composite")
     brand_art.save_slot = lambda *a, **k: None
+    brand_art.load_slots = lambda conn, tid: {}
     try:
         brand_art.run_task(Conn(), "t1", {"put_object": lambda *a: None, "invalidate": cleared.append})
     finally:
-        brand_art.load_task, brand_art.gather, brand_art.render_slot, brand_art.save_slot = orig
+        (brand_art.load_task, brand_art.gather, brand_art.render_slot, brand_art.save_slot,
+         brand_art.load_slots) = orig
     assert cleared == ["/brand-art/storm/*"]
+
+
+def test_a_composite_never_replaces_a_gemini_hero():
+    # Runbook 6gf: "please keep the shop setting for every brand's hero-2".
+    puts, saves = [], []
+    class Cur:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def execute(self, q, params=()): pass
+        def fetchone(self): return ("run-1",)
+    class Conn:
+        def cursor(self): return Cur()
+        def commit(self): pass
+    task = {"id": "t1", "brand_name": "Roto Grip", "params": {"palette": PALETTE, "slug": "roto-grip"},
+            "triggers": [], "last_full_run_at": None}
+    slot = {"slot_key": "hero-2", "kind": "hero", "line_id": None, "hero_type": "lineup", "items": [],
+            "sizes": [(1600, 1200)], "alt": "a", "input_hash": "new"}
+    orig = brand_art.load_task, brand_art.gather, brand_art.render_slot, brand_art.save_slot, brand_art.load_slots
+    brand_art.load_task = lambda conn, tid: task
+    brand_art.gather = lambda conn, t, deps, assign: ([slot], None)
+    brand_art.render_slot = lambda s, p, d: ([((1600, 1200), Image.new("RGB", (1600, 1200)))], "composite")
+    brand_art.save_slot = lambda conn, tid, s, keys, method, error=None: saves.append((method, error))
+    try:
+        brand_art.load_slots = lambda conn, tid: {"hero-2": {"method": "gemini"}}
+        out = brand_art.run_task(Conn(), "t1", {"put_object": lambda *a: puts.append(a)})
+        assert puts == [] and saves[-1][0] is None and "kept the previous image" in saves[-1][1]
+        assert out["slots"]["hero-2"]["kept_previous"]
+        brand_art.load_slots = lambda conn, tid: {}                     # never drawn: the composite is written
+        brand_art.run_task(Conn(), "t1", {"put_object": lambda *a: puts.append(a)})
+        assert len(puts) == 1 and saves[-1] == ("composite", None)
+    finally:
+        (brand_art.load_task, brand_art.gather, brand_art.render_slot, brand_art.save_slot,
+         brand_art.load_slots) = orig

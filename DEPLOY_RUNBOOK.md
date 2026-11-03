@@ -23741,6 +23741,29 @@ CloudFront's 1,000 free paths a month.
 
 **Tests:** 1 new in `tests/test_brand_art.py` (45).
 
+### 6gf. A redraw never replaces a Gemini hero with the plain composite (2026-11-03, not deployed)
+
+The Roto Grip brand-store session passed on that Al approved the Roto
+Grip art (2026-11-03). Al had first thought hero-2 "was only balls on a
+background with no shop", which is what the 6gb 429 fallback produced.
+The session asked to "please keep the shop setting for every brand's
+hero-2".
+
+**Change (`brand_art.run_task`):** when a hero's redraw ends with the
+composite because every Gemini attempt failed (logo or backdrop checks, or
+quota), and that slot already has a Gemini image, nothing is written:
+- the image stays, along with the featured list that describes it;
+- the slot's `error` says "kept the previous image";
+- the run's detail marks `kept_previous`.
+
+The slot is retried when its inputs next change or on the weekly sweep. A
+slot that has never had a Gemini image still gets the composite, so a new
+brand's slide isn't left empty.
+
+**Deploy:** `sam build && sam deploy`, together with 6gd and 6ge.
+
+**Tests:** 1 new in `tests/test_brand_art.py` (46).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
