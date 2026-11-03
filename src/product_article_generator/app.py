@@ -4084,8 +4084,19 @@ def run_brand_art_job(conn, event, *, s3_client, bedrock_client, gemini_auth, ge
             return call_bedrock_remove_background(bedrock_removebg_client, removebg_model_id,
                                                   _reference_image_to_base64_png(image_bytes))
 
+    invalidate = None
+    distribution_id = os.environ.get("IMAGE_CDN_DISTRIBUTION_ID")
+    if distribution_id:
+        def invalidate(path):
+            # Runbook 6ge: a redraw replaces the image behind a stable URL,
+            # so the CDN's cached copies (every ?w= size) are cleared.
+            boto3.client("cloudfront").create_invalidation(
+                DistributionId=distribution_id,
+                InvalidationBatch={"Paths": {"Quantity": 1, "Items": [path]},
+                                   "CallerReference": f"brand-art-{path}-{time.time()}"})
+
     deps = {"fetch_bytes": fetch_bytes, "fetch_html": fetch_html, "put_object": put_object, "bc_get": bc_get,
-            "gemini": gemini, "remove_bg": remove_bg, "gemini_scene": gemini_scene}
+            "gemini": gemini, "remove_bg": remove_bg, "gemini_scene": gemini_scene, "invalidate": invalidate}
 
     def invoke_run(queue):
         """Start the first queued run; it carries the rest (runbook 6gc:

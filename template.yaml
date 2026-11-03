@@ -3041,6 +3041,8 @@ Resources:
           # Brand-art task (runbook 6fq): the brand's stocked bags, shoes and
           # accessories for hero companions, read from Bowler Depot's catalog.
           BIGCOMMERCE_SECRET_ARN: !Ref BigCommerceSecretArn
+          # Brand-art redraws clear the image CDN's cached copies (runbook 6ge).
+          IMAGE_CDN_DISTRIBUTION_ID: !Ref ImageResizerDistribution
       Policies:
         - VPCAccessPolicy: {}
         - Statement:
@@ -3263,6 +3265,11 @@ Resources:
               Action:
                 - s3:PutObject
               Resource: !Sub arn:aws:s3:::${ImageBucket}/brand-art/*
+            # ...and clears the CDN's copies of them (runbook 6ge).
+            - Effect: Allow
+              Action:
+                - cloudfront:CreateInvalidation
+              Resource: !Sub arn:aws:cloudfront::${AWS::AccountId}:distribution/${ImageResizerDistribution}
       Events:
         DailySchedule:
           Type: Schedule

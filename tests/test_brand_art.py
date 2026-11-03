@@ -662,3 +662,31 @@ def test_dark_backgrounds_keep_the_glow_backdrop():
         return _png((2048, 1536) if aspect == "4:3" else (2048, 1152), (25, 28, 27))
     brand_art.render_slot(_plan_default()["hero-1"], PALETTE, {"fetch_bytes": lambda u: _png_cutout(), "gemini": ok})
     assert "deep #191c1b" in prompts[0]
+
+
+def test_a_run_that_draws_something_clears_the_brands_cdn_cache():
+    # Runbook 6ge: admin's ?w=480 thumbnails showed the art from before a redraw.
+    cleared = []
+    class Cur:
+        def __init__(self): self.q = None
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def execute(self, q, params=()): self.q = q
+        def fetchone(self): return ("run-1",)
+    class Conn:
+        def cursor(self): return Cur()
+        def commit(self): pass
+    task = {"id": "t1", "brand_name": "Storm", "params": {"palette": PALETTE, "slug": "storm"}, "triggers": [],
+            "last_full_run_at": None}
+    slot = {"slot_key": "hero-1", "kind": "hero", "line_id": None, "hero_type": "product", "items": [],
+            "sizes": [(1600, 1200)], "alt": "a", "input_hash": "h"}
+    orig = brand_art.load_task, brand_art.gather, brand_art.render_slot, brand_art.save_slot
+    brand_art.load_task = lambda conn, tid: task
+    brand_art.gather = lambda conn, t, deps, assign: ([slot], None)
+    brand_art.render_slot = lambda s, p, d: ([((1600, 1200), Image.new("RGB", (1600, 1200)))], "composite")
+    brand_art.save_slot = lambda *a, **k: None
+    try:
+        brand_art.run_task(Conn(), "t1", {"put_object": lambda *a: None, "invalidate": cleared.append})
+    finally:
+        brand_art.load_task, brand_art.gather, brand_art.render_slot, brand_art.save_slot = orig
+    assert cleared == ["/brand-art/storm/*"]

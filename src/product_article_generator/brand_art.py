@@ -1019,6 +1019,17 @@ def run_task(conn, task_id: str, deps: dict, slot_keys: list | None = None, trig
                 detail["slots"][slot["slot_key"]] = {"ok": False, "error": str(e)[:200]}
         ok = [s for s in detail["slots"].values() if s["ok"]]
         status = "succeeded" if len(ok) == len(detail["slots"]) else ("partial" if ok else "failed")
+        # Runbook 6ge: clear the image CDN's copies of this brand's art.
+        # Al: "the images in the admin are not all correct ... it is
+        # correct when you click on it but the image on the main page is
+        # wrong" -- admin shows resized copies (?w=480), which the CDN
+        # keeps for up to an hour after a redraw, as it does the full-size
+        # file the partner's slides load.
+        if ok and deps.get("invalidate"):
+            try:
+                deps["invalidate"](f"/{ART_PREFIX}/{slug}/*")
+            except Exception:
+                logger.exception("couldn't clear the CDN cache for brand-art/%s", slug)
     except Exception as e:
         logger.exception("brand-art task %s failed", task_id)
         detail["error"] = str(e)[:500]

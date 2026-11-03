@@ -23714,6 +23714,33 @@ aws lambda invoke --function-name bowling-scraper-product-article-generator --in
 flat fill; the light prompt is used and an amber backdrop is rejected
 while a matching one passes; dark palettes keep the glow prompt.
 
+### 6ge. Brand-art redraws clear the image CDN's cache (2026-11-03, not deployed)
+
+Al: "the images in the admin are not all correct. roto grip hero 2 and
+radical hero 1. it is correct when you click on it but the image on the
+main page is wrong". The admin Brand Stores page shows resized copies
+(`…/hero-2.webp?w=480&fmt=webp`). CloudFront keeps each one for up to an
+hour (6fq's `max-age=3600`), and the full-size files the partners' slides
+load are cached the same way. So for up to an hour after a redraw, some
+views still showed the art from before it.
+
+**Fixed by hand, 2026-11-03:** cleared `/brand-art/*` on
+`E2FXENFKXYESZD` (img.bowleriq.io), invalidation
+`IDTI47PQQUB4MLWL0IADIKQ53H`.
+
+**Change:** `brand_art.run_task` clears `/brand-art/<slug>/*` on the image
+CDN after any run that drew at least one slot. That covers every `?w=`
+copy. `app.run_brand_art_job` passes `invalidate` when
+`IMAGE_CDN_DISTRIBUTION_ID` is set. The template sets it to
+`ImageResizerDistribution` and grants `cloudfront:CreateInvalidation` on
+that one distribution. A failed invalidation is logged and doesn't fail
+the run. It costs one invalidation path per brand per redraw, well inside
+CloudFront's 1,000 free paths a month.
+
+**Deploy:** `sam build && sam deploy`, together with 6gd.
+
+**Tests:** 1 new in `tests/test_brand_art.py` (45).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
