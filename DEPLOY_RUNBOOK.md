@@ -23243,7 +23243,18 @@ fine".
   - Only the first `SCENE_SHARP_BALLS` (2) balls are logo-checked. A
     blurred logo can't be verified, so the soft ones are carried over from
     their references unchecked.
-- **The display balls are in `featured`** after the counter's, by kind and
+- **No ball display behind the counter.** Even with the brand's real
+  balls as references (6, then 12), Gemini filled the display with
+  invented balls in nearly every attempt, and the check rejected them all,
+  so the slide fell back to the composite. Al's objection was to made-up
+  balls ("the rest of the products were fine"), so the shop keeps its
+  bags, accessories and shoe wall, and the only balls are the counter's.
+  The background check now rejects any ball behind the counter. A task can
+  still list display balls explicitly (`display_ball_ids` on the hero).
+  The 2026-11-02 render passed at both sizes: the front two logos matched,
+  and the check reported "No bowling balls visible in background, only
+  bags and shoes".
+- **Any display balls are in `featured`** after the counter's, by kind and
   BigCommerce id. They're part of the slot's fingerprint, so one selling
   out redraws the slide.
 - **A background check:** `app.check_scene_background` has Claude compare

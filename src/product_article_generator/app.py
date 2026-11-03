@@ -3726,7 +3726,8 @@ def check_scene_background(shelf_raws: list, scene_png: bytes, n_balls: int, bed
             content += [{"type": "text", "text": f"Reference product {i}:"},
                         {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": _jpeg_b64(raw, 384)}}]
         refs = (f"The {len(shelf_raws)} images before it are the only bowling balls allowed in the background. "
-                if shelf_raws else "No bowling balls are allowed in the background. ")
+                if shelf_raws else "NO bowling balls at all are allowed in the background -- any ball behind the "
+                                   "counter, however blurred, fails. ")
         content += [{"type": "text", "text": "Scene:"},
                     {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": _jpeg_b64(scene_png)}},
                     {"type": "text", "text": SCENE_BACKGROUND_PROMPT.format(n=n_balls, refs=refs)}]

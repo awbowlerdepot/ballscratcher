@@ -467,8 +467,7 @@ def test_lineup_hero_is_a_gemini_scene_with_every_ball_as_a_reference():
     assert [(n, a) for n, a, _ in calls] == [(4, "4:3"), (4, "16:9")]
     prompt = calls[0][2]
     assert "butcher block" in prompt and "#191c1b" in prompt and "exactly the 4 bowling balls" in prompt
-    assert "ball display" in prompt
-    assert "one of the 2 balls in the last 2 reference photos" in prompt   # the display: the other current balls
+    assert "NO bowling balls anywhere in the background" in prompt
 
 
 def test_lineup_scene_falls_back_to_the_composite_for_both_sizes():
@@ -482,22 +481,23 @@ def test_lineup_scene_falls_back_to_the_composite_for_both_sizes():
     assert sizes.count("16:9") == brand_art.GEMINI_HERO_ATTEMPTS
 
 
-def test_scene_display_balls_are_the_brands_other_current_balls():
-    # "the rest of the products were fine" -- only the made-up balls in the
-    # display were wrong, so the display is the brand's other real balls.
-    balls = [_ball(c, c.upper(), datetime.date(2026, 5, 1) - datetime.timedelta(days=i)) for i, c in enumerate("abcdefghij")]
-    task = _task(heroes=[{"type": "line_mix"}])
-    slot = next(s for s in brand_art.plan_slots(task, balls, [_line("one", ["a"]), _line("two", ["b"])],
-                                                [], set(), TODAY) if s["slot_key"] == "hero-1")
-    assert [p["name"] for p in slot["shelf"]] == ["C", "D", "E", "F", "G", "H"]   # newest not on the counter, 6 max
+def test_scene_has_no_background_balls_unless_a_task_lists_them():
+    # Gemini invented display balls even with real ones as references, so
+    # by default the shop behind shows bags, accessories and shoes only.
+    balls = [_ball(c, c.upper(), datetime.date(2026, 5, 1) - datetime.timedelta(days=i)) for i, c in enumerate("abcd")]
+    lines = [_line("one", ["a"]), _line("two", ["b"])]
+    slot = next(s for s in brand_art.plan_slots(_task(heroes=[{"type": "line_mix"}]), balls, lines, [], set(), TODAY)
+                if s["slot_key"] == "hero-1")
+    assert slot["shelf"] == []
     calls = []
     def scene(raws, shelf_raws, prompt, aspect):
         calls.append((len(raws), len(shelf_raws), prompt))
         return _scene_png((2048, 1536) if aspect == "4:3" else (2048, 1152))
-    images, method = brand_art.render_slot(slot, PALETTE, {"fetch_bytes": lambda u: _png_cutout(), "gemini_scene": scene})
-    assert method == "gemini" and calls[0][:2] == (2, 6)
-    assert "one of the 6 balls in the last 6 reference photos" in calls[0][2] and "butcher block" in calls[0][2]
-
+    brand_art.render_slot(slot, PALETTE, {"fetch_bytes": lambda u: _png_cutout(), "gemini_scene": scene})
+    assert calls[0][:2] == (2, 0) and "NO bowling balls anywhere in the background" in calls[0][2]
+    listed = next(s for s in brand_art.plan_slots(_task(heroes=[{"type": "line_mix", "display_ball_ids": ["c", "d"]}]),
+                                                  balls, lines, [], set(), TODAY) if s["slot_key"] == "hero-1")
+    assert [p["name"] for p in listed["shelf"]] == ["C", "D"]
 
 def test_line_mix_is_ordered_by_demand_highest_first():
     # "the balls in order of demand with highest infront"

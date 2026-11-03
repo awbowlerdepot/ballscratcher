@@ -630,13 +630,15 @@ def plan_slots(task: dict, balls: list, lines: list, companions: list, stocked: 
         if not items:
             continue
         shelf = []
-        if hero_type == "lineup":
-            # The scene's ball display: the brand's next newest current
-            # balls that aren't on the counter (6fv: real balls, never
-            # made-up ones). They're in the picture, so they're featured
-            # too, after the counter's balls.
-            on_counter = {x["product_id"] for x in items}
-            shelf = [_ball_item(b) for b in newest_first if b["product_id"] not in on_counter][:DISPLAY_BALLS]
+        # No ball display behind the counter (6fv): with real balls given
+        # as references (6, then 12), Gemini still invented balls to fill
+        # the display in nearly every attempt and scene_check rejected them
+        # all. Al's rule was about the balls -- "the rest of the products
+        # were fine" -- so the shop keeps its bags, accessories and shoe
+        # wall and shows no balls but the counter's. `shelf` stays for a
+        # task that lists display balls explicitly (h["display_ball_ids"]).
+        if hero_type == "lineup" and h.get("display_ball_ids"):
+            shelf = [_ball_item(by_id[p]) for p in h["display_ball_ids"] if p in by_id][:DISPLAY_BALLS]
         if hero_type == "lineup":
             alt = f"{brand} {_join([x['name'] for x in items])} bowling balls"
         elif items[0]["kind"] == "ball":
@@ -726,7 +728,8 @@ HERO_NO_TEXT = (
 SCENE_PROMPT = (
     "Create a photorealistic, premium photograph of a modern bowling pro shop. In the foreground is a clean pro shop "
     "counter with a butcher block wood top, stained dark, running across the frame. Behind it, softly out of focus, "
-    "the shop: wall shelving and a ball display, lit in deep {background} with {accent} accent lighting. {display} "
+    "the shop: wall shelving with bowling bags, accessories and a wall of bowling shoes, lit in deep {background} "
+    "with {accent} accent lighting. {display} "
     "A close-up, low camera angle along the counter top: exactly the {n} bowling balls from the first {n} "
     "reference photos stand in a row that recedes away from the camera along the counter, in the order of the "
     "references -- the first reference ball nearest the camera and largest in frame, at the right, then each next "
@@ -746,11 +749,15 @@ SCENE_PROMPT = (
 # the display holds real balls: the brand's other current balls, passed as
 # reference photos after the counter's.
 DISPLAY_WITH_BALLS = (
-    "Every bowling ball in the ball display is one of the {m} balls in the last {m} reference photos, exactly as "
-    "photographed -- no made-up ball designs; leave a spot empty rather than invent a ball."
+    "The ball display is small: it holds at most {m} bowling balls, and every one of them is one of the {m} balls in "
+    "the last {m} reference photos, exactly as photographed -- no made-up ball designs, no repeats; the rest of the "
+    "shelving holds bags and accessories, and a spot stays empty rather than hold an invented ball."
 )
-DISPLAY_EMPTY = "The ball display holds no bowling balls."
-DISPLAY_BALLS = 6
+DISPLAY_EMPTY = ("There are NO bowling balls anywhere in the background -- no ball display, no balls on shelves; the only "
+                 "bowling balls in the image are the ones on the counter.")
+# 12, not 6: with six, every 16:9 attempt filled its wider display with
+# invented balls and failed scene_check (2026-11-02 close-up render).
+DISPLAY_BALLS = 12
 SCENE_SHARP_BALLS = 2   # the front balls in focus, the only ones whose logo can be checked
 
 
