@@ -23358,8 +23358,9 @@ Hammer lineup, task or palette.
   name, taken from the theme's Hammer navigation.
 - Grouping `ball-type`: an exclusive Spare line (Spare+, Viz-A-Ball).
 - The theme's Performance tiers aren't in our data, so they aren't loaded.
-- **The palette is a placeholder (#000000) until the Hammer session sends
-  Hammer's colors.** Don't load before that.
+- Palette #000000 / #fe5000, from hammerbowling.com's own CSS variables
+  (`--colorBody`, `--colorBtnPrimary`), sent by the Hammer brand-store
+  session.
 
 **Expected art:**
 - hero-1: the Blacklist (pre-order, 2026-11-19).

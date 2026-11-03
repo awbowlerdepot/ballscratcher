@@ -6,8 +6,9 @@
     "bigcommerce_brand_id": 38,
     "palette": {
       "background": "#000000",
-      "accent": "#000000"
-    }
+      "accent": "#fe5000"
+    },
+    "palette_source": "hammerbowling.com CSS: --colorBody #000000, --colorBtnPrimary #fe5000 (via the Hammer brand-store session, 2026-11-03)"
   },
   "groupings": [
     {
