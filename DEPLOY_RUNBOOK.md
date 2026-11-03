@@ -23704,6 +23704,11 @@ accent glow.
   channel off the band's color is rejected and retried. After the
   attempts run out, it falls back to the flat composite.
 - Dark palettes are unchanged.
+- First local render, 2026-11-03: the 4:3 passed (flat #fff200, logo
+  -3%). Every 16:9 attempt drew the ball too big for the size check (49%
+  and 54% of the frame width), and one drifted off #fff200. So the light
+  prompt now also says "the ball fills about two-thirds of the frame's
+  height".
 
 **Deploy:** `sam build && sam deploy`. Then redraw Radical's hero-1:
 ```bash
@@ -23756,9 +23761,14 @@ quota), and that slot already has a Gemini image, nothing is written:
 - the slot's `error` says "kept the previous image";
 - the run's detail marks `kept_previous`.
 
-The slot is retried when its inputs next change or on the weekly sweep. A
-slot that has never had a Gemini image still gets the composite, so a new
-brand's slide isn't left empty.
+The old image is kept only when it's still right for the brand: the same
+inputs (a retry or the weekly sweep), or only the featured balls changed,
+where the shop scene beats a plain row. A palette or photo change (same
+products, new inputs) lets the composite through, because Radical's new
+yellow (6gd) must not keep its black-halo image. The slot is retried when
+its inputs next change or on the weekly sweep. A slot that has never had a
+Gemini image still gets the composite, so a new brand's slide isn't left
+empty.
 
 **Deploy:** `sam build && sam deploy`, together with 6gd and 6ge.
 

@@ -715,10 +715,20 @@ def test_a_composite_never_replaces_a_gemini_hero():
     brand_art.render_slot = lambda s, p, d: ([((1600, 1200), Image.new("RGB", (1600, 1200)))], "composite")
     brand_art.save_slot = lambda conn, tid, s, keys, method, error=None: saves.append((method, error))
     try:
-        brand_art.load_slots = lambda conn, tid: {"hero-2": {"method": "gemini"}}
+        brand_art.load_slots = lambda conn, tid: {"hero-2": {"method": "gemini", "input_hash": "new", "featured": []}}
         out = brand_art.run_task(Conn(), "t1", {"put_object": lambda *a: puts.append(a)})
         assert puts == [] and saves[-1][0] is None and "kept the previous image" in saves[-1][1]
         assert out["slots"]["hero-2"]["kept_previous"]
+        # Only the featured balls changed: the shop scene still beats a plain row.
+        brand_art.load_slots = lambda conn, tid: {"hero-2": {"method": "gemini", "input_hash": "old",
+                                                             "featured": [{"product_id": "x"}]}}
+        brand_art.run_task(Conn(), "t1", {"put_object": lambda *a: puts.append(a)})
+        assert puts == []
+        # Same products, new inputs (a palette change, 6gd): the old image is wrong, the composite goes in.
+        brand_art.load_slots = lambda conn, tid: {"hero-2": {"method": "gemini", "input_hash": "old", "featured": []}}
+        brand_art.run_task(Conn(), "t1", {"put_object": lambda *a: puts.append(a)})
+        assert len(puts) == 1
+        puts.clear()
         brand_art.load_slots = lambda conn, tid: {}                     # never drawn: the composite is written
         brand_art.run_task(Conn(), "t1", {"put_object": lambda *a: puts.append(a)})
         assert len(puts) == 1 and saves[-1] == ("composite", None)

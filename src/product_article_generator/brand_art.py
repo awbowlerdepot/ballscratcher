@@ -732,6 +732,7 @@ HERO_BACKDROP_THEME = (
 # light background gets its own backdrop, and the result's backdrop is
 # checked against the band's color (backdrop_matches).
 HERO_BACKDROP_LIGHT = (
+    "the ball fills about two-thirds of the frame's height, with clear backdrop all around it; "
     "a seamless, flat studio backdrop of exactly {background} -- that exact color, not darker, warmer or more "
     "golden -- evenly lit from edge to edge: no vignette, no darkening toward the edges or corners, no colored glow, "
     "rim light or halo around the ball, only a soft natural contact shadow directly under the ball; the ball sits in "
@@ -1018,8 +1019,18 @@ def run_task(conn, task_id: str, deps: dict, slot_keys: list | None = None, trig
                 # is retried when its inputs next change or on the weekly
                 # sweep. A slot that never had a Gemini image still gets
                 # the composite rather than nothing.
-                if (method == "composite" and slot["kind"] == "hero"
-                        and (stored.get(slot["slot_key"]) or {}).get("method") == "gemini"):
+                # Kept only when the old image is still right for the brand:
+                # the same inputs (a retry or the weekly sweep), or only the
+                # featured balls changed (the shop scene beats a plain row).
+                # A palette or photo change -- same products, new inputs --
+                # lets the composite through: Radical's yellow (6gd) must
+                # not keep its black-halo image.
+                prev = stored.get(slot["slot_key"]) or {}
+                prev_ids = {(f.get("product_id"), f.get("bigcommerce_product_id")) for f in prev.get("featured") or []}
+                new_ids = {(i.get("product_id"), i.get("bigcommerce_product_id")) for i in slot["items"]}
+                still_right = prev.get("input_hash") == slot["input_hash"] or prev_ids != new_ids
+                if (method == "composite" and slot["kind"] == "hero" and prev.get("method") == "gemini"
+                        and still_right):
                     save_slot(conn, task_id, slot, keys, None,
                               error="Gemini couldn't draw this slot; kept the previous image")
                     detail["slots"][slot["slot_key"]] = {"ok": False, "kept_previous": True,
