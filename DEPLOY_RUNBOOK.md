@@ -23552,6 +23552,22 @@ with no 15 lb variant; polyester and particle covers; image order; `--include`;
 the insert SQL (retired/other, the matched link, no price source, an existing
 url writes nothing).
 
+**Applied 2026-11-03** (Al: "Apply 32 + 2"), `--apply --include 3125,3096`
+(900 Global Reality and Zen):
+- **34 balls imported**: Storm 16, Roto Grip 9, 900 Global 6, Brunswick 1, DV8
+  1, Radical 1. 0 already existed.
+- All 34 are retired and published, with oil/motion estimated.
+- 194 SKU rows, with specs on 32 of them, every one on 15 lb.
+- 34 `matched` links and 0 price sources.
+- 60 images queued. image_processor copied all 60 into
+  `bowling-scraper-images-…` within about a minute (0 left with a null
+  `stored_url`).
+- The 6 remaining holds (Rhino, Ice Storm, Tropical Surge Purple, Messenger
+  PowerCOR, Scorcher and Zombie Viz-a-Ball) were left out as balls we already
+  have.
+- The applied run's report is `hidden-balls-import-applied-2026-11-03.csv` in
+  the 6fn/6fz session notes folder.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
