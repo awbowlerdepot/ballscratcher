@@ -23334,6 +23334,49 @@ filter lived in local state only.
 Learn Site run 41564666225 succeeded. Live,
 `learn.bowlerdepot.com/plotter/?brand=Storm` opens with only Storm on.
 
+### 6fy. Brand art for Hammer: partial lineups, its families, and same-day ties (2026-11-03, not deployed)
+
+The Hammer brand-store session asked for Hammer's brand art (`hammer`
+hero-1 and hero-2, both sizes), modeled on Storm's store. BowlerIQ had no
+Hammer lineup, task or palette.
+
+**Code (`brand_art.py`):**
+- **Partial lines.** A line whose rule has `"partial": true` names only
+  some of the brand's balls, so balls in none of its grouping's lines are
+  not flagged as unplaced. Hammer's families leave out Raw Hammer, Axe,
+  Spawn, Fallout, NU and others, and without this the dispatcher would put
+  every one of them in the review queue each day. Partial lines still feed
+  the line mix (exclusive lines don't).
+- **Line-mix tie.** When two balls in a line share a release date (Zero
+  Mercy Hybrid and Tour, 2026-09-17), the newest-in-line pick goes to the
+  higher demand, so it's stable.
+
+**Data (`scripts/brand_lineups/hammer.json`):**
+- BigCommerce brand 38.
+- Grouping `family`: Black Widow (excluding spares), Zero Mercy, Purple
+  Pearl Urethane, Effect and Vibe. These are partial `fields` rules on the
+  name, taken from the theme's Hammer navigation.
+- Grouping `ball-type`: an exclusive Spare line (Spare+, Viz-A-Ball).
+- The theme's Performance tiers aren't in our data, so they aren't loaded.
+- **The palette is a placeholder (#000000) until the Hammer session sends
+  Hammer's colors.** Don't load before that.
+
+**Expected art:**
+- hero-1: the Blacklist (pre-order, 2026-11-19).
+- hero-2: Zero Mercy Hybrid, Black Widow 3.0 Dynasty, Deep Ocean Vibe,
+  Purple Pearl Urethane 78D, Full Effect, by demand.
+
+**Deploy, then load, then run** (the same order as 6fr: the deployed code
+would treat the partial family lines as complete and flag about 20 balls):
+```bash
+sam build && sam deploy
+.venv/bin/python scripts/load_brand_lineups.py scripts/brand_lineups/hammer.json --apply
+aws lambda invoke --function-name bowling-scraper-product-article-generator --invocation-type Event --payload '{"brand_art": "run", "task_id": "<hammer task id from the load>", "trigger": "manual"}' --cli-binary-format raw-in-base64-out /dev/null
+```
+
+**Tests:** `tests/test_brand_art.py` (38): partial groupings never flag,
+and the Hammer family rules match its ball names and keep the spares out.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

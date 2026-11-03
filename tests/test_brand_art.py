@@ -517,3 +517,50 @@ def test_line_mix_is_ordered_by_demand_highest_first():
 def test_scene_prompt_is_a_close_receding_row_with_shallow_focus():
     p = brand_art.SCENE_PROMPT
     assert "close-up" in p and "first reference ball nearest the camera" in p and "shallow depth of field" in p
+
+
+def test_partial_groupings_never_flag_balls_outside_them():
+    # Runbook 6fy: Hammer's families name only some of its balls.
+    state = [{"grouping_key": "family", "grouping_label": "Family", "line_id": "L1", "key": "vibe", "text": None,
+              "label": "Vibe", "assign_rule": {"type": "fields", "partial": True}, "ball_ids": ["v"]}]
+    executed = []
+
+    class Cur:
+        rowcount = 0
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def execute(self, q, params=()): executed.append(" ".join(q.split()))
+
+    class Conn:
+        def cursor(self): return Cur()
+        def commit(self): pass
+
+    orig = brand_art.list_lines, brand_art.fields_members
+    brand_art.list_lines = lambda conn, bid: state
+    brand_art.fields_members = lambda rule, conn, bid: {"v"}
+    try:
+        out = brand_art.apply_assign_rules(Conn(), "hammer", [_ball("v", "Deep Ocean Vibe", TODAY),
+                                                             _ball("raw", "Raw Hammer", TODAY)], lambda u: "")
+    finally:
+        brand_art.list_lines, brand_art.fields_members = orig
+    assert out["unplaced"] == []
+    assert not any(q.startswith("insert into review_queue") for q in executed)
+
+
+def test_hammer_family_rules_match_its_names():
+    import json as _json, re as _re
+    cfg = _json.load(open(os.path.join(os.path.dirname(__file__), "..", "scripts", "brand_lineups", "hammer.json")))
+    rules = {l["key"]: _re.compile(l["assign_rule"]["all"][0]["matches"])
+             for g in cfg["groupings"] for l in g["lines"]}
+    want = {"black-widow": ["Black Widow 3.0 Dynasty", "Black Widow Tour V1", "Black Widow 2.0 Hybrid"],
+            "zero-mercy": ["Zero Mercy Hybrid", "Zero Mercy Tour", "Zero Mercy Pearl"],
+            "purple": ["Purple Pearl Urethane 78D", "Purple Pearl Urethane"],
+            "effect": ["Full Effect"], "vibe": ["Deep Ocean Vibe", "Bubblegum Vibe", "Arctic Vibe"],
+            "spare": ["Black Widow Spare+", "Black Widow Viz-A-Ball", "Turbine Viz-A-Ball"]}
+    for key, names in want.items():
+        for n in names:
+            assert rules[key].search(n), (key, n)
+    for n in ["Black Widow Spare+", "Black Widow Viz-A-Ball"]:
+        assert not rules["black-widow"].search(n), n
+    for n in ["Raw Hammer - Black / Grey", "Axe - Purple / Pink", "Spawn", "Blacklist"]:
+        assert not any(r.search(n) for r in rules.values()), n

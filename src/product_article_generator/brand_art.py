@@ -316,7 +316,11 @@ def apply_assign_rules(conn, brand_id: str, balls: list, fetch_html, sleep=time.
         g = ruled[line["grouping_key"]]
         if rule.get("exclusive"):
             exempt |= set(line["ball_ids"])
-        else:
+        elif not rule.get("partial"):
+            # A PARTIAL line (rule "partial": true, runbook 6fy) names only
+            # some of the brand's balls -- Hammer's families (Black Widow,
+            # Zero Mercy, Vibe...) leave out Raw Hammer, Axe, Spawn and the
+            # rest -- so a ball in none of them isn't "unplaced".
             g["ruled"] = g["ruled"] or rule.get("type", "manual") != "manual"
         g["members"] |= set(line["ball_ids"])
     unplaced = []
@@ -603,8 +607,12 @@ def plan_slots(task: dict, balls: list, lines: list, companions: list, stocked: 
             for l in populated:
                 if l["grouping_key"] != gkey:
                     continue
+                # Newest; a same-day tie (Hammer's Zero Mercy Hybrid and
+                # Tour) goes to the higher demand, so the pick is stable.
                 members = sorted((by_id[p] for p in l["ball_ids"] if p in by_id and p not in seen),
-                                 key=lambda b: (b["release_date"] or datetime.date.min), reverse=True)
+                                 key=lambda b: (b["release_date"] or datetime.date.min,
+                                                b.get("demand_score") if b.get("demand_score") is not None else -1),
+                                 reverse=True)
                 if members:
                     seen.add(members[0]["product_id"])
                     items.append(members[0])
