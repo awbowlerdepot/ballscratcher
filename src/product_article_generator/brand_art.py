@@ -78,10 +78,18 @@ GEMINI_HERO_ATTEMPTS = 3
 LISTING_CRAWL_DELAY_SECONDS = 10         # stormbowling.com robots.txt Crawl-delay (commercebuild_url_discovery)
 LISTING_LINK_RE = re.compile(r'href="(/[a-z0-9-]+-bowling-ball)"')
 
+# Default heroes for every brand (runbook 6fu). Al, through the Bowler
+# Depot brand-stores session, the brand page's slides are "fixed in
+# purpose": 1 = the newest ball, "including pre-orders" (the Ion Pro
+# Pearl, on pre-order, not the Equinox Hybrid the in-stock-first rule
+# picked); 2 = "Find your reaction", one ball from each of the brand's
+# lines; 3 = "See them on the plotter", which the theme draws live, so it
+# has no image. "Other brands should get the same three by default."
+# The older pick types (a ranked newest_ball, newest_companion) still work
+# when a task lists them in params.heroes.
 DEFAULT_HEROES = [
-    {"type": "product", "pick": "newest_ball", "rank": 1},
-    {"type": "product", "pick": "newest_ball", "rank": 2},
-    {"type": "product", "pick": "newest_companion", "fallback_rank": 3},
+    {"type": "product", "pick": "newest_ball", "include_preorder": True},
+    {"type": "line_mix"},
 ]
 
 # BigCommerce category roots that count as a non-ball "companion" for a
@@ -568,7 +576,28 @@ def plan_slots(task: dict, balls: list, lines: list, companions: list, stocked: 
     for i, h in enumerate(params.get("heroes") or DEFAULT_HEROES, start=1):
         slot_key = f"hero-{i}"
         items, hero_type = [], h.get("type", "product")
-        if hero_type == "lineup":
+        if hero_type == "line_mix":
+            # "Find your reaction": the newest ball from each populated line
+            # of one grouping (h["grouping"], else the brand's first grouping
+            # with two or more populated lines), in the brand's line order,
+            # no ball twice. Drawn like a lineup hero.
+            hero_type = "lineup"
+            populated = [l for l in lines if any(p in by_id for p in l["ball_ids"])
+                         and not (l["assign_rule"] or {}).get("exclusive")]
+            gkey = h.get("grouping") or next(
+                (g for g in dict.fromkeys(l["grouping_key"] for l in populated)
+                 if sum(1 for l in populated if l["grouping_key"] == g) >= 2), None)
+            seen = set()
+            for l in populated:
+                if l["grouping_key"] != gkey:
+                    continue
+                members = sorted((by_id[p] for p in l["ball_ids"] if p in by_id and p not in seen),
+                                 key=lambda b: (b["release_date"] or datetime.date.min), reverse=True)
+                if members:
+                    seen.add(members[0]["product_id"])
+                    items.append(_ball_item(members[0]))
+            items = items[:6]
+        elif hero_type == "lineup":
             ids = h.get("ball_ids") or []
             if h.get("line"):
                 line = next((l for l in lines if l["key"] == h["line"]), None)
@@ -583,7 +612,11 @@ def plan_slots(task: dict, balls: list, lines: list, companions: list, stocked: 
                       "kind": c["kind"], "photos": [c["photo"]], "inches": companion_inches(c)},
                      _ball_item(preferred[0])]
         else:
-            ball = next_ball()
+            if h.get("include_preorder"):
+                # Newest current ball whatever its release date or stock.
+                ball = next((b for b in newest_first if b["product_id"] not in used), None)
+            else:
+                ball = next_ball()
             if ball:
                 used.add(ball["product_id"])
                 items = [_ball_item(ball)]

@@ -253,11 +253,15 @@ def lineup_hero(size: tuple, palette: dict, items: list) -> Image.Image:
     headline."""
     w, h = size
     canvas = background(size, palette, glow_at=(0.64, 0.55))
-    items = items[:4]
+    items = items[:6]
     n = len(items)
     if n:
-        item_h = h * (0.6 if n == 1 else 0.5 if n == 2 else 0.42 if n == 3 else 0.36)
-        _row(canvas, items, w * 0.44, w * 0.86, h * 0.88, item_h)
+        # Up to six (one per reaction line for "Find your reaction", 6fu).
+        # Wide frames have more room, so their balls can be bigger.
+        wide = w / h > 1.5
+        item_h = h * {1: 0.6, 2: 0.5, 3: 0.42, 4: 0.36, 5: 0.3, 6: 0.26}[n] * (1.12 if wide else 1.0)
+        left = w * (0.4 if n <= 4 else 0.32)
+        _row(canvas, items, left, w * 0.88, h * 0.86, item_h)
     return canvas
 
 

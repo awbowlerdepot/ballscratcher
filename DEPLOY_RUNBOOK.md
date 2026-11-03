@@ -23147,6 +23147,58 @@ fraction of a cent a month, and nothing links to them any more.
 
 **Tests:** 1 new in `tests/test_brand_art.py` (26).
 
+### 6fu. Brand art heroes: newest ball (pre-orders too), "Find your reaction" line mix, no image for the plotter slide (2026-11-02)
+
+Al, through the Bowler Depot brand-stores session: the brand page's three
+slides are "fixed in purpose":
+1. "the newest ball", Storm's Ion Pro Pearl (on pre-order). The 6fq pick
+   showed the Equinox Hybrid, because it took released, in-stock balls
+   first.
+2. "Find your reaction": "a mix of balls from different reaction lines",
+   one from each populated profile.
+3. "See them on the plotter": the theme draws BowlerIQ's live plotter
+   there, so it "needs no image".
+
+"Other brands should get the same three by default."
+
+**`brand_art.DEFAULT_HEROES`** is now two image slots:
+- `hero-1`: `{"type": "product", "pick": "newest_ball",
+  "include_preorder": true}`. The newest current published ball, whatever
+  its release date or stock. It's drawn by the Gemini product-shot
+  pipeline, as before.
+- `hero-2`: `{"type": "line_mix"}`. The newest ball from each populated
+  line of one grouping, in the brand's line order, with no ball twice.
+  - The grouping is `h["grouping"]`, or else the brand's first grouping
+    with two or more populated lines. For Storm that's reaction profile:
+    five balls.
+  - Exclusive lines (6fr) are never mixed in.
+  - It's stored and served as hero_type `lineup`, composited from the real
+    photos at 4:3 and 16:9. `lineup_hero` now fits up to six balls.
+- There is no third slot. The plotter slide is the theme's.
+
+The older pick types (ranked `newest_ball`, `newest_companion` with its
+3-ball-roller ranking and true scale, `lineup` by line or ball ids) still
+work when a task lists them in `params.heroes`.
+
+Not built: the optional per-profile graphic (each profile's ball path down
+the lane). It would be drawn data rather than a photo, so it waits on Al's
+call.
+
+**Data, after the deploy** (together with 6ft's):
+```sql
+update tasks set params = params - 'line_groupings', updated_at = now() where kind = 'brand_art';
+delete from brand_art_slots where kind = 'line' or (slot_key = 'hero-3' and task_id in
+  (select id from tasks where kind = 'brand_art' and not (params ? 'heroes')));
+```
+Then rerun Storm. `hero-1.webp` and `hero-2.webp` are redrawn in place.
+`hero-3.webp` (the roller-bag composite) stays in the bucket, unlinked.
+
+**Tests:** `tests/test_brand_art.py` (31). The 6fq hero tests now name
+their legacy picks. New ones cover: the default hero-1 is the pre-order
+Ion Pro Pearl; the line mix takes one per line of the first grouping and
+skips lane-read and exclusive lines; there's no hero-3 and no line
+images; no ball repeats in a mix; and five or six balls fit both sizes.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

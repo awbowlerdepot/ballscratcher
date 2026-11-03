@@ -141,7 +141,14 @@ def test_stocked_companions_newest_first_and_skips_balls_and_sold_out():
 
 # --- planning -----------------------------------------------------------
 
-def _plan(companions=(), stocked=frozenset(), heroes=None):
+# The pre-6fu default (two newest released balls, then a companion hero):
+# still valid pick types when a task lists them in params.heroes.
+LEGACY_HEROES = [{"type": "product", "pick": "newest_ball", "rank": 1},
+                 {"type": "product", "pick": "newest_ball", "rank": 2},
+                 {"type": "product", "pick": "newest_companion", "fallback_rank": 3}]
+
+
+def _plan(companions=(), stocked=frozenset(), heroes=LEGACY_HEROES):
     balls = [_ball("new", "Ion Pro Pearl", datetime.date(2026, 11, 6), bc=10),   # not released yet
              _ball("b1", "Equinox Hybrid", datetime.date(2026, 9, 4), bc=11),
              _ball("b2", "IQ Tour Sapphire", datetime.date(2026, 8, 7), bc=12),
@@ -381,3 +388,60 @@ def test_no_line_images_unless_a_task_names_groupings():
     task["params"].pop("line_groupings")
     slots = brand_art.plan_slots(task, balls, [_line("strong-symmetrical", ["b1"])], [], {11}, TODAY)
     assert [s["slot_key"] for s in slots] == ["hero-1"]
+
+
+# --- Runbook 6fu: default heroes = newest ball (pre-orders too) + line mix ---
+
+def _plan_default(stocked=frozenset()):
+    balls = [_ball("new", "Ion Pro Pearl", datetime.date(2026, 11, 6), bc=4519),   # pre-order
+             _ball("b1", "Equinox Hybrid", datetime.date(2026, 9, 4), bc=11),
+             _ball("b2", "IQ Tour Sapphire", datetime.date(2026, 8, 7), bc=12),
+             _ball("b3", "Alpha Crux", datetime.date(2026, 5, 29), bc=13),
+             _ball("b4", "Monsoon", datetime.date(2026, 5, 1), bc=None),
+             _ball("mix", "MIX PLATINUM", datetime.date(2026, 1, 1), bc=None)]
+    lines = [_line("strong", ["b3"]), _line("smooth", ["b4"]), _line("responsive", ["new", "b1"]),
+             _line("clean", ["b2", "b1"]), _line("empty", []),
+             {**_line("spare", ["mix"], grouping="ball-type"), "assign_rule": {"type": "fields", "exclusive": True}},
+             _line("early-read", ["b1", "b2"], grouping="lane-read"),
+             _line("late-read", ["b3"], grouping="lane-read")]
+    task = _task()
+    task["params"].pop("line_groupings")
+    return {s["slot_key"]: s for s in brand_art.plan_slots(task, balls, lines, [], set(stocked), TODAY)}
+
+
+def test_default_hero_1_is_the_newest_ball_including_pre_orders():
+    slots = _plan_default(stocked={11, 12})
+    assert slots["hero-1"]["items"][0]["name"] == "Ion Pro Pearl"
+    assert slots["hero-1"]["items"][0]["bigcommerce_product_id"] == 4519
+
+
+def test_default_hero_2_mixes_the_newest_ball_of_each_line_of_the_first_grouping():
+    slots = _plan_default()
+    h2 = slots["hero-2"]
+    assert h2["hero_type"] == "lineup" and h2["sizes"] == [(1600, 1200), (1600, 900)]
+    # strong -> Alpha Crux, smooth -> Monsoon, responsive -> Ion Pro Pearl,
+    # clean -> Equinox Hybrid (its newest, not yet used); the lane-read and
+    # exclusive spare lines aren't mixed in.
+    assert [i["name"] for i in h2["items"]] == ["Alpha Crux", "Monsoon", "Ion Pro Pearl", "Equinox Hybrid"]
+
+
+def test_default_has_no_third_hero_and_no_line_images():
+    assert sorted(_plan_default()) == ["hero-1", "hero-2"]
+
+
+def test_lineup_hero_fits_five_or_six_balls_in_both_sizes():
+    ball = compose.cutout(_png_cutout())
+    for n in (5, 6):
+        for size in ((1600, 1200), (1600, 900)):
+            im = compose.lineup_hero(size, PALETTE, [ball] * n)
+            assert im.size == size
+            px = im.convert("L").load()
+            assert max(px[2, y] for y in range(size[1])) < 60 and max(px[size[0] - 3, y] for y in range(size[1])) < 60
+
+
+def test_line_mix_never_repeats_a_ball():
+    balls = [_ball("a", "A", datetime.date(2026, 5, 1)), _ball("b", "B", datetime.date(2026, 4, 1))]
+    lines = [_line("one", ["a"]), _line("two", ["a", "b"])]
+    task = _task(heroes=[{"type": "line_mix"}])
+    slot = next(s for s in brand_art.plan_slots(task, balls, lines, [], set(), TODAY) if s["slot_key"] == "hero-1")
+    assert [i["name"] for i in slot["items"]] == ["A", "B"]
