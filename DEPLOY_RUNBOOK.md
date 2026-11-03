@@ -23469,6 +23469,89 @@ curl -s https://api.bowleriq.io/articles/motiv-subzero-forge | python3 -c "impor
 - After: 229 approved BowlerDepot sources off as `listing_unavailable`, 234 on.
   The live `GET /articles/motiv-subzero-forge` returns `ecommerce_url: null`.
 
+### 6ga. Import the retired balls bowlerdepot.com hid, from the store's copy: `scripts/import_bowlerdepot_hidden_balls.py` (2026-11-03)
+
+Al, via the Spurline session: add the retired balls Spurline hid on
+bowlerdepot.com on 2026-11-02 "but only the ones BowlerIQ doesn't already
+have". They predate Spurline and BowlerIQ, and some are gone from the
+manufacturers' sites, so the store copy may be the only source left. Its
+rules:
+- copy the images, because Al may delete the BigCommerce products;
+- add them as retired;
+- "don't fill in specs it doesn't have";
+- say what matched and how.
+
+Input: Spurline's `hidden-balls-2026-11-02.json` (258 products, read from
+BigCommerce with no cost fields), in the Spurline session's notes folder.
+
+**Matching**, in order. Only `missing` is written:
+| Tier | How | 2026-11-03 |
+|---|---|---|
+| linked | a `bowlerdepot_products` row has the BigCommerce id (6fm/6fn links) | 214 |
+| part_number | mpn or variant sku = our part_number (we store no UPCs) | 0 |
+| exact_name | `_normalize_name` equal, same brand | 1 (Brunswick Method Solid) |
+| near_name | `fuzzy_match_product`, the link script's medium tier, or same letters with spaces gone | 3 (Pay Back, Zig Zag, Hell Cat XLR8) |
+| hold | every word of the store name is in one of ours, or they differ only by Viz-a-Ball/Spare | 8 |
+| missing | none of the above | 32 |
+
+The reverse case, where our name is inside the store's ("Harsh Reality" vs
+"Harsh Reality Pearl", "Hy-Road" vs "Hy-Road Pearl"), is a different ball, so
+it stays `missing`.
+
+The 8 holds are imported only by `--include <BigCommerce ids>`:
+- **Probably separate balls** (the rule is cautious with short names): 3125
+  900 Global Reality (ours: Harsh Reality), 3096 900 Global Zen (ours: Zen U,
+  Zen 25).
+- **Probably ours** (colour wording): 502 Brunswick Rhino Black/Blue/Silver
+  (ours: "... Silver Pearl"), 614 Storm Ice Storm Blue / White (ours: "Ocean
+  Blue-White"), 3195 Storm Tropical Surge Purple (ours: "Silver-Purple"),
+  3970 Columbia 300 Messenger PowerCOR (ours: Solid and Pearl), 572 / 573 DV8
+  Scorcher / Zombie Viz-a-Ball (ours: "... Spare").
+
+The 32 missing: Storm 16, Roto Grip 9, 900 Global 4, Brunswick 1 (Attitude
+Pearl), DV8 1 (Hellcat Solid), Radical 1 (Conspiracy Solid).
+
+**What `--apply` writes** for each ball, in one transaction (details in the
+module docstring):
+- `products`:
+  - status `retired`, `source_platform 'other'`, url = its bowlerdepot.com
+    listing (unique key), name without the brand, part_number = mpn;
+  - coverstock, cover material/type and particle, core and core type, finish,
+    color, fragrance and description, from the custom fields only;
+  - `weights_available` from the variants;
+  - no release, announced or discontinued date (the listing's `date_created`
+    isn't one);
+  - published by the `products_aa_publish_retired` trigger.
+- `product_skus`: one `html` row per variant weight. RG, differential and mass
+  bias go on the **15 lb row only**, because the store's labels are 15 lb
+  values. Other weights get null specs. 7 of the 32 have no custom fields at
+  all, so they get just a name, weights and images.
+- oil/motion `estimated`, the same way every scraper does it.
+- `product_images`: every image, thumbnail first (`main`, then `other`), each
+  sent to ImageProcessQueue, so image_processor copies it into our bucket.
+- `bowlerdepot_products` (`matched`) to its hidden listing, so it stays linked
+  if the store shows it again. No price source.
+
+It never updates an existing row: products is `on conflict (url) do nothing`.
+
+**Run** (PG* from the `bowling-scraper-db` secret):
+```bash
+.venv/bin/python scripts/import_bowlerdepot_hidden_balls.py hidden-balls-2026-11-02.json --csv hidden-import.csv
+.venv/bin/python scripts/import_bowlerdepot_hidden_balls.py hidden-balls-2026-11-02.json --apply --include 3125,3096
+```
+
+**Verify:**
+```bash
+psql -c "select count(*), count(*) filter (where p.published) published, count(distinct pi.product_id) filter (where pi.stored_url is not null) with_stored_image from products p left join product_images pi on pi.product_id = p.id where p.source_platform = 'other' and p.url like 'https://bowlerdepot.com/%'"
+```
+
+**Tests:** `tests/test_import_bowlerdepot_hidden_balls.py` (20): every tier,
+including Pay Back, Rhino, Viz-a-Ball, Harsh Reality Pearl and Phaze III;
+specs only on 15 lb, both label spellings, no guessing without fields, specs
+with no 15 lb variant; polyester and particle covers; image order; `--include`;
+the insert SQL (retired/other, the matched link, no price source, an existing
+url writes nothing).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
