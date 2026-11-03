@@ -735,3 +735,25 @@ def test_a_composite_never_replaces_a_gemini_hero():
     finally:
         (brand_art.load_task, brand_art.gather, brand_art.render_slot, brand_art.save_slot,
          brand_art.load_slots) = orig
+
+
+def test_flatten_backdrop_sets_band_color_and_keeps_ball_and_shadow():
+    # Runbook 6gj: Gemini's "#fff200" comes back warm and uneven. The
+    # backdrop becomes the band color exactly; the ball is untouched and
+    # the contact shadow stays darker than the band.
+    from PIL import Image, ImageDraw
+    import brand_art_compose as compose
+    im = Image.new("RGB", (640, 480), (246, 214, 20))
+    d = ImageDraw.Draw(im)
+    d.ellipse((260, 120, 420, 260), fill=(254, 230, 70))     # the lighter middle of an uneven draw
+    d.ellipse((330, 380, 560, 430), fill=(190, 160, 10))     # contact shadow
+    d.ellipse((350, 140, 540, 410), fill=(30, 110, 160))     # the ball
+    d.rectangle((420, 250, 470, 270), fill=(235, 110, 30))   # its orange logo
+    out = compose.flatten_backdrop(im, "#fff200", brand_art.BACKDROP_SPOTS)
+    assert out.getpixel((20, 20)) == (255, 242, 0)
+    assert out.getpixel((280, 190)) == (255, 242, 0)          # lighter patch flattened
+    assert out.getpixel((445, 200)) == (30, 110, 160)         # ball untouched
+    assert out.getpixel((445, 260)) == (235, 110, 30)         # logo untouched
+    shadow = out.getpixel((345, 405))
+    assert shadow[1] < 242 - 30                                # still a shadow
+    assert brand_art.backdrop_matches(out, "#fff200")

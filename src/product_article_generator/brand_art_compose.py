@@ -155,6 +155,58 @@ def is_light(value: str) -> bool:
     return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.6
 
 
+# flatten_backdrop's bands, as the largest channel difference from the
+# backdrop Gemini drew. Within FLAT_NEAR the pixel is backdrop and becomes
+# the band color exactly; a LIGHTER pixel is backdrop out to FLAT_FAR (the
+# pale middle of an uneven draw -- a shadow is never lighter). A darker one
+# between the two is the contact shadow: shifted onto the band with its
+# darkness kept. Past FLAT_FAR (the ball, its edge, its logo) it's left as
+# drawn. FLAT_FAR stays well under Radical's orange logo, ~105-117 from
+# the drawn yellow. FLAT_GUARD: only a backdrop already this close to the
+# band is corrected (the warm draws were within 34); anything further off
+# isn't a plain backdrop of the band color, and the check rejects it.
+FLAT_NEAR, FLAT_FAR, FLAT_GUARD = 45, 100, 60
+
+
+def _ramp(near: int, far: int):
+    span = far - near
+    return lambda d: 255 if d <= near else (0 if d >= far else 255 * (far - d) // span)
+
+
+def flatten_backdrop(im: Image.Image, value: str, spots: list) -> Image.Image:
+    """Gemini's draw with its backdrop set to exactly `value` (runbook 6gj).
+    Asked for #fff200, it paints a warmer yellow -- (240-255, 208-228, 2-59)
+    over five Radical draws, the "amber/golden" Al flagged -- often with a
+    lighter middle, so the backdrop check rejected most draws and the slide
+    band and the art didn't meet cleanly. `spots` are the (x, y) points,
+    in a 64x48 thumbnail, that measure the drawn backdrop (the check's own
+    points, away from the ball). Only for a pale band: there the ball is
+    never close to the backdrop's color, which is what keeps it untouched."""
+    im = im.convert("RGB")
+    small = im.resize((64, 48))
+    seen = [small.getpixel(p) for p in spots]
+    drawn = tuple(sorted(c[i] for c in seen)[len(seen) // 2] for i in range(3))  # per-channel median
+    want = hex_rgb(value)
+    if max(abs(a - b) for a, b in zip(drawn, want)) > FLAT_GUARD:
+        return im
+    diff = ImageChops.difference(im, Image.new("RGB", im.size, drawn))
+    dist = ImageChops.lighter(ImageChops.lighter(diff.getchannel(0), diff.getchannel(1)), diff.getchannel(2))
+    drawn_lum = Image.new("RGB", (1, 1), drawn).convert("L").getpixel((0, 0))
+    # Soft: how much lighter than the drawn backdrop (0 at 12 darker, 255 at level).
+    lighter = im.convert("L").point(lambda v: max(0, min(255, (v - drawn_lum + 12) * 255 // 12)))
+    shifted = Image.merge("RGB", [im.getchannel(i).point(lambda v, d=want[i] - drawn[i]: max(0, min(255, v + d)))
+                                  for i in range(3)])
+    # Every edge is a ramp, and the masks are softened by a couple of
+    # pixels: hard cut-offs left a cut-out outline on the contact shadow and
+    # a jagged rim where the ball reflects the yellow (first try, 6gj).
+    soften = ImageFilter.GaussianBlur(2)
+    flat_mask = ImageChops.lighter(dist.point(_ramp(15, FLAT_NEAR)),
+                                   ImageChops.multiply(lighter, dist.point(_ramp(FLAT_FAR - 25, FLAT_FAR)))).filter(soften)
+    keep_mask = ImageChops.lighter(flat_mask, dist.point(_ramp(FLAT_NEAR, FLAT_FAR))).filter(soften)
+    out = Image.composite(Image.new("RGB", im.size, want), shifted, flat_mask)
+    return Image.composite(out, im, keep_mask)
+
+
 def background(size: tuple, palette: dict, glow_at: tuple = (0.5, 0.55)) -> Image.Image:
     """The brand's background color with a soft glow of its accent color
     behind the products. Drawn, not generated: no texture, no marks."""

@@ -735,9 +735,11 @@ HERO_BACKDROP_THEME = (
 # the frame's height, and Gemini overshoots what it's asked for. Asked
 # for "about two-thirds", Radical's live redraws (2026-11-03) came back at
 # 85-96% -- five of six too big -- and both runs kept the old image.
+# The 16:9 overshoots most (a short frame, so the ball fills its height:
+# 87-142% when asked for 55%), so it's asked for less (HERO_LIGHT_FILL).
+HERO_LIGHT_FILL = {"4:3": "a little more than half (about 55%)", "16:9": "a little under half (about 45%)"}
 HERO_BACKDROP_LIGHT = (
-    "the ball fills a little more than half of the frame's height (about 55%), with generous clear backdrop "
-    "all around it; "
+    "the ball fills {fill} of the frame's height, with generous clear backdrop all around it; "
     "a seamless, flat studio backdrop of exactly {background} -- that exact color, not darker, warmer or more "
     "golden -- evenly lit from edge to edge: no vignette, no darkening toward the edges or corners, no colored glow, "
     "rim light or halo around the ball, only a soft natural contact shadow directly under the ball; the ball sits in "
@@ -745,6 +747,7 @@ HERO_BACKDROP_LIGHT = (
     "HTML)"
 )
 BACKDROP_TOLERANCE = 36   # max channel difference from the band's color, at the frame's edges
+BACKDROP_SPOTS = [(2, 2), (61, 2), (2, 24), (32, 2), (8, 12)]  # in a 64x48 thumbnail, away from the ball
 
 
 def backdrop_matches(im, value: str, tolerance: int = BACKDROP_TOLERANCE) -> bool:
@@ -754,8 +757,7 @@ def backdrop_matches(im, value: str, tolerance: int = BACKDROP_TOLERANCE) -> boo
     want = compose.hex_rgb(value)
     w, h = im.size
     small = im.convert("RGB").resize((64, 48))
-    spots = [(2, 2), (61, 2), (2, 24), (32, 2), (8, 12)]
-    for x, y in spots:
+    for x, y in BACKDROP_SPOTS:
         px = small.getpixel((x, y))
         if max(abs(a - b) for a, b in zip(px, want)) > tolerance:
             return False
@@ -879,7 +881,8 @@ def render_ball_product_hero(item: dict, size: tuple, palette: dict, deps: dict)
     if gen and deps.get("_gemini_failed") != item["product_id"]:
         aspect = "16:9" if size[0] / size[1] > 1.5 else "4:3"
         light = compose.is_light(palette["background"])
-        theme = (HERO_BACKDROP_LIGHT if light else HERO_BACKDROP_THEME).format(**palette)
+        theme = (HERO_BACKDROP_LIGHT.format(fill=HERO_LIGHT_FILL[aspect], **palette) if light
+                 else HERO_BACKDROP_THEME.format(**palette))
         for attempt in range(GEMINI_HERO_ATTEMPTS):
             try:
                 png = gen(item["product_id"], raw, theme, HERO_NO_TEXT, aspect)
@@ -890,6 +893,12 @@ def render_ball_product_hero(item: dict, size: tuple, palette: dict, deps: dict)
             if png:
                 from PIL import Image, ImageOps
                 im = ImageOps.fit(Image.open(io.BytesIO(png)).convert("RGB"), size, Image.LANCZOS)
+                if light:
+                    # Runbook 6gj: Gemini's yellow runs warm and uneven, so
+                    # the drawn backdrop is set to the band color exactly;
+                    # the check still rejects a draw that isn't a plain
+                    # backdrop to begin with (a scene, a strong gradient).
+                    im = compose.flatten_backdrop(im, palette["background"], BACKDROP_SPOTS)
                 if light and not backdrop_matches(im, palette["background"]):
                     logger.info("brand-art hero attempt %d for %s: backdrop isn't %s", attempt + 1, item["name"],
                                 palette["background"])

@@ -23790,10 +23790,12 @@ The local 6gd test render had just been a lucky draw. Dark-band brands use
 frame's height (about 55%), with generous clear backdrop all around it". Only
 the size wording changed.
 
-**Radical hero-1, meanwhile:** redrawn from a local run with the deployed
-code (the scratchpad's `run_live.py`: the real `run_brand_art_job`, writing
-the real S3 keys and `brand_art_slots` row, and clearing the CDN). See
-the verify note below for the result.
+**Radical hero-1, meanwhile:** three more redraws from a local run (the
+real `run_brand_art_job` against the live keys) also kept the old image.
+With the smaller ball the size check mostly passed, and the backdrop check
+then rejected nearly every draw. That's 6gj. The 16:9 still overshot at
+55% (87-142% of the height), so `HERO_LIGHT_FILL` asks 16:9 for about 45%
+and 4:3 for about 55%.
 
 **Deploy:** `sam build && sam deploy`.
 
@@ -23909,6 +23911,47 @@ checks.
 4. Set the Motiv task's `enabled = true`.
 
 Copy rather than redraw, so the live art is exactly what Al approved.
+
+### 6gj. A pale band's Gemini backdrop is set to the band color exactly (2026-11-03, not deployed)
+
+Radical's hero-1 kept failing `backdrop_matches` after 6gg. A diagnostic
+render logged the edge colors Gemini paints when asked for #fff200 (255,
+242, 0): (240–255, 208–228, 2–59). That's a warmer, amber yellow, the
+"amber/golden" Al saw, and often lighter in the middle. The one draw that
+passed was (255, 235, 2).
+
+**Change (`brand_art_compose.flatten_backdrop`, called from
+`render_ball_product_hero` for a light band, before the check):**
+- It measures the drawn backdrop at the check's points (`BACKDROP_SPOTS`,
+  per-channel median) and works out each pixel's largest channel difference
+  from it.
+- Within 45 the pixel becomes the band color exactly. A lighter pixel
+  becomes the band color out to 100: the pale middle of an uneven draw,
+  since a shadow is never lighter.
+- A darker pixel between 45 and 100 is the contact shadow. It's shifted
+  onto the band with its darkness kept, fading to the drawn pixel by 100.
+- Past 100 (the ball, its rim, its logo) the pixel is left as drawn.
+  Radical's orange logo is about 105–117 away.
+- All the edges are ramps and the masks are blurred 2 px. The first try had
+  hard cut-offs, which left a cut-out outline on the shadow and a jagged rim
+  where the ball reflects the yellow.
+- Only a backdrop already within 60 of the band is corrected (the warm
+  draws were within 34). Anything further off isn't a plain backdrop of the
+  band, so `backdrop_matches` still rejects it (the test's golden
+  (226, 170, 20)).
+
+Safe only on a pale band, where a ball is never close to the backdrop's
+color. Dark bands are untouched.
+
+**Local render (2026-11-03):** passed at both sizes, Gemini, exact #fff200 at
+every sample point. Logo checks: 4:3 -0%, 16:9 +14%.
+
+**Deploy:** `sam build && sam deploy`, with 6gg and 6gh. Then redraw
+Radical's hero-1 as in 6gg's verify.
+
+**Tests:** 1 new in `tests/test_brand_art.py` (47). It checks that the
+backdrop and the lighter patch come out exactly #fff200, the ball and logo
+are untouched, and the shadow stays darker.
 
 ## 7. Ongoing operations
 
