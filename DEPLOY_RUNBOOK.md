@@ -23470,10 +23470,13 @@ curl -s https://api.bowleriq.io/articles/motiv-subzero-forge | python3 -c "impor
   (brand lineups) and 059 (status override) in the meantime, so it was renumbered
   along with this section (written as 6fo).
 - Merged main, then `sam build && sam deploy` (stack `UPDATE_COMPLETE` 05:46
-  UTC). The only source changes were price_checker and admin_api. The other ~18
-  functions in the changeset had no source changes since 6fn: their zips were
-  repackaged because 6fq's deploy built them from another worktree's dependency
-  cache. No brand_art function was in the changeset.
+  UTC). Correction (2026-11-03): I said the only source changes were
+  price_checker and admin_api, and that the rest were repackaged zips. That was
+  wrong. I had checked the history of only some of the functions in the
+  changeset, and missed others, product_article_generator among them. The merged
+  `main` also carried 6fy's partial-lineup flag and same-day tie fix, which
+  went live with this deploy (see 6fr/6fy). 6fy's later spare skip (f697952)
+  came after it and was not in it.
 - The two check-now invokes: 246 + 250 sources checked, 0 failed, **121 + 108
   = 229 switched off**, 0 back on.
 - All 214 of the listings hidden on 2026-11-02 are off. The other 15 are
