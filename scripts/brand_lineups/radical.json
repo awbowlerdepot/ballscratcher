@@ -1,0 +1,60 @@
+{
+  "brand": "Radical",
+  "owner": "bowlerdepot",
+  "theme_key": "radical",
+  "task": {
+    "slug": "radical",
+    "bigcommerce_brand_id": 46,
+    "palette": {
+      "background": "#000000",
+      "accent": "#fff200"
+    },
+    "palette_source": "Radical yellow, from the Radical brand-store session (2026-11-03)"
+  },
+  "groupings": [
+    {
+      "key": "performance-level",
+      "label": "Performance level",
+      "theme_group": "Performance level",
+      "source": "radicalbowling.com performance levels, mapped by Bowler Depot product id in the Radical theme (bowlerdepot-theme-radical, branch radical-store); filed by hand -- Radical's site has no readable filter and the level isn't in the ball names",
+      "lines": [
+        {
+          "key": "top-shelf",
+          "label": "Top Shelf",
+          "assign_rule": {
+            "type": "manual"
+          }
+        },
+        {
+          "key": "reliable-plus",
+          "label": "Reliable Plus",
+          "assign_rule": {
+            "type": "manual"
+          }
+        },
+        {
+          "key": "reliable",
+          "label": "Reliable",
+          "assign_rule": {
+            "type": "manual"
+          }
+        },
+        {
+          "key": "ez-use",
+          "label": "EZ-Use",
+          "assign_rule": {
+            "type": "manual"
+          }
+        },
+        {
+          "key": "polyester",
+          "label": "Polyester",
+          "assign_rule": {
+            "type": "manual",
+            "exclusive": true
+          }
+        }
+      ]
+    }
+  ]
+}

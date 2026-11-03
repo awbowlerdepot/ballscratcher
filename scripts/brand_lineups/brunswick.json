@@ -1,0 +1,52 @@
+{
+  "brand": "Brunswick",
+  "owner": "bowlerdepot",
+  "theme_key": "brunswick",
+  "task": {
+    "slug": "brunswick",
+    "bigcommerce_brand_id": 45,
+    "palette": {
+      "background": "#061b2b",
+      "accent": "#4a5bff"
+    },
+    "palette_source": "Brunswick bar navy and accent blue, from the Brunswick brand-store session (2026-11-03)"
+  },
+  "groupings": [
+    {
+      "key": "performance-level",
+      "label": "Performance level",
+      "theme_group": "Performance level",
+      "source": "brunswickbowling.com performance levels, mapped by Bowler Depot product id in the Brunswick theme (bowlerdepot-theme-brunswick, branch brunswick-store); filed by hand",
+      "lines": [
+        {
+          "key": "pro",
+          "label": "Pro",
+          "assign_rule": {
+            "type": "manual"
+          }
+        },
+        {
+          "key": "high",
+          "label": "High",
+          "assign_rule": {
+            "type": "manual"
+          }
+        },
+        {
+          "key": "advanced",
+          "label": "Advanced",
+          "assign_rule": {
+            "type": "manual"
+          }
+        },
+        {
+          "key": "affordable",
+          "label": "Affordable",
+          "assign_rule": {
+            "type": "manual"
+          }
+        }
+      ]
+    }
+  ]
+}

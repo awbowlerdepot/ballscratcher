@@ -23596,6 +23596,41 @@ url writes nothing).
 - The applied run's report is `hidden-balls-import-applied-2026-11-03.csv` in
   the 6fn/6fz session notes folder.
 
+### 6gb. Brand art for Radical, Motiv and Brunswick (2026-11-03, data only)
+
+Each brand-store session (Radical, Motiv, Brunswick) asked for its brand's
+art, the same as Storm's and Hammer's. No code changed: each is a data
+file, a load and a run, as 6fq intended ("adding the next brand should
+only mean loading its lineups and creating its task").
+
+| Brand | File | BigCommerce brand | Palette | Lines (seeded from the store's theme worktree) |
+|---|---|---|---|---|
+| Radical | `radical.json` | 46 | #000000 / #fff200 | performance level, plus Polyester as exclusive (spare); Retired left out; 13 balls |
+| MOTIV | `motiv.json` | 56 | #3a3a3a / #f86615 | lane condition, 5 lines; 21 balls |
+| Brunswick | `brunswick.json` | 45 | #061b2b / #4a5bff | performance level, 4 lines (the theme's reaction-shape and Polyester lines are empty); 22 balls |
+
+**All three are filed by hand** (`manual` lines) from the product ids in
+each theme's `navigation.html`. None of these sites has a filter BowlerIQ
+reads, and the levels aren't in the ball names. So a new release isn't
+placed in a line until the theme lists it and the lineup is reloaded with
+`--theme-nav`. Manual groupings raise no review flags.
+
+**Picks** (heroes are the defaults):
+- **Radical.** hero-1: Intel Recon Hybrid (pre-order, 2026-11-19). hero-2:
+  Vexed Variant, No Doubt Hybrid, Revenge Pearl, Intel Recon Hybrid. The
+  Intel Recon is last because it has no demand data yet.
+- **MOTIV.** hero-1: Raptor Pursuit. hero-2: Forge Fuel, Raptor Pursuit,
+  Venom Hysteria, Sigma Tour Pearl, Shadow Tank.
+- **Brunswick.** hero-1: Purple Rhino Pro (tied with Strategy Logic on
+  2026-10-22; the first by name wins). hero-2: Purple Rhino Pro, Fury -
+  Purple / Blue, Strategy Logic, Crown Victory Pearl.
+
+**Run:**
+```bash
+.venv/bin/python scripts/load_brand_lineups.py scripts/brand_lineups/<brand>.json --theme-nav ../bicommerce-site/bowlerdepot-theme-<brand>/templates/components/brand-store/navigation.html --apply
+aws lambda invoke --function-name bowling-scraper-product-article-generator --invocation-type Event --payload '{"brand_art": "run", "task_id": "<task id>", "trigger": "manual"}' --cli-binary-format raw-in-base64-out /dev/null
+```
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

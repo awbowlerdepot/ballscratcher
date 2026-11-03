@@ -1,0 +1,59 @@
+{
+  "brand": "MOTIV",
+  "owner": "bowlerdepot",
+  "theme_key": "motiv",
+  "task": {
+    "slug": "motiv",
+    "bigcommerce_brand_id": 56,
+    "palette": {
+      "background": "#3a3a3a",
+      "accent": "#f86615"
+    },
+    "palette_source": "Motiv charcoal and orange, from the Motiv brand-store session (2026-11-03)"
+  },
+  "groupings": [
+    {
+      "key": "lane-condition",
+      "label": "Lane condition",
+      "theme_group": "Lane condition",
+      "source": "motivbowling.com lane-condition lines, mapped by Bowler Depot product id in the Motiv theme (bowlerdepot-theme-motiv, branch motiv-store, 9202b1c); filed by hand -- no readable filter on Motiv's NetSuite site",
+      "lines": [
+        {
+          "key": "heavy-oil",
+          "label": "Heavy Oil",
+          "assign_rule": {
+            "type": "manual"
+          }
+        },
+        {
+          "key": "medium-heavy-oil",
+          "label": "Medium-Heavy Oil",
+          "assign_rule": {
+            "type": "manual"
+          }
+        },
+        {
+          "key": "medium-oil",
+          "label": "Medium Oil",
+          "assign_rule": {
+            "type": "manual"
+          }
+        },
+        {
+          "key": "light-medium-oil",
+          "label": "Light-Medium Oil",
+          "assign_rule": {
+            "type": "manual"
+          }
+        },
+        {
+          "key": "light-oil",
+          "label": "Light Oil",
+          "assign_rule": {
+            "type": "manual"
+          }
+        }
+      ]
+    }
+  ]
+}
