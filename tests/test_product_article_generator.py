@@ -2370,7 +2370,8 @@ def test_classify_factory_finish_matches_admin_api_service_duplicate():
     own test coverage, so the two can't silently drift apart on the
     cases that matter for the image prompt."""
     assert app.classify_factory_finish("500/1000/2000 Siaair Micro Pad") == "dull"
-    assert app.classify_factory_finish("5000 Grit LSS") == "satin"
+    assert app.classify_factory_finish("5000 Grit LSS") == "dull"
+    assert app.classify_factory_finish("5500 Grit LSP") == "polished"  # runbook 6gh
     assert app.classify_factory_finish(
         "800 Abranet(R), 1000, 2000 Abralon(R) Power House Factory Finish Polish"
     ) == "polished"
@@ -2389,7 +2390,7 @@ def test_build_gemini_scene_prompt_includes_finish_hint_when_factory_finish_know
     authority, and states the specific bucket computed."""
     product = {"color": "Blue", "factory_finish": "5000 Grit LSS"}
     prompt = app.build_gemini_scene_prompt(product, _SAMPLE_ARTICLE, "product_shot")
-    assert "classified as 'satin'" in prompt
+    assert "classified as 'sanded' (sanding alone, no separate polish step, to 5000 grit)" in prompt
     assert "not a substitute for the reference photo itself, which is always the final authority" in prompt
 
 

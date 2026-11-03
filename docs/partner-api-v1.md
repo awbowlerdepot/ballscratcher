@@ -59,6 +59,8 @@ Values below are illustrative.
   "has_particle": false,
   "factory_finish": "1500 Grit Polished",
   "finish_category": "polished",
+  "finish_type": "polished",
+  "finish_grit": 1500,
   "fragrance": "Root Beer",
   "weights": [{"weight_lbs": 16, "rg": 2.48, "differential": 0.051, "mass_bias": null}],
   "plotter": {"oil": 9.1, "motion": 14.4, "source": "estimated"},
@@ -88,6 +90,8 @@ Values below are illustrative.
   - `chart`: read off a manufacturer's published ball motion chart
   - `estimated`: BowlerIQ's model
   - `manual`: a staff correction
+- **`finish_type`:** `"sanded"` or `"polished"`, the factory finish as the manufacturer states it (e.g. Motiv's `LSP` = laser scan polished, `LSS` = laser scan sanded). **`finish_grit`** is the finest grit the finish text names (`5500` for `"5500 Grit LSP"`). Both are `null` when the finish text doesn't say. Added 2026-11-03.
+- **`finish_category`:** the older grouping, now only `"polished"` or `"dull"` (sanded). `"satin"` is no longer returned. Prefer `finish_type`.
 - **`fragrance`:** the ball's scent as the manufacturer names it (e.g. `"Root Beer"`); `null` when none is listed. Only Storm publishes one today.
 - **`bigcommerce_product_id`:** the ball's product id in BowlerDepot's BigCommerce store. Only set when BowlerIQ matched it unambiguously and no other ball claims the same BigCommerce product; otherwise `null`.
 - **`demand`:** refreshed once a day; `null` until the ball's first refresh.

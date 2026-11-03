@@ -32,6 +32,7 @@ CoverstockMaterial = Literal["reactive_resin", "urethane", "polyester_plastic"]
 CoverstockType = Literal["solid", "pearl", "hybrid"]
 CoreType = Literal["symmetric", "asymmetric"]
 FinishCategory = Literal["polished", "satin", "dull"]
+FinishType = Literal["sanded", "polished"]
 BallStatus = Literal["current", "retired"]
 PositionSource = Literal["chart", "estimated", "manual"]
 
@@ -114,7 +115,18 @@ class Ball(_Model):
     core: Core
     has_particle: bool = Field(description="True when the cover contains particle (additive) material.")
     factory_finish: Optional[str] = Field(None, description="Manufacturer's finish text, e.g. '500, 1000, 1500 Siaair / Factory Compound'.")
-    finish_category: Optional[FinishCategory] = Field(None, description="The factory finish, grouped as polished, satin or dull.")
+    finish_category: Optional[FinishCategory] = Field(
+        None, description="The factory finish, grouped as polished or dull (sanded). 'satin' is no longer "
+                          "returned. Prefer finish_type.")
+    # Runbook 6gh -- optional and additive. Al: "can we just do sanded or
+    # polished". Satin was BowlerIQ's own bucket, not a manufacturer's
+    # word; finish_category keeps its three v1 values for existing
+    # clients, and these two say what the manufacturer says.
+    finish_type: Optional[FinishType] = Field(
+        None, description="The factory finish as the manufacturer states it: sanded or polished. "
+                          "Prefer this to finish_category.")
+    finish_grit: Optional[int] = Field(
+        None, description="The finest grit named in factory_finish, e.g. 5500 for '5500 Grit LSP'.")
     # Runbook 6fk -- optional and additive (Al: "the partner API is the
     # one i was targeting to have it"). Always present, null when the
     # manufacturer doesn't list a scent ("for the API just return an empty
@@ -163,6 +175,8 @@ class Ball(_Model):
                 "has_particle": False,
                 "factory_finish": "1500 Grit Polished",
                 "finish_category": "polished",
+                "finish_type": "polished",
+                "finish_grit": 1500,
                 "fragrance": "Root Beer",
                 "weights": [
                     {"weight_lbs": 16, "rg": 2.48, "differential": 0.051, "mass_bias": None},

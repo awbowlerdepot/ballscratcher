@@ -372,6 +372,16 @@ class FakeCursor:
             self.db["product_skus"].setdefault(key, {})[column] = value
             self._last_result = None
 
+        elif q.startswith("update products set finish_") and q.endswith("where id = %s"):
+            # backfill_finish_categories' write (runbook 6gh): any of
+            # finish_category / finish_type / finish_grit, only the ones
+            # that changed, so the column list is read off the SQL.
+            cols = re.findall(r"(finish_\w+) = %s", q)
+            row = self.db["products"].setdefault(params[-1], {})
+            for col, value in zip(cols, params[:-1]):
+                row[col] = value
+            self._last_result = None
+
         elif q.startswith("update products set video_reviews_summary"):
             # More specific than (and must be checked before) the generic
             # single-column "update products set" branch below -- store_rollup
@@ -442,11 +452,12 @@ class FakeCursor:
                 if row.get("oil_rating") is None or (include_estimated and row.get("oil_motion_source") == "estimated"):
                     rows.append((pid, row.get("oil_rating"), row.get("motion_rating"), row.get("oil_motion_source"),
                                  row.get("core_type"), row.get("coverstock_type"), row.get("coverstock_material"),
-                                 row.get("has_particle"), row.get("finish_category"), row.get("max_price")))
+                                 row.get("has_particle"), row.get("finish_category"), row.get("finish_grit"),
+                                 row.get("max_price")))
             self._rows = rows
             self.description = [("id",), ("oil_rating",), ("motion_rating",), ("oil_motion_source",), ("core_type",),
                                 ("coverstock_type",), ("coverstock_material",), ("has_particle",),
-                                ("finish_category",), ("max_price",)]
+                                ("finish_category",), ("finish_grit",), ("max_price",)]
 
         elif q.startswith("select product_id, weight_lbs, rg, differential, mass_bias from product_skus"):
             (product_ids,) = params
@@ -1211,14 +1222,15 @@ class FakeCursor:
         # id = %s" -- already handled by the generic "update products
         # set" branch above, no dedicated branch needed for it.
 
-        elif q.startswith("select id, factory_finish, finish_category from products where factory_finish is not null"):
+        elif q.startswith("select id, factory_finish, finish_category, finish_type, finish_grit from products"):
             rows = [
-                (pid, row.get("factory_finish"), row.get("finish_category"))
+                (pid, row.get("factory_finish"), row.get("finish_category"), row.get("finish_type"),
+                 row.get("finish_grit"))
                 for pid, row in self.db["products"].items()
                 if row.get("factory_finish") is not None
             ]
             self._rows = rows
-            self.description = [("id",), ("factory_finish",), ("finish_category",)]
+            self.description = [("id",), ("factory_finish",), ("finish_category",), ("finish_type",), ("finish_grit",)]
 
         # --- delete_article_image_candidate (Al: "can we add support to
         # delete unwanted ai generated images") -- these two are the only
@@ -2209,18 +2221,36 @@ def test_backfill_last_video_discovery_at_handles_multiple_products_independentl
 # glossier finish; very fine grit alone (>=3000) can read as a mild sheen
 # without any polish step) grounding these bucket definitions.
 
-def test_classify_factory_finish_dull_below_satin_threshold():
+def test_classify_factory_finish_sanded_is_dull_at_any_grit():
+    # Runbook 6gh: no 'satin' -- Al: "can we update all to not have satin
+    # too not just these". Every sanded finish is 'dull' ("dull/sanded"),
+    # however fine; the grit is kept separately in finish_grit.
     assert service.classify_factory_finish("500/1000/2000 Siaair Micro Pad") == "dull"
+    assert service.classify_factory_finish("5000 Grit LSS") == "dull"
+    assert service.classify_factory_finish("500, 1000, 3000 Abralon") == "dull"
 
 
-def test_classify_factory_finish_satin_at_or_above_grit_threshold():
-    assert service.classify_factory_finish("5000 Grit LSS") == "satin"
+def test_classify_factory_finish_lsp_is_polished_lss_is_sanded():
+    # Al: "LS is laser scan S=sanded P=polished". Motiv writes both the
+    # long and short forms for the same process.
+    assert service.classify_factory_finish("5500 Grit LSP") == "polished"
+    assert service.classify_factory_finish("5000 LSP") == "polished"
+    assert service.classify_factory_finish("5500 Grit Laser Scan Polished") == "polished"
+    assert service.classify_factory_finish("3000 Grit LSS") == "dull"
+    assert service.classify_factory_finish("3000 Grit Laser Scan Sanded") == "dull"
+    # Whole word only: not inside another word.
+    assert service.classify_factory_finish("4000 Grit CLSPX") == "dull"
 
 
-def test_classify_factory_finish_uses_highest_grit_in_a_progression():
-    # A progression that crosses the threshold should classify off the
-    # FINEST (highest) grit reached, not the first/lowest one listed.
-    assert service.classify_factory_finish("500, 1000, 3000 Abralon") == "satin"
+def test_classify_finish_type_and_grit():
+    assert service.classify_finish_type("5500 Grit LSP") == "polished"
+    assert service.classify_finish_type("2000 Grit LSS") == "sanded"
+    assert service.classify_finish_type("Sanded finish") is None
+    assert service.classify_finish_type(None) is None
+    assert service.finish_grit("500/1000/2000 Siaair Micro Pad") == 2000
+    assert service.finish_grit("5500 Grit LSP") == 5500
+    assert service.finish_grit("Royal Compound") is None
+    assert service.finish_grit(None) is None
 
 
 def test_classify_factory_finish_polish_keyword_wins_over_grit_number():
@@ -2266,7 +2296,9 @@ def test_backfill_finish_categories_classifies_unset_rows():
 
     assert result == {"products_with_factory_finish": 2, "products_updated": 2}
     assert db["products"]["prod-1"]["finish_category"] == "dull"
-    assert db["products"]["prod-2"]["finish_category"] == "satin"
+    assert db["products"]["prod-2"]["finish_category"] == "dull"
+    assert (db["products"]["prod-1"]["finish_type"], db["products"]["prod-1"]["finish_grit"]) == ("sanded", 2000)
+    assert (db["products"]["prod-2"]["finish_type"], db["products"]["prod-2"]["finish_grit"]) == ("sanded", 5000)
     assert db["products"]["prod-3"]["finish_category"] is None  # no factory_finish, left alone
     assert conn.committed is True
 
@@ -2274,7 +2306,8 @@ def test_backfill_finish_categories_classifies_unset_rows():
 def test_backfill_finish_categories_skips_rows_already_matching_computed_value():
     db = {
         "products": {
-            "prod-1": {"factory_finish": "5000 Grit LSS", "finish_category": "satin"},
+            "prod-1": {"factory_finish": "5000 Grit LSS", "finish_category": "dull",
+                       "finish_type": "sanded", "finish_grit": 5000},
         },
     }
     conn = FakeConnection(db)
@@ -2282,7 +2315,16 @@ def test_backfill_finish_categories_skips_rows_already_matching_computed_value()
     result = service.backfill_finish_categories(conn)
 
     assert result == {"products_with_factory_finish": 1, "products_updated": 0}
-    assert db["products"]["prod-1"]["finish_category"] == "satin"
+    assert db["products"]["prod-1"]["finish_category"] == "dull"
+
+
+def test_backfill_finish_categories_moves_lsp_satin_to_polished():
+    # Runbook 6gh: Motiv Nebula, "5500 Grit LSP", had been classed satin.
+    db = {"products": {"nebula": {"factory_finish": "5500 Grit LSP", "finish_category": "satin"}}}
+    result = service.backfill_finish_categories(FakeConnection(db))
+    assert result["products_updated"] == 1
+    assert db["products"]["nebula"] == {"factory_finish": "5500 Grit LSP", "finish_category": "polished",
+                                        "finish_type": "polished", "finish_grit": 5500}
 
 
 def test_backfill_finish_categories_overwrites_stale_classification():
@@ -7918,7 +7960,7 @@ def test_v3_uses_price_model_only_when_price_known():
 
 def test_v3_higher_price_means_more_oil_and_never_changes_motion():
     common = dict(coverstock_material="reactive_resin", coverstock_type="hybrid", core_type="asymmetric",
-                  finish_category="satin", rg15=2.50, diff15=0.050, mass_bias15=0.015)
+                  finish_category="dull", finish_grit=4000, rg15=2.50, diff15=0.050, mass_bias15=0.015)
     cheap, pricey = _v3(**common, price=110.0), _v3(**common, price=195.0)
     assert pricey["oil"] > cheap["oil"]
     assert pricey["motion"] == cheap["motion"] == _v3(**common)["motion"]
@@ -7934,7 +7976,7 @@ def test_v3_duller_finish_means_more_oil_and_smoother_motion():
 
 def test_v3_higher_differential_means_more_oil_and_motion():
     common = dict(coverstock_material="reactive_resin", coverstock_type="solid", core_type="symmetric",
-                  finish_category="satin", rg15=2.50)
+                  finish_category="dull", finish_grit=4000, rg15=2.50)
     low, high = _v3(**common, diff15=0.020), _v3(**common, diff15=0.055)
     assert high["oil"] > low["oil"] and high["motion"] > low["motion"]
 
@@ -7968,7 +8010,7 @@ def test_low_friction_rule_leaves_plastic_and_urethane_alone():
 def test_v3_clamps_inputs_to_the_training_range():
     """Out-of-range specs (other brands' outliers) mustn't extrapolate."""
     common = dict(coverstock_material="reactive_resin", coverstock_type="solid", core_type="asymmetric",
-                  finish_category="satin", price=170.0)
+                  finish_category="dull", finish_grit=4000, price=170.0)
     assert _v3(**common, rg15=2.30, diff15=0.090) == _v3(**common, rg15=2.462, diff15=0.058)
     specs = dict(rg15=2.50, diff15=0.050)
     assert _v3(**{**common, **specs, "price": 400.0}) == _v3(**{**common, **specs, "price": 194.95})
@@ -7981,7 +8023,7 @@ def test_v3_always_returns_in_range_values_with_no_inputs():
 
 def test_v3_particle_keeps_oil_bonus():
     common = dict(coverstock_material="reactive_resin", coverstock_type="solid", core_type="symmetric",
-                  finish_category="satin", rg15=2.50, diff15=0.040)
+                  finish_category="dull", finish_grit=4000, rg15=2.50, diff15=0.040)
     # Within one tenth: the bonus is added before rounding to 0.1.
     assert _v3(**common, has_particle=True)["oil"] == pytest.approx(
         min(16, _v3(**common)["oil"] + service.PLOTTER_PARTICLE_OIL_BONUS), abs=0.1 + 1e-9
@@ -7996,7 +8038,7 @@ def test_v3_positions_are_to_one_tenth():
     for diff in (0.020, 0.031, 0.044, 0.052):
         for rg in (2.47, 2.51, 2.56):
             r = _v3(coverstock_material="reactive_resin", coverstock_type="solid", core_type="asymmetric",
-                    finish_category="satin", rg15=rg, diff15=diff, price=165.0)
+                    finish_category="dull", finish_grit=4000, rg15=rg, diff15=diff, price=165.0)
             for v in (r["oil"], r["motion"]):
                 assert isinstance(v, float) and round(v, 1) == v
                 seen_fractional |= v != int(v)

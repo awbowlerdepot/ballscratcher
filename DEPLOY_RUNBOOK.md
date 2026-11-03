@@ -23646,7 +23646,7 @@ across six brands can hit the quota. Fixed in 6gc.
 aws lambda invoke --function-name bowling-scraper-product-article-generator --invocation-type Event --payload '{"brand_art": "run", "task_id": "<task id>", "trigger": "manual"}' --cli-binary-format raw-in-base64-out /dev/null
 ```
 
-### 6gc. Brand art runs one brand at a time, and Gemini errors back off (2026-11-03, not deployed)
+### 6gc. Brand art runs one brand at a time, and Gemini errors back off (2026-11-03, deployed)
 
 **Why.** On 2026-11-03 four brands' first runs (Radical, Motiv,
 Brunswick, Roto Grip) were started within two minutes of each other.
@@ -23682,7 +23682,7 @@ psql -c "select b.name, r.trigger, r.status, r.started_at, r.finished_at from ta
 **Tests:** `tests/test_brand_art.py` (41): Gemini errors back off 20s/40s;
 dispatch hands every due run to a single queue.
 
-### 6gd. Brand art on a pale brand color: flat backdrop, no accent halo (2026-11-03, not deployed)
+### 6gd. Brand art on a pale brand color: flat backdrop, no accent halo (2026-11-03, deployed 17:54 UTC)
 
 Al flagged Radical's hero-1, through the Radical brand-store session. On
 Radical's new palette (#fff200 band, #000000 accent), the 16:9 had "a
@@ -23719,7 +23719,7 @@ aws lambda invoke --function-name bowling-scraper-product-article-generator --in
 flat fill; the light prompt is used and an amber backdrop is rejected
 while a matching one passes; dark palettes keep the glow prompt.
 
-### 6ge. Brand-art redraws clear the image CDN's cache (2026-11-03, not deployed)
+### 6ge. Brand-art redraws clear the image CDN's cache (2026-11-03, deployed 17:54 UTC)
 
 Al: "the images in the admin are not all correct. roto grip hero 2 and
 radical hero 1. it is correct when you click on it but the image on the
@@ -23746,7 +23746,7 @@ CloudFront's 1,000 free paths a month.
 
 **Tests:** 1 new in `tests/test_brand_art.py` (45).
 
-### 6gf. A redraw never replaces a Gemini hero with the plain composite (2026-11-03, not deployed)
+### 6gf. A redraw never replaces a Gemini hero with the plain composite (2026-11-03, deployed 17:54 UTC)
 
 The Roto Grip brand-store session passed on that Al approved the Roto
 Grip art (2026-11-03). Al had first thought hero-2 "was only balls on a
@@ -23773,6 +23773,142 @@ empty.
 **Deploy:** `sam build && sam deploy`, together with 6gd and 6ge.
 
 **Tests:** 1 new in `tests/test_brand_art.py` (46).
+
+### 6gg. Brand art on a pale color asks for a smaller ball (2026-11-03, not deployed)
+
+The first live redraw of Radical's hero-1 after the 6gd–6gf deploy
+(2026-11-03 17:54 UTC) failed twice in Lambda. 6gf kept the old image each
+time, as designed. The logs show Gemini drew the ball too big:
+`logo_size_ok` allows 50–85% of the frame's height (`PRODUCT_SHOT_BALL_RANGE`,
+scaled to the aspect), and `HERO_BACKDROP_LIGHT` asked for "about
+two-thirds". Gemini overshoots that to 85–96%, so five of six attempts in
+the first run were "too big", and the second run's 4:3 failed the same way.
+The local 6gd test render had just been a lucky draw. Dark-band brands use
+`HERO_BACKDROP_THEME`, which has no size line, so they aren't affected.
+
+**Change:** `HERO_BACKDROP_LIGHT` asks for "a little more than half of the
+frame's height (about 55%), with generous clear backdrop all around it". Only
+the size wording changed.
+
+**Radical hero-1, meanwhile:** redrawn from a local run with the deployed
+code (the scratchpad's `run_live.py`: the real `run_brand_art_job`, writing
+the real S3 keys and `brand_art_slots` row, and clearing the CDN). See
+the verify note below for the result.
+
+**Deploy:** `sam build && sam deploy`.
+
+**Verify:** after the deploy, redraw Radical's hero-1
+(`aws lambda invoke --function-name bowling-scraper-product-article-generator --invocation-type Event --payload '{"brand_art":"run","task_id":"dc232272-50e6-48fe-8387-585c39af187e","slots":["hero-1"],"trigger":"manual"}' --cli-binary-format raw-in-base64-out /dev/null`)
+and check the logs show `logo ok=True` on both sizes within the three attempts.
+
+### 6gh. Finish type: sanded or polished, no satin; LSP is polished (2026-11-03, not deployed)
+
+The Bowler Depot theme session reported that the store showed Motiv Nebula
+("5500 Grit LSP") as "Finish Type: Satin". Finish Type is written to
+bowlerdepot.com's custom fields by `bowleriq-sync`
+(`bicommerce-site/bowleriq-sync`, Lambda every 30 minutes), from the partner
+API's `finish_category`.
+
+- **LSP was misread.** Al: "LS is laser scan S=sanded P=polished". The
+  classifier only knew polish/compound/shine/buff, so Motiv's short form
+  fell through to the grit rule. Motiv writes the same process both ways
+  ("5500 Grit Laser Scan Polished" was polished; "5500 Grit LSP" was satin):
+  56 of the 58 LSP balls were satin, 1 dull, 1 never classified.
+- **Satin was ours.** Al: "where did you get satin? can we just do sanded
+  or polished. if need 3 it needs to be two variants of dull/sanded", then
+  "can we update all to not have satin too not just these". Migration 035
+  (2026-09) invented satin for sanded at 3000+ grit. No manufacturer uses
+  the word.
+- Before the change: 657 polished, 369 dull, 241 satin, 702 empty. Many balls
+  had never been classified, because `finish_category` is filled only by
+  the backfill and the scrapers don't set it.
+
+**Changes:**
+- **`db/migrations/061_products_finish_type.sql`:**
+  - adds `products.finish_type`, which is `sanded` or `polished`;
+  - adds `products.finish_grit`, the finest grit named in the finish text;
+  - converts satin to dull and checks `finish_category` to dull/polished;
+  - adds both new columns to `products_bump_content_changed_at`, so they
+    show up in `/v1/changes`.
+- **`admin_api.classify_factory_finish`, and its copy in `product_article_generator`:**
+  - `\bLSP\b` counts as a polish word (whole word, so LSS stays sanded);
+  - there's no satin; every sanded finish is `dull`.
+- **New in `admin_api`:**
+  - `classify_finish_type` and `finish_grit`;
+  - `backfill_finish_categories` fills all three columns;
+  - `finish_type` is review-queue editable, like `finish_category`.
+- **Partner API v1** (additive, contract snapshot regenerated):
+  - optional `finish_type` and `finish_grit`;
+  - `finish_category` is documented as polished/dull only, prefer
+    `finish_type`. Its enum keeps "satin" so the schema doesn't narrow, but
+    it's never returned.
+  - `docs/partner-api-v1.md` and `marketing-site/developers.html` are updated.
+- **Plotter estimator** (both copies, plus `scripts/refit_plotter_estimator.py`):
+  - the finish level comes from `_plotter_finish_level(finish_category, finish_grit)`;
+  - a dull ball at 3000+ grit keeps the old satin level (1.0), so the fit and
+    the stored positions don't move;
+  - stored positions change only on a re-estimate. LSP balls (satin to
+    polished) would move then.
+- **Gemini article images:** the finish hint says "'sanded' (... to N grit)"
+  or "'polished'".
+
+**Not in this repo:** `bowleriq-sync` still maps `finish_category` to
+Polished / Satin / Dull. After this deploy it will show Polished / Dull. It
+needs switching to `finish_type` (Sanded / Polished). That's for the
+Bowler Depot theme session, after this deploy is live.
+
+**Deploy, in order.** The partner API and admin queries read the new columns:
+1. `psql "$DATABASE_URL" -f db/migrations/061_products_finish_type.sql`
+2. `sam build && sam deploy`
+3. Run the backfill, `POST /admin/backfill-finish-categories`, via
+   `scripts/backfill_finish_categories.py`. It needs `ADMIN_API_URL` and
+   `ADMIN_API_TOKEN`; see its docstring. Admin's Batch Jobs tab has no
+   button for it.
+
+**Verify:**
+- `select finish_category, finish_type, count(*) from products group by 1, 2;`
+  should show no satin, and every `finish_type` matching its category.
+- Motiv Nebula should be polished / polished / 5500.
+
+**Tests:**
+- `tests/test_admin_api_service.py` (468): LSP/LSS, type and grit, the LSP
+  backfill.
+- `tests/test_product_article_generator.py`.
+- `tests/test_plotter_estimator_sync.py`: the grid adds grit. Run it with
+  `PYTHONPATH=src/admin_api`, since `oil_patterns` doesn't import without it,
+  a pre-existing issue.
+- `tests/test_partner_api_contract.py`.
+
+### 6gi. Motiv heroes held for Orion Nebula (2026-11-03, data only)
+
+The Motiv brand-store session asked to re-pick Motiv's heroes for Orion
+Nebula (Medium Oil, out 11/25/2026), with the art held until approved and
+not published over the live URLs until the theme's copy deploys. Al: "yes
+do 1-3, keep orion in the back". The previews were then approved.
+
+**Data changes:**
+- The Motiv task (`ee091088-…`) has `enabled = false`, so the daily dispatch
+  skips it. Orion Nebula was added at 14:59 UTC, after that day's 12:30 run,
+  and the next run would have redrawn the live hero-1.
+- Orion Nebula (`6e76de36-…`) went into Motiv's `medium-oil` line by hand
+  (`added_by 'admin'`). Motiv's lines are manual, and the ball has no
+  BigCommerce id yet.
+- Picks: hero-1 is Orion Nebula. hero-2, front to back, is Forge Fuel,
+  Raptor Pursuit, Venom Hysteria, Shadow Tank, Orion Nebula. Orion is at the
+  back because its demand score is 0 before release.
+
+**Previews:** `img.bowleriq.io/brand-art/motiv/preview/hero-{1,2}{,-16x9}.webp`.
+Drawn by the real run path with keys rewritten to `preview/` and no slot
+rows saved (scratchpad `run_preview.py`). Both are Gemini and passed their
+checks.
+
+**When the theme deploys:**
+1. Copy the four preview files onto the stable `brand-art/motiv/` keys.
+2. Save the slot rows: run a plan, so the input hashes match.
+3. Invalidate `/brand-art/motiv/*`.
+4. Set the Motiv task's `enabled = true`.
+
+Copy rather than redraw, so the live art is exactly what Al approved.
 
 ## 7. Ongoing operations
 

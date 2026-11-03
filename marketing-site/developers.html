@@ -284,9 +284,11 @@
         </div>
         <div class="field">
           <h3>Finish</h3>
-          <div class="keys">factory_finish · finish_category · fragrance</div>
-          <p>The manufacturer's own finish text, plus a normalized category:
-          <code>polished</code>, <code>satin</code> or <code>dull</code>. <code>fragrance</code> is the ball's
+          <div class="keys">factory_finish · finish_type · finish_grit · finish_category · fragrance</div>
+          <p>The manufacturer's own finish text; <code>finish_type</code>, <code>sanded</code> or
+          <code>polished</code>; and <code>finish_grit</code>, the finest grit it names (e.g. <code>5500</code>).
+          <code>finish_category</code> is the older grouping, <code>polished</code> or <code>dull</code>; prefer
+          <code>finish_type</code>. <code>fragrance</code> is the ball's
           scent where the manufacturer lists one (only Storm today), otherwise <code>null</code>.</p>
         </div>
         <div class="field">

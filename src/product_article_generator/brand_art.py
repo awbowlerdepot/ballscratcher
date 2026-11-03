@@ -731,8 +731,13 @@ HERO_BACKDROP_THEME = (
 # are right for a dark band (Storm, Hammer) and wrong for a pale one, so a
 # light background gets its own backdrop, and the result's backdrop is
 # checked against the band's color (backdrop_matches).
+# Size asked low on purpose (6gg): logo_size_ok allows the ball 50-85% of
+# the frame's height, and Gemini overshoots what it's asked for. Asked
+# for "about two-thirds", Radical's live redraws (2026-11-03) came back at
+# 85-96% -- five of six too big -- and both runs kept the old image.
 HERO_BACKDROP_LIGHT = (
-    "the ball fills about two-thirds of the frame's height, with clear backdrop all around it; "
+    "the ball fills a little more than half of the frame's height (about 55%), with generous clear backdrop "
+    "all around it; "
     "a seamless, flat studio backdrop of exactly {background} -- that exact color, not darker, warmer or more "
     "golden -- evenly lit from edge to edge: no vignette, no darkening toward the edges or corners, no colored glow, "
     "rim light or halo around the ball, only a soft natural contact shadow directly under the ball; the ball sits in "

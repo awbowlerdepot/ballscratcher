@@ -32,13 +32,16 @@ import math
 
 import numpy as np
 
-FINISH = {"polished": 0.0, "satin": 1.0, "dull": 2.0}
+# Runbook 6gh: no satin category any more; a dull (sanded) ball at 3000+
+# grit is the middle level, as in the estimator's _plotter_finish_level.
+FINISH = {"polished": 0.0, "dull": 2.0}
+FINE_SANDED_GRIT = 3000
 FEATS = ["urethane", "pearl", "solid", "asymmetric", "core_unknown", "finish", "rg15", "diff15", "mass_bias15"]
 LAMBDAS = [0.1, 0.25, 0.5, 1, 2, 3, 5, 8, 12, 20, 30, 50]
 
 QUERY = """
 select b.name as brand, p.name, p.oil_rating, p.motion_rating, p.coverstock_material, p.coverstock_type,
-       c.core_type, p.finish_category,
+       c.core_type, p.finish_category, p.finish_grit,
        (select max(h.price) from product_price_sources ps join product_price_history h on h.price_source_id = ps.id
          where ps.product_id = p.id and ps.status = 'approved' and h.price is not null) as max_price,
        (select json_agg(json_build_object('w', s.weight_lbs, 'rg', s.rg, 'diff', s.differential, 'mb', s.mass_bias))
@@ -79,7 +82,7 @@ def prepare(rows):
         data.append({
             "name": f"{r['brand']} {r['name']}", "oil": float(r["oil_rating"]), "motion": float(r["motion_rating"]),
             "material": r["coverstock_material"], "ctype": r["coverstock_type"], "core": r["core_type"],
-            "finish": r["finish_category"], "rg": s.get("rg"), "diff": s.get("diff"), "mb": s.get("mb"),
+            "finish": "fine" if r["finish_category"] == "dull" and (r["finish_grit"] or 0) >= FINE_SANDED_GRIT else r["finish_category"], "rg": s.get("rg"), "diff": s.get("diff"), "mb": s.get("mb"),
             "price": float(r["max_price"]) if r["max_price"] is not None else None,
         })
     return data

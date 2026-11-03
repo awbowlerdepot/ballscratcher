@@ -39,12 +39,13 @@ def test_estimators_agree_over_an_input_grid():
         ["reactive_resin", "urethane", "polyester_plastic", None],
         ["solid", "pearl", "hybrid", None],
         ["symmetric", "asymmetric", None],
-        ["polished", "satin", "dull", None],
+        ["polished", "dull", None],
+        [None, 2000, 4000],
         [None, 2.47, 2.55],
         [None, 0.020, 0.050],
         [None, 120.0, 190.0],
     )
-    for material, cover, core, finish, rg, diff, price in grid:
-        kwargs = dict(coverstock_material=material, coverstock_type=cover, core_type=core, finish_category=finish,
+    for material, cover, core, finish, grit, rg, diff, price in grid:
+        kwargs = dict(coverstock_material=material, coverstock_type=cover, core_type=core, finish_category=finish, finish_grit=grit,
                       rg15=rg, diff15=diff, mass_bias15=0.015 if core == "asymmetric" else None, price=price)
         assert pub.estimate_oil_motion(**kwargs) == adm.estimate_oil_motion(**kwargs), kwargs

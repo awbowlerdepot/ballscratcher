@@ -127,6 +127,8 @@
             },
             "factory_finish": "1500 Grit Polished",
             "finish_category": "polished",
+            "finish_grit": 1500,
+            "finish_type": "polished",
             "fragrance": "Root Beer",
             "has_particle": false,
             "id": "ff32beb3-57fc-4c61-abb4-c4cab2b46240",
@@ -244,8 +246,36 @@
                 "type": "null"
               }
             ],
-            "description": "The factory finish, grouped as polished, satin or dull.",
+            "description": "The factory finish, grouped as polished or dull (sanded). 'satin' is no longer returned. Prefer finish_type.",
             "title": "Finish Category"
+          },
+          "finish_grit": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The finest grit named in factory_finish, e.g. 5500 for '5500 Grit LSP'.",
+            "title": "Finish Grit"
+          },
+          "finish_type": {
+            "anyOf": [
+              {
+                "enum": [
+                  "sanded",
+                  "polished"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The factory finish as the manufacturer states it: sanded or polished. Prefer this to finish_category.",
+            "title": "Finish Type"
           },
           "fragrance": {
             "anyOf": [

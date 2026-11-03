@@ -1311,14 +1311,14 @@ def estimate_ball_frame_fill_ratio(raw_bytes: bytes):
 # see admin_api/service.py's classify_factory_finish docstring and
 # migration 035's header comment for the full research writeup behind
 # these values.
-_FINISH_POLISH_KEYWORDS_RE = re.compile(r"polish|compound|shine|buff", re.IGNORECASE)
-_FINISH_SATIN_GRIT_THRESHOLD = 3000
+# "LSP" = Motiv's laser scan polished (runbook 6gh; see admin_api's copy).
+_FINISH_POLISH_KEYWORDS_RE = re.compile(r"polish|compound|shine|buff|\bLSP\b", re.IGNORECASE)
 
 
 def classify_factory_finish(raw_finish: str) -> str:
     """Local duplicate of admin_api.service.classify_factory_finish --
-    buckets a raw products.factory_finish string into 'dull', 'satin', or
-    'polished', or returns None if there's nothing to classify. Used only
+    buckets a raw products.factory_finish string into 'dull' (sanded) or
+    'polished' (no 'satin' since runbook 6gh), or returns None if there's nothing to classify. Used only
     to build a supporting-context hint for Gemini alongside the reference
     photo (see build_gemini_scene_prompt's own finish-preservation clause)
     -- never as a replacement for looking at the actual photo, per Al's
@@ -1334,7 +1334,7 @@ def classify_factory_finish(raw_finish: str) -> str:
     if not grit_numbers:
         return None
 
-    return "satin" if max(grit_numbers) >= _FINISH_SATIN_GRIT_THRESHOLD else "dull"
+    return "dull"
 
 
 def _resolve_visual_context(article: dict) -> str:
@@ -1886,12 +1886,19 @@ def build_gemini_scene_prompt(product: dict, article: dict, variant: str,
     # (unknown factory_finish) rather than stating a category that isn't
     # actually known.
     finish_category = classify_factory_finish(product.get("factory_finish"))
+    # Runbook 6gh: said as 'sanded' with its grit, Al's and the
+    # manufacturers' word, not the old dull/satin buckets.
+    grit = max((int(n) for n in re.findall(r"\d{3,5}", product.get("factory_finish") or "")), default=None)
+    if finish_category == "polished":
+        finish_described = "'polished' (a distinct polish/compound step producing real gloss)"
+    else:
+        finish_described = ("'sanded' (sanding alone, no separate polish step"
+                            + (f", to {grit} grit)" if grit else ")"))
     if finish_category:
         finish_hint_clause = (
             f" As additional context (not a substitute for the reference photo "
             f"itself, which is always the final authority): this ball's factory "
-            f"surface preparation is classified as '{finish_category}' "
-            f"({'a distinct polish/compound step producing real gloss' if finish_category == 'polished' else 'fine sanding alone, no separate polish step'}), "
+            f"surface preparation is classified as {finish_described}, "
             "an approximate bucket derived from the manufacturer's own finish "
             "description and not a precise measurement -- different manufacturers' "
             "sanding pads and polishes are not all identical, so treat this as a "
@@ -1900,7 +1907,7 @@ def build_gemini_scene_prompt(product: dict, article: dict, variant: str,
                 "This coverstock is also a pearl finish, which can look shinier "
                 "than the factory-finish classification alone would suggest due to "
                 "its mica-like additive -- some visible shimmer or sparkle beyond "
-                "a plain matte/satin surface is expected and correct for a pearl "
+                "a plain sanded surface is expected and correct for a pearl "
                 "ball, and should be preserved from the reference photo. "
                 if product.get("coverstock_type") == "pearl"
                 else ""

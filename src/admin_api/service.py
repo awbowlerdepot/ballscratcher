@@ -39,7 +39,7 @@ SKU_FIELD_NAME_RE = re.compile(r"^(rg|differential|mass_bias)_(\d{1,2})lb$")
 PRODUCT_UPDATABLE_FIELDS = {
     "name", "color", "coverstock_material", "coverstock_type",
     "coverstock_name", "factory_finish", "part_number", "published",
-    "finish_category",
+    "finish_category", "finish_type",
     # Runbook 6fd: bowwwl_cross_check proposes 'retired' when bowwwl marks a
     # ball Discontinued and we still have it current. Values are checked in
     # _cast_proposed_value (current/retired only).
@@ -67,21 +67,24 @@ NUMERIC_SKU_FIELDS = {"rg", "differential", "mass_bias"}
 # number also appears in the same string (e.g. "1000, 2000 Abralon(R)
 # Power House Factory Finish Polish" is 'polished', not 'satin', even
 # though 2000 alone would read as 'dull').
-FINISH_POLISH_KEYWORDS_RE = re.compile(r"polish|compound|shine|buff", re.IGNORECASE)
+# "LSP" (runbook 6gh): Motiv writes its finishes both long and short --
+# "5500 Grit Laser Scan Polished" and "5500 Grit LSP" are the same
+# process. Al: "LS is laser scan S=sanded P=polished". Without it the 58
+# LSP balls fell through to the grit rule and came out satin. Whole word
+# only, so "LSS" (laser scan sanded) stays on the grit rule.
+FINISH_POLISH_KEYWORDS_RE = re.compile(r"polish|compound|shine|buff|\bLSP\b", re.IGNORECASE)
 
-# Grit-number threshold separating 'dull' (hazy, common "box finish" range)
-# from 'satin' (fine-enough sanding alone starts producing visible sheen) --
-# see migration 035's header comment for the bowling-industry research this
-# threshold is grounded in. Applied to the HIGHEST grit number found in the
-# string, since factory_finish values commonly list a whole progression
-# ("500/1000/2000 Siaair Micro Pad") and the finest grit used is what
-# actually determines the final surface.
-FINISH_SATIN_GRIT_THRESHOLD = 3000
+# No grit threshold any more (runbook 6gh). Migration 035 split sanded
+# balls at 3000 grit into 'dull' and 'satin'; satin was this project's own
+# word, not a manufacturer's, and Al asked for it gone everywhere: "can we
+# update all to not have satin too not just these". Every sanded ball is
+# 'dull' (Al: "dull/sanded"), and the grit lives on in finish_grit.
 
 
 def classify_factory_finish(raw_finish: str) -> str:
     """Buckets a products.factory_finish raw string into a coarse sheen
-    category: 'dull', 'satin', or 'polished' -- see migration 035's header
+    category: 'dull' (sanded) or 'polished' -- 'satin' was retired in
+    runbook 6gh / migration 061. See migration 035's header
     comment for the full domain research (Abralon/Siaair Micro Pad/Abranet
     are mechanical sanding pads, not polishes; a genuine polish/compound
     step produces meaningfully more gloss than sanding alone; very fine
@@ -118,7 +121,31 @@ def classify_factory_finish(raw_finish: str) -> str:
     if not grit_numbers:
         return None
 
-    return "satin" if max(grit_numbers) >= FINISH_SATIN_GRIT_THRESHOLD else "dull"
+    return "dull"
+
+
+# Runbook 6gh. Al, on seeing satin in Bowler Depot's "Finish Type":
+# "where did you get satin? can we just do sanded or polished. if need 3
+# it needs to be two variants of dull/sanded". Satin was this project's
+# own bucket (migration 035), not a word any manufacturer uses; they say
+# sanded or polished plus a grit. So finish_type is the two-way answer and
+# finish_grit keeps the coarse/fine detail as the number itself rather
+# than as a third name. finish_category stays (polished/dull, no satin):
+# the partner API's v1 contract names it, and the plotter reads it.
+def classify_finish_type(raw_finish: str):
+    """'polished', 'sanded', or None (nothing to classify) -- the same
+    rule as classify_factory_finish, in the manufacturers' word: its
+    'dull' is 'sanded'."""
+    category = classify_factory_finish(raw_finish)
+    return None if category is None else ("polished" if category == "polished" else "sanded")
+
+
+def finish_grit(raw_finish: str):
+    """The finest (highest) grit named in a factory_finish string, e.g.
+    5500 for "5500 Grit LSP" and 2000 for "500/1000/2000 Siaair Micro Pad";
+    None when no grit number appears."""
+    grits = [int(n) for n in re.findall(r"\d{3,5}", raw_finish or "")]
+    return max(grits) if grits else None
 
 
 def parse_review_field_name(field_name: str) -> dict:
@@ -2897,7 +2924,7 @@ def update_product_image(conn, product_id: str, image_id: str, is_visible: bool 
 #   applying the coefficients: with only ~44 points some coefficients are
 #   steep (RG especially), and other brands' outliers mustn't extrapolate
 #   wildly. Missing RG/differential -> the chart data's mean; missing mass
-#   bias -> 0 (symmetric); missing finish -> satin; missing core type ->
+#   bias -> 0 (symmetric); missing finish -> the middle level; missing core type ->
 #   its own "unknown" coefficient.
 # - Recomputed only on demand (admin Batch Jobs "Re-estimate plotter
 #   positions" -> admin_api.reestimate_plotter_positions); chart and manual
@@ -2923,8 +2950,20 @@ def update_product_image(conn, product_id: str, image_id: str, is_visible: bool 
 PLOTTER_OIL_MIN, PLOTTER_OIL_MAX = 1, 16
 PLOTTER_MOTION_MIN, PLOTTER_MOTION_MAX = 1, 18
 
-PLOTTER_FINISH_LEVEL = {"polished": 0.0, "satin": 1.0, "dull": 2.0}
+PLOTTER_FINISH_LEVEL = {"polished": 0.0, "dull": 2.0}
 PLOTTER_FINISH_DEFAULT = 1.0
+# Runbook 6gh: finish_category no longer has 'satin' (Al: "can we update
+# all to not have satin"), but the model was fit on three levels and a
+# fine-sanded ball does read differently from a coarse one. So a dull
+# (sanded) ball at 3000+ grit -- what used to be classed satin -- keeps
+# the middle level, read from finish_grit, and the fit is unchanged.
+PLOTTER_FINE_SANDED_GRIT = 3000
+
+
+def _plotter_finish_level(finish_category: str = None, finish_grit=None) -> float:
+    if finish_category == "dull" and finish_grit is not None and int(finish_grit) >= PLOTTER_FINE_SANDED_GRIT:
+        return PLOTTER_FINISH_DEFAULT
+    return PLOTTER_FINISH_LEVEL.get(finish_category, PLOTTER_FINISH_DEFAULT)
 PLOTTER_INPUT_RANGES = {
     "rg15": (2.462, 2.65),
     "diff15": (0.015, 0.058),
@@ -3015,7 +3054,8 @@ def _plotter_linear(model: dict, features: dict) -> float:
 def estimate_oil_motion(coverstock_material: str = None, coverstock_type: str = None,
                          has_particle: bool = False, core_type: str = None,
                          finish_category: str = None, rg15=None, diff15=None,
-                         mass_bias15=None, price=None, coverstock_name: str = None) -> dict:
+                         mass_bias15=None, price=None, coverstock_name: str = None,
+                         finish_grit=None) -> dict:
     """Pure function (no DB): the plotter's (oil 1-16, motion 1-18)
     estimate for a ball from its specs -- see the PLOTTER ESTIMATOR v3
     comment above for the model, the data behind it, and every rule.
@@ -3033,7 +3073,7 @@ def estimate_oil_motion(coverstock_material: str = None, coverstock_type: str = 
         "solid": 1.0 if coverstock_type == "solid" else 0.0,
         "asymmetric": 1.0 if core_type == "asymmetric" else 0.0,
         "core_unknown": 1.0 if core_type is None else 0.0,
-        "finish": PLOTTER_FINISH_LEVEL.get(finish_category, PLOTTER_FINISH_DEFAULT),
+        "finish": _plotter_finish_level(finish_category, finish_grit),
         "rg15": _plotter_clamp_input("rg15", rg15 if rg15 is not None else PLOTTER_INPUT_FILL["rg15"]),
         "diff15": _plotter_clamp_input("diff15", diff_value if diff_value is not None else PLOTTER_INPUT_FILL["diff15"]),
         "mass_bias15": _plotter_clamp_input(
@@ -3131,7 +3171,7 @@ def _fetch_plotter_estimate_inputs(cur, where_sql: str, params=()) -> list:
     cur.execute(
         f"""
         select p.id, p.oil_rating, p.motion_rating, p.oil_motion_source,
-               c.core_type, p.coverstock_type, p.coverstock_material, p.has_particle, p.finish_category,
+               c.core_type, p.coverstock_type, p.coverstock_material, p.has_particle, p.finish_category, p.finish_grit,
                {PLOTTER_MAX_PRICE_SQL} as max_price,
                (select cv.name from coverstocks cv where cv.id = p.coverstock_id) as coverstock_name
         from products p
@@ -3173,6 +3213,7 @@ def _estimate_from_inputs(p: dict) -> dict:
         has_particle=bool(p["has_particle"]), core_type=p["core_type"],
         finish_category=p["finish_category"], rg15=sku.get("rg"), diff15=sku.get("differential"),
         mass_bias15=sku.get("mass_bias"), price=p["max_price"], coverstock_name=p.get("coverstock_name"),
+        finish_grit=p.get("finish_grit"),
     )
 
 
@@ -4047,18 +4088,28 @@ def backfill_finish_categories(conn) -> dict:
     backfill overwrites a correction he made by hand."""
     with conn.cursor() as cur:
         cur.execute(
-            "select id, factory_finish, finish_category from products where factory_finish is not null"
+            "select id, factory_finish, finish_category, finish_type, finish_grit from products"
+            " where factory_finish is not null"
         )
         rows = cur.fetchall()
 
+    # Runbook 6gh: finish_type and finish_grit (migration 061) are filled
+    # by the same pass, under the same overwrite-when-changed rule. A
+    # column the classifier can't fill (None) is left as it is.
     updated = 0
     with conn.cursor() as cur:
-        for product_id, raw_finish, current_category in rows:
-            computed = classify_factory_finish(raw_finish)
-            if computed is not None and computed != current_category:
+        for product_id, raw_finish, current_category, current_type, current_grit in rows:
+            computed = {"finish_category": classify_factory_finish(raw_finish),
+                        "finish_type": classify_finish_type(raw_finish),
+                        "finish_grit": finish_grit(raw_finish)}
+            current = {"finish_category": current_category, "finish_type": current_type,
+                       "finish_grit": current_grit}
+            changed = {k: v for k, v in computed.items() if v is not None and v != current[k]}
+            if changed:
+                # Column names come from the fixed dict above, never input.
                 cur.execute(
-                    "update products set finish_category = %s where id = %s",
-                    (computed, product_id),
+                    f"update products set {', '.join(f'{k} = %s' for k in changed)} where id = %s",
+                    (*changed.values(), product_id),
                 )
                 updated += 1
     conn.commit()

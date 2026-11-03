@@ -1702,7 +1702,7 @@ def list_similar_products(conn, product_id: str, limit: int = 5) -> list:
 #   applying the coefficients: with only ~44 points some coefficients are
 #   steep (RG especially), and other brands' outliers mustn't extrapolate
 #   wildly. Missing RG/differential -> the chart data's mean; missing mass
-#   bias -> 0 (symmetric); missing finish -> satin; missing core type ->
+#   bias -> 0 (symmetric); missing finish -> the middle level; missing core type ->
 #   its own "unknown" coefficient.
 # - Recomputed only on demand (admin Batch Jobs "Re-estimate plotter
 #   positions" -> admin_api.reestimate_plotter_positions); chart and manual
@@ -1728,8 +1728,20 @@ def list_similar_products(conn, product_id: str, limit: int = 5) -> list:
 PLOTTER_OIL_MIN, PLOTTER_OIL_MAX = 1, 16
 PLOTTER_MOTION_MIN, PLOTTER_MOTION_MAX = 1, 18
 
-PLOTTER_FINISH_LEVEL = {"polished": 0.0, "satin": 1.0, "dull": 2.0}
+PLOTTER_FINISH_LEVEL = {"polished": 0.0, "dull": 2.0}
 PLOTTER_FINISH_DEFAULT = 1.0
+# Runbook 6gh: finish_category no longer has 'satin' (Al: "can we update
+# all to not have satin"), but the model was fit on three levels and a
+# fine-sanded ball does read differently from a coarse one. So a dull
+# (sanded) ball at 3000+ grit -- what used to be classed satin -- keeps
+# the middle level, read from finish_grit, and the fit is unchanged.
+PLOTTER_FINE_SANDED_GRIT = 3000
+
+
+def _plotter_finish_level(finish_category: str = None, finish_grit=None) -> float:
+    if finish_category == "dull" and finish_grit is not None and int(finish_grit) >= PLOTTER_FINE_SANDED_GRIT:
+        return PLOTTER_FINISH_DEFAULT
+    return PLOTTER_FINISH_LEVEL.get(finish_category, PLOTTER_FINISH_DEFAULT)
 PLOTTER_INPUT_RANGES = {
     "rg15": (2.462, 2.65),
     "diff15": (0.015, 0.058),
@@ -1820,7 +1832,8 @@ def _plotter_linear(model: dict, features: dict) -> float:
 def estimate_oil_motion(coverstock_material: str = None, coverstock_type: str = None,
                          has_particle: bool = False, core_type: str = None,
                          finish_category: str = None, rg15=None, diff15=None,
-                         mass_bias15=None, price=None, coverstock_name: str = None) -> dict:
+                         mass_bias15=None, price=None, coverstock_name: str = None,
+                         finish_grit=None) -> dict:
     """Pure function (no DB): the plotter's (oil 1-16, motion 1-18)
     estimate for a ball from its specs -- see the PLOTTER ESTIMATOR v3
     comment above for the model, the data behind it, and every rule.
@@ -1838,7 +1851,7 @@ def estimate_oil_motion(coverstock_material: str = None, coverstock_type: str = 
         "solid": 1.0 if coverstock_type == "solid" else 0.0,
         "asymmetric": 1.0 if core_type == "asymmetric" else 0.0,
         "core_unknown": 1.0 if core_type is None else 0.0,
-        "finish": PLOTTER_FINISH_LEVEL.get(finish_category, PLOTTER_FINISH_DEFAULT),
+        "finish": _plotter_finish_level(finish_category, finish_grit),
         "rg15": _plotter_clamp_input("rg15", rg15 if rg15 is not None else PLOTTER_INPUT_FILL["rg15"]),
         "diff15": _plotter_clamp_input("diff15", diff_value if diff_value is not None else PLOTTER_INPUT_FILL["diff15"]),
         "mass_bias15": _plotter_clamp_input(
@@ -1930,7 +1943,7 @@ def list_plotter_positions(conn, status: str = "current", ids: list = None) -> l
             select p.id, p.name, p.url,
                    b.name as brand_name,
                    c.core_type, p.coverstock_type, p.coverstock_material, p.has_particle,
-                   p.finish_category, {PLOTTER_MAX_PRICE_SQL} as max_price,
+                   p.finish_category, p.finish_grit, {PLOTTER_MAX_PRICE_SQL} as max_price,
                    (select cv.name from coverstocks cv where cv.id = p.coverstock_id) as coverstock_name,
                    p.oil_rating, p.motion_rating, p.oil_motion_source,
                    coalesce(
@@ -1985,6 +1998,7 @@ def list_plotter_positions(conn, status: str = "current", ids: list = None) -> l
                 finish_category=p["finish_category"], rg15=ref_sku.get("rg"),
                 diff15=ref_sku.get("differential"), mass_bias15=ref_sku.get("mass_bias"),
                 price=p["max_price"], coverstock_name=p["coverstock_name"],
+                finish_grit=p.get("finish_grit"),
             )
             oil, motion, source = estimate["oil"], estimate["motion"], "estimated"
         results.append({
