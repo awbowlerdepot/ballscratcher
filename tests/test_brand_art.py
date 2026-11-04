@@ -757,3 +757,19 @@ def test_flatten_backdrop_sets_band_color_and_keeps_ball_and_shadow():
     shadow = out.getpixel((345, 405))
     assert shadow[1] < 242 - 30                                # still a shadow
     assert brand_art.backdrop_matches(out, "#fff200")
+
+
+def test_pale_band_16x9_is_the_4x3_draw_on_a_wider_band():
+    # Runbook 6gk: Gemini's 16:9 drew the ball too big every time on Radical.
+    aspects = []
+    def flat(pid, raw, theme, no_text, aspect):
+        aspects.append(aspect)
+        return _png((2048, 1536), (252, 238, 10))
+    slot = _plan_default()["hero-1"]
+    images, method = brand_art.render_slot(slot, YELLOW, {"fetch_bytes": lambda u: _png_cutout(), "gemini": flat,
+                                                          "sleep": lambda s: None})
+    assert method == "gemini" and aspects == ["4:3"]
+    (tall, im43), (wide, im169) = images
+    assert im169.size == wide
+    assert im169.getpixel((20, 450)) == (255, 242, 0)
+    assert brand_art.backdrop_matches(im169, "#fff200")

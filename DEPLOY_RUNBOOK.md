@@ -23969,6 +23969,32 @@ Radical's hero-1 as in 6gg's verify.
 backdrop and the lighter patch come out exactly #fff200, the ball and logo
 are untouched, and the shadow stays darker.
 
+### 6gk. A pale band's 16:9 hero is its 4:3 draw on a wider band (2026-11-04, not deployed)
+
+After the 6gg/6gj deploy, Radical's live hero-1 redraw still failed. The 4:3
+passed, but every 16:9 attempt drew the ball at about 49–50% of the frame
+width, which is about 88% of a short frame's height. That's over
+`logo_size_ok`'s 85% limit, even when the prompt asked for 45%. Over the day
+it was 12 of 12 attempts.
+
+**Change (`brand_art.render_slot`, ball product hero on a light band):**
+Gemini draws the 4:3 only. `brand_art_compose.widen_flat` makes the 16:9 by
+scaling the flattened 4:3 to the 16:9's height and setting it at the right of
+a canvas of the band color. 6gj's exact backdrop makes the join seamless.
+The left stays empty band for the headline, and both slides show the same
+ball. Dark bands still draw both sizes.
+
+**Radical hero-1 is live (2026-11-04):** drawn by a local `run_live.py` run
+with this code. It wrote the live keys and the `brand_art_slots` row and
+cleared the CDN. 4:3 logo check -1%. Through the CDN, the corners read
+(253, 234, 1) and (255, 243, 1).
+
+**Deploy:** `sam build && sam deploy`, so Lambda redraws (the weekly sweep, a
+new release) make the 16:9 the same way. Until then, a Lambda redraw that
+fails keeps this image (6gf).
+
+**Tests:** 1 new in `tests/test_brand_art.py` (48).
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

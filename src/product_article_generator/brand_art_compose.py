@@ -207,6 +207,17 @@ def flatten_backdrop(im: Image.Image, value: str, spots: list) -> Image.Image:
     return Image.composite(out, im, keep_mask)
 
 
+def widen_flat(im: Image.Image, size: tuple, value: str) -> Image.Image:
+    """A flattened pale-band draw (flatten_backdrop) set at the right of a
+    wider canvas of the band color, scaled to its height: the 16:9 from the
+    4:3 (runbook 6gk). The left stays empty band for the headline."""
+    w, h = size
+    scaled = im.convert("RGB").resize((round(im.width * h / im.height), h), Image.LANCZOS)
+    canvas = Image.new("RGB", size, hex_rgb(value))
+    canvas.paste(scaled, (w - scaled.width, 0))
+    return canvas
+
+
 def background(size: tuple, palette: dict, glow_at: tuple = (0.5, 0.55)) -> Image.Image:
     """The brand's background color with a soft glow of its accent color
     behind the products. Drawn, not generated: no texture, no marks."""

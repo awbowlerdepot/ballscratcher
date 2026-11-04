@@ -934,8 +934,20 @@ def render_slot(slot: dict, palette: dict, deps: dict) -> tuple:
         # Both sizes of one hero are the same slide (4:3 desktop, 16:9
         # phone), so they come from the same method: if Gemini can't make
         # one of them pass the logo checks, both are the composite.
-        drawn = [render_ball_product_hero(focus, size, palette, deps) for size in slot["sizes"]]
-        if all(m == "gemini" for _, m in drawn):
+        if compose.is_light(palette["background"]) and len(slot["sizes"]) == 2:
+            # Runbook 6gk: on a pale band the 16:9 is the 4:3 draw on a
+            # wider canvas of the band color. Asked for a 16:9, Gemini drew
+            # the ball at ~88% of the short frame's height however small it
+            # was asked for (Radical, 2026-11-04: 12 of 12 too big), and
+            # 6gj's flat backdrop makes the join seamless. Same ball in both.
+            tall, wide = slot["sizes"]
+            im, method = render_ball_product_hero(focus, tall, palette, deps)
+            if method == "gemini":
+                return [(tall, im), (wide, compose.widen_flat(im, wide, palette["background"]))], "gemini"
+            drawn = [(im, method)]
+        else:
+            drawn = [render_ball_product_hero(focus, size, palette, deps) for size in slot["sizes"]]
+        if len(drawn) == len(slot["sizes"]) and all(m == "gemini" for _, m in drawn):
             return [(size, im) for size, (im, _) in zip(slot["sizes"], drawn)], "gemini"
         cut = compose.cutout(first_photo(focus, fetch)[0], deps.get("remove_bg"))
         return [(size, compose.product_hero(size, palette, cut)) for size in slot["sizes"]], "composite"
