@@ -2249,6 +2249,8 @@ def test_classify_finish_type_and_grit():
     assert service.classify_finish_type(None) is None
     assert service.finish_grit("500/1000/2000 Siaair Micro Pad") == 2000
     assert service.finish_grit("5500 Grit LSP") == 5500
+    assert service.finish_grit("2,000 Siaair Micro Pad") == 2000
+    assert service.finish_grit("500, 1000, 1,500 Abralon") == 1500
     assert service.finish_grit("Royal Compound") is None
     assert service.finish_grit(None) is None
 

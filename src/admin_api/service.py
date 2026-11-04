@@ -144,7 +144,9 @@ def finish_grit(raw_finish: str):
     """The finest (highest) grit named in a factory_finish string, e.g.
     5500 for "5500 Grit LSP" and 2000 for "500/1000/2000 Siaair Micro Pad";
     None when no grit number appears."""
-    grits = [int(n) for n in re.findall(r"\d{3,5}", raw_finish or "")]
+    # "2,000 Siaair Micro Pad" (Brunswick): a thousands comma is part of
+    # the number, or the grit reads as 0 (found by the 6gh backfill).
+    grits = [int(n.replace(",", "")) for n in re.findall(r"\d{1,2},\d{3}|\d{3,5}", raw_finish or "")]
     return max(grits) if grits else None
 
 

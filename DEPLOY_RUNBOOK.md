@@ -23774,7 +23774,7 @@ empty.
 
 **Tests:** 1 new in `tests/test_brand_art.py` (46).
 
-### 6gg. Brand art on a pale color asks for a smaller ball (2026-11-03, not deployed)
+### 6gg. Brand art on a pale color asks for a smaller ball (2026-11-03, deployed 2026-11-04 00:06 UTC)
 
 The first live redraw of Radical's hero-1 after the 6gd–6gf deploy
 (2026-11-03 17:54 UTC) failed twice in Lambda. 6gf kept the old image each
@@ -23803,7 +23803,7 @@ and 4:3 for about 55%.
 (`aws lambda invoke --function-name bowling-scraper-product-article-generator --invocation-type Event --payload '{"brand_art":"run","task_id":"dc232272-50e6-48fe-8387-585c39af187e","slots":["hero-1"],"trigger":"manual"}' --cli-binary-format raw-in-base64-out /dev/null`)
 and check the logs show `logo ok=True` on both sizes within the three attempts.
 
-### 6gh. Finish type: sanded or polished, no satin; LSP is polished (2026-11-03, not deployed)
+### 6gh. Finish type: sanded or polished, no satin; LSP is polished (2026-11-03, deployed 2026-11-04 00:06 UTC)
 
 The Bowler Depot theme session reported that the store showed Motiv Nebula
 ("5500 Grit LSP") as "Finish Type: Satin". Finish Type is written to
@@ -23872,9 +23872,25 @@ Bowler Depot theme session, after this deploy is live.
   should show no satin, and every `finish_type` matching its category.
 - Motiv Nebula should be polished / polished / 5500.
 
+**Done (2026-11-04):**
+- 061 was applied at about 00:00 UTC, before the deploy. Satin went to dull
+  (241 rows), leaving 610 dull, 657 polished and 702 empty.
+- The deploy finished at 00:06 UTC.
+- The backfill updated 1,641 of 1,772 rows with a finish. Totals now:
+  dull/sanded 670, polished/polished 971, empty 328 (no finish text). Nebula
+  and Raptor Pursuit are polished at 5500; Orion Nebula is sanded at 3000.
+
+**Follow-up fix (not yet deployed):** the first backfill run stopped on
+Brunswick's "2,000 Siaair Micro Pad". The comma split the number, so the grit
+read as 0 and `products_finish_grit_check` rejected it. Nothing was written,
+because it's one transaction. `finish_grit` and the article generator's hint
+now read `\d{1,2},\d{3}` as one number. The backfill was then run locally
+with the fixed code. The deployed admin route still has the old parsing, so
+don't rerun it from admin until the next `sam build && sam deploy`.
+
 **Tests:**
-- `tests/test_admin_api_service.py` (468): LSP/LSS, type and grit, the LSP
-  backfill.
+- `tests/test_admin_api_service.py` (468): LSP/LSS, type and grit (including
+  comma grits), the LSP backfill.
 - `tests/test_product_article_generator.py`.
 - `tests/test_plotter_estimator_sync.py`: the grid adds grit. Run it with
   `PYTHONPATH=src/admin_api`, since `oil_patterns` doesn't import without it,
@@ -23912,7 +23928,7 @@ checks.
 
 Copy rather than redraw, so the live art is exactly what Al approved.
 
-### 6gj. A pale band's Gemini backdrop is set to the band color exactly (2026-11-03, not deployed)
+### 6gj. A pale band's Gemini backdrop is set to the band color exactly (2026-11-03, deployed 2026-11-04 00:06 UTC)
 
 Radical's hero-1 kept failing `backdrop_matches` after 6gg. A diagnostic
 render logged the edge colors Gemini paints when asked for #fff200 (255,

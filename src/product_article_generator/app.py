@@ -1888,7 +1888,8 @@ def build_gemini_scene_prompt(product: dict, article: dict, variant: str,
     finish_category = classify_factory_finish(product.get("factory_finish"))
     # Runbook 6gh: said as 'sanded' with its grit, Al's and the
     # manufacturers' word, not the old dull/satin buckets.
-    grit = max((int(n) for n in re.findall(r"\d{3,5}", product.get("factory_finish") or "")), default=None)
+    grit = max((int(n.replace(",", "")) for n in re.findall(r"\d{1,2},\d{3}|\d{3,5}", product.get("factory_finish") or "")),
+               default=None)
     if finish_category == "polished":
         finish_described = "'polished' (a distinct polish/compound step producing real gloss)"
     else:
