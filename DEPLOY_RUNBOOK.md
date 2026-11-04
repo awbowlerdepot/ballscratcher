@@ -23880,13 +23880,13 @@ Bowler Depot theme session, after this deploy is live.
   dull/sanded 670, polished/polished 971, empty 328 (no finish text). Nebula
   and Raptor Pursuit are polished at 5500; Orion Nebula is sanded at 3000.
 
-**Follow-up fix (not yet deployed):** the first backfill run stopped on
+**Follow-up fix (deployed 2026-11-04 00:22 UTC):** the first backfill run stopped on
 Brunswick's "2,000 Siaair Micro Pad". The comma split the number, so the grit
 read as 0 and `products_finish_grit_check` rejected it. Nothing was written,
 because it's one transaction. `finish_grit` and the article generator's hint
 now read `\d{1,2},\d{3}` as one number. The backfill was then run locally
-with the fixed code. The deployed admin route still has the old parsing, so
-don't rerun it from admin until the next `sam build && sam deploy`.
+with the fixed code. The admin route had the old parsing until the 00:22
+deploy; it's safe to rerun now.
 
 **Tests:**
 - `tests/test_admin_api_service.py` (468): LSP/LSS, type and grit (including
