@@ -23969,7 +23969,7 @@ Radical's hero-1 as in 6gg's verify.
 backdrop and the lighter patch come out exactly #fff200, the ball and logo
 are untouched, and the shadow stays darker.
 
-### 6gk. A pale band's 16:9 hero is its 4:3 draw on a wider band (2026-11-04, not deployed)
+### 6gk. A pale band's 16:9 hero is its 4:3 draw on a wider band (2026-11-04, deployed 01:14 UTC)
 
 After the 6gg/6gj deploy, Radical's live hero-1 redraw still failed. The 4:3
 passed, but every 16:9 attempt drew the ball at about 49–50% of the frame
