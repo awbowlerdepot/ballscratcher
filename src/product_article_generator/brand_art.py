@@ -543,7 +543,7 @@ def _join(names: list) -> str:
 
 
 def plan_slots(task: dict, balls: list, lines: list, companions: list, stocked: set,
-               today: datetime.date) -> list:
+               today: datetime.date, previous: dict | None = None) -> list:
     """Every slot the task draws, with its inputs and their fingerprint.
     Slots: the hero slots from params.heroes (DEFAULT_HEROES), plus one
     line image per line of the groupings named in params.line_groupings.
@@ -627,6 +627,7 @@ def plan_slots(task: dict, balls: list, lines: list, companions: list, stocked: 
             # and the front-center ball in the composite.
             items.sort(key=lambda b: b.get("demand_score") if b.get("demand_score") is not None else -1,
                        reverse=True)
+            items = _keep_near_tie_order(items, (previous or {}).get(slot_key) or [])
             items = [_ball_item(b) for b in items[:6]]
         elif hero_type == "lineup":
             ids = h.get("ball_ids") or []
@@ -994,8 +995,40 @@ def save_slot(conn, task_id: str, slot: dict, keys: tuple, method: str, error: s
 
 # ---------------------------------------------------------------- running
 
-def gather(conn, task: dict, deps: dict, assign: bool) -> tuple:
-    """(slots, assign_result) for a task, reading BigCommerce once."""
+# Runbook 6gl. Motiv's hero-2 had Raptor Pursuit 0.9878 and Forge Fuel
+# 0.9876 -- a tie that flips with each daily demand refresh. Every flip
+# changes the slot's inputs, so dispatch would redraw the shop scene with
+# Gemini each time and replace the art Al approved. Two balls trade places
+# only when their scores differ by more than this; inside it they keep the
+# order the current image has.
+DEMAND_ORDER_MARGIN = 0.02
+
+
+def _keep_near_tie_order(items: list, previous_ids: list) -> list:
+    """`items` sorted by demand, highest first, with neighbours whose
+    scores are within DEMAND_ORDER_MARGIN put back in their `previous_ids`
+    order. A ball the previous image didn't have stays where demand put it."""
+    rank = {pid: i for i, pid in enumerate(previous_ids)}
+    items = list(items)
+    score = lambda b: b.get("demand_score") if b.get("demand_score") is not None else -1
+    for _ in range(len(items)):
+        moved = False
+        for i in range(len(items) - 1):
+            a, b = items[i], items[i + 1]
+            if (a["product_id"] in rank and b["product_id"] in rank
+                    and rank[b["product_id"]] < rank[a["product_id"]]
+                    and abs(score(a) - score(b)) <= DEMAND_ORDER_MARGIN):
+                items[i], items[i + 1] = b, a
+                moved = True
+        if not moved:
+            break
+    return items
+
+
+def gather(conn, task: dict, deps: dict, assign: bool, stored: dict | None = None) -> tuple:
+    """(slots, assign_result) for a task, reading BigCommerce once.
+    `stored` (load_slots) gives each slot's current featured order, which
+    a demand near-tie keeps (runbook 6gl)."""
     balls = list_brand_balls(conn, task["brand_id"])
     assigned = apply_assign_rules(conn, task["brand_id"], balls, deps["fetch_html"]) if assign else None
     lines = list_lines(conn, task["brand_id"])
@@ -1005,7 +1038,8 @@ def gather(conn, task: dict, deps: dict, assign: bool) -> tuple:
         catalog = fetch_brand_catalog(deps["bc_get"], bc_brand)
         companions = stocked_companions(catalog, fetch_category_roots(deps["bc_get"]))
         stocked = stocked_bc_ids(catalog)
-    slots = plan_slots(task, balls, lines, companions, stocked, deps.get("today") or datetime.date.today())
+    previous = {k: [f.get("product_id") for f in v.get("featured") or []] for k, v in (stored or {}).items()}
+    slots = plan_slots(task, balls, lines, companions, stocked, deps.get("today") or datetime.date.today(), previous)
     return slots, assigned
 
 
@@ -1026,7 +1060,7 @@ def run_task(conn, task_id: str, deps: dict, slot_keys: list | None = None, trig
     detail = {"slots": {}, "assigned": None}
     try:
         stored = load_slots(conn, task_id)
-        slots, assigned = gather(conn, task, deps, assign=trigger == "manual")
+        slots, assigned = gather(conn, task, deps, assign=trigger == "manual", stored=stored)
         detail["assigned"] = assigned
         slug = task["params"].get("slug") or re.sub(r"[^a-z0-9]+", "-", task["brand_name"].lower()).strip("-")
         palette = task["params"]["palette"]
@@ -1114,8 +1148,9 @@ def dispatch(conn, deps: dict, invoke_run) -> dict:
     out, queue = {}, []
     for task in list_enabled_tasks(conn):
         try:
-            slots, assigned = gather(conn, task, deps, assign=True)
-            due = due_slots(task, slots, load_slots(conn, task["id"]), now)
+            stored = load_slots(conn, task["id"])
+            slots, assigned = gather(conn, task, deps, assign=True, stored=stored)
+            due = due_slots(task, slots, stored, now)
             enabled_rules = set(task["triggers"] or [])
             due = {k: v for k, v in due.items() if v in enabled_rules}
             weekly = any(v == "weekly_sweep" for v in due.values())

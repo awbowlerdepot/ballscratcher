@@ -611,7 +611,7 @@ def test_dispatch_hands_every_due_run_to_one_queue():
 
     orig = brand_art.list_enabled_tasks, brand_art.gather, brand_art.load_slots
     brand_art.list_enabled_tasks = lambda conn: tasks
-    brand_art.gather = lambda conn, task, deps, assign: (slots, None)
+    brand_art.gather = lambda conn, task, deps, assign, stored=None: (slots, None)
     brand_art.load_slots = lambda conn, tid: {"hero-1": {"input_hash": "h", "featured": []}}
     try:
         brand_art.dispatch(Conn(), {"now": datetime.datetime(2026, 11, 3, tzinfo=datetime.timezone.utc)}, calls.append)
@@ -682,7 +682,7 @@ def test_a_run_that_draws_something_clears_the_brands_cdn_cache():
             "sizes": [(1600, 1200)], "alt": "a", "input_hash": "h"}
     orig = brand_art.load_task, brand_art.gather, brand_art.render_slot, brand_art.save_slot, brand_art.load_slots
     brand_art.load_task = lambda conn, tid: task
-    brand_art.gather = lambda conn, t, deps, assign: ([slot], None)
+    brand_art.gather = lambda conn, t, deps, assign, stored=None: ([slot], None)
     brand_art.render_slot = lambda s, p, d: ([((1600, 1200), Image.new("RGB", (1600, 1200)))], "composite")
     brand_art.save_slot = lambda *a, **k: None
     brand_art.load_slots = lambda conn, tid: {}
@@ -711,7 +711,7 @@ def test_a_composite_never_replaces_a_gemini_hero():
             "sizes": [(1600, 1200)], "alt": "a", "input_hash": "new"}
     orig = brand_art.load_task, brand_art.gather, brand_art.render_slot, brand_art.save_slot, brand_art.load_slots
     brand_art.load_task = lambda conn, tid: task
-    brand_art.gather = lambda conn, t, deps, assign: ([slot], None)
+    brand_art.gather = lambda conn, t, deps, assign, stored=None: ([slot], None)
     brand_art.render_slot = lambda s, p, d: ([((1600, 1200), Image.new("RGB", (1600, 1200)))], "composite")
     brand_art.save_slot = lambda conn, tid, s, keys, method, error=None: saves.append((method, error))
     try:
@@ -773,3 +773,17 @@ def test_pale_band_16x9_is_the_4x3_draw_on_a_wider_band():
     assert im169.size == wide
     assert im169.getpixel((20, 450)) == (255, 242, 0)
     assert brand_art.backdrop_matches(im169, "#fff200")
+
+
+def test_demand_near_tie_keeps_the_current_image_order():
+    # Runbook 6gl: Motiv's Raptor Pursuit 0.9878 vs Forge Fuel 0.9876 flipped
+    # daily, and each flip would redraw the approved shop scene.
+    items = [{"product_id": "raptor", "demand_score": 0.9878}, {"product_id": "forge", "demand_score": 0.9876},
+             {"product_id": "venom", "demand_score": 0.9789}, {"product_id": "orion", "demand_score": 0.4555}]
+    kept = brand_art._keep_near_tie_order(items, ["forge", "raptor", "venom", "shadow", "orion"])
+    assert [i["product_id"] for i in kept] == ["forge", "raptor", "venom", "orion"]
+    # A real gap still reorders, and with no previous image demand decides.
+    items[0]["demand_score"] = 0.999
+    items[1]["demand_score"] = 0.95
+    assert [i["product_id"] for i in brand_art._keep_near_tie_order(items, ["forge", "raptor"])][:2] == ["raptor", "forge"]
+    assert brand_art._keep_near_tie_order(items, []) == items

@@ -23942,6 +23942,21 @@ motivbowling.com and the theme: Primal Ghost, Sigma Tour Pearl, Orion
 Nebula, Nebula (Orion position 2, Nebula 3). The order only affects how
 `/v1/brands/{id}/lineups` lists the line; the hero picks don't use it.
 
+**Swapped live (2026-11-04):** Al: "go ahead and swap the motiv heroes live".
+The swap is scratchpad `motiv_swap.py`:
+- It re-planned the slots and asserted the picks matched the previews.
+- It copied the four preview files onto `brand-art/motiv/hero-{1,2}{,-16x9}.webp`,
+  with `CACHE_CONTROL`.
+- It saved both slot rows from the plan, with Orion's 4520 in the featured
+  list, and invalidated `/brand-art/motiv/*`.
+- Through the CDN, the live files are byte-identical to the previews.
+
+The first try stopped before writing anything. The overnight demand refresh
+had put Raptor Pursuit (0.9878) ahead of Forge Fuel (0.9876), so the plan no
+longer matched the approved hero-2. That's 6gl: the rows were saved from a
+plan that keeps the image's order. **The Motiv task stays paused until 6gl is
+deployed.** Then `update tasks set enabled = true where id = 'ee091088-2b7a-4a2b-a501-9981103b1c71';`
+
 ### 6gj. A pale band's Gemini backdrop is set to the band color exactly (2026-11-03, deployed 2026-11-04 00:06 UTC)
 
 Radical's hero-1 kept failing `backdrop_matches` after 6gg. A diagnostic
@@ -24008,6 +24023,29 @@ new release) make the 16:9 the same way. Until then, a Lambda redraw that
 fails keeps this image (6gf).
 
 **Tests:** 1 new in `tests/test_brand_art.py` (48).
+
+### 6gl. A demand near-tie keeps the hero-2 order the current image has (2026-11-04, not deployed)
+
+Motiv's hero-2 ("Find your reaction", front ball = highest demand, runbook
+6fv) had Raptor Pursuit at 0.9878 and Forge Fuel at 0.9876. The daily demand
+refresh flips a tie like that back and forth. Every flip changes the slot's
+`input_hash` (same balls, new order), so dispatch would redraw the shop scene
+with Gemini as `photo_changed` each time, replacing the art Al approved. Any
+brand with close scores would churn the same way.
+
+**Change (`brand_art`):**
+- `_keep_near_tie_order`: after the demand sort, neighbouring balls whose
+  scores are within `DEMAND_ORDER_MARGIN` (0.02) go back to the order of the
+  current image's featured list. A real gap still reorders. A ball the
+  current image doesn't have stays where demand put it.
+- `plan_slots(..., previous)` and `gather(..., stored)` take that order.
+  `run_task` already loaded the stored slots; dispatch now loads them before
+  planning, not after.
+
+**Deploy:** `sam build && sam deploy`. Then turn Motiv back on (6gi).
+
+**Tests:** 1 new in `tests/test_brand_art.py` (49). Three dispatch/run tests'
+`gather` stubs take `stored`.
 
 ## 7. Ongoing operations
 
