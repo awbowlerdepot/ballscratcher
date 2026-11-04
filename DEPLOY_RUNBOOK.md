@@ -23928,6 +23928,15 @@ checks.
 
 Copy rather than redraw, so the live art is exactly what Al approved.
 
+**Linked to BigCommerce (2026-11-04):** the theme session created product
+4520, "Motiv Orion Nebula" (pre-order). Al: "yes link it". One
+`bowlerdepot_products` row now marks Orion Nebula as matched to 4520. It was
+written by `scripts/link_bowlerdepot_products.py`'s guarded insert, after
+checking the name and brand 56 in BigCommerce. The partner API returns
+`bigcommerce_product_id: 4520`; `bowlerdepot_url` fills on the daily
+reconciliation. The previews were drawn before the link, so the swap's
+re-plan records 4520 in the featured list, with the same picks and image.
+
 ### 6gj. A pale band's Gemini backdrop is set to the band color exactly (2026-11-03, deployed 2026-11-04 00:06 UTC)
 
 Radical's hero-1 kept failing `backdrop_matches` after 6gg. A diagnostic
