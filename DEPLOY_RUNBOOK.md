@@ -23937,6 +23937,11 @@ checking the name and brand 56 in BigCommerce. The partner API returns
 reconciliation. The previews were drawn before the link, so the swap's
 re-plan records 4520 in the featured list, with the same picks and image.
 
+**Line order (2026-11-04):** Al: "yes swap them". Medium Oil now matches
+motivbowling.com and the theme: Primal Ghost, Sigma Tour Pearl, Orion
+Nebula, Nebula (Orion position 2, Nebula 3). The order only affects how
+`/v1/brands/{id}/lineups` lists the line; the hero picks don't use it.
+
 ### 6gj. A pale band's Gemini backdrop is set to the band color exactly (2026-11-03, deployed 2026-11-04 00:06 UTC)
 
 Radical's hero-1 kept failing `backdrop_matches` after 6gg. A diagnostic
