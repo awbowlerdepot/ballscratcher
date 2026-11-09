@@ -24161,6 +24161,18 @@ an out-of-range value keeps the stored value if that one is in range. A bad
 scrape never wipes a good value. Nothing to keep (a new row, or a blank)
 still blanks and flags as before.
 
+On an INSERT, the stored value is looked up too. The scrapers upsert, and
+Postgres runs the BEFORE INSERT trigger on the incoming row first. There it
+would blank the typo, and `do update set differential = excluded.differential`
+would then copy the blank over the good value. The script's first run caught
+this in its re-scrape simulation and committed nothing. The review-row
+de-duplication also now compares numbers, so 0.52 and 0.520 count as the
+same raw value. A rolled-back dry run then passed every case:
+- An upsert with the typos keeps 0.052 / 2.48.
+- A plain update with a typo keeps the stored value.
+- A new bad row still blanks and flags.
+- A stored blank plus a typo stays blank with no duplicate review row.
+
 **Apply:**
 ```bash
 DB_SECRET_ARN=arn:aws:secretsmanager:us-west-1:563981859606:secret:bowling-scraper-db-rQYdf7 .venv/bin/python scripts/write_6gn_spec_lookups.py

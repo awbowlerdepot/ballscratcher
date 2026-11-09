@@ -16,6 +16,19 @@
 -- and the review row still happen when there's nothing good to keep (a
 -- new row, or a stored value that's blank).
 --
+-- "The value already stored" has to be looked up on an INSERT too. The
+-- scrapers upsert (`insert ... on conflict do update set rg =
+-- excluded.rg`), and Postgres runs the BEFORE INSERT trigger on the
+-- incoming row first: it would blank the typo there, and the update half
+-- would then copy that blank over the good value (the first run of
+-- scripts/write_6gn_spec_lookups.py caught exactly this in its re-scrape
+-- simulation, before committing anything). So on an INSERT whose
+-- (product_id, weight_lbs) row already exists, the stored row stands in
+-- for OLD, and the incoming row carries the good value into `excluded`.
+--
+-- The review row's de-duplication compares numbers, not text: a scraper
+-- sending 0.52 and the stored 0.520 are the same raw value.
+--
 -- Only the function changes; 062's trigger keeps calling it.
 
 create or replace function product_skus_usbc_spec_check() returns trigger
@@ -29,7 +42,19 @@ declare
     bad text[] := '{}';
     raw jsonb := jsonb_build_object('rg', new.rg, 'differential', new.differential, 'mass_bias', new.mass_bias);
     f text;
+    -- The row this write replaces: OLD on an UPDATE; on an INSERT, the
+    -- row an upsert is about to conflict with, if there is one.
+    stored_rg numeric;
+    stored_diff numeric;
+    stored_mb numeric;
 begin
+    if tg_op = 'UPDATE' then
+        stored_rg := old.rg; stored_diff := old.differential; stored_mb := old.mass_bias;
+    else
+        select s.rg, s.differential, s.mass_bias into stored_rg, stored_diff, stored_mb
+        from product_skus s where s.product_id = new.product_id and s.weight_lbs = new.weight_lbs;
+    end if;
+
     -- 1. Lost decimal.
     if new.differential >= 1 and new.differential <= 60 and new.differential = trunc(new.differential) then
         new.differential := new.differential / 1000;
@@ -48,16 +73,16 @@ begin
     -- 3. Out of range: keep the stored value if it's good (063),
     --    otherwise blank and flag.
     if new.rg is not null and (new.rg < rg_min or new.rg > rg_max) then
-        if tg_op = 'UPDATE' and old.rg between rg_min and rg_max then
-            new.rg := old.rg;
+        if stored_rg between rg_min and rg_max then
+            new.rg := stored_rg;
         else
             bad := bad || 'rg'::text;
             new.rg := null;
         end if;
     end if;
     if new.differential is not null and (new.differential < 0 or new.differential > diff_max) then
-        if tg_op = 'UPDATE' and old.differential between 0 and diff_max then
-            new.differential := old.differential;
+        if stored_diff between 0 and diff_max then
+            new.differential := stored_diff;
         else
             bad := bad || 'differential'::text;
             new.differential := null;
@@ -66,9 +91,9 @@ begin
     if new.mass_bias is not null
        and (new.mass_bias < 0 or new.mass_bias > diff_max
             or (new.differential is not null and new.mass_bias > new.differential)) then
-        if tg_op = 'UPDATE' and old.mass_bias between 0 and diff_max
-           and (new.differential is null or old.mass_bias <= new.differential) then
-            new.mass_bias := old.mass_bias;
+        if stored_mb between 0 and diff_max
+           and (new.differential is null or stored_mb <= new.differential) then
+            new.mass_bias := stored_mb;
         else
             bad := bad || 'mass_bias'::text;
             new.mass_bias := null;
@@ -89,7 +114,7 @@ begin
                 select 1 from review_queue q
                 where q.source = 'usbc_spec_check' and q.product_id = new.product_id
                   and q.field_name = f || '_' || new.weight_lbs || 'lb'
-                  and q.current_value is not distinct from raw ->> f);
+                  and q.current_value::numeric is not distinct from (raw ->> f)::numeric);
         end loop;
     end if;
     return new;

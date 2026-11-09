@@ -90,7 +90,7 @@ cur.execute(
        returning rg, differential""",
     (TR2, BURN),
 )
-sim = [tuple(float(v) for v in r) for r in cur.fetchall()]
+sim = [tuple(None if v is None else float(v) for v in r) for r in cur.fetchall()]
 print("re-scrape simulation:", sim)
 assert sorted(sim) == sorted([(2.54, 0.052), (2.48, 0.050)]), sim
 cur.execute("rollback to savepoint sim")
