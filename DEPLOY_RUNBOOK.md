@@ -23957,6 +23957,9 @@ longer matched the approved hero-2. That's 6gl: the rows were saved from a
 plan that keeps the image's order. **The Motiv task stays paused until 6gl is
 deployed.** Then `update tasks set enabled = true where id = 'ee091088-2b7a-4a2b-a501-9981103b1c71';`
 
+**Re-enabled 2026-11-09**, after confirming `_keep_near_tie_order` in the live
+product-article-generator zip (stack updated 2026-11-05 00:18 UTC).
+
 ### 6gj. A pale band's Gemini backdrop is set to the band color exactly (2026-11-03, deployed 2026-11-04 00:06 UTC)
 
 Radical's hero-1 kept failing `backdrop_matches` after 6gg. A diagnostic
@@ -24024,7 +24027,7 @@ fails keeps this image (6gf).
 
 **Tests:** 1 new in `tests/test_brand_art.py` (48).
 
-### 6gl. A demand near-tie keeps the hero-2 order the current image has (2026-11-04, not deployed)
+### 6gl. A demand near-tie keeps the hero-2 order the current image has (2026-11-04, deployed 2026-11-05)
 
 Motiv's hero-2 ("Find your reaction", front ball = highest demand, runbook
 6fv) had Raptor Pursuit at 0.9878 and Forge Fuel at 0.9876. The daily demand
@@ -24046,6 +24049,72 @@ brand with close scores would churn the same way.
 
 **Tests:** 1 new in `tests/test_brand_art.py` (49). Three dispatch/run tests'
 `gather` stubs take `stored`.
+
+### 6gm. Ball specs checked against the USBC limits (2026-11-09, not applied)
+
+Al: "it looks like the 900 Global Portal bowling ball has a bad spec for its
+mass bias number. 19.000 is likely supposed to be .019. Here is the USBC spec
+for equipment that could be used as a check to make sure they are at least
+within that." (USBC Equipment Specifications and Certifications Manual,
+10/25, Physical Specifications.)
+
+Portal wasn't alone. 36 of 5,959 ball SKU rows were impossible, from every
+platform:
+- **Lost decimal:** 900 Global's image-only Tech Data PDFs go through
+  Textract, which drops the ".0": Portal 15 lb mass bias 19.000, 14 lb
+  differential 49.000; same on Harsh Reality, Viking, Viking Conquest,
+  Eternity PI, Origin EX, Sublime Focus, Vengeance, Vengeance Returns,
+  Xponent Pearl 10, and Motiv Covert VIP EXJ (56.000, from HTML).
+- **Swapped:** Hammer TNBA Chalk 12 lb rg 0.039 / diff 2.600.
+- **Can't be guessed:** Track Cyborg 13 lb diff 2.530 (its RG again), DV8
+  Diva Style's RG column holding 0.040-0.052, Hammer Raw Hammer Burn 15 lb
+  RG 0.480, Motiv Recon RX1 Silver 16 lb RG 2.290, Motiv TR2 diff 0.31-0.52,
+  Tribal Fire 12 lb diff 0.310, Track 300T 15 lb diff 0.090.
+
+**Change (migration 062):** a BEFORE INSERT/UPDATE trigger on
+`product_skus`, so all six writers (five scrapers and `pdf_parser`) and the
+review-queue approve path go through one rule.
+
+Limits for a ball of 13 lb or more (USBC):
+
+| Field | Limit |
+|---|---|
+| RG | 2.447–2.813, checked as 2.44–2.82 because sheets print two decimals |
+| Differential | 0.060 max |
+| Mass bias | no more than the differential (USBC's "intermediate differential") |
+
+Under 13 lb, USBC has no rule, so the limits come from the catalog's own range:
+RG 2.40–2.95, differential up to 0.080. Ebonite's 14 lb RG 2.44 is a real
+published value and stays.
+
+What the trigger does:
+1. A whole number 1–60 in differential or mass bias becomes thousandths
+   (19 → 0.019).
+2. An RG under 0.1 next to a differential of 2.40–2.95 gets swapped.
+3. Anything still out of range is blanked and `needs_review` is set. A
+   `review_queue` row (source `usbc_spec_check`) keeps the raw value, so it
+   can be filled in from the manufacturer's sheet. A blank shows as "not
+   published" everywhere, which is true. A wrong value got shown and drawn
+   on the plotter. The row isn't repeated for the same SKU, field and raw
+   value, so a reject stays rejected through the Sunday re-scrapes.
+
+The migration runs the 36 bad rows through the trigger: 22 repaired, 14
+values blanked into the review queue. A transaction-rolled-back dry run
+showed exactly that, plus an insert and an `on conflict` upsert repairing
+on the way in. The AFTER triggers bump `content_changed_at`, so the fixed
+specs flow to /v1/changes and the BigCommerce sync.
+
+**Apply:** `psql "$DB_URL" -f db/migrations/062_product_skus_usbc_spec_check.sql`.
+No Lambda deploy. Then Admin → Batch Jobs → Re-estimate plotter positions
+(the estimator read 19.000 as its 0.027 cap).
+
+**Verify:**
+```sql
+select count(*) from product_skus where differential >= 1 or mass_bias >= 1;  -- 0
+select rg, differential, mass_bias from product_skus s join products p on p.id = s.product_id
+ where p.name = 'Portal' order by weight_lbs;                                     -- 15 lb mass bias 0.019
+select count(*) from review_queue where source = 'usbc_spec_check';             -- 14
+```
 
 ## 7. Ongoing operations
 
