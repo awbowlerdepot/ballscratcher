@@ -24206,6 +24206,35 @@ It runs in one transaction:
 Tribal Fire is unchanged at 4.3/12.5: its estimate uses the 15 lb row,
 which was already right.
 
+### 6go. The last three blanks filled from bowwwl.com (2026-11-09, applied)
+
+Al: "look up the 300T, Cyborg and Recon specs on bowwwl", then "yes write
+them, including cyborg mass bias". The manufacturers' own pages are wrong
+for these three, so 6gn left them blank.
+
+| Ball | Manufacturer page | bowwwl.com (written) |
+|---|---|---|
+| Track 300T diff 15 lb | 0.090 | 0.029 (14 lb 0.036, 16 lb 0.023) |
+| Track Cyborg diff 13 lb | 2.530 (its RG) | 0.055 |
+| Track Cyborg mass bias 14/15/16 | none | 0.007 |
+| Motiv Recon RX1 Silver RG 16 lb | 2.29 | 2.59 |
+
+bowwwl's 300T 12/13 lb rows weren't taken. They're Cyborg's 12/13 lb numbers
+exactly, and we don't carry those weights.
+
+**A first.** `bowwwl_cross_check/app.py`'s legal note records that
+bowwwl.com's terms restrict copying. Until now its values only ever appeared
+in the review queue. Al chose to publish these after that was raised.
+
+**Applied** with `scripts/write_6go_bowwwl_specs.py`.
+- Review rows: all 14 `usbc_spec_check` rows are approved, and no SKU is
+  left with `needs_review`.
+- Re-estimate: 2 products changed. 300T went from 5.1/11.1 to 4.0/10.4
+  and Cyborg from 7.8/12.3 to 9.0/12.4. Recon RX1 Silver stayed at
+  2.3/11.5.
+- Sunday re-scrapes keep these values: the pages' typos are out of range,
+  so 063 keeps what's stored.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
