@@ -24130,7 +24130,7 @@ select count(*) from review_queue where source = 'usbc_spec_check';             
   EXJ 9.5/12.5 → 9.2/12.2. Balls whose differential was blanked moved toward
   the fill default: TR2 9.2/13.3 → 7.2/11.3, 300T 8.5/13.9 → 5.1/11.1.
 
-### 6gn. Looked-up specs for 6gm's blanks, kept through re-scrapes (2026-11-09, not applied)
+### 6gn. Looked-up specs for 6gm's blanks, kept through re-scrapes (2026-11-09, applied)
 
 Al: "look up the real specs for the 14 blanked values", then "yes write
 them all".
@@ -24189,6 +24189,22 @@ It runs in one transaction:
 
 **Verify:** the script prints review rows `approved 11, pending 3`, and
 "still needs review" lists only 300T 15, Cyborg 13 and Recon RX1 Silver 16.
+
+**Applied 2026-11-09 (Al ran the script).**
+- Re-scrape simulation: TR2 15 lb kept 0.052 and Raw Hammer Burn kept
+  2.48 (rolled back).
+- Review rows: 11 approved, 3 pending. "Still needs review" is exactly
+  the three above.
+- Re-estimate: 3 products changed (oil/motion):
+
+| Ball | After 6gm | After 6gn |
+|---|---|---|
+| TR2 | 7.2 / 11.3 | 8.2 / 12.6 |
+| Raw Hammer Burn | 7.3 / 11.8 | 7.4 / 11.5 |
+| Diva Style | 6.9 / 13.9 | 7.0 / 13.9 |
+
+Tribal Fire is unchanged at 4.3/12.5: its estimate uses the 15 lb row,
+which was already right.
 
 ## 7. Ongoing operations
 
