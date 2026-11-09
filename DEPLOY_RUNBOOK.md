@@ -24130,6 +24130,54 @@ select count(*) from review_queue where source = 'usbc_spec_check';             
   EXJ 9.5/12.5 → 9.2/12.2. Balls whose differential was blanked moved toward
   the fill default: TR2 9.2/13.3 → 7.2/11.3, 300T 8.5/13.9 → 5.1/11.1.
 
+### 6gn. Looked-up specs for 6gm's blanks, kept through re-scrapes (2026-11-09, not applied)
+
+Al: "look up the real specs for the 14 blanked values", then "yes write
+them all".
+
+| Ball | Was | Real | Source |
+|---|---|---|---|
+| Motiv TR2 diff 12/13/14/15/16 | 0.31/0.42/0.48/0.52/0.48 | 0.031/0.042/0.048/0.052/0.048 | Motiv's table is off by ten; the page's own text says ".052 (15# ball)" |
+| Motiv Tribal Fire diff 12 | .31 | 0.031 | same typo; other weights .036–.038 |
+| Hammer Raw Hammer Burn RG 15 | .48 | 2.48 | page prints "RG (.48)"; 14 lb 2.50, 16 lb 2.48 |
+| DV8 Diva Style RG 10/11/12/13 | 0.040/0.052/0.052/0.052 | 2.800/2.769/2.608/2.585 | info sheet PDF, form 1216-11 |
+
+The Diva Style sheet also fixes rows the check couldn't catch:
+- 16 lb RG: stored 2.516 (the 15 lb headline), sheet says 2.503.
+- Differentials: 10–13 and 16 lb filled in.
+- 14 lb: the row was missing; added as 2.532 / 0.052.
+- Mass bias: 0.001 at every weight.
+
+Still blank and pending, because the manufacturer's own page is wrong:
+- Track 300T 15 lb differential (0.090)
+- Track Cyborg 13 lb differential (2.530, its RG)
+- Motiv Recon RX1 Silver 16 lb RG (2.29)
+
+**Migration 063.** These balls are retired, but they're still re-scraped
+every Sunday. The Shopify, NetSuite and Craft scrapers overwrite rg and
+differential outright, so the page typo would come back, 062 would blank it,
+and the fix would be lost. 063 changes the trigger function: on an UPDATE,
+an out-of-range value keeps the stored value if that one is in range. A bad
+scrape never wipes a good value. Nothing to keep (a new row, or a blank)
+still blanks and flags as before.
+
+**Apply:**
+```bash
+DB_SECRET_ARN=arn:aws:secretsmanager:us-west-1:563981859606:secret:bowling-scraper-db-rQYdf7 .venv/bin/python scripts/write_6gn_spec_lookups.py
+```
+
+It runs in one transaction:
+1. Applies 063.
+2. Writes the values and clears `needs_review` on those rows.
+3. Approves their 11 review rows.
+4. Simulates a re-scrape with the typos, then rolls the simulation back. It
+   asserts TR2 15 lb keeps 0.052 and Raw Hammer Burn keeps 2.48, and
+   doesn't commit if either fails.
+5. Re-estimates plotter positions.
+
+**Verify:** the script prints review rows `approved 11, pending 3`, and
+"still needs review" lists only 300T 15, Cyborg 13 and Recon RX1 Silver 16.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,
