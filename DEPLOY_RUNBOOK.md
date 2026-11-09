@@ -24050,7 +24050,7 @@ brand with close scores would churn the same way.
 **Tests:** 1 new in `tests/test_brand_art.py` (49). Three dispatch/run tests'
 `gather` stubs take `stored`.
 
-### 6gm. Ball specs checked against the USBC limits (2026-11-09, not applied)
+### 6gm. Ball specs checked against the USBC limits (2026-11-09, applied)
 
 Al: "it looks like the 900 Global Portal bowling ball has a bad spec for its
 mass bias number. 19.000 is likely supposed to be .019. Here is the USBC spec
@@ -24115,6 +24115,20 @@ select rg, differential, mass_bias from product_skus s join products p on p.id =
  where p.name = 'Portal' order by weight_lbs;                                     -- 15 lb mass bias 0.019
 select count(*) from review_queue where source = 'usbc_spec_check';             -- 14
 ```
+
+**Applied 2026-11-09.**
+- **062:** 36 rows run through. All three checks above match: 0, Portal
+  15 lb mass bias 0.019, 14 review rows. 14 SKUs are marked `needs_review`.
+- **Re-estimate:** 1,876 estimated products considered, 765 changed. Mean
+  shift was oil 0.84 and motion 1.23. That's far more than these 36 rows,
+  because it was the first catalog-wide run since 6gh's finish backfill
+  (about 370 balls gained a finish_category) and the drift in price
+  and demand.
+- **Spec-fixed balls:** Portal 10.3/13.2 → 13.6/15.3, Harsh Reality
+  11.2/14.9 → 14.0/12.8, Origin EX 10.0/14.0 → 13.7/12.4, Eternity PI
+  10.0/12.0 → 11.6/12.4, Covert VIP EXJ 9.5/12.5 → 9.2/12.2. Balls whose
+  values were blanked (TR2, 300T, Xponent Pearl 10) moved toward the fill
+  defaults.
 
 ## 7. Ongoing operations
 
