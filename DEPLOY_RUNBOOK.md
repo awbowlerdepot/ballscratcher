@@ -24126,9 +24126,9 @@ select count(*) from review_queue where source = 'usbc_spec_check';             
   and demand.
 - **Spec-fixed balls:** Portal 10.3/13.2 → 13.6/15.3, Harsh Reality
   11.2/14.9 → 14.0/12.8, Origin EX 10.0/14.0 → 13.7/12.4, Eternity PI
-  10.0/12.0 → 11.6/12.4, Covert VIP EXJ 9.5/12.5 → 9.2/12.2. Balls whose
-  values were blanked (TR2, 300T, Xponent Pearl 10) moved toward the fill
-  defaults.
+  10.0/12.0 → 11.6/12.4, Xponent Pearl 10 8.8/14.9 → 7.0/11.0, Covert VIP
+  EXJ 9.5/12.5 → 9.2/12.2. Balls whose differential was blanked moved toward
+  the fill default: TR2 9.2/13.3 → 7.2/11.3, 300T 8.5/13.9 → 5.1/11.1.
 
 ## 7. Ongoing operations
 
