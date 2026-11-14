@@ -24235,6 +24235,58 @@ in the review queue. Al chose to publish these after that was raised.
 - Sunday re-scrapes keep these values: the pages' typos are out of range,
   so 063 keeps what's stored.
 
+### 6gp. Clear Storm Pink PWBA: a prose column read as RG (2026-11-13, not deployed)
+
+Al: "https://www.stormbowling.com/storm-clear-pink-pwba-bowling-ball this
+wasn't found by the discover new balls scan".
+
+Discovery did find it. It's in `sitemap_products.xml`, and
+`discovered_urls` has had it since 2026-11-14 01:12 UTC. The scrape failed
+three times (the SQS retries) with `NumericValueOutOfRange: numeric field
+overflow`, so the ball never reached `products`.
+
+**Cause.** The Tech Data sheet is image-only (Textract), and it's a new table
+shape: one row per weight, with a PRODUCT DETAILS prose column to the left
+of the weight column.
+
+```
+['PRODUCT DETAILS:', '', 'RG', 'DIFF']
+['COVERSTOCK: Clear Polyester', '16 lb', '2.62', '0.018']
+['WEIGHT BLOCK: Hex Core FACTORY FINISH: 3500-grit Polished', '15 lb', '2.66', '0.018']
+...
+['AVAILABLE WEIGHTS: 12 - 16 lbs. PRODUCT SKU: VPB', '12 lb', '2.80', '0.018']
+```
+
+`_skus_from_table`'s long mode took every non-blank cell in order, so the
+prose became RG (3500 from "3500-grit", 12 from "12 - 16"), RG shifted into
+differential, and Diff into mass bias. An RG of 3500 doesn't fit
+numeric(5,3), and Postgres casts the value before 062's trigger can see it,
+so the whole upsert aborted.
+
+**Change (`commercebuild_product_scraper`).** Long mode keeps only cells that
+are a single plain number (`_to_float_strict`). That's the same rule the
+header-column branch uses for Portal's prose rows (6cp). The weight-token
+guard still runs first.
+
+**Tests.** 1 new test in `tests/test_commercebuild_product_scraper.py`, built
+from the real Textract table (91 pass).
+
+**Other failures this month** in the same log are unrelated:
+- **404s for removed pages:** Ember, Rockstar, Rockstar Amped, RST
+  Hyperdrive, Hy-Road 40, !Q Tour AI, Lightning Storm Clear, Tropical Surge
+  Red/White/Purple, and merchandise.
+- **Optimum Idol Pearl:** its Tech Data PDF returns 403, which fails the
+  whole product.
+
+**Deploy:** `sam build && sam deploy`. Then re-scrape the ball:
+
+```bash
+aws lambda invoke --region us-west-1 --function-name bowling-scraper-commercebuild-product-scraper --cli-binary-format raw-in-base64-out --payload '{"url":"https://www.stormbowling.com/storm-clear-pink-pwba-bowling-ball","brand_id":"aadc2a74-fbef-47a6-8417-c40f3644a28a"}' /dev/stdout
+```
+
+**Verify:** `products` has "Clear Storm Pink PWBA" with five SKUs, RG 2.62–2.80
+and differential 0.018.
+
 ## 7. Ongoing operations
 
 - **Check the DLQs periodically** (`bowling-scraper-product-scrape-dlq`,

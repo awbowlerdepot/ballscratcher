@@ -700,6 +700,28 @@ def test_skus_from_table_real_gremlin_long_format_shape():
     assert by_weight[12] == {"weight_lbs": 12, "rg": 2.59, "differential": 0.029, "mass_bias": 0.008}
 
 
+def test_skus_from_table_long_mode_skips_prose_column_left_of_weights():
+    """Runbook 6gp: Clear Storm Pink PWBA's Textract table (raw, captured
+    2026-11-13) has a PRODUCT DETAILS prose column left of the weights.
+    "3500-grit" and "12 - 16 lbs." must not become RG (3500 overflowed
+    numeric(5,3) and aborted the product's upsert)."""
+    table = [
+        ["PRODUCT DETAILS:", "", "RG", "DIFF"],
+        ["COVERSTOCK: Clear Polyester", "16 lb", "2.62", "0.018"],
+        ["WEIGHT BLOCK: Hex™ Core FACTORY FINISH: 3500-grit Polished", "15 lb", "2.66", "0.018"],
+        ["COLOR: Pink", "14 lb", "2.73", "0.018"],
+        ["FLARE POTENTIAL: Low FRAGRANCE: N/A", "13 lb", "2.78", "0.018"],
+        ["AVAILABLE WEIGHTS: 12 - 16 lbs. PRODUCT SKU: VPB", "12 lb", "2.80", "0.018"],
+    ]
+    assert app._skus_from_table(table) == [
+        {"weight_lbs": 16, "rg": 2.62, "differential": 0.018, "mass_bias": None},
+        {"weight_lbs": 15, "rg": 2.66, "differential": 0.018, "mass_bias": None},
+        {"weight_lbs": 14, "rg": 2.73, "differential": 0.018, "mass_bias": None},
+        {"weight_lbs": 13, "rg": 2.78, "differential": 0.018, "mass_bias": None},
+        {"weight_lbs": 12, "rg": 2.80, "differential": 0.018, "mass_bias": None},
+    ]
+
+
 def test_skus_from_table_gremlin_header_row_not_mistaken_for_data():
     """The header row itself ("WEIGHT"/"RG"/"DIFF"/"PSA") must never
     produce a spurious SKU -- none of its cells contain a digit, so the

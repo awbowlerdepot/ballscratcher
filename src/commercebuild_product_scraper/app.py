@@ -868,13 +868,30 @@ def _skus_from_table(table: list) -> list:
                 weight_match.group(1), weight_shaped, len(table), table,
             )
             continue
+        # Runbook 6gp. Al: "https://www.stormbowling.com/storm-clear-pink-
+        # pwba-bowling-ball this wasn't found by the discover new balls
+        # scan". It was found -- the scrape failed. Clear Storm Pink PWBA's
+        # image-only sheet is a 5th shape: long mode with a PRODUCT DETAILS
+        # prose column to the LEFT of the weight column --
+        #   ['PRODUCT DETAILS:', '', 'RG', 'DIFF']
+        #   ['COVERSTOCK: Clear Polyester', '16 lb', '2.62', '0.018']
+        #   ['WEIGHT BLOCK: Hex(TM) Core FACTORY FINISH: 3500-grit Polished', '15 lb', '2.66', '0.018']
+        #   ['AVAILABLE WEIGHTS: 12 - 16 lbs. PRODUCT SKU: VPB', '12 lb', '2.80', '0.018']
+        # Taking every non-blank cell in order read the prose as RG
+        # (_to_float pulls 3500 out of "3500-grit", 12 out of "12 - 16"),
+        # shifted RG into differential and Diff into mass bias, and RG 3500
+        # overflowed numeric(5,3) -- the whole product's upsert aborted, on
+        # every retry, so the ball never reached the catalog. Only cells
+        # that are one plain number now count, the same rule the
+        # header-column branch above already uses for Portal's prose rows.
+        numbers = [v for v in other_values if _to_float_strict(v)]
         skus.append({
             "weight_lbs": int(weight_match.group(1)),
-            "rg": _to_float(other_values[0]) if len(other_values) > 0 else None,
-            "differential": _to_float(other_values[1]) if len(other_values) > 1 else None,
+            "rg": _to_float(numbers[0]) if len(numbers) > 0 else None,
+            "differential": _to_float(numbers[1]) if len(numbers) > 1 else None,
             # Same PSA-is-mass_bias fix as wide mode above -- see that
             # branch's comment.
-            "mass_bias": _to_float(other_values[2]) if len(other_values) > 2 else None,
+            "mass_bias": _to_float(numbers[2]) if len(numbers) > 2 else None,
         })
     return skus
 
