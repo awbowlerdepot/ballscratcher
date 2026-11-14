@@ -24268,24 +24268,39 @@ are a single plain number (`_to_float_strict`). That's the same rule the
 header-column branch uses for Portal's prose rows (6cp). The weight-token
 guard still runs first.
 
-**Tests.** 1 new test in `tests/test_commercebuild_product_scraper.py`, built
-from the real Textract table (91 pass).
+**PDF fallback (Al: "yes add the pdf fallback too").** Roto Grip Optimum
+Idol Pearl's Tech Data PDF returns 403 (2026-11-01 and 11-08), and the
+exception from `fetch_pdf` failed the whole product. `_process_one` now
+treats a PDF that won't load or parse the same as a PDF that found nothing:
+- It logs a warning with the sheet URL.
+- It still upserts the product.
+- `_html_fallback_skus` writes the one weight/RG/diff the page shows.
 
-**Other failures this month** in the same log are unrelated:
-- **404s for removed pages:** Ember, Rockstar, Rockstar Amped, RST
-  Hyperdrive, Hy-Road 40, !Q Tour AI, Lightning Storm Clear, Tropical Surge
-  Red/White/Purple, and merchandise.
-- **Optimum Idol Pearl:** its Tech Data PDF returns 403, which fails the
-  whole product.
+Stored SKUs for other weights aren't touched. We didn't try to get past the
+403 (a different User-Agent, for example). That's the site's call.
 
-**Deploy:** `sam build && sam deploy`. Then re-scrape the ball:
+**Tests.** 2 new tests in `tests/test_commercebuild_product_scraper.py` (92
+pass):
+- The real Textract table.
+- A failed PDF fetch still writes the HTML SKU.
+
+**Other failures this month** in the same log are unrelated: 404s for
+removed pages (Ember, Rockstar, Rockstar Amped, RST Hyperdrive, Hy-Road 40,
+!Q Tour AI, Lightning Storm Clear, Tropical Surge Red/White/Purple, and
+merchandise).
+
+**Deploy:** `sam build && sam deploy`. Then re-scrape both balls:
 
 ```bash
 aws lambda invoke --region us-west-1 --function-name bowling-scraper-commercebuild-product-scraper --cli-binary-format raw-in-base64-out --payload '{"url":"https://www.stormbowling.com/storm-clear-pink-pwba-bowling-ball","brand_id":"aadc2a74-fbef-47a6-8417-c40f3644a28a"}' /dev/stdout
+aws lambda invoke --region us-west-1 --function-name bowling-scraper-commercebuild-product-scraper --cli-binary-format raw-in-base64-out --payload '{"url":"https://www.stormbowling.com/roto-grip-optimum-idol-pearl-bowling-ball","brand_id":"3ed62731-166b-42a9-9088-91e48c926452"}' /dev/stdout
 ```
 
-**Verify:** `products` has "Clear Storm Pink PWBA" with five SKUs, RG 2.62–2.80
-and differential 0.018.
+**Verify:**
+- `products` has "Clear Storm Pink PWBA" with five SKUs: RG 2.62–2.80,
+  differential 0.018.
+- Optimum Idol Pearl's invoke returns a `product_id`.
+- The log shows the "couldn't be loaded or parsed" warning, not an error.
 
 ## 7. Ongoing operations
 

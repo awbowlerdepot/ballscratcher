@@ -1607,8 +1607,24 @@ def _process_one(job: dict) -> dict:
 
     pdf_skus = []
     if parsed["tech_data_pdf_url"]:
-        pdf_bytes = fetch_pdf(parsed["tech_data_pdf_url"])
-        pdf_skus = parse_tech_data_pdf(pdf_bytes)
+        # Runbook 6gp. Al: "yes add the pdf fallback too". Roto Grip
+        # Optimum Idol Pearl's Tech Data PDF answers 403 (11-01, 11-08), and
+        # an exception here failed the WHOLE product on every retry -- the
+        # page's own name, status, cover and its one HTML weight/RG/diff
+        # never got written either. A PDF that won't load or parse now
+        # counts as "the PDF found nothing", so the product is still
+        # upserted and the _html_fallback_skus path below supplies the one
+        # SKU the page shows, same as an image-only sheet Textract can't
+        # read. Logged as a warning with the URL so a dead sheet stays
+        # visible in CloudWatch. Stored SKUs for the other weights aren't
+        # touched: upsert_product only writes the weights it's given.
+        try:
+            pdf_bytes = fetch_pdf(parsed["tech_data_pdf_url"])
+            pdf_skus = parse_tech_data_pdf(pdf_bytes)
+        except Exception:
+            logger.warning("Tech Data PDF %s for %s couldn't be loaded or parsed -- using the page's own specs",
+                           parsed["tech_data_pdf_url"], url, exc_info=True)
+            pdf_skus = []
     else:
         logger.warning("No Tech Data PDF found for %s -- no per-weight SKU data will be stored", url)
 

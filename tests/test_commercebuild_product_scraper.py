@@ -1230,6 +1230,41 @@ def test_html_fallback_skus_passes_through_none_rg_and_differential():
     }]
 
 
+def test_process_one_falls_back_to_page_specs_when_pdf_fetch_fails():
+    """Runbook 6gp: Optimum Idol Pearl's Tech Data PDF answers 403. That
+    used to fail the whole product; now the page is still upserted with
+    its one HTML SKU."""
+    parsed = {"status": "current", "tech_data_pdf_url": "https://cdn.example/sheet.pdf",
+              "html_weight_lbs": 15, "html_rg": 2.49, "html_differential": 0.048}
+    written = {}
+
+    class FakeConn:
+        def close(self):
+            pass
+
+    def fail_pdf(url):
+        raise RuntimeError("403 Client Error: Forbidden")
+
+    def fake_upsert(conn, brand_id, parsed_page, skus, mismatches):
+        written["skus"] = skus
+        return {"product_id": "p1", "pending_image_jobs": []}
+
+    saved = {name: getattr(app, name) for name in
+             ("fetch_page", "parse_product_page", "fetch_pdf", "get_db_connection", "upsert_product")}
+    app.fetch_page = lambda url: "<html></html>"
+    app.parse_product_page = lambda html, url: parsed
+    app.fetch_pdf = fail_pdf
+    app.get_db_connection = FakeConn
+    app.upsert_product = fake_upsert
+    try:
+        result = app._process_one({"url": "https://www.stormbowling.com/x-bowling-ball", "brand_id": "b1"})
+    finally:
+        for name, fn in saved.items():
+            setattr(app, name, fn)
+    assert result["product_id"] == "p1"
+    assert written["skus"] == [{"weight_lbs": 15, "rg": 2.49, "differential": 0.048, "mass_bias": None, "source": "html"}]
+
+
 def test_html_fallback_skus_missing_key_entirely_treated_as_absent():
     # parsed_page.get(...) -- a dict that never had the key at all
     # (not just None) behaves the same as explicitly-None.
